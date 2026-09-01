@@ -137,7 +137,7 @@ pub async fn list_flow_traces(
         .flow_trace_store()
         .ok_or_else(|| ApiError::NotFound("Flow trace store not configured".to_string()))?;
 
-    let limit = params.limit.min(1000).max(1);
+    let limit = params.limit.clamp(1, 1000);
 
     let mut query = FlowTraceQuery {
         call_id: params.call_id,

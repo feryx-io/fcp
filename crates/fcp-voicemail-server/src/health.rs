@@ -63,6 +63,8 @@ fn protected_router() -> Router<Arc<VoicemailState>> {
 }
 
 /// Create the voicemail health router.
+// Kept as part of the module's intended API; not currently called from this binary.
+#[allow(dead_code)]
 pub fn voicemail_router() -> Router<Arc<VoicemailState>> {
     public_router()
 }

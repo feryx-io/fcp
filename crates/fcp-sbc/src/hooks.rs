@@ -154,7 +154,7 @@ impl EventPublisher for SbcEventHooks {
 
                     if let Some(ref recorder) = self.recorder {
                         let recorder = Arc::clone(recorder);
-                        let call_id_clone = call_id.clone();
+                        let call_id_clone = *call_id;
                         let a_sdp = a_leg_sdp.clone();
                         let b_sdp = b_leg_sdp.clone();
                         tokio::spawn(async move {
@@ -165,7 +165,7 @@ impl EventPublisher for SbcEventHooks {
                     }
                     if let Some(ref capture) = self.local_capture {
                         let capture = Arc::clone(capture);
-                        let call_id = call_id.clone();
+                        let call_id = *call_id;
                         tokio::spawn(async move {
                             capture.on_call_answered(&call_id).await;
                         });
@@ -199,14 +199,14 @@ impl EventPublisher for SbcEventHooks {
                     if let Some(ref recorder) = self.recorder {
                         recorder.cleanup_pending(call_id);
                         let recorder = Arc::clone(recorder);
-                        let call_id_clone = call_id.clone();
+                        let call_id_clone = *call_id;
                         tokio::spawn(async move {
                             recorder.stop_recording(&call_id_clone).await;
                         });
                     }
                     if let Some(ref capture) = self.local_capture {
                         let capture = Arc::clone(capture);
-                        let call_id = call_id.clone();
+                        let call_id = *call_id;
                         tokio::spawn(async move {
                             capture.on_call_ended(&call_id).await;
                         });
@@ -246,7 +246,7 @@ impl EventPublisher for SbcEventHooks {
                     if let Some(ref recorder) = self.recorder {
                         recorder.cleanup_pending(call_id);
                         let recorder = Arc::clone(recorder);
-                        let call_id_clone = call_id.clone();
+                        let call_id_clone = *call_id;
                         tokio::spawn(async move {
                             recorder.stop_recording(&call_id_clone).await;
                         });

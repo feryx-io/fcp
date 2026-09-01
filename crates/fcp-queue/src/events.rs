@@ -33,7 +33,7 @@ pub async fn caller_enqueued(
             call_id: call_id.to_string(),
             caller: caller.to_string(),
             position,
-            tenant_id: tenant_id.clone(),
+            tenant_id: *tenant_id,
             timestamp: SystemTime::now(),
         },
     )
@@ -56,7 +56,7 @@ pub async fn caller_dequeued(
             call_id: call_id.to_string(),
             agent_id: agent_id.to_string(),
             wait_time_secs,
-            tenant_id: tenant_id.clone(),
+            tenant_id: *tenant_id,
             timestamp: SystemTime::now(),
         },
     )
@@ -79,7 +79,7 @@ pub async fn caller_abandoned(
             call_id: call_id.to_string(),
             wait_time_secs,
             position,
-            tenant_id: tenant_id.clone(),
+            tenant_id: *tenant_id,
             timestamp: SystemTime::now(),
         },
     )
@@ -102,7 +102,7 @@ pub async fn caller_overflowed(
             call_id: call_id.to_string(),
             destination: destination.to_string(),
             reason: reason.to_string(),
-            tenant_id: tenant_id.clone(),
+            tenant_id: *tenant_id,
             timestamp: SystemTime::now(),
         },
     )
@@ -121,7 +121,7 @@ pub async fn agent_logged_in(
         QueueEvent::AgentLoggedIn {
             queue_name: queue_name.to_string(),
             agent_id: agent_id.to_string(),
-            tenant_id: tenant_id.clone(),
+            tenant_id: *tenant_id,
             timestamp: SystemTime::now(),
         },
     )
@@ -140,7 +140,7 @@ pub async fn agent_logged_out(
         QueueEvent::AgentLoggedOut {
             queue_name: queue_name.to_string(),
             agent_id: agent_id.to_string(),
-            tenant_id: tenant_id.clone(),
+            tenant_id: *tenant_id,
             timestamp: SystemTime::now(),
         },
     )
@@ -163,7 +163,7 @@ pub async fn agent_state_changed(
             old_state: old_state.to_string(),
             new_state: new_state.to_string(),
             reason: reason.map(|s| s.to_string()),
-            tenant_id: tenant_id.clone(),
+            tenant_id: *tenant_id,
             timestamp: SystemTime::now(),
         },
     )
@@ -182,7 +182,7 @@ pub async fn agent_kicked(
         QueueEvent::AgentKicked {
             agent_id: agent_id.to_string(),
             reason: reason.to_string(),
-            tenant_id: tenant_id.clone(),
+            tenant_id: *tenant_id,
             timestamp: SystemTime::now(),
         },
     )
@@ -203,7 +203,7 @@ pub async fn callback_initiated(
             queue_name: queue_name.to_string(),
             call_id: call_id.to_string(),
             callback_uri: callback_uri.to_string(),
-            tenant_id: tenant_id.clone(),
+            tenant_id: *tenant_id,
             timestamp: SystemTime::now(),
         },
     )
@@ -224,7 +224,7 @@ pub async fn caller_transferred(
             from_queue: from_queue.to_string(),
             to_queue: to_queue.to_string(),
             call_id: call_id.to_string(),
-            tenant_id: tenant_id.clone(),
+            tenant_id: *tenant_id,
             timestamp: SystemTime::now(),
         },
     )
@@ -245,7 +245,7 @@ pub async fn supervisor_joined(
             call_id: call_id.to_string(),
             supervisor_id: supervisor_id.to_string(),
             mode: mode.to_string(),
-            tenant_id: tenant_id.clone(),
+            tenant_id: *tenant_id,
             timestamp: SystemTime::now(),
         },
     )
@@ -264,7 +264,7 @@ pub async fn supervisor_left(
         QueueEvent::SupervisorLeft {
             call_id: call_id.to_string(),
             supervisor_id: supervisor_id.to_string(),
-            tenant_id: tenant_id.clone(),
+            tenant_id: *tenant_id,
             timestamp: SystemTime::now(),
         },
     )
@@ -287,7 +287,7 @@ pub async fn callback_attempted(
             call_id: call_id.to_string(),
             callback_uri: callback_uri.to_string(),
             attempt,
-            tenant_id: tenant_id.clone(),
+            tenant_id: *tenant_id,
             timestamp: SystemTime::now(),
         },
     )
@@ -312,7 +312,7 @@ pub async fn callback_completed(
             callback_uri: callback_uri.to_string(),
             agent_id: agent_id.to_string(),
             attempts,
-            tenant_id: tenant_id.clone(),
+            tenant_id: *tenant_id,
             timestamp: SystemTime::now(),
         },
     )
@@ -337,7 +337,7 @@ pub async fn callback_failed(
             callback_uri: callback_uri.to_string(),
             reason: reason.to_string(),
             attempts,
-            tenant_id: tenant_id.clone(),
+            tenant_id: *tenant_id,
             timestamp: SystemTime::now(),
         },
     )
@@ -362,7 +362,7 @@ pub async fn service_level_warning(
             threshold_pct,
             calls_offered,
             calls_within_sl,
-            tenant_id: tenant_id.clone(),
+            tenant_id: *tenant_id,
             timestamp: SystemTime::now(),
         },
     )
@@ -379,7 +379,7 @@ pub async fn queue_draining(
         events,
         QueueEvent::QueueDraining {
             queue_name: queue_name.to_string(),
-            tenant_id: tenant_id.clone(),
+            tenant_id: *tenant_id,
             timestamp: SystemTime::now(),
         },
     )
@@ -396,7 +396,7 @@ pub async fn queue_drained(
         events,
         QueueEvent::QueueDrained {
             queue_name: queue_name.to_string(),
-            tenant_id: tenant_id.clone(),
+            tenant_id: *tenant_id,
             timestamp: SystemTime::now(),
         },
     )
@@ -415,7 +415,7 @@ pub async fn campaign_call_placed(
         QueueEvent::CampaignCallPlaced {
             queue_name: queue_name.to_string(),
             destination: destination.to_string(),
-            tenant_id: tenant_id.clone(),
+            tenant_id: *tenant_id,
             timestamp: SystemTime::now(),
         },
     )
@@ -436,7 +436,7 @@ pub async fn campaign_call_connected(
             queue_name: queue_name.to_string(),
             destination: destination.to_string(),
             agent_id: agent_id.to_string(),
-            tenant_id: tenant_id.clone(),
+            tenant_id: *tenant_id,
             timestamp: SystemTime::now(),
         },
     )
@@ -457,7 +457,7 @@ pub async fn campaign_call_failed(
             queue_name: queue_name.to_string(),
             destination: destination.to_string(),
             outcome: outcome.to_string(),
-            tenant_id: tenant_id.clone(),
+            tenant_id: *tenant_id,
             timestamp: SystemTime::now(),
         },
     )
@@ -490,7 +490,7 @@ pub async fn stats_snapshot(
         events,
         QueueEvent::StatsSnapshot {
             stats: snapshots,
-            tenant_id: tenant_id.clone(),
+            tenant_id: *tenant_id,
             timestamp: SystemTime::now(),
         },
     )

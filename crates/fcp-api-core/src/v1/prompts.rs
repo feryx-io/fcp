@@ -233,7 +233,7 @@ pub async fn create_prompt(
                     let tenant_dir = prompts_dir.join(prompt.tenant_id.to_string());
                     let _ = tokio::fs::create_dir_all(&tenant_dir).await;
                     let dest_path = tenant_dir.join(format!("{}.wav", prompt.id));
-                    if let Ok(_) = tokio::fs::copy(&cached_path, &dest_path).await {
+                    if tokio::fs::copy(&cached_path, &dest_path).await.is_ok() {
                         let file_size = tokio::fs::metadata(&dest_path)
                             .await
                             .map(|m| m.len())
@@ -320,7 +320,7 @@ pub async fn update_prompt(
                     let tenant_dir = prompts_dir.join(prompt.tenant_id.to_string());
                     let _ = tokio::fs::create_dir_all(&tenant_dir).await;
                     let dest_path = tenant_dir.join(format!("{}.wav", prompt.id));
-                    if let Ok(_) = tokio::fs::copy(&cached_path, &dest_path).await {
+                    if tokio::fs::copy(&cached_path, &dest_path).await.is_ok() {
                         let file_size = tokio::fs::metadata(&dest_path)
                             .await
                             .map(|m| m.len())

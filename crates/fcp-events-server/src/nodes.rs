@@ -19,6 +19,7 @@ pub enum NodeStatus {
 /// Type of node (for future expansion).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum NodeType {
     /// SIP call manager node
     CallManager,
@@ -26,13 +27,8 @@ pub enum NodeType {
     #[allow(dead_code)]
     SessionManager,
     /// Unknown/generic node
+    #[default]
     Unknown,
-}
-
-impl Default for NodeType {
-    fn default() -> Self {
-        Self::Unknown
-    }
 }
 
 /// Information about a registered node.

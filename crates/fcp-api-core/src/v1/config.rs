@@ -306,7 +306,7 @@ pub async fn get_audit_log(
     let service = params.service.as_deref().unwrap_or("_global");
     let tenant_id = scoped_config_tenant_id(&tenant, identity.as_ref().map(|ext| &ext.0), None);
 
-    let limit = params.limit.min(500).max(1);
+    let limit = params.limit.clamp(1, 500);
 
     let entries = store
         .get_audit_log(service, &tenant_id, params.section.as_deref(), limit)

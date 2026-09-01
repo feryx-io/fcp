@@ -65,7 +65,7 @@ impl RedisPresencePubSub {
     ) -> Result<()> {
         let event = PresenceChangeEvent {
             aor: aor.to_string(),
-            tenant_id: tenant_id.clone(),
+            tenant_id: *tenant_id,
             node_id: self.node_id.clone(),
             state: Some(state.to_string()),
             note: note.map(|s| s.to_string()),

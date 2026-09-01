@@ -227,7 +227,7 @@ impl DefaultRoutingEngine {
             .or_else(|| service_uri.strip_prefix("sips:"))
             .unwrap_or(service_uri)
             .split('@')
-            .last()
+            .next_back()
             .unwrap_or(service_uri)
             .trim();
         format!("sip:{}@{}", extension, host)
@@ -307,9 +307,7 @@ impl RoutingEngine for DefaultRoutingEngine {
                             return Err(RoutingError::NoDevicesAvailable);
                         }
 
-                        let sip_uri = device
-                            .sip_uri
-                            .ok_or_else(|| RoutingError::NoDevicesAvailable)?;
+                        let sip_uri = device.sip_uri.ok_or(RoutingError::NoDevicesAvailable)?;
 
                         Ok(RoutingResult {
                             phone_number: None,

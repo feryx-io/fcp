@@ -106,7 +106,7 @@ pub async fn list_presences(
                 }
 
                 // Resolve extension target to device AOR(s)
-                let device_aors = resolve_ext_to_device_aors(&ext, storage.as_ref()).await;
+                let device_aors = resolve_ext_to_device_aors(ext, storage.as_ref()).await;
                 for dev_aor in device_aors {
                     device_aor_to_ext
                         .insert(dev_aor, (ext.number.clone(), ext.description.clone()));

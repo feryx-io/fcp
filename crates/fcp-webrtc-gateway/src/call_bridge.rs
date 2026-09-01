@@ -128,7 +128,7 @@ impl CallBridgeManager {
         // 3. Create media session
         let media_session = self
             .media_manager
-            .create_session_default(call_id.clone(), dialog_id.clone())
+            .create_session_default(call_id, dialog_id)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to create media session: {}", e))?;
 
@@ -330,7 +330,7 @@ async fn drive_call_lifecycle(
     let code = final_response.start_line().code();
     info!(bridge_id = %bridge_id, code = code, "SIP final response");
 
-    if code < 200 || code >= 300 {
+    if !(200..300).contains(&code) {
         // Non-2xx final → call failed
         let reason = format!("{} {}", code, final_response.start_line().reason());
         error!(bridge_id = %bridge_id, reason = %reason, "SIP call rejected");

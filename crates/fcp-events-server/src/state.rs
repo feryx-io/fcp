@@ -617,7 +617,7 @@ mod tests {
 
         // Ringing
         store.process_event(&CallEvent::Ringing {
-            call_id: call_id.clone(),
+            call_id,
             timestamp: SystemTime::now(),
             node_id: Some("node-1".to_string()),
         });
@@ -628,7 +628,7 @@ mod tests {
 
         // Answered
         store.process_event(&CallEvent::Answered {
-            call_id: call_id.clone(),
+            call_id,
             answer_time: SystemTime::now(),
             codec: "PCMU".to_string(),
             a_leg_sdp: None,
@@ -644,7 +644,7 @@ mod tests {
 
         // Ended
         store.process_event(&CallEvent::Ended {
-            call_id: call_id.clone(),
+            call_id,
             end_time: SystemTime::now(),
             duration_ms: 30000,
             hangup_cause: "Normal Clearing".to_string(),

@@ -31,7 +31,7 @@ pub async fn status_changed(
             aor: aor.to_string(),
             old_state: old_state.to_string(),
             new_state: new_state.to_string(),
-            tenant_id: tenant_id.clone(),
+            tenant_id: *tenant_id,
             timestamp: SystemTime::now(),
         },
     )
@@ -50,7 +50,7 @@ pub async fn watcher_added(
         PresenceEvent::WatcherAdded {
             presentity_aor: presentity_aor.to_string(),
             watcher_aor: watcher_aor.to_string(),
-            tenant_id: tenant_id.clone(),
+            tenant_id: *tenant_id,
             timestamp: SystemTime::now(),
         },
     )
@@ -69,7 +69,7 @@ pub async fn watcher_removed(
         PresenceEvent::WatcherRemoved {
             presentity_aor: presentity_aor.to_string(),
             watcher_aor: watcher_aor.to_string(),
-            tenant_id: tenant_id.clone(),
+            tenant_id: *tenant_id,
             timestamp: SystemTime::now(),
         },
     )
@@ -88,7 +88,7 @@ pub async fn publish_received(
         PresenceEvent::PublishReceived {
             aor: aor.to_string(),
             state: state.to_string(),
-            tenant_id: tenant_id.clone(),
+            tenant_id: *tenant_id,
             timestamp: SystemTime::now(),
         },
     )
@@ -109,7 +109,7 @@ pub async fn publish_expiry_warning(
             aor: aor.to_string(),
             etag: etag.to_string(),
             elapsed_pct,
-            tenant_id: tenant_id.clone(),
+            tenant_id: *tenant_id,
             timestamp: SystemTime::now(),
         },
     )
@@ -130,7 +130,7 @@ pub async fn publish_expired(
             aor: aor.to_string(),
             etag: etag.to_string(),
             state: state.to_string(),
-            tenant_id: tenant_id.clone(),
+            tenant_id: *tenant_id,
             timestamp: SystemTime::now(),
         },
     )
@@ -151,7 +151,7 @@ pub async fn dialog_changed(
             aor: aor.to_string(),
             call_id: call_id.to_string(),
             dialog_state: dialog_state.to_string(),
-            tenant_id: tenant_id.clone(),
+            tenant_id: *tenant_id,
             timestamp: SystemTime::now(),
         },
     )

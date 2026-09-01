@@ -305,37 +305,6 @@ pub struct MediaSessionStats {
     pub duration_secs: u64,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_session_state_transitions() {
-        let states = vec![
-            MediaSessionState::Negotiating,
-            MediaSessionState::Active,
-            MediaSessionState::OnHold,
-            MediaSessionState::Active,
-            MediaSessionState::Terminated,
-        ];
-
-        for state in states {
-            // Just verify states can be created and compared
-            assert_eq!(state, state);
-        }
-    }
-
-    #[test]
-    fn test_default_config() {
-        let config = MediaSessionConfig::default();
-        assert!(config.enable_transcoding);
-        assert!(!config.enable_recording);
-        assert_eq!(config.dtmf_mode, DtmfMode::Rfc2833);
-        assert!(config.preferred_codecs.contains(&"PCMU".to_string()));
-        assert!(config.validate().is_ok());
-    }
-}
-
 fn contains_crlf(value: &str) -> bool {
     value.bytes().any(|b| matches!(b, b'\r' | b'\n'))
 }
@@ -381,4 +350,35 @@ fn validate_path_components(path: &str) -> crate::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_session_state_transitions() {
+        let states = vec![
+            MediaSessionState::Negotiating,
+            MediaSessionState::Active,
+            MediaSessionState::OnHold,
+            MediaSessionState::Active,
+            MediaSessionState::Terminated,
+        ];
+
+        for state in states {
+            // Just verify states can be created and compared
+            assert_eq!(state, state);
+        }
+    }
+
+    #[test]
+    fn test_default_config() {
+        let config = MediaSessionConfig::default();
+        assert!(config.enable_transcoding);
+        assert!(!config.enable_recording);
+        assert_eq!(config.dtmf_mode, DtmfMode::Rfc2833);
+        assert!(config.preferred_codecs.contains(&"PCMU".to_string()));
+        assert!(config.validate().is_ok());
+    }
 }

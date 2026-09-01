@@ -47,6 +47,9 @@ enum OutputFormat {
     Yaml,
 }
 
+// A clap subcommand enum is parsed once at startup and never stored in bulk,
+// so the size spread between variants does not matter here.
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 enum Commands {
     /// Launch interactive TUI mode

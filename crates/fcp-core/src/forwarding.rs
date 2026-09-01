@@ -203,10 +203,10 @@ impl ForwardingRule {
     /// Checks if this rule applies to the given caller.
     pub fn applies_to_caller(&self, caller: &str) -> bool {
         // Check blacklist first
-        if !self.caller_blacklist.is_empty() {
-            if self.matches_pattern_list(caller, &self.caller_blacklist) {
-                return false;
-            }
+        if !self.caller_blacklist.is_empty()
+            && self.matches_pattern_list(caller, &self.caller_blacklist)
+        {
+            return false;
         }
 
         // If whitelist is empty, applies to all
@@ -319,10 +319,7 @@ impl ForwardingRulesManager {
     /// Adds a forwarding rule.
     pub fn add_rule(&mut self, rule: ForwardingRule) {
         let line_binding_id = rule.line_binding_id;
-        self.rules
-            .entry(line_binding_id)
-            .or_insert_with(Vec::new)
-            .push(rule);
+        self.rules.entry(line_binding_id).or_default().push(rule);
 
         // Sort by priority
         if let Some(rules) = self.rules.get_mut(&line_binding_id) {

@@ -12,9 +12,10 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 /// How the B2BUA distributes outbound INVITE attempts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum ForkingMode {
     /// Send INVITE to a single destination only.
+    #[default]
     Single,
 
     /// Send INVITEs to all destinations simultaneously.
@@ -24,26 +25,15 @@ pub enum ForkingMode {
     Sequential,
 }
 
-impl Default for ForkingMode {
-    fn default() -> Self {
-        Self::Single
-    }
-}
-
 /// How early media (183 Session Progress) from forked legs is handled.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum EarlyMediaPolicy {
     /// Only relay early media from the first responding leg.
+    #[default]
     FirstOnly,
 
     /// Do not relay any early media to the caller.
     None,
-}
-
-impl Default for EarlyMediaPolicy {
-    fn default() -> Self {
-        Self::FirstOnly
-    }
 }
 
 /// Policy-level configuration for call forking.
@@ -226,42 +216,51 @@ mod tests {
 
     #[test]
     fn test_validate_zero_timeout() {
-        let mut cfg = ForkingConfig::default();
-        cfg.timeout = Duration::ZERO;
+        let cfg = ForkingConfig {
+            timeout: Duration::ZERO,
+            ..Default::default()
+        };
         let err = cfg.validate().unwrap_err();
         assert!(err.contains("greater than zero"));
     }
 
     #[test]
     fn test_validate_excessive_timeout() {
-        let mut cfg = ForkingConfig::default();
-        cfg.timeout = Duration::from_secs(301);
+        let cfg = ForkingConfig {
+            timeout: Duration::from_secs(301),
+            ..Default::default()
+        };
         let err = cfg.validate().unwrap_err();
         assert!(err.contains("300 seconds"));
     }
 
     #[test]
     fn test_validate_zero_max_legs() {
-        let mut cfg = ForkingConfig::default();
-        cfg.max_parallel_legs = 0;
+        let cfg = ForkingConfig {
+            max_parallel_legs: 0,
+            ..Default::default()
+        };
         let err = cfg.validate().unwrap_err();
         assert!(err.contains("greater than zero"));
     }
 
     #[test]
     fn test_validate_excessive_max_legs() {
-        let mut cfg = ForkingConfig::default();
-        cfg.max_parallel_legs = 51;
+        let cfg = ForkingConfig {
+            max_parallel_legs: 51,
+            ..Default::default()
+        };
         let err = cfg.validate().unwrap_err();
         assert!(err.contains("50"));
     }
 
     #[test]
     fn test_validate_boundary_values() {
-        let mut cfg = ForkingConfig::default();
-
         // Exactly 300s is valid
-        cfg.timeout = Duration::from_secs(300);
+        let mut cfg = ForkingConfig {
+            timeout: Duration::from_secs(300),
+            ..Default::default()
+        };
         assert!(cfg.validate().is_ok());
 
         // Exactly 50 legs is valid

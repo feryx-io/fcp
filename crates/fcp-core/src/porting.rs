@@ -357,10 +357,8 @@ impl PortRequest {
                     self.submitted_at = Some(SystemTime::now());
                 }
             }
-            PortStatus::Completed => {
-                if self.completed_at.is_none() {
-                    self.completed_at = Some(SystemTime::now());
-                }
+            PortStatus::Completed if self.completed_at.is_none() => {
+                self.completed_at = Some(SystemTime::now());
             }
             _ => {}
         }
@@ -861,7 +859,7 @@ mod tests {
 
         // Valid request
         let request = PortRequest::new(
-            tenant_id.clone(),
+            tenant_id,
             vec!["+14155551234".to_string()],
             "Acme Corp".to_string(),
             "ACC-12345".to_string(),
@@ -873,7 +871,7 @@ mod tests {
 
         // Invalid: empty phone numbers
         let request = PortRequest::new(
-            tenant_id.clone(),
+            tenant_id,
             vec![],
             "Acme Corp".to_string(),
             "ACC-12345".to_string(),
@@ -885,7 +883,7 @@ mod tests {
 
         // Invalid: non-E.164 phone number
         let request = PortRequest::new(
-            tenant_id.clone(),
+            tenant_id,
             vec!["4155551234".to_string()],
             "Acme Corp".to_string(),
             "ACC-12345".to_string(),

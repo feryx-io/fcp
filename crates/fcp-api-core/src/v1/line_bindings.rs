@@ -238,12 +238,7 @@ pub async fn create_line_binding(
     let binding_type = parse_binding_type(&req.binding_type)?;
 
     // SECURITY: Use authenticated tenant, not request body tenant_id
-    let mut binding = LineBinding::new(
-        phone_number_id,
-        owner_user_id,
-        binding_type,
-        tenant.0.clone(),
-    );
+    let mut binding = LineBinding::new(phone_number_id, owner_user_id, binding_type, tenant.0);
 
     // Set optional fields
     if let Some(devices) = req.devices {

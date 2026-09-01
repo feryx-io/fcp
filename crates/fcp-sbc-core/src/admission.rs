@@ -150,32 +150,40 @@ mod tests {
 
     #[test]
     fn test_validate_excessive_cps() {
-        let mut cfg = AdmissionConfig::default();
-        cfg.max_cps = 100_001;
+        let cfg = AdmissionConfig {
+            max_cps: 100_001,
+            ..Default::default()
+        };
         let err = cfg.validate().unwrap_err();
         assert!(err.contains("max_cps"));
     }
 
     #[test]
     fn test_validate_excessive_concurrent_calls() {
-        let mut cfg = AdmissionConfig::default();
-        cfg.max_concurrent_calls = 1_000_001;
+        let cfg = AdmissionConfig {
+            max_concurrent_calls: 1_000_001,
+            ..Default::default()
+        };
         let err = cfg.validate().unwrap_err();
         assert!(err.contains("max_concurrent_calls"));
     }
 
     #[test]
     fn test_validate_retry_after_too_low() {
-        let mut cfg = AdmissionConfig::default();
-        cfg.retry_after_secs = 0;
+        let cfg = AdmissionConfig {
+            retry_after_secs: 0,
+            ..Default::default()
+        };
         let err = cfg.validate().unwrap_err();
         assert!(err.contains("retry_after_secs"));
     }
 
     #[test]
     fn test_validate_retry_after_too_high() {
-        let mut cfg = AdmissionConfig::default();
-        cfg.retry_after_secs = 3601;
+        let cfg = AdmissionConfig {
+            retry_after_secs: 3601,
+            ..Default::default()
+        };
         let err = cfg.validate().unwrap_err();
         assert!(err.contains("retry_after_secs"));
     }
@@ -208,10 +216,10 @@ mod tests {
 
     #[test]
     fn test_validate_boundary_values() {
-        let mut cfg = AdmissionConfig::default();
-
-        // Exactly 100,000 CPS is valid
-        cfg.max_cps = 100_000;
+        let mut cfg = AdmissionConfig {
+            max_cps: 100_000,
+            ..Default::default()
+        };
         assert!(cfg.validate().is_ok());
 
         // Exactly 1,000,000 concurrent calls is valid

@@ -4,6 +4,9 @@
 //! via SUBSCRIBE/NOTIFY/PUBLISH, manages watcher subscriptions, and provides
 //! a REST API for presence management.
 
+// `fcp_presence::webhook` is deprecated in favour of `fcp-webhooks`; this server
+// has not been migrated yet, so it still uses the older in-crate dispatcher.
+#![allow(deprecated)]
 use anyhow::{Context, Result};
 use clap::Parser;
 use fcp_events::filter::EventType;
@@ -398,7 +401,7 @@ async fn main() -> Result<()> {
     // Start webhook dispatcher (if configured and webhook feature enabled)
     #[cfg(feature = "webhook")]
     let webhook_dispatcher = {
-        let dispatcher = if config.webhooks.as_ref().map_or(false, |w| w.enabled) {
+        let dispatcher = if config.webhooks.as_ref().is_some_and(|w| w.enabled) {
             let wh = config.webhooks.as_ref().unwrap();
             let d = Arc::new(fcp_presence::webhook::WebhookDispatcher::new(
                 wh.max_retries,
@@ -712,7 +715,7 @@ async fn create_uac(
 
     let mut builder = IntegratedUAC::builder();
     builder = builder
-        .local_uri(local_uri.as_str())
+        .local_uri(local_uri.as_str())?
         .local_addr(&local_addr)?
         .via_advertised_addr(&local_addr)?
         .transaction_manager(transaction_manager)

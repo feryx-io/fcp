@@ -181,7 +181,7 @@ pub async fn create_routing_rule(
     let action = req
         .action
         .parse::<RoutingAction>()
-        .map_err(|e| ApiError::BadRequest(e))?;
+        .map_err(ApiError::BadRequest)?;
 
     let mut rule = RoutingRule::new(req.name, tenant.0);
     rule.description = req.description;
@@ -269,7 +269,7 @@ pub async fn update_routing_rule(
     if let Some(action) = req.action {
         rule.action = action
             .parse::<RoutingAction>()
-            .map_err(|e| ApiError::BadRequest(e))?;
+            .map_err(ApiError::BadRequest)?;
     }
     if let Some(tid) = req.target_trunk_id {
         rule.target_trunk_id = Some(tid).filter(|s| !s.is_empty());

@@ -469,6 +469,7 @@ impl SipMessageHandler {
     /// * `storage` - Optional storage for line binding lookups
     /// * `media_manager` - Optional media manager for RTP handling
     /// * `media_config` - Optional media configuration
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         transaction_manager: Arc<TransactionManager>,
         dialog_manager: Arc<DialogManager>,
@@ -521,6 +522,7 @@ impl SipMessageHandler {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn new_with_settings(
         transaction_manager: Arc<TransactionManager>,
         dialog_manager: Arc<DialogManager>,
@@ -1145,7 +1147,7 @@ impl SipMessageHandler {
                     if let (Some(media_session_id), Some(media_manager)) =
                         (&call.media_session_id, &self.media_manager)
                     {
-                        let media_session_id = media_session_id.clone();
+                        let media_session_id = *media_session_id;
                         let media_manager = Arc::clone(media_manager);
                         let call_id = call.id;
 
@@ -1558,7 +1560,7 @@ impl SipMessageHandler {
                         "PBX feature code detected"
                     );
                     return self
-                        .handle_pbx_feature_code(request, &handle, &call_id, action)
+                        .handle_pbx_feature_code(request, handle, &call_id, action)
                         .await;
                 }
             }
@@ -1626,7 +1628,7 @@ impl SipMessageHandler {
                                     let fcp_call_id = fcp_core::CallId::new();
                                     let fcp_dialog_id = fcp_core::DialogId::new();
                                     match media_manager
-                                        .create_session_default(fcp_call_id.clone(), fcp_dialog_id)
+                                        .create_session_default(fcp_call_id, fcp_dialog_id)
                                         .await
                                     {
                                         Ok(_session) => {
@@ -1751,7 +1753,7 @@ impl SipMessageHandler {
                                                                 "Content-Length",
                                                             ),
                                                             smol_str::SmolStr::new(
-                                                                &sdp_bytes.len().to_string(),
+                                                                sdp_bytes.len().to_string(),
                                                             ),
                                                         );
 
@@ -1963,7 +1965,7 @@ impl SipMessageHandler {
                 let fcp_call_id = fcp_core::CallId::new();
                 let fcp_dialog_id = fcp_core::DialogId::new();
                 match media_manager
-                    .create_session_default(fcp_call_id.clone(), fcp_dialog_id)
+                    .create_session_default(fcp_call_id, fcp_dialog_id)
                     .await
                 {
                     Ok(_session) => {
@@ -2086,7 +2088,7 @@ impl SipMessageHandler {
 
                 // Create media session
                 match media_manager
-                    .create_session_default(fcp_call_id.clone(), fcp_dialog_id)
+                    .create_session_default(fcp_call_id, fcp_dialog_id)
                     .await
                 {
                     Ok(session) => {
@@ -2195,7 +2197,7 @@ impl SipMessageHandler {
         let mut headers = sip_core::Headers::new();
         for name in ["Alert-Info", "Call-Info", "X-FCP-Intercom-Mode"] {
             for value in request.headers().get_all(name) {
-                let _ = headers.push(SmolStr::new(name), value.to_string());
+                let _ = headers.push(SmolStr::new(name), value);
             }
         }
         headers
@@ -2394,7 +2396,7 @@ impl SipMessageHandler {
         let dialog_id = fcp_core::DialogId::new();
 
         media_manager
-            .create_session_default(media_session_id.clone(), dialog_id)
+            .create_session_default(media_session_id, dialog_id)
             .await
             .with_context(|| format!("{} failed: could not create media session", label))?;
 
@@ -2433,7 +2435,7 @@ impl SipMessageHandler {
                 fcp_media::construct_answer_for_a_leg(offer, &self.local_addr, rtp_port, None)
             })
             .or_else(|| Some(local_offer.clone()));
-        let original_answer = original_answer.or_else(|| Some(local_offer));
+        let original_answer = original_answer.or(Some(local_offer));
 
         info!(
             call_id = %ringing_call_id,
@@ -2582,12 +2584,10 @@ impl SipMessageHandler {
         }
 
         // Rewrite Contact header with external domain
-        if config.hide_contact {
-            if headers.get("Contact").is_some() {
-                headers.remove("Contact");
-                let contact_value = format!("<sip:{}>", external_domain);
-                let _ = headers.push("Contact", &contact_value);
-            }
+        if config.hide_contact && headers.get("Contact").is_some() {
+            headers.remove("Contact");
+            let contact_value = format!("<sip:{}>", external_domain);
+            let _ = headers.push("Contact", &contact_value);
         }
 
         // Strip or replace User-Agent/Server headers
@@ -2626,7 +2626,7 @@ impl SipMessageHandler {
             .split('<')
             .nth(1)
             .and_then(|s| s.split('>').next())
-            .unwrap_or(&to)
+            .unwrap_or(to)
             .trim();
 
         // Normalize AOR by stripping URI parameters (e.g., ;transport=UDP)
@@ -2824,7 +2824,7 @@ impl SipMessageHandler {
                                                             fcp_core::DialogId::new();
                                                         match media_manager
                                                             .create_session_default(
-                                                                fcp_call_id.clone(),
+                                                                fcp_call_id,
                                                                 fcp_dialog_id,
                                                             )
                                                             .await
@@ -2962,7 +2962,7 @@ impl SipMessageHandler {
                                                                                         .headers()
                                                                                         .clone();
                                                                                 let _ = headers.push(smol_str::SmolStr::new("Content-Type"), smol_str::SmolStr::new("application/sdp"));
-                                                                                let _ = headers.push(smol_str::SmolStr::new("Content-Length"), smol_str::SmolStr::new(&sdp_bytes.len().to_string()));
+                                                                                let _ = headers.push(smol_str::SmolStr::new("Content-Length"), smol_str::SmolStr::new(sdp_bytes.len().to_string()));
                                                                                 response = sip_core::Response::new(response.start_line().clone(), headers, sdp_bytes).expect("Failed to create response with SDP");
                                                                                 info!(call_id = %call_id, "Added SDP to 200 OK response");
                                                                             }
@@ -3201,7 +3201,7 @@ impl SipMessageHandler {
                                                         })
                                                         .unwrap_or(server_uri)
                                                         .split('@')
-                                                        .last()
+                                                        .next_back()
                                                         .unwrap_or(server_uri);
                                                     let target_uri =
                                                         format!("sip:{}@{}", room_number, host);
@@ -3686,39 +3686,38 @@ impl SipMessageHandler {
 
                                                 // Collect all contact URIs from device registrations
                                                 for device_binding in enabled_devices {
-                                                    match storage
+                                                    if let Ok(Some(device)) = storage
                                                         .get_device(&device_binding.device_id)
                                                         .await
                                                     {
-                                                        Ok(Some(device)) => {
-                                                            if let Some(sip_uri) = &device.sip_uri {
-                                                                if let Some(registrar) =
-                                                                    &self.registrar
+                                                        if let Some(sip_uri) = &device.sip_uri {
+                                                            if let Some(registrar) = &self.registrar
+                                                            {
+                                                                match registrar
+                                                                    .get_registrations_for_device(
+                                                                        &tenant_id,
+                                                                        sip_uri,
+                                                                        invite_domain,
+                                                                    )
+                                                                    .await
                                                                 {
-                                                                    match registrar
-                                                                        .get_registrations_for_device(&tenant_id, sip_uri, invite_domain)
-                                                                        .await
+                                                                    Ok(contacts)
+                                                                        if !contacts.is_empty() =>
                                                                     {
-                                                                        Ok(contacts)
-                                                                            if !contacts
-                                                                                .is_empty() =>
-                                                                        {
-                                                                            debug!(
-                                                                                call_id = %call_id,
-                                                                                extension = %extension_number,
-                                                                                device = %device.name,
-                                                                                contacts = contacts.len(),
-                                                                                "Found registrations for extension target device"
-                                                                            );
-                                                                            extension_contacts
-                                                                                .extend(contacts);
-                                                                        }
-                                                                        _ => {}
+                                                                        debug!(
+                                                                            call_id = %call_id,
+                                                                            extension = %extension_number,
+                                                                            device = %device.name,
+                                                                            contacts = contacts.len(),
+                                                                            "Found registrations for extension target device"
+                                                                        );
+                                                                        extension_contacts
+                                                                            .extend(contacts);
                                                                     }
+                                                                    _ => {}
                                                                 }
                                                             }
                                                         }
-                                                        _ => {}
                                                     }
                                                 }
                                             }
@@ -3949,8 +3948,7 @@ impl SipMessageHandler {
                                                                                 self.media_manager
                                                                             {
                                                                                 let sid =
-                                                                                    session_id
-                                                                                        .clone();
+                                                                                    *session_id;
                                                                                 let mm2 =
                                                                                     Arc::clone(mm);
                                                                                 tokio::spawn(
@@ -4135,7 +4133,7 @@ impl SipMessageHandler {
                                                 .or_else(|| server_uri.strip_prefix("sips:"))
                                                 .unwrap_or(server_uri)
                                                 .split('@')
-                                                .last()
+                                                .next_back()
                                                 .unwrap_or(server_uri);
                                             let target_uri =
                                                 format!("sip:{}@{}", extension_number, host);
@@ -4253,7 +4251,7 @@ impl SipMessageHandler {
                                             .or_else(|| server_uri.strip_prefix("sips:"))
                                             .unwrap_or(server_uri)
                                             .split('@')
-                                            .last()
+                                            .next_back()
                                             .unwrap_or(server_uri);
                                         let target_uri =
                                             format!("sip:{}@{}", extension_number, host);
@@ -4284,7 +4282,7 @@ impl SipMessageHandler {
                                                     .get_call(&call_id)
                                                     .and_then(|c| {
                                                         if c.media_anchored {
-                                                            c.media_session_id.clone()
+                                                            c.media_session_id
                                                         } else {
                                                             None
                                                         }
@@ -4617,7 +4615,7 @@ impl SipMessageHandler {
             // Check if this call has anchored media
             let media_session_id = self.call_manager.get_call(&call_id).and_then(|call| {
                 if call.media_anchored {
-                    call.media_session_id.clone()
+                    call.media_session_id
                 } else {
                     None
                 }
@@ -4796,7 +4794,7 @@ impl SipMessageHandler {
             let uac_clone = Arc::clone(&uac);
             let target_uri_clone = target_contact.uri.clone();
             let a_leg_sdp_clone = a_leg_sdp.clone();
-            let call_id_clone = call_id.clone();
+            let call_id_clone = call_id;
             let flow_token_clone = target_contact.flow_token.clone();
             let flow_registry_clone = Arc::clone(&self.flow_registry);
             let sip_call_id_map_clone = Arc::clone(&self.sip_call_id_map);
@@ -4858,8 +4856,9 @@ impl SipMessageHandler {
                 match invite_result {
                     Ok(Ok(call)) => {
                         // Register B-leg SIP Call-ID → FCP CallId mapping for trace correlation
+                        let b_leg_invite = call.invite_request().await;
                         if let Some(b_leg_cid) =
-                            sip_parse::header(call.invite_request().headers(), "Call-ID")
+                            sip_parse::header(b_leg_invite.headers(), "Call-ID")
                         {
                             sip_call_id_map_clone
                                 .insert(b_leg_cid.as_str().to_string(), call_id_clone.to_string());
@@ -4867,8 +4866,8 @@ impl SipMessageHandler {
 
                         // Log outbound B-leg INVITE for SIP trace
                         if let Some(ref trace_tx) = sip_trace_tx_clone {
-                            let b_req = call.invite_request();
-                            let raw_bytes = sip_parse::serialize_request(b_req);
+                            let b_req = call.invite_request().await;
+                            let raw_bytes = sip_parse::serialize_request(&b_req);
                             let raw_str = String::from_utf8_lossy(&raw_bytes);
                             let from_uri = sip_parse::header(b_req.headers(), "From")
                                 .map(|s| s.as_str().to_string())
@@ -4972,7 +4971,7 @@ impl SipMessageHandler {
         let handler = self.clone();
         let request_clone = request.clone();
         let a_leg_handle_arc = Arc::new(a_leg_handle.clone());
-        let call_id_clone = call_id.clone();
+        let call_id_clone = call_id;
 
         tokio::spawn(async move {
             if let Err(e) = handler
@@ -4991,7 +4990,7 @@ impl SipMessageHandler {
 
         // Return immediately - responses will be handled in background task
         info!(call_id = %call_id, "Parallel forking in progress, handling responses in background");
-        return Ok(());
+        Ok(())
     }
 
     /// Handle B-leg responses in background task (spawned from forward_invite_to_b_leg)
@@ -5023,7 +5022,7 @@ impl SipMessageHandler {
             );
 
             // Forward all 18x responses to A-leg (180, 183, 199, etc.)
-            if status_code >= 180 && status_code < 200 {
+            if (180..200).contains(&status_code) {
                 info!(
                     call_id = %call_id,
                     code = status_code,
@@ -5088,7 +5087,7 @@ impl SipMessageHandler {
                         headers.remove("Content-Length");
                         let _ = headers.push(
                             SmolStr::new("Content-Length"),
-                            SmolStr::new(&final_body.len().to_string()),
+                            SmolStr::new(final_body.len().to_string()),
                         );
                     }
 
@@ -5187,7 +5186,7 @@ impl SipMessageHandler {
             if let Some(ref original_sdp) = b_leg_sdp {
                 let media_session_id = self.call_manager.get_call(&call_id).and_then(|call| {
                     if call.media_anchored {
-                        call.media_session_id.clone()
+                        call.media_session_id
                     } else {
                         None
                     }
@@ -5214,7 +5213,7 @@ impl SipMessageHandler {
                 // Check if this call has anchored media
                 let media_session_id = self.call_manager.get_call(&call_id).and_then(|call| {
                     if call.media_anchored {
-                        call.media_session_id.clone()
+                        call.media_session_id
                     } else {
                         None
                     }
@@ -5475,7 +5474,7 @@ impl SipMessageHandler {
         for (i, (target, b_leg_handle, _flow_token)) in b_leg_calls.iter().enumerate() {
             let b_leg_handle_clone = Arc::clone(b_leg_handle);
             let target_clone = target.clone();
-            let call_id_clone = call_id.clone();
+            let call_id_clone = call_id;
             let provisional_tx_clone = provisional_tx.clone();
             let provisional_sent_clone = Arc::clone(&provisional_sent);
             let task_early_media_policy = early_media_policy;
@@ -5505,7 +5504,7 @@ impl SipMessageHandler {
                     );
 
                     // Signal if it's a ringing/progress response (skip 100 Trying etc.)
-                    if code >= 180 && code < 200 {
+                    if (180..200).contains(&code) {
                         let mut sent = provisional_sent_clone.lock().await;
                         if !*sent || !task_dedup {
                             info!(
@@ -5533,7 +5532,7 @@ impl SipMessageHandler {
         // CRITICAL: This fixes two issues:
         // 1. Early media/183 with SDP is now forwarded (not dropped)
         // 2. To-tag is extracted and saved for reuse in 200 OK
-        let call_id_clone = call_id.clone();
+        let call_id_clone = call_id;
         let a_leg_handle_clone = Arc::clone(&a_leg_handle);
         let request_clone = request.clone();
         let call_manager_clone = self.call_manager.clone();
@@ -5612,7 +5611,7 @@ impl SipMessageHandler {
         for (i, (target, b_leg_handle, flow_token)) in b_leg_calls.iter().enumerate() {
             let b_leg_handle_clone = Arc::clone(b_leg_handle);
             let target_clone = target.clone();
-            let call_id_clone = call_id.clone();
+            let call_id_clone = call_id;
             let flow_token_clone = flow_token.clone();
 
             let task = tokio::spawn(async move {
@@ -5684,7 +5683,7 @@ impl SipMessageHandler {
                             "B-leg {} completed with code {}", i, code
                         );
 
-                        if code >= 200 && code < 300 {
+                        if (200..300).contains(&code) {
                             info!(
                                 call_id = %call_id,
                                 winner = %target,
@@ -5860,7 +5859,7 @@ impl SipMessageHandler {
             if let Some(ref original_sdp) = b_leg_sdp {
                 let media_session_id = self.call_manager.get_call(&call_id).and_then(|call| {
                     if call.media_anchored {
-                        call.media_session_id.clone()
+                        call.media_session_id
                     } else {
                         None
                     }
@@ -5887,7 +5886,7 @@ impl SipMessageHandler {
                 // Check if this call has anchored media
                 let media_session_id = self.call_manager.get_call(&call_id).and_then(|call| {
                     if call.media_anchored {
-                        call.media_session_id.clone()
+                        call.media_session_id
                     } else {
                         None
                     }
@@ -6296,7 +6295,7 @@ impl SipMessageHandler {
             .split('<')
             .nth(1)
             .and_then(|s| s.split('>').next())
-            .unwrap_or(&from)
+            .unwrap_or(from)
             .trim()
             .to_string();
 
@@ -6309,7 +6308,7 @@ impl SipMessageHandler {
             .split('<')
             .nth(1)
             .and_then(|s| s.split('>').next())
-            .unwrap_or(&to)
+            .unwrap_or(to)
             .trim()
             .to_string();
 
@@ -6359,7 +6358,7 @@ impl SipMessageHandler {
 
         // Generate SDP answer using our media profile
         let user_opt = self.uas.local_uri.user();
-        let username = user_opt.as_deref().unwrap_or("fcp");
+        let username = user_opt.unwrap_or("fcp");
         let session_desc = profile.build(
             username,
             &self.local_addr,
@@ -6580,7 +6579,7 @@ impl SipMessageHandler {
                         if let (Some(media_session_id), Some(media_manager)) =
                             (&call.media_session_id, &self.media_manager)
                         {
-                            let media_session_id = media_session_id.clone();
+                            let media_session_id = *media_session_id;
                             let media_manager = Arc::clone(media_manager);
                             let call_id = call.id;
 
@@ -6609,8 +6608,8 @@ impl SipMessageHandler {
 
                     // Cleanup per-dialog state for remaining dialogs to prevent memory leaks
                     if let Some(a_dialog) = &updated_call.a_leg.dialog {
-                        self.rate_limits.remove(&a_dialog.id());
-                        self.mid_dialog_lock.remove(&a_dialog.id());
+                        self.rate_limits.remove(a_dialog.id());
+                        self.mid_dialog_lock.remove(a_dialog.id());
                         let keys: Vec<_> = self
                             .subscription_index
                             .iter()
@@ -6624,8 +6623,8 @@ impl SipMessageHandler {
                     }
                     if let Some(b_leg) = &updated_call.b_leg {
                         if let Some(b_dialog) = &b_leg.dialog {
-                            self.rate_limits.remove(&b_dialog.id());
-                            self.mid_dialog_lock.remove(&b_dialog.id());
+                            self.rate_limits.remove(b_dialog.id());
+                            self.mid_dialog_lock.remove(b_dialog.id());
                             let keys: Vec<_> = self
                                 .subscription_index
                                 .iter()
@@ -6667,7 +6666,7 @@ impl SipMessageHandler {
         let (call, is_a_leg) = self.lookup_call_for_in_dialog(request)?;
         let target_dialog = self.get_opposite_dialog(&call, is_a_leg)?;
         let mut target_dialog = target_dialog.clone();
-        let _guard = self.acquire_mid_dialog_lock(&target_dialog.id()).await;
+        let _guard = self.acquire_mid_dialog_lock(target_dialog.id()).await;
         let cseq = sip_parse::header(request.headers(), "CSeq");
         let src_dialog_id = if is_a_leg {
             call.a_leg.dialog.as_ref().map(|d| d.id().clone())
@@ -6700,7 +6699,7 @@ impl SipMessageHandler {
 
         if self.check_rate_limit(
             "REINVITE",
-            src_dialog_id.as_ref().unwrap_or(&target_dialog.id()),
+            src_dialog_id.as_ref().unwrap_or(target_dialog.id()),
             self.settings.reinvite_rate_limit,
         ) {
             warn!(call_id = %call.id, "re-INVITE rate limited");
@@ -6715,7 +6714,7 @@ impl SipMessageHandler {
 
         // If media is anchored, rewrite SDP before forwarding to peer
         if call.media_anchored {
-            if let (Some(ref body_str), Some(ref media_session_id), Some(ref media_manager)) = (
+            if let (Some(body_str), Some(ref media_session_id), Some(media_manager)) = (
                 body.as_ref(),
                 call.media_session_id.as_ref(),
                 self.media_manager.as_ref(),
@@ -6762,7 +6761,7 @@ impl SipMessageHandler {
             "outbound",
             "INVITE",
             Some(call.id.to_string().as_str()),
-            Some(&target_dialog.id()),
+            Some(target_dialog.id()),
             cseq.as_ref().map(|v| v.as_str()),
             None,
             None,
@@ -6802,7 +6801,7 @@ impl SipMessageHandler {
                     &self.subscription_index,
                     &self.subscription_created_at,
                     &call.id,
-                    &target_dialog.id(),
+                    target_dialog.id(),
                     "re-INVITE forward failed",
                 );
                 return Ok(self.create_simple_response(
@@ -6823,7 +6822,7 @@ impl SipMessageHandler {
                 &self.subscription_index,
                 &self.subscription_created_at,
                 &call.id,
-                &target_dialog.id(),
+                target_dialog.id(),
                 "Peer returned 481 to re-INVITE",
             );
             self.metrics.inc_counter(
@@ -6835,7 +6834,7 @@ impl SipMessageHandler {
         // If media is anchored and peer sent SDP in response, rewrite it before relaying back
         let mut peer_resp = peer_resp;
         if call.media_anchored && peer_resp.start_line().is_success() {
-            if let (Some(ref media_session_id), Some(ref media_manager)) =
+            if let (Some(ref media_session_id), Some(media_manager)) =
                 (call.media_session_id.as_ref(), self.media_manager.as_ref())
             {
                 if !peer_resp.body().is_empty() {
@@ -6978,7 +6977,7 @@ impl SipMessageHandler {
         let (call, is_a_leg) = self.lookup_call_for_in_dialog(request)?;
         let target_dialog = self.get_opposite_dialog(&call, is_a_leg)?;
         let mut target_dialog = target_dialog.clone();
-        let _guard = self.acquire_mid_dialog_lock(&target_dialog.id()).await;
+        let _guard = self.acquire_mid_dialog_lock(target_dialog.id()).await;
         let cseq = sip_parse::header(request.headers(), "CSeq");
         let src_dialog_id = if is_a_leg {
             call.a_leg.dialog.as_ref().map(|d| d.id().clone())
@@ -7010,7 +7009,7 @@ impl SipMessageHandler {
 
         if self.check_rate_limit(
             "SUBSCRIBE",
-            src_dialog_id.as_ref().unwrap_or(&target_dialog.id()),
+            src_dialog_id.as_ref().unwrap_or(target_dialog.id()),
             self.settings.update_rate_limit,
         ) {
             warn!(call_id = %call.id, "SUBSCRIBE rate limited");
@@ -7025,7 +7024,7 @@ impl SipMessageHandler {
             "outbound",
             "SUBSCRIBE",
             Some(call.id.to_string().as_str()),
-            Some(&target_dialog.id()),
+            Some(target_dialog.id()),
             cseq.as_ref().map(|v| v.as_str()),
             None,
             None,
@@ -7068,7 +7067,7 @@ impl SipMessageHandler {
                     &self.subscription_index,
                     &self.subscription_created_at,
                     &call.id,
-                    &target_dialog.id(),
+                    target_dialog.id(),
                     "SUBSCRIBE forward failed",
                 );
                 return Ok(self.create_simple_response(
@@ -7089,7 +7088,7 @@ impl SipMessageHandler {
                 &self.subscription_index,
                 &self.subscription_created_at,
                 &call.id,
-                &target_dialog.id(),
+                target_dialog.id(),
                 "Peer returned 481 to SUBSCRIBE",
             );
             self.metrics.inc_counter(
@@ -7115,7 +7114,7 @@ impl SipMessageHandler {
         let (call, is_a_leg) = self.lookup_call_for_in_dialog(request)?;
         let target_dialog = self.get_opposite_dialog(&call, is_a_leg)?;
         let target_dialog = target_dialog.clone();
-        let _guard = self.acquire_mid_dialog_lock(&target_dialog.id()).await;
+        let _guard = self.acquire_mid_dialog_lock(target_dialog.id()).await;
         let cseq = sip_parse::header(request.headers(), "CSeq");
         let src_dialog_id = if is_a_leg {
             call.a_leg.dialog.as_ref().map(|d| d.id().clone())
@@ -7160,13 +7159,13 @@ impl SipMessageHandler {
 
         // Create a synthetic subscription to use contact/route info from dialog target
         // (we don't track full subscription state yet beyond storage)
-        if let Some(sub) = self.find_subscription(&target_dialog.id(), event.as_str()) {
+        if let Some(sub) = self.find_subscription(target_dialog.id(), event.as_str()) {
             let state = sip_dialog::SubscriptionState::Active;
             self.log_sip_message(
                 "outbound",
                 "NOTIFY",
                 Some(call.id.to_string().as_str()),
-                Some(&target_dialog.id()),
+                Some(target_dialog.id()),
                 cseq.as_ref().map(|v| v.as_str()),
                 None,
                 None,
@@ -7176,7 +7175,7 @@ impl SipMessageHandler {
             );
             if self.check_rate_limit(
                 "NOTIFY",
-                src_dialog_id.as_ref().unwrap_or(&target_dialog.id()),
+                src_dialog_id.as_ref().unwrap_or(target_dialog.id()),
                 self.settings.info_rate_limit,
             ) {
                 warn!(call_id = %call.id, "NOTIFY rate limited");
@@ -7216,7 +7215,7 @@ impl SipMessageHandler {
                         &self.subscription_index,
                         &self.subscription_created_at,
                         &call.id,
-                        &target_dialog.id(),
+                        target_dialog.id(),
                         "NOTIFY forward failed",
                     );
                     return Ok(self.create_simple_response(
@@ -7237,7 +7236,7 @@ impl SipMessageHandler {
                     &self.subscription_index,
                     &self.subscription_created_at,
                     &call.id,
-                    &target_dialog.id(),
+                    target_dialog.id(),
                     "Peer returned 481 to NOTIFY",
                 );
                 self.metrics.inc_counter(
@@ -7257,7 +7256,7 @@ impl SipMessageHandler {
                 "outbound",
                 "NOTIFY",
                 Some(call.id.to_string().as_str()),
-                Some(&target_dialog.id()),
+                Some(target_dialog.id()),
                 cseq.as_ref().map(|v| v.as_str()),
                 None,
                 None,
@@ -7267,7 +7266,7 @@ impl SipMessageHandler {
             );
             if self.check_rate_limit(
                 "NOTIFY",
-                src_dialog_id.as_ref().unwrap_or(&target_dialog.id()),
+                src_dialog_id.as_ref().unwrap_or(target_dialog.id()),
                 self.settings.info_rate_limit,
             ) {
                 warn!(call_id = %call.id, "NOTIFY rate limited");
@@ -7310,7 +7309,7 @@ impl SipMessageHandler {
                         &self.subscription_index,
                         &self.subscription_created_at,
                         &call.id,
-                        &target_dialog.id(),
+                        target_dialog.id(),
                         "NOTIFY forward failed",
                     );
                     return Ok(self.create_simple_response(
@@ -7331,7 +7330,7 @@ impl SipMessageHandler {
                     &self.subscription_index,
                     &self.subscription_created_at,
                     &call.id,
-                    &target_dialog.id(),
+                    target_dialog.id(),
                     "Peer returned 481 to NOTIFY",
                 );
                 self.metrics.inc_counter(
@@ -7359,7 +7358,7 @@ impl SipMessageHandler {
         let (call, is_a_leg) = self.lookup_call_for_in_dialog(request)?;
         let target_dialog = self.get_opposite_dialog(&call, is_a_leg)?;
         let mut target_dialog = target_dialog.clone();
-        let _guard = self.acquire_mid_dialog_lock(&target_dialog.id()).await;
+        let _guard = self.acquire_mid_dialog_lock(target_dialog.id()).await;
         let cseq = sip_parse::header(request.headers(), "CSeq");
         let src_dialog_id = if is_a_leg {
             call.a_leg.dialog.as_ref().map(|d| d.id().clone())
@@ -7392,7 +7391,7 @@ impl SipMessageHandler {
 
         if self.check_rate_limit(
             "UPDATE",
-            src_dialog_id.as_ref().unwrap_or(&target_dialog.id()),
+            src_dialog_id.as_ref().unwrap_or(target_dialog.id()),
             self.settings.update_rate_limit,
         ) {
             warn!(call_id = %call.id, "UPDATE rate limited");
@@ -7409,7 +7408,7 @@ impl SipMessageHandler {
             "outbound",
             "UPDATE",
             Some(call.id.to_string().as_str()),
-            Some(&target_dialog.id()),
+            Some(target_dialog.id()),
             cseq.as_ref().map(|v| v.as_str()),
             None,
             None,
@@ -7446,7 +7445,7 @@ impl SipMessageHandler {
                     &self.subscription_index,
                     &self.subscription_created_at,
                     &call.id,
-                    &target_dialog.id(),
+                    target_dialog.id(),
                     "UPDATE forward failed",
                 );
                 return Ok(self.create_simple_response(
@@ -7467,7 +7466,7 @@ impl SipMessageHandler {
                 &self.subscription_index,
                 &self.subscription_created_at,
                 &call.id,
-                &target_dialog.id(),
+                target_dialog.id(),
                 "Peer returned 481 to UPDATE",
             );
             self.metrics.inc_counter(
@@ -7513,7 +7512,7 @@ impl SipMessageHandler {
         let (call, is_a_leg) = self.lookup_call_for_in_dialog(request)?;
         let target_dialog = self.get_opposite_dialog(&call, is_a_leg)?;
         let mut target_dialog = target_dialog.clone();
-        let _guard = self.acquire_mid_dialog_lock(&target_dialog.id()).await;
+        let _guard = self.acquire_mid_dialog_lock(target_dialog.id()).await;
         let cseq = sip_parse::header(request.headers(), "CSeq");
         let src_dialog_id = if is_a_leg {
             call.a_leg.dialog.as_ref().map(|d| d.id().clone())
@@ -7545,7 +7544,7 @@ impl SipMessageHandler {
 
         if self.check_rate_limit(
             "PRACK",
-            src_dialog_id.as_ref().unwrap_or(&target_dialog.id()),
+            src_dialog_id.as_ref().unwrap_or(target_dialog.id()),
             self.settings.update_rate_limit,
         ) {
             warn!(call_id = %call.id, "PRACK rate limited");
@@ -7560,7 +7559,7 @@ impl SipMessageHandler {
             "outbound",
             "PRACK",
             Some(call.id.to_string().as_str()),
-            Some(&target_dialog.id()),
+            Some(target_dialog.id()),
             cseq.as_ref().map(|v| v.as_str()),
             None,
             None,
@@ -7597,7 +7596,7 @@ impl SipMessageHandler {
                     &self.subscription_index,
                     &self.subscription_created_at,
                     &call.id,
-                    &target_dialog.id(),
+                    target_dialog.id(),
                     "PRACK forward failed",
                 );
                 return Ok(self.create_simple_response(
@@ -7618,7 +7617,7 @@ impl SipMessageHandler {
                 &self.subscription_index,
                 &self.subscription_created_at,
                 &call.id,
-                &target_dialog.id(),
+                target_dialog.id(),
                 "Peer returned 481 to PRACK",
             );
             self.metrics.inc_counter(
@@ -7709,7 +7708,7 @@ impl SipMessageHandler {
         self.check_info_content_type(content_type.as_str())?;
         if self.check_rate_limit(
             "INFO",
-            src_dialog_id.as_ref().unwrap_or(&target_dialog.id()),
+            src_dialog_id.as_ref().unwrap_or(target_dialog.id()),
             self.settings.info_rate_limit,
         ) {
             warn!(call_id = %call.id, "INFO rate limited");
@@ -7724,7 +7723,7 @@ impl SipMessageHandler {
             "outbound",
             "INFO",
             Some(call.id.to_string().as_str()),
-            Some(&target_dialog.id()),
+            Some(target_dialog.id()),
             cseq.as_ref().map(|v| v.as_str()),
             None,
             None,
@@ -7764,7 +7763,7 @@ impl SipMessageHandler {
                     &self.subscription_index,
                     &self.subscription_created_at,
                     &call.id,
-                    &target_dialog.id(),
+                    target_dialog.id(),
                     "INFO forward failed",
                 );
                 return Ok(self.create_simple_response(
@@ -7785,7 +7784,7 @@ impl SipMessageHandler {
                 &self.subscription_index,
                 &self.subscription_created_at,
                 &call.id,
-                &target_dialog.id(),
+                target_dialog.id(),
                 "Peer returned 481 to INFO",
             );
             self.metrics.inc_counter(
@@ -7856,7 +7855,7 @@ impl SipMessageHandler {
         }
         if self.check_rate_limit(
             "REFER",
-            src_dialog_id.as_ref().unwrap_or(&target_dialog.id()),
+            src_dialog_id.as_ref().unwrap_or(target_dialog.id()),
             self.b2bua_config.transfer.rate_limit_per_dialog,
         ) {
             warn!(call_id = %call.id, "REFER rate limited");
@@ -7871,7 +7870,7 @@ impl SipMessageHandler {
             "outbound",
             "REFER",
             Some(call.id.to_string().as_str()),
-            Some(&target_dialog.id()),
+            Some(target_dialog.id()),
             cseq.as_ref().map(|v| v.as_str()),
             None,
             None,
@@ -7908,7 +7907,7 @@ impl SipMessageHandler {
                     &self.subscription_index,
                     &self.subscription_created_at,
                     &call.id,
-                    &target_dialog.id(),
+                    target_dialog.id(),
                     "REFER forward failed",
                 );
                 return Ok(self.create_simple_response(
@@ -7929,7 +7928,7 @@ impl SipMessageHandler {
                 &self.subscription_index,
                 &self.subscription_created_at,
                 &call.id,
-                &target_dialog.id(),
+                target_dialog.id(),
                 "Peer returned 481 to REFER",
             );
             self.metrics.inc_counter(
@@ -8086,8 +8085,8 @@ impl SipMessageHandler {
             sip_parse::header(request.headers(), "CSeq").map(|s| s.as_str()),
             None,
             None,
-            Some(&resp.headers()),
-            Some(&resp.body()),
+            Some(resp.headers()),
+            Some(resp.body()),
             None,
         );
         resp
@@ -8560,7 +8559,7 @@ impl SipMessageHandler {
             None,
             None,
             Some(response.headers()),
-            Some(&response.body()),
+            Some(response.body()),
             None,
         );
 
@@ -8651,7 +8650,7 @@ impl SipMessageHandler {
         // Use the latest reliable provisional (highest RSeq)
         list.iter()
             .max_by_key(|resp| {
-                sip_parse::header(&resp.headers(), "RSeq")
+                sip_parse::header(resp.headers(), "RSeq")
                     .and_then(|v| v.parse::<u32>().ok())
                     .unwrap_or(0)
             })
@@ -8679,6 +8678,7 @@ impl SipMessageHandler {
         let _ = self.dialog_manager.insert(dialog_clone);
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn log_sip_message(
         &self,
         direction: &str,
@@ -8776,21 +8776,13 @@ impl SipMessageHandler {
             let record_route = headers
                 .map(|h| {
                     let vals: Vec<_> = h.get_all("Record-Route").collect();
-                    vals.iter()
-                        .map(|v| v)
-                        .map(|v| *v)
-                        .collect::<Vec<_>>()
-                        .join(",")
+                    vals.to_vec().join(",")
                 })
                 .unwrap_or_default();
             let route = headers
                 .map(|h| {
                     let vals: Vec<_> = h.get_all("Route").collect();
-                    vals.iter()
-                        .map(|v| v)
-                        .map(|v| *v)
-                        .collect::<Vec<_>>()
-                        .join(",")
+                    vals.to_vec().join(",")
                 })
                 .unwrap_or_default();
 
@@ -9075,7 +9067,7 @@ impl SipMessageHandler {
         dialog_id: &sip_dialog::DialogId,
         event: &str,
     ) -> Option<sip_dialog::Subscription> {
-        let key = (dialog_id.clone(), smol_str::SmolStr::new(event.to_string()));
+        let key = (dialog_id.clone(), smol_str::SmolStr::new(event));
         if let Some(id) = self.subscription_index.get(&key) {
             return self.subscription_manager.get(&id);
         }
@@ -9092,7 +9084,7 @@ impl SipMessageHandler {
         let key = (
             sip_dialog::DialogId::new(sub.id().call_id(), sub.id().from_tag(), sub.id().to_tag())
                 .expect("Failed to create DialogId from subscription"),
-            smol_str::SmolStr::new(sub.id().event().to_string()),
+            smol_str::SmolStr::new(sub.id().event()),
         );
         self.subscription_created_at
             .insert(sub.id().clone(), Instant::now());
@@ -9351,7 +9343,7 @@ impl SipMessageHandler {
         };
         let original_offer = ringing_call.a_leg.sdp.clone();
 
-        let mut pickup_media_session_id = ringing_call.media_session_id.clone();
+        let mut pickup_media_session_id = ringing_call.media_session_id;
         let mut pickup_media_anchored = ringing_call.media_anchored;
 
         let (original_answer, picker_answer) = if ringing_call.media_anchored {
@@ -9364,7 +9356,7 @@ impl SipMessageHandler {
                 );
                 return Ok(());
             };
-            let Some(media_session_id) = ringing_call.media_session_id.clone() else {
+            let Some(media_session_id) = ringing_call.media_session_id else {
                 let response = self.create_simple_response(request, 503, "Media Unavailable");
                 handle.send_final(response).await;
                 let _ = self.call_manager.terminate_call(
@@ -9479,7 +9471,7 @@ impl SipMessageHandler {
             call.a_leg.dialog = Some(original_dialog.clone());
             call.b_leg = Some(picker_leg.clone());
             call.cancel_notify = None;
-            call.media_session_id = pickup_media_session_id.clone();
+            call.media_session_id = pickup_media_session_id;
             call.media_anchored = pickup_media_anchored;
             call.establish();
         });
@@ -10438,7 +10430,7 @@ impl SipMessageHandler {
                 let mut actual_rtp_port = rtp_port;
                 let existing_session_id = call_manager
                     .get_call(&call_id)
-                    .and_then(|c| c.media_session_id.clone());
+                    .and_then(|c| c.media_session_id);
 
                 if let Some(mm) = &media_manager {
                     if let Some(ref existing_msid) = existing_session_id {
@@ -10454,9 +10446,8 @@ impl SipMessageHandler {
                         // No existing session — create one
                         let core_call_id = fcp_core::CallId::from_uuid(*call_id.as_uuid());
                         let fcp_dialog_id = fcp_core::DialogId::new();
-                        if let Ok(session) = mm
-                            .create_session_default(core_call_id.clone(), fcp_dialog_id)
-                            .await
+                        if let Ok(session) =
+                            mm.create_session_default(core_call_id, fcp_dialog_id).await
                         {
                             actual_rtp_port = session.ports().0;
                             if !request.body().is_empty() {
@@ -10491,7 +10482,7 @@ impl SipMessageHandler {
                     );
                     let _ = headers.push(
                         smol_str::SmolStr::new("Content-Length"),
-                        smol_str::SmolStr::new(&sdp_bytes.len().to_string()),
+                        smol_str::SmolStr::new(sdp_bytes.len().to_string()),
                     );
                     sip_core::Response::new(base.start_line().clone(), headers, sdp_bytes)
                         .expect("Failed to create response with SDP")
@@ -10849,7 +10840,7 @@ impl SipMessageHandler {
                     .or_else(|| vm_uri.strip_prefix("sips:"))
                     .unwrap_or(vm_uri)
                     .split('@')
-                    .last()
+                    .next_back()
                     .unwrap_or(vm_uri);
 
                 // Use the original callee as the user part
@@ -10889,7 +10880,7 @@ impl SipMessageHandler {
                 let original_sdp = String::from_utf8_lossy(original_request.body()).to_string();
                 let media_session_id = self.call_manager.get_call(&call_id).and_then(|call| {
                     if call.media_anchored {
-                        call.media_session_id.clone()
+                        call.media_session_id
                     } else {
                         None
                     }
@@ -11276,7 +11267,7 @@ async fn run_origination(
     };
 
     let a_status = a_response.start_line().code();
-    if a_status < 200 || a_status >= 300 {
+    if !(200..300).contains(&a_status) {
         let _ = call_manager.update_call(&call_id, |c| {
             c.fail(format!(
                 "A-leg rejected: {} {}",
@@ -11349,7 +11340,7 @@ async fn run_origination(
     };
 
     let b_status = b_response.start_line().code();
-    if b_status < 200 || b_status >= 300 {
+    if !(200..300).contains(&b_status) {
         // BYE the A-leg
         let _ = uac.bye(&a_dialog).await;
         dialog_manager.remove(a_dialog.id());
@@ -11408,7 +11399,7 @@ impl InboundMessageHandler for SipMessageHandler {
         if let Some(req) = sip_parse::parse_request(&payload) {
             // Look up FCP internal CallId from the SIP Call-ID header
             // Priority: 1) Fast DashMap lookup, 2) Call manager dialog scan, 3) Raw SIP Call-ID
-            let sip_cid = sip_parse::header(&req.headers(), "Call-ID");
+            let sip_cid = sip_parse::header(req.headers(), "Call-ID");
             let fcp_call_id_str = sip_cid
                 .as_ref()
                 .and_then(|cid| {
@@ -11431,7 +11422,7 @@ impl InboundMessageHandler for SipMessageHandler {
                     .find_by_request(&req)
                     .map(|d| d.id().clone())
                     .as_ref(),
-                sip_parse::header(&req.headers(), "CSeq").map(|s| s.as_str()),
+                sip_parse::header(req.headers(), "CSeq").map(|s| s.as_str()),
                 Some(peer),
                 Some(match transport {
                     sip_transaction::TransportKind::Udp => "udp",
@@ -11440,7 +11431,7 @@ impl InboundMessageHandler for SipMessageHandler {
                     sip_transaction::TransportKind::Ws => "ws",
                     _ => "other",
                 }),
-                Some(&req.headers()),
+                Some(req.headers()),
                 Some(req.body()),
                 Some(&raw_payload_str),
             );
@@ -11486,7 +11477,7 @@ impl InboundMessageHandler for SipMessageHandler {
         } else if let Some(resp) = sip_parse::parse_response(&payload) {
             // Look up FCP internal CallId from the SIP Call-ID header
             // Priority: 1) Fast DashMap lookup, 2) Call manager dialog scan, 3) Raw SIP Call-ID
-            let sip_cid_resp = sip_parse::header(&resp.headers(), "Call-ID");
+            let sip_cid_resp = sip_parse::header(resp.headers(), "Call-ID");
             let fcp_call_id_resp = sip_cid_resp
                 .as_ref()
                 .and_then(|cid| {
@@ -11506,7 +11497,7 @@ impl InboundMessageHandler for SipMessageHandler {
                 &resp.start_line().code().to_string(),
                 fcp_call_id_resp.as_deref(),
                 None,
-                sip_parse::header(&resp.headers(), "CSeq").map(|s| s.as_str()),
+                sip_parse::header(resp.headers(), "CSeq").map(|s| s.as_str()),
                 Some(peer),
                 Some(match transport {
                     sip_transaction::TransportKind::Udp => "udp",
@@ -11515,8 +11506,8 @@ impl InboundMessageHandler for SipMessageHandler {
                     sip_transaction::TransportKind::Ws => "ws",
                     _ => "other",
                 }),
-                Some(&resp.headers()),
-                Some(&resp.body()),
+                Some(resp.headers()),
+                Some(resp.body()),
                 Some(&raw_payload_str),
             );
             debug!(
@@ -11541,11 +11532,7 @@ fn extract_tag_value(value: Option<&SmolStr>) -> Option<String> {
     value.and_then(|v| {
         v.split(';').find_map(|seg| {
             let s = seg.trim();
-            if let Some(rest) = s.strip_prefix("tag=") {
-                Some(rest.to_string())
-            } else {
-                None
-            }
+            s.strip_prefix("tag=").map(|rest| rest.to_string())
         })
     })
 }
@@ -11617,15 +11604,6 @@ fn extract_domain_from_uri(uri: &sip_core::Uri) -> Option<String> {
     }
 }
 
-/// Helper to check if a URI represents an E.164 phone number.
-///
-/// Extracts the user part from a SIP URI and checks if it looks like an E.164 number.
-/// E.164 numbers start with '+' and have at least 7 digits.
-///
-/// # Examples
-/// - `sip:+15183217034@domain` → true
-/// - `sip:alice@domain` → false
-/// - `sip:+1518@domain` → false (too short)
 /// Normalize a dialed number to E.164 format by adding "+" prefix if needed.
 ///
 /// Handles common dialing patterns:
@@ -11693,6 +11671,15 @@ fn normalize_dialed_number(uri: &str, max_extension_digits: u8) -> String {
     }
 }
 
+/// Helper to check if a URI represents an E.164 phone number.
+///
+/// Extracts the user part from a SIP URI and checks if it looks like an E.164 number.
+/// E.164 numbers start with '+' and have at least 7 digits.
+///
+/// # Examples
+/// - `sip:+15183217034@domain` → true
+/// - `sip:alice@domain` → false
+/// - `sip:+1518@domain` → false (too short)
 fn is_e164_number(uri: &str) -> bool {
     // Extract user part from sip:+15183217034@domain or just +15183217034
     let user_part = uri
@@ -11821,7 +11808,7 @@ fn store_leg_sdp(
 fn extract_session_timer(
     resp: &sip_core::Response,
 ) -> Option<(Duration, Option<sip_core::RefresherRole>)> {
-    let se_header = sip_parse::header(&resp.headers(), "Session-Expires")?;
+    let se_header = sip_parse::header(resp.headers(), "Session-Expires")?;
     sip_parse::parse_session_expires(se_header).map(|se| {
         (
             Duration::from_secs(se.delta_seconds() as u64),
@@ -11831,7 +11818,7 @@ fn extract_session_timer(
 }
 
 fn extract_min_se(resp: &sip_core::Response) -> Option<Duration> {
-    sip_parse::header(&resp.headers(), "Min-SE")
+    sip_parse::header(resp.headers(), "Min-SE")
         .and_then(|v| v.parse::<u32>().ok())
         .map(|secs| Duration::from_secs(secs as u64))
 }
@@ -11990,6 +11977,7 @@ fn terminate_dialog(
     let _ = call_manager.terminate_call(call_id, Some("Session expired".to_string()));
 }
 
+#[allow(clippy::too_many_arguments)]
 fn terminate_dialog_with_cleanup(
     call_manager: &fcp_b2bua_core::CallManager,
     dialog_manager: &sip_dialog::DialogManager,
@@ -12032,6 +12020,7 @@ fn terminate_dialog_with_cleanup(
     debug!(dialog_id = ?dialog_id, "Cleaned up dialog state (rate limits, locks, subscriptions)");
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cleanup_after_forward_failure(
     call_manager: &fcp_b2bua_core::CallManager,
     dialog_manager: &sip_dialog::DialogManager,
@@ -12183,10 +12172,9 @@ fn extract_from_display_name(request: &sip_core::Request) -> Option<String> {
     // No quoted display name found - fallback to extracting username from URI
     // Extract URI part (between angle brackets or entire string before parameters)
     let uri_str = if let Some(start) = from_header.find('<') {
-        if let Some(end) = from_header[start..].find('>') {
+        {
+            let end = from_header[start..].find('>')?;
             &from_header[start + 1..start + end]
-        } else {
-            return None;
         }
     } else {
         // No brackets, take until semicolon or end
@@ -12953,7 +12941,7 @@ mod tests {
         };
         headers.push(
             SmolStr::new("Content-Length"),
-            SmolStr::new(&format!("{}", sdp.len())),
+            SmolStr::new(format!("{}", sdp.len())),
         );
 
         sip_core::Request::new(
@@ -13117,7 +13105,7 @@ mod tests {
             .strip_prefix("sip:")
             .unwrap_or(vm_uri)
             .split('@')
-            .last()
+            .next_back()
             .unwrap_or(vm_uri);
         let user_part = original_callee
             .strip_prefix("sip:")
@@ -13139,7 +13127,7 @@ mod tests {
             .strip_prefix("sip:")
             .unwrap_or(vm_uri)
             .split('@')
-            .last()
+            .next_back()
             .unwrap_or(vm_uri);
         let user_part = original_callee
             .strip_prefix("sip:")
@@ -13153,6 +13141,9 @@ mod tests {
     }
 
     #[test]
+    // The `None` callee is the whole point of this case, so the literal-unwrap
+    // lint on `original_callee.unwrap_or(..)` is expected here.
+    #[allow(clippy::unnecessary_literal_unwrap)]
     fn test_voicemail_uri_unknown_callee() {
         let vm_uri = "sip:vm@192.168.1.50:5060";
         let original_callee: Option<&str> = None;
@@ -13161,7 +13152,7 @@ mod tests {
             .strip_prefix("sip:")
             .unwrap_or(vm_uri)
             .split('@')
-            .last()
+            .next_back()
             .unwrap_or(vm_uri);
         let user = original_callee.unwrap_or("unknown");
         let user_part = user

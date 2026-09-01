@@ -154,7 +154,7 @@ impl CallLeg {
 
         // Extract SDP body if present
         let sdp = if !request.body().is_empty() {
-            Some(String::from_utf8_lossy(&request.body()).to_string())
+            Some(String::from_utf8_lossy(request.body()).to_string())
         } else {
             None
         };

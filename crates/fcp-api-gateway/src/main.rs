@@ -144,11 +144,11 @@ async fn gateway_status(State(proxy_state): State<proxy::ProxyState>) -> impl In
 
     // Check optional backends
     let events_health = match &backends_config.events {
-        Some(backend) => serde_json::Value::from(check_backend_health(client, backend).await),
+        Some(backend) => check_backend_health(client, backend).await,
         None => serde_json::Value::Null,
     };
     let jobs_health = match &backends_config.jobs {
-        Some(backend) => serde_json::Value::from(check_backend_health(client, backend).await),
+        Some(backend) => check_backend_health(client, backend).await,
         None => serde_json::Value::Null,
     };
 

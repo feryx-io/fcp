@@ -297,7 +297,7 @@ pub async fn create_trunk(
 
     let direction = if let Some(ref dir) = req.direction {
         dir.parse::<TrunkDirection>()
-            .map_err(|e| ApiError::BadRequest(e))?
+            .map_err(ApiError::BadRequest)?
     } else {
         TrunkDirection::Upstream
     };
@@ -418,7 +418,7 @@ pub async fn update_trunk(
     if let Some(ref dir) = req.direction {
         trunk.direction = dir
             .parse::<TrunkDirection>()
-            .map_err(|e| ApiError::BadRequest(e))?;
+            .map_err(ApiError::BadRequest)?;
     }
     if let Some(priority) = req.priority {
         trunk.priority = priority;

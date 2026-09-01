@@ -437,12 +437,10 @@ impl GeoRoutingRule {
 
     fn find_regional_destination(&self, source_location: &Location) -> Option<&RegionDestination> {
         // Find first enabled destination in a matching region
-        for dest in &self.region_destinations {
-            if dest.enabled && source_location.matches_region(&dest.region) {
-                return Some(dest);
-            }
-        }
-        None
+        self.region_destinations
+            .iter()
+            .find(|&dest| dest.enabled && source_location.matches_region(&dest.region))
+            .map(|v| v as _)
     }
 
     fn find_timezone_destination(&self, source_location: &Location) -> Option<&RegionDestination> {
@@ -490,10 +488,7 @@ impl GeoRoutingManager {
     /// Adds a routing rule.
     pub fn add_rule(&mut self, rule: GeoRoutingRule) {
         let tenant_id = rule.tenant_id;
-        self.rules
-            .entry(tenant_id)
-            .or_insert_with(Vec::new)
-            .push(rule);
+        self.rules.entry(tenant_id).or_default().push(rule);
 
         // Sort by priority
         if let Some(rules) = self.rules.get_mut(&tenant_id) {

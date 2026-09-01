@@ -93,7 +93,7 @@ impl PolicyRule {
 ///
 /// If `all_users: true`, the rule matches any authenticated caller regardless
 /// of roles or groups. This is useful for broad policies like "allow all internal calls".
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct AppliesTo {
     /// If true, this rule applies to all authenticated users.
     /// When set, users/roles/groups are ignored.
@@ -168,17 +168,6 @@ impl AppliesTo {
             }
         }
         Ok(())
-    }
-}
-
-impl Default for AppliesTo {
-    fn default() -> Self {
-        Self {
-            all_users: false,
-            users: None,
-            roles: None,
-            groups: None,
-        }
     }
 }
 
@@ -496,7 +485,10 @@ mod tests {
             roles: None,
             groups: None,
         };
-        assert!(applies_to.matches(&ctx), "all_users: true should match any user");
+        assert!(
+            applies_to.matches(&ctx),
+            "all_users: true should match any user"
+        );
 
         // Policy with all_users: true should match even when other fields are set
         let applies_to_with_roles = AppliesTo {

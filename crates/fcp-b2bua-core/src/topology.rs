@@ -11,9 +11,10 @@
 use serde::{Deserialize, Serialize};
 
 /// How aggressively the B2BUA hides internal topology.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum TopologyHidingMode {
     /// No topology hiding — headers pass through unmodified.
+    #[default]
     None,
 
     /// Selective hiding — only some headers are rewritten.
@@ -21,12 +22,6 @@ pub enum TopologyHidingMode {
 
     /// Full hiding — all topology-revealing headers are rewritten or stripped.
     Full,
-}
-
-impl Default for TopologyHidingMode {
-    fn default() -> Self {
-        Self::None
-    }
 }
 
 /// Policy-level configuration for topology hiding.
@@ -177,23 +172,29 @@ mod tests {
 
     #[test]
     fn test_validate_empty_domain() {
-        let mut cfg = TopologyHidingConfig::default();
-        cfg.local_domain = Some(String::new());
+        let cfg = TopologyHidingConfig {
+            local_domain: Some(String::new()),
+            ..Default::default()
+        };
         assert!(cfg.validate().is_err());
     }
 
     #[test]
     fn test_validate_crlf_domain() {
-        let mut cfg = TopologyHidingConfig::default();
-        cfg.local_domain = Some("bad\r\ndomain".into());
+        let cfg = TopologyHidingConfig {
+            local_domain: Some("bad\r\ndomain".into()),
+            ..Default::default()
+        };
         let err = cfg.validate().unwrap_err();
         assert!(err.contains("CR/LF"));
     }
 
     #[test]
     fn test_validate_crlf_user_agent() {
-        let mut cfg = TopologyHidingConfig::default();
-        cfg.custom_user_agent = Some("bad\nagent".into());
+        let cfg = TopologyHidingConfig {
+            custom_user_agent: Some("bad\nagent".into()),
+            ..Default::default()
+        };
         let err = cfg.validate().unwrap_err();
         assert!(err.contains("CR/LF"));
     }

@@ -1442,7 +1442,7 @@ fn render_form_modal(
 
     // Show error message at bottom if present
     if let Some(error_msg) = error {
-        let error_y = inner.y + inner.height.saturating_sub(error_lines as u16);
+        let error_y = inner.y + inner.height.saturating_sub(error_lines);
         let error_text = vec![Line::from(vec![
             Span::styled("Error: ", theme.error()),
             Span::raw(error_msg),
@@ -1454,7 +1454,7 @@ fn render_form_modal(
 
         f.render_widget(
             error_para,
-            Rect::new(inner.x + 2, error_y, inner.width - 4, error_lines as u16),
+            Rect::new(inner.x + 2, error_y, inner.width - 4, error_lines),
         );
     }
 

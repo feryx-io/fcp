@@ -127,7 +127,7 @@ async fn main() -> Result<()> {
     if let Some(ref ip) = config.sip.local_ip {
         info!(
             local_ip = %ip,
-            source = if cli.public_ip.as_ref().map_or(false, |p| !p.is_empty()) { "PUBLIC_IP env" } else { "auto-detected" },
+            source = if cli.public_ip.as_ref().is_some_and(|p| !p.is_empty()) { "PUBLIC_IP env" } else { "auto-detected" },
             "Using local IP for SIP signaling and media"
         );
     }
@@ -957,7 +957,7 @@ async fn main() -> Result<()> {
 
     // Set up SIP trace channel for raw message capture to PostgreSQL
     let sip_trace_store: Option<Arc<dyn fcp_core::SipTraceStore>> =
-        if let Some(ref store) = dyn_storage.sip_trace_store() {
+        if let Some(store) = dyn_storage.sip_trace_store() {
             Some(Arc::clone(store))
         } else {
             None
@@ -1728,7 +1728,7 @@ async fn create_uac(
 
     let mut builder = IntegratedUAC::builder();
     builder = builder
-        .local_uri(local_uri.as_str())
+        .local_uri(local_uri.as_str())?
         .local_addr(&local_addr)?
         .via_advertised_addr(&local_addr)?
         .transaction_manager(transaction_manager)
@@ -1798,18 +1798,20 @@ async fn create_media_manager(config: &CallManagerConfig) -> Result<Arc<fcp_medi
             provider: None,
             tenant_id: None,
         })
-    } else if let Some(ref engine) = config.media.tts_engine {
-        Some(fcp_media::TtsProviderConfig::Local {
-            engine: engine.clone(),
-            executable_path: config
-                .media
-                .tts_python
-                .as_ref()
-                .map(std::path::PathBuf::from),
-            device: None,
-        })
     } else {
-        None
+        config
+            .media
+            .tts_engine
+            .as_ref()
+            .map(|engine| fcp_media::TtsProviderConfig::Local {
+                engine: engine.clone(),
+                executable_path: config
+                    .media
+                    .tts_python
+                    .as_ref()
+                    .map(std::path::PathBuf::from),
+                device: None,
+            })
     };
 
     let tts_service = if let Some(provider_config) = tts_provider_config {
@@ -2990,21 +2992,17 @@ async fn run_presence_listener(
                         mailbox_id,
                         new_messages,
                         ..
-                    }) => {
-                        if *new_messages > 0 {
-                            let aor = resolve_mailbox_aor(mailbox_id, &presence);
-                            if let Some(aor) = aor {
-                                if let Some(info) =
-                                    presence.get_presence_for_tenant(&aor, &tenant_id)
-                                {
-                                    let note = format!("{} new voicemail(s)", new_messages);
-                                    let update = fcp_presence::PresenceUpdate {
-                                        aor,
-                                        state: info.state,
-                                        note: Some(note),
-                                    };
-                                    let _ = presence.update_presence(update, &tenant_id).await;
-                                }
+                    }) if *new_messages > 0 => {
+                        let aor = resolve_mailbox_aor(mailbox_id, &presence);
+                        if let Some(aor) = aor {
+                            if let Some(info) = presence.get_presence_for_tenant(&aor, &tenant_id) {
+                                let note = format!("{} new voicemail(s)", new_messages);
+                                let update = fcp_presence::PresenceUpdate {
+                                    aor,
+                                    state: info.state,
+                                    note: Some(note),
+                                };
+                                let _ = presence.update_presence(update, &tenant_id).await;
                             }
                         }
                     }

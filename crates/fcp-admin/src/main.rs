@@ -224,7 +224,9 @@ async fn main() -> Result<()> {
             enabled: true,
             ..Default::default()
         };
-        let pm = fcp_presence::PresenceManager::new(presence_config, None);
+        // `set_pubsub` takes `&mut self`, but is only called under the `redis` feature.
+        #[cfg_attr(not(feature = "redis"), allow(unused_mut))]
+        let mut pm = fcp_presence::PresenceManager::new(presence_config, None);
 
         // Wire up Redis Pub/Sub for cross-node presence sync
         #[cfg(feature = "redis")]
@@ -632,6 +634,8 @@ fn build_events_ws_url(
 }
 
 /// Extract the IP:port from a SIP contact URI like "sip:alice@192.168.1.80:5060"
+// Kept as part of the module's intended API; not currently called from this binary.
+#[allow(dead_code)]
 fn extract_ip_from_contact(contact: &str) -> Option<String> {
     let stripped = contact
         .trim_start_matches("sip:")

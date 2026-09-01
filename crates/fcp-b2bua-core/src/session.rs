@@ -442,8 +442,10 @@ mod tests {
     #[test]
     fn test_b2bua_config_voicemail_uri_serde() {
         // Serialize default, modify, deserialize
-        let mut cfg = B2buaConfig::default();
-        cfg.voicemail_server_uri = Some("sip:vm@192.168.1.50:5060".to_string());
+        let cfg = B2buaConfig {
+            voicemail_server_uri: Some("sip:vm@192.168.1.50:5060".to_string()),
+            ..Default::default()
+        };
         let json = serde_json::to_string(&cfg).unwrap();
         let deserialized: B2buaConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(

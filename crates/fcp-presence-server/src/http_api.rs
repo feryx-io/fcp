@@ -1,5 +1,9 @@
 //! HTTP REST API for the standalone presence server.
 
+// `fcp_presence::webhook` is deprecated in favour of `fcp-webhooks`; this server
+// has not been migrated yet, so it still uses the older in-crate dispatcher.
+#![allow(deprecated)]
+
 use axum::{
     extract::{Path, Request, State},
     http::{HeaderMap, StatusCode},
@@ -107,6 +111,9 @@ async fn require_api_token(
 
 pub(crate) const PLATFORM_TENANT_HEADER: &str = "x-fcp-tenant-id";
 
+// The error type is an axum `Response`, which is large by nature; boxing it
+// here would only add indirection at every call site.
+#[allow(clippy::result_large_err)]
 pub(crate) async fn resolve_request_tenant_id(
     headers: &HeaderMap,
     state: &AppState,

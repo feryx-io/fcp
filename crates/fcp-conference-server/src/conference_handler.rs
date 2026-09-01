@@ -492,6 +492,7 @@ impl PinDtmfCollector {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn log_pin_collector_summary(
     result: &str,
     digits: &str,
@@ -524,6 +525,7 @@ fn log_pin_collector_summary(
 }
 
 impl ConferenceCallHandler {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         bridge: Arc<ConferenceBridge>,
         storage: Arc<DynStorage>,
@@ -607,7 +609,7 @@ impl ConferenceCallHandler {
     ) -> Result<Option<Meeting>> {
         use fcp_core::storage::ConferenceStore;
 
-        let cache_key = (tenant_id.clone(), room_number.to_string());
+        let cache_key = (*tenant_id, room_number.to_string());
         let ttl = Duration::from_secs(self.conference_config.read().cache_ttl_secs);
 
         // Check cache first (if TTL > 0)
@@ -672,7 +674,7 @@ impl ConferenceCallHandler {
     /// Invalidate cached meeting entry (call after update/delete).
     pub fn invalidate_meeting_cache(&self, tenant_id: &TenantId, room_number: &str) {
         self.meeting_cache
-            .remove(&(tenant_id.clone(), room_number.to_string()));
+            .remove(&(*tenant_id, room_number.to_string()));
     }
 
     fn session_tenant_for_room(&self, room_number: &str) -> Option<TenantId> {
@@ -769,6 +771,8 @@ impl ConferenceCallHandler {
         Ok(resolved)
     }
 
+    // Kept as part of the module's intended API; not currently called from this binary.
+    #[allow(dead_code)]
     async fn default_tenant_fallback(&self) -> Result<Option<TenantId>> {
         let tenants = self
             .storage
@@ -1377,7 +1381,7 @@ impl ConferenceCallHandler {
 
         // 6. Check for 2xx success
         let status_code = response.code();
-        if status_code < 200 || status_code >= 300 {
+        if !(200..300).contains(&status_code) {
             let pool = Arc::clone(&self.port_pool);
             tokio::spawn(async move { pool.deallocate(port_pair).await });
             let reason_phrase = response.reason();
@@ -1912,7 +1916,7 @@ impl ConferenceCallHandler {
                 .iter()
                 .next()
                 .and_then(|e| now.checked_duration_since(e.value().1))
-                .map_or(false, |elapsed| elapsed > Duration::from_secs(10));
+                .is_some_and(|elapsed| elapsed > Duration::from_secs(10));
         if should_evict {
             self.invite_rate.retain(|_, (_, window_start)| {
                 now.duration_since(*window_start) < Duration::from_secs(60)
@@ -3958,7 +3962,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
 
         if let Some(pending) = self.pending_pin_auth.get(&call_id) {
             if !body.is_empty() {
-                let body_str = String::from_utf8_lossy(&body);
+                let body_str = String::from_utf8_lossy(body);
                 for line in body_str.lines() {
                     let line = line.trim();
                     if let Some(signal) = line
@@ -3997,7 +4001,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
 
         // Parse DTMF from application/dtmf-relay body
         if !body.is_empty() {
-            let body_str = String::from_utf8_lossy(&body);
+            let body_str = String::from_utf8_lossy(body);
             // Format: "Signal=5\r\nDuration=160\r\n"
             for line in body_str.lines() {
                 let line = line.trim();

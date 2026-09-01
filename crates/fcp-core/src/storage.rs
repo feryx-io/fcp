@@ -379,19 +379,15 @@ fn default_tenant_id() -> crate::TenantId {
 /// Account status for user accounts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum AccountStatus {
     /// Account is active and can authenticate
+    #[default]
     Active,
     /// Account is temporarily suspended
     Suspended,
     /// Account is locked (e.g., after too many failed login attempts)
     Locked,
-}
-
-impl Default for AccountStatus {
-    fn default() -> Self {
-        Self::Active
-    }
 }
 
 impl std::fmt::Display for AccountStatus {
@@ -1547,12 +1543,12 @@ where
     S: ConferenceStore + TenantStore,
 {
     use std::collections::HashSet;
-    let mut tenant_ids: HashSet<crate::TenantId> = HashSet::from([default_tenant_id.clone()]);
+    let mut tenant_ids: HashSet<crate::TenantId> = HashSet::from([*default_tenant_id]);
     for tenant in storage.list_tenants().await? {
         tenant_ids.insert(tenant.id);
     }
     for tenant_id in tenant_ids {
-        if exclude_tenant == Some(tenant_id.clone()) {
+        if exclude_tenant == Some(tenant_id) {
             continue;
         }
         if storage
@@ -2451,6 +2447,10 @@ pub struct DynStorage {
 
 impl DynStorage {
     /// Create a new DynStorage from individual trait objects.
+    ///
+    /// This is an aggregate constructor over every store trait, so the argument
+    /// count tracks the number of stores rather than any avoidable complexity.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         credential_store: Arc<dyn CredentialStore>,
         registration_store: Arc<dyn RegistrationStore>,

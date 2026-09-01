@@ -56,7 +56,7 @@ impl RegistrationStore for RedisRegistrationStore {
         let now = SystemTime::now();
         let mut registrations = Vec::with_capacity(entries.len());
 
-        for (_contact, json) in &entries {
+        for json in entries.values() {
             match serde_json::from_str::<Registration>(json) {
                 Ok(reg) => {
                     // Filter out expired contacts client-side
@@ -266,7 +266,7 @@ impl RegistrationStore for RedisRegistrationStore {
                     .await
                     .map_err(|e| anyhow::anyhow!("Redis HGETALL failed for {}: {}", key, e))?;
 
-                for (_contact, json) in &entries {
+                for json in entries.values() {
                     match serde_json::from_str::<Registration>(json) {
                         Ok(reg) if reg.expires_at > now => {
                             all_registrations.push(reg);

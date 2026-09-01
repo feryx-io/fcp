@@ -352,40 +352,50 @@ mod tests {
 
     #[test]
     fn test_lcr_config_validation_min_asr_out_of_range() {
-        let mut cfg = LcrConfig::default();
-        cfg.min_asr = 1.5;
+        let cfg = LcrConfig {
+            min_asr: 1.5,
+            ..Default::default()
+        };
         let err = cfg.validate().unwrap_err();
         assert!(err.contains("min_asr"));
     }
 
     #[test]
     fn test_lcr_config_validation_min_asr_negative() {
-        let mut cfg = LcrConfig::default();
-        cfg.min_asr = -0.1;
+        let cfg = LcrConfig {
+            min_asr: -0.1,
+            ..Default::default()
+        };
         let err = cfg.validate().unwrap_err();
         assert!(err.contains("min_asr"));
     }
 
     #[test]
     fn test_lcr_config_validation_max_failover() {
-        let mut cfg = LcrConfig::default();
-        cfg.max_failover_attempts = 11;
+        let cfg = LcrConfig {
+            max_failover_attempts: 11,
+            ..Default::default()
+        };
         let err = cfg.validate().unwrap_err();
         assert!(err.contains("max_failover_attempts"));
     }
 
     #[test]
     fn test_lcr_config_validation_quality_window_too_small() {
-        let mut cfg = LcrConfig::default();
-        cfg.quality_window_secs = 10;
+        let cfg = LcrConfig {
+            quality_window_secs: 10,
+            ..Default::default()
+        };
         let err = cfg.validate().unwrap_err();
         assert!(err.contains("quality_window_secs"));
     }
 
     #[test]
     fn test_lcr_config_validation_quality_window_too_large() {
-        let mut cfg = LcrConfig::default();
-        cfg.quality_window_secs = 100_000;
+        let cfg = LcrConfig {
+            quality_window_secs: 100_000,
+            ..Default::default()
+        };
         let err = cfg.validate().unwrap_err();
         assert!(err.contains("quality_window_secs"));
     }

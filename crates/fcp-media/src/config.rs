@@ -79,9 +79,11 @@ pub struct MediaConfig {
 /// Backend deployment mode
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
+#[derive(Default)]
 pub enum BackendType {
     /// Embedded mode: forge-media runs in-process
     /// Best for: Single-box PBX, simple deployments, development
+    #[default]
     Embedded,
 
     /// Remote mode: forge-media runs as separate service
@@ -118,13 +120,6 @@ impl std::fmt::Debug for MediaConfig {
             .field("tts", &self.tts.is_some())
             .field("tts_service", &self.tts_service.is_some())
             .finish()
-    }
-}
-
-impl Default for BackendType {
-    fn default() -> Self {
-        // Default to embedded for Phase 1
-        Self::Embedded
     }
 }
 
@@ -327,9 +322,11 @@ mod tests {
 
     #[test]
     fn test_invalid_port_range() {
-        let mut config = MediaConfig::default();
-        config.rtp_port_start = 5000;
-        config.rtp_port_end = 4000;
+        let config = MediaConfig {
+            rtp_port_start: 5000,
+            rtp_port_end: 4000,
+            ..Default::default()
+        };
         assert!(config.validate().is_err());
     }
 

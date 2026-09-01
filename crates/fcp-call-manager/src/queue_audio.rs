@@ -301,7 +301,9 @@ fn load_wav_pcm(path: &Path) -> Option<Vec<i16>> {
 
             // Convert LE i16 pairs
             let samples: Vec<i16> = pcm_bytes
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|c| i16::from_le_bytes([c[0], c[1]]))
                 .collect();
 
@@ -317,7 +319,7 @@ fn load_wav_pcm(path: &Path) -> Option<Vec<i16>> {
 
         offset += 8 + chunk_size;
         // WAV chunks are word-aligned
-        if chunk_size % 2 != 0 {
+        if !chunk_size.is_multiple_of(2) {
             offset += 1;
         }
     }
@@ -510,6 +512,8 @@ impl PromptCache {
 
     /// Get pre-encoded frames for a prompt and codec, with language support.
     /// Tries `{lang}/{prompt_name}` first, falls back to `{prompt_name}`.
+    // Kept as part of the module's intended API; not currently called from this binary.
+    #[allow(dead_code)]
     pub fn get_frames_i18n(
         &self,
         prompt_name: &str,

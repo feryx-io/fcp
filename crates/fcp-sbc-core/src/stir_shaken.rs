@@ -349,9 +349,7 @@ pub fn clean_tn(input: &str) -> String {
 fn strip_non_tn_chars(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
     for (i, ch) in s.chars().enumerate() {
-        if ch == '+' && i == 0 {
-            result.push(ch);
-        } else if ch.is_ascii_digit() {
+        if (ch == '+' && i == 0) || ch.is_ascii_digit() {
             result.push(ch);
         }
     }
@@ -638,10 +636,10 @@ mod tests {
 
     #[test]
     fn test_stir_config_validation_ranges() {
-        let mut cfg = StirShakenConfig::default();
-
-        // cert_cache_ttl_secs
-        cfg.cert_cache_ttl_secs = 0;
+        let mut cfg = StirShakenConfig {
+            cert_cache_ttl_secs: 0,
+            ..Default::default()
+        };
         assert!(cfg.validate().is_err());
         cfg.cert_cache_ttl_secs = 86401;
         assert!(cfg.validate().is_err());
@@ -667,10 +665,10 @@ mod tests {
 
     #[test]
     fn test_stir_config_signing_field_consistency() {
-        let mut cfg = StirShakenConfig::default();
-
-        // Only key path set — should fail
-        cfg.signing_key_path = Some("/path/to/key.pem".into());
+        let mut cfg = StirShakenConfig {
+            signing_key_path: Some("/path/to/key.pem".into()),
+            ..Default::default()
+        };
         assert!(cfg.validate().is_err());
 
         // Key + cert but no URL — should fail

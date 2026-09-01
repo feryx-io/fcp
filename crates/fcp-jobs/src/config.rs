@@ -9,7 +9,7 @@ use std::time::Duration;
 use tracing::info;
 
 /// Jobs service configuration
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct JobsConfig {
     /// Service configuration
     #[serde(default)]
@@ -34,19 +34,6 @@ pub struct JobsConfig {
     /// Logging configuration
     #[serde(default)]
     pub logging: LoggingConfig,
-}
-
-impl Default for JobsConfig {
-    fn default() -> Self {
-        Self {
-            service: ServiceConfig::default(),
-            redis: RedisConfig::default(),
-            workers: WorkerConfig::default(),
-            retry: RetryConfig::default(),
-            health: HealthConfig::default(),
-            logging: LoggingConfig::default(),
-        }
-    }
 }
 
 /// Service configuration

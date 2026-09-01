@@ -75,12 +75,12 @@ impl AppSettings {
     /// Get a setting value by dotted key
     pub fn get(&self, key: &str) -> Option<String> {
         match key {
-            "deployment.mode" | "deployment_mode" => Some(format!(
-                "{}",
+            "deployment.mode" | "deployment_mode" => Some(
                 serde_json::to_string(&self.deployment_mode)
                     .unwrap_or_default()
                     .trim_matches('"')
-            )),
+                    .to_string(),
+            ),
             "output.format" | "output_format" => Some(self.output_format.clone()),
             "output.no_color" | "no_color" => Some(self.no_color.to_string()),
             "api.timeout" | "api_timeout_secs" => Some(self.api_timeout_secs.to_string()),

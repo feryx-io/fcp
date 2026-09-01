@@ -142,41 +142,50 @@ mod tests {
 
     #[test]
     fn test_validate_snapshot_interval_too_low() {
-        let mut cfg = SbcMetricsConfig::default();
-        cfg.snapshot_interval_secs = 4;
+        let cfg = SbcMetricsConfig {
+            snapshot_interval_secs: 4,
+            ..Default::default()
+        };
         let err = cfg.validate().unwrap_err();
         assert!(err.contains("snapshot_interval_secs"));
     }
 
     #[test]
     fn test_validate_snapshot_interval_too_high() {
-        let mut cfg = SbcMetricsConfig::default();
-        cfg.snapshot_interval_secs = 3601;
+        let cfg = SbcMetricsConfig {
+            snapshot_interval_secs: 3601,
+            ..Default::default()
+        };
         let err = cfg.validate().unwrap_err();
         assert!(err.contains("snapshot_interval_secs"));
     }
 
     #[test]
     fn test_validate_source_ip_entries_too_low() {
-        let mut cfg = SbcMetricsConfig::default();
-        cfg.max_source_ip_entries = 99;
+        let cfg = SbcMetricsConfig {
+            max_source_ip_entries: 99,
+            ..Default::default()
+        };
         let err = cfg.validate().unwrap_err();
         assert!(err.contains("max_source_ip_entries"));
     }
 
     #[test]
     fn test_validate_source_ip_entries_too_high() {
-        let mut cfg = SbcMetricsConfig::default();
-        cfg.max_source_ip_entries = 1_000_001;
+        let cfg = SbcMetricsConfig {
+            max_source_ip_entries: 1_000_001,
+            ..Default::default()
+        };
         let err = cfg.validate().unwrap_err();
         assert!(err.contains("max_source_ip_entries"));
     }
 
     #[test]
     fn test_validate_boundary_values() {
-        let mut cfg = SbcMetricsConfig::default();
-
-        cfg.snapshot_interval_secs = 5;
+        let mut cfg = SbcMetricsConfig {
+            snapshot_interval_secs: 5,
+            ..Default::default()
+        };
         assert!(cfg.validate().is_ok());
         cfg.snapshot_interval_secs = 3600;
         assert!(cfg.validate().is_ok());

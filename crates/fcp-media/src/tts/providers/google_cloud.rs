@@ -196,10 +196,10 @@ impl TtsProvider for GoogleCloudTts {
                     name: v.name.clone(),
                     display_name: v.name.clone(),
                     language: v.language_codes.first().cloned().unwrap_or_default(),
-                    gender: v.ssml_gender.clone().and_then(|g| match g.as_str() {
-                        "MALE" => Some("male".to_string()),
-                        "FEMALE" => Some("female".to_string()),
-                        _ => Some("neutral".to_string()),
+                    gender: v.ssml_gender.clone().map(|g| match g.as_str() {
+                        "MALE" => "male".to_string(),
+                        "FEMALE" => "female".to_string(),
+                        _ => "neutral".to_string(),
                     }),
                     metadata,
                 }

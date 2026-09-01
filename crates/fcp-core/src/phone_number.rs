@@ -128,8 +128,8 @@ pub struct PhoneNumber {
 /// then falls back to heuristics for 1 and 2-digit codes.
 fn extract_country_code(digits: &str) -> (String, &str) {
     // Try 1-digit country code (only valid is '1' for NANP)
-    if digits.starts_with('1') {
-        return ("1".to_string(), &digits[1..]);
+    if let Some(rest) = digits.strip_prefix('1') {
+        return ("1".to_string(), rest);
     }
 
     // Check for known 3-digit country codes using exact prefix matching

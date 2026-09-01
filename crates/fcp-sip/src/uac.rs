@@ -6,7 +6,7 @@ use crate::settings::ServerSettings;
 use anyhow::Result;
 use sip_core::Headers;
 use sip_dialog::{Dialog, Subscription};
-use sip_uac::integrated::{CallHandle, IntegratedUAC};
+use sip_uac::integrated::{CallHandle, Flow, IntegratedUAC};
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::PathBuf;
@@ -134,7 +134,7 @@ impl SipUserAgentClient {
         peer_addr: std::net::SocketAddr,
     ) -> Result<CallHandle> {
         self.inner
-            .invite_via_flow(target, sdp_body, flow_stream, peer_addr)
+            .invite_via_flow(target, sdp_body, Flow::new(flow_stream, peer_addr))
             .await
     }
 
@@ -178,7 +178,7 @@ impl SipUserAgentClient {
         peer_addr: std::net::SocketAddr,
     ) -> Result<sip_core::Response> {
         self.inner
-            .bye_via_flow(dialog, flow_stream, peer_addr)
+            .bye_via_flow(dialog, Flow::new(flow_stream, peer_addr))
             .await
     }
 
@@ -255,7 +255,7 @@ impl SipUserAgentClient {
         event: &str,
         expires: Option<u32>,
     ) -> Result<(sip_core::Response, Option<Subscription>)> {
-        self.log_outbound("SUBSCRIBE", Some(&dialog.id()));
+        self.log_outbound("SUBSCRIBE", Some(dialog.id()));
         // Target is remote target of dialog
         self.inner
             .subscribe(dialog.remote_target().clone(), event, expires)

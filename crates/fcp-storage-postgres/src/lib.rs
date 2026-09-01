@@ -471,8 +471,8 @@ impl CredentialStore for PostgresStorage {
         .bind(&role)
         .bind(&user.department_id)
         .bind(user.enabled)
-        .bind(&created_at)
-        .bind(&updated_at)
+        .bind(created_at)
+        .bind(updated_at)
         .bind(&media_preferences)
         .bind(&user.email)
         .bind(password_last_reset)
@@ -1673,9 +1673,9 @@ impl PhoneNumberStore for PostgresStorage {
         .bind(&phone_number.ocn)
         .bind(&phone_number.rate_center)
         .bind(&phone_number.lata)
-        .bind(&acquired_at)
-        .bind(&activated_at)
-        .bind(&ported_at)
+        .bind(acquired_at)
+        .bind(activated_at)
+        .bind(ported_at)
         .bind(loa_date)
         .bind(foc_date)
         .bind(phone_number.recording_enabled)
@@ -1684,8 +1684,8 @@ impl PhoneNumberStore for PostgresStorage {
         .bind(&block_list)
         .bind(&tags)
         .bind(&location_id)
-        .bind(&created_at)
-        .bind(&updated_at)
+        .bind(created_at)
+        .bind(updated_at)
         .execute(&self.pool)
         .await?;
 
@@ -1965,8 +1965,8 @@ impl LineBindingStore for PostgresStorage {
         .bind(&binding.outbound_caller_id)
         .bind(&binding.outbound_cnam)
         .bind(&binding.flow_id)
-        .bind(&created_at)
-        .bind(&updated_at)
+        .bind(created_at)
+        .bind(updated_at)
         .execute(&self.pool)
         .await?;
 
@@ -2092,8 +2092,8 @@ impl ExtensionStore for PostgresStorage {
         .bind(&extension.description)
         .bind(&location_id)
         .bind(extension.enabled)
-        .bind(&created_at)
-        .bind(&updated_at)
+        .bind(created_at)
+        .bind(updated_at)
         .execute(&self.pool)
         .await?;
 
@@ -2202,7 +2202,7 @@ impl DeviceStore for PostgresStorage {
         let registration_state = device.registration_state.to_string();
         let last_registration = device.last_registration.map(system_time_to_datetime);
         let codec_support = serde_json::to_value(
-            &device
+            device
                 .codec_support
                 .into_iter()
                 .map(|c| format!("{:?}", c))
@@ -2351,9 +2351,7 @@ impl fcp_core::storage::ConfigTemplateStore for PostgresStorage {
         .fetch_all(&self.pool)
         .await?;
 
-        rows.into_iter()
-            .map(|row| row_to_config_template(row))
-            .collect()
+        rows.into_iter().map(row_to_config_template).collect()
     }
 
     async fn put_config_template(
@@ -2828,9 +2826,9 @@ fn map_device_write_error(err: sqlx::Error) -> anyhow::Error {
                 message = %db_err.message(),
                 "Device write rejected by unique constraint"
             );
-            return anyhow::Error::new(fcp_core::Error::Storage(
-                fcp_core::StorageError::Conflict(client_msg),
-            ));
+            return anyhow::Error::new(fcp_core::Error::Storage(fcp_core::StorageError::Conflict(
+                client_msg,
+            )));
         }
     }
     anyhow::Error::from(err)
@@ -3277,7 +3275,7 @@ impl TrunkStore for PostgresStorage {
             let bucket: DateTime<Utc> = row.try_get("bucket")?;
             let cnt: i64 = row.try_get("cnt").unwrap_or(0);
             let hours_ago = (chrono::Utc::now() - bucket).num_hours();
-            if hours_ago >= 0 && hours_ago < 24 {
+            if (0..24).contains(&hours_ago) {
                 hourly[23 - hours_ago as usize] = cnt as u64;
             }
         }
@@ -3647,8 +3645,8 @@ impl SiteLocationStore for PostgresStorage {
         .bind(&location.timezone)
         .bind(&location.emergency_contact_name)
         .bind(&location.emergency_contact_phone)
-        .bind(&created_at)
-        .bind(&updated_at)
+        .bind(created_at)
+        .bind(updated_at)
         .execute(&self.pool)
         .await?;
 

@@ -13,15 +13,36 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      # The workspace path-depends on external/siphon-rs and external/forge-media,
+      # so the submodules must be present or dependency resolution fails outright.
+      # Both are private, so the default GITHUB_TOKEN cannot clone them: SUBMODULE_TOKEN
+      # must be set as both an Actions secret and a Dependabot secret.
+      - name: Check submodule token is available
+        env:
+          SUBMODULE_TOKEN: ${{ secrets.SUBMODULE_TOKEN }}
+        run: |
+          if [ -z "$SUBMODULE_TOKEN" ]; then
+            echo "::error::SUBMODULE_TOKEN is not set, so the private submodules external/siphon-rs and external/forge-media cannot be cloned. Add a PAT with 'repo' scope named SUBMODULE_TOKEN under Settings > Secrets and variables, to both Actions and Dependabot."
+            exit 1
+          fi
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+          token: ${{ secrets.SUBMODULE_TOKEN }}
       - name: Install toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
       - name: Restore cargo cache
         uses: Swatinem/rust-cache@v2
+      # `cargo fmt --all` also reformats the path dependencies under external/, which are
+      # separately maintained submodules with their own CI. Scope the check to the
+      # workspace members so FCP's CI does not police siphon-rs / forge-media style.
       - name: Format
-        run: cargo fmt --all -- --check
+        run: |
+          pkgs=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[].name | "-p \(.)"' | tr '\n' ' ')
+          cargo fmt $pkgs -- --check
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
       - name: Tests
@@ -31,15 +52,18 @@ jobs:
     name: Security Audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      # cargo-audit reads the committed Cargo.lock, so this job does not need
+      # the submodules and therefore does not need SUBMODULE_TOKEN.
+      - uses: actions/checkout@v5
       - name: Install cargo-audit
-        run: cargo install cargo-audit
+        run: cargo install cargo-audit --locked
       - name: Run security audit
         run: cargo audit
       - name: Run cargo-audit with JSON output
+        if: always()
         run: cargo audit --json > audit-report.json || true
       - name: Upload audit report
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         if: always()
         with:
           name: security-audit-report

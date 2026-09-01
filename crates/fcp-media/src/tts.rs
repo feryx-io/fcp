@@ -339,7 +339,7 @@ impl TtsService {
         let mut cache_index = self.cache_index.write().await;
         let mut cache_size = self.cache_size_bytes.write().await;
 
-        for (_, (path, _)) in cache_index.iter() {
+        for (path, _) in cache_index.values() {
             if let Err(e) = tokio::fs::remove_file(path).await {
                 warn!(
                     path = %path.display(),

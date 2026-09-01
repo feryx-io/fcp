@@ -878,7 +878,7 @@ mod tests {
         let xml = generate_pres_rules(&policy);
         let parsed = parse_pres_rules(&xml).unwrap();
 
-        assert_eq!(parsed.default_allow, false);
+        assert!(!parsed.default_allow);
         assert_eq!(parsed.allow_list, policy.allow_list);
         assert!(parsed.block_list.is_empty());
     }

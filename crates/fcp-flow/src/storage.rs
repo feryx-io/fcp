@@ -93,15 +93,11 @@ pub enum SortField {
 /// Sort order
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum SortOrder {
     Asc,
+    #[default]
     Desc,
-}
-
-impl Default for SortOrder {
-    fn default() -> Self {
-        SortOrder::Desc
-    }
 }
 
 /// Result of a flow query with pagination info.

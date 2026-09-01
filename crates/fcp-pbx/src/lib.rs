@@ -254,11 +254,13 @@ mod tests {
             },
         );
 
-        let mut feature_codes = FeatureCodeConfig::default();
-        feature_codes.group_pickup = "*8".to_string();
-        feature_codes.directed_pickup = "*9".to_string();
-        feature_codes.intercom_oneway = "*80".to_string();
-        feature_codes.intercom_twoway = "*81".to_string();
+        let feature_codes = FeatureCodeConfig {
+            group_pickup: "*8".to_string(),
+            directed_pickup: "*9".to_string(),
+            intercom_oneway: "*80".to_string(),
+            intercom_twoway: "*81".to_string(),
+            ..Default::default()
+        };
 
         PbxConfig {
             enabled: true,

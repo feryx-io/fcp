@@ -339,38 +339,41 @@ async fn main() -> Result<()> {
     let node_registry = Arc::new(NodeRegistry::new());
 
     // Create webhook dispatcher if enabled (requires PostgreSQL storage)
-    let webhook_dispatcher = if config.webhook.enabled && storage_result.is_some() {
-        info!("Webhook dispatching enabled, initializing...");
+    let webhook_dispatcher = match storage_result.as_ref() {
+        Some(storage) if config.webhook.enabled => {
+            info!("Webhook dispatching enabled, initializing...");
 
-        // Re-use the already-initialized PostgreSQL storage for webhooks
-        let webhook_store: Arc<dyn fcp_core::storage::WebhookStore> =
-            storage_result.as_ref().unwrap().pg_storage.clone();
+            // Re-use the already-initialized PostgreSQL storage for webhooks
+            let webhook_store: Arc<dyn fcp_core::storage::WebhookStore> =
+                storage.pg_storage.clone();
 
-        let dispatcher_config = WebhookDispatcherConfig {
-            request_timeout: Duration::from_secs(config.webhook.request_timeout_secs),
-            max_retries: config.webhook.max_retries,
-            base_retry_delay: Duration::from_secs(config.webhook.base_retry_delay_secs),
-            max_retry_delay: Duration::from_secs(config.webhook.max_retry_delay_secs),
-            max_concurrent: config.webhook.max_concurrent,
-            retry_interval: Duration::from_secs(config.webhook.retry_interval_secs),
-        };
+            let dispatcher_config = WebhookDispatcherConfig {
+                request_timeout: Duration::from_secs(config.webhook.request_timeout_secs),
+                max_retries: config.webhook.max_retries,
+                base_retry_delay: Duration::from_secs(config.webhook.base_retry_delay_secs),
+                max_retry_delay: Duration::from_secs(config.webhook.max_retry_delay_secs),
+                max_concurrent: config.webhook.max_concurrent,
+                retry_interval: Duration::from_secs(config.webhook.retry_interval_secs),
+            };
 
-        let dispatcher = Arc::new(WebhookDispatcher::new(webhook_store, dispatcher_config));
+            let dispatcher = Arc::new(WebhookDispatcher::new(webhook_store, dispatcher_config));
 
-        // Spawn event consumer that dispatches to webhooks
-        fcp_webhooks::spawn_webhook_consumer(
-            event_bus.clone() as Arc<dyn EventSubscriber>,
-            dispatcher.clone(),
-        );
+            // Spawn event consumer that dispatches to webhooks
+            fcp_webhooks::spawn_webhook_consumer(
+                event_bus.clone() as Arc<dyn EventSubscriber>,
+                dispatcher.clone(),
+            );
 
-        // Spawn retry processor
-        fcp_webhooks::dispatcher::spawn_retry_processor(dispatcher.clone());
+            // Spawn retry processor
+            fcp_webhooks::dispatcher::spawn_retry_processor(dispatcher.clone());
 
-        info!("Webhook dispatcher initialized");
-        Some(dispatcher)
-    } else {
-        info!("Webhook dispatching disabled");
-        None
+            info!("Webhook dispatcher initialized");
+            Some(dispatcher)
+        }
+        _ => {
+            info!("Webhook dispatching disabled");
+            None
+        }
     };
 
     // Create application state
@@ -663,9 +666,7 @@ fn extract_token_from_headers(headers: &axum::http::HeaderMap) -> Option<String>
 }
 
 fn extract_query_token(uri: &axum::http::Uri) -> Option<String> {
-    let Some(query) = uri.query() else {
-        return None;
-    };
+    let query = uri.query()?;
 
     url::form_urlencoded::parse(query.as_bytes())
         .find(|(key, _)| key == "token")
@@ -703,7 +704,7 @@ async fn authenticate_presented_token(
             }
 
             let store = Arc::clone(store);
-            let token_id = api_token.id.clone();
+            let token_id = api_token.id;
             tokio::spawn(async move {
                 if let Err(error) = store.update_last_used(&token_id).await {
                     debug!(error = %error, "Failed to update API token last_used_at");
@@ -936,7 +937,7 @@ async fn websocket_handler(
     // Register connection
     let conn_id = match state
         .manager
-        .register(tenant_id.clone(), allow_all_tenants, event_tx)
+        .register(tenant_id, allow_all_tenants, event_tx)
     {
         Ok(id) => id,
         Err(e) => {
@@ -1109,15 +1110,21 @@ fn process_event_for_state(
 
             // Update call counts based on event type
             match call_event {
-                CallEvent::Initiated { node_id, .. } => {
-                    if let Some(ref nid) = node_id {
-                        node_registry.increment_calls(nid);
-                    }
+                CallEvent::Initiated {
+                    node_id: Some(ref nid),
+                    ..
+                } => {
+                    node_registry.increment_calls(nid);
                 }
-                CallEvent::Ended { node_id, .. } | CallEvent::Failed { node_id, .. } => {
-                    if let Some(ref nid) = node_id {
-                        node_registry.decrement_calls(nid);
-                    }
+                CallEvent::Ended {
+                    node_id: Some(ref nid),
+                    ..
+                }
+                | CallEvent::Failed {
+                    node_id: Some(ref nid),
+                    ..
+                } => {
+                    node_registry.decrement_calls(nid);
                 }
                 _ => {}
             }
@@ -1216,7 +1223,7 @@ async fn event_broadcast_task(
 
 fn resolve_event_tenant_id(event: &PlatformEvent, call_store: &CallStateStore) -> Option<TenantId> {
     if let Some(tenant_id) = event.tenant_id() {
-        return Some(tenant_id.clone());
+        return Some(*tenant_id);
     }
 
     let call_id = event.call_id()?;

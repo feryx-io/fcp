@@ -287,7 +287,7 @@ fn render_phone_numbers_table(
         .collect();
 
     let title = if state.loading {
-        format!(" Phone Numbers (Loading...) ")
+        " Phone Numbers (Loading...) ".to_string()
     } else {
         format!(
             " Phone Numbers ({}) (↑↓ to navigate) ",
@@ -374,10 +374,7 @@ fn render_details_panel(
                 }),
             ]),
             if let Some(e911) = &phone.e911_address {
-                Line::from(vec![
-                    Span::raw("  "),
-                    Span::raw(format!("{}", e911.address1)),
-                ])
+                Line::from(vec![Span::raw("  "), Span::raw(e911.address1.to_string())])
             } else {
                 Line::from("")
             },
@@ -988,7 +985,7 @@ pub async fn handle_phone_number_action(
                     }
                 }
             }
-            return true;
+            true
         }
         _ => false,
     }

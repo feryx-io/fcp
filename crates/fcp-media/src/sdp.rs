@@ -95,8 +95,7 @@ pub fn extract_telephone_event_pt(sdp_body: &str) -> Option<u8> {
     // Fallback: manual scan of a=rtpmap lines
     for line in sdp_body.lines() {
         let line = line.trim();
-        if line.starts_with("a=rtpmap:") {
-            let rtpmap_data = &line[9..];
+        if let Some(rtpmap_data) = line.strip_prefix("a=rtpmap:") {
             if let Some((pt_str, codec_info)) = rtpmap_data.split_once(' ') {
                 let codec_name = codec_info.split('/').next().unwrap_or(codec_info);
                 if codec_name.eq_ignore_ascii_case("telephone-event") {
@@ -136,8 +135,7 @@ fn parse_sdp_codecs_manual(sdp_body: &str) -> Vec<SdpCodecInfo> {
             }
         }
 
-        if line.starts_with("a=rtpmap:") {
-            let rtpmap_data = &line[9..];
+        if let Some(rtpmap_data) = line.strip_prefix("a=rtpmap:") {
             if let Some((pt, codec_info)) = rtpmap_data.split_once(' ') {
                 let parts: Vec<&str> = codec_info.split('/').collect();
                 let codec_name = parts[0];
@@ -588,10 +586,9 @@ pub fn filter_sdp_codecs(original_sdp: &str, allowed_codecs: &[&str]) -> String 
 
         // Filter a=rtpmap and a=fmtp lines
         if trimmed.starts_with("a=rtpmap:") || trimmed.starts_with("a=fmtp:") {
-            let attr_data = if trimmed.starts_with("a=rtpmap:") {
-                &trimmed[9..]
-            } else {
-                &trimmed[7..]
+            let attr_data = match trimmed.strip_prefix("a=rtpmap:") {
+                Some(rest) => rest,
+                None => &trimmed["a=fmtp:".len()..],
             };
             if let Some(pt_str) = attr_data
                 .split_whitespace()
@@ -644,8 +641,8 @@ pub fn extract_codecs_from_sdp(sdp_body: &str) -> Vec<String> {
         }
 
         // Parse rtpmap: a=rtpmap:0 PCMU/8000
-        if line.starts_with("a=rtpmap:") {
-            let rtpmap_data = &line[9..]; // Skip "a=rtpmap:"
+        if let Some(rtpmap_data) = line.strip_prefix("a=rtpmap:") {
+            // Skip "a=rtpmap:"
             if let Some((pt, codec_info)) = rtpmap_data.split_once(' ') {
                 // Extract codec name (before the slash)
                 let codec_name = codec_info.split('/').next().unwrap_or(codec_info);

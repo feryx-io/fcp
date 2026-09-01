@@ -9,7 +9,7 @@ use std::time::Duration;
 use tracing::info;
 
 /// Events server configuration
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct EventsConfig {
     /// Service configuration
     #[serde(default)]
@@ -137,22 +137,6 @@ impl Default for WebhookConfig {
             max_concurrent: default_webhook_max_concurrent(),
             retry_interval_secs: default_webhook_retry_interval(),
             database_url: default_webhook_database_url(),
-        }
-    }
-}
-
-impl Default for EventsConfig {
-    fn default() -> Self {
-        Self {
-            service: ServiceConfig::default(),
-            websocket: WebSocketConfig::default(),
-            event_bus: EventBusConfig::default(),
-            limits: LimitsConfig::default(),
-            logging: LoggingConfig::default(),
-            upstream: UpstreamConfig::default(),
-            webhook: WebhookConfig::default(),
-            cluster: ClusterConfig::default(),
-            auth: AuthConfig::default(),
         }
     }
 }

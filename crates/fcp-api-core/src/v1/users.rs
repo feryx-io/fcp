@@ -311,7 +311,11 @@ pub async fn create_user(
         };
 
     // Check if user already exists
-    if let Some(_) = storage.get_user_in_tenant(&req.username, &tenant.0).await? {
+    if storage
+        .get_user_in_tenant(&req.username, &tenant.0)
+        .await?
+        .is_some()
+    {
         // Use generic error message to avoid user enumeration
         return Err(ApiError::Conflict(
             "Unable to create user with provided credentials".to_string(),
@@ -353,7 +357,7 @@ pub async fn create_user(
         sip_ha1_hash: Some(sip_ha1_hash),
         sip_provisioning_password,
         display_name: req.display_name,
-        tenant_id: tenant.0.clone(),
+        tenant_id: tenant.0,
         enabled: req.enabled,
         role,                             // NEW: User role for RBAC
         department_id: req.department_id, // NEW: Department scoping for department admins

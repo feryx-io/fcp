@@ -253,13 +253,13 @@ impl SipPresenceHandler {
     /// Extract the watcher AOR from the From header.
     fn extract_watcher_aor(request: &sip_core::Request) -> Option<String> {
         let from = request.headers().get("From")?;
-        extract_aor(&*from)
+        extract_aor(from)
     }
 
     /// Extract the Contact URI from the request (where to send NOTIFY).
     fn extract_contact_uri(request: &sip_core::Request) -> Option<String> {
         let contact = request.headers().get("Contact")?;
-        let contact_str: &str = &*contact;
+        let contact_str: &str = contact;
 
         // Extract URI from < > brackets if present
         if let Some(start) = contact_str.find('<') {
@@ -279,7 +279,7 @@ impl SipPresenceHandler {
             event
                 .split(';')
                 .next()
-                .unwrap_or(&event)
+                .unwrap_or(event)
                 .trim()
                 .to_lowercase(),
         )
@@ -396,9 +396,7 @@ impl SipPresenceHandler {
             // Via: SIP/2.0/UDP 192.168.1.100:5060;branch=...
             if let Some(host_start) = via.rfind(' ') {
                 let host_part = &via[host_start + 1..];
-                let end = host_part
-                    .find(|c: char| c == ';' || c == ',')
-                    .unwrap_or(host_part.len());
+                let end = host_part.find([';', ',']).unwrap_or(host_part.len());
                 let host_port = &host_part[..end];
                 // Strip port
                 if let Some((host, _)) = host_port.rsplit_once(':') {
@@ -856,7 +854,7 @@ impl SipPresenceHandler {
             presentity_aor: ctx.presentity_aor.clone(),
             subscription_id: subscription_id.clone(),
             expires_at: Instant::now() + Duration::from_secs(ctx.expires as u64),
-            tenant_id: self.tenant_id.clone(),
+            tenant_id: self.tenant_id,
             contact_uri: ctx.contact_uri.clone(),
             event_package: "presence.winfo".to_string(),
             sip_call_id: None,
@@ -912,7 +910,7 @@ impl SipPresenceHandler {
             presentity_aor: ctx.presentity_aor.clone(),
             subscription_id: subscription_id.clone(),
             expires_at: Instant::now() + Duration::from_secs(ctx.expires as u64),
-            tenant_id: self.tenant_id.clone(),
+            tenant_id: self.tenant_id,
             contact_uri: ctx.contact_uri.clone(),
             event_package: ctx.event.clone(),
             sip_call_id,

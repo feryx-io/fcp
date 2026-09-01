@@ -232,8 +232,10 @@ impl DeviceBinding {
 /// Ring strategy for distributing incoming calls.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum RingStrategy {
     /// Ring all devices at once
+    #[default]
     Simultaneous,
 
     /// Ring devices in priority order with timeout
@@ -258,12 +260,6 @@ impl fmt::Display for RingStrategy {
             Self::LongestIdle => write!(f, "longest_idle"),
             Self::Primary => write!(f, "primary"),
         }
-    }
-}
-
-impl Default for RingStrategy {
-    fn default() -> Self {
-        Self::Simultaneous
     }
 }
 

@@ -35,11 +35,8 @@ pub trait RoutingStore: Send + Sync {
     async fn list_policy_rules(&self, tenant_id: &TenantId) -> Result<Vec<PolicyRule>>;
 
     /// Get a specific policy rule by name
-    async fn get_policy_rule(
-        &self,
-        name: &str,
-        tenant_id: &TenantId,
-    ) -> Result<Option<PolicyRule>>;
+    async fn get_policy_rule(&self, name: &str, tenant_id: &TenantId)
+        -> Result<Option<PolicyRule>>;
 
     // === Future Layers (stubs for now) ===
     // These will be implemented when we add Reachability, Routing, and Transform layers

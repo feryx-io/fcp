@@ -5,11 +5,13 @@ use fcp_pbx::config::{HuntGroupConfig, RingStrategy};
 use std::time::Duration;
 
 fn enabled_pbx_config() -> fcp_pbx::PbxConfig {
-    let mut feature_codes = fcp_pbx::config::FeatureCodeConfig::default();
-    feature_codes.group_pickup = "*8".to_string();
-    feature_codes.directed_pickup = "*9".to_string();
-    feature_codes.intercom_oneway = "*80".to_string();
-    feature_codes.intercom_twoway = "*81".to_string();
+    let feature_codes = fcp_pbx::config::FeatureCodeConfig {
+        group_pickup: "*8".to_string(),
+        directed_pickup: "*9".to_string(),
+        intercom_oneway: "*80".to_string(),
+        intercom_twoway: "*81".to_string(),
+        ..Default::default()
+    };
 
     fcp_pbx::PbxConfig {
         enabled: true,

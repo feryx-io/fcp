@@ -252,16 +252,10 @@ impl Default for LoggingSection {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct StorageSection {
     #[serde(default)]
     pub redis_url: Option<String>,
-}
-
-impl Default for StorageSection {
-    fn default() -> Self {
-        Self { redis_url: None }
-    }
 }
 
 /// Cluster configuration.

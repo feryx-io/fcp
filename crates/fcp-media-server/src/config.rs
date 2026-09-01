@@ -404,10 +404,8 @@ pub fn validate_config(config: &MediaServerConfig) -> Result<()> {
     }
 
     // TLS consistency
-    if config.tls.enabled {
-        if config.tls.cert.is_none() || config.tls.key.is_none() {
-            anyhow::bail!("tls.enabled is true but tls.cert and/or tls.key are not configured");
-        }
+    if config.tls.enabled && (config.tls.cert.is_none() || config.tls.key.is_none()) {
+        anyhow::bail!("tls.enabled is true but tls.cert and/or tls.key are not configured");
     }
 
     // Auth consistency: not disabled and no tokens

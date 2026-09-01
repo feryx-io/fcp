@@ -50,8 +50,8 @@ impl PresenceHistoryStore for InMemoryPresenceHistory {
             .iter()
             .filter(|e| &e.tenant_id == tenant_id)
             .filter(|e| e.aor == aor)
-            .filter(|e| from_epoch.map_or(true, |f| e.timestamp_epoch >= f))
-            .filter(|e| to_epoch.map_or(true, |t| e.timestamp_epoch <= t))
+            .filter(|e| from_epoch.is_none_or(|f| e.timestamp_epoch >= f))
+            .filter(|e| to_epoch.is_none_or(|t| e.timestamp_epoch <= t))
             .rev() // most recent first
             .take(limit)
             .cloned()
@@ -71,8 +71,8 @@ impl PresenceHistoryStore for InMemoryPresenceHistory {
         let mut by_aor: HashMap<String, Vec<&StoredPresenceChange>> = HashMap::new();
         for entry in entries.iter() {
             if &entry.tenant_id == tenant_id
-                && from_epoch.map_or(true, |f| entry.timestamp_epoch >= f)
-                && to_epoch.map_or(true, |t| entry.timestamp_epoch <= t)
+                && from_epoch.is_none_or(|f| entry.timestamp_epoch >= f)
+                && to_epoch.is_none_or(|t| entry.timestamp_epoch <= t)
             {
                 by_aor.entry(entry.aor.clone()).or_default().push(entry);
             }
@@ -250,7 +250,7 @@ mod tests {
         let store = InMemoryPresenceHistory::new(100);
         let tenant_id = fcp_core::TenantId::new();
 
-        let changes = vec![
+        let changes = [
             ("closed", "open", 1000),
             ("open", "busy", 1060),
             ("busy", "open", 1090),

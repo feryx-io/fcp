@@ -49,9 +49,6 @@ pub mod models;
 pub mod service;
 pub mod storage;
 
-#[cfg(feature = "metrics")]
-pub mod metrics;
-
 // Re-export key types for convenience
 pub use evaluator::PolicyEvaluator;
 pub use models::identity::{DeviceType, Endpoint, IdentityContext, User};

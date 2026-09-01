@@ -77,7 +77,7 @@ pub async fn create_uac(
     let resolver = Arc::new(SipResolver::from_system().context("Failed to create DNS resolver")?);
 
     let builder = IntegratedUAC::builder()
-        .local_uri(local_uri.as_str())
+        .local_uri(local_uri.as_str())?
         .local_addr(&local_addr)?
         .via_advertised_addr(&local_addr)?
         .transaction_manager(transaction_manager)

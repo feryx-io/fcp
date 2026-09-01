@@ -38,8 +38,10 @@ pub fn is_host_literal(domain: &str) -> bool {
 /// Account status for a tenant
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum TenantStatus {
     /// Tenant is active and can use the system
+    #[default]
     Active,
     /// Tenant is suspended (cannot make/receive calls)
     Suspended,
@@ -47,12 +49,6 @@ pub enum TenantStatus {
     Trial,
     /// Tenant account is closed
     Closed,
-}
-
-impl Default for TenantStatus {
-    fn default() -> Self {
-        Self::Active
-    }
 }
 
 impl std::fmt::Display for TenantStatus {

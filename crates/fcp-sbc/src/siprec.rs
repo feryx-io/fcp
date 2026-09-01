@@ -68,7 +68,7 @@ impl SiprecRecorder {
             .rules
             .iter()
             .filter(|r| r.enabled)
-            .filter_map(|r| {
+            .map(|r| {
                 let caller_regex = r.caller_pattern.as_ref().and_then(|p| {
                     Regex::new(p)
                         .map_err(|e| warn!(rule = %r.name, pattern = %p, error = %e, "invalid caller_pattern regex"))
@@ -87,13 +87,13 @@ impl SiprecRecorder {
                         None
                     }
                 });
-                Some(CompiledRecordingRule {
+                CompiledRecordingRule {
                     name: r.name.clone(),
                     caller_regex,
                     callee_regex,
                     trunk_names: r.trunk_names.clone(),
                     direction,
-                })
+                }
             })
             .collect();
 
@@ -217,6 +217,7 @@ impl SiprecRecorder {
                 // Extract SIP Call-ID from the INVITE request
                 let sip_call_id = call_handle
                     .invite_request()
+                    .await
                     .headers()
                     .get_smol("Call-ID")
                     .map(|s| s.to_string())
@@ -226,7 +227,7 @@ impl SiprecRecorder {
                     call_key,
                     RecordingSession {
                         _recording_id: recording_id,
-                        _call_id: call_id.clone(),
+                        _call_id: *call_id,
                         sip_call_id,
                         server_uri: server.uri.clone(),
                         _started_at: SystemTime::now(),
@@ -325,9 +326,8 @@ fn extract_first_codec(sdp_text: &str) -> Option<(String, u8, u32)> {
         let line = line.trim();
         if let Some(rest) = line.strip_prefix("a=rtpmap:") {
             // Format: "PT codec/rate" or "PT codec/rate/channels"
-            let mut parts = rest.splitn(2, ' ');
-            let pt_str = parts.next()?;
-            let codec_part = parts.next()?;
+            let (pt_str, codec_part) = rest.split_once(' ')?;
+
             let pt: u8 = pt_str.parse().ok()?;
             let mut codec_parts = codec_part.split('/');
             let name = codec_parts.next()?;
