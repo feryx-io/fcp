@@ -1,0 +1,16 @@
+# Local build defaults for the FCP workspace.
+#
+# A full debug build of this 33-crate workspace with default settings exceeds
+# 100GB of target/ (debuginfo roughly triples artifact size, and the
+# incremental cache alone reaches tens of GB), which has exhausted both CI
+# runners and dev machines. CI already builds with debuginfo off
+# (CARGO_PROFILE_DEV_DEBUG=0 in ci.yml); this makes local builds match.
+#
+# Need symbols for a debugging session? Override ad hoc:
+#   CARGO_PROFILE_DEV_DEBUG=2 cargo build -p <crate>
+
+[build]
+incremental = false
+
+[profile.dev]
+debug = 0

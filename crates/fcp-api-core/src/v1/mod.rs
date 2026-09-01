@@ -329,6 +329,14 @@ pub fn router() -> Router<ApiState> {
                 .post(config_templates::create_config_template),
         )
         .route(
+            "/config-templates/library",
+            get(config_templates::list_template_library),
+        )
+        .route(
+            "/config-templates/library/:vendor",
+            axum::routing::post(config_templates::instantiate_library_template),
+        )
+        .route(
             "/config-templates/:id",
             get(config_templates::get_config_template)
                 .patch(config_templates::update_config_template)

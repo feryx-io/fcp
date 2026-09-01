@@ -485,7 +485,7 @@ async fn handle_request(request: Request, tenant_id: TenantId) -> Result<()> {
 - ✅ `fcp-tts-server`: Shared TTS service (provider registry, caching, health)
 - ✅ Device provisioning serving layer (token auth, HTTPS enforcement, template rendering in `fcp-api-core/src/v1/provisioning.rs`)
 - ✅ Audio transcoding pipeline — `fcp-media` syncs the payload-type map from each leg's SDP and arms forge-engine's per-packet transcoders on codec mismatch (single-session and bridged modes); gated by `media.enable_transcoding`; transcodable set PCMU/PCMA/Opus/PCM
-- ⏳ Vendor provisioning templates — no shipped Polycom/Yealink/Cisco/Grandstream templates yet; tenants author their own
+- ✅ Vendor provisioning templates — built-in Yealink/Polycom/Grandstream/Cisco starters (`config_template::builtin_templates`), instantiated per tenant via `/v1/config-templates/library`
 - `fcp-policy`: Dedicated policy engine — currently policies are inline in routing/SBC code; extract into a standalone crate with a rule DSL for call admission, number manipulation, time-of-day routing, and tenant-level feature toggles
 - ⏳ Billing — MVP shipped (per-tenant rate plans with prefix rates in `fcp-core/src/billing.rs`, calls rated at CDR creation, cost in usage reports, admin CRUD at `/v1/rate-plans`); remaining: balance enforcement, external billing-system hooks, extraction into a dedicated `fcp-billing` crate
 - SBC pipeline stages 3–5: reachability, trunk routing/failover, header & number transform
