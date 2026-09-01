@@ -27,7 +27,7 @@ Update this file when feature status changes; keep other docs describing scope, 
 | Policy-based routing + LCR | ✅ Done | `fcp-routing` (rule evaluator, ~1,000 lines) |
 | Provisioning — serving layer | ✅ Done | `fcp-api-core/src/v1/provisioning.rs`: token auth (constant-time), HTTPS enforcement, template rendering, migrations 045/046 |
 | TTS service | ✅ Done | `fcp-tts-server`: synthesize/voices/providers/cache routes, Redis feature-gating |
-| Audio transcoding | ⚠️ Partial | Real transcoding only in `fcp-call-manager`'s queue path; `fcp-media` has decision logic (`codec.rs`, `decision.rs`) but does not link `forge-transcoder`; its `RemoteBackend` is a stub (14 `todo!()`) |
+| Audio transcoding | ✅ Done | B2BUA/SBC path wired (2026-09-01): `fcp-media` rebuilds the payload-type map from each leg's negotiated SDP and arms forge-engine's per-packet transcoders on codec mismatch, in both single-session and cross-wired bridge modes; queue path already had it. Transcodable set: PCMU/PCMA/Opus/PCM (Opus needs the `opus` feature; G722/G729 pass through untranscoded). Gated by `media.enable_transcoding` (default off). `RemoteBackend` stubs now return errors instead of panicking (remote mode remains unimplemented) |
 | Provisioning — vendor templates | ❌ Missing | No shipped Polycom/Yealink/Cisco/Grandstream templates |
 | Policy engine (`fcp-policy`) | ❌ Not extracted | Rules live inline in `fcp-routing` + SBC admission config; no dedicated crate or DSL |
 | Billing (`fcp-billing`) | ❌ Absent | Only read-only `GET /billing/summary` usage report; CDRs carry `cost: None // TODO` |
@@ -61,8 +61,8 @@ Each needs a deliberate keep-or-descope decision:
 
 ## Next steps (agreed 2026-09-01)
 
-1. ~~Documentation truth pass~~ (this change)
-2. Finish transcoding path: wire `forge-transcoder` into `fcp-media`; resolve the `RemoteBackend` stub (implement or delete)
+1. ~~Documentation truth pass~~ (done 2026-09-01)
+2. ~~Finish transcoding path~~ (done 2026-09-01: PT map + transcoder arming wired through `fcp-media`; `RemoteBackend` stubs return errors)
 3. Billing MVP: stamp CDR `cost`, per-tenant rate tables, build on existing usage aggregation
 4. Ship vendor provisioning templates (seed via migration)
 5. Extract `fcp-policy` (evaluator + admission behind one crate, YAML rule format)
