@@ -8,11 +8,13 @@
 
 FCP is a multi-tenant, API-first alternative to FreeSWITCH, Kamailio, and Asterisk, designed with memory safety, modern async I/O, and observability built-in from day one.
 
+**📋 Current implementation status: [STATUS.md](STATUS.md)** — the maintained source of truth for what is done, partial, or absent.
+
 ---
 
 ## 🚀 Features
 
-### Phase 1 (Current - MVP)
+### Phase 1 (Complete - MVP)
 
 - ✅ **Production-Grade SIP Stack** (siphon-rs)
   - RFC 3261 compliant (INVITE, BYE, CANCEL, ACK, REGISTER, OPTIONS)
@@ -500,10 +502,12 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines.
 ### Phase 4: Enterprise Features (In Progress)
 - ✅ SBC with enforcement pipeline
 - ✅ Trunk management and LCR
-- 🚧 STIR/SHAKEN verification
-- 🚧 Audio transcoding
-- [ ] Device provisioning server
-- [ ] CDR analytics pipeline
+- ✅ STIR/SHAKEN signing and verification
+- ✅ Device provisioning serving layer (vendor templates pending)
+- ✅ Shared TTS service
+- 🚧 Audio transcoding (queue path done; B2BUA/SBC path pending)
+- [ ] Billing (rate plans, CDR cost stamping)
+- [ ] Policy engine extraction (fcp-policy)
 - [ ] KMS integration
 
 ### Phase 5: Carrier Grade (Planned - 2027)

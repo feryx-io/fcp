@@ -1,6 +1,10 @@
 # Ferrous Communications Platform (FCP)
 ## Architecture Blueprint v0.2
 
+> **This document is the architecture *vision*, not a status tracker.** The roadmap
+> checkboxes in §12 are not maintained. For what is actually done, partial, or absent,
+> see [`STATUS.md`](../STATUS.md) at the repository root.
+
 ---
 
 ## 1. Vision & Strategic Positioning
