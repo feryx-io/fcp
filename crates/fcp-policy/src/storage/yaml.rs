@@ -41,6 +41,10 @@ struct RoutingData {
     /// List of policy rules
     #[serde(default)]
     policies: Vec<PolicyRule>,
+
+    /// Per-tenant feature toggles
+    #[serde(default)]
+    feature_toggles: Vec<crate::models::TenantFeatures>,
     // Future: destination_classes, routes, transforms
 }
 
@@ -200,6 +204,18 @@ impl RoutingStore for YamlRoutingStore {
             .policies
             .iter()
             .find(|p| p.name == name && &p.tenant_id == tenant_id)
+            .cloned())
+    }
+
+    async fn get_tenant_features(
+        &self,
+        tenant_id: &TenantId,
+    ) -> Result<Option<crate::models::TenantFeatures>> {
+        let data = self.data.read().await;
+        Ok(data
+            .feature_toggles
+            .iter()
+            .find(|f| &f.tenant_id == tenant_id)
             .cloned())
     }
 }

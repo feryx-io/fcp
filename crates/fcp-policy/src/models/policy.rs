@@ -42,6 +42,13 @@ pub struct PolicyRule {
     /// If empty, matches all source IPs
     pub source_ip_ranges: Vec<IpRange>,
 
+    /// Tenant feature toggles this rule requires (optional).
+    /// The rule only matches when *every* named feature is enabled for the
+    /// tenant (see [`TenantFeatures`]); a feature that is absent counts as
+    /// disabled. If empty, no feature gating applies.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub require_features: Vec<String>,
+
     /// Action to take if rule matches
     pub action: PolicyAction,
 
@@ -79,10 +86,38 @@ impl PolicyRule {
         for range in &self.source_ip_ranges {
             range.validate()?;
         }
+        for feature in &self.require_features {
+            if feature.is_empty() {
+                return Err("policy.require_features entries must not be empty".to_string());
+            }
+            reject_crlf("policy.require_features", feature)?;
+        }
         if let Some(reason) = &self.reason {
             reject_crlf("policy.reason", reason)?;
         }
         Ok(())
+    }
+}
+
+/// Per-tenant feature toggles.
+///
+/// Features are free-form names (e.g. `international_calls`, `call_recording`)
+/// that policy rules can require via [`PolicyRule::require_features`]. A
+/// feature that is not listed is disabled.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct TenantFeatures {
+    /// Tenant these toggles belong to
+    pub tenant_id: TenantId,
+
+    /// Feature name → enabled
+    #[serde(default)]
+    pub features: std::collections::HashMap<String, bool>,
+}
+
+impl TenantFeatures {
+    /// Whether a feature is enabled. Absent features are disabled.
+    pub fn is_enabled(&self, feature: &str) -> bool {
+        self.features.get(feature).copied().unwrap_or(false)
     }
 }
 

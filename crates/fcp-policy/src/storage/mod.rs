@@ -7,7 +7,7 @@
 
 pub mod yaml;
 
-use crate::models::{PolicyRule, User};
+use crate::models::{PolicyRule, TenantFeatures, User};
 use anyhow::Result;
 use async_trait::async_trait;
 use fcp_core::TenantId;
@@ -37,6 +37,14 @@ pub trait RoutingStore: Send + Sync {
     /// Get a specific policy rule by name
     async fn get_policy_rule(&self, name: &str, tenant_id: &TenantId)
         -> Result<Option<PolicyRule>>;
+
+    /// Get a tenant's feature toggles. `None` means no toggles are configured
+    /// for the tenant, in which case every feature counts as disabled.
+    /// Defaulted so existing store implementations keep compiling.
+    async fn get_tenant_features(&self, tenant_id: &TenantId) -> Result<Option<TenantFeatures>> {
+        let _ = tenant_id;
+        Ok(None)
+    }
 
     // === Future Layers (stubs for now) ===
     // These will be implemented when we add Reachability, Routing, and Transform layers

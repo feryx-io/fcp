@@ -13,5 +13,6 @@ pub mod policy;
 // Re-export key types
 pub use identity::{DeviceType, Endpoint, IdentityContext, User};
 pub use policy::{
-    AppliesTo, DestinationMatch, IpRange, PolicyAction, PolicyDecision, PolicyRule, TimeWindow,
+    AppliesTo, DestinationMatch, IpRange, PolicyAction, PolicyDecision, PolicyRule, TenantFeatures,
+    TimeWindow,
 };

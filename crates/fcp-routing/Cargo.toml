@@ -3,45 +3,25 @@ name = "fcp-routing"
 version = "0.3.0"
 edition = "2021"
 authors = ["FCP Contributors"]
-description = "Declarative policy-based call routing for FCP"
+description = "Declarative policy-based call routing for FCP (policy engine lives in fcp-policy)"
 
 [dependencies]
 # Internal dependencies
 fcp-core = { path = "../fcp-core" }
+fcp-policy = { path = "../fcp-policy" }
 
 # Error handling
 anyhow = "1.0"
-thiserror = "2.0"
 
 # Async
-async-trait = "0.1"
 tokio = { workspace = true }
-
-# Serialization
-serde = { workspace = true }
-serde_yaml = "0.9"
-serde_json = { workspace = true }
 
 # Logging
 tracing = { workspace = true }
 
-# Pattern matching
-regex = "1.10"
-
-# Time handling
-chrono = { version = "0.4", features = ["serde"] }
-chrono-tz = "0.10"
-
-# File watching for hot-reload
-notify = "8.0"
-
-# IP network (CIDR matching)
-ipnetwork = "0.20"
-
-# Metrics
-prometheus = { version = "0.13", default-features = false }
-lazy_static = "1.5"
-
 [dev-dependencies]
 tokio-test = "0.4"
 tempfile = "3.0"
+serde_yaml = "0.9"
+chrono = { version = "0.4", features = ["serde"] }
+async-trait = "0.1"
