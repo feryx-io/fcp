@@ -489,7 +489,7 @@ async fn handle_request(request: Request, tenant_id: TenantId) -> Result<()> {
 - ✅ Vendor provisioning templates — built-in Yealink/Polycom/Grandstream/Cisco starters (`config_template::builtin_templates`), instantiated per tenant via `/v1/config-templates/library`
 - ✅ `fcp-policy`: Dedicated policy engine — rule model, evaluator, and YAML rule store extracted from fcp-routing (which re-exports for compatibility); timezone-correct time-of-day windows and per-tenant feature toggles included. Number manipulation remains with the SBC transform stage (future)
 - ⏳ Billing — MVP shipped (per-tenant rate plans with prefix rates in `fcp-core/src/billing.rs`, calls rated at CDR creation, cost in usage reports, admin CRUD at `/v1/rate-plans`); remaining: balance enforcement, external billing-system hooks, extraction into a dedicated `fcp-billing` crate
-- SBC pipeline stages 3–5: reachability, trunk routing/failover, header & number transform
+- ✅ SBC pipeline stages 3–5: reachability (classified 404/503 resolution), trunk routing/failover/LB (`TrunkRouter` + LCR), transform (HMR headers + per-trunk `egress_number_transform` digit plans)
 - Encryption at rest (KMS integration)
 
 ### Phase 5 (Planned - Carrier Grade)

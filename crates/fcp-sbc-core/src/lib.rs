@@ -14,6 +14,7 @@ pub mod config;
 pub mod hmr;
 pub mod metrics;
 pub mod nat;
+pub mod number_transform;
 pub mod rate_limit;
 pub mod security;
 pub mod siprec;

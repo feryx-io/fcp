@@ -211,6 +211,22 @@ pub struct OutboundRoute {
     pub allowed_codecs: Option<Vec<String>>,
 }
 
+/// Outcome of classified route resolution (the reachability stage).
+///
+/// Distinguishes *why* no route was produced so the caller can answer with
+/// the right SIP status: 404 when nothing is configured to carry the
+/// destination, 503 when routes exist but none is currently available
+/// (unhealthy, at capacity, over CPS).
+#[derive(Debug, Clone)]
+pub enum RouteResolution {
+    /// Ordered routes for failover; never empty.
+    Routes(Vec<OutboundRoute>),
+    /// No trunk/route is configured for this destination → 404.
+    NoRoute,
+    /// Routes are configured but all are currently unavailable → 503.
+    Unavailable,
+}
+
 /// Provides fallback outbound routing when registrar lookup fails.
 ///
 /// Used by the SBC to route calls to trunks when the destination
@@ -228,6 +244,18 @@ pub trait OutboundRouteProvider: Send + Sync {
             .await
             .into_iter()
             .collect()
+    }
+
+    /// Classified resolution (reachability stage). The default cannot tell
+    /// "nothing configured" from "nothing available" and reports `NoRoute`
+    /// for any empty result; providers with a route table should override.
+    async fn resolve_outbound_classified(&self, destination_uri: &str) -> RouteResolution {
+        let routes = self.resolve_outbound_ordered(destination_uri).await;
+        if routes.is_empty() {
+            RouteResolution::NoRoute
+        } else {
+            RouteResolution::Routes(routes)
+        }
     }
 }
 use sip_transaction::ServerTransactionHandle;
@@ -3471,10 +3499,42 @@ impl SipMessageHandler {
                     match registrar.get_registrations(destination_aor).await {
                         Ok(bindings) if !bindings.is_empty() => bindings,
                         _ => {
-                            // Try outbound route provider with failover before giving up
+                            // Try outbound route provider with failover before giving up.
+                            // Classified resolution (reachability stage): 404 when
+                            // nothing is configured for the destination, 503 when
+                            // routes exist but no trunk is currently available.
                             if let Some(provider) = &self.outbound_route_provider {
-                                let routes =
-                                    provider.resolve_outbound_ordered(destination_aor).await;
+                                let routes = match provider
+                                    .resolve_outbound_classified(destination_aor)
+                                    .await
+                                {
+                                    RouteResolution::Routes(routes) => routes,
+                                    RouteResolution::Unavailable => {
+                                        warn!(call_id = %call_id, destination = %destination_aor, "Routes configured but no trunk currently available");
+                                        let response = self.create_simple_response(
+                                            request,
+                                            503,
+                                            "Service Unavailable",
+                                        );
+                                        a_leg_handle.send_final(response).await;
+                                        let _ = self.call_manager.terminate_call(
+                                            &call_id,
+                                            Some("All trunks unavailable".to_string()),
+                                        );
+                                        return Ok(());
+                                    }
+                                    RouteResolution::NoRoute => {
+                                        info!(call_id = %call_id, destination = %destination_aor, "Destination not registered and no route configured");
+                                        let response =
+                                            self.create_simple_response(request, 404, "Not Found");
+                                        a_leg_handle.send_final(response).await;
+                                        let _ = self.call_manager.terminate_call(
+                                            &call_id,
+                                            Some("No route to destination".to_string()),
+                                        );
+                                        return Ok(());
+                                    }
+                                };
                                 if let Some(route) = routes.first() {
                                     info!(call_id = %call_id, target = %route.target_uri, trunk = ?route.trunk_name, allowed_codecs = ?route.allowed_codecs, routes = routes.len(), "Routing via outbound trunk (failover available)");
                                     // Store trunk name and allowed codecs on call for lifecycle tracking
@@ -4405,10 +4465,42 @@ impl SipMessageHandler {
                             bindings
                         }
                         Ok(_) => {
-                            // Try outbound route provider with failover before giving up
+                            // Try outbound route provider with failover before giving up.
+                            // Classified resolution (reachability stage): 404 when
+                            // nothing is configured for the destination, 503 when
+                            // routes exist but no trunk is currently available.
                             if let Some(provider) = &self.outbound_route_provider {
-                                let routes =
-                                    provider.resolve_outbound_ordered(destination_aor).await;
+                                let routes = match provider
+                                    .resolve_outbound_classified(destination_aor)
+                                    .await
+                                {
+                                    RouteResolution::Routes(routes) => routes,
+                                    RouteResolution::Unavailable => {
+                                        warn!(call_id = %call_id, destination = %destination_aor, "Routes configured but no trunk currently available");
+                                        let response = self.create_simple_response(
+                                            request,
+                                            503,
+                                            "Service Unavailable",
+                                        );
+                                        a_leg_handle.send_final(response).await;
+                                        let _ = self.call_manager.terminate_call(
+                                            &call_id,
+                                            Some("All trunks unavailable".to_string()),
+                                        );
+                                        return Ok(());
+                                    }
+                                    RouteResolution::NoRoute => {
+                                        info!(call_id = %call_id, destination = %destination_aor, "Destination not registered and no route configured");
+                                        let response =
+                                            self.create_simple_response(request, 404, "Not Found");
+                                        a_leg_handle.send_final(response).await;
+                                        let _ = self.call_manager.terminate_call(
+                                            &call_id,
+                                            Some("No route to destination".to_string()),
+                                        );
+                                        return Ok(());
+                                    }
+                                };
                                 if let Some(route) = routes.first() {
                                     info!(call_id = %call_id, target = %route.target_uri, trunk = ?route.trunk_name, allowed_codecs = ?route.allowed_codecs, routes = routes.len(), "Routing via outbound trunk (extension path, failover available)");
                                     // Store trunk name and allowed codecs on call for lifecycle tracking

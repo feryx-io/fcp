@@ -255,6 +255,11 @@ pub struct TrunkConfig {
     /// STIR/SHAKEN caller ID verification and signing configuration
     #[serde(default)]
     pub stir_shaken: TrunkStirShakenConfig,
+
+    /// Egress dialed-number transform: applied to the Request-URI user part
+    /// when this trunk is selected as the outbound route (transform stage).
+    #[serde(default)]
+    pub egress_number_transform: Option<crate::number_transform::NumberTransform>,
 }
 
 impl Default for TrunkConfig {
@@ -277,6 +282,7 @@ impl Default for TrunkConfig {
             dtmf: TrunkDtmfConfig::default(),
             codec: TrunkCodecConfig::default(),
             stir_shaken: TrunkStirShakenConfig::default(),
+            egress_number_transform: None,
         }
     }
 }
@@ -322,6 +328,11 @@ impl TrunkConfig {
                     self.name
                 ));
             }
+        }
+        if let Some(ref transform) = self.egress_number_transform {
+            transform
+                .validate()
+                .map_err(|e| format!("trunk {:?}: {e}", self.name))?;
         }
         if let Some(ref creds) = self.credentials {
             if creds.username.is_empty() {

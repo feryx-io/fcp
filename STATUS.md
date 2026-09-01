@@ -31,7 +31,7 @@ Update this file when feature status changes; keep other docs describing scope, 
 | Provisioning — vendor templates | ✅ Done (2026-09-01) | Built-in starter templates for Yealink, Polycom, Grandstream, Cisco ship in `fcp-core/src/config_template.rs`; tenants browse them at `GET /v1/config-templates/library` and instantiate a customizable copy via `POST /v1/config-templates/library/:vendor` (never overwrites an existing copy) |
 | Policy engine (`fcp-policy`) | ✅ Extracted (2026-09-01) | Dedicated crate: rule model, evaluator, YAML store with hot reload. `fcp-routing` re-exports everything (no consumer changes). Extraction also fixed the ignored `TimeWindow.timezone` (rules now evaluate in their own timezone, overnight windows supported) and added per-tenant feature toggles (`require_features` on rules + `feature_toggles` in YAML). SBC admission stays in `fcp-sbc-core` (it is rate/capacity control, a different concern); number manipulation remains future (SBC transform stage) |
 | Billing | ⚠️ MVP (2026-09-01) | Per-tenant rate plans with longest-prefix rates (`fcp-core/src/billing.rs`, migration 047, admin CRUD at `/v1/rate-plans`); answered calls rated at CDR creation and cost/currency stamped; `total_cost` in usage/billing reports. Not yet: balance enforcement, external billing-system hooks, a dedicated `fcp-billing` crate |
-| SBC pipeline stages 3–5 | ❌ Planned | Reachability, trunk routing/failover, header & number transform |
+| SBC pipeline stages 3–5 | ✅ Done (2026-09-01) | **Reachability**: classified route resolution (`RouteResolution`) — unroutable destinations now get 404 (nothing configured) vs 503 (trunks exist but unavailable) instead of generic 480/500. **Routing**: trunk selection/failover/LB already existed (`TrunkRouter` + LCR); fixed a concurrency-accounting leak that recorded every failover candidate as a started call. **Transform**: headers via HMR (pre-existing) + new per-trunk egress number transforms (`egress_number_transform`: strip prefixes / prepend, applied at route build) |
 | Encryption at rest / KMS | ❌ Absent | No KMS/cipher code in the storage layer |
 
 ## Phase 5 reality check
@@ -66,7 +66,7 @@ Each needs a deliberate keep-or-descope decision:
 3. ~~Billing MVP~~ (done 2026-09-01: rate plans + rating + CDR cost stamping + usage cost; balance enforcement is follow-up)
 4. ~~Ship vendor provisioning templates~~ (done 2026-09-01: built-in library + instantiate API, rather than migration seeding — future tenants get them too)
 5. ~~Extract `fcp-policy`~~ (done 2026-09-01: policy engine in its own crate + timezone fix + tenant feature toggles; admission deliberately left in fcp-sbc-core as capacity control)
-6. SBC pipeline stages 3–5
+6. ~~SBC pipeline stages 3–5~~ (done 2026-09-01: reachability classification, routing accounting fix, per-trunk number transforms)
 7. Parallel: raise the test floor (containerized Postgres integration tests, binary smoke tests)
 8. Phase 5 gate decisions: storage strategy, plugin/gRPC keep-or-descope, schedule distributed conferencing, KMS design
 

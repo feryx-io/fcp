@@ -327,17 +327,18 @@ codecs = ["PCMU", "PCMA", "G729"]
 ## 7. Routing Engine
 
 **Crate:** `fcp-routing`
-**Path:** `crates/fcp-routing/src/`
+**Path:** `crates/fcp-policy/src/` (engine) and `crates/fcp-routing/src/` (service wrapper + re-exports)
 
 ### Overview
 
-Declarative policy-based call routing with a five-layer architecture (MVP implements layers 1-2):
+Declarative policy-based call routing with a five-layer architecture. All five
+layers are implemented, spread across the crates where they naturally live:
 
-1. **Identity** (implemented) — who is calling, who are they calling
-2. **Policy** (implemented) — is the call permitted (time windows, IP ranges, user roles)
-3. **Reachability** (planned) — can the destination be reached
-4. **Routing** (planned) — trunk selection, failover, load balancing
-5. **Transform** (planned) — header and number manipulation
+1. **Identity** (implemented, `fcp-policy`) — who is calling, who are they calling
+2. **Policy** (implemented, `fcp-policy`) — is the call permitted (time windows in the rule's own timezone, IP ranges, user roles, tenant feature toggles)
+3. **Reachability** (implemented, `fcp-sbc-core`/`fcp-sip`) — classified route resolution: 404 when nothing is configured for the destination, 503 when routes exist but no trunk is available
+4. **Routing** (implemented, `fcp-sbc-core`) — trunk selection, failover, load balancing (`TrunkRouter` + LCR)
+5. **Transform** (implemented, `fcp-sbc-core`/`fcp-sbc`) — header manipulation (HMR) and per-trunk egress number transforms (`egress_number_transform`)
 
 ### Components
 
