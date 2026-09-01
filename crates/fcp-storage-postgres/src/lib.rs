@@ -1224,7 +1224,8 @@ impl CdrStore for PostgresStorage {
                         WHERE pn.tenant_id = $1
                           AND ({outbound_match})
                     )
-                ) as outbound_calls
+                ) as outbound_calls,
+                COALESCE(SUM(c.cost), 0)::FLOAT8 as total_cost
             FROM cdrs c
             WHERE c.tenant_id = $1 AND c.start_time >= $2 AND c.start_time < $3"
         );
@@ -1242,6 +1243,7 @@ impl CdrStore for PostgresStorage {
             total_duration_ms: row.get::<i64, _>("total_duration_ms") as u64,
             inbound_calls: row.get::<i64, _>("inbound_calls") as u64,
             outbound_calls: row.get::<i64, _>("outbound_calls") as u64,
+            total_cost: row.get::<f64, _>("total_cost"),
         })
     }
 
@@ -1332,11 +1334,275 @@ impl CdrStore for PostgresStorage {
 
         Ok(results)
     }
+
+    async fn create_rate_plan(&self, plan: fcp_core::billing::RatePlan) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        if plan.is_default {
+            sqlx::query(
+                "UPDATE rate_plans SET is_default = FALSE WHERE tenant_id = $1 AND is_default",
+            )
+            .bind(plan.tenant_id.to_string())
+            .execute(&mut *tx)
+            .await?;
+        }
+        sqlx::query(
+            "INSERT INTO rate_plans (
+                id, tenant_id, name, currency, default_rate_per_minute,
+                connect_fee, billing_increment_secs, is_default, enabled,
+                created_at, updated_at
+             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+        )
+        .bind(plan.id.to_string())
+        .bind(plan.tenant_id.to_string())
+        .bind(&plan.name)
+        .bind(&plan.currency)
+        .bind(plan.default_rate_per_minute)
+        .bind(plan.connect_fee)
+        .bind(plan.billing_increment_secs as i32)
+        .bind(plan.is_default)
+        .bind(plan.enabled)
+        .bind(system_time_to_datetime(plan.created_at))
+        .bind(system_time_to_datetime(plan.updated_at))
+        .execute(&mut *tx)
+        .await
+        .map_err(map_rate_plan_write_error)?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn get_rate_plan(
+        &self,
+        tenant_id: &fcp_core::TenantId,
+        plan_id: uuid::Uuid,
+    ) -> Result<Option<fcp_core::billing::RatePlan>> {
+        let row = sqlx::query("SELECT * FROM rate_plans WHERE id = $1 AND tenant_id = $2")
+            .bind(plan_id.to_string())
+            .bind(tenant_id.to_string())
+            .fetch_optional(&self.pool)
+            .await?;
+        row.map(row_to_rate_plan).transpose()
+    }
+
+    async fn list_rate_plans(
+        &self,
+        tenant_id: &fcp_core::TenantId,
+    ) -> Result<Vec<fcp_core::billing::RatePlan>> {
+        let rows = sqlx::query("SELECT * FROM rate_plans WHERE tenant_id = $1 ORDER BY name")
+            .bind(tenant_id.to_string())
+            .fetch_all(&self.pool)
+            .await?;
+        rows.into_iter().map(row_to_rate_plan).collect()
+    }
+
+    async fn update_rate_plan(&self, plan: fcp_core::billing::RatePlan) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        if plan.is_default {
+            sqlx::query(
+                "UPDATE rate_plans SET is_default = FALSE
+                 WHERE tenant_id = $1 AND is_default AND id <> $2",
+            )
+            .bind(plan.tenant_id.to_string())
+            .bind(plan.id.to_string())
+            .execute(&mut *tx)
+            .await?;
+        }
+        let result = sqlx::query(
+            "UPDATE rate_plans SET
+                name = $3, currency = $4, default_rate_per_minute = $5,
+                connect_fee = $6, billing_increment_secs = $7,
+                is_default = $8, enabled = $9, updated_at = NOW()
+             WHERE id = $1 AND tenant_id = $2",
+        )
+        .bind(plan.id.to_string())
+        .bind(plan.tenant_id.to_string())
+        .bind(&plan.name)
+        .bind(&plan.currency)
+        .bind(plan.default_rate_per_minute)
+        .bind(plan.connect_fee)
+        .bind(plan.billing_increment_secs as i32)
+        .bind(plan.is_default)
+        .bind(plan.enabled)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_rate_plan_write_error)?;
+        if result.rows_affected() == 0 {
+            return Err(anyhow::Error::new(fcp_core::Error::Storage(
+                fcp_core::StorageError::NotFound(format!("rate plan {}", plan.id)),
+            )));
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn delete_rate_plan(
+        &self,
+        tenant_id: &fcp_core::TenantId,
+        plan_id: uuid::Uuid,
+    ) -> Result<()> {
+        let result = sqlx::query("DELETE FROM rate_plans WHERE id = $1 AND tenant_id = $2")
+            .bind(plan_id.to_string())
+            .bind(tenant_id.to_string())
+            .execute(&self.pool)
+            .await?;
+        if result.rows_affected() == 0 {
+            return Err(anyhow::Error::new(fcp_core::Error::Storage(
+                fcp_core::StorageError::NotFound(format!("rate plan {plan_id}")),
+            )));
+        }
+        Ok(())
+    }
+
+    async fn upsert_rate(
+        &self,
+        tenant_id: &fcp_core::TenantId,
+        rate: fcp_core::billing::Rate,
+    ) -> Result<()> {
+        // The tenant check rides in the INSERT..SELECT: zero rows affected
+        // means the plan does not exist in this tenant.
+        let result = sqlx::query(
+            "INSERT INTO rates (id, rate_plan_id, prefix, rate_per_minute, connect_fee, description)
+             SELECT $1, p.id, $3, $4, $5, $6
+             FROM rate_plans p WHERE p.id = $2 AND p.tenant_id = $7
+             ON CONFLICT (rate_plan_id, prefix) DO UPDATE SET
+                rate_per_minute = EXCLUDED.rate_per_minute,
+                connect_fee = EXCLUDED.connect_fee,
+                description = EXCLUDED.description",
+        )
+        .bind(rate.id.to_string())
+        .bind(rate.rate_plan_id.to_string())
+        .bind(&rate.prefix)
+        .bind(rate.rate_per_minute)
+        .bind(rate.connect_fee)
+        .bind(&rate.description)
+        .bind(tenant_id.to_string())
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(anyhow::Error::new(fcp_core::Error::Storage(
+                fcp_core::StorageError::NotFound(format!("rate plan {}", rate.rate_plan_id)),
+            )));
+        }
+        Ok(())
+    }
+
+    async fn list_rates(
+        &self,
+        tenant_id: &fcp_core::TenantId,
+        plan_id: uuid::Uuid,
+    ) -> Result<Vec<fcp_core::billing::Rate>> {
+        let rows = sqlx::query(
+            "SELECT r.* FROM rates r
+             JOIN rate_plans p ON p.id = r.rate_plan_id
+             WHERE r.rate_plan_id = $1 AND p.tenant_id = $2
+             ORDER BY LENGTH(r.prefix) DESC, r.prefix",
+        )
+        .bind(plan_id.to_string())
+        .bind(tenant_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(row_to_rate).collect()
+    }
+
+    async fn delete_rate(
+        &self,
+        tenant_id: &fcp_core::TenantId,
+        plan_id: uuid::Uuid,
+        rate_id: uuid::Uuid,
+    ) -> Result<()> {
+        let result = sqlx::query(
+            "DELETE FROM rates r
+             USING rate_plans p
+             WHERE r.id = $1 AND r.rate_plan_id = $2
+               AND p.id = r.rate_plan_id AND p.tenant_id = $3",
+        )
+        .bind(rate_id.to_string())
+        .bind(plan_id.to_string())
+        .bind(tenant_id.to_string())
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(anyhow::Error::new(fcp_core::Error::Storage(
+                fcp_core::StorageError::NotFound(format!("rate {rate_id}")),
+            )));
+        }
+        Ok(())
+    }
+
+    async fn get_default_rate_plan_with_rates(
+        &self,
+        tenant_id: &fcp_core::TenantId,
+    ) -> Result<Option<(fcp_core::billing::RatePlan, Vec<fcp_core::billing::Rate>)>> {
+        let row =
+            sqlx::query("SELECT * FROM rate_plans WHERE tenant_id = $1 AND is_default AND enabled")
+                .bind(tenant_id.to_string())
+                .fetch_optional(&self.pool)
+                .await?;
+        let Some(row) = row else { return Ok(None) };
+        let plan = row_to_rate_plan(row)?;
+        let rates = sqlx::query("SELECT * FROM rates WHERE rate_plan_id = $1")
+            .bind(plan.id.to_string())
+            .fetch_all(&self.pool)
+            .await?
+            .into_iter()
+            .map(row_to_rate)
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Some((plan, rates)))
+    }
 }
 
 // ============================================================================
 // Helper Functions for Row Conversion
 // ============================================================================
+
+/// Map unique-constraint violations on rate-plan writes to Conflict (409).
+fn map_rate_plan_write_error(err: sqlx::Error) -> anyhow::Error {
+    if let Some(db_err) = err.as_database_error() {
+        if db_err.code().as_deref() == Some("23505") {
+            return anyhow::Error::new(fcp_core::Error::Storage(fcp_core::StorageError::Conflict(
+                "a rate plan with this name (or default flag) already exists for the tenant"
+                    .to_string(),
+            )));
+        }
+    }
+    err.into()
+}
+
+/// Convert PostgreSQL row to RatePlan
+fn row_to_rate_plan(row: sqlx::postgres::PgRow) -> Result<fcp_core::billing::RatePlan> {
+    Ok(fcp_core::billing::RatePlan {
+        id: parse_uuid_column(&row.get::<String, _>("id"))?,
+        tenant_id: TenantId::from_str(&row.get::<String, _>("tenant_id"))?,
+        name: row.get("name"),
+        currency: row.get("currency"),
+        default_rate_per_minute: row.get("default_rate_per_minute"),
+        connect_fee: row.get("connect_fee"),
+        billing_increment_secs: row.get::<i32, _>("billing_increment_secs") as u32,
+        is_default: row.get("is_default"),
+        enabled: row.get("enabled"),
+        created_at: datetime_to_system_time(row.get::<DateTime<Utc>, _>("created_at")),
+        updated_at: datetime_to_system_time(row.get::<DateTime<Utc>, _>("updated_at")),
+    })
+}
+
+/// Convert PostgreSQL row to Rate
+fn row_to_rate(row: sqlx::postgres::PgRow) -> Result<fcp_core::billing::Rate> {
+    Ok(fcp_core::billing::Rate {
+        id: parse_uuid_column(&row.get::<String, _>("id"))?,
+        rate_plan_id: parse_uuid_column(&row.get::<String, _>("rate_plan_id"))?,
+        prefix: row.get("prefix"),
+        rate_per_minute: row.get("rate_per_minute"),
+        connect_fee: row.get("connect_fee"),
+        description: row.get("description"),
+    })
+}
+
+fn parse_uuid_column(value: &str) -> Result<uuid::Uuid> {
+    uuid::Uuid::from_str(value).map_err(|e| {
+        anyhow::Error::new(fcp_core::Error::Storage(
+            fcp_core::StorageError::Serialization(format!("invalid uuid '{value}': {e}")),
+        ))
+    })
+}
 
 /// Convert PostgreSQL row to User
 fn row_to_user(row: sqlx::postgres::PgRow) -> Result<User> {

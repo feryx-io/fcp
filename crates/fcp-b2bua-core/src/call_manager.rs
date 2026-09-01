@@ -593,6 +593,11 @@ async fn create_and_insert_cdr(storage: &fcp_core::DynStorage, call: &Call) -> R
         .as_ref()
         .and_then(|b| extract_codec_from_sdp(b.sdp.as_deref()));
 
+    // Rate the call against the tenant's default rate plan. Rating is
+    // best-effort: a missing plan, an unratable destination (named URI,
+    // internal target), or a storage error must never block CDR insertion.
+    let (cost, currency) = rate_cdr_cost(storage, call, &to_uri, call_duration_ms).await;
+
     // Build CallDetailRecord
     let cdr = CallDetailRecord {
         call_id: fcp_core::CallId::from_uuid(*call.id.as_uuid()),
@@ -623,8 +628,8 @@ async fn create_and_insert_cdr(storage: &fcp_core::DynStorage, call: &Call) -> R
         rtp_bytes_sent: None,
         rtp_bytes_received: None,
         recording_url: None, // TODO: Phase 2 - recording integration
-        cost: None,          // TODO: Phase 4 - billing integration
-        currency: None,
+        cost,
+        currency,
         custom_data: call.custom_data.clone(),
     };
 
@@ -635,6 +640,51 @@ async fn create_and_insert_cdr(storage: &fcp_core::DynStorage, call: &Call) -> R
         .context("Failed to insert CDR into storage")?;
 
     Ok(())
+}
+
+/// Rate a finished call against the tenant's default rate plan, returning
+/// `(cost, currency)` for the CDR. `(None, None)` when billing is not
+/// configured for the tenant, the destination has no dialable digits, or the
+/// rate lookup fails (logged, never fatal).
+async fn rate_cdr_cost(
+    storage: &fcp_core::DynStorage,
+    call: &Call,
+    to_uri: &str,
+    call_duration_ms: Option<u64>,
+) -> (Option<f64>, Option<String>) {
+    use fcp_core::storage::CdrStore;
+
+    let Some(dialed) = fcp_core::billing::dialed_digits_from_uri(to_uri) else {
+        return (None, None);
+    };
+
+    match storage
+        .get_default_rate_plan_with_rates(&call.tenant_id)
+        .await
+    {
+        Ok(Some((plan, rates))) => {
+            let rated =
+                fcp_core::billing::rate_call(&plan, &rates, &dialed, call_duration_ms.unwrap_or(0));
+            tracing::debug!(
+                call_id = %call.id,
+                cost = rated.cost,
+                currency = %rated.currency,
+                matched_prefix = ?rated.matched_prefix,
+                billable_secs = rated.billable_secs,
+                "Call rated"
+            );
+            (Some(rated.cost), Some(rated.currency))
+        }
+        Ok(None) => (None, None),
+        Err(e) => {
+            tracing::warn!(
+                call_id = %call.id,
+                error = %e,
+                "Rate plan lookup failed - CDR will carry no cost"
+            );
+            (None, None)
+        }
+    }
 }
 
 /// Map CallState and failure_reason to CallDisposition and HangupCause.

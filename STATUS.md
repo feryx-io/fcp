@@ -30,7 +30,7 @@ Update this file when feature status changes; keep other docs describing scope, 
 | Audio transcoding | ✅ Done | B2BUA/SBC path wired (2026-09-01): `fcp-media` rebuilds the payload-type map from each leg's negotiated SDP and arms forge-engine's per-packet transcoders on codec mismatch, in both single-session and cross-wired bridge modes; queue path already had it. Transcodable set: PCMU/PCMA/Opus/PCM (Opus needs the `opus` feature; G722/G729 pass through untranscoded). Gated by `media.enable_transcoding` (default off). `RemoteBackend` stubs now return errors instead of panicking (remote mode remains unimplemented) |
 | Provisioning — vendor templates | ❌ Missing | No shipped Polycom/Yealink/Cisco/Grandstream templates |
 | Policy engine (`fcp-policy`) | ❌ Not extracted | Rules live inline in `fcp-routing` + SBC admission config; no dedicated crate or DSL |
-| Billing (`fcp-billing`) | ❌ Absent | Only read-only `GET /billing/summary` usage report; CDRs carry `cost: None // TODO` |
+| Billing | ⚠️ MVP (2026-09-01) | Per-tenant rate plans with longest-prefix rates (`fcp-core/src/billing.rs`, migration 047, admin CRUD at `/v1/rate-plans`); answered calls rated at CDR creation and cost/currency stamped; `total_cost` in usage/billing reports. Not yet: balance enforcement, external billing-system hooks, a dedicated `fcp-billing` crate |
 | SBC pipeline stages 3–5 | ❌ Planned | Reachability, trunk routing/failover, header & number transform |
 | Encryption at rest / KMS | ❌ Absent | No KMS/cipher code in the storage layer |
 
@@ -63,7 +63,7 @@ Each needs a deliberate keep-or-descope decision:
 
 1. ~~Documentation truth pass~~ (done 2026-09-01)
 2. ~~Finish transcoding path~~ (done 2026-09-01: PT map + transcoder arming wired through `fcp-media`; `RemoteBackend` stubs return errors)
-3. Billing MVP: stamp CDR `cost`, per-tenant rate tables, build on existing usage aggregation
+3. ~~Billing MVP~~ (done 2026-09-01: rate plans + rating + CDR cost stamping + usage cost; balance enforcement is follow-up)
 4. Ship vendor provisioning templates (seed via migration)
 5. Extract `fcp-policy` (evaluator + admission behind one crate, YAML rule format)
 6. SBC pipeline stages 3–5

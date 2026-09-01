@@ -48,6 +48,9 @@ pub struct UsageResponse {
     pub total_duration_ms: u64,
     pub inbound_calls: u64,
     pub outbound_calls: u64,
+    /// Sum of rated call costs in the period, in the tenant's rate-plan
+    /// currency (0.0 when billing is not configured).
+    pub total_cost: f64,
 }
 
 /// Per-number usage response.
@@ -216,6 +219,7 @@ pub async fn get_usage(
         total_duration_ms: agg.total_duration_ms,
         inbound_calls: agg.inbound_calls,
         outbound_calls: agg.outbound_calls,
+        total_cost: agg.total_cost,
     }))
 }
 
@@ -306,6 +310,7 @@ pub async fn billing_summary(
             total_duration_ms: agg.total_duration_ms,
             inbound_calls: agg.inbound_calls,
             outbound_calls: agg.outbound_calls,
+            total_cost: agg.total_cost,
         },
         resource_counts: ResourceCounts {
             phone_numbers: phone_numbers.len(),
