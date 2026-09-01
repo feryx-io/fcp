@@ -261,7 +261,7 @@ pub mod embedded {
     use forge_injection::FileSource;
     use forge_rtp::PortPoolConfig;
     use std::time::Duration;
-    use tracing::{debug, info, warn};
+    use tracing::{debug, error, info, warn};
 
     pub struct EmbeddedBackend {
         /// forge-media session manager
@@ -617,6 +617,10 @@ pub mod embedded {
                 warn!(?call_id, "Failed to parse remote endpoint from SDP - will rely on symmetric RTP learning");
             }
 
+            // Keep the payload-type map in step with the A-leg's negotiated
+            // codec (also covers a re-INVITE changing the codec mid-call).
+            sync_transcoding_state(call_id, &session_info.forge_session).await;
+
             // Extract telephone-event PT from A-leg's SDP and store on forge session
             let te_pt = crate::sdp::extract_telephone_event_pt(&remote_sdp).unwrap_or_else(|| {
                 // Default to PT 101 — virtually all phones use this
@@ -697,27 +701,10 @@ pub mod embedded {
                         "Set B-leg endpoint and codec from SDP"
                     );
 
-                    // Detect codec mismatch and log transcoding activation
-                    drop(pb); // Release write lock before acquiring read lock on A
-                    let pa = session_info.forge_session.participant_a().read().await;
-                    let a_leg_codec = format!("{:?}", pa.codec_config.codec);
-                    drop(pa);
-
-                    let b_leg_codec = first.encoding_name.as_str();
-                    if !a_leg_codec.eq_ignore_ascii_case(b_leg_codec) {
-                        info!(
-                            ?call_id,
-                            a_leg_codec = %a_leg_codec,
-                            b_leg_codec = %b_leg_codec,
-                            "Codec mismatch detected - transcoding enabled"
-                        );
-                    } else {
-                        debug!(
-                            ?call_id,
-                            codec = %a_leg_codec,
-                            "Codecs match - direct RTP forwarding"
-                        );
-                    }
+                    // Both legs' codecs are now known: rebuild the payload-type
+                    // map and arm transcoders if the legs disagree.
+                    drop(pb); // Release write lock before the helper reads both participants
+                    sync_transcoding_state(call_id, &session_info.forge_session).await;
                 } else {
                     info!(
                         ?call_id,
@@ -1309,6 +1296,31 @@ pub mod embedded {
                     .remote_addr = Some(addr);
             }
 
+            // Cross-copy codecs so each session can transcode toward the far
+            // leg: forwarding compares its own participants' payload types, so
+            // each session's participant_b must describe the *other* phone's
+            // negotiated codec, not this session's placeholder.
+            let (a_phone_codec, a_phone_pt) = {
+                let p = a_session.forge_session.participant_a().read().await;
+                (p.codec_config.clone(), p.payload_type)
+            };
+            let (b_phone_codec, b_phone_pt) = {
+                let p = b_session.forge_session.participant_a().read().await;
+                (p.codec_config.clone(), p.payload_type)
+            };
+            {
+                let mut pb = a_session.forge_session.participant_b().write().await;
+                pb.codec_config = b_phone_codec;
+                pb.payload_type = b_phone_pt;
+            }
+            {
+                let mut pb = b_session.forge_session.participant_b().write().await;
+                pb.codec_config = a_phone_codec;
+                pb.payload_type = a_phone_pt;
+            }
+            sync_transcoding_state(a_leg_call_id, &a_session.forge_session).await;
+            sync_transcoding_state(b_leg_call_id, &b_session.forge_session).await;
+
             info!(
                 a_leg = %a_leg_call_id,
                 b_leg = %b_leg_call_id,
@@ -1564,6 +1576,83 @@ pub mod embedded {
     }
 
     /// Convert an `SdpCodecInfo` to a forge-engine `ParticipantCodecConfig`.
+    /// Sync the forge session's transcoding state with both participants'
+    /// currently negotiated codecs: rebuild the payload-type map (payload
+    /// types arrive with each leg's SDP, after session creation) and arm
+    /// transcoders when the legs' codecs differ. Safe to call whenever either
+    /// leg's codec changes — arming is idempotent, and a payload-type change
+    /// clears stale transcoders so the forwarding path re-arms them.
+    async fn sync_transcoding_state(call_id: &fcp_core::CallId, forge_session: &ForgeMediaSession) {
+        let (a_codec, a_pt) = {
+            let pa = forge_session.participant_a().read().await;
+            (pa.codec_config.codec, pa.payload_type)
+        };
+        let (b_codec, b_pt) = {
+            let pb = forge_session.participant_b().read().await;
+            (pb.codec_config.codec, pb.payload_type)
+        };
+
+        let mut pt_map = forge_transcoder::rtp::PayloadTypeMap::default();
+        for (codec, pt) in [(a_codec, a_pt), (b_codec, b_pt)] {
+            match codec {
+                forge_core::AudioCodec::PCMU => pt_map.pcmu = pt,
+                forge_core::AudioCodec::PCMA => pt_map.pcma = pt,
+                forge_core::AudioCodec::Opus => pt_map.opus = pt,
+                _ => {}
+            }
+        }
+        forge_session.set_payload_type_map(pt_map).await;
+
+        if a_codec == b_codec {
+            debug!(
+                ?call_id,
+                codec = ?a_codec,
+                "Codecs match - direct RTP forwarding"
+            );
+            return;
+        }
+
+        if !forge_session.transcoding_config().enable_transcoding {
+            warn!(
+                ?call_id,
+                a_leg_codec = ?a_codec,
+                b_leg_codec = ?b_codec,
+                "Codec mismatch but transcoding is disabled (media.enable_transcoding) - legs cannot decode each other's audio"
+            );
+            return;
+        }
+
+        match (
+            ForgeMediaSession::to_transcoder_codec(a_codec),
+            ForgeMediaSession::to_transcoder_codec(b_codec),
+        ) {
+            (Some(a), Some(b)) => {
+                let armed_a = forge_session.ensure_transcoder_a_to_b(a, b).await;
+                let armed_b = forge_session.ensure_transcoder_b_to_a(b, a).await;
+                match (armed_a, armed_b) {
+                    (Ok(()), Ok(())) => info!(
+                        ?call_id,
+                        a_leg_codec = ?a_codec,
+                        b_leg_codec = ?b_codec,
+                        "Codec mismatch detected - transcoding armed"
+                    ),
+                    (ra, rb) => error!(
+                        ?call_id,
+                        a_to_b = ?ra,
+                        b_to_a = ?rb,
+                        "Failed to arm transcoders for codec mismatch"
+                    ),
+                }
+            }
+            _ => warn!(
+                ?call_id,
+                a_leg_codec = ?a_codec,
+                b_leg_codec = ?b_codec,
+                "Codec pair is not transcodable (supported: PCMU, PCMA, Opus, PCM) - RTP will be forwarded untranscoded"
+            ),
+        }
+    }
+
     fn sdp_codec_to_forge_config(info: &crate::sdp::SdpCodecInfo) -> ParticipantCodecConfig {
         let codec = match info.encoding_name.to_uppercase().as_str() {
             "PCMU" => forge_core::AudioCodec::PCMU,
@@ -1582,6 +1671,85 @@ pub mod embedded {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        #[tokio::test]
+        async fn test_sync_transcoding_state_arms_transcoders_and_updates_pt_map() {
+            let pool_config = PortPoolConfig::new(42100, 42300).unwrap();
+            let port_pool = std::sync::Arc::new(forge_rtp::PortPool::new(pool_config));
+            let session = ForgeMediaSession::new(
+                forge_core::CallId::generate(),
+                ParticipantId::generate(),
+                ParticipantId::generate(),
+                &port_pool,
+                forge_engine::session::MediaSessionConfig {
+                    transcoding_config: TranscodingConfig {
+                        enable_transcoding: true,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+            let call_id = fcp_core::CallId::new();
+
+            // Legs disagree on always-available codecs: A is PCMU/0, B is PCMA/8.
+            {
+                let mut pa = session.participant_a().write().await;
+                pa.codec_config.codec = forge_core::AudioCodec::PCMU;
+                pa.codec_config.payload_type = 0;
+                pa.payload_type = 0;
+            }
+            {
+                let mut pb = session.participant_b().write().await;
+                pb.codec_config.codec = forge_core::AudioCodec::PCMA;
+                pb.codec_config.payload_type = 8;
+                pb.payload_type = 8;
+            }
+
+            sync_transcoding_state(&call_id, &session).await;
+
+            assert!(
+                session.transcoder_a_to_b().lock().await.is_some(),
+                "A→B transcoder must be armed on codec mismatch"
+            );
+            assert!(
+                session.transcoder_b_to_a().lock().await.is_some(),
+                "B→A transcoder must be armed on codec mismatch"
+            );
+
+            // A dynamically negotiated Opus PT must land in the map (map
+            // maintenance is independent of whether the opus codec feature is
+            // compiled in), and the map change must clear armed transcoders.
+            {
+                let mut pb = session.participant_b().write().await;
+                pb.codec_config.codec = forge_core::AudioCodec::Opus;
+                pb.codec_config.payload_type = 96;
+                pb.payload_type = 96;
+            }
+            sync_transcoding_state(&call_id, &session).await;
+            let map = session.payload_type_map();
+            assert_eq!(map.pcmu, 0);
+            assert_eq!(map.opus, 96, "dynamic Opus PT must land in the map");
+
+            // Matching codecs: after the map change cleared the stale
+            // transcoders, matching legs must not re-arm anything.
+            {
+                let mut pb = session.participant_b().write().await;
+                pb.codec_config.codec = forge_core::AudioCodec::PCMU;
+                pb.codec_config.payload_type = 0;
+                pb.payload_type = 0;
+            }
+            sync_transcoding_state(&call_id, &session).await;
+            assert!(
+                session.transcoder_a_to_b().lock().await.is_none(),
+                "map change must clear transcoders, and matching codecs must not re-arm"
+            );
+        }
 
         #[test]
         fn test_parse_remote_endpoint_ipv4() {
@@ -2033,17 +2201,23 @@ pub mod remote {
             _remote_sdp: String,
         ) -> Result<()> {
             // POST /v1/sessions/{id}/sdp-b-leg
-            todo!("Implement remote B-leg SDP update")
+            Err(Error::Backend(
+                "remote media backend does not implement B-leg SDP update".to_string(),
+            ))
         }
 
         async fn hold_session(&self, _call_id: &fcp_core::CallId) -> Result<()> {
             // POST /v1/sessions/{id}/hold
-            todo!("Implement remote hold")
+            Err(Error::Backend(
+                "remote media backend does not implement hold".to_string(),
+            ))
         }
 
         async fn resume_session(&self, _call_id: &fcp_core::CallId) -> Result<()> {
             // POST /v1/sessions/{id}/resume
-            todo!("Implement remote resume")
+            Err(Error::Backend(
+                "remote media backend does not implement resume".to_string(),
+            ))
         }
 
         async fn terminate_session(&self, call_id: &fcp_core::CallId) -> Result<()> {
@@ -2098,17 +2272,23 @@ pub mod remote {
             _duration_ms: u32,
         ) -> Result<()> {
             // POST /v1/sessions/{id}/dtmf
-            todo!("Implement remote DTMF")
+            Err(Error::Backend(
+                "remote media backend does not implement DTMF".to_string(),
+            ))
         }
 
         async fn start_recording(&self, _call_id: &fcp_core::CallId, _path: String) -> Result<()> {
             // POST /v1/sessions/{id}/recording
-            todo!("Implement remote recording")
+            Err(Error::Backend(
+                "remote media backend does not implement recording".to_string(),
+            ))
         }
 
         async fn stop_recording(&self, _call_id: &fcp_core::CallId) -> Result<()> {
             // DELETE /v1/sessions/{id}/recording
-            todo!("Implement remote recording stop")
+            Err(Error::Backend(
+                "remote media backend does not implement recording stop".to_string(),
+            ))
         }
 
         async fn play_file(
@@ -2118,7 +2298,9 @@ pub mod remote {
             _target: AudioTarget,
         ) -> Result<String> {
             // POST /v1/sessions/{id}/playback/file
-            todo!("Implement remote audio playback")
+            Err(Error::Backend(
+                "remote media backend does not implement audio playback".to_string(),
+            ))
         }
 
         async fn play_tone(
@@ -2130,7 +2312,9 @@ pub mod remote {
             _target: AudioTarget,
         ) -> Result<String> {
             // POST /v1/sessions/{id}/playback/tone
-            todo!("Implement remote tone playback")
+            Err(Error::Backend(
+                "remote media backend does not implement tone playback".to_string(),
+            ))
         }
 
         async fn play_tts(
@@ -2142,7 +2326,9 @@ pub mod remote {
             _target: AudioTarget,
         ) -> Result<String> {
             // POST /v1/sessions/{id}/playback/tts
-            todo!("Implement remote TTS playback")
+            Err(Error::Backend(
+                "remote media backend does not implement TTS playback".to_string(),
+            ))
         }
 
         async fn stop_playback(
@@ -2151,12 +2337,16 @@ pub mod remote {
             _playback_id: String,
         ) -> Result<()> {
             // DELETE /v1/sessions/{id}/playback/{playback_id}
-            todo!("Implement remote playback stop")
+            Err(Error::Backend(
+                "remote media backend does not implement playback stop".to_string(),
+            ))
         }
 
         async fn wait_playback_completion(&self, _playback_id: String) -> Result<()> {
             // GET /v1/playback/{playback_id}/wait or use websocket for completion events
-            todo!("Implement remote playback completion waiting")
+            Err(Error::Backend(
+                "remote media backend does not implement playback completion waiting".to_string(),
+            ))
         }
 
         async fn bridge_calls(
@@ -2166,7 +2356,9 @@ pub mod remote {
         ) -> Result<()> {
             // POST /v1/bridge
             // Body: { "a_leg": "call-id-1", "b_leg": "call-id-2" }
-            todo!("Implement remote call bridging")
+            Err(Error::Backend(
+                "remote media backend does not implement call bridging".to_string(),
+            ))
         }
 
         async fn unbridge_calls(
@@ -2176,7 +2368,9 @@ pub mod remote {
         ) -> Result<()> {
             // DELETE /v1/bridge
             // Body: { "a_leg": "call-id-1", "b_leg": "call-id-2" }
-            todo!("Implement remote call unbridging")
+            Err(Error::Backend(
+                "remote media backend does not implement call unbridging".to_string(),
+            ))
         }
 
         fn backend_name(&self) -> &'static str {

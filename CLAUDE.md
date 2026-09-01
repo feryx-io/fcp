@@ -484,7 +484,7 @@ async fn handle_request(request: Request, tenant_id: TenantId) -> Result<()> {
 - ✅ STIR/SHAKEN caller ID verification (ES256 sign + verify, cert cache, wired into the SBC enforcement pipeline)
 - ✅ `fcp-tts-server`: Shared TTS service (provider registry, caching, health)
 - ✅ Device provisioning serving layer (token auth, HTTPS enforcement, template rendering in `fcp-api-core/src/v1/provisioning.rs`)
-- ⏳ Audio transcoding pipeline — real transcoding exists but only in `fcp-call-manager`'s queue path; `fcp-media` has the codec-decision logic and needs `forge-transcoder` wired into the B2BUA/SBC path (its `RemoteBackend` is an unimplemented stub)
+- ✅ Audio transcoding pipeline — `fcp-media` syncs the payload-type map from each leg's SDP and arms forge-engine's per-packet transcoders on codec mismatch (single-session and bridged modes); gated by `media.enable_transcoding`; transcodable set PCMU/PCMA/Opus/PCM
 - ⏳ Vendor provisioning templates — no shipped Polycom/Yealink/Cisco/Grandstream templates yet; tenants author their own
 - `fcp-policy`: Dedicated policy engine — currently policies are inline in routing/SBC code; extract into a standalone crate with a rule DSL for call admission, number manipulation, time-of-day routing, and tenant-level feature toggles
 - `fcp-billing`: Billing gateway — CDR-driven usage metering, rate plans, balance enforcement, and integration hooks for external billing systems (today only a read-only usage report exists; CDRs carry `cost: None`)

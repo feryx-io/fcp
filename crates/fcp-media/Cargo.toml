@@ -27,6 +27,7 @@ forge-core = { path = "../../external/forge-media/crates/forge-core", optional =
 forge-engine = { path = "../../external/forge-media/crates/forge-engine", optional = false }
 forge-rtp = { path = "../../external/forge-media/crates/forge-rtp", optional = false }
 forge-codecs = { path = "../../external/forge-media/crates/forge-codecs", optional = false }
+forge-transcoder = { path = "../../external/forge-media/crates/forge-transcoder", optional = false }
 forge-recorder = { path = "../../external/forge-media/crates/forge-recorder", optional = false }
 forge-injection = { path = "../../external/forge-media/crates/forge-injection", optional = false }
 
