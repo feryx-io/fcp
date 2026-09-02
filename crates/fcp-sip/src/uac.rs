@@ -102,6 +102,19 @@ impl SipUserAgentClient {
         self.inner.invite(target, sdp_body).await
     }
 
+    /// INVITE with extra headers when given, plain INVITE otherwise.
+    pub async fn invite_with_optional_headers(
+        &self,
+        target: &str,
+        sdp_body: Option<&str>,
+        extra_headers: Option<Headers>,
+    ) -> Result<CallHandle> {
+        match extra_headers {
+            Some(headers) => self.invite_with_headers(target, sdp_body, headers).await,
+            None => self.invite(target, sdp_body).await,
+        }
+    }
+
     /// Initiate an outbound INVITE with additional SIP headers.
     pub async fn invite_with_headers(
         &self,

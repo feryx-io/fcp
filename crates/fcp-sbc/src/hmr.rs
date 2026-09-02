@@ -831,6 +831,7 @@ mod tests {
             name: "carrier-a".into(),
             hosts: vec!["sip.carrier.com".into()],
             header_rules: vec!["rule-a".into()],
+            emergency_capable: false,
             ..Default::default()
         }];
 

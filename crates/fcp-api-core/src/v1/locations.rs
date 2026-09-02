@@ -45,6 +45,7 @@ pub struct LocationResponse {
     pub timezone: Option<String>,
     pub emergency_contact_name: Option<String>,
     pub emergency_contact_phone: Option<String>,
+    pub e911_callback_number: Option<String>,
     pub created_at: SystemTime,
     pub updated_at: SystemTime,
 }
@@ -70,6 +71,7 @@ impl From<SiteLocation> for LocationResponse {
             timezone: loc.timezone,
             emergency_contact_name: loc.emergency_contact_name,
             emergency_contact_phone: loc.emergency_contact_phone,
+            e911_callback_number: loc.e911_callback_number,
             created_at: loc.created_at,
             updated_at: loc.updated_at,
         }
@@ -97,6 +99,7 @@ pub struct CreateLocationRequest {
     pub timezone: Option<String>,
     pub emergency_contact_name: Option<String>,
     pub emergency_contact_phone: Option<String>,
+    pub e911_callback_number: Option<String>,
 }
 
 fn default_tenant_id() -> TenantId {
@@ -134,6 +137,7 @@ pub struct UpdateLocationRequest {
     pub timezone: Option<String>,
     pub emergency_contact_name: Option<String>,
     pub emergency_contact_phone: Option<String>,
+    pub e911_callback_number: Option<String>,
 }
 
 /// List locations.
@@ -202,6 +206,7 @@ pub async fn create_location(
     location.timezone = req.timezone;
     location.emergency_contact_name = req.emergency_contact_name;
     location.emergency_contact_phone = req.emergency_contact_phone;
+    location.e911_callback_number = req.e911_callback_number;
 
     // Store the location
     storage
@@ -293,6 +298,9 @@ pub async fn update_location(
     }
     if req.emergency_contact_phone.is_some() {
         location.emergency_contact_phone = req.emergency_contact_phone;
+    }
+    if req.e911_callback_number.is_some() {
+        location.e911_callback_number = req.e911_callback_number;
     }
 
     // Update timestamp

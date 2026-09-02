@@ -36,6 +36,7 @@ use fcp_sip::prelude::{
 use fcp_sip::Call;
 use fcp_sip::{B2buaConfig, CallManager};
 use fcp_storage_postgres::api_token::PostgresApiTokenStore;
+use fcp_storage_postgres::emergency::PostgresEmergencyStore;
 use fcp_storage_postgres::flow_trace::PostgresFlowTraceStore;
 use fcp_storage_postgres::prompt::PostgresPromptStore;
 use fcp_storage_postgres::sip_trace::PostgresSipTraceStore;
@@ -87,6 +88,7 @@ struct App {
     storage: Arc<PostgresStorage>,
     traces: Arc<PostgresFlowTraceStore>,
     sip_traces: Arc<PostgresSipTraceStore>,
+    emergency: Arc<PostgresEmergencyStore>,
     event_bus: Arc<InMemoryEventBus>,
     dialog_manager: Arc<DialogManager>,
     subscription_manager: Arc<SubscriptionManager>,
@@ -129,11 +131,15 @@ impl App {
         let api_tokens = Arc::new(PostgresApiTokenStore::new(storage.pool().clone()));
         let traces = Arc::new(PostgresFlowTraceStore::new(storage.pool().clone()));
         let sip_traces = Arc::new(PostgresSipTraceStore::new(storage.pool().clone()));
+        let emergency = Arc::new(PostgresEmergencyStore::new(storage.pool().clone()));
         let dyn_storage = Arc::new(
             DynStorage::from_all_in_one(Arc::clone(&storage))
                 .with_api_token_store(api_tokens)
                 .with_flow_trace_store(Arc::clone(&traces) as Arc<dyn FlowTraceStore>)
                 .with_sip_trace_store(Arc::clone(&sip_traces) as Arc<dyn SipTraceStore>)
+                .with_emergency_store(
+                    Arc::clone(&emergency) as Arc<dyn fcp_core::e911::EmergencyStore>
+                )
                 .with_prompt_store(Arc::new(PostgresPromptStore::new(storage.pool().clone()))
                     as Arc<dyn fcp_core::prompt::PromptStore>),
         );
@@ -222,6 +228,7 @@ impl App {
             storage,
             traces,
             sip_traces,
+            emergency,
             event_bus,
             dialog_manager,
             subscription_manager,
@@ -3607,6 +3614,274 @@ async fn debug_endpoints_reflect_runtime_state_per_tenant() {
         .send_as(&jwt_eu, Method::GET, "/api/v1/debug/summary", None)
         .await;
     assert_eq!(denied.status, StatusCode::FORBIDDEN, "{}", denied.text);
+
+    app.finish().await;
+}
+
+// ─── Emergency calling (E911) ────────────────────────────────────────────
+
+#[tokio::test]
+async fn e911_config_readiness_validation_and_audit() {
+    use fcp_core::e911::{EmergencyCallRecord, EmergencyKind, EmergencyStore};
+
+    let app = require_app!();
+
+    // Defaults until configured.
+    let cfg = app
+        .admin(Method::GET, "/api/v1/emergency/config", None)
+        .await;
+    assert_eq!(cfg.status, StatusCode::OK, "{}", cfg.text);
+    assert_eq!(cfg.json["configured"], false);
+    assert_eq!(cfg.json["emergency_numbers"], json!(["911"]));
+    assert_eq!(cfg.json["test_numbers"], json!(["933"]));
+
+    let bad = app
+        .admin(
+            Method::PUT,
+            "/api/v1/emergency/config",
+            Some(json!({ "emergency_numbers": ["9-1-1"] })),
+        )
+        .await;
+    assert_eq!(bad.status, StatusCode::BAD_REQUEST, "{}", bad.text);
+    let clash = app
+        .admin(
+            Method::PUT,
+            "/api/v1/emergency/config",
+            Some(json!({ "emergency_numbers": ["911", "933"] })),
+        )
+        .await;
+    assert_eq!(clash.status, StatusCode::BAD_REQUEST, "{}", clash.text);
+
+    let saved = app
+        .admin(
+            Method::PUT,
+            "/api/v1/emergency/config",
+            Some(json!({
+                "emergency_numbers": ["911", "112", " 911 "],
+                "notify_contacts": ["security@example.com", "sip:frontdesk@pbx.example.com"],
+                "require_dispatchable_location": true
+            })),
+        )
+        .await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.text);
+    assert_eq!(saved.json["configured"], true);
+    assert_eq!(
+        saved.json["emergency_numbers"],
+        json!(["911", "112"]),
+        "deduplicated"
+    );
+    assert_eq!(
+        saved.json["test_numbers"],
+        json!(["933"]),
+        "untouched fields keep defaults"
+    );
+    assert_eq!(saved.json["require_dispatchable_location"], true);
+    let reread = app
+        .admin(Method::GET, "/api/v1/emergency/config", None)
+        .await;
+    assert_eq!(
+        reread.json["notify_contacts"][1],
+        "sip:frontdesk@pbx.example.com"
+    );
+    // Tenant B still sees defaults.
+    let other = app
+        .admin_in(app.tenant_b, Method::GET, "/api/v1/emergency/config", None)
+        .await;
+    assert_eq!(other.json["configured"], false, "{}", other.text);
+
+    // Readiness: a site with an address and ELIN makes its users ready.
+    let site = app
+        .admin(
+            Method::POST,
+            "/api/v1/locations",
+            Some(json!({
+                "name": "HQ",
+                "address_line1": "1 State St",
+                "city": "Albany",
+                "state": "NY",
+                "postal_code": "12207",
+                "country": "US",
+                "floor": "3",
+                "e911_callback_number": "+15185550100"
+            })),
+        )
+        .await;
+    assert_eq!(site.status, StatusCode::CREATED, "{}", site.text);
+    let site_id = site.json["id"].as_str().unwrap().to_string();
+    assert_eq!(site.json["e911_callback_number"], "+15185550100");
+
+    let ready_user = app.create_user("ready", None).await;
+    let placed = app
+        .admin(
+            Method::PUT,
+            "/api/v1/users/ready",
+            Some(json!({ "location_id": site_id })),
+        )
+        .await;
+    assert_eq!(placed.status, StatusCode::OK, "{}", placed.text);
+    app.create_user("nowhere", None).await;
+
+    let readiness = app
+        .admin(Method::GET, "/api/v1/emergency/readiness", None)
+        .await;
+    assert_eq!(readiness.status, StatusCode::OK, "{}", readiness.text);
+    assert_eq!(readiness.json["summary"]["users"], 2, "{}", readiness.text);
+    assert_eq!(readiness.json["summary"]["missing_location"], 1);
+    let rows = readiness.json["users"].as_array().unwrap();
+    let ready = rows.iter().find(|u| u["username"] == "ready").unwrap();
+    assert_eq!(ready["location"]["source"], "user_location", "{ready}");
+    assert_eq!(ready["location"]["callback_number"], "+15185550100");
+    assert_eq!(ready["location"]["address"]["address2"], "Floor 3");
+    assert_eq!(ready["location"]["location_id"], site_id);
+    // Site addresses are never "validated", so the user is not fully ready.
+    assert_eq!(ready["ready"], false, "{ready}");
+    assert_eq!(ready["issues"].as_array().unwrap().len(), 1, "{ready}");
+    let nowhere = rows.iter().find(|u| u["username"] == "nowhere").unwrap();
+    assert_eq!(nowhere["ready"], false);
+    assert!(nowhere["location"].is_null());
+    let _ = ready_user;
+
+    // Ad-hoc address validation.
+    let check = app
+        .admin(
+            Method::POST,
+            "/api/v1/emergency/validate-address",
+            Some(json!({ "address": {
+                "address1": "State Street", "city": "", "state": "New York",
+                "postal_code": "1220", "country": "US", "validated": false
+            }})),
+        )
+        .await;
+    assert_eq!(check.status, StatusCode::OK, "{}", check.text);
+    assert_eq!(check.json["valid"], false);
+    assert_eq!(
+        check.json["issues"].as_array().unwrap().len(),
+        4,
+        "{}",
+        check.text
+    );
+    assert_eq!(check.json["validator"], "basic");
+
+    // Validating a number's E911 address marks it validated when it passes.
+    let number = app
+        .admin(
+            Method::POST,
+            "/api/v1/phone-numbers",
+            Some(json!({
+                "e164": "+15185550199",
+                "tenant_id": app.tenant_a,
+                "e911_address": {
+                    "address1": " 2  Main St", "city": "Albany", "state": "ny",
+                    "postal_code": "12207", "country": "US", "validated": false
+                },
+                "e911_callback": "+15185550199"
+            })),
+        )
+        .await;
+    assert_eq!(number.status, StatusCode::CREATED, "{}", number.text);
+    let number_id = number.json["id"].as_str().unwrap().to_string();
+    assert_eq!(number.json["e911_address"]["validated"], false);
+    let validated = app
+        .admin(
+            Method::POST,
+            &format!("/api/v1/phone-numbers/{number_id}/e911/validate"),
+            None,
+        )
+        .await;
+    assert_eq!(validated.status, StatusCode::OK, "{}", validated.text);
+    assert_eq!(validated.json["validated"], true);
+    assert!(!validated.json["validated_at"].is_null());
+    assert_eq!(validated.json["validation"]["normalized"]["state"], "NY");
+    let stored = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/phone-numbers/{number_id}"),
+            None,
+        )
+        .await;
+    assert_eq!(
+        stored.json["e911_address"]["validated"], true,
+        "{}",
+        stored.text
+    );
+    assert_eq!(
+        stored.json["e911_address"]["address1"], "2 Main St",
+        "normalized on save"
+    );
+    let cross = app
+        .admin_in(
+            app.tenant_b,
+            Method::POST,
+            &format!("/api/v1/phone-numbers/{number_id}/e911/validate"),
+            None,
+        )
+        .await;
+    assert_eq!(cross.status, StatusCode::NOT_FOUND, "{}", cross.text);
+
+    // Trunks carry the emergency flag through create and update.
+    let trunk = app
+        .admin(
+            Method::POST,
+            "/api/v1/trunks",
+            Some(json!({ "name": "e911-trunk", "hosts": ["sip.carrier.example.net"], "emergency_capable": true })),
+        )
+        .await;
+    assert_eq!(trunk.status, StatusCode::CREATED, "{}", trunk.text);
+    assert_eq!(trunk.json["emergency_capable"], true);
+    let trunk_id = trunk.json["id"].as_str().unwrap().to_string();
+    let cleared = app
+        .admin(
+            Method::PATCH,
+            &format!("/api/v1/trunks/{trunk_id}"),
+            Some(json!({ "emergency_capable": false })),
+        )
+        .await;
+    assert_eq!(cleared.json["emergency_capable"], false, "{}", cleared.text);
+
+    // Audit trail: records written by the B2BUA are listed per tenant.
+    let record = EmergencyCallRecord {
+        id: 0,
+        tenant_id: app.tenant_a,
+        call_id: CallId::new().to_string(),
+        sip_call_id: Some("abc@10.0.0.5".to_string()),
+        caller_uri: format!("sip:ready@{REALM}"),
+        caller_username: Some("ready".to_string()),
+        dialed_number: "911".to_string(),
+        kind: EmergencyKind::Live,
+        callback_number: Some("+15185550100".to_string()),
+        location: None,
+        trunk_name: Some("e911-trunk".to_string()),
+        outcome: "placed".to_string(),
+        placed_at: SystemTime::now(),
+        notified: false,
+    };
+    let id = app.emergency.insert_emergency_call(&record).await.unwrap();
+    assert!(id > 0);
+    let mut b_record = record.clone();
+    b_record.tenant_id = app.tenant_b;
+    app.emergency
+        .insert_emergency_call(&b_record)
+        .await
+        .unwrap();
+
+    let calls = app
+        .admin(Method::GET, "/api/v1/emergency/calls", None)
+        .await;
+    assert_eq!(calls.status, StatusCode::OK, "{}", calls.text);
+    assert_eq!(calls.json.as_array().unwrap().len(), 1, "{}", calls.text);
+    assert_eq!(calls.json[0]["dialed_number"], "911");
+    assert_eq!(calls.json[0]["kind"], "live");
+    assert_eq!(calls.json[0]["callback_number"], "+15185550100");
+    assert_eq!(calls.json[0]["caller_username"], "ready");
+    assert_eq!(calls.json[0]["notified"], false);
+    app.emergency
+        .mark_emergency_call_notified(id)
+        .await
+        .unwrap();
+    let calls = app
+        .admin(Method::GET, "/api/v1/emergency/calls", None)
+        .await;
+    assert_eq!(calls.json[0]["notified"], true, "{}", calls.text);
 
     app.finish().await;
 }

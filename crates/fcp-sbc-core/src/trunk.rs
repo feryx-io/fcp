@@ -239,6 +239,10 @@ pub struct TrunkConfig {
     /// Names of HMR rules to apply for this trunk (empty = use all matching global rules).
     #[serde(default)]
     pub header_rules: Vec<String>,
+    /// Emergency calls (911) are routed to trunks with this flag first, in
+    /// priority order, before falling back to the normal LCR choice.
+    #[serde(default)]
+    pub emergency_capable: bool,
 
     /// SRTP configuration for this trunk
     #[serde(default)]
@@ -278,6 +282,7 @@ impl Default for TrunkConfig {
             failover: TrunkFailover::default(),
             max_concurrent_calls: 0,
             header_rules: Vec::new(),
+            emergency_capable: false,
             srtp: TrunkSrtpConfig::default(),
             dtmf: TrunkDtmfConfig::default(),
             codec: TrunkCodecConfig::default(),

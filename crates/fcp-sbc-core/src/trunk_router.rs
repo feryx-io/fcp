@@ -116,6 +116,29 @@ impl TrunkRouter {
     ///
     /// Returns trunks in preference order for failover. The caller should
     /// try each trunk in order until one succeeds or all are exhausted.
+    /// Trunks for an emergency call: every eligible `emergency_capable`
+    /// trunk first (by priority, then weight), followed by the normal
+    /// ordered choice so a 911 call still goes out when nothing is flagged.
+    pub fn select_emergency_trunks_ordered(
+        &self,
+        direction: TrunkDirection,
+        destination: &str,
+    ) -> Vec<&TrunkConfig> {
+        let mut flagged: Vec<&TrunkConfig> = self
+            .trunks
+            .iter()
+            .filter(|t| t.emergency_capable && self.is_trunk_eligible(t, direction))
+            .collect();
+        flagged.sort_by_key(|t| (t.priority, std::cmp::Reverse(t.weight)));
+        let mut ordered = flagged;
+        for trunk in self.select_trunks_ordered(direction, destination) {
+            if !ordered.iter().any(|t| t.name == trunk.name) {
+                ordered.push(trunk);
+            }
+        }
+        ordered
+    }
+
     pub fn select_trunks_ordered(
         &self,
         direction: TrunkDirection,
@@ -502,6 +525,13 @@ impl OutboundRouteProvider for TrunkRouter {
             }
         }
         routes
+    }
+
+    async fn resolve_emergency_ordered(&self, destination_uri: &str) -> Vec<OutboundRoute> {
+        self.select_emergency_trunks_ordered(TrunkDirection::Upstream, destination_uri)
+            .into_iter()
+            .filter_map(|trunk| self.build_outbound_route(trunk, destination_uri))
+            .collect()
     }
 
     async fn resolve_outbound_classified(&self, destination_uri: &str) -> RouteResolution {
@@ -1099,5 +1129,55 @@ mod tests {
             .await
             .expect("route");
         assert!(route.target_uri.starts_with("sip:alice@"));
+    }
+
+    #[tokio::test]
+    async fn emergency_trunks_come_first_then_normal_choice() {
+        let mut backup = make_trunk("backup-911", 10, 1, TrunkDirection::Upstream);
+        backup.emergency_capable = true;
+        let mut primary = make_trunk("primary-911", 1, 1, TrunkDirection::Upstream);
+        primary.emergency_capable = true;
+        let mut disabled = make_trunk("dead-911", 0, 1, TrunkDirection::Upstream);
+        disabled.emergency_capable = true;
+        disabled.enabled = false;
+        let mut inbound_only = make_trunk("inbound-911", 0, 1, TrunkDirection::Downstream);
+        inbound_only.emergency_capable = true;
+        let regular = make_trunk("regular", 0, 1, TrunkDirection::Upstream);
+        let trunks = vec![regular.clone(), backup, disabled, inbound_only, primary];
+        let health = Arc::new(TrunkHealthMonitor::new(&trunks));
+        let router = TrunkRouter::new(trunks, health, no_cps());
+
+        let names: Vec<&str> = router
+            .select_emergency_trunks_ordered(TrunkDirection::Upstream, "sip:911@pbx")
+            .into_iter()
+            .map(|t| t.name.as_str())
+            .collect();
+        assert_eq!(names[0], "primary-911", "{names:?}");
+        assert_eq!(names[1], "backup-911", "{names:?}");
+        assert!(
+            !names.contains(&"dead-911"),
+            "disabled trunk excluded: {names:?}"
+        );
+        assert!(
+            !names.contains(&"inbound-911"),
+            "wrong direction excluded: {names:?}"
+        );
+        assert!(
+            names.contains(&"regular"),
+            "normal choice appended: {names:?}"
+        );
+        assert_eq!(names.len(), 3, "{names:?}");
+
+        // Through the provider trait, the routes keep that order.
+        let routes = router.resolve_emergency_ordered("sip:911@pbx").await;
+        assert_eq!(routes[0].trunk_name.as_deref(), Some("primary-911"));
+
+        // With nothing flagged, emergency routing degrades to the normal choice.
+        let plain = vec![regular];
+        let health = Arc::new(TrunkHealthMonitor::new(&plain));
+        let router = TrunkRouter::new(plain, health, no_cps());
+        let routes = router.resolve_emergency_ordered("sip:911@pbx").await;
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].trunk_name.as_deref(), Some("regular"));
     }
 }

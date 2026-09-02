@@ -71,6 +71,32 @@ pub enum CallEvent {
         node_id: Option<String>,
     },
 
+    /// An emergency call (911 or a test number) was placed. Carries what
+    /// consumers need for on-site notification (Kari's Law) and the record.
+    Emergency {
+        call_id: CallId,
+        tenant_id: TenantId,
+        from: String,
+        dialed: String,
+        /// `live` or `test`.
+        kind: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        callback_number: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        location_source: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        location_summary: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trunk_name: Option<String>,
+        /// People/URIs the tenant asked to be told about emergency calls.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        notify_contacts: Vec<String>,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        node_id: Option<String>,
+    },
+
     /// Call is ringing (180/183 received)
     Ringing {
         call_id: CallId,
@@ -1074,6 +1100,7 @@ impl PlatformEvent {
                 CallEvent::Answered { .. } => "call.answered",
                 CallEvent::Ended { .. } => "call.ended",
                 CallEvent::Failed { .. } => "call.failed",
+                CallEvent::Emergency { .. } => "call.emergency",
                 CallEvent::Parked { .. } => "call.parked",
                 CallEvent::Unparked { .. } => "call.unparked",
             },
@@ -1381,6 +1408,7 @@ impl CallEvent {
             | CallEvent::Answered { call_id, .. }
             | CallEvent::Ended { call_id, .. }
             | CallEvent::Failed { call_id, .. }
+            | CallEvent::Emergency { call_id, .. }
             | CallEvent::Parked { call_id, .. }
             | CallEvent::Unparked { call_id, .. } => Some(call_id),
         }
@@ -1392,6 +1420,7 @@ impl CallEvent {
             | CallEvent::Ringing { timestamp, .. }
             | CallEvent::Progress { timestamp, .. }
             | CallEvent::Failed { timestamp, .. }
+            | CallEvent::Emergency { timestamp, .. }
             | CallEvent::Parked { timestamp, .. }
             | CallEvent::Unparked { timestamp, .. } => *timestamp,
             CallEvent::Answered { answer_time, .. } => *answer_time,

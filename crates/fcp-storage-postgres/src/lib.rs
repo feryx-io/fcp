@@ -29,6 +29,7 @@
 
 pub mod api_token;
 pub mod config;
+pub mod emergency;
 pub mod encryption;
 pub mod flow_trace;
 pub mod prompt;
@@ -3574,6 +3575,7 @@ fn row_to_site_location(row: sqlx::postgres::PgRow) -> Result<SiteLocation> {
         timezone: row.get("timezone"),
         emergency_contact_name: row.get("emergency_contact_name"),
         emergency_contact_phone: row.get("emergency_contact_phone"),
+        e911_callback_number: row.try_get("e911_callback_number").unwrap_or(None),
         created_at,
         updated_at,
     })
@@ -3607,6 +3609,7 @@ fn row_to_trunk(row: sqlx::postgres::PgRow) -> Result<Trunk> {
     let recovery_interval_secs: i32 = row.try_get("recovery_interval_secs")?;
     let health_check_enabled: bool = row.try_get("health_check_enabled")?;
     let health_check_interval_secs: i32 = row.try_get("health_check_interval_secs")?;
+    let emergency_capable: bool = row.try_get("emergency_capable").unwrap_or(false);
     let codec_prefs: Vec<String> = row.try_get("codec_prefs")?;
     let caller_id_override: Option<String> = row.try_get("caller_id_override")?;
     let from_domain: Option<String> = row.try_get("from_domain")?;
@@ -3650,6 +3653,7 @@ fn row_to_trunk(row: sqlx::postgres::PgRow) -> Result<Trunk> {
         recovery_interval_secs,
         health_check_enabled,
         health_check_interval_secs,
+        emergency_capable,
         codec_prefs,
         caller_id_override,
         from_domain,
@@ -3683,7 +3687,7 @@ impl TrunkStore for PostgresStorage {
                     strip_digits, prepend_digits, cps_limit, description,
                     srtp_mode, dtmf_mode, session_timer_secs, t38_enabled,
                     outbound_proxy, trunk_group, header_rules,
-                    created_at, updated_at
+                    created_at, updated_at, emergency_capable
              FROM trunks WHERE id = $1",
         )
         .bind(id.to_string())
@@ -3708,7 +3712,7 @@ impl TrunkStore for PostgresStorage {
                     strip_digits, prepend_digits, cps_limit, description,
                     srtp_mode, dtmf_mode, session_timer_secs, t38_enabled,
                     outbound_proxy, trunk_group, header_rules,
-                    created_at, updated_at
+                    created_at, updated_at, emergency_capable
              FROM trunks WHERE tenant_id = $1
              ORDER BY priority, name",
         )
@@ -3736,8 +3740,8 @@ impl TrunkStore for PostgresStorage {
                     strip_digits, prepend_digits, cps_limit, description,
                     srtp_mode, dtmf_mode, session_timer_secs, t38_enabled,
                     outbound_proxy, trunk_group, header_rules,
-                    created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37)
+                    created_at, updated_at, emergency_capable)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38)
              ON CONFLICT (id) DO UPDATE SET
                 name = EXCLUDED.name,
                 enabled = EXCLUDED.enabled,
@@ -3772,6 +3776,7 @@ impl TrunkStore for PostgresStorage {
                 outbound_proxy = EXCLUDED.outbound_proxy,
                 trunk_group = EXCLUDED.trunk_group,
                 header_rules = EXCLUDED.header_rules,
+                emergency_capable = EXCLUDED.emergency_capable,
                 updated_at = EXCLUDED.updated_at",
         )
         .bind(trunk.id.to_string())
@@ -3811,6 +3816,7 @@ impl TrunkStore for PostgresStorage {
         .bind(&trunk.header_rules)
         .bind(system_time_to_datetime(trunk.created_at))
         .bind(system_time_to_datetime(trunk.updated_at))
+        .bind(trunk.emergency_capable)
         .execute(&self.pool)
         .await?;
 
@@ -4158,7 +4164,7 @@ impl SiteLocationStore for PostgresStorage {
                     city, state, postal_code, country, floor, building,
                     latitude, longitude, phone_number, timezone,
                     emergency_contact_name, emergency_contact_phone,
-                    created_at, updated_at
+                    created_at, updated_at, e911_callback_number
              FROM locations
              WHERE id = $1",
         )
@@ -4178,7 +4184,7 @@ impl SiteLocationStore for PostgresStorage {
                     city, state, postal_code, country, floor, building,
                     latitude, longitude, phone_number, timezone,
                     emergency_contact_name, emergency_contact_phone,
-                    created_at, updated_at
+                    created_at, updated_at, e911_callback_number
              FROM locations
              WHERE tenant_id = $1
              ORDER BY name",
@@ -4207,9 +4213,9 @@ impl SiteLocationStore for PostgresStorage {
                 city, state, postal_code, country, floor, building,
                 latitude, longitude, phone_number, timezone,
                 emergency_contact_name, emergency_contact_phone,
-                created_at, updated_at
+                created_at, updated_at, e911_callback_number
              )
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
              ON CONFLICT(id) DO UPDATE SET
                  name = EXCLUDED.name,
                  description = EXCLUDED.description,
@@ -4227,6 +4233,7 @@ impl SiteLocationStore for PostgresStorage {
                  timezone = EXCLUDED.timezone,
                  emergency_contact_name = EXCLUDED.emergency_contact_name,
                  emergency_contact_phone = EXCLUDED.emergency_contact_phone,
+                 e911_callback_number = EXCLUDED.e911_callback_number,
                  updated_at = EXCLUDED.updated_at",
         )
         .bind(&id)
@@ -4249,6 +4256,7 @@ impl SiteLocationStore for PostgresStorage {
         .bind(&location.emergency_contact_phone)
         .bind(created_at)
         .bind(updated_at)
+        .bind(&location.e911_callback_number)
         .execute(&self.pool)
         .await?;
 

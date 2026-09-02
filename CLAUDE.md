@@ -506,7 +506,7 @@ async fn handle_request(request: Request, tenant_id: TenantId) -> Result<()> {
 **Focus:** Carrier-scale deployment
 
 **Key Components (in the agreed order, see STATUS.md):**
-- E911 integration
+- E911 integration — block 1 shipped (`docs/E911.md`): detection, dispatchable location, ELIN caller ID, emergency-capable trunks, audit + event, admin API
 - Regulatory compliance features
 - Distributed conferencing (cascaded mixing)
 - Multi-region support (CockroachDB compatibility pass first; Postgres stays the system of record)
@@ -641,6 +641,7 @@ cargo run -p siphond -- --mode registrar
 ### Key Documents
 
 - **ARCHITECTURE-v0.2.md**: Complete architecture vision and roadmap
+- **docs/E911.md**: Emergency calling — location precedence, call flow, admin API, tenant checklist
 - **Phase1 plan.md**: Detailed MVP implementation plan with sprint breakdowns
 - **IMPLEMENTATION_DOCS.md**: Index of implementation documentation for completed features
   - **Dial Node B2BUA**: Complete 4-phase implementation (outbound calls, response handling, media bridging)

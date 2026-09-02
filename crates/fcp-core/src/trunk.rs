@@ -195,6 +195,10 @@ pub struct Trunk {
     /// Custom SIP header rules as JSON array
     /// e.g. [{"action":"add","name":"X-Custom","value":"foo"}]
     pub header_rules: Option<String>,
+    /// Emergency calls (911) prefer trunks with this flag; a flagged trunk is
+    /// tried before any LCR choice, in priority order.
+    #[serde(default)]
+    pub emergency_capable: bool,
 
     /// Created timestamp
     pub created_at: SystemTime,
@@ -260,6 +264,7 @@ impl Trunk {
             outbound_proxy: None,
             trunk_group: None,
             header_rules: None,
+            emergency_capable: false,
             created_at: now,
             updated_at: now,
         }
