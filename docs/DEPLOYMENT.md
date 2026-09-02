@@ -366,6 +366,10 @@ kubectl apply -f fcp-deployment.yaml
 | `FCP_LOG_FORMAT` | `json` | Log format (json, pretty) |
 | `FCP_CONFIG` | `/etc/fcp/fcp.toml` | Configuration file path |
 | `DATABASE_URL` | - | Database connection string |
+| `FCP_ENCRYPTION_PROVIDER` | `none` | Encryption at rest: `none`, `local`, or `aws-kms` (see `docs/ENCRYPTION.md`) |
+| `FCP_MASTER_KEY` | - | `local` provider: base64 32-byte master key (`openssl rand -base64 32`) |
+| `FCP_MASTER_KEY_FILE` | - | `local` provider: file containing the base64 master key |
+| `FCP_AWS_KMS_KEY_ID` | - | `aws-kms` provider: KMS key id / ARN / alias |
 
 ### Configuration File Sections
 

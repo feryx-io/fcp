@@ -15,11 +15,14 @@
 use fcp_core::billing::{
     BalanceTransactionKind, BalanceTransactionRequest, Rate, RatePlan, TenantBalance,
 };
+use fcp_core::encryption::EncryptionStore;
 use fcp_core::storage::{
     CallDetailRecord, CallDisposition, CdrQuery, CdrStore, CredentialStore, HangupCause,
     PhoneNumberStore, Registration, RegistrationStore, TenantStore, User,
 };
+use fcp_core::storage::{ConferenceStore, TrunkStore, WebhookStore};
 use fcp_core::{CallId, PhoneNumber, StorageError, Tenant, TenantId};
+use fcp_crypto::EncryptionSettings;
 use fcp_storage_postgres::{PostgresConfig, PostgresStorage};
 use sqlx::{Connection, PgConnection};
 use std::time::{Duration, SystemTime};
@@ -48,6 +51,10 @@ struct TestDb {
 
 impl TestDb {
     async fn new() -> Option<Self> {
+        Self::with_encryption(EncryptionSettings::Disabled).await
+    }
+
+    async fn with_encryption(settings: EncryptionSettings) -> Option<Self> {
         let admin_url = std::env::var("FCP_TEST_DATABASE_URL").ok()?;
         let name = format!("fcp_test_{}", Uuid::new_v4().simple());
 
@@ -60,9 +67,11 @@ impl TestDb {
             .expect("create test database");
         admin.close().await.ok();
 
-        let storage = PostgresStorage::new(PostgresConfig::new(Self::url(&admin_url, &name)))
-            .await
-            .expect("connect + migrate test database");
+        let storage = PostgresStorage::new(
+            PostgresConfig::new(Self::url(&admin_url, &name)).with_encryption(settings),
+        )
+        .await
+        .expect("connect + migrate test database");
         Some(Self {
             admin_url,
             name,
@@ -85,6 +94,23 @@ impl TestDb {
 
     fn storage(&self) -> &PostgresStorage {
         &self.storage
+    }
+
+    /// A second backend over the same database with its own settings.
+    async fn connect_with(&self, settings: EncryptionSettings) -> anyhow::Result<PostgresStorage> {
+        PostgresStorage::new(
+            PostgresConfig::new(TestDb::url(&self.admin_url, &self.name)).with_encryption(settings),
+        )
+        .await
+    }
+
+    /// Raw column value, bypassing the backend's open step.
+    async fn raw(&self, sql: &str, id: &str) -> Option<String> {
+        sqlx::query_scalar::<_, Option<String>>(sql)
+            .bind(id)
+            .fetch_one(self.storage.pool())
+            .await
+            .expect("raw query")
     }
 
     /// Drop the database. Call at the end of a passing test.
@@ -861,6 +887,361 @@ async fn balance_debits_serialize_under_concurrency() {
             .len(),
         25
     );
+
+    db.finish().await;
+}
+
+// ─── Encryption at rest ──────────────────────────────────────────────────
+
+fn master_key(byte: u8) -> EncryptionSettings {
+    use base64::Engine;
+    EncryptionSettings::local_from_base64(
+        &base64::engine::general_purpose::STANDARD.encode([byte; 32]),
+    )
+    .unwrap()
+}
+
+fn trunk(tenant_id: TenantId, name: &str, password: &str) -> fcp_core::Trunk {
+    let mut t = fcp_core::Trunk::new(name.to_string(), tenant_id);
+    t.hosts = vec!["10.0.0.1".to_string()];
+    t.auth_username = Some("trunkuser".to_string());
+    t.auth_password = Some(password.to_string());
+    t
+}
+
+/// Built through serde: the struct has many defaulted presentation fields.
+fn meeting(tenant_id: TenantId, room: &str, pin: &str) -> fcp_core::Meeting {
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let ts = serde_json::json!({ "secs_since_epoch": now, "nanos_since_epoch": 0 });
+    serde_json::from_value(serde_json::json!({
+        "id": fcp_core::MeetingId::new(),
+        "tenant_id": tenant_id,
+        "room_number": room,
+        "name": format!("Room {room}"),
+        "guest_pin": pin,
+        "host_pin": format!("{pin}9"),
+        "require_guest_pin": true,
+        "max_participants": 10,
+        "wait_for_moderator": false,
+        "enabled": true,
+        "auto_record": false,
+        "default_locked": false,
+        "permanent": true,
+        "play_entry_tone": true,
+        "play_exit_tone": true,
+        "created_at": ts,
+        "updated_at": ts,
+    }))
+    .expect("meeting fixture deserializes")
+}
+
+fn webhook(tenant_id: TenantId, secret: &str) -> fcp_core::storage::WebhookEndpoint {
+    let now = SystemTime::now();
+    fcp_core::storage::WebhookEndpoint {
+        id: fcp_core::WebhookId::new(),
+        tenant_id,
+        url: "https://hooks.example.com/fcp".to_string(),
+        secret: secret.to_string(),
+        events: vec!["call.*".to_string()],
+        enabled: true,
+        description: None,
+        created_at: now,
+        updated_at: now,
+    }
+}
+
+#[tokio::test]
+async fn encryption_seals_secret_columns_and_reads_them_back() {
+    let Some(db) = TestDb::with_encryption(master_key(1)).await else {
+        return;
+    };
+    let s = db.storage();
+    let a = tenant("a");
+    s.put_tenant(a.clone()).await.unwrap();
+
+    let status = s.encryption_status().await.unwrap();
+    assert!(status.enabled);
+    assert_eq!(status.provider, "local");
+    assert!(status.kek_id.as_deref().unwrap().starts_with("local:"));
+    assert_eq!(status.key_ids.len(), 1);
+    assert_eq!(status.key_ids[0], status.active_key_id.clone().unwrap());
+    assert!(status
+        .sealed_columns
+        .iter()
+        .any(|c| c == "users.digest_password"));
+
+    // User secrets.
+    let mut u = user(a.id, "alice");
+    u.digest_password = Some("sip-pass".to_string());
+    u.sip_ha1_hash = Some("d41d8cd98f00b204e9800998ecf8427e".to_string());
+    u.sip_provisioning_password = Some("prov-pass".to_string());
+    s.put_user(u).await.unwrap();
+    let back = s.get_user_in_tenant("alice", &a.id).await.unwrap().unwrap();
+    assert_eq!(back.digest_password.as_deref(), Some("sip-pass"));
+    assert_eq!(
+        back.sip_ha1_hash.as_deref(),
+        Some("d41d8cd98f00b204e9800998ecf8427e")
+    );
+    assert_eq!(back.sip_provisioning_password.as_deref(), Some("prov-pass"));
+    let raw = db
+        .raw(
+            "SELECT digest_password FROM users WHERE id = $1",
+            &back.id.to_string(),
+        )
+        .await
+        .unwrap();
+    assert!(raw.starts_with("enc:v1:"), "stored value is sealed: {raw}");
+    assert!(!raw.contains("sip-pass"));
+
+    // Trunk password.
+    let t = trunk(a.id, "carrier", "trunk-pass");
+    let trunk_id = t.id.clone();
+    s.put_trunk(t).await.unwrap();
+    let back = s.get_trunk(&trunk_id).await.unwrap().unwrap();
+    assert_eq!(back.auth_password.as_deref(), Some("trunk-pass"));
+    let raw = db
+        .raw(
+            "SELECT auth_password FROM trunks WHERE id = $1",
+            &trunk_id.to_string(),
+        )
+        .await
+        .unwrap();
+    assert!(raw.starts_with("enc:v1:"));
+    assert!(s.list_trunks(&a.id).await.unwrap()[0]
+        .auth_password
+        .as_deref()
+        .eq(&Some("trunk-pass")));
+
+    // Conference PINs.
+    let m = meeting(a.id, "1000", "1234");
+    let meeting_id = m.id;
+    s.put_meeting(m).await.unwrap();
+    let back = s.get_meeting(&meeting_id).await.unwrap().unwrap();
+    assert_eq!(back.guest_pin.as_deref(), Some("1234"));
+    assert_eq!(back.host_pin.as_deref(), Some("12349"));
+    let raw = db
+        .raw(
+            "SELECT guest_pin FROM conference_meetings WHERE id = $1",
+            &meeting_id.to_string(),
+        )
+        .await
+        .unwrap();
+    assert!(raw.starts_with("enc:v1:"));
+
+    // Webhook secret inside JSONB.
+    let w = webhook(a.id, "whsec_123");
+    let webhook_id = w.id;
+    s.create_endpoint(w).await.unwrap();
+    let back = s.get_endpoint(&webhook_id).await.unwrap().unwrap();
+    assert_eq!(back.secret, "whsec_123");
+    let raw = db
+        .raw(
+            "SELECT endpoint_json->>'secret' FROM webhook_endpoints WHERE id = $1",
+            &webhook_id.to_string(),
+        )
+        .await
+        .unwrap();
+    assert!(raw.starts_with("enc:v1:"));
+    assert_eq!(
+        s.list_endpoints(&a.id).await.unwrap()[0].secret,
+        "whsec_123"
+    );
+
+    db.finish().await;
+}
+
+#[tokio::test]
+async fn encryption_reads_legacy_plaintext_and_reencrypt_seals_it() {
+    let Some(db) = TestDb::with_encryption(master_key(1)).await else {
+        return;
+    };
+    let s = db.storage();
+    let a = tenant("a");
+    s.put_tenant(a.clone()).await.unwrap();
+
+    // A row written before encryption was enabled (plaintext on disk).
+    let mut u = user(a.id, "legacy");
+    u.digest_password = Some("old-pass".to_string());
+    s.put_user(u).await.unwrap();
+    let uid = s
+        .get_user_in_tenant("legacy", &a.id)
+        .await
+        .unwrap()
+        .unwrap()
+        .id
+        .to_string();
+    sqlx::query("UPDATE users SET digest_password = 'old-pass', sip_ha1_hash = NULL WHERE id = $1")
+        .bind(&uid)
+        .execute(s.pool())
+        .await
+        .unwrap();
+    let raw = db
+        .raw("SELECT digest_password FROM users WHERE id = $1", &uid)
+        .await
+        .unwrap();
+    assert_eq!(raw, "old-pass");
+
+    // Reads pass plaintext through.
+    let back = s
+        .get_user_in_tenant("legacy", &a.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(back.digest_password.as_deref(), Some("old-pass"));
+
+    // Bulk re-encrypt seals it and leaves already-sealed rows alone.
+    let report = s.reencrypt_secrets().await.unwrap();
+    assert_eq!(report.rewritten, 1, "{report:?}");
+    let raw = db
+        .raw("SELECT digest_password FROM users WHERE id = $1", &uid)
+        .await
+        .unwrap();
+    assert!(raw.starts_with("enc:v1:"));
+    assert_eq!(
+        s.get_user_in_tenant("legacy", &a.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .digest_password
+            .as_deref(),
+        Some("old-pass")
+    );
+    let again = s.reencrypt_secrets().await.unwrap();
+    assert_eq!(again.rewritten, 0);
+    assert_eq!(again.already_current, 1);
+
+    db.finish().await;
+}
+
+#[tokio::test]
+async fn encryption_rotation_keeps_old_values_readable_and_other_nodes_refresh() {
+    let Some(db) = TestDb::with_encryption(master_key(1)).await else {
+        return;
+    };
+    let s = db.storage();
+    let a = tenant("a");
+    s.put_tenant(a.clone()).await.unwrap();
+
+    let mut u = user(a.id, "alice");
+    u.digest_password = Some("before-rotate".to_string());
+    s.put_user(u).await.unwrap();
+    let uid = s
+        .get_user_in_tenant("alice", &a.id)
+        .await
+        .unwrap()
+        .unwrap()
+        .id;
+    let old_key = s.encryption_status().await.unwrap().active_key_id.unwrap();
+
+    // A second node connected before the rotation.
+    let other = db.connect_with(master_key(1)).await.unwrap();
+
+    let status = s.rotate_encryption_key().await.unwrap();
+    let new_key = status.active_key_id.clone().unwrap();
+    assert_ne!(new_key, old_key);
+    assert_eq!(status.key_ids.len(), 2);
+
+    // Old value still opens; new writes use the new key.
+    assert_eq!(
+        s.get_user_by_id(&uid)
+            .await
+            .unwrap()
+            .unwrap()
+            .digest_password
+            .as_deref(),
+        Some("before-rotate")
+    );
+    let mut u2 = user(a.id, "bob");
+    u2.digest_password = Some("after-rotate".to_string());
+    s.put_user(u2).await.unwrap();
+    let bob = s.get_user_in_tenant("bob", &a.id).await.unwrap().unwrap();
+    let raw = db
+        .raw(
+            "SELECT digest_password FROM users WHERE id = $1",
+            &bob.id.to_string(),
+        )
+        .await
+        .unwrap();
+    assert!(raw.starts_with(&format!("enc:v1:{new_key}:")));
+
+    // The stale node refreshes its key ring on the unknown DEK and reads it.
+    let seen = other
+        .get_user_in_tenant("bob", &a.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(seen.digest_password.as_deref(), Some("after-rotate"));
+    assert_eq!(other.encryption_status().await.unwrap().key_ids.len(), 2);
+
+    // Re-encrypt moves alice onto the new key.
+    let report = s.reencrypt_secrets().await.unwrap();
+    assert_eq!(report.rewritten, 1, "{report:?}");
+    let raw = db
+        .raw(
+            "SELECT digest_password FROM users WHERE id = $1",
+            &uid.to_string(),
+        )
+        .await
+        .unwrap();
+    assert!(raw.starts_with(&format!("enc:v1:{new_key}:")));
+
+    other.close().await;
+    db.finish().await;
+}
+
+#[tokio::test]
+async fn encryption_fails_closed_on_wrong_master_key_or_no_cipher() {
+    let Some(db) = TestDb::with_encryption(master_key(1)).await else {
+        return;
+    };
+    let s = db.storage();
+    let a = tenant("a");
+    s.put_tenant(a.clone()).await.unwrap();
+    let mut u = user(a.id, "alice");
+    u.digest_password = Some("secret".to_string());
+    s.put_user(u).await.unwrap();
+
+    // A different master key cannot unwrap the active DEK: startup fails.
+    let err = db
+        .connect_with(master_key(2))
+        .await
+        .err()
+        .expect("wrong KEK rejected");
+    assert!(
+        format!("{err:#}").contains("KEK"),
+        "error names the KEK mismatch: {err:#}"
+    );
+
+    // Encryption disabled: sealed values are an error, not garbage.
+    let plain = db.connect_with(EncryptionSettings::Disabled).await.unwrap();
+    assert!(!plain.encryption_status().await.unwrap().enabled);
+    let err = plain.get_user_in_tenant("alice", &a.id).await.unwrap_err();
+    assert!(
+        format!("{err:#}").contains("not configured"),
+        "sealed value without cipher: {err:#}"
+    );
+    assert!(plain.rotate_encryption_key().await.is_err());
+    plain.close().await;
+
+    // Disabled backends still work for tenants with no sealed secrets.
+    let db2 = TestDb::new().await.unwrap();
+    let b = tenant("b");
+    db2.storage().put_tenant(b.clone()).await.unwrap();
+    let mut u = user(b.id, "carol");
+    u.digest_password = Some("plain".to_string());
+    db2.storage().put_user(u).await.unwrap();
+    let raw = db2
+        .raw(
+            "SELECT digest_password FROM users WHERE username = $1",
+            "carol",
+        )
+        .await
+        .unwrap();
+    assert_eq!(raw, "plain");
+    db2.finish().await;
 
     db.finish().await;
 }

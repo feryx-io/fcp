@@ -2627,6 +2627,7 @@ pub struct DynStorage {
     prompt_store: Option<Arc<dyn crate::prompt::PromptStore>>,
     flow_trace_store: Option<Arc<dyn crate::flow_trace::FlowTraceStore>>,
     config_template_store: Option<Arc<dyn ConfigTemplateStore>>,
+    encryption_store: Option<Arc<dyn crate::encryption::EncryptionStore>>,
 }
 
 impl DynStorage {
@@ -2684,6 +2685,7 @@ impl DynStorage {
             prompt_store: None,
             flow_trace_store: None,
             config_template_store: None,
+            encryption_store: None,
         }
     }
 
@@ -2743,6 +2745,7 @@ impl DynStorage {
             prompt_store: None,
             flow_trace_store: None,
             config_template_store: Some(storage),
+            encryption_store: None,
         }
     }
 
@@ -2860,6 +2863,20 @@ impl DynStorage {
     pub fn with_config_template_store(mut self, store: Arc<dyn ConfigTemplateStore>) -> Self {
         self.config_template_store = Some(store);
         self
+    }
+
+    /// Attach the backend's encryption-at-rest management surface.
+    pub fn with_encryption_store(
+        mut self,
+        store: Arc<dyn crate::encryption::EncryptionStore>,
+    ) -> Self {
+        self.encryption_store = Some(store);
+        self
+    }
+
+    /// The encryption-at-rest management surface, if the backend has one.
+    pub fn encryption_store(&self) -> Option<&Arc<dyn crate::encryption::EncryptionStore>> {
+        self.encryption_store.as_ref()
     }
 
     /// Get the config template store, if one has been set.

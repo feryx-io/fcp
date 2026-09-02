@@ -29,6 +29,7 @@
 
 pub mod api_token;
 pub mod config;
+pub mod encryption;
 pub mod flow_trace;
 pub mod prompt;
 pub mod sip_trace;
@@ -61,8 +62,13 @@ use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{Pool, Postgres, Row};
 use std::collections::HashMap;
 use std::str::FromStr;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing::{debug, info};
+
+use crate::encryption::EncryptionState;
+use fcp_core::encryption::{EncryptionStatus, EncryptionStore, ReencryptReport};
+use fcp_crypto::{EncryptionSettings, FieldCipher};
 
 // Helper functions for SystemTime <-> chrono::DateTime conversion
 fn system_time_to_datetime(st: SystemTime) -> DateTime<Utc> {
@@ -145,6 +151,10 @@ pub struct PostgresConfig {
     pub max_connections: u32,
     /// Connection timeout
     pub connection_timeout: Duration,
+    /// Encryption at rest. `None` reads [`EncryptionSettings::from_env`] at
+    /// connect time (`FCP_ENCRYPTION_PROVIDER`, `FCP_MASTER_KEY`, …), so
+    /// every binary configures it the same way; tests pass explicit settings.
+    pub encryption: Option<EncryptionSettings>,
 }
 
 impl PostgresConfig {
@@ -154,7 +164,14 @@ impl PostgresConfig {
             connection_string: connection_string.into(),
             max_connections: 10,
             connection_timeout: Duration::from_secs(30),
+            encryption: None,
         }
+    }
+
+    /// Use explicit encryption settings instead of the environment.
+    pub fn with_encryption(mut self, settings: EncryptionSettings) -> Self {
+        self.encryption = Some(settings);
+        self
     }
 
     /// Set the maximum number of connections in the pool.
@@ -180,6 +197,8 @@ impl Default for PostgresConfig {
 #[derive(Clone)]
 pub struct PostgresStorage {
     pool: Pool<Postgres>,
+    /// Present when encryption at rest is enabled for this deployment.
+    encryption: Option<Arc<EncryptionState>>,
 }
 
 impl PostgresStorage {
@@ -221,7 +240,111 @@ impl PostgresStorage {
 
         info!("PostgreSQL migrations complete");
 
-        Ok(Self { pool })
+        // Encryption at rest: resolve the provider and load the key ring.
+        let settings = match config.encryption {
+            Some(settings) => settings,
+            None => EncryptionSettings::from_env().context("Invalid encryption configuration")?,
+        };
+        let encryption = match settings
+            .kek()
+            .await
+            .context("Failed to initialize encryption key provider")?
+        {
+            Some(kek) => Some(Arc::new(
+                EncryptionState::load(&pool, kek, settings.provider_name())
+                    .await
+                    .context("Failed to load data encryption keys")?,
+            )),
+            None => {
+                info!("Encryption at rest disabled (FCP_ENCRYPTION_PROVIDER not set)");
+                None
+            }
+        };
+
+        Ok(Self { pool, encryption })
+    }
+
+    // ── Encryption at rest helpers ───────────────────────────────────────
+
+    /// Seal a secret for storage (identity when encryption is disabled).
+    fn seal_opt(&self, value: Option<&str>) -> Result<Option<String>> {
+        match (&self.encryption, value) {
+            (_, None) => Ok(None),
+            (None, Some(v)) => Ok(Some(v.to_string())),
+            (Some(enc), Some(v)) => Ok(Some(enc.seal(v)?)),
+        }
+    }
+
+    /// Open a stored secret. Legacy plaintext passes through; a sealed value
+    /// on a backend without encryption configured is an error rather than
+    /// a silently wrong credential.
+    async fn open_opt(&self, value: Option<String>) -> Result<Option<String>> {
+        let Some(v) = value else { return Ok(None) };
+        match &self.encryption {
+            None if FieldCipher::is_sealed(&v) => {
+                Err(fcp_crypto::CryptoError::NotConfigured.into())
+            }
+            None => Ok(Some(v)),
+            Some(enc) => Ok(Some(enc.open(&self.pool, &v).await?)),
+        }
+    }
+
+    async fn open_user(&self, mut user: User) -> Result<User> {
+        user.digest_password = self.open_opt(user.digest_password).await?;
+        user.sip_ha1_hash = self.open_opt(user.sip_ha1_hash).await?;
+        user.sip_provisioning_password = self.open_opt(user.sip_provisioning_password).await?;
+        Ok(user)
+    }
+
+    async fn open_users(&self, users: Vec<User>) -> Result<Vec<User>> {
+        let mut out = Vec::with_capacity(users.len());
+        for user in users {
+            out.push(self.open_user(user).await?);
+        }
+        Ok(out)
+    }
+
+    async fn open_trunk(&self, mut trunk: Trunk) -> Result<Trunk> {
+        trunk.auth_password = self.open_opt(trunk.auth_password).await?;
+        Ok(trunk)
+    }
+
+    async fn open_trunks(&self, trunks: Vec<Trunk>) -> Result<Vec<Trunk>> {
+        let mut out = Vec::with_capacity(trunks.len());
+        for trunk in trunks {
+            out.push(self.open_trunk(trunk).await?);
+        }
+        Ok(out)
+    }
+
+    async fn open_meeting(&self, mut meeting: fcp_core::Meeting) -> Result<fcp_core::Meeting> {
+        meeting.guest_pin = self.open_opt(meeting.guest_pin).await?;
+        meeting.host_pin = self.open_opt(meeting.host_pin).await?;
+        Ok(meeting)
+    }
+
+    async fn open_meetings(
+        &self,
+        meetings: Vec<fcp_core::Meeting>,
+    ) -> Result<Vec<fcp_core::Meeting>> {
+        let mut out = Vec::with_capacity(meetings.len());
+        for meeting in meetings {
+            out.push(self.open_meeting(meeting).await?);
+        }
+        Ok(out)
+    }
+
+    fn seal_webhook(&self, mut endpoint: WebhookEndpoint) -> Result<WebhookEndpoint> {
+        endpoint.secret = self.seal_opt(Some(&endpoint.secret))?.unwrap_or_default();
+        Ok(endpoint)
+    }
+
+    async fn open_webhook(&self, mut endpoint: WebhookEndpoint) -> Result<WebhookEndpoint> {
+        endpoint.secret = self
+            .open_opt(Some(endpoint.secret))
+            .await?
+            .unwrap_or_default();
+        Ok(endpoint)
     }
 
     /// Get a reference to the underlying connection pool.
@@ -320,7 +443,10 @@ impl CredentialStore for PostgresStorage {
 
         match rows.len() {
             0 => Ok(None),
-            1 => Ok(Some(row_to_user(rows.into_iter().next().unwrap())?)),
+            1 => Ok(Some(
+                self.open_user(row_to_user(rows.into_iter().next().unwrap())?)
+                    .await?,
+            )),
             _ => anyhow::bail!("username '{}' exists in multiple tenants", username),
         }
     }
@@ -347,7 +473,7 @@ impl CredentialStore for PostgresStorage {
         .await?;
 
         match row {
-            Some(row) => Ok(Some(row_to_user(row)?)),
+            Some(row) => Ok(Some(self.open_user(row_to_user(row)?).await?)),
             None => Ok(None),
         }
     }
@@ -373,6 +499,7 @@ impl CredentialStore for PostgresStorage {
             .into_iter()
             .filter_map(|row| row_to_user(row).ok())
             .collect();
+        let users = self.open_users(users).await?;
 
         Ok(users)
     }
@@ -394,7 +521,7 @@ impl CredentialStore for PostgresStorage {
         .await?;
 
         match row {
-            Some(row) => Ok(Some(row_to_user(row)?)),
+            Some(row) => Ok(Some(self.open_user(row_to_user(row)?).await?)),
             None => Ok(None),
         }
     }
@@ -416,6 +543,9 @@ impl CredentialStore for PostgresStorage {
         let voicemail_box_id = user.voicemail_box_id.map(|id| id.to_string());
         let account_locked_until = user.account_locked_until.map(system_time_to_datetime);
         let location_id = user.location_id.map(|id| id.to_string());
+        let digest_password = self.seal_opt(user.digest_password.as_deref())?;
+        let sip_ha1_hash = self.seal_opt(user.sip_ha1_hash.as_deref())?;
+        let sip_provisioning_password = self.seal_opt(user.sip_provisioning_password.as_deref())?;
 
         sqlx::query(
             "INSERT INTO users (
@@ -463,9 +593,9 @@ impl CredentialStore for PostgresStorage {
         .bind(&id)
         .bind(&user.username)
         .bind(&user.password)
-        .bind(&user.digest_password)
-        .bind(&user.sip_ha1_hash)
-        .bind(&user.sip_provisioning_password)
+        .bind(&digest_password)
+        .bind(&sip_ha1_hash)
+        .bind(&sip_provisioning_password)
         .bind(&user.display_name)
         .bind(&tenant_id)
         .bind(&role)
@@ -550,6 +680,7 @@ impl CredentialStore for PostgresStorage {
             .into_iter()
             .filter_map(|row| row_to_user(row).ok())
             .collect();
+        let users = self.open_users(users).await?;
 
         Ok(users)
     }
@@ -1595,6 +1726,32 @@ impl CdrStore for PostgresStorage {
         .fetch_all(&self.pool)
         .await?;
         rows.into_iter().map(row_to_balance_transaction).collect()
+    }
+}
+
+#[async_trait]
+impl EncryptionStore for PostgresStorage {
+    async fn encryption_status(&self) -> Result<EncryptionStatus> {
+        Ok(match &self.encryption {
+            Some(enc) => enc.status(),
+            None => EncryptionStatus::disabled(),
+        })
+    }
+
+    async fn rotate_encryption_key(&self) -> Result<EncryptionStatus> {
+        let enc = self
+            .encryption
+            .as_ref()
+            .context("encryption at rest is not enabled (set FCP_ENCRYPTION_PROVIDER)")?;
+        enc.rotate(&self.pool).await
+    }
+
+    async fn reencrypt_secrets(&self) -> Result<ReencryptReport> {
+        let enc = self
+            .encryption
+            .as_ref()
+            .context("encryption at rest is not enabled (set FCP_ENCRYPTION_PROVIDER)")?;
+        enc.reencrypt(&self.pool).await
     }
 }
 
@@ -2859,7 +3016,7 @@ impl ConferenceStore for PostgresStorage {
         .await?;
 
         match row {
-            Some(row) => Ok(Some(map_meeting_row_pg(row)?)),
+            Some(row) => Ok(Some(self.open_meeting(map_meeting_row_pg(row)?).await?)),
             None => Ok(None),
         }
     }
@@ -2885,7 +3042,7 @@ impl ConferenceStore for PostgresStorage {
         .await?;
 
         match row {
-            Some(row) => Ok(Some(map_meeting_row_pg(row)?)),
+            Some(row) => Ok(Some(self.open_meeting(map_meeting_row_pg(row)?).await?)),
             None => Ok(None),
         }
     }
@@ -2909,6 +3066,7 @@ impl ConferenceStore for PostgresStorage {
             .into_iter()
             .filter_map(|row| map_meeting_row_pg(row).ok())
             .collect();
+        let meetings = self.open_meetings(meetings).await?;
 
         Ok(meetings)
     }
@@ -2939,6 +3097,7 @@ impl ConferenceStore for PostgresStorage {
             .into_iter()
             .filter_map(|row| map_meeting_row_pg(row).ok())
             .collect();
+        let meetings = self.open_meetings(meetings).await?;
         Ok(meetings)
     }
 
@@ -2986,8 +3145,8 @@ impl ConferenceStore for PostgresStorage {
         .bind(meeting.tenant_id.to_string())
         .bind(&meeting.room_number)
         .bind(&meeting.name)
-        .bind(meeting.guest_pin.as_deref())
-        .bind(meeting.host_pin.as_deref())
+        .bind(self.seal_opt(meeting.guest_pin.as_deref())?)
+        .bind(self.seal_opt(meeting.host_pin.as_deref())?)
         .bind(meeting.require_guest_pin)
         .bind(meeting.max_participants as i32)
         .bind(meeting.wait_for_moderator)
@@ -3532,7 +3691,7 @@ impl TrunkStore for PostgresStorage {
         .await?;
 
         match row {
-            Some(row) => Ok(Some(row_to_trunk(row)?)),
+            Some(row) => Ok(Some(self.open_trunk(row_to_trunk(row)?).await?)),
             None => Ok(None),
         }
     }
@@ -3561,6 +3720,7 @@ impl TrunkStore for PostgresStorage {
             .into_iter()
             .filter_map(|row| row_to_trunk(row).ok())
             .collect();
+        let trunks = self.open_trunks(trunks).await?;
         Ok(trunks)
     }
 
@@ -3626,7 +3786,7 @@ impl TrunkStore for PostgresStorage {
         .bind(trunk.transport_port)
         .bind(trunk.verify_tls)
         .bind(&trunk.auth_username)
-        .bind(&trunk.auth_password)
+        .bind(self.seal_opt(trunk.auth_password.as_deref())?)
         .bind(&trunk.auth_realm)
         .bind(trunk.register)
         .bind(trunk.register_expiry)
@@ -4650,6 +4810,7 @@ impl ResourceListStore for PostgresStorage {
 #[async_trait]
 impl WebhookStore for PostgresStorage {
     async fn create_endpoint(&self, endpoint: WebhookEndpoint) -> Result<()> {
+        let endpoint = self.seal_webhook(endpoint)?;
         let endpoint_json = serde_json::to_value(&endpoint)?;
         sqlx::query(
             "INSERT INTO webhook_endpoints (id, tenant_id, endpoint_json, created_at, updated_at)
@@ -4675,8 +4836,13 @@ impl WebhookStore for PostgresStorage {
             .fetch_optional(&self.pool)
             .await?;
 
-        row.map(|row| webhook_endpoint_from_value(row.get("endpoint_json")))
-            .transpose()
+        match row {
+            Some(row) => Ok(Some(
+                self.open_webhook(webhook_endpoint_from_value(row.get("endpoint_json"))?)
+                    .await?,
+            )),
+            None => Ok(None),
+        }
     }
 
     async fn list_endpoints(&self, tenant_id: &TenantId) -> Result<Vec<WebhookEndpoint>> {
@@ -4690,12 +4856,18 @@ impl WebhookStore for PostgresStorage {
         .fetch_all(&self.pool)
         .await?;
 
-        rows.into_iter()
-            .map(|row| webhook_endpoint_from_value(row.get("endpoint_json")))
-            .collect()
+        let mut endpoints = Vec::with_capacity(rows.len());
+        for row in rows {
+            endpoints.push(
+                self.open_webhook(webhook_endpoint_from_value(row.get("endpoint_json"))?)
+                    .await?,
+            );
+        }
+        Ok(endpoints)
     }
 
     async fn update_endpoint(&self, endpoint: WebhookEndpoint) -> Result<()> {
+        let endpoint = self.seal_webhook(endpoint)?;
         let endpoint_json = serde_json::to_value(&endpoint)?;
         sqlx::query(
             "UPDATE webhook_endpoints

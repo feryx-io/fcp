@@ -588,6 +588,7 @@ async fn initialize_storage(config: &PresenceServerConfig) -> Result<StorageResu
         connection_string: config.storage.database_url.clone(),
         max_connections: config.storage.max_connections,
         connection_timeout: Duration::from_secs(30),
+        encryption: None,
     };
 
     let storage = PostgresStorage::new(pg_config)

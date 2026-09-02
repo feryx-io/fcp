@@ -12,6 +12,7 @@ pub mod config;
 pub mod config_store;
 pub mod config_template;
 pub mod device;
+pub mod encryption;
 pub mod error;
 pub mod extension;
 pub mod flow_trace;
@@ -59,6 +60,7 @@ pub use crate::config_store::{
     ConfigEntry, ConfigStore, ConfigWatcher,
 };
 pub use crate::device::{Device, DeviceType, RegistrationState};
+pub use crate::encryption::{EncryptionStatus, EncryptionStore, ReencryptReport};
 pub use crate::error::{
     DialogError, Error, MediaError, ParseError, Result, StorageError, TransactionError,
     TransportError,

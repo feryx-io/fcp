@@ -10,6 +10,7 @@ pub mod config_templates;
 pub mod dashboard;
 pub mod debug;
 pub mod devices;
+pub mod encryption;
 pub mod events;
 pub mod extensions;
 pub mod flow_traces;
@@ -160,6 +161,10 @@ pub fn router() -> Router<ApiState> {
         // Dashboard
         .route("/dashboard/summary", get(dashboard::summary))
         .route("/status", get(system::status_scoped))
+        // Encryption at rest (platform admin only, enforced in the handlers)
+        .route("/system/encryption", get(encryption::status))
+        .route("/system/encryption/rotate", post(encryption::rotate))
+        .route("/system/encryption/reencrypt", post(encryption::reencrypt))
         // Usage & Billing
         .route("/usage", get(usage::get_usage))
         .route("/usage/by-number", get(usage::get_usage_by_number))

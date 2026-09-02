@@ -15,6 +15,7 @@ pub async fn initialize_storage(config: &StorageSection) -> Result<Arc<DynStorag
         connection_string: config.database_url.clone(),
         max_connections: config.max_connections,
         connection_timeout: Duration::from_secs(30),
+        encryption: None,
     };
 
     let storage = PostgresStorage::new(pg_config)

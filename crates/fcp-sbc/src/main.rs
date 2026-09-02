@@ -321,6 +321,7 @@ async fn main() -> Result<()> {
             connection_string: sbc_config.storage.database_url.clone(),
             max_connections: 10,
             connection_timeout: std::time::Duration::from_secs(30),
+            encryption: None,
         };
         let pg_storage = fcp_storage_postgres::PostgresStorage::new(pg_config)
             .await

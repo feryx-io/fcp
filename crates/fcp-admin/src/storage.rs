@@ -22,6 +22,7 @@ pub async fn initialize_storage(config: &StorageConfig) -> Result<StorageResult>
         connection_string: config.database_url.clone(),
         max_connections: config.max_connections,
         connection_timeout: Duration::from_secs(30),
+        encryption: None,
     };
 
     let storage = PostgresStorage::new(pg_config)
@@ -51,6 +52,7 @@ pub async fn initialize_storage(config: &StorageConfig) -> Result<StorageResult>
     );
 
     let dyn_st = DynStorage::from_all_in_one(storage.clone())
+        .with_encryption_store(storage.clone() as Arc<dyn fcp_core::encryption::EncryptionStore>)
         .with_sip_trace_store(sip_trace_store as Arc<dyn fcp_core::sip_trace::SipTraceStore>)
         .with_api_token_store(api_token_store as Arc<dyn fcp_core::storage::ApiTokenStore>)
         .with_prompt_store(prompt_store as Arc<dyn fcp_core::prompt::PromptStore>)
