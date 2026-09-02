@@ -67,7 +67,7 @@ Each needs a deliberate keep-or-descope decision:
 4. ~~Ship vendor provisioning templates~~ (done 2026-09-01: built-in library + instantiate API, rather than migration seeding — future tenants get them too)
 5. ~~Extract `fcp-policy`~~ (done 2026-09-01: policy engine in its own crate + timezone fix + tenant feature toggles; admission deliberately left in fcp-sbc-core as capacity control)
 6. ~~SBC pipeline stages 3–5~~ (done 2026-09-01: reachability classification, routing accounting fix, per-trunk number transforms)
-7. Parallel: raise the test floor (containerized Postgres integration tests, binary smoke tests)
+7. Parallel: raise the test floor — ~~containerized Postgres integration tests~~ (done 2026-09-01: `fcp-storage-postgres/tests/integration.rs` runs against a Postgres service in CI, gated on `FCP_TEST_DATABASE_URL`; first run caught two production bugs — `query_cdrs` emitted unnumbered `$` placeholders so every filtered CDR query failed, and `aggregate_usage*` could not decode `SUM(bigint)` (NUMERIC) so usage/billing summaries failed for any tenant with answered calls — both fixed in v0.25.71); still to do: binary smoke tests, API handler tests against Postgres (see `tests/integration/README.md`)
 8. Phase 5 gate decisions: storage strategy, plugin/gRPC keep-or-descope, schedule distributed conferencing, KMS design
 
 ## Historical documents

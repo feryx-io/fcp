@@ -1,0 +1,866 @@
+//! Integration tests against a real PostgreSQL instance.
+//!
+//! Gated on `FCP_TEST_DATABASE_URL` (an admin connection string, e.g.
+//! `postgresql://postgres:postgres@localhost:5432/postgres`). When it is
+//! unset every test returns early with a notice, so `cargo test` stays green
+//! on machines without a database. CI provides a Postgres service and sets
+//! the variable, so these run on every push.
+//!
+//! Isolation: each test creates its own database (`fcp_test_<hex>`), runs the
+//! full migration set through `PostgresStorage::new`, and drops the database
+//! at the end. Tests are therefore parallel-safe and never see each other's
+//! rows. A test that panics leaves its database behind; the prefix makes
+//! stale ones easy to find and drop.
+
+use fcp_core::billing::{
+    BalanceTransactionKind, BalanceTransactionRequest, Rate, RatePlan, TenantBalance,
+};
+use fcp_core::storage::{
+    CallDetailRecord, CallDisposition, CdrQuery, CdrStore, CredentialStore, HangupCause,
+    PhoneNumberStore, Registration, RegistrationStore, TenantStore, User,
+};
+use fcp_core::{CallId, PhoneNumber, StorageError, Tenant, TenantId};
+use fcp_storage_postgres::{PostgresConfig, PostgresStorage};
+use sqlx::{Connection, PgConnection};
+use std::time::{Duration, SystemTime};
+use uuid::Uuid;
+
+// ─── Harness ─────────────────────────────────────────────────────────────
+
+/// Skip the test (returning early) unless a database is configured.
+macro_rules! require_db {
+    () => {
+        match TestDb::new().await {
+            Some(db) => db,
+            None => {
+                eprintln!("FCP_TEST_DATABASE_URL not set; skipping PostgreSQL integration test");
+                return;
+            }
+        }
+    };
+}
+
+struct TestDb {
+    admin_url: String,
+    name: String,
+    storage: PostgresStorage,
+}
+
+impl TestDb {
+    async fn new() -> Option<Self> {
+        let admin_url = std::env::var("FCP_TEST_DATABASE_URL").ok()?;
+        let name = format!("fcp_test_{}", Uuid::new_v4().simple());
+
+        let mut admin = PgConnection::connect(&admin_url)
+            .await
+            .expect("connect to admin database");
+        sqlx::query(&format!("CREATE DATABASE {name}"))
+            .execute(&mut admin)
+            .await
+            .expect("create test database");
+        admin.close().await.ok();
+
+        let storage = PostgresStorage::new(PostgresConfig::new(Self::url(&admin_url, &name)))
+            .await
+            .expect("connect + migrate test database");
+        Some(Self {
+            admin_url,
+            name,
+            storage,
+        })
+    }
+
+    /// Swap the database name in an admin connection string, keeping any
+    /// query parameters (`?sslmode=…`).
+    fn url(admin_url: &str, database: &str) -> String {
+        let (base, query) = match admin_url.split_once('?') {
+            Some((b, q)) => (b, format!("?{q}")),
+            None => (admin_url, String::new()),
+        };
+        let (head, _) = base
+            .rsplit_once('/')
+            .expect("FCP_TEST_DATABASE_URL must contain a database path");
+        format!("{head}/{database}{query}")
+    }
+
+    fn storage(&self) -> &PostgresStorage {
+        &self.storage
+    }
+
+    /// Drop the database. Call at the end of a passing test.
+    async fn finish(self) {
+        self.storage.close().await;
+        let mut admin = PgConnection::connect(&self.admin_url)
+            .await
+            .expect("connect to admin database");
+        sqlx::query(&format!("DROP DATABASE {} WITH (FORCE)", self.name))
+            .execute(&mut admin)
+            .await
+            .expect("drop test database");
+        admin.close().await.ok();
+    }
+}
+
+fn tenant(name: &str) -> Tenant {
+    let mut t = Tenant::new(name.to_string());
+    t.sip_domains = vec![format!("{name}.example.com")];
+    t
+}
+
+/// Build a user through serde so the fixture does not have to track every
+/// enterprise field on the struct; only the non-defaulted ones are given.
+fn user(tenant_id: TenantId, username: &str) -> User {
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    serde_json::from_value(serde_json::json!({
+        "username": username,
+        "password": "secret",
+        "tenant_id": tenant_id,
+        "display_name": format!("User {username}"),
+        "enabled": true,
+        "created_at": now,
+        "updated_at": now,
+    }))
+    .expect("user fixture deserializes")
+}
+
+fn registration(tenant_id: TenantId, aor: &str, contact: &str, ttl: Duration) -> Registration {
+    let now = SystemTime::now();
+    Registration {
+        tenant_id,
+        aor: aor.to_string(),
+        contact: contact.to_string(),
+        expires_at: now + ttl,
+        call_id: format!("{}@test", Uuid::new_v4()),
+        cseq: 1,
+        user_agent: Some("fcp-test/1.0".to_string()),
+        q: None,
+        registered_at: now,
+        path: None,
+        flow_token: None,
+    }
+}
+
+fn cdr(
+    tenant_id: TenantId,
+    to_uri: &str,
+    answered_ms: Option<u64>,
+    cost: Option<f64>,
+) -> CallDetailRecord {
+    let start = SystemTime::now() - Duration::from_secs(120);
+    let (disposition, answer_time) = match answered_ms {
+        Some(_) => (
+            CallDisposition::Answered,
+            Some(start + Duration::from_secs(2)),
+        ),
+        None => (CallDisposition::NoAnswer, None),
+    };
+    CallDetailRecord {
+        call_id: CallId::new(),
+        tenant_id,
+        sip_call_id: format!("{}@test", Uuid::new_v4()),
+        from_uri: "sip:alice@test.example.com".to_string(),
+        from_display_name: Some("Alice".to_string()),
+        to_uri: to_uri.to_string(),
+        to_display_name: None,
+        start_time: start,
+        answer_time,
+        end_time: Some(start + Duration::from_secs(60)),
+        setup_duration_ms: Some(2000),
+        call_duration_ms: answered_ms,
+        total_duration_ms: Some(60_000),
+        disposition,
+        hangup_cause: HangupCause::NormalClearing,
+        hangup_party: None,
+        sip_status_code: Some(200),
+        sip_reason: None,
+        route_id: None,
+        gateway_id: Some("trunk-a".to_string()),
+        media_anchored: true,
+        codec_a_leg: Some("PCMU".to_string()),
+        codec_b_leg: Some("PCMU".to_string()),
+        rtp_packets_sent: None,
+        rtp_packets_received: None,
+        rtp_bytes_sent: None,
+        rtp_bytes_received: None,
+        recording_url: None,
+        cost,
+        currency: cost.map(|_| "USD".to_string()),
+        custom_data: None,
+    }
+}
+
+fn rate_plan(tenant_id: TenantId, name: &str, is_default: bool) -> RatePlan {
+    let now = SystemTime::now();
+    RatePlan {
+        id: Uuid::new_v4(),
+        tenant_id,
+        name: name.to_string(),
+        currency: "USD".to_string(),
+        default_rate_per_minute: 0.02,
+        connect_fee: 0.0,
+        billing_increment_secs: 60,
+        is_default,
+        enabled: true,
+        created_at: now,
+        updated_at: now,
+    }
+}
+
+fn rate(plan_id: Uuid, prefix: &str, per_minute: f64) -> Rate {
+    Rate {
+        id: Uuid::new_v4(),
+        rate_plan_id: plan_id,
+        prefix: prefix.to_string(),
+        rate_per_minute: per_minute,
+        connect_fee: None,
+        description: None,
+    }
+}
+
+fn balance(tenant_id: TenantId, enforce: bool) -> TenantBalance {
+    TenantBalance {
+        tenant_id,
+        balance: 0.0,
+        currency: "USD".to_string(),
+        credit_limit: 0.0,
+        enforce,
+        low_balance_threshold: None,
+        updated_at: SystemTime::now(),
+    }
+}
+
+fn charge(tenant_id: TenantId, call_id: CallId, amount: f64) -> BalanceTransactionRequest {
+    BalanceTransactionRequest {
+        tenant_id,
+        kind: BalanceTransactionKind::CallCharge,
+        amount: -amount,
+        currency: "USD".to_string(),
+        call_id: Some(call_id),
+        description: None,
+        external_ref: None,
+    }
+}
+
+fn is_conflict(e: &anyhow::Error) -> bool {
+    matches!(
+        e.downcast_ref::<fcp_core::Error>(),
+        Some(fcp_core::Error::Storage(StorageError::Conflict(_)))
+    )
+}
+
+fn is_not_found(e: &anyhow::Error) -> bool {
+    matches!(
+        e.downcast_ref::<fcp_core::Error>(),
+        Some(fcp_core::Error::Storage(StorageError::NotFound(_)))
+    )
+}
+
+fn approx(a: f64, b: f64) -> bool {
+    (a - b).abs() < 1e-9
+}
+
+// ─── Migrations ──────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn migrations_apply_and_are_idempotent() {
+    let db = require_db!();
+    // A second `new()` against the same database re-runs the migrator, which
+    // must find everything applied and succeed.
+    let again = PostgresStorage::new(PostgresConfig::new(TestDb::url(&db.admin_url, &db.name)))
+        .await
+        .expect("second migration pass is a no-op");
+    again.close().await;
+    db.finish().await;
+}
+
+// ─── Tenants ─────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn tenant_round_trip_and_lookups() {
+    let db = require_db!();
+    let s = db.storage();
+
+    let t = tenant("acme");
+    s.put_tenant(t.clone()).await.unwrap();
+
+    let got = s.get_tenant(&t.id).await.unwrap().expect("tenant stored");
+    assert_eq!(got.name, "acme");
+    assert_eq!(got.sip_domains, vec!["acme.example.com"]);
+
+    assert_eq!(
+        s.get_tenant_by_name("acme").await.unwrap().map(|t| t.id),
+        Some(t.id)
+    );
+    assert_eq!(
+        s.get_tenant_by_sip_domain("ACME.example.com")
+            .await
+            .unwrap()
+            .map(|t| t.id),
+        Some(t.id),
+        "sip domain lookup is case-insensitive"
+    );
+    assert!(s
+        .get_tenant_by_sip_domain("nobody.example.com")
+        .await
+        .unwrap()
+        .is_none());
+
+    // Update through put (upsert) — name change is visible.
+    let mut updated = got.clone();
+    updated.name = "acme-renamed".to_string();
+    s.put_tenant(updated).await.unwrap();
+    assert_eq!(
+        s.get_tenant(&t.id).await.unwrap().unwrap().name,
+        "acme-renamed"
+    );
+    assert!(s.get_tenant_by_name("acme").await.unwrap().is_none());
+
+    assert!(s.list_tenants().await.unwrap().iter().any(|x| x.id == t.id));
+
+    s.delete_tenant(&t.id).await.unwrap();
+    assert!(s.get_tenant(&t.id).await.unwrap().is_none());
+
+    db.finish().await;
+}
+
+// ─── Users ───────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn users_are_scoped_by_tenant() {
+    let db = require_db!();
+    let s = db.storage();
+
+    let a = tenant("a");
+    let b = tenant("b");
+    s.put_tenant(a.clone()).await.unwrap();
+    s.put_tenant(b.clone()).await.unwrap();
+
+    // Same username in two tenants must coexist.
+    s.put_user(user(a.id, "alice")).await.unwrap();
+    s.put_user(user(b.id, "alice")).await.unwrap();
+
+    let in_a = s
+        .get_user_in_tenant("alice", &a.id)
+        .await
+        .unwrap()
+        .expect("alice in a");
+    let in_b = s
+        .get_user_in_tenant("alice", &b.id)
+        .await
+        .unwrap()
+        .expect("alice in b");
+    assert_ne!(in_a.id, in_b.id);
+    assert_eq!(in_a.tenant_id, a.id);
+    assert_eq!(in_b.tenant_id, b.id);
+    assert_eq!(s.list_users_by_username("alice").await.unwrap().len(), 2);
+
+    let by_id = s
+        .get_user_by_id(&in_a.id)
+        .await
+        .unwrap()
+        .expect("lookup by id");
+    assert_eq!(by_id.username, "alice");
+    assert_eq!(by_id.display_name.as_deref(), Some("User alice"));
+
+    // Deleting in one tenant leaves the other intact.
+    s.delete_user_in_tenant("alice", &a.id).await.unwrap();
+    assert!(s
+        .get_user_in_tenant("alice", &a.id)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(s
+        .get_user_in_tenant("alice", &b.id)
+        .await
+        .unwrap()
+        .is_some());
+
+    db.finish().await;
+}
+
+// ─── Registrations ───────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn registrations_bind_expire_and_scope() {
+    let db = require_db!();
+    let s = db.storage();
+
+    let a = tenant("a");
+    let b = tenant("b");
+    s.put_tenant(a.clone()).await.unwrap();
+    s.put_tenant(b.clone()).await.unwrap();
+
+    let aor = "sip:2001@a.example.com";
+    let hour = Duration::from_secs(3600);
+    s.put_registration(registration(a.id, aor, "sip:2001@10.0.0.1:5060", hour))
+        .await
+        .unwrap();
+    s.put_registration(registration(a.id, aor, "sip:2001@10.0.0.2:5060", hour))
+        .await
+        .unwrap();
+    // Same AOR string in another tenant is a separate binding set.
+    s.put_registration(registration(b.id, aor, "sip:2001@10.0.1.1:5060", hour))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        s.get_registrations_in_tenant(&a.id, aor)
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        s.get_registrations_in_tenant(&b.id, aor)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+
+    // Re-registering the same contact refreshes rather than duplicates.
+    let mut refreshed = registration(a.id, aor, "sip:2001@10.0.0.1:5060", hour * 2);
+    refreshed.cseq = 2;
+    s.put_registration(refreshed).await.unwrap();
+    let regs = s.get_registrations_in_tenant(&a.id, aor).await.unwrap();
+    assert_eq!(regs.len(), 2);
+    assert_eq!(
+        regs.iter()
+            .find(|r| r.contact == "sip:2001@10.0.0.1:5060")
+            .map(|r| r.cseq),
+        Some(2)
+    );
+
+    s.delete_registration_in_tenant(&a.id, aor, "sip:2001@10.0.0.2:5060")
+        .await
+        .unwrap();
+    assert_eq!(
+        s.get_registrations_in_tenant(&a.id, aor)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        s.get_registrations_in_tenant(&b.id, aor)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+
+    // An already-expired binding is swept by cleanup_expired.
+    let expired_aor = "sip:2002@a.example.com";
+    let mut expired = registration(a.id, expired_aor, "sip:2002@10.0.0.9:5060", Duration::ZERO);
+    expired.expires_at = SystemTime::now() - Duration::from_secs(10);
+    s.put_registration(expired).await.unwrap();
+    let swept = s.cleanup_expired().await.unwrap();
+    assert!(
+        swept >= 1,
+        "expected at least one expired binding swept, got {swept}"
+    );
+    assert!(s
+        .get_registrations_in_tenant(&a.id, expired_aor)
+        .await
+        .unwrap()
+        .is_empty());
+
+    db.finish().await;
+}
+
+// ─── CDRs ────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn cdrs_insert_query_count_and_aggregate() {
+    let db = require_db!();
+    let s = db.storage();
+
+    let a = tenant("a");
+    let b = tenant("b");
+    s.put_tenant(a.clone()).await.unwrap();
+    s.put_tenant(b.clone()).await.unwrap();
+
+    let answered = cdr(
+        a.id,
+        "sip:+14155550100@a.example.com",
+        Some(90_000),
+        Some(0.04),
+    );
+    let answered_id = answered.call_id;
+    s.insert_cdr(answered).await.unwrap();
+    s.insert_cdr(cdr(
+        a.id,
+        "sip:+442079460000@a.example.com",
+        Some(30_000),
+        Some(0.03),
+    ))
+    .await
+    .unwrap();
+    s.insert_cdr(cdr(a.id, "sip:2002@a.example.com", None, None))
+        .await
+        .unwrap();
+    s.insert_cdr(cdr(
+        b.id,
+        "sip:+14155550100@b.example.com",
+        Some(10_000),
+        Some(1.0),
+    ))
+    .await
+    .unwrap();
+
+    let got = s.get_cdr(&answered_id).await.unwrap().expect("cdr by id");
+    assert_eq!(got.tenant_id, a.id);
+    assert_eq!(got.disposition, CallDisposition::Answered);
+    assert_eq!(got.call_duration_ms, Some(90_000));
+    assert_eq!(got.cost, Some(0.04));
+    assert_eq!(got.currency.as_deref(), Some("USD"));
+    assert_eq!(got.gateway_id.as_deref(), Some("trunk-a"));
+
+    let tenant_query = CdrQuery {
+        tenant_id: Some(a.id),
+        ..Default::default()
+    };
+    assert_eq!(s.query_cdrs(tenant_query.clone()).await.unwrap().len(), 3);
+    assert_eq!(s.count_cdrs(tenant_query.clone()).await.unwrap(), 3);
+
+    let answered_only = CdrQuery {
+        tenant_id: Some(a.id),
+        disposition: Some(CallDisposition::Answered),
+        ..Default::default()
+    };
+    assert_eq!(s.count_cdrs(answered_only).await.unwrap(), 2);
+
+    let paged = CdrQuery {
+        tenant_id: Some(a.id),
+        limit: Some(2),
+        offset: Some(2),
+        ..Default::default()
+    };
+    assert_eq!(s.query_cdrs(paged).await.unwrap().len(), 1);
+
+    // URI substring filters, and count must agree with query for every
+    // filter combination (regression: count used to ignore these).
+    let by_to = CdrQuery {
+        tenant_id: Some(a.id),
+        to_uri: Some("+4420".to_string()),
+        ..Default::default()
+    };
+    assert_eq!(s.query_cdrs(by_to.clone()).await.unwrap().len(), 1);
+    assert_eq!(s.count_cdrs(by_to).await.unwrap(), 1);
+    let by_from = CdrQuery {
+        from_uri: Some("alice@".to_string()),
+        ..Default::default()
+    };
+    assert_eq!(s.count_cdrs(by_from).await.unwrap(), 4);
+    let by_call = CdrQuery {
+        call_id: Some(answered_id),
+        ..Default::default()
+    };
+    assert_eq!(s.query_cdrs(by_call.clone()).await.unwrap().len(), 1);
+    assert_eq!(s.count_cdrs(by_call).await.unwrap(), 1);
+
+    // Time-window filters bind real timestamps.
+    let in_window = CdrQuery {
+        tenant_id: Some(a.id),
+        start_time_from: Some(SystemTime::now() - Duration::from_secs(600)),
+        start_time_to: Some(SystemTime::now()),
+        ..Default::default()
+    };
+    assert_eq!(s.query_cdrs(in_window.clone()).await.unwrap().len(), 3);
+    assert_eq!(s.count_cdrs(in_window).await.unwrap(), 3);
+    let future = CdrQuery {
+        tenant_id: Some(a.id),
+        start_time_from: Some(SystemTime::now() + Duration::from_secs(60)),
+        ..Default::default()
+    };
+    assert!(s.query_cdrs(future.clone()).await.unwrap().is_empty());
+    assert_eq!(s.count_cdrs(future).await.unwrap(), 0);
+
+    // Tenant a owns the number the answered call was placed to, so that call
+    // counts as inbound in both aggregates.
+    s.put_phone_number(PhoneNumber::new("+14155550100".to_string(), a.id).unwrap())
+        .await
+        .unwrap();
+
+    let from = SystemTime::now() - Duration::from_secs(3600);
+    let to = SystemTime::now() + Duration::from_secs(60);
+    let agg = s.aggregate_usage(&a.id, from, to).await.unwrap();
+    assert_eq!(agg.total_calls, 3);
+    assert_eq!(agg.answered_calls, 2);
+    assert_eq!(agg.total_duration_ms, 120_000);
+    assert_eq!(agg.inbound_calls, 1);
+    assert_eq!(agg.outbound_calls, 0);
+    assert!(
+        approx(agg.total_cost, 0.07),
+        "total_cost = {}",
+        agg.total_cost
+    );
+
+    let by_number = s.aggregate_usage_by_number(&a.id, from, to).await.unwrap();
+    assert_eq!(
+        by_number.len(),
+        1,
+        "one owned number with traffic: {by_number:?}"
+    );
+    let n = &by_number[0];
+    assert_eq!(n.number, "+14155550100");
+    assert_eq!(n.total_calls, 1);
+    assert_eq!(n.answered_calls, 1);
+    assert_eq!(n.total_duration_ms, 90_000);
+    assert_eq!(n.inbound_calls, 1);
+    assert_eq!(n.outbound_calls, 0);
+
+    // Tenant b's expensive call must not leak into a's aggregate.
+    let agg_b = s.aggregate_usage(&b.id, from, to).await.unwrap();
+    assert_eq!(agg_b.total_calls, 1);
+    assert!(approx(agg_b.total_cost, 1.0));
+
+    db.finish().await;
+}
+
+// ─── Rate plans ──────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn rate_plans_default_flag_uniqueness_and_rates() {
+    let db = require_db!();
+    let s = db.storage();
+
+    let a = tenant("a");
+    let b = tenant("b");
+    s.put_tenant(a.clone()).await.unwrap();
+    s.put_tenant(b.clone()).await.unwrap();
+
+    let first = rate_plan(a.id, "standard", true);
+    s.create_rate_plan(first.clone()).await.unwrap();
+
+    // Duplicate name within the tenant is a Conflict.
+    let dup = rate_plan(a.id, "standard", false);
+    let err = s.create_rate_plan(dup).await.unwrap_err();
+    assert!(is_conflict(&err), "expected Conflict, got {err:#}");
+
+    // Same name in another tenant is fine, and invisible to tenant a.
+    s.create_rate_plan(rate_plan(b.id, "standard", true))
+        .await
+        .unwrap();
+    assert_eq!(s.list_rate_plans(&a.id).await.unwrap().len(), 1);
+    assert!(s.get_rate_plan(&a.id, first.id).await.unwrap().is_some());
+    assert!(s.get_rate_plan(&b.id, first.id).await.unwrap().is_none());
+
+    // Creating a second default demotes the first.
+    let second = rate_plan(a.id, "premium", true);
+    s.create_rate_plan(second.clone()).await.unwrap();
+    let plans = s.list_rate_plans(&a.id).await.unwrap();
+    let defaults: Vec<_> = plans
+        .iter()
+        .filter(|p| p.is_default)
+        .map(|p| p.id)
+        .collect();
+    assert_eq!(defaults, vec![second.id]);
+
+    // Rates: upsert on prefix replaces, longest-prefix data round-trips.
+    s.upsert_rate(&a.id, rate(second.id, "44", 0.03))
+        .await
+        .unwrap();
+    s.upsert_rate(&a.id, rate(second.id, "4420", 0.01))
+        .await
+        .unwrap();
+    let mut replaced = rate(second.id, "44", 0.05);
+    replaced.description = Some("UK".to_string());
+    s.upsert_rate(&a.id, replaced).await.unwrap();
+    let rates = s.list_rates(&a.id, second.id).await.unwrap();
+    assert_eq!(rates.len(), 2);
+    let uk = rates.iter().find(|r| r.prefix == "44").unwrap();
+    assert!(approx(uk.rate_per_minute, 0.05));
+    assert_eq!(uk.description.as_deref(), Some("UK"));
+
+    // Rates on a plan the tenant does not own are rejected.
+    let err = s
+        .upsert_rate(&b.id, rate(second.id, "1", 0.01))
+        .await
+        .unwrap_err();
+    assert!(is_not_found(&err), "expected NotFound, got {err:#}");
+
+    // The rating path lookup returns the enabled default with its rates.
+    let (plan, plan_rates) = s
+        .get_default_rate_plan_with_rates(&a.id)
+        .await
+        .unwrap()
+        .expect("default plan");
+    assert_eq!(plan.id, second.id);
+    assert_eq!(plan_rates.len(), 2);
+
+    // Disabling the default hides it from the rating path.
+    let mut disabled = plan.clone();
+    disabled.enabled = false;
+    s.update_rate_plan(disabled).await.unwrap();
+    assert!(s
+        .get_default_rate_plan_with_rates(&a.id)
+        .await
+        .unwrap()
+        .is_none());
+
+    // Deleting one rate, then the plan cascades the rest.
+    let rate_id = rates.iter().find(|r| r.prefix == "4420").unwrap().id;
+    s.delete_rate(&a.id, second.id, rate_id).await.unwrap();
+    assert_eq!(s.list_rates(&a.id, second.id).await.unwrap().len(), 1);
+    s.delete_rate_plan(&a.id, second.id).await.unwrap();
+    assert!(s.get_rate_plan(&a.id, second.id).await.unwrap().is_none());
+    assert!(s.list_rates(&a.id, second.id).await.unwrap().is_empty());
+
+    // Deleting a plan that is not the tenant's is NotFound.
+    let err = s.delete_rate_plan(&a.id, Uuid::new_v4()).await.unwrap_err();
+    assert!(is_not_found(&err), "expected NotFound, got {err:#}");
+
+    db.finish().await;
+}
+
+// ─── Balances ────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn balances_settings_ledger_and_single_settlement() {
+    let db = require_db!();
+    let s = db.storage();
+
+    let a = tenant("a");
+    s.put_tenant(a.clone()).await.unwrap();
+
+    assert!(s.get_balance(&a.id).await.unwrap().is_none());
+
+    // First transaction creates the balance row (enforcement off).
+    let topup = s
+        .apply_balance_transaction(BalanceTransactionRequest {
+            tenant_id: a.id,
+            kind: BalanceTransactionKind::TopUp,
+            amount: 10.0,
+            currency: "USD".to_string(),
+            call_id: None,
+            description: Some("card".to_string()),
+            external_ref: Some("pay_1".to_string()),
+        })
+        .await
+        .unwrap();
+    assert!(approx(topup.balance_after, 10.0));
+    let row = s
+        .get_balance(&a.id)
+        .await
+        .unwrap()
+        .expect("balance row created");
+    assert!(approx(row.balance, 10.0));
+    assert!(!row.enforce);
+    assert_eq!(row.currency, "USD");
+
+    // Upserting settings keeps the amount.
+    let mut settings = balance(a.id, true);
+    settings.credit_limit = 2.5;
+    settings.low_balance_threshold = Some(1.0);
+    s.upsert_balance(settings).await.unwrap();
+    let row = s.get_balance(&a.id).await.unwrap().unwrap();
+    assert!(
+        approx(row.balance, 10.0),
+        "amount preserved: {}",
+        row.balance
+    );
+    assert!(row.enforce);
+    assert!(approx(row.credit_limit, 2.5));
+    assert_eq!(row.low_balance_threshold, Some(1.0));
+    assert!(approx(row.available(), 12.5));
+
+    // A call charge debits; a second charge for the same call is a Conflict
+    // and must roll back so the balance is untouched.
+    let call_id = CallId::new();
+    let debit = s
+        .apply_balance_transaction(charge(a.id, call_id, 0.06))
+        .await
+        .unwrap();
+    assert!(approx(debit.balance_after, 9.94));
+    assert_eq!(debit.call_id, Some(call_id));
+    assert_eq!(debit.kind, BalanceTransactionKind::CallCharge);
+
+    let err = s
+        .apply_balance_transaction(charge(a.id, call_id, 0.06))
+        .await
+        .unwrap_err();
+    assert!(is_conflict(&err), "expected Conflict, got {err:#}");
+    assert!(approx(
+        s.get_balance(&a.id).await.unwrap().unwrap().balance,
+        9.94
+    ));
+
+    // A different call charges normally; adjustments can go either way.
+    s.apply_balance_transaction(charge(a.id, CallId::new(), 0.04))
+        .await
+        .unwrap();
+    let adj = s
+        .apply_balance_transaction(BalanceTransactionRequest {
+            tenant_id: a.id,
+            kind: BalanceTransactionKind::Adjustment,
+            amount: -5.0,
+            currency: "USD".to_string(),
+            call_id: None,
+            description: Some("write-off".to_string()),
+            external_ref: None,
+        })
+        .await
+        .unwrap();
+    assert!(approx(adj.balance_after, 4.90));
+
+    // Ledger: newest first, paginated, tenant-scoped.
+    let ledger = s.list_balance_transactions(&a.id, 10, 0).await.unwrap();
+    assert_eq!(ledger.len(), 4);
+    assert_eq!(ledger[0].kind, BalanceTransactionKind::Adjustment);
+    assert_eq!(ledger[3].kind, BalanceTransactionKind::TopUp);
+    assert_eq!(ledger[3].external_ref.as_deref(), Some("pay_1"));
+    let page = s.list_balance_transactions(&a.id, 2, 1).await.unwrap();
+    assert_eq!(page.len(), 2);
+    assert_eq!(page[0].id, ledger[1].id);
+
+    let other = TenantId::new();
+    assert!(s
+        .list_balance_transactions(&other, 10, 0)
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(s.get_balance(&other).await.unwrap().is_none());
+
+    db.finish().await;
+}
+
+#[tokio::test]
+async fn balance_debits_serialize_under_concurrency() {
+    let db = require_db!();
+    let s = db.storage().clone();
+
+    let a = tenant("a");
+    s.put_tenant(a.clone()).await.unwrap();
+    s.upsert_balance(balance(a.id, true)).await.unwrap();
+
+    // 25 concurrent settlements of 0.01 each must land exactly once each.
+    let mut handles = Vec::new();
+    for _ in 0..25 {
+        let s = s.clone();
+        let tenant_id = a.id;
+        handles.push(tokio::spawn(async move {
+            s.apply_balance_transaction(charge(tenant_id, CallId::new(), 0.01))
+                .await
+                .unwrap()
+        }));
+    }
+    for h in handles {
+        h.await.unwrap();
+    }
+
+    let row = s.get_balance(&a.id).await.unwrap().unwrap();
+    assert!(approx(row.balance, -0.25), "balance = {}", row.balance);
+    assert_eq!(
+        s.list_balance_transactions(&a.id, 100, 0)
+            .await
+            .unwrap()
+            .len(),
+        25
+    );
+
+    db.finish().await;
+}

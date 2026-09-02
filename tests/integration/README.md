@@ -6,8 +6,11 @@ in-process stubs.
 
 ## Current state
 
-No runnable integration tests exist here yet. Unit tests in the individual
-crates cover most of the pure logic.
+The storage layer has database-backed tests in
+`crates/fcp-storage-postgres/tests/integration.rs` (gated on
+`FCP_TEST_DATABASE_URL`, run in CI against a `postgres:16` service; see that
+crate's README). Nothing runnable lives in this directory yet; cross-service
+tests (API + SIP + media) are still a gap.
 
 ## Known coverage gaps
 

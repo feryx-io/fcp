@@ -192,18 +192,28 @@ autovacuum_naptime = 30s
 
 ## Testing
 
-Integration tests require a running PostgreSQL instance:
+`tests/integration.rs` exercises the backend against a real PostgreSQL:
+migrations, tenants, users, registrations, CDR query/count/aggregates, rate
+plans and balances (including the one-settlement-per-call guarantee under
+concurrency). The tests are gated on `FCP_TEST_DATABASE_URL` and skip when it
+is unset, so `cargo test` stays green without a database. Each test creates
+its own `fcp_test_<hex>` database, migrates it, and drops it at the end, so
+the connection must be a superuser (or have CREATEDB).
 
 ```bash
-# Start PostgreSQL with Docker
-docker run --rm -p 5432:5432 -e POSTGRES_PASSWORD=postgres postgres:16
+# Start a throwaway PostgreSQL (or use scripts/pg-test.sh, which does this for you)
+docker run --rm -d --name fcp-pg -p 5432:5432 -e POSTGRES_PASSWORD=postgres postgres:16
 
-# Run tests (most are ignored by default)
-cargo test -- --ignored
+# Run the integration tests
+FCP_TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/postgres \
+  cargo test -p fcp-storage-postgres --test integration
 
-# Or set DATABASE_URL
-DATABASE_URL=postgresql://postgres:postgres@localhost/postgres cargo test
+docker rm -f fcp-pg
 ```
+
+CI runs the same tests against a `postgres:16` service on every push. A test
+that panics leaves its `fcp_test_*` database behind; drop stale ones with
+`DROP DATABASE … WITH (FORCE)`.
 
 ## Migration
 
