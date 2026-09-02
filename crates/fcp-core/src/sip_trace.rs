@@ -65,6 +65,15 @@ pub trait SipTraceStore: Send + Sync {
     /// Delete SIP trace messages older than the specified number of days.
     /// Returns the number of rows deleted.
     async fn delete_sip_traces_older_than(&self, days: u32) -> anyhow::Result<u64>;
+
+    /// Delete one tenant's traces older than `before` (retention policy).
+    async fn delete_sip_traces_for_tenant_before(
+        &self,
+        _tenant_id: &str,
+        _before: SystemTime,
+    ) -> anyhow::Result<u64> {
+        Ok(0)
+    }
 }
 
 /// Serde module for SystemTime serialization as epoch seconds.

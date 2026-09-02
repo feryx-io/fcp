@@ -169,6 +169,23 @@ impl FlowTraceStore for PostgresFlowTraceStore {
         Ok((entries, total as usize))
     }
 
+    async fn delete_flow_traces_for_tenant_before(
+        &self,
+        tenant_id: &str,
+        before: SystemTime,
+    ) -> anyhow::Result<u64> {
+        let result = sqlx::query(
+            "DELETE FROM flow_execution_traces
+             WHERE timestamp < $2
+               AND call_id IN (SELECT call_id FROM cdrs WHERE tenant_id = $1)",
+        )
+        .bind(tenant_id)
+        .bind(system_time_to_datetime(before))
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
     async fn delete_flow_traces_older_than(&self, days: u32) -> anyhow::Result<u64> {
         let result =
             sqlx::query("DELETE FROM flow_execution_traces WHERE timestamp < NOW() - $1::interval")

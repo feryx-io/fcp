@@ -24,8 +24,9 @@ Database-backed tests live next to the crates they exercise and are gated on
   (served on a real loopback socket), the multipart uploads (avatars,
   voicemail greetings, audio prompts), SIP traces, the `/debug` runtime
   views (real dialogs, subscriptions, and calls inserted into the managers),
-  and the E911 admin API (config, readiness, address validation, audit
-  trail).
+  the E911 admin API (config, readiness, address validation, audit
+  trail), and the compliance basics (retention policy and runs, admin
+  audit log, CSV export).
   The `ApiState` it needs is built on a
   no-op SIP transport dispatcher (no sockets, no SIP traffic), so no separate
   harness crate was required.

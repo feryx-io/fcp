@@ -142,6 +142,60 @@ async fn main() -> Result<()> {
 
     info!("Storage backend initialized successfully");
 
+    // Retention sweep: apply every tenant's compliance policy once an hour.
+    // Tenants without a policy (or with no retention windows) are skipped.
+    {
+        let sweep_storage = Arc::clone(&storage);
+        let recordings_dir = config
+            .call_recordings_dir
+            .as_deref()
+            .map(std::path::PathBuf::from);
+        tokio::spawn(async move {
+            use fcp_core::TenantStore;
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+            loop {
+                interval.tick().await;
+                let Some(store) = sweep_storage.compliance_store().cloned() else {
+                    continue;
+                };
+                let tenants = match sweep_storage.list_tenants().await {
+                    Ok(t) => t,
+                    Err(e) => {
+                        warn!(error = %e, "Retention sweep: failed to list tenants");
+                        continue;
+                    }
+                };
+                for tenant in tenants {
+                    let policy = match store.get_compliance_policy(&tenant.id).await {
+                        Ok(Some(p)) if p.has_retention() => p,
+                        Ok(_) => continue,
+                        Err(e) => {
+                            warn!(tenant_id = %tenant.id, error = %e, "Retention sweep: failed to load policy");
+                            continue;
+                        }
+                    };
+                    let report = fcp_core::compliance::run_retention(
+                        &sweep_storage,
+                        &policy,
+                        recordings_dir.as_deref(),
+                    )
+                    .await;
+                    if report.total_deleted() > 0 || !report.errors.is_empty() {
+                        info!(
+                            tenant_id = %tenant.id,
+                            deleted = report.total_deleted(),
+                            errors = ?report.errors,
+                            "Retention sweep completed"
+                        );
+                    }
+                    if let Err(e) = store.record_retention_run(&report).await {
+                        warn!(tenant_id = %tenant.id, error = %e, "Retention sweep: failed to record run");
+                    }
+                }
+            }
+        });
+    }
+
     // Build lightweight SIP components (no real transport).
     // The admin API only needs the component graph for REST API operations
     // (e.g. hangup calls via BYE), not actual SIP traffic.
@@ -344,6 +398,10 @@ async fn main() -> Result<()> {
         api_state.with_prompts_dir(std::path::PathBuf::from(dir))
     } else {
         api_state.with_prompts_dir(std::path::PathBuf::from("/tmp/fcp/audio/prompts"))
+    };
+    let api_state = match config.call_recordings_dir.as_deref() {
+        Some(dir) => api_state.with_call_recordings_dir(std::path::PathBuf::from(dir)),
+        None => api_state,
     };
 
     // Initialize TTS service for prompt audio synthesis (optional)

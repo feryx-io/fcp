@@ -8,6 +8,7 @@ use crate::{
 use axum::{
     extract::{Extension, Path, Query, State},
     http::HeaderMap,
+    http::{header, StatusCode},
     response::IntoResponse,
     Json,
 };
@@ -180,6 +181,89 @@ pub async fn list_cdrs(
     };
 
     // Build CdrQuery from request parameters
+    let query = build_cdr_query(&params, &tenant, allow_all_tenants, limit)?;
+
+    debug!(
+        tenant_id = ?query.tenant_id,
+        call_id = ?query.call_id,
+        from_uri = ?query.from_uri,
+        to_uri = ?query.to_uri,
+        disposition = ?query.disposition,
+        limit = query.limit,
+        offset = query.offset,
+        "Querying CDRs"
+    );
+
+    // Execute queries in parallel
+    let (cdrs, total) = tokio::try_join!(
+        storage.query_cdrs(query.clone()),
+        storage.count_cdrs(query.clone())
+    )
+    .map_err(|e| {
+        warn!(error = %e, "Failed to query CDRs");
+        ApiError::Internal("Failed to query CDRs".to_string())
+    })?;
+
+    let cdr_responses: Vec<CdrResponse> = cdrs.into_iter().map(CdrResponse::from).collect();
+
+    Ok(Json(ListCdrsResponse {
+        cdrs: cdr_responses,
+        total,
+        limit,
+        offset: params.offset,
+    }))
+}
+
+/// Get a specific CDR by call ID.
+///
+/// GET /api/v1/cdrs/:call_id
+pub async fn get_cdr(
+    State(state): State<ApiState>,
+    tenant: TenantContext,
+    identity: Option<Extension<AuthIdentity>>,
+    headers: HeaderMap,
+    Path(call_id_str): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let storage = require_storage!(state);
+    let allow_all_tenants = can_access_all_tenants(identity.as_ref().map(|ext| &ext.0))
+        && !headers.contains_key(PLATFORM_TENANT_HEADER);
+
+    // Parse call_id
+    let call_id = call_id_str
+        .parse::<fcp_core::CallId>()
+        .map_err(|e| ApiError::BadRequest(format!("Invalid call_id: {}", e)))?;
+
+    debug!(call_id = %call_id, "Retrieving CDR");
+
+    // Retrieve CDR from storage
+    let cdr = storage
+        .get_cdr(&call_id)
+        .await
+        .map_err(|e| {
+            warn!(call_id = %call_id, error = %e, "Failed to retrieve CDR");
+            ApiError::Internal("Failed to retrieve CDR".to_string())
+        })?
+        .ok_or_else(|| ApiError::NotFound(format!("CDR not found for call_id: {}", call_id)))?;
+
+    if !allow_all_tenants && cdr.tenant_id != tenant.0 {
+        return Err(ApiError::NotFound(format!(
+            "CDR not found for call_id: {}",
+            call_id
+        )));
+    }
+
+    Ok(Json(CdrResponse::from(cdr)))
+}
+
+/// Translate list/export query parameters into a storage query, applying
+/// tenant scoping (platform admins may pick any tenant, everyone else is
+/// pinned to their own).
+fn build_cdr_query(
+    params: &ListCdrsQuery,
+    tenant: &TenantContext,
+    allow_all_tenants: bool,
+    limit: usize,
+) -> Result<CdrQuery, ApiError> {
     let mut query = CdrQuery {
         tenant_id: Some(tenant.0),
         call_id: None,
@@ -258,76 +342,90 @@ pub async fn list_cdrs(
         query.start_time_to = Some(UNIX_EPOCH + std::time::Duration::from_secs(timestamp));
     }
 
-    debug!(
-        tenant_id = ?query.tenant_id,
-        call_id = ?query.call_id,
-        from_uri = ?query.from_uri,
-        to_uri = ?query.to_uri,
-        disposition = ?query.disposition,
-        limit = query.limit,
-        offset = query.offset,
-        "Querying CDRs"
-    );
-
-    // Execute queries in parallel
-    let (cdrs, total) = tokio::try_join!(
-        storage.query_cdrs(query.clone()),
-        storage.count_cdrs(query.clone())
-    )
-    .map_err(|e| {
-        warn!(error = %e, "Failed to query CDRs");
-        ApiError::Internal("Failed to query CDRs".to_string())
-    })?;
-
-    let cdr_responses: Vec<CdrResponse> = cdrs.into_iter().map(CdrResponse::from).collect();
-
-    Ok(Json(ListCdrsResponse {
-        cdrs: cdr_responses,
-        total,
-        limit,
-        offset: params.offset,
-    }))
+    Ok(query)
 }
 
-/// Get a specific CDR by call ID.
+/// Escape one CSV field (RFC 4180): quote when needed, double inner quotes.
+fn csv_field(value: &str) -> String {
+    if value.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value.to_string()
+    }
+}
+
+/// Maximum rows one export returns.
+const EXPORT_MAX_ROWS: usize = 100_000;
+
+/// Export CDRs as CSV with the same filters as the listing.
 ///
-/// GET /api/v1/cdrs/:call_id
-pub async fn get_cdr(
+/// GET /api/v1/cdrs/export
+pub async fn export_cdrs(
     State(state): State<ApiState>,
     tenant: TenantContext,
     identity: Option<Extension<AuthIdentity>>,
     headers: HeaderMap,
-    Path(call_id_str): Path<String>,
+    Query(params): Query<ListCdrsQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = require_storage!(state);
     let allow_all_tenants = can_access_all_tenants(identity.as_ref().map(|ext| &ext.0))
         && !headers.contains_key(PLATFORM_TENANT_HEADER);
+    let mut query = build_cdr_query(&params, &tenant, allow_all_tenants, EXPORT_MAX_ROWS)?;
+    query.offset = Some(0);
 
-    // Parse call_id
-    let call_id = call_id_str
-        .parse::<fcp_core::CallId>()
-        .map_err(|e| ApiError::BadRequest(format!("Invalid call_id: {}", e)))?;
+    let cdrs = storage.query_cdrs(query).await.map_err(|e| {
+        warn!(error = %e, "Failed to export CDRs");
+        ApiError::Internal("Failed to export CDRs".to_string())
+    })?;
 
-    debug!(call_id = %call_id, "Retrieving CDR");
-
-    // Retrieve CDR from storage
-    let cdr = storage
-        .get_cdr(&call_id)
-        .await
-        .map_err(|e| {
-            warn!(call_id = %call_id, error = %e, "Failed to retrieve CDR");
-            ApiError::Internal("Failed to retrieve CDR".to_string())
-        })?
-        .ok_or_else(|| ApiError::NotFound(format!("CDR not found for call_id: {}", call_id)))?;
-
-    if !allow_all_tenants && cdr.tenant_id != tenant.0 {
-        return Err(ApiError::NotFound(format!(
-            "CDR not found for call_id: {}",
-            call_id
-        )));
+    let mut csv = String::from(
+        "call_id,tenant_id,sip_call_id,start_time,answer_time,end_time,from_uri,to_uri,\
+         disposition,hangup_cause,setup_duration_ms,call_duration_ms,total_duration_ms,\
+         sip_status_code,codec_a_leg,codec_b_leg,cost,currency,recording_url\n",
+    );
+    let opt_u64 = |v: Option<u64>| v.map(|n| n.to_string()).unwrap_or_default();
+    let opt_str = |v: &Option<String>| csv_field(v.as_deref().unwrap_or(""));
+    let count = cdrs.len();
+    for cdr in cdrs {
+        let r = CdrResponse::from(cdr);
+        let row = [
+            csv_field(&r.call_id),
+            csv_field(&r.tenant_id),
+            csv_field(&r.sip_call_id),
+            r.start_time.to_string(),
+            opt_u64(r.answer_time),
+            opt_u64(r.end_time),
+            csv_field(&r.from_uri),
+            csv_field(&r.to_uri),
+            csv_field(&r.disposition),
+            csv_field(&r.hangup_cause),
+            opt_u64(r.setup_duration_ms),
+            opt_u64(r.call_duration_ms),
+            opt_u64(r.total_duration_ms),
+            r.sip_status_code.map(|c| c.to_string()).unwrap_or_default(),
+            opt_str(&r.codec_a_leg),
+            opt_str(&r.codec_b_leg),
+            r.cost.map(|c| c.to_string()).unwrap_or_default(),
+            opt_str(&r.currency),
+            opt_str(&r.recording_url),
+        ];
+        csv.push_str(&row.join(","));
+        csv.push('\n');
     }
+    debug!(rows = count, "Exported CDRs as CSV");
 
-    Ok(Json(CdrResponse::from(cdr)))
+    Ok((
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "text/csv; charset=utf-8"),
+            (
+                header::CONTENT_DISPOSITION,
+                "attachment; filename=\"cdrs.csv\"",
+            ),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        csv,
+    ))
 }
 
 #[cfg(test)]

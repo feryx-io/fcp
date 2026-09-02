@@ -128,6 +128,9 @@ pub struct ApiState {
     /// E911 address validator (completeness checks by default; a
     /// provider-backed validator can be injected).
     pub e911_validator: Arc<dyn fcp_core::e911::E911AddressValidator>,
+
+    /// Directory holding call recordings, pruned by the retention policy.
+    pub call_recordings_dir: Option<PathBuf>,
 }
 
 impl ApiState {
@@ -176,6 +179,7 @@ impl ApiState {
             trunk_health: None,
             deployment_mode: fcp_core::permissions::DeploymentMode::default(),
             e911_validator: Arc::new(fcp_core::e911::BasicAddressValidator),
+            call_recordings_dir: None,
         }
     }
 
@@ -248,6 +252,12 @@ impl ApiState {
     /// Set whether the provisioning endpoint requires HTTPS.
     pub fn with_provisioning_require_https(mut self, require: bool) -> Self {
         self.provisioning_require_https = require;
+        self
+    }
+
+    /// Set the call recordings directory pruned by retention runs.
+    pub fn with_call_recordings_dir(mut self, dir: PathBuf) -> Self {
+        self.call_recordings_dir = Some(dir);
         self
     }
 

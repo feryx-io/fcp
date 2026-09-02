@@ -4,6 +4,7 @@ pub mod api_tokens;
 pub mod auth_session;
 pub mod billing;
 pub mod cdrs;
+pub mod compliance;
 pub mod conferences;
 pub mod config;
 pub mod config_templates;
@@ -272,8 +273,23 @@ pub fn router() -> Router<ApiState> {
             "/calls/:call_id/sip-messages",
             get(sip_trace::get_sip_messages),
         )
+        // Compliance: retention/consent policy, retention runs, audit log
+        .route(
+            "/compliance/policy",
+            get(compliance::get_policy).put(compliance::update_policy),
+        )
+        .route(
+            "/compliance/retention/run",
+            post(compliance::run_retention_now),
+        )
+        .route(
+            "/compliance/retention/runs",
+            get(compliance::list_retention_runs),
+        )
+        .route("/audit-log", get(compliance::list_audit_log))
         // CDR
         .route("/cdrs", get(cdrs::list_cdrs))
+        .route("/cdrs/export", get(cdrs::export_cdrs))
         .route("/cdrs/:call_id", get(cdrs::get_cdr))
         // Flow execution traces
         .route("/flow-traces", get(flow_traces::list_flow_traces))

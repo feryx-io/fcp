@@ -36,6 +36,7 @@ use fcp_sip::prelude::{
 use fcp_sip::Call;
 use fcp_sip::{B2buaConfig, CallManager};
 use fcp_storage_postgres::api_token::PostgresApiTokenStore;
+use fcp_storage_postgres::compliance::PostgresComplianceStore;
 use fcp_storage_postgres::emergency::PostgresEmergencyStore;
 use fcp_storage_postgres::flow_trace::PostgresFlowTraceStore;
 use fcp_storage_postgres::prompt::PostgresPromptStore;
@@ -89,6 +90,7 @@ struct App {
     traces: Arc<PostgresFlowTraceStore>,
     sip_traces: Arc<PostgresSipTraceStore>,
     emergency: Arc<PostgresEmergencyStore>,
+    compliance: Arc<PostgresComplianceStore>,
     event_bus: Arc<InMemoryEventBus>,
     dialog_manager: Arc<DialogManager>,
     subscription_manager: Arc<SubscriptionManager>,
@@ -132,6 +134,7 @@ impl App {
         let traces = Arc::new(PostgresFlowTraceStore::new(storage.pool().clone()));
         let sip_traces = Arc::new(PostgresSipTraceStore::new(storage.pool().clone()));
         let emergency = Arc::new(PostgresEmergencyStore::new(storage.pool().clone()));
+        let compliance = Arc::new(PostgresComplianceStore::new(storage.pool().clone()));
         let dyn_storage = Arc::new(
             DynStorage::from_all_in_one(Arc::clone(&storage))
                 .with_api_token_store(api_tokens)
@@ -139,6 +142,9 @@ impl App {
                 .with_sip_trace_store(Arc::clone(&sip_traces) as Arc<dyn SipTraceStore>)
                 .with_emergency_store(
                     Arc::clone(&emergency) as Arc<dyn fcp_core::e911::EmergencyStore>
+                )
+                .with_compliance_store(
+                    Arc::clone(&compliance) as Arc<dyn fcp_core::compliance::ComplianceStore>
                 )
                 .with_prompt_store(Arc::new(PostgresPromptStore::new(storage.pool().clone()))
                     as Arc<dyn fcp_core::prompt::PromptStore>),
@@ -229,6 +235,7 @@ impl App {
             traces,
             sip_traces,
             emergency,
+            compliance,
             event_bus,
             dialog_manager,
             subscription_manager,
@@ -414,7 +421,19 @@ impl App {
         answered_ms: Option<u64>,
         cost: Option<f64>,
     ) -> (CallId, String) {
-        let start = SystemTime::now() - Duration::from_secs(300);
+        self.seed_cdr_aged(tenant, answered_ms, cost, Duration::from_secs(300))
+            .await
+    }
+
+    /// Like [`seed_cdr_full`] with the call starting `age` ago.
+    async fn seed_cdr_aged(
+        &self,
+        tenant: TenantId,
+        answered_ms: Option<u64>,
+        cost: Option<f64>,
+        age: Duration,
+    ) -> (CallId, String) {
+        let start = SystemTime::now() - age;
         let (disposition, answer_time) = match answered_ms {
             Some(_) => (
                 CallDisposition::Answered,
@@ -498,6 +517,17 @@ impl App {
 
     /// Insert one flow-trace entry for a call.
     async fn seed_trace(&self, call_id: &CallId, flow_id: &str, event: FlowTraceEventType) {
+        self.seed_trace_at(call_id, flow_id, event, SystemTime::now())
+            .await
+    }
+
+    async fn seed_trace_at(
+        &self,
+        call_id: &CallId,
+        flow_id: &str,
+        event: FlowTraceEventType,
+        timestamp: SystemTime,
+    ) {
         self.traces
             .insert_flow_trace(&FlowTraceEntry {
                 id: 0,
@@ -506,7 +536,7 @@ impl App {
                 flow_name: Some("Main IVR".to_string()),
                 node_id: Some("answer".to_string()),
                 event_type: event,
-                timestamp: SystemTime::now(),
+                timestamp,
                 detail: None,
                 flow_version: Some(1),
                 elapsed_ms: Some(5),
@@ -531,6 +561,37 @@ impl App {
                 sip_call_id: sip_call_id.to_string(),
                 tenant_id: tenant.to_string(),
                 timestamp: SystemTime::now(),
+                direction: direction.to_string(),
+                method_or_status: method_or_status.to_string(),
+                cseq: "1 INVITE".to_string(),
+                from_uri: "sip:alice@pbx.example.com".to_string(),
+                to_uri: "sip:bob@pbx.example.com".to_string(),
+                source_addr: "10.0.0.5:5060".to_string(),
+                dest_addr: "10.0.0.1:5060".to_string(),
+                transport: "udp".to_string(),
+                raw_message: format!("{method_or_status} sip:bob@pbx.example.com SIP/2.0\r\n"),
+                node_id: Some("node-test".to_string()),
+            })
+            .await
+            .expect("insert sip trace");
+    }
+
+    async fn seed_sip_trace_at(
+        &self,
+        call_id: &str,
+        sip_call_id: &str,
+        tenant: TenantId,
+        direction: &str,
+        method_or_status: &str,
+        timestamp: SystemTime,
+    ) {
+        self.sip_traces
+            .insert_sip_trace(&SipTraceMessage {
+                id: 0,
+                call_id: call_id.to_string(),
+                sip_call_id: sip_call_id.to_string(),
+                tenant_id: tenant.to_string(),
+                timestamp,
                 direction: direction.to_string(),
                 method_or_status: method_or_status.to_string(),
                 cseq: "1 INVITE".to_string(),
@@ -3882,6 +3943,437 @@ async fn e911_config_readiness_validation_and_audit() {
         .admin(Method::GET, "/api/v1/emergency/calls", None)
         .await;
     assert_eq!(calls.json[0]["notified"], true, "{}", calls.text);
+
+    app.finish().await;
+}
+
+// ─── Compliance basics ───────────────────────────────────────────────────
+
+/// Poll the audit log until `pred` matches an entry (writes are async).
+async fn wait_for_audit(app: &App, path: &str, pred: impl Fn(&Value) -> bool) -> Value {
+    for _ in 0..30 {
+        let res = app.admin(Method::GET, path, None).await;
+        if let Some(hit) = res
+            .json
+            .as_array()
+            .and_then(|a| a.iter().find(|e| pred(e)).cloned())
+        {
+            return hit;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("audit entry never appeared at {path}");
+}
+
+#[tokio::test]
+async fn compliance_policy_audit_log_export_and_retention() {
+    use fcp_core::compliance::{AuditEvent, ComplianceStore};
+
+    let app = require_app!();
+    let days = |d: u64| Duration::from_secs(d * 86_400);
+
+    // ── Policy ──
+    let defaults = app
+        .admin(Method::GET, "/api/v1/compliance/policy", None)
+        .await;
+    assert_eq!(defaults.status, StatusCode::OK, "{}", defaults.text);
+    assert_eq!(defaults.json["configured"], false);
+    assert!(defaults.json["cdr_retention_days"].is_null());
+    assert_eq!(defaults.json["recording_consent"], "none");
+
+    let bad_days = app
+        .admin(
+            Method::PUT,
+            "/api/v1/compliance/policy",
+            Some(json!({ "cdr_retention_days": 0 })),
+        )
+        .await;
+    assert_eq!(
+        bad_days.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        bad_days.text
+    );
+    let announce_without_prompt = app
+        .admin(
+            Method::PUT,
+            "/api/v1/compliance/policy",
+            Some(json!({ "recording_consent": "announce" })),
+        )
+        .await;
+    assert_eq!(
+        announce_without_prompt.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        announce_without_prompt.text
+    );
+    let unknown_prompt = app
+        .admin(
+            Method::PUT,
+            "/api/v1/compliance/policy",
+            Some(json!({ "recording_consent": "announce", "recording_consent_prompt_id": "prompt-00000000-0000-0000-0000-000000000000" })),
+        )
+        .await;
+    assert_eq!(
+        unknown_prompt.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        unknown_prompt.text
+    );
+
+    let prompt = app
+        .admin(
+            Method::POST,
+            "/api/v1/prompts",
+            Some(json!({ "name": "consent", "category": "system", "source_type": "file" })),
+        )
+        .await;
+    assert_eq!(prompt.status, StatusCode::CREATED, "{}", prompt.text);
+    let prompt_id = prompt.json["id"].as_str().unwrap().to_string();
+
+    let saved = app
+        .admin(
+            Method::PUT,
+            "/api/v1/compliance/policy",
+            Some(json!({
+                "cdr_retention_days": 30,
+                "sip_trace_retention_days": 30,
+                "flow_trace_retention_days": 30,
+                "audit_retention_days": 90,
+                "recording_consent": "announce",
+                "recording_consent_prompt_id": prompt_id
+            })),
+        )
+        .await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.text);
+    assert_eq!(saved.json["configured"], true);
+    assert_eq!(saved.json["cdr_retention_days"], 30);
+    assert!(
+        saved.json["recording_retention_days"].is_null(),
+        "untouched stays forever"
+    );
+    assert_eq!(saved.json["recording_consent"], "announce");
+    // Clearing a window with null, keeping the rest.
+    let cleared = app
+        .admin(
+            Method::PUT,
+            "/api/v1/compliance/policy",
+            Some(json!({ "audit_retention_days": null })),
+        )
+        .await;
+    assert!(
+        cleared.json["audit_retention_days"].is_null(),
+        "{}",
+        cleared.text
+    );
+    assert_eq!(cleared.json["cdr_retention_days"], 30);
+    let other = app
+        .admin_in(app.tenant_b, Method::GET, "/api/v1/compliance/policy", None)
+        .await;
+    assert_eq!(
+        other.json["configured"], false,
+        "tenant B untouched: {}",
+        other.text
+    );
+
+    // ── Audit log ──
+    // The policy update above and a failed login must both be recorded.
+    let entry = wait_for_audit(
+        &app,
+        "/api/v1/audit-log?action=PUT%20/api/v1/compliance/policy",
+        |e| e["status"] == 200,
+    )
+    .await;
+    assert_eq!(entry["actor"], "static_token", "{entry}");
+    assert_eq!(entry["actor_kind"], "static_token");
+    assert_eq!(entry["method"], "PUT");
+    assert_eq!(entry["path"], "/api/v1/compliance/policy");
+    assert_eq!(entry["tenant_id"], app.tenant_a.to_string());
+
+    app.login("ghost", "nope").await;
+    let failed_login = wait_for_audit(
+        &app,
+        "/api/v1/audit-log?action=POST%20/api/v1/auth/login",
+        |e| e["status"] == 401,
+    )
+    .await;
+    assert_eq!(failed_login["actor"], "anonymous", "{failed_login}");
+
+    // A JWT session is recorded under its username, and tenant B's admin
+    // sees none of tenant A's events.
+    app.create_user_with_role("auditor", "tenant_admin").await;
+    let jwt = app.login("auditor", PASSWORD).await.json["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let created = app
+        .send_as(
+            &jwt,
+            Method::POST,
+            "/api/v1/devices",
+            Some(
+                json!({ "name": "audited", "device_type": "softphone", "tenant_id": app.tenant_a }),
+            ),
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.text);
+    let by_session = wait_for_audit(&app, "/api/v1/audit-log?actor=auditor", |e| {
+        e["action"] == "POST /api/v1/devices" && e["status"] == 201
+    })
+    .await;
+    assert_eq!(by_session["actor_kind"], "session", "{by_session}");
+    // GET requests are not audited.
+    let reads = app
+        .admin(
+            Method::GET,
+            "/api/v1/audit-log?action=GET%20/api/v1/devices",
+            None,
+        )
+        .await;
+    assert!(reads.json.as_array().unwrap().is_empty(), "{}", reads.text);
+    let b_admin = app
+        .admin_in(
+            app.tenant_b,
+            Method::POST,
+            "/api/v1/users",
+            Some(json!({ "username": "b-auditor", "password": PASSWORD, "role": "tenant_admin" })),
+        )
+        .await;
+    assert_eq!(b_admin.status, StatusCode::CREATED, "{}", b_admin.text);
+    let jwt_b = app.login("b-auditor", PASSWORD).await.json["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let b_view = app
+        .send_as(&jwt_b, Method::GET, "/api/v1/audit-log?limit=200", None)
+        .await;
+    assert_eq!(b_view.status, StatusCode::OK, "{}", b_view.text);
+    assert!(
+        b_view
+            .json
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|e| e["tenant_id"] == app.tenant_b.to_string()),
+        "{}",
+        b_view.text
+    );
+
+    // ── Export ──
+    let (_, _) = app
+        .seed_cdr_full(app.tenant_a, Some(5_000), Some(0.10))
+        .await;
+    let (_, _) = app.seed_cdr_full(app.tenant_a, None, None).await;
+    let (_, _) = app.seed_cdr_full(app.tenant_b, Some(1_000), None).await;
+    let export = app
+        .admin_in(app.tenant_a, Method::GET, "/api/v1/cdrs/export", None)
+        .await;
+    assert_eq!(export.status, StatusCode::OK, "{}", export.text);
+    assert!(export
+        .header("content-type")
+        .is_some_and(|ct| ct.starts_with("text/csv")));
+    assert!(export
+        .header("content-disposition")
+        .is_some_and(|cd| cd.contains("cdrs.csv")));
+    let lines: Vec<&str> = export.text.lines().collect();
+    assert!(
+        lines[0].starts_with("call_id,tenant_id,sip_call_id,start_time"),
+        "{}",
+        lines[0]
+    );
+    assert_eq!(lines.len(), 3, "header + 2 rows: {}", export.text);
+    assert!(lines[1..]
+        .iter()
+        .all(|l| l.contains(&app.tenant_a.to_string())));
+    let answered_only = app
+        .admin_in(
+            app.tenant_a,
+            Method::GET,
+            "/api/v1/cdrs/export?disposition=answered",
+            None,
+        )
+        .await;
+    assert_eq!(
+        answered_only.text.lines().count(),
+        2,
+        "{}",
+        answered_only.text
+    );
+    let all = app.admin(Method::GET, "/api/v1/cdrs/export", None).await;
+    assert_eq!(all.text.lines().count(), 4, "platform-wide: {}", all.text);
+    let exported = wait_for_audit(
+        &app,
+        "/api/v1/audit-log?action=GET%20/api/v1/cdrs/export",
+        |e| e["status"] == 200,
+    )
+    .await;
+    assert_eq!(exported["actor"], "static_token", "{exported}");
+
+    // ── Retention ──
+    let (old_call, old_sip) = app
+        .seed_cdr_aged(app.tenant_a, Some(5_000), None, days(60))
+        .await;
+    let (new_call, _) = app.seed_cdr_full(app.tenant_a, Some(5_000), None).await;
+    let (b_old, b_sip) = app
+        .seed_cdr_aged(app.tenant_b, Some(5_000), None, days(60))
+        .await;
+    let old_ts = SystemTime::now() - days(60);
+    app.seed_trace_at(&old_call, "ivr", FlowTraceEventType::Started, old_ts)
+        .await;
+    app.seed_trace(&new_call, "ivr", FlowTraceEventType::Started)
+        .await;
+    app.seed_sip_trace_at(
+        &old_call.to_string(),
+        &old_sip,
+        app.tenant_a,
+        "inbound",
+        "INVITE",
+        old_ts,
+    )
+    .await;
+    app.seed_sip_trace(
+        &new_call.to_string(),
+        "new@10.0.0.5",
+        app.tenant_a,
+        "inbound",
+        "INVITE",
+    )
+    .await;
+    app.seed_sip_trace_at(
+        &b_old.to_string(),
+        &b_sip,
+        app.tenant_b,
+        "inbound",
+        "INVITE",
+        old_ts,
+    )
+    .await;
+    // An old audit event for tenant A (its window was cleared, so it must survive).
+    app.compliance
+        .record_audit_event(&AuditEvent {
+            id: 0,
+            tenant_id: Some(app.tenant_a),
+            actor: "static_token".into(),
+            actor_kind: "static_token".into(),
+            method: "DELETE".into(),
+            path: "/api/v1/users/old".into(),
+            status: 204,
+            action: "DELETE /api/v1/users/:username".into(),
+            detail: None,
+            source_ip: None,
+            occurred_at: SystemTime::now() - days(400),
+        })
+        .await
+        .unwrap();
+
+    let run = app
+        .admin(Method::POST, "/api/v1/compliance/retention/run", None)
+        .await;
+    assert_eq!(run.status, StatusCode::OK, "{}", run.text);
+    assert_eq!(run.json["cdrs_deleted"], 1, "{}", run.text);
+    assert_eq!(run.json["sip_traces_deleted"], 1, "{}", run.text);
+    assert_eq!(run.json["flow_traces_deleted"], 1, "{}", run.text);
+    assert_eq!(
+        run.json["audit_events_deleted"], 0,
+        "window cleared: {}",
+        run.text
+    );
+    assert_eq!(run.json["recordings_deleted"], 0);
+    assert!(
+        run.json["errors"].as_array().unwrap().is_empty(),
+        "{}",
+        run.text
+    );
+
+    assert_eq!(
+        app.admin_in(
+            app.tenant_a,
+            Method::GET,
+            &format!("/api/v1/cdrs/{old_call}"),
+            None
+        )
+        .await
+        .status,
+        StatusCode::NOT_FOUND,
+        "old CDR purged"
+    );
+    assert_eq!(
+        app.admin_in(
+            app.tenant_a,
+            Method::GET,
+            &format!("/api/v1/cdrs/{new_call}"),
+            None
+        )
+        .await
+        .status,
+        StatusCode::OK,
+        "recent CDR kept"
+    );
+    let b_kept = app
+        .admin_in(
+            app.tenant_b,
+            Method::GET,
+            &format!("/api/v1/cdrs/{b_old}"),
+            None,
+        )
+        .await;
+    assert_eq!(
+        b_kept.status,
+        StatusCode::OK,
+        "tenant B has no policy: {}",
+        b_kept.text
+    );
+    let b_traces = app
+        .admin_in(
+            app.tenant_b,
+            Method::GET,
+            &format!("/api/v1/calls/{b_old}/sip-messages"),
+            None,
+        )
+        .await;
+    assert_eq!(
+        b_traces.json["messages"].as_array().unwrap().len(),
+        1,
+        "{}",
+        b_traces.text
+    );
+    let old_audit = app
+        .admin(
+            Method::GET,
+            "/api/v1/audit-log?action=DELETE%20/api/v1/users",
+            None,
+        )
+        .await;
+    assert_eq!(
+        old_audit.json.as_array().unwrap().len(),
+        1,
+        "{}",
+        old_audit.text
+    );
+
+    // Now set an audit window and run again: only the old audit row goes.
+    app.admin(
+        Method::PUT,
+        "/api/v1/compliance/policy",
+        Some(json!({ "audit_retention_days": 90 })),
+    )
+    .await;
+    let second = app
+        .admin(Method::POST, "/api/v1/compliance/retention/run", None)
+        .await;
+    assert_eq!(second.json["audit_events_deleted"], 1, "{}", second.text);
+    assert_eq!(second.json["cdrs_deleted"], 0, "{}", second.text);
+
+    let runs = app
+        .admin(Method::GET, "/api/v1/compliance/retention/runs", None)
+        .await;
+    assert_eq!(runs.status, StatusCode::OK, "{}", runs.text);
+    assert_eq!(runs.json.as_array().unwrap().len(), 2, "{}", runs.text);
+    assert_eq!(
+        runs.json[1]["cdrs_deleted"], 1,
+        "oldest last: {}",
+        runs.text
+    );
 
     app.finish().await;
 }

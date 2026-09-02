@@ -51,8 +51,12 @@ pub async fn initialize_storage(config: &StorageSection) -> Result<StorageResult
     let emergency_store = Arc::new(
         fcp_storage_postgres::emergency::PostgresEmergencyStore::new(storage.pool().clone()),
     );
+    let compliance_store = Arc::new(
+        fcp_storage_postgres::compliance::PostgresComplianceStore::new(storage.pool().clone()),
+    );
     let dyn_st = DynStorage::from_all_in_one(storage.clone())
         .with_emergency_store(emergency_store as Arc<dyn fcp_core::e911::EmergencyStore>)
+        .with_compliance_store(compliance_store as Arc<dyn fcp_core::compliance::ComplianceStore>)
         .with_encryption_store(storage.clone() as Arc<dyn fcp_core::encryption::EncryptionStore>)
         .with_sip_trace_store(sip_trace_store as Arc<dyn fcp_core::sip_trace::SipTraceStore>)
         .with_prompt_store(prompt_store as Arc<dyn fcp_core::prompt::PromptStore>)

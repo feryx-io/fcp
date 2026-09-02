@@ -97,6 +97,16 @@ pub trait FlowTraceStore: Send + Sync {
 
     /// Delete traces older than the specified number of days. Returns rows deleted.
     async fn delete_flow_traces_older_than(&self, days: u32) -> anyhow::Result<u64>;
+
+    /// Delete traces older than `before` for calls that belong to a tenant
+    /// (traces carry no tenant themselves; the backend joins on CDRs).
+    async fn delete_flow_traces_for_tenant_before(
+        &self,
+        _tenant_id: &str,
+        _before: SystemTime,
+    ) -> anyhow::Result<u64> {
+        Ok(0)
+    }
 }
 
 /// Serde module for SystemTime serialization as epoch milliseconds.

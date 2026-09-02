@@ -10,6 +10,7 @@
 //! - Request validation
 //! - Router creation and server startup
 
+pub mod audit;
 pub mod auth;
 pub mod error;
 pub mod state;
@@ -62,6 +63,11 @@ pub fn create_router_with(
             header::HeaderName::from_static("x-fcp-provisioning-token"),
         ]);
 
+    // Admin audit log: inside the auth layer (so it sees the caller's
+    // identity and the matched route), on both the protected and the
+    // pre-auth routers.
+    let audit_layer = middleware::from_fn_with_state(state.clone(), audit::audit_requests);
+
     // Build the auth-protected API router
     let mut router = Router::new()
         .route(
@@ -69,7 +75,10 @@ pub fn create_router_with(
             axum::routing::get(v1::metrics::prometheus_metrics)
                 .route_layer(middleware::from_fn(auth::require_admin)),
         )
-        .nest("/api/v1", v1::router().merge(extra_v1));
+        .nest(
+            "/api/v1",
+            v1::router().merge(extra_v1).layer(audit_layer.clone()),
+        );
 
     // Always derive JWT secret from auth_token when available.
     // JWT session auth (admin UI login) is independent of bearer middleware.
@@ -127,7 +136,10 @@ pub fn create_router_with(
             "Public signup requested but auth_token/JWT secret is unavailable; signup route disabled"
         );
     }
-    router = router.merge(Router::new().nest("/api/v1", v1::pre_auth_router(enable_signup)));
+    router = router.merge(Router::new().nest(
+        "/api/v1",
+        v1::pre_auth_router(enable_signup).layer(audit_layer),
+    ));
     router = router.merge(Router::new().nest("/api/v1", v1::ws_router()));
 
     router
