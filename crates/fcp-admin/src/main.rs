@@ -347,7 +347,7 @@ async fn main() -> Result<()> {
     };
 
     // Initialize TTS service for prompt audio synthesis (optional)
-    let mut api_state = if let Some(ref tts_config) = config.tts {
+    let api_state = if let Some(ref tts_config) = config.tts {
         match fcp_media::tts::TtsService::new(fcp_media::tts::TtsConfig {
             provider: fcp_media::tts::TtsProviderConfig::Local {
                 engine: tts_config.engine.clone(),
@@ -413,94 +413,13 @@ async fn main() -> Result<()> {
 
     let bind_addr = config.api.bind_address;
     let api_handle = tokio::spawn(async move {
-        // Build the API router with cluster routes merged into the v1 namespace.
-        // We inline fcp_api_core::create_router logic here so we can inject the
-        // cluster routes *inside* the /api/v1 nest (routes merged outside the
-        // nest would be shadowed by axum's prefix matching).
+        // Cluster routes live inside the /api/v1 nest next to the core API
+        // (routes merged outside the nest would be shadowed by axum's prefix
+        // matching); create_router_with does the auth/CORS/pre-auth wiring.
         let cluster_routes: axum::Router<fcp_api_core::ApiState> =
             cluster_api::cluster_router(cluster_state)
                 .layer(axum::middleware::from_fn(fcp_api_core::auth::require_admin));
-        let v1 = fcp_api_core::v1::router().merge(cluster_routes);
-
-        let cors = tower_http::cors::CorsLayer::new()
-            .allow_origin(tower_http::cors::Any)
-            .allow_methods([
-                axum::http::Method::GET,
-                axum::http::Method::POST,
-                axum::http::Method::PUT,
-                axum::http::Method::DELETE,
-            ])
-            .allow_headers([
-                axum::http::header::CONTENT_TYPE,
-                axum::http::header::AUTHORIZATION,
-                axum::http::header::HeaderName::from_static("x-fcp-provisioning-token"),
-            ]);
-
-        let mut router = axum::Router::new()
-            .route(
-                "/metrics",
-                axum::routing::get(fcp_api_core::v1::metrics::prometheus_metrics),
-            )
-            .nest("/api/v1", v1);
-
-        // Always derive JWT secret from auth_token when available.
-        // JWT session auth (admin UI login) is independent of bearer middleware.
-        if let Some(ref auth_token) = api_config.auth_token {
-            api_state = api_state.with_jwt_secret_from_token(auth_token);
-        }
-        api_state = api_state
-            .with_provisioning_auth_token(api_config.provisioning_auth_token.clone())
-            .with_provisioning_require_https(api_config.provisioning_require_https);
-
-        if api_config.auth_enabled {
-            let auth_token = api_config.auth_token.as_ref().unwrap_or_else(|| {
-                panic!(
-                    "FATAL: auth_enabled=true but no auth_token configured. \
-                     Set api.auth_token in config or disable auth with api.auth_enabled=false."
-                )
-            });
-            tracing::info!("API authentication enabled");
-            let mut auth_config = fcp_api_core::auth::AuthConfig::new(auth_token.clone());
-            if let Some(store) = api_state
-                .storage
-                .as_ref()
-                .and_then(|s| s.api_token_store().cloned())
-            {
-                auth_config = auth_config.with_api_token_store(store);
-                tracing::info!("API token authentication enabled");
-            }
-            // Share JWT secret so bearer middleware also accepts JWT session tokens
-            if let Some(ref jwt_secret) = api_state.jwt_secret {
-                auth_config = auth_config.with_jwt_secret(jwt_secret.clone());
-            }
-            // Share credential store so JWT auth can verify user is still active
-            if let Some(ref storage) = api_state.storage {
-                auth_config = auth_config.with_credential_store(storage.credential_store_arc());
-            }
-            // Store auth config in ApiState for WebSocket first-message auth
-            api_state.auth_config = Some(auth_config.clone());
-            router = router.layer(axum::middleware::from_fn(move |req, next| {
-                let config = auth_config.clone();
-                fcp_api_core::auth::validate_bearer_token(config, req, next)
-            }));
-        }
-
-        // Pre-auth and WebSocket routes merged AFTER the auth layer so they bypass it.
-        // Public signup is only exposed when explicitly enabled and JWT issuance works.
-        let enable_signup = api_config.allow_public_signup && api_state.jwt_secret.is_some();
-        if api_config.allow_public_signup && !enable_signup {
-            warn!("Public signup requested but auth_token/JWT secret is unavailable; signup route disabled");
-        }
-        router = router.merge(
-            axum::Router::new().nest("/api/v1", fcp_api_core::v1::pre_auth_router(enable_signup)),
-        );
-        router = router.merge(axum::Router::new().nest("/api/v1", fcp_api_core::v1::ws_router()));
-
-        let mut app = router
-            .layer(cors)
-            .layer(tower_http::trace::TraceLayer::new_for_http())
-            .with_state(api_state);
-
+        let mut app = fcp_api_core::create_router_with(api_state, &api_config, cluster_routes);
         app = app.merge(fcp_admin_ui::admin_ui_router());
 
         let listener = tokio::net::TcpListener::bind(bind_addr).await?;

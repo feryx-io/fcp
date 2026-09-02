@@ -12,11 +12,15 @@ Database-backed tests live next to the crates they exercise and are gated on
 - `crates/fcp-storage-postgres/tests/integration.rs` — the storage layer
   (see that crate's README).
 - `crates/fcp-api-core/tests/api_postgres.rs` — REST handlers through the
-  full router built by `fcp_api_core::create_router`: bearer middleware,
-  platform-admin tenant override (`x-fcp-tenant-id`), users, devices, config
-  templates, and device auto-provisioning. The `ApiState` it needs is built
-  on a no-op SIP transport dispatcher (no sockets, no SIP traffic), so no
-  separate harness crate was required.
+  full router built by `fcp_api_core::create_router` (the same builder
+  fcp-admin serves): bearer middleware, platform-admin tenant override
+  (`x-fcp-tenant-id`), JWT login/refresh/lockout and role gating, database
+  API tokens, users, devices, config templates, device auto-provisioning,
+  CDRs/usage/billing summary, rate plans and the balance ledger, trunks
+  (Carrier vs Enterprise deployment modes), queue configs, and voicemail
+  mailboxes. The `ApiState` it needs is built on a no-op SIP transport
+  dispatcher (no sockets, no SIP traffic), so no separate harness crate was
+  required.
 
 - `crates/<binary>/tests/smoke.rs` (all 14 service binaries) — built on
   `crates/fcp-testkit` (`fcp_testkit::smoke`): `--version`/`--help`, a
@@ -49,9 +53,9 @@ Covered by `crates/fcp-api-core/tests/api_postgres.rs`:
    owner's credentials, including the HA1 read back through the sealed
    column.
 
-Still uncovered: the remaining handler families (CDRs, billing, trunks,
-queues, voicemail, presence), JWT session login flows, and API-token
-(`fcp_…`) authentication against the database.
+Still uncovered: flows, presence, registrations, phone-number porting, the
+self-service `/me` routes, WebSocket first-message auth, and the queue
+runtime endpoints (they need a live `QueueManager`).
 
 ## When adding tests here
 
