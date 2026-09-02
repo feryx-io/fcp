@@ -530,11 +530,8 @@ async fn main() -> Result<()> {
     }
 
     // Wait for shutdown signal
-    info!("FCP Admin API running. Press Ctrl+C to shutdown.");
-    signal::ctrl_c()
-        .await
-        .context("Failed to listen for shutdown signal")?;
-    info!("Received shutdown signal (Ctrl+C)");
+    info!("FCP Admin API running. Press Ctrl+C or send SIGTERM to shutdown.");
+    shutdown_signal().await;
 
     // Shutdown API server
     api_handle.abort();
@@ -827,5 +824,31 @@ async fn run_presence_listener(
                 }
             }
         }
+    }
+}
+
+/// Resolve on Ctrl+C or SIGTERM so container orchestrators can stop the
+/// service gracefully (`docker stop`, Kubernetes pod termination).
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        signal::ctrl_c()
+            .await
+            .expect("Failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        signal::unix::signal(signal::unix::SignalKind::terminate())
+            .expect("Failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => info!("Received Ctrl+C"),
+        _ = terminate => info!("Received SIGTERM"),
     }
 }

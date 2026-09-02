@@ -52,3 +52,6 @@ bytes = { workspace = true }
 smol_str = "0.3"
 uuid = { workspace = true }
 tokio-rustls = "0.26"
+
+[dev-dependencies]
+fcp-testkit = { path = "../fcp-testkit" }

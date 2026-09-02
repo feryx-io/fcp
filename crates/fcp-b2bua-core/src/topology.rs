@@ -30,6 +30,7 @@ pub enum TopologyHidingMode {
 /// performed by the SIP handler layer, which reads this config to decide
 /// which transformations to apply.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct TopologyHidingConfig {
     /// Overall hiding mode.
     pub mode: TopologyHidingMode,

@@ -61,3 +61,6 @@ url = "2"
 hmac = "0.12"
 sha2 = "0.10"
 base64 = "0.22"
+
+[dev-dependencies]
+fcp-testkit = { path = "../fcp-testkit" }

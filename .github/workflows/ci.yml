@@ -16,9 +16,10 @@ env:
 jobs:
   test:
     runs-on: ubuntu-latest
-    # Real PostgreSQL for crates/fcp-storage-postgres/tests/integration.rs.
-    # The tests create and drop a throwaway database per test, so the
-    # service only needs a superuser and the default `postgres` database.
+    # Real PostgreSQL for the database-backed suites (fcp-storage-postgres,
+    # fcp-api-core, and the per-binary smoke tests). They create and drop a
+    # throwaway database per test, so the service only needs a superuser and
+    # the default `postgres` database.
     services:
       postgres:
         image: postgres:16
@@ -31,8 +32,20 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+      # Redis for the fcp-jobs smoke test (crates/fcp-jobs/tests/smoke.rs);
+      # everything else treats Redis as optional.
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     env:
       FCP_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+      FCP_TEST_REDIS_URL: redis://localhost:6379
     steps:
       # The hosted runner leaves ~14GB free, which a 32-crate workspace's
       # debug + test artifacts overflow (the run dies with SIGBUS in ld /

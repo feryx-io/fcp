@@ -63,3 +63,6 @@ sha2 = "0.10"
 # Utilities
 socket2 = "0.5"
 uuid = { workspace = true }
+
+[dev-dependencies]
+fcp-testkit = { path = "../fcp-testkit" }

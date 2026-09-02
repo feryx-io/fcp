@@ -17,7 +17,10 @@ pub struct SbcDeployConfig {
     pub redis_url: Option<String>,
 
     /// All other SBC configuration.
-    #[serde(flatten)]
+    /// SBC engine configuration, under the `[core]` table (see
+    /// `fcp-sbc-local.toml` and `docs/SINGLE-NODE-SETUP.md`). Every field
+    /// falls back to `SbcConfig::default()` so partial files work.
+    #[serde(default)]
     pub core: fcp_sbc_core::SbcConfig,
 }
 

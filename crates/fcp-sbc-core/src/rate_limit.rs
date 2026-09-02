@@ -118,6 +118,7 @@ impl MethodRateLimits {
 
 /// Aggregate rate limiting policy configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct RateLimitPolicyConfig {
     /// Whether rate limiting is enabled globally.
     pub enabled: bool,

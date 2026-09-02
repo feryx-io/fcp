@@ -119,6 +119,8 @@ impl RealTransportDispatcher {
     pub fn load_tls_client_config() -> Result<Arc<tokio_rustls::rustls::ClientConfig>> {
         use tokio_rustls::rustls::{ClientConfig, RootCertStore};
 
+        ensure_crypto_provider();
+
         // Use system root certificates
         let mut root_store = RootCertStore::empty();
 
@@ -135,6 +137,25 @@ impl RealTransportDispatcher {
             .with_no_client_auth();
 
         Ok(Arc::new(config))
+    }
+}
+
+/// Make sure rustls has a process-level [`CryptoProvider`].
+///
+/// The workspace links rustls with both the `ring` and `aws-lc-rs` backends
+/// (pulled in by different dependencies), so rustls cannot pick one on its
+/// own and panics the first time a `ClientConfig`/`ServerConfig` builder is
+/// used. Installing a default is idempotent; the first caller wins, so a
+/// binary that wants a specific backend can install it before touching
+/// SIP transports.
+///
+/// [`CryptoProvider`]: tokio_rustls::rustls::crypto::CryptoProvider
+#[cfg(feature = "tls")]
+pub fn ensure_crypto_provider() {
+    use tokio_rustls::rustls::crypto::{aws_lc_rs, CryptoProvider};
+    if CryptoProvider::get_default().is_none() {
+        // Err only when another thread installed one first, which is fine.
+        let _ = aws_lc_rs::default_provider().install_default();
     }
 }
 

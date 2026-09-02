@@ -28,6 +28,7 @@ pub struct TrunkCpsLimit {
 
 /// Call admission control configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct AdmissionConfig {
     /// Maximum global calls per second.
     pub max_cps: u32,

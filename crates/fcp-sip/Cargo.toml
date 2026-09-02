@@ -9,7 +9,7 @@ description = "Integration layer between fcp-core and siphon-rs SIP stack"
 
 [features]
 default = []
-tls = ["sip-transport/tls", "tokio-rustls", "rustls-native-certs"]
+tls = ["sip-transport/tls", "tokio-rustls", "rustls", "rustls-native-certs"]
 ws = ["sip-transport/ws"]
 
 [dependencies]
@@ -61,6 +61,9 @@ rand = "0.8"
 
 # TLS support (optional) - must match sip-transport's rustls version
 tokio-rustls = { version = "0.26", optional = true }
+# Explicit so the aws-lc-rs backend used by ensure_crypto_provider() is a
+# feature this crate owns rather than one inherited from another dependency.
+rustls = { version = "0.23", optional = true }
 rustls-native-certs = { version = "0.8", optional = true }
 regex = "1"
 serde_json = "1"

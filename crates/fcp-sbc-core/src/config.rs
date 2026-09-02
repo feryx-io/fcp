@@ -58,6 +58,7 @@ impl Default for SbcStorageConfig {
 /// sub-configurations. The default uses SBC-tuned B2BUA settings (full
 /// topology hiding, always anchor media, single forking, SBC transfer defaults).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SbcConfig {
     /// B2BUA behavior configuration (topology hiding, media anchoring, etc.).
     pub b2bua: B2buaConfig,

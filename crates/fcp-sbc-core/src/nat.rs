@@ -57,6 +57,7 @@ impl Default for TurnServerConfig {
 
 /// NAT traversal configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct NatConfig {
     /// Whether NAT traversal is enabled.
     pub enabled: bool,

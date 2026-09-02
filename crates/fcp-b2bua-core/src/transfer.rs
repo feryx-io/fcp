@@ -67,6 +67,7 @@ pub enum TransferResult {
 
 /// Policy-level configuration for call transfers.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct TransferConfig {
     /// Which transfer types are permitted.
     pub policy: TransferPolicy,

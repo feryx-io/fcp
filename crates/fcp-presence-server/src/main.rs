@@ -33,7 +33,11 @@ use config::PresenceServerConfig;
 
 /// CLI arguments for fcp-presence-server.
 #[derive(Parser)]
-#[command(name = "fcp-presence", about = "Standalone SIP presence server")]
+#[command(
+    name = "fcp-presence",
+    version,
+    about = "Standalone SIP presence server"
+)]
 struct Cli {
     /// Path to the TOML configuration file.
     #[arg(short, long)]

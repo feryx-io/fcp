@@ -34,6 +34,7 @@ pub enum MediaAnchoringMode {
 /// When `Always`, media is always anchored regardless of flags.
 /// When `Never`, media is never anchored regardless of flags.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct MediaAnchoringConfig {
     /// Overall anchoring mode.
     pub mode: MediaAnchoringMode,
