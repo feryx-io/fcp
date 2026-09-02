@@ -34,6 +34,7 @@ use fcp_sip::prelude::{
 use fcp_sip::{B2buaConfig, CallManager};
 use fcp_storage_postgres::api_token::PostgresApiTokenStore;
 use fcp_storage_postgres::flow_trace::PostgresFlowTraceStore;
+use fcp_storage_postgres::prompt::PostgresPromptStore;
 use fcp_storage_postgres::{PostgresConfig, PostgresStorage};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
@@ -82,6 +83,8 @@ struct App {
     storage: Arc<PostgresStorage>,
     traces: Arc<PostgresFlowTraceStore>,
     event_bus: Arc<InMemoryEventBus>,
+    /// Upload directories (avatars, greetings, prompts); removed on drop.
+    _dir: tempfile::TempDir,
     admin_url: String,
     db_name: String,
     /// Default tenant for the static admin token (`ApiState::default_tenant_id`).
@@ -120,8 +123,14 @@ impl App {
         let dyn_storage = Arc::new(
             DynStorage::from_all_in_one(Arc::clone(&storage))
                 .with_api_token_store(api_tokens)
-                .with_flow_trace_store(Arc::clone(&traces) as Arc<dyn FlowTraceStore>),
+                .with_flow_trace_store(Arc::clone(&traces) as Arc<dyn FlowTraceStore>)
+                .with_prompt_store(Arc::new(PostgresPromptStore::new(storage.pool().clone()))
+                    as Arc<dyn fcp_core::prompt::PromptStore>),
         );
+        let dir = tempfile::Builder::new()
+            .prefix("fcp-api-test-")
+            .tempdir()
+            .expect("temp dir");
         let event_bus = Arc::new(InMemoryEventBus::new());
 
         // Runtime managers the queue and presence endpoints need. The queue
@@ -185,7 +194,10 @@ impl App {
             REALM.to_string(),
             tenant_a,
         )
-        .with_deployment_mode(mode);
+        .with_deployment_mode(mode)
+        .with_profile_pictures_dir(dir.path().join("avatars"))
+        .with_voicemail_greetings_dir(dir.path().join("greetings"))
+        .with_prompts_dir(dir.path().join("prompts"));
 
         let api_config = ApiConfig {
             auth_enabled: true,
@@ -200,6 +212,7 @@ impl App {
             storage,
             traces,
             event_bus,
+            _dir: dir,
             admin_url,
             db_name,
             tenant_a,
@@ -245,6 +258,7 @@ impl App {
             headers,
             json,
             text,
+            bytes: bytes.to_vec(),
         }
     }
 
@@ -252,6 +266,73 @@ impl App {
     async fn admin(&self, method: Method, path: &str, body: Option<Value>) -> Response {
         self.send(method, path, &[(AUTH_HEADER, BEARER)], body)
             .await
+    }
+
+    /// Send a request with a raw body and explicit content type.
+    async fn send_raw(
+        &self,
+        token: &str,
+        method: Method,
+        path: &str,
+        content_type: &str,
+        body: Vec<u8>,
+    ) -> Response {
+        let request = Request::builder()
+            .method(method)
+            .uri(path)
+            .header(AUTH_HEADER, format!("Bearer {token}"))
+            .header(header::CONTENT_TYPE, content_type)
+            .body(Body::from(body))
+            .expect("build request");
+        let response = self
+            .router
+            .clone()
+            .oneshot(request)
+            .await
+            .expect("router never fails");
+        let status = response.status();
+        let headers = response.headers().clone();
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        Response {
+            status,
+            headers,
+            json: serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+            text: String::from_utf8_lossy(&bytes).into_owned(),
+            bytes: bytes.to_vec(),
+        }
+    }
+
+    /// POST a multipart/form-data body.
+    async fn send_multipart(&self, token: &str, path: &str, parts: &[Part<'_>]) -> Response {
+        const BOUNDARY: &str = "fcp-test-boundary-7d3a1b";
+        let mut body = Vec::new();
+        for (name, file, bytes) in parts {
+            body.extend_from_slice(format!("--{BOUNDARY}\r\n").as_bytes());
+            match file {
+                Some((filename, content_type)) => body.extend_from_slice(
+                    format!(
+                        "Content-Disposition: form-data; name=\"{name}\"; filename=\"{filename}\"\r\nContent-Type: {content_type}\r\n\r\n"
+                    )
+                    .as_bytes(),
+                ),
+                None => body.extend_from_slice(
+                    format!("Content-Disposition: form-data; name=\"{name}\"\r\n\r\n").as_bytes(),
+                ),
+            }
+            body.extend_from_slice(bytes);
+            body.extend_from_slice(b"\r\n");
+        }
+        body.extend_from_slice(format!("--{BOUNDARY}--\r\n").as_bytes());
+        self.send_raw(
+            token,
+            Method::POST,
+            path,
+            &format!("multipart/form-data; boundary={BOUNDARY}"),
+            body,
+        )
+        .await
     }
 
     /// Request with an arbitrary bearer token (JWT session or `fcp_…` token).
@@ -537,6 +618,9 @@ impl App {
     }
 }
 
+/// One multipart part: `(field name, optional (filename, content type), bytes)`.
+type Part<'a> = (&'a str, Option<(&'a str, &'a str)>, &'a [u8]);
+
 const AUTH_HEADER: &str = "authorization";
 const PASSWORD: &str = "Str0ng-Passw0rd!";
 const BEARER: &str = "Bearer test-admin-token";
@@ -546,6 +630,7 @@ struct Response {
     headers: HeaderMap,
     json: Value,
     text: String,
+    bytes: Vec<u8>,
 }
 
 impl Response {
@@ -2631,6 +2716,471 @@ async fn websocket_events_require_first_message_auth() {
     assert!(
         frames.iter().any(|f| f.contains("device-ws-test")),
         "event never arrived; frames: {frames:?}"
+    );
+
+    app.finish().await;
+}
+
+// ─── Multipart uploads ───────────────────────────────────────────────────
+
+/// A small but well-formed 8 kHz mono 16-bit PCM WAV file.
+fn wav_bytes(samples: usize) -> Vec<u8> {
+    let data_len = (samples * 2) as u32;
+    let mut out = Vec::with_capacity(44 + data_len as usize);
+    out.extend_from_slice(b"RIFF");
+    out.extend_from_slice(&(36 + data_len).to_le_bytes());
+    out.extend_from_slice(b"WAVEfmt ");
+    out.extend_from_slice(&16u32.to_le_bytes()); // fmt chunk size
+    out.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    out.extend_from_slice(&1u16.to_le_bytes()); // mono
+    out.extend_from_slice(&8000u32.to_le_bytes()); // sample rate
+    out.extend_from_slice(&16000u32.to_le_bytes()); // byte rate
+    out.extend_from_slice(&2u16.to_le_bytes()); // block align
+    out.extend_from_slice(&16u16.to_le_bytes()); // bits per sample
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&data_len.to_le_bytes());
+    for i in 0..samples {
+        out.extend_from_slice(&((i % 64) as i16 * 100).to_le_bytes());
+    }
+    out
+}
+
+const PNG_MAGIC: &[u8] = b"\x89PNG\r\n\x1a\n";
+
+#[tokio::test]
+async fn avatar_upload_download_and_delete() {
+    let app = require_app!();
+    app.create_user_with_role("selfie", "end_user").await;
+    let jwt = app.login("selfie", PASSWORD).await.json["token"]
+        .as_str()
+        .expect("jwt")
+        .to_string();
+    let path = "/api/v1/me/profile/avatar";
+
+    let none = app.send_as(&jwt, Method::GET, path, None).await;
+    assert_eq!(none.status, StatusCode::NOT_FOUND, "{}", none.text);
+
+    // Unknown field name (both `avatar` and `file` are accepted), unsupported
+    // type, empty file, oversize: all 400.
+    let wrong_field = app
+        .send_multipart(
+            &jwt,
+            path,
+            &[("picture", Some(("a.png", "image/png")), PNG_MAGIC)],
+        )
+        .await;
+    assert_eq!(
+        wrong_field.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        wrong_field.text
+    );
+    let text_file = app
+        .send_multipart(
+            &jwt,
+            path,
+            &[("avatar", Some(("a.txt", "text/plain")), b"hello")],
+        )
+        .await;
+    assert_eq!(
+        text_file.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        text_file.text
+    );
+    let empty = app
+        .send_multipart(&jwt, path, &[("avatar", Some(("a.png", "image/png")), b"")])
+        .await;
+    assert_eq!(empty.status, StatusCode::BAD_REQUEST, "{}", empty.text);
+    let huge = vec![0u8; 2 * 1024 * 1024 + 1];
+    let oversize = app
+        .send_multipart(
+            &jwt,
+            path,
+            &[("avatar", Some(("a.png", "image/png")), &huge)],
+        )
+        .await;
+    assert_eq!(
+        oversize.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        oversize.text
+    );
+
+    // A PNG round-trips byte for byte with the right content type.
+    let mut png = PNG_MAGIC.to_vec();
+    png.extend_from_slice(&[7u8; 512]);
+    let uploaded = app
+        .send_multipart(
+            &jwt,
+            path,
+            &[("avatar", Some(("me.png", "image/png")), &png)],
+        )
+        .await;
+    assert_eq!(uploaded.status, StatusCode::CREATED, "{}", uploaded.text);
+    let got = app.send_as(&jwt, Method::GET, path, None).await;
+    assert_eq!(got.status, StatusCode::OK, "{}", got.text);
+    assert_eq!(got.header("content-type"), Some("image/png"));
+    assert_eq!(got.bytes, png);
+    let profile = app
+        .send_as(&jwt, Method::GET, "/api/v1/me/profile", None)
+        .await;
+    assert_eq!(
+        profile.json["has_profile_picture"], true,
+        "{}",
+        profile.text
+    );
+
+    // Replacing with a JPEG swaps the stored file and its type.
+    let jpeg = vec![0xFFu8, 0xD8, 0xFF, 0xE0, 1, 2, 3, 4];
+    let replaced = app
+        .send_multipart(
+            &jwt,
+            path,
+            &[("avatar", Some(("me.jpg", "image/jpeg")), &jpeg)],
+        )
+        .await;
+    assert_eq!(replaced.status, StatusCode::CREATED, "{}", replaced.text);
+    let got = app.send_as(&jwt, Method::GET, path, None).await;
+    assert_eq!(got.header("content-type"), Some("image/jpeg"));
+    assert_eq!(got.bytes, jpeg);
+
+    let deleted = app.send_as(&jwt, Method::DELETE, path, None).await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{}", deleted.text);
+    assert_eq!(
+        app.send_as(&jwt, Method::GET, path, None).await.status,
+        StatusCode::NOT_FOUND
+    );
+    let profile = app
+        .send_as(&jwt, Method::GET, "/api/v1/me/profile", None)
+        .await;
+    assert_eq!(
+        profile.json["has_profile_picture"], false,
+        "{}",
+        profile.text
+    );
+
+    app.finish().await;
+}
+
+#[tokio::test]
+async fn voicemail_greetings_admin_and_self_service() {
+    let app = require_app!();
+    let user_id = app.create_user_with_role("greeter", "end_user").await;
+    let number = app
+        .admin(
+            Method::POST,
+            "/api/v1/phone-numbers",
+            Some(json!({ "e164": "+15550003333", "tenant_id": app.tenant_a })),
+        )
+        .await;
+    assert_eq!(number.status, StatusCode::CREATED, "{}", number.text);
+    let binding = app
+        .admin(
+            Method::POST,
+            "/api/v1/line-bindings",
+            Some(json!({
+                "phone_number_id": number.json["id"],
+                "owner_user_id": user_id,
+                "binding_type": "user",
+                "tenant_id": app.tenant_a,
+            })),
+        )
+        .await;
+    assert_eq!(binding.status, StatusCode::CREATED, "{}", binding.text);
+    let mailbox = app
+        .admin(
+            Method::POST,
+            "/api/v1/voicemail/mailboxes",
+            Some(json!({
+                "tenant_id": app.tenant_a,
+                "user_id": user_id,
+                "line_binding_id": binding.json["id"],
+                "pin": "1234",
+            })),
+        )
+        .await;
+    assert_eq!(mailbox.status, StatusCode::CREATED, "{}", mailbox.text);
+    let mailbox_id = mailbox.json["id"].as_str().unwrap().to_string();
+    let admin_path = format!("/api/v1/voicemail/mailboxes/{mailbox_id}/greetings");
+    let busy_wav = wav_bytes(800);
+
+    // Admin upload: validation first.
+    let missing_type = app
+        .send_multipart(
+            ADMIN_TOKEN,
+            &admin_path,
+            &[("audio", Some(("g.wav", "audio/wav")), &busy_wav)],
+        )
+        .await;
+    assert_eq!(
+        missing_type.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        missing_type.text
+    );
+    let bad_type = app
+        .send_multipart(
+            ADMIN_TOKEN,
+            &admin_path,
+            &[
+                ("greeting_type", None, b"holiday"),
+                ("audio", Some(("g.wav", "audio/wav")), &busy_wav),
+            ],
+        )
+        .await;
+    assert_eq!(
+        bad_type.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        bad_type.text
+    );
+    let empty = app
+        .send_multipart(
+            ADMIN_TOKEN,
+            &admin_path,
+            &[
+                ("greeting_type", None, b"busy"),
+                ("audio", Some(("g.wav", "audio/wav")), b""),
+            ],
+        )
+        .await;
+    assert_eq!(empty.status, StatusCode::BAD_REQUEST, "{}", empty.text);
+
+    let uploaded = app
+        .send_multipart(
+            ADMIN_TOKEN,
+            &admin_path,
+            &[
+                ("greeting_type", None, b"busy"),
+                ("audio", Some(("g.wav", "audio/wav")), &busy_wav),
+            ],
+        )
+        .await;
+    assert_eq!(uploaded.status, StatusCode::CREATED, "{}", uploaded.text);
+    assert_eq!(uploaded.json["greeting_type"], "busy");
+
+    let list = app.admin(Method::GET, &admin_path, None).await;
+    assert_eq!(list.json.as_array().unwrap().len(), 1, "{}", list.text);
+    let activated = app
+        .admin(
+            Method::PUT,
+            &format!("{admin_path}/busy/active"),
+            Some(json!({ "active": true })),
+        )
+        .await;
+    assert_eq!(activated.status, StatusCode::OK, "{}", activated.text);
+    let audio = app
+        .admin(Method::GET, &format!("{admin_path}/busy/audio"), None)
+        .await;
+    assert_eq!(audio.status, StatusCode::OK, "{}", audio.text);
+    assert_eq!(audio.header("content-type"), Some("audio/wav"));
+    assert_eq!(audio.bytes, busy_wav);
+
+    // Another tenant cannot touch the mailbox.
+    let cross = app
+        .admin_in(app.tenant_b, Method::GET, &admin_path, None)
+        .await;
+    assert_eq!(cross.status, StatusCode::NOT_FOUND, "{}", cross.text);
+
+    // The owner manages greetings through /me with the same files.
+    let jwt = app.login("greeter", PASSWORD).await.json["token"]
+        .as_str()
+        .expect("jwt")
+        .to_string();
+    let me_path = "/api/v1/me/voicemail/greetings";
+    let temp_wav = wav_bytes(400);
+    let temp = app
+        .send_multipart(
+            &jwt,
+            me_path,
+            &[
+                ("greeting_type", None, b"temporary"),
+                ("expires_in", None, b"24"),
+                ("audio", Some(("t.wav", "audio/wav")), &temp_wav),
+            ],
+        )
+        .await;
+    assert_eq!(temp.status, StatusCode::CREATED, "{}", temp.text);
+    assert_eq!(temp.json["greeting_type"], "temporary");
+    assert!(!temp.json["expires_at"].is_null(), "{}", temp.text);
+    let bad_expiry = app
+        .send_multipart(
+            &jwt,
+            me_path,
+            &[
+                ("greeting_type", None, b"name"),
+                ("expires_in", None, b"soon"),
+                ("audio", Some(("n.wav", "audio/wav")), &temp_wav),
+            ],
+        )
+        .await;
+    assert_eq!(
+        bad_expiry.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        bad_expiry.text
+    );
+
+    let mine = app.send_as(&jwt, Method::GET, me_path, None).await;
+    assert_eq!(mine.status, StatusCode::OK, "{}", mine.text);
+    assert_eq!(mine.json.as_array().unwrap().len(), 2, "{}", mine.text);
+    let busy_audio = app
+        .send_as(&jwt, Method::GET, &format!("{me_path}/busy/audio"), None)
+        .await;
+    assert_eq!(busy_audio.status, StatusCode::OK, "{}", busy_audio.text);
+    assert_eq!(busy_audio.bytes, busy_wav);
+    let temp_audio = app
+        .send_as(
+            &jwt,
+            Method::GET,
+            &format!("{me_path}/temporary/audio"),
+            None,
+        )
+        .await;
+    assert_eq!(temp_audio.bytes, temp_wav);
+
+    let del_temp = app
+        .send_as(&jwt, Method::DELETE, &format!("{me_path}/temporary"), None)
+        .await;
+    assert_eq!(del_temp.status, StatusCode::NO_CONTENT, "{}", del_temp.text);
+    let del_busy = app
+        .admin(Method::DELETE, &format!("{admin_path}/busy"), None)
+        .await;
+    assert_eq!(del_busy.status, StatusCode::NO_CONTENT, "{}", del_busy.text);
+    let none = app.admin(Method::GET, &admin_path, None).await;
+    assert!(none.json.as_array().unwrap().is_empty(), "{}", none.text);
+    let gone = app
+        .send_as(&jwt, Method::GET, &format!("{me_path}/busy/audio"), None)
+        .await;
+    assert_eq!(gone.status, StatusCode::NOT_FOUND, "{}", gone.text);
+
+    app.finish().await;
+}
+
+#[tokio::test]
+async fn prompts_crud_and_audio_upload() {
+    let app = require_app!();
+
+    let no_text = app
+        .admin(
+            Method::POST,
+            "/api/v1/prompts",
+            Some(json!({ "name": "welcome", "source_type": "tts" })),
+        )
+        .await;
+    assert_eq!(
+        no_text.status,
+        StatusCode::BAD_REQUEST,
+        "tts prompts need text: {}",
+        no_text.text
+    );
+
+    let created = app
+        .admin(
+            Method::POST,
+            "/api/v1/prompts",
+            Some(json!({
+                "name": "welcome",
+                "description": "Main menu welcome",
+                "category": "ivr",
+                "source_type": "file",
+            })),
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.text);
+    let id = created.json["id"].as_str().unwrap().to_string();
+    assert_eq!(created.json["category"], "ivr");
+    assert_eq!(created.json["source_type"], "file");
+    assert_eq!(created.json["has_audio"], false);
+    assert_eq!(created.json["tenant_id"], app.tenant_a.to_string());
+    let audio_path = format!("/api/v1/prompts/{id}/audio");
+
+    let no_audio = app.admin(Method::GET, &audio_path, None).await;
+    assert_eq!(no_audio.status, StatusCode::NOT_FOUND, "{}", no_audio.text);
+
+    let wrong_field = app
+        .send_multipart(
+            ADMIN_TOKEN,
+            &audio_path,
+            &[("file", Some(("w.wav", "audio/wav")), &wav_bytes(10))],
+        )
+        .await;
+    assert_eq!(
+        wrong_field.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        wrong_field.text
+    );
+    let empty = app
+        .send_multipart(
+            ADMIN_TOKEN,
+            &audio_path,
+            &[("audio", Some(("w.wav", "audio/wav")), b"")],
+        )
+        .await;
+    assert_eq!(empty.status, StatusCode::BAD_REQUEST, "{}", empty.text);
+
+    let wav = wav_bytes(1600);
+    let uploaded = app
+        .send_multipart(
+            ADMIN_TOKEN,
+            &audio_path,
+            &[("audio", Some(("welcome.wav", "audio/wav")), &wav)],
+        )
+        .await;
+    assert_eq!(uploaded.status, StatusCode::OK, "{}", uploaded.text);
+    assert_eq!(uploaded.json["has_audio"], true);
+    assert_eq!(uploaded.json["audio_format"], "wav");
+    assert_eq!(uploaded.json["file_size"], wav.len());
+
+    let download = app.admin(Method::GET, &audio_path, None).await;
+    assert_eq!(download.status, StatusCode::OK, "{}", download.text);
+    assert_eq!(download.header("content-type"), Some("audio/wav"));
+    assert_eq!(download.bytes, wav);
+
+    let listed = app
+        .admin(Method::GET, "/api/v1/prompts?category=ivr", None)
+        .await;
+    assert_eq!(listed.status, StatusCode::OK, "{}", listed.text);
+    assert_eq!(listed.json.as_array().unwrap().len(), 1, "{}", listed.text);
+    let other_category = app
+        .admin(Method::GET, "/api/v1/prompts?category=moh", None)
+        .await;
+    assert!(
+        other_category.json.as_array().unwrap().is_empty(),
+        "{}",
+        other_category.text
+    );
+
+    let cross = app
+        .admin_in(
+            app.tenant_b,
+            Method::GET,
+            &format!("/api/v1/prompts/{id}"),
+            None,
+        )
+        .await;
+    assert_eq!(cross.status, StatusCode::NOT_FOUND, "{}", cross.text);
+    let cross_audio = app
+        .admin_in(app.tenant_b, Method::GET, &audio_path, None)
+        .await;
+    assert_eq!(
+        cross_audio.status,
+        StatusCode::NOT_FOUND,
+        "{}",
+        cross_audio.text
+    );
+
+    let deleted = app
+        .admin(Method::DELETE, &format!("/api/v1/prompts/{id}"), None)
+        .await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{}", deleted.text);
+    assert_eq!(
+        app.admin(Method::GET, &format!("/api/v1/prompts/{id}"), None)
+            .await
+            .status,
+        StatusCode::NOT_FOUND
     );
 
     app.finish().await;
