@@ -4,7 +4,7 @@
 Update this file when feature status changes; keep other docs describing scope, not status.
 
 - **Last reviewed:** 2026-09-01 (full code audit against ARCHITECTURE-v0.2.md)
-- **Version:** v0.25.63 · 33 workspace crates
+- **Version:** v0.25.73 · 36 workspace crates
 - **Submodules:** siphon-rs `v2026.08.25` · forge-media `v2026.09.01.1` (both at their repos' current release tips)
 - **Health:** CI green (fmt, clippy `-D warnings`, tests, cargo-audit) · 0 Dependabot alerts · 0 future-incompat warnings
 
@@ -56,7 +56,7 @@ Each needs a deliberate keep-or-descope decision:
 
 ## Known weak spots
 
-- **Test coverage** outside the SIP stack is thin: storage backends and most binaries have little to no automated coverage. Workspace `TODO`/`todo!()` count is low (~45, mostly `fcp-media`'s RemoteBackend), so the debt is coverage, not stubs.
+- **Test coverage** outside the SIP stack is thin: the Postgres backend and the core REST handlers (users, devices, templates, provisioning) now have database-backed tests, but most binaries and the remaining API surface (CDRs, billing, trunks, queues, voicemail) still have little to no automated coverage. Workspace `TODO`/`todo!()` count is low (~45, mostly `fcp-media`'s RemoteBackend), so the debt is coverage, not stubs.
 - `proc-macro-error2`/`redis 0.25` future-incompat warnings were cleared in v0.25.63.
 
 ## Next steps (agreed 2026-09-01)
@@ -67,7 +67,7 @@ Each needs a deliberate keep-or-descope decision:
 4. ~~Ship vendor provisioning templates~~ (done 2026-09-01: built-in library + instantiate API, rather than migration seeding — future tenants get them too)
 5. ~~Extract `fcp-policy`~~ (done 2026-09-01: policy engine in its own crate + timezone fix + tenant feature toggles; admission deliberately left in fcp-sbc-core as capacity control)
 6. ~~SBC pipeline stages 3–5~~ (done 2026-09-01: reachability classification, routing accounting fix, per-trunk number transforms)
-7. Parallel: raise the test floor — ~~containerized Postgres integration tests~~ (done 2026-09-01: `fcp-storage-postgres/tests/integration.rs` runs against a Postgres service in CI, gated on `FCP_TEST_DATABASE_URL`; first run caught two production bugs — `query_cdrs` emitted unnumbered `$` placeholders so every filtered CDR query failed, and `aggregate_usage*` could not decode `SUM(bigint)` (NUMERIC) so usage/billing summaries failed for any tenant with answered calls — both fixed in v0.25.71); still to do: binary smoke tests, API handler tests against Postgres (see `tests/integration/README.md`)
+7. Parallel: raise the test floor — ~~containerized Postgres integration tests~~ (done 2026-09-01: `fcp-storage-postgres/tests/integration.rs` runs against a Postgres service in CI, gated on `FCP_TEST_DATABASE_URL`; first run caught two production bugs — `query_cdrs` emitted unnumbered `$` placeholders so every filtered CDR query failed, and `aggregate_usage*` could not decode `SUM(bigint)` (NUMERIC) so usage/billing summaries failed for any tenant with answered calls — both fixed in v0.25.71); → ~~API handler tests against Postgres~~ (done 2026-09-02: `fcp-api-core/tests/api_postgres.rs` drives the full Axum router — bearer middleware, platform-admin tenant override, users, devices, config templates, and the device auto-provisioning endpoint including its uniform-404 failure surface — against the same CI Postgres service; the SIP side of `ApiState` is built on a no-op transport dispatcher, which turned out to need no new harness); still to do: binary smoke tests, then widen the handler suite to CDRs/billing/trunks
 8. ~~KMS design~~ (done 2026-09-01: envelope encryption in `fcp-crypto`, local + AWS KMS providers). Phase 5 gate decisions: storage strategy, plugin/gRPC keep-or-descope, schedule distributed conferencing
 
 ## Historical documents

@@ -56,3 +56,7 @@ regex = "1"
 [dev-dependencies]
 async-trait = "0.1"
 tower = { version = "0.5", features = ["util"] }
+# Handler tests against a real PostgreSQL instance (tests/api_postgres.rs)
+fcp-storage-postgres = { path = "../fcp-storage-postgres" }
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres"] }
+bytes = { workspace = true }
