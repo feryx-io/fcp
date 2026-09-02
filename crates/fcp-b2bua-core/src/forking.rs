@@ -38,6 +38,7 @@ pub enum EarlyMediaPolicy {
 
 /// Policy-level configuration for call forking.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ForkingConfig {
     /// Forking mode.
     pub mode: ForkingMode,

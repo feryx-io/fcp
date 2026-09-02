@@ -1,0 +1,17 @@
+[package]
+name = "fcp-testkit"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Test-support helpers for FCP: binary smoke tests, throwaway databases"
+publish = false
+
+[dependencies]
+anyhow = { workspace = true }
+libc = "0.2"
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres"] }
+tempfile = "3"
+tokio = { workspace = true }
+uuid = { workspace = true }

@@ -24,6 +24,7 @@ pub enum TrunkHealthStatus {
 
 /// SBC metrics collection configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SbcMetricsConfig {
     /// Whether metrics collection is enabled.
     pub enabled: bool,

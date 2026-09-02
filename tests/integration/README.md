@@ -18,8 +18,15 @@ Database-backed tests live next to the crates they exercise and are gated on
   on a no-op SIP transport dispatcher (no sockets, no SIP traffic), so no
   separate harness crate was required.
 
+- `crates/<binary>/tests/smoke.rs` (all 14 service binaries) — built on
+  `crates/fcp-testkit` (`fcp_testkit::smoke`): `--version`/`--help`, a
+  malformed config file is rejected, and the service starts on free loopback
+  ports, answers its health endpoint, and exits cleanly on SIGTERM. Binaries
+  that need a database run against `FCP_TEST_DATABASE_URL`; `fcp-jobs` needs
+  `FCP_TEST_REDIS_URL` (a `redis:7` service in CI). Both skip when unset.
+
 Nothing runnable lives in this directory yet; cross-service tests (API + SIP
-+ media) and binary smoke tests are still a gap.
++ media) are still a gap.
 
 ## Known coverage gaps
 

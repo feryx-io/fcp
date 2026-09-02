@@ -83,4 +83,5 @@ fcp-storage-redis = { path = "../fcp-storage-redis", optional = true }
 fcp-cluster = { path = "../fcp-cluster", optional = true }
 
 [dev-dependencies]
+fcp-testkit = { path = "../fcp-testkit" }
 tower = "0.5"

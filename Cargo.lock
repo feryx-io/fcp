@@ -2039,7 +2039,7 @@ checksum = "9f1f227452a390804cdb637b74a86990f2a7d7ba4b7d5693aac9b4dd6defd8d6"
 
 [[package]]
 name = "fcp-admin"
-version = "0.25.73"
+version = "0.25.74"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2059,6 +2059,7 @@ dependencies = [
  "fcp-sip",
  "fcp-storage-postgres",
  "fcp-storage-redis",
+ "fcp-testkit",
  "futures-util",
  "reqwest 0.12.28",
  "serde",
@@ -2075,7 +2076,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-admin-ui"
-version = "0.25.73"
+version = "0.25.74"
 dependencies = [
  "axum 0.7.9",
  "include_dir",
@@ -2084,7 +2085,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-api-core"
-version = "0.25.73"
+version = "0.25.74"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2121,7 +2122,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-api-gateway"
-version = "0.25.73"
+version = "0.25.74"
 dependencies = [
  "anyhow",
  "axum 0.7.9",
@@ -2129,6 +2130,7 @@ dependencies = [
  "bytes",
  "clap",
  "dashmap 6.1.0",
+ "fcp-testkit",
  "futures-util",
  "governor",
  "http-body-util",
@@ -2150,7 +2152,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-b2bua-core"
-version = "0.25.73"
+version = "0.25.74"
 dependencies = [
  "anyhow",
  "bytes",
@@ -2173,7 +2175,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-billing"
-version = "0.25.73"
+version = "0.25.74"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2187,7 +2189,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-call-manager"
-version = "0.25.73"
+version = "0.25.74"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2209,6 +2211,7 @@ dependencies = [
  "fcp-sip",
  "fcp-storage-postgres",
  "fcp-storage-redis",
+ "fcp-testkit",
  "fcp-voicemail",
  "fcp-webhooks",
  "forge-codecs",
@@ -2244,7 +2247,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-cli"
-version = "0.25.73"
+version = "0.25.74"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2277,7 +2280,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-cluster"
-version = "0.25.73"
+version = "0.25.74"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2296,7 +2299,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-conference-server"
-version = "0.25.73"
+version = "0.25.74"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -2315,6 +2318,7 @@ dependencies = [
  "fcp-sip",
  "fcp-storage-postgres",
  "fcp-storage-redis",
+ "fcp-testkit",
  "forge-codecs",
  "forge-conference",
  "forge-core",
@@ -2373,7 +2377,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-crypto"
-version = "0.25.73"
+version = "0.25.74"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -2391,7 +2395,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-events"
-version = "0.25.73"
+version = "0.25.74"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2408,7 +2412,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-events-server"
-version = "0.25.73"
+version = "0.25.74"
 dependencies = [
  "anyhow",
  "axum 0.7.9",
@@ -2420,6 +2424,7 @@ dependencies = [
  "fcp-events",
  "fcp-storage-postgres",
  "fcp-storage-redis",
+ "fcp-testkit",
  "fcp-webhooks",
  "futures-util",
  "hmac 0.12.1",
@@ -2464,7 +2469,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-ivr"
-version = "0.25.73"
+version = "0.25.74"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2483,6 +2488,7 @@ dependencies = [
  "fcp-sip",
  "fcp-storage-postgres",
  "fcp-storage-redis",
+ "fcp-testkit",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -2504,13 +2510,14 @@ dependencies = [
 
 [[package]]
 name = "fcp-jobs"
-version = "0.25.73"
+version = "0.25.74"
 dependencies = [
  "anyhow",
  "axum 0.7.9",
  "chrono",
  "clap",
  "fcp-core",
+ "fcp-testkit",
  "num_cpus",
  "redis",
  "reqwest 0.12.28",
@@ -2562,7 +2569,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-media-server"
-version = "0.25.73"
+version = "0.25.74"
 dependencies = [
  "anyhow",
  "clap",
@@ -2571,6 +2578,7 @@ dependencies = [
  "fcp-events",
  "fcp-storage-postgres",
  "fcp-storage-redis",
+ "fcp-testkit",
  "forge-api",
  "forge-core",
  "serde",
@@ -2584,7 +2592,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-pbx"
-version = "0.25.73"
+version = "0.25.74"
 dependencies = [
  "dashmap 6.1.0",
  "fcp-b2bua-core",
@@ -2623,7 +2631,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-presence"
-version = "0.25.73"
+version = "0.25.74"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -2650,7 +2658,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-presence-server"
-version = "0.25.73"
+version = "0.25.74"
 dependencies = [
  "anyhow",
  "axum 0.7.9",
@@ -2662,6 +2670,7 @@ dependencies = [
  "fcp-sip",
  "fcp-storage-postgres",
  "fcp-storage-redis",
+ "fcp-testkit",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -2680,7 +2689,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-queue"
-version = "0.25.73"
+version = "0.25.74"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2702,7 +2711,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-registrar"
-version = "0.25.73"
+version = "0.25.74"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2712,6 +2721,7 @@ dependencies = [
  "fcp-core",
  "fcp-sip",
  "fcp-storage-postgres",
+ "fcp-testkit",
  "serde",
  "serde_json",
  "sip-auth",
@@ -2747,7 +2757,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-sbc"
-version = "0.25.73"
+version = "0.25.74"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2765,6 +2775,7 @@ dependencies = [
  "fcp-sip",
  "fcp-storage-postgres",
  "fcp-storage-redis",
+ "fcp-testkit",
  "ipnetwork",
  "p256",
  "rand 0.8.6",
@@ -2797,7 +2808,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-sbc-core"
-version = "0.25.73"
+version = "0.25.74"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2843,6 +2854,7 @@ dependencies = [
  "md5",
  "rand 0.8.6",
  "regex",
+ "rustls",
  "rustls-native-certs",
  "serde",
  "serde_json",
@@ -2874,7 +2886,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-storage-postgres"
-version = "0.25.73"
+version = "0.25.74"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2895,7 +2907,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-storage-redis"
-version = "0.25.73"
+version = "0.25.74"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2913,8 +2925,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "fcp-testkit"
+version = "0.25.74"
+dependencies = [
+ "anyhow",
+ "libc",
+ "sqlx",
+ "tempfile",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "fcp-tts-server"
-version = "0.25.73"
+version = "0.25.74"
 dependencies = [
  "anyhow",
  "axum 0.7.9",
@@ -2924,6 +2948,7 @@ dependencies = [
  "fcp-events",
  "fcp-media",
  "fcp-storage-redis",
+ "fcp-testkit",
  "serde",
  "serde_json",
  "tokio",
@@ -2951,7 +2976,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-voicemail-server"
-version = "0.25.73"
+version = "0.25.74"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2970,6 +2995,7 @@ dependencies = [
  "fcp-sip",
  "fcp-storage-postgres",
  "fcp-storage-redis",
+ "fcp-testkit",
  "fcp-voicemail",
  "futures-util",
  "reqwest 0.12.28",
@@ -2994,7 +3020,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-webhooks"
-version = "0.25.73"
+version = "0.25.74"
 dependencies = [
  "fcp-core",
  "fcp-events",
@@ -3012,7 +3038,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-webrtc-gateway"
-version = "0.25.73"
+version = "0.25.74"
 dependencies = [
  "anyhow",
  "axum 0.8.9",
@@ -3025,6 +3051,7 @@ dependencies = [
  "fcp-media",
  "fcp-sip",
  "fcp-storage-redis",
+ "fcp-testkit",
  "forge-api",
  "forge-conference",
  "forge-core",

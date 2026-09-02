@@ -46,3 +46,6 @@ fcp-events = { path = "../fcp-events" }
 fcp-storage-postgres = { path = "../fcp-storage-postgres" }
 fcp-storage-redis = { path = "../fcp-storage-redis", optional = true }
 fcp-cluster = { path = "../fcp-cluster", optional = true }
+
+[dev-dependencies]
+fcp-testkit = { path = "../fcp-testkit" }

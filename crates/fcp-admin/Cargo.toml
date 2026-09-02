@@ -71,3 +71,6 @@ futures-util = "0.3"
 
 # For future connection pooling
 dashmap = "6"
+
+[dev-dependencies]
+fcp-testkit = { path = "../fcp-testkit" }

@@ -95,4 +95,5 @@ futures = "0.3"
 async-stream = "0.3"
 
 [dev-dependencies]
+fcp-testkit = { path = "../fcp-testkit" }
 tempfile = "3"

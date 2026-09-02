@@ -52,3 +52,6 @@ bytes = { workspace = true }
 futures-util = "0.3"
 uuid = { workspace = true }
 base64 = "0.22"
+
+[dev-dependencies]
+fcp-testkit = { path = "../fcp-testkit" }

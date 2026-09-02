@@ -74,6 +74,7 @@ pub struct RecordingServer {
 
 /// SIPREC recording configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SiprecConfig {
     /// Recording policy.
     pub policy: RecordingPolicy,

@@ -109,6 +109,7 @@ pub enum MalformedSipPolicy {
 
 /// Security configuration for the SBC.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SecurityConfig {
     /// ACL for signaling traffic.
     pub signaling_acl: IpAcl,

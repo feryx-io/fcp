@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Ferrous Communications Platform (FCP)** is a next-generation, carrier-grade unified communications platform written entirely in Rust. The project aims to be a multi-tenant, API-first alternative to FreeSWITCH/Kamailio/Asterisk with built-in memory safety, modern async I/O, and observability.
 
-The repository contains 36 workspace crates spanning core libraries, application services, storage backends, and standalone binaries, plus two git submodules under `external/`: the siphon-rs SIP stack and the forge-media media stack. Both submodule repositories are public.
+The repository contains 37 workspace crates spanning core libraries, application services, storage backends, and standalone binaries, plus two git submodules under `external/`: the siphon-rs SIP stack and the forge-media media stack. Both submodule repositories are public.
 
 > **Current status lives in [STATUS.md](STATUS.md)** — the phase notes below describe scope, but STATUS.md is the maintained source of truth for what is done, partial, or absent.
 
@@ -109,7 +109,7 @@ The architecture document (`ARCHITECTURE-v0.2.md`) defines a layered platform wi
 
 ```
 fcp/
-├── Cargo.toml                    # Workspace root (32 crates)
+├── Cargo.toml                    # Workspace root (37 crates)
 ├── ARCHITECTURE-v0.2.md          # Detailed architecture and roadmap
 ├── IMPLEMENTATION_DOCS.md        # Implementation details for all subsystems
 ├── Phase1 plan.md                # Original MVP implementation plan
@@ -145,6 +145,9 @@ fcp/
 │   │ # ── Storage ───────────────────────────────────────────
 │   ├── fcp-storage-postgres/     # PostgreSQL backend (sqlx, JSONB, migrations)
 │   ├── fcp-storage-redis/        # Redis backend (event bus, parking, circuit breaker)
+│   │
+│   │ # ── Test support (dev-dependency only) ─────────────────
+│   ├── fcp-testkit/              # Binary smoke-test harness, throwaway Postgres databases
 │   │
 │   │ # ── Admin & CLI ───────────────────────────────────────
 │   ├── fcp-admin/                # Admin HTTP server
@@ -404,6 +407,10 @@ while let Some(event) = ctx.wait_event().await {
 - Place in `tests/` directory at workspace root
 - Test interactions between multiple crates
 - Use `sip-testkit` for SIP-specific test utilities
+- Database-backed suites (`fcp-storage-postgres/tests`, `fcp-api-core/tests`) and the
+  per-binary `tests/smoke.rs` files are gated on `FCP_TEST_DATABASE_URL` (and
+  `FCP_TEST_REDIS_URL` for `fcp-jobs`); they skip when unset and run in CI against
+  service containers. `fcp-testkit` holds the shared harness.
 
 **Property Tests:**
 - Use `proptest` for testing invariants
