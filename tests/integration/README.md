@@ -17,10 +17,13 @@ Database-backed tests live next to the crates they exercise and are gated on
   (`x-fcp-tenant-id`), JWT login/refresh/lockout and role gating, database
   API tokens, users, devices, config templates, device auto-provisioning,
   CDRs/usage/billing summary, rate plans and the balance ledger, trunks
-  (Carrier vs Enterprise deployment modes), queue configs, and voicemail
-  mailboxes. The `ApiState` it needs is built on a no-op SIP transport
-  dispatcher (no sockets, no SIP traffic), so no separate harness crate was
-  required.
+  (Carrier vs Enterprise deployment modes), queue configs and the queue
+  runtime (live `QueueManager`), voicemail mailboxes, flows and flow traces,
+  registrations, the presence runtime (live `PresenceManager`), the
+  self-service `/me` routes, and the `/events` WebSocket first-message auth
+  (served on a real loopback socket). The `ApiState` it needs is built on a
+  no-op SIP transport dispatcher (no sockets, no SIP traffic), so no separate
+  harness crate was required.
 
 - `crates/<binary>/tests/smoke.rs` (all 14 service binaries) — built on
   `crates/fcp-testkit` (`fcp_testkit::smoke`): `--version`/`--help`, a
@@ -53,9 +56,9 @@ Covered by `crates/fcp-api-core/tests/api_postgres.rs`:
    owner's credentials, including the HA1 read back through the sealed
    column.
 
-Still uncovered: flows, presence, registrations, phone-number porting, the
-self-service `/me` routes, WebSocket first-message auth, and the queue
-runtime endpoints (they need a live `QueueManager`).
+Still uncovered: multipart upload endpoints (avatars, voicemail greetings,
+audio prompts), the SIP trace and debug routes, and phone-number porting
+(no API exists yet; only the `PortingStore` model).
 
 ## When adding tests here
 

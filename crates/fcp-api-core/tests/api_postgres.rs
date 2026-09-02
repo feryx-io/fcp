@@ -19,17 +19,23 @@ use axum::http::{header, HeaderMap, Method, Request, StatusCode};
 use axum::Router;
 use bytes::Bytes;
 use fcp_api_core::{create_router, ApiState};
+use fcp_core::flow_trace::{FlowTraceEntry, FlowTraceEventType, FlowTraceStore};
 use fcp_core::permissions::DeploymentMode;
 use fcp_core::storage::{CallDetailRecord, CallDisposition, CdrStore, DeviceStore, HangupCause};
+use fcp_core::storage::{Registration, RegistrationStore};
 use fcp_core::{ApiConfig, CallId, DynStorage, Tenant, TenantId, TenantStore, UserId};
 use fcp_events::InMemoryEventBus;
+use fcp_events::{EventPublisher, PlatformEvent, SystemEvent};
+use fcp_flow::FlowStore;
 use fcp_sip::handler::SipMessageHandler;
 use fcp_sip::prelude::{
     DialogManager, SubscriptionManager, TransactionManager, TransportContext, TransportDispatcher,
 };
 use fcp_sip::{B2buaConfig, CallManager};
 use fcp_storage_postgres::api_token::PostgresApiTokenStore;
+use fcp_storage_postgres::flow_trace::PostgresFlowTraceStore;
 use fcp_storage_postgres::{PostgresConfig, PostgresStorage};
+use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use sqlx::{Connection, PgConnection};
 use std::sync::Arc;
@@ -74,6 +80,8 @@ impl TransportDispatcher for NullDispatcher {
 struct App {
     router: Router,
     storage: Arc<PostgresStorage>,
+    traces: Arc<PostgresFlowTraceStore>,
+    event_bus: Arc<InMemoryEventBus>,
     admin_url: String,
     db_name: String,
     /// Default tenant for the static admin token (`ApiState::default_tenant_id`).
@@ -108,9 +116,26 @@ impl App {
         // Mirror the production wiring in fcp-admin/src/storage.rs: the API
         // token store is a separate Postgres store attached to DynStorage.
         let api_tokens = Arc::new(PostgresApiTokenStore::new(storage.pool().clone()));
+        let traces = Arc::new(PostgresFlowTraceStore::new(storage.pool().clone()));
         let dyn_storage = Arc::new(
-            DynStorage::from_all_in_one(Arc::clone(&storage)).with_api_token_store(api_tokens),
+            DynStorage::from_all_in_one(Arc::clone(&storage))
+                .with_api_token_store(api_tokens)
+                .with_flow_trace_store(Arc::clone(&traces) as Arc<dyn FlowTraceStore>),
         );
+        let event_bus = Arc::new(InMemoryEventBus::new());
+
+        // Runtime managers the queue and presence endpoints need. The queue
+        // manager starts with one configured queue in the default tenant.
+        let queue_config: fcp_queue::QueueSystemConfig = serde_json::from_value(json!({
+            "enabled": true,
+            "queues": {
+                "support": { "name": "Support", "extension": "7000", "strategy": "round_robin" }
+            }
+        }))
+        .expect("queue config");
+        let queue_manager = Arc::new(fcp_queue::QueueManager::new(queue_config, None, tenant_a));
+        let presence_manager =
+            fcp_presence::PresenceManager::new(fcp_presence::PresenceConfig::default(), None);
 
         // SIP components with no transport behind them.
         let transaction_manager = Arc::new(TransactionManager::new(
@@ -148,15 +173,15 @@ impl App {
 
         let state = ApiState::new(
             Some(dyn_storage),
-            None,
+            Some(Arc::clone(&storage) as Arc<dyn FlowStore>),
             dialog_manager,
             subscription_manager,
             call_manager,
             Arc::new(handler),
             None,
-            Arc::new(InMemoryEventBus::new()),
-            None,
-            None,
+            Arc::clone(&event_bus) as Arc<dyn fcp_events::EventBus>,
+            Some(queue_manager),
+            Some(presence_manager),
             REALM.to_string(),
             tenant_a,
         )
@@ -173,6 +198,8 @@ impl App {
         Some(Self {
             router: create_router(state, &api_config),
             storage,
+            traces,
+            event_bus,
             admin_url,
             db_name,
             tenant_a,
@@ -319,6 +346,60 @@ impl App {
         let id = cdr.call_id;
         self.storage.insert_cdr(cdr).await.expect("insert cdr");
         id
+    }
+
+    /// Serve the router on a loopback TCP port (for WebSocket tests, which
+    /// cannot go through `oneshot`). Returns the bound port.
+    async fn serve(&self) -> u16 {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind loopback");
+        let port = listener.local_addr().unwrap().port();
+        let router = self.router.clone();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+        port
+    }
+
+    /// Insert a registration binding directly through storage.
+    async fn seed_registration(&self, tenant: TenantId, aor: &str, contact: &str) {
+        let now = SystemTime::now();
+        self.storage
+            .put_registration(Registration {
+                tenant_id: tenant,
+                aor: aor.to_string(),
+                contact: contact.to_string(),
+                expires_at: now + Duration::from_secs(3600),
+                call_id: format!("{}@test", Uuid::new_v4()),
+                cseq: 1,
+                user_agent: Some("fcp-test/1.0".to_string()),
+                q: None,
+                registered_at: now,
+                path: None,
+                flow_token: None,
+            })
+            .await
+            .expect("put registration");
+    }
+
+    /// Insert one flow-trace entry for a call.
+    async fn seed_trace(&self, call_id: &CallId, flow_id: &str, event: FlowTraceEventType) {
+        self.traces
+            .insert_flow_trace(&FlowTraceEntry {
+                id: 0,
+                call_id: call_id.to_string(),
+                flow_id: flow_id.to_string(),
+                flow_name: Some("Main IVR".to_string()),
+                node_id: Some("answer".to_string()),
+                event_type: event,
+                timestamp: SystemTime::now(),
+                detail: None,
+                flow_version: Some(1),
+                elapsed_ms: Some(5),
+            })
+            .await
+            .expect("insert trace");
     }
 
     /// Authenticated request as the static admin token, scoped to `tenant`.
@@ -1132,7 +1213,27 @@ async fn database_api_tokens_authenticate_and_are_scoped() {
     let listed = list.json.as_array().unwrap();
     assert_eq!(listed.len(), 2);
     assert!(listed.iter().all(|t| t.get("secret").is_none()));
-    let used = listed.iter().find(|t| t["name"] == "automation").unwrap();
+    // last_used_at is stamped asynchronously after a successful auth.
+    let mut used = listed
+        .iter()
+        .find(|t| t["name"] == "automation")
+        .unwrap()
+        .clone();
+    for _ in 0..20 {
+        if !used["last_used_at"].is_null() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let again = app.admin(Method::GET, "/api/v1/api-tokens", None).await;
+        used = again
+            .json
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "automation")
+            .unwrap()
+            .clone();
+    }
     assert!(
         !used["last_used_at"].is_null(),
         "last_used_at not stamped: {used}"
@@ -1603,8 +1704,8 @@ async fn queue_configs_crud_and_runtime_absent() {
             Method::POST,
             "/api/v1/queue-configs",
             Some(json!({
-                "name": "support",
-                "extension": "7000",
+                "name": "billing",
+                "extension": "7100",
                 "strategy": "ring_all",
                 "max_wait_time_secs": 120,
                 "agents": [agent],
@@ -1613,8 +1714,8 @@ async fn queue_configs_crud_and_runtime_absent() {
         .await;
     assert_eq!(created.status, StatusCode::CREATED, "{}", created.text);
     let id = created.json["id"].as_str().unwrap().to_string();
-    assert_eq!(created.json["name"], "support");
-    assert_eq!(created.json["extension"], "7000");
+    assert_eq!(created.json["name"], "billing");
+    assert_eq!(created.json["extension"], "7100");
 
     let list = app.admin(Method::GET, "/api/v1/queue-configs", None).await;
     assert_eq!(list.status, StatusCode::OK, "{}", list.text);
@@ -1630,14 +1731,21 @@ async fn queue_configs_crud_and_runtime_absent() {
         .await;
     assert_eq!(cross.status, StatusCode::NOT_FOUND, "{}", cross.text);
 
-    // The queue listing is served from stored configs even without a live
-    // QueueManager; runtime-only endpoints report its absence as 404, not 500.
+    // Stored configs are not runtime queues until synced: the listing comes
+    // from the live QueueManager, and runtime-only endpoints answer 404 (not
+    // 500) for a config it has not loaded.
     let queues = app.admin(Method::GET, "/api/v1/queues", None).await;
     assert_eq!(queues.status, StatusCode::OK, "{}", queues.text);
-    assert_eq!(queues.json[0]["name"], "support", "{}", queues.text);
-    assert_eq!(queues.json[0]["calls_waiting"], 0);
+    let names: Vec<&str> = queues
+        .json
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|q| q["name"].as_str())
+        .collect();
+    assert!(names.contains(&"support"), "{names:?}");
     let stats = app
-        .admin(Method::GET, "/api/v1/queues/support/stats", None)
+        .admin(Method::GET, "/api/v1/queues/billing/stats", None)
         .await;
     assert_eq!(stats.status, StatusCode::NOT_FOUND, "{}", stats.text);
 
@@ -1783,6 +1891,746 @@ async fn voicemail_mailboxes_crud() {
         .await
         .status,
         StatusCode::NOT_FOUND
+    );
+
+    app.finish().await;
+}
+
+// ─── Flows and flow traces ───────────────────────────────────────────────
+
+fn hangup_flow(id: &str, name: &str) -> Value {
+    json!({
+        "id": id,
+        "name": name,
+        "initial_node": "answer",
+        "nodes": {
+            "answer": { "id": "answer", "name": "Answer", "type": "answer", "next": "hangup" },
+            "hangup": { "id": "hangup", "name": "Hangup", "type": "hangup", "reason": "normal" }
+        },
+        "variables": {},
+        "enabled": true
+    })
+}
+
+#[tokio::test]
+async fn flows_crud_versions_and_tenant_scoping() {
+    let app = require_app!();
+
+    let created = app
+        .admin(
+            Method::POST,
+            "/api/v1/flows",
+            Some(hangup_flow("main-ivr", "Main IVR")),
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.text);
+    assert_eq!(created.json["id"], "main-ivr");
+    assert_eq!(created.json["tenant_id"], app.tenant_a.to_string());
+    assert_eq!(created.json["initial_node"], "answer");
+
+    let got = app.admin(Method::GET, "/api/v1/flows/main-ivr", None).await;
+    assert_eq!(got.status, StatusCode::OK, "{}", got.text);
+    assert_eq!(got.json["nodes"]["hangup"]["type"], "hangup");
+
+    let list = app.admin(Method::GET, "/api/v1/flows", None).await;
+    assert_eq!(list.status, StatusCode::OK, "{}", list.text);
+    assert_eq!(list.json["total"], 1, "{}", list.text);
+    assert_eq!(list.json["flows"][0]["id"], "main-ivr");
+
+    let updated = app
+        .admin(
+            Method::PUT,
+            "/api/v1/flows/main-ivr",
+            Some(json!({ "name": "Main IVR v2", "enabled": false })),
+        )
+        .await;
+    assert_eq!(updated.status, StatusCode::OK, "{}", updated.text);
+    assert_eq!(updated.json["name"], "Main IVR v2");
+    assert_eq!(updated.json["enabled"], false);
+
+    let versions = app
+        .admin(Method::GET, "/api/v1/flows/main-ivr/versions", None)
+        .await;
+    assert_eq!(versions.status, StatusCode::OK, "{}", versions.text);
+    let version_count = versions
+        .json
+        .as_array()
+        .map(|v| v.len())
+        .or_else(|| versions.json["versions"].as_array().map(|v| v.len()))
+        .unwrap_or(0);
+    assert!(version_count >= 1, "{}", versions.text);
+
+    // Tenant B cannot see, edit, or delete it.
+    let cross = app
+        .admin_in(app.tenant_b, Method::GET, "/api/v1/flows/main-ivr", None)
+        .await;
+    assert_eq!(cross.status, StatusCode::NOT_FOUND, "{}", cross.text);
+    let cross_del = app
+        .admin_in(app.tenant_b, Method::DELETE, "/api/v1/flows/main-ivr", None)
+        .await;
+    assert_eq!(
+        cross_del.status,
+        StatusCode::NOT_FOUND,
+        "{}",
+        cross_del.text
+    );
+    let b_list = app
+        .admin_in(app.tenant_b, Method::GET, "/api/v1/flows", None)
+        .await;
+    assert_eq!(b_list.json["total"], 0, "{}", b_list.text);
+
+    let del = app
+        .admin(Method::DELETE, "/api/v1/flows/main-ivr", None)
+        .await;
+    assert!(
+        del.status.is_success(),
+        "delete: {} {}",
+        del.status,
+        del.text
+    );
+    assert_eq!(
+        app.admin(Method::GET, "/api/v1/flows/main-ivr", None)
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+
+    app.finish().await;
+}
+
+#[tokio::test]
+async fn flow_traces_follow_call_visibility() {
+    let app = require_app!();
+    let a_call = app.seed_cdr(app.tenant_a, Some(5_000), None).await;
+    let b_call = app.seed_cdr(app.tenant_b, Some(5_000), None).await;
+    app.seed_trace(&a_call, "main-ivr", FlowTraceEventType::Started)
+        .await;
+    app.seed_trace(&a_call, "main-ivr", FlowTraceEventType::Completed)
+        .await;
+    app.seed_trace(&b_call, "other-ivr", FlowTraceEventType::Started)
+        .await;
+
+    // Scoped to tenant A: only A's call shows, and B's call is invisible.
+    let list = app
+        .admin_in(app.tenant_a, Method::GET, "/api/v1/flow-traces", None)
+        .await;
+    assert_eq!(list.status, StatusCode::OK, "{}", list.text);
+    assert_eq!(list.json["total"], 2, "{}", list.text);
+    assert!(list.json["traces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|t| t["call_id"] == a_call.to_string()));
+
+    let filtered = app
+        .admin_in(
+            app.tenant_a,
+            Method::GET,
+            "/api/v1/flow-traces?event_type=completed",
+            None,
+        )
+        .await;
+    assert_eq!(filtered.json["total"], 1, "{}", filtered.text);
+    let bad = app
+        .admin_in(
+            app.tenant_a,
+            Method::GET,
+            "/api/v1/flow-traces?event_type=exploded",
+            None,
+        )
+        .await;
+    assert_eq!(bad.status, StatusCode::BAD_REQUEST, "{}", bad.text);
+
+    let by_call = app
+        .admin_in(
+            app.tenant_a,
+            Method::GET,
+            &format!("/api/v1/flow-traces/{a_call}"),
+            None,
+        )
+        .await;
+    assert_eq!(by_call.status, StatusCode::OK, "{}", by_call.text);
+    assert_eq!(by_call.json.as_array().unwrap().len(), 2);
+    let cross = app
+        .admin_in(
+            app.tenant_a,
+            Method::GET,
+            &format!("/api/v1/flow-traces/{b_call}"),
+            None,
+        )
+        .await;
+    assert_eq!(cross.status, StatusCode::NOT_FOUND, "{}", cross.text);
+
+    // Unscoped platform access sees everything.
+    let all = app.admin(Method::GET, "/api/v1/flow-traces", None).await;
+    assert_eq!(all.json["total"], 3, "{}", all.text);
+
+    app.finish().await;
+}
+
+// ─── Registrations ───────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn registrations_list_get_and_delete() {
+    let app = require_app!();
+    let aor = format!("alice@{REALM}");
+    app.seed_registration(app.tenant_a, &aor, "sip:alice@10.0.0.5:5060")
+        .await;
+    app.seed_registration(app.tenant_a, &aor, "sip:alice@10.0.0.6:5060")
+        .await;
+    app.seed_registration(
+        app.tenant_b,
+        &format!("bob@{REALM}"),
+        "sip:bob@10.0.1.5:5060",
+    )
+    .await;
+
+    // AORs are visible to a tenant through its users (username@realm).
+    app.create_user("alice", None).await;
+    app.admin_in(
+        app.tenant_b,
+        Method::POST,
+        "/api/v1/users",
+        Some(json!({ "username": "bob", "password": PASSWORD })),
+    )
+    .await;
+
+    // Unscoped platform view sees both tenants; the tenant view only its own.
+    let all = app.admin(Method::GET, "/api/v1/registrations", None).await;
+    assert_eq!(all.status, StatusCode::OK, "{}", all.text);
+    assert_eq!(all.json.as_array().unwrap().len(), 3, "{}", all.text);
+    let scoped = app
+        .admin_in(app.tenant_a, Method::GET, "/api/v1/registrations", None)
+        .await;
+    assert_eq!(scoped.json.as_array().unwrap().len(), 2, "{}", scoped.text);
+
+    let mine = app
+        .admin_in(
+            app.tenant_a,
+            Method::GET,
+            &format!("/api/v1/registrations/{aor}"),
+            None,
+        )
+        .await;
+    assert_eq!(mine.status, StatusCode::OK, "{}", mine.text);
+    let bindings = mine.json.as_array().unwrap();
+    assert_eq!(bindings.len(), 2, "{}", mine.text);
+    assert!(bindings
+        .iter()
+        .all(|b| b["expires_in_seconds"].as_u64().unwrap() > 0));
+    assert!(bindings.iter().all(|b| b["user_agent"] == "fcp-test/1.0"));
+
+    // Tenant A cannot see tenant B's binding.
+    let cross = app
+        .admin_in(
+            app.tenant_a,
+            Method::GET,
+            &format!("/api/v1/registrations/bob@{REALM}"),
+            None,
+        )
+        .await;
+    assert_eq!(cross.status, StatusCode::NOT_FOUND, "{}", cross.text);
+
+    // Delete one contact, then the rest.
+    let del_one = app
+        .admin(
+            Method::DELETE,
+            &format!("/api/v1/registrations/{aor}/sip:alice@10.0.0.5:5060"),
+            None,
+        )
+        .await;
+    assert_eq!(del_one.status, StatusCode::NO_CONTENT, "{}", del_one.text);
+    let left = app
+        .admin(Method::GET, &format!("/api/v1/registrations/{aor}"), None)
+        .await;
+    assert_eq!(left.json.as_array().unwrap().len(), 1, "{}", left.text);
+    assert_eq!(left.json[0]["contact"], "sip:alice@10.0.0.6:5060");
+
+    let del_all = app
+        .admin(
+            Method::DELETE,
+            &format!("/api/v1/registrations/{aor}"),
+            None,
+        )
+        .await;
+    assert_eq!(del_all.status, StatusCode::NO_CONTENT, "{}", del_all.text);
+    // A known AOR with no bindings is an empty list, not 404.
+    let gone = app
+        .admin_in(
+            app.tenant_a,
+            Method::GET,
+            &format!("/api/v1/registrations/{aor}"),
+            None,
+        )
+        .await;
+    assert_eq!(gone.status, StatusCode::OK, "{}", gone.text);
+    assert!(gone.json.as_array().unwrap().is_empty(), "{}", gone.text);
+    // Tenant B's binding survived the tenant-A deletes.
+    let bobs = app
+        .admin_in(
+            app.tenant_b,
+            Method::GET,
+            &format!("/api/v1/registrations/bob@{REALM}"),
+            None,
+        )
+        .await;
+    assert_eq!(bobs.json.as_array().unwrap().len(), 1, "{}", bobs.text);
+
+    app.finish().await;
+}
+
+// ─── Presence runtime ────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn presence_state_policy_and_pres_rules() {
+    let app = require_app!();
+    let aor = format!("alice@{REALM}");
+    let path = format!("/api/v1/presence/{aor}");
+
+    let invalid = app
+        .admin(Method::PUT, &path, Some(json!({ "state": "teleporting" })))
+        .await;
+    assert_eq!(invalid.status, StatusCode::BAD_REQUEST, "{}", invalid.text);
+
+    let set = app
+        .admin(
+            Method::PUT,
+            &path,
+            Some(json!({ "state": "busy", "note": "In a meeting" })),
+        )
+        .await;
+    assert_eq!(set.status, StatusCode::OK, "{}", set.text);
+    assert_eq!(set.json["aor"], aor);
+    assert!(
+        set.json["state"]
+            .as_str()
+            .unwrap()
+            .eq_ignore_ascii_case("busy"),
+        "{}",
+        set.text
+    );
+    assert_eq!(set.json["note"], "In a meeting");
+
+    let got = app.admin(Method::GET, &path, None).await;
+    assert_eq!(got.status, StatusCode::OK, "{}", got.text);
+    assert_eq!(got.json["watcher_count"], 0);
+    let list = app.admin(Method::GET, "/api/v1/presence", None).await;
+    assert_eq!(list.json.as_array().unwrap().len(), 1, "{}", list.text);
+    let stats = app.admin(Method::GET, "/api/v1/presence/stats", None).await;
+    assert_eq!(stats.json["total_presentities"], 1, "{}", stats.text);
+    let watchers = app
+        .admin(Method::GET, &format!("{path}/watchers"), None)
+        .await;
+    assert_eq!(watchers.status, StatusCode::OK, "{}", watchers.text);
+    assert!(watchers.json.as_array().unwrap().is_empty());
+
+    // Authorization policy round-trips and renders as pres-rules XML.
+    let policy = json!({
+        "default_allow": false,
+        "allow_list": [format!("bob@{REALM}")],
+        "block_list": [format!("mallory@{REALM}")]
+    });
+    let set_policy = app
+        .admin(Method::PUT, &format!("{path}/policy"), Some(policy.clone()))
+        .await;
+    assert_eq!(set_policy.status, StatusCode::OK, "{}", set_policy.text);
+    let get_policy = app
+        .admin(Method::GET, &format!("{path}/policy"), None)
+        .await;
+    assert_eq!(
+        get_policy.json["default_allow"], false,
+        "{}",
+        get_policy.text
+    );
+    assert_eq!(get_policy.json["allow_list"][0], format!("bob@{REALM}"));
+
+    let rules = app
+        .admin(Method::GET, &format!("{path}/pres-rules"), None)
+        .await;
+    assert_eq!(rules.status, StatusCode::OK, "{}", rules.text);
+    assert_eq!(
+        rules.header("content-type"),
+        Some("application/auth-policy+xml")
+    );
+    assert!(rules.text.contains("bob@"), "{}", rules.text);
+
+    let del_policy = app
+        .admin(Method::DELETE, &format!("{path}/policy"), None)
+        .await;
+    assert_eq!(
+        del_policy.status,
+        StatusCode::NO_CONTENT,
+        "{}",
+        del_policy.text
+    );
+
+    let del = app.admin(Method::DELETE, &path, None).await;
+    assert_eq!(del.status, StatusCode::NO_CONTENT, "{}", del.text);
+    assert_eq!(
+        app.admin(Method::GET, &path, None).await.status,
+        StatusCode::NOT_FOUND
+    );
+    let missing = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/presence/nobody@{REALM}"),
+            None,
+        )
+        .await;
+    assert_eq!(missing.status, StatusCode::NOT_FOUND);
+
+    app.finish().await;
+}
+
+// ─── Queue runtime ───────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn queue_runtime_agents_and_stats() {
+    let app = require_app!();
+
+    let queues = app.admin(Method::GET, "/api/v1/queues", None).await;
+    assert_eq!(queues.status, StatusCode::OK, "{}", queues.text);
+    assert_eq!(queues.json[0]["name"], "support", "{}", queues.text);
+    assert_eq!(queues.json[0]["extension"], "7000");
+
+    let stats = app
+        .admin(Method::GET, "/api/v1/queues/support/stats", None)
+        .await;
+    assert_eq!(stats.status, StatusCode::OK, "{}", stats.text);
+    assert_eq!(stats.json["queue_name"], "support");
+    assert_eq!(stats.json["agents_total"], 0);
+    assert_eq!(stats.json["calls_waiting"], 0);
+
+    let unknown = app
+        .admin(Method::GET, "/api/v1/queues/sales/stats", None)
+        .await;
+    assert_eq!(unknown.status, StatusCode::NOT_FOUND, "{}", unknown.text);
+    // The queue belongs to tenant A only.
+    let cross = app
+        .admin_in(app.tenant_b, Method::GET, "/api/v1/queues/support", None)
+        .await;
+    assert_eq!(cross.status, StatusCode::NOT_FOUND, "{}", cross.text);
+
+    let login = app
+        .admin(
+            Method::POST,
+            "/api/v1/queues/support/agents",
+            Some(json!({ "agent_id": "agent-1", "extension": "1001", "skills": ["billing"] })),
+        )
+        .await;
+    assert_eq!(login.status, StatusCode::CREATED, "{}", login.text);
+    assert_eq!(login.json["id"], "agent-1");
+    assert_eq!(login.json["extension"], "1001");
+    assert!(login.json["queues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|q| q == "support"));
+
+    let agents = app
+        .admin(Method::GET, "/api/v1/queues/support/agents", None)
+        .await;
+    assert_eq!(agents.json.as_array().unwrap().len(), 1, "{}", agents.text);
+    let stats = app
+        .admin(Method::GET, "/api/v1/queues/support/stats", None)
+        .await;
+    assert_eq!(stats.json["agents_total"], 1, "{}", stats.text);
+
+    let paused = app
+        .admin(
+            Method::POST,
+            "/api/v1/queues/support/agents/agent-1/pause",
+            None,
+        )
+        .await;
+    assert_eq!(paused.status, StatusCode::OK, "{}", paused.text);
+    assert!(
+        paused.json["state"]
+            .as_str()
+            .unwrap()
+            .eq_ignore_ascii_case("paused"),
+        "{}",
+        paused.text
+    );
+    let resumed = app
+        .admin(
+            Method::POST,
+            "/api/v1/queues/support/agents/agent-1/resume",
+            None,
+        )
+        .await;
+    assert_eq!(resumed.status, StatusCode::OK, "{}", resumed.text);
+    assert!(
+        resumed.json["state"]
+            .as_str()
+            .unwrap()
+            .eq_ignore_ascii_case("available"),
+        "{}",
+        resumed.text
+    );
+
+    let logout = app
+        .admin(
+            Method::DELETE,
+            "/api/v1/queues/support/agents/agent-1",
+            None,
+        )
+        .await;
+    assert_eq!(logout.status, StatusCode::NO_CONTENT, "{}", logout.text);
+    // Logout keeps the agent record (for reporting) but marks it logged out
+    // and takes it out of the available pool.
+    let agents = app
+        .admin(Method::GET, "/api/v1/queues/support/agents", None)
+        .await;
+    let remaining = agents.json.as_array().unwrap();
+    assert!(
+        remaining.is_empty()
+            || remaining.iter().all(|a| a["state"]
+                .as_str()
+                .unwrap()
+                .eq_ignore_ascii_case("logged_out")),
+        "{}",
+        agents.text
+    );
+    let stats = app
+        .admin(Method::GET, "/api/v1/queues/support/stats", None)
+        .await;
+    assert_eq!(stats.json["agents_available"], 0, "{}", stats.text);
+
+    app.finish().await;
+}
+
+// ─── Self-service (/me) ──────────────────────────────────────────────────
+
+#[tokio::test]
+async fn self_service_profile_password_forwarding_and_voicemail() {
+    let app = require_app!();
+    let user_id = app.create_user_with_role("selfie", "end_user").await;
+
+    // Give the user a number, a line binding, and a mailbox (admin side).
+    let number = app
+        .admin(
+            Method::POST,
+            "/api/v1/phone-numbers",
+            Some(json!({ "e164": "+15550002222", "tenant_id": app.tenant_a })),
+        )
+        .await;
+    assert_eq!(number.status, StatusCode::CREATED, "{}", number.text);
+    let binding = app
+        .admin(
+            Method::POST,
+            "/api/v1/line-bindings",
+            Some(json!({
+                "phone_number_id": number.json["id"],
+                "owner_user_id": user_id,
+                "binding_type": "user",
+                "tenant_id": app.tenant_a,
+            })),
+        )
+        .await;
+    assert_eq!(binding.status, StatusCode::CREATED, "{}", binding.text);
+    let binding_id = binding.json["id"].as_str().unwrap().to_string();
+    let mailbox = app
+        .admin(
+            Method::POST,
+            "/api/v1/voicemail/mailboxes",
+            Some(json!({
+                "tenant_id": app.tenant_a,
+                "user_id": user_id,
+                "line_binding_id": binding_id,
+                "pin": "1234",
+            })),
+        )
+        .await;
+    assert_eq!(mailbox.status, StatusCode::CREATED, "{}", mailbox.text);
+
+    // The static platform token has no user behind it, so /me is closed to it.
+    let no_user = app.admin(Method::GET, "/api/v1/me/profile", None).await;
+    assert_eq!(no_user.status, StatusCode::UNAUTHORIZED, "{}", no_user.text);
+
+    let jwt = app.login("selfie", PASSWORD).await.json["token"]
+        .as_str()
+        .expect("jwt")
+        .to_string();
+
+    let profile = app
+        .send_as(&jwt, Method::GET, "/api/v1/me/profile", None)
+        .await;
+    assert_eq!(profile.status, StatusCode::OK, "{}", profile.text);
+    assert_eq!(profile.json["username"], "selfie");
+    assert_eq!(profile.json["role"], "end_user");
+
+    let updated = app
+        .send_as(
+            &jwt,
+            Method::PUT,
+            "/api/v1/me/profile",
+            Some(json!({ "display_name": "Self Service", "timezone": "Europe/Berlin" })),
+        )
+        .await;
+    assert_eq!(updated.status, StatusCode::OK, "{}", updated.text);
+    assert_eq!(updated.json["display_name"], "Self Service");
+    assert_eq!(updated.json["timezone"], "Europe/Berlin");
+
+    let forwarding = app
+        .send_as(&jwt, Method::GET, "/api/v1/me/forwarding", None)
+        .await;
+    assert_eq!(forwarding.status, StatusCode::OK, "{}", forwarding.text);
+    assert_eq!(
+        forwarding.json.as_array().unwrap().len(),
+        1,
+        "{}",
+        forwarding.text
+    );
+    assert_eq!(forwarding.json[0]["phone_number"], "+15550002222");
+    let fwd_id = forwarding.json[0]["id"].as_str().unwrap().to_string();
+    let set_fwd = app
+        .send_as(
+            &jwt,
+            Method::PATCH,
+            &format!("/api/v1/me/forwarding/{fwd_id}"),
+            Some(json!({ "forward_on_no_answer": "+15559990000", "no_answer_timeout_secs": 15 })),
+        )
+        .await;
+    assert_eq!(set_fwd.status, StatusCode::OK, "{}", set_fwd.text);
+    assert_eq!(set_fwd.json["forward_on_no_answer"], "+15559990000");
+    assert_eq!(set_fwd.json["no_answer_timeout_secs"], 15);
+
+    let vm = app
+        .send_as(&jwt, Method::GET, "/api/v1/me/voicemail", None)
+        .await;
+    assert_eq!(vm.status, StatusCode::OK, "{}", vm.text);
+    assert_eq!(vm.json["enabled"], true);
+    let vm_stats = app
+        .send_as(&jwt, Method::GET, "/api/v1/me/voicemail/stats", None)
+        .await;
+    assert_eq!(vm_stats.status, StatusCode::OK, "{}", vm_stats.text);
+    let messages = app
+        .send_as(&jwt, Method::GET, "/api/v1/me/voicemail/messages", None)
+        .await;
+    assert_eq!(messages.status, StatusCode::OK, "{}", messages.text);
+
+    // Password change needs the current password and takes effect for login.
+    let wrong = app
+        .send_as(
+            &jwt,
+            Method::PUT,
+            "/api/v1/me/password",
+            Some(json!({ "current_password": "nope", "new_password": "N3w-Passw0rd!" })),
+        )
+        .await;
+    assert_eq!(wrong.status, StatusCode::UNAUTHORIZED, "{}", wrong.text);
+    let changed = app
+        .send_as(
+            &jwt,
+            Method::PUT,
+            "/api/v1/me/password",
+            Some(json!({ "current_password": PASSWORD, "new_password": "N3w-Passw0rd!" })),
+        )
+        .await;
+    assert_eq!(changed.status, StatusCode::NO_CONTENT, "{}", changed.text);
+    assert_eq!(
+        app.login("selfie", PASSWORD).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        app.login("selfie", "N3w-Passw0rd!").await.status,
+        StatusCode::OK
+    );
+
+    app.finish().await;
+}
+
+// ─── WebSocket event stream ──────────────────────────────────────────────
+
+#[tokio::test]
+async fn websocket_events_require_first_message_auth() {
+    use tokio_tungstenite::tungstenite::Message;
+
+    let app = require_app!();
+    let port = app.serve().await;
+    let url = format!("ws://127.0.0.1:{port}/api/v1/events");
+
+    // Wrong token: auth_error, then the server closes.
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url)
+        .await
+        .expect("connect");
+    ws.send(Message::Text(
+        json!({ "type": "auth", "token": "not-the-token" }).to_string(),
+    ))
+    .await
+    .unwrap();
+    let reply = tokio::time::timeout(Duration::from_secs(5), ws.next())
+        .await
+        .expect("reply in time")
+        .expect("frame")
+        .expect("ok frame");
+    let reply: Value = serde_json::from_str(reply.to_text().unwrap()).unwrap();
+    assert_eq!(reply["type"], "auth_error", "{reply}");
+
+    // A non-auth first message is rejected the same way.
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url)
+        .await
+        .expect("connect");
+    ws.send(Message::Text(json!({ "type": "hello" }).to_string()))
+        .await
+        .unwrap();
+    let reply = tokio::time::timeout(Duration::from_secs(5), ws.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let reply: Value = serde_json::from_str(reply.to_text().unwrap()).unwrap();
+    assert_eq!(reply["type"], "auth_error", "{reply}");
+
+    // Right token: auth_ok, then published events stream through.
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url)
+        .await
+        .expect("connect");
+    ws.send(Message::Text(
+        json!({ "type": "auth", "token": ADMIN_TOKEN }).to_string(),
+    ))
+    .await
+    .unwrap();
+    let reply = tokio::time::timeout(Duration::from_secs(5), ws.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let reply: Value = serde_json::from_str(reply.to_text().unwrap()).unwrap();
+    assert_eq!(reply["type"], "auth_ok", "{reply}");
+
+    // Give the subscription a moment to attach, then publish.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    app.event_bus
+        .publish(PlatformEvent::System(SystemEvent::ConfigChanged {
+            entity_type: "device".to_string(),
+            entity_id: "device-ws-test".to_string(),
+            tenant_id: app.tenant_a,
+            timestamp: SystemTime::now(),
+        }))
+        .await
+        .expect("publish");
+    // The server announces the subscription first, then streams events.
+    let mut frames = Vec::new();
+    for _ in 0..3 {
+        let frame = tokio::time::timeout(Duration::from_secs(5), ws.next())
+            .await
+            .expect("frame in time")
+            .unwrap()
+            .unwrap();
+        let text = frame.to_text().unwrap().to_string();
+        let done = text.contains("device-ws-test");
+        frames.push(text);
+        if done {
+            break;
+        }
+    }
+    let first: Value = serde_json::from_str(&frames[0]).unwrap();
+    assert_eq!(first["type"], "connected", "{}", frames[0]);
+    assert!(
+        frames.iter().any(|f| f.contains("device-ws-test")),
+        "event never arrived; frames: {frames:?}"
     );
 
     app.finish().await;

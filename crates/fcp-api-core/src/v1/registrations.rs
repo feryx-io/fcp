@@ -1,14 +1,14 @@
 //! Registration viewing API endpoints.
 
 use crate::{
-    auth::{can_access_all_tenants, AuthIdentity, TenantContext},
+    auth::{can_access_all_tenants, AuthIdentity, TenantContext, PLATFORM_TENANT_HEADER},
     error::ApiError,
     state::ApiState,
     validation,
 };
 use axum::{
     extract::{Extension, Path, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     Json,
 };
 use fcp_core::storage::DeviceStore;
@@ -64,6 +64,12 @@ async fn tenant_visible_aors(
     Ok(visible)
 }
 
+/// Cross-tenant access applies to platform admins only while they have not
+/// selected a tenant with the override header.
+fn platform_wide(identity: Option<&AuthIdentity>, headers: &HeaderMap) -> bool {
+    can_access_all_tenants(identity) && !headers.contains_key(PLATFORM_TENANT_HEADER)
+}
+
 async fn registration_visible_to_tenant(
     state: &ApiState,
     tenant_id: &TenantId,
@@ -117,13 +123,16 @@ pub async fn list_registrations(
     State(state): State<ApiState>,
     tenant: TenantContext,
     identity: Option<Extension<AuthIdentity>>,
+    headers: HeaderMap,
 ) -> Result<Json<Vec<RegistrationResponse>>, ApiError> {
     let storage = state
         .storage
         .as_ref()
         .ok_or_else(|| ApiError::NotFound("Registrar not enabled".to_string()))?;
 
-    let allow_all_tenants = can_access_all_tenants(identity.as_ref().map(|ext| &ext.0));
+    // Platform admins see every tenant unless they selected one with the
+    // override header (then `tenant` already carries it).
+    let allow_all_tenants = platform_wide(identity.as_ref().map(|ext| &ext.0), &headers);
     let registrations = if allow_all_tenants {
         storage.get_all_registrations().await?
     } else {
@@ -147,11 +156,12 @@ pub async fn get_registrations(
     State(state): State<ApiState>,
     tenant: TenantContext,
     identity: Option<Extension<AuthIdentity>>,
+    headers: HeaderMap,
     Path(aor): Path<String>,
 ) -> Result<Json<Vec<RegistrationResponse>>, ApiError> {
     validation::validate_aor(&aor)?;
 
-    if !can_access_all_tenants(identity.as_ref().map(|ext| &ext.0))
+    if !platform_wide(identity.as_ref().map(|ext| &ext.0), &headers)
         && !registration_visible_to_tenant(&state, &tenant.0, &aor).await?
     {
         return Err(ApiError::NotFound(format!(
@@ -165,7 +175,7 @@ pub async fn get_registrations(
         .as_ref()
         .ok_or_else(|| ApiError::NotFound("Registrar not enabled".to_string()))?;
 
-    let registrations = if can_access_all_tenants(identity.as_ref().map(|ext| &ext.0)) {
+    let registrations = if platform_wide(identity.as_ref().map(|ext| &ext.0), &headers) {
         storage.get_registrations(&aor).await?
     } else {
         storage.get_registrations_in_tenant(&tenant.0, &aor).await?
@@ -189,11 +199,12 @@ pub async fn delete_registrations(
     State(state): State<ApiState>,
     tenant: TenantContext,
     identity: Option<Extension<AuthIdentity>>,
+    headers: HeaderMap,
     Path(aor): Path<String>,
 ) -> Result<StatusCode, ApiError> {
     validation::validate_aor(&aor)?;
 
-    if !can_access_all_tenants(identity.as_ref().map(|ext| &ext.0))
+    if !platform_wide(identity.as_ref().map(|ext| &ext.0), &headers)
         && !registration_visible_to_tenant(&state, &tenant.0, &aor).await?
     {
         return Err(ApiError::NotFound(format!(
@@ -207,7 +218,7 @@ pub async fn delete_registrations(
         .as_ref()
         .ok_or_else(|| ApiError::NotFound("Registrar not enabled".to_string()))?;
 
-    if can_access_all_tenants(identity.as_ref().map(|ext| &ext.0)) {
+    if platform_wide(identity.as_ref().map(|ext| &ext.0), &headers) {
         storage.delete_all_registrations(&aor).await?;
     } else {
         storage
@@ -224,12 +235,13 @@ pub async fn delete_registration(
     State(state): State<ApiState>,
     tenant: TenantContext,
     identity: Option<Extension<AuthIdentity>>,
+    headers: HeaderMap,
     Path((aor, contact)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
     validation::validate_aor(&aor)?;
     validation::validate_contact(&contact)?;
 
-    if !can_access_all_tenants(identity.as_ref().map(|ext| &ext.0))
+    if !platform_wide(identity.as_ref().map(|ext| &ext.0), &headers)
         && !registration_visible_to_tenant(&state, &tenant.0, &aor).await?
     {
         return Err(ApiError::NotFound(format!(
@@ -243,7 +255,7 @@ pub async fn delete_registration(
         .as_ref()
         .ok_or_else(|| ApiError::NotFound("Registrar not enabled".to_string()))?;
 
-    if can_access_all_tenants(identity.as_ref().map(|ext| &ext.0)) {
+    if platform_wide(identity.as_ref().map(|ext| &ext.0), &headers) {
         storage.delete_registration(&aor, &contact).await?;
     } else {
         storage
