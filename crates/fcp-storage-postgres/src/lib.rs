@@ -1077,80 +1077,18 @@ impl CdrStore for PostgresStorage {
     }
 
     async fn query_cdrs(&self, query: CdrQuery) -> Result<Vec<CallDetailRecord>> {
-        let mut sql = String::from("SELECT * FROM cdrs WHERE 1=1");
-        let mut conditions = Vec::new();
-
-        if let Some(tenant_id) = &query.tenant_id {
-            conditions.push(("tenant_id", tenant_id.to_string()));
-        }
-
-        if let Some(call_id) = &query.call_id {
-            conditions.push(("call_id", call_id.to_string()));
-        }
-
-        if let Some(from_uri) = &query.from_uri {
-            conditions.push(("from_uri_like", format!("%{}%", from_uri)));
-        }
-
-        if let Some(to_uri) = &query.to_uri {
-            conditions.push(("to_uri_like", format!("%{}%", to_uri)));
-        }
-
-        if let Some(start_from) = query.start_time_from {
-            let dt = system_time_to_datetime(start_from);
-            conditions.push(("start_time_from", dt.to_rfc3339()));
-        }
-
-        if let Some(start_to) = query.start_time_to {
-            let dt = system_time_to_datetime(start_to);
-            conditions.push(("start_time_to", dt.to_rfc3339()));
-        }
-
-        if let Some(disposition) = &query.disposition {
-            let disp_str = serde_json::to_string(disposition)?
-                .trim_matches('"')
-                .to_string();
-            conditions.push(("disposition", disp_str));
-        }
-
-        // Build dynamic query
-        for (key, _value) in &conditions {
-            match *key {
-                "from_uri_like" => {
-                    sql.push_str(" AND from_uri LIKE $");
-                }
-                "to_uri_like" => {
-                    sql.push_str(" AND to_uri LIKE $");
-                }
-                "start_time_from" => {
-                    sql.push_str(" AND start_time >= $");
-                }
-                "start_time_to" => {
-                    sql.push_str(" AND start_time <= $");
-                }
-                _ => {
-                    sql.push_str(&format!(" AND {} = $", key));
-                }
-            }
-        }
-
+        let (mut sql, binds) = cdr_filter_sql("SELECT * FROM cdrs", &query)?;
         sql.push_str(" ORDER BY start_time DESC");
-
         if let Some(limit) = query.limit {
             sql.push_str(&format!(" LIMIT {}", limit));
         }
-
         if let Some(offset) = query.offset {
             sql.push_str(&format!(" OFFSET {}", offset));
         }
 
-        // Execute query with bindings
-        let mut final_query = sqlx::query(&sql);
-        for (_, value) in conditions {
-            final_query = final_query.bind(value);
-        }
-
-        let rows = final_query.fetch_all(&self.pool).await?;
+        let rows = bind_cdr_filters(sqlx::query(&sql), binds)
+            .fetch_all(&self.pool)
+            .await?;
 
         let cdrs = rows
             .into_iter()
@@ -1161,35 +1099,12 @@ impl CdrStore for PostgresStorage {
     }
 
     async fn count_cdrs(&self, query: CdrQuery) -> Result<usize> {
-        let mut sql = String::from("SELECT COUNT(*) as count FROM cdrs WHERE 1=1");
-        let mut conditions = Vec::new();
-
-        if let Some(tenant_id) = &query.tenant_id {
-            sql.push_str(" AND tenant_id = $1");
-            conditions.push(tenant_id.to_string());
-        }
-
-        if let Some(disposition) = &query.disposition {
-            let param_num = if conditions.is_empty() {
-                1
-            } else {
-                conditions.len() + 1
-            };
-            sql.push_str(&format!(" AND disposition = ${}", param_num));
-            let disp_str = serde_json::to_string(disposition)?
-                .trim_matches('"')
-                .to_string();
-            conditions.push(disp_str);
-        }
-
-        let mut query_builder = sqlx::query(&sql);
-        for condition in conditions {
-            query_builder = query_builder.bind(condition);
-        }
-
-        let row = query_builder.fetch_one(&self.pool).await?;
+        // Same filter set as query_cdrs so paginated totals match the rows.
+        let (sql, binds) = cdr_filter_sql("SELECT COUNT(*) AS count FROM cdrs", &query)?;
+        let row = bind_cdr_filters(sqlx::query(&sql), binds)
+            .fetch_one(&self.pool)
+            .await?;
         let count: i64 = row.get("count");
-
         Ok(count as usize)
     }
 
@@ -1208,7 +1123,7 @@ impl CdrStore for PostgresStorage {
             "SELECT
                 COUNT(*) as total_calls,
                 COUNT(*) FILTER (WHERE c.answer_time IS NOT NULL) as answered_calls,
-                COALESCE(SUM(c.call_duration_ms) FILTER (WHERE c.answer_time IS NOT NULL), 0) as total_duration_ms,
+                COALESCE(SUM(c.call_duration_ms) FILTER (WHERE c.answer_time IS NOT NULL), 0)::BIGINT as total_duration_ms,
                 COUNT(*) FILTER (
                     WHERE EXISTS (
                         SELECT 1
@@ -1304,7 +1219,7 @@ impl CdrStore for PostgresStorage {
                 COALESCE(
                     SUM(CASE WHEN answered THEN call_duration_ms ELSE 0 END),
                     0
-                ) AS total_duration_ms,
+                )::BIGINT AS total_duration_ms,
                 COUNT(*) FILTER (WHERE has_inbound) AS inbound_calls,
                 COUNT(*) FILTER (WHERE has_outbound) AS outbound_calls
             FROM deduped_calls
@@ -1681,6 +1596,99 @@ impl CdrStore for PostgresStorage {
         .await?;
         rows.into_iter().map(row_to_balance_transaction).collect()
     }
+}
+
+// ============================================================================
+// CDR query helpers
+// ============================================================================
+
+/// A bound CDR filter value.
+enum CdrBind {
+    Text(String),
+    Time(DateTime<Utc>),
+}
+
+/// Build `<select> WHERE …` from a [`CdrQuery`], with numbered placeholders
+/// and typed bind values in placeholder order. Shared by `query_cdrs` and
+/// `count_cdrs` so the two can never disagree about which rows match.
+fn cdr_filter_sql(select: &str, query: &CdrQuery) -> Result<(String, Vec<CdrBind>)> {
+    let mut sql = format!("{select} WHERE 1=1");
+    let mut binds: Vec<CdrBind> = Vec::new();
+
+    let push = |sql: &mut String, clause: &str, bind: CdrBind, binds: &mut Vec<CdrBind>| {
+        binds.push(bind);
+        sql.push_str(&format!(" AND {clause} ${}", binds.len()));
+    };
+
+    if let Some(tenant_id) = &query.tenant_id {
+        push(
+            &mut sql,
+            "tenant_id =",
+            CdrBind::Text(tenant_id.to_string()),
+            &mut binds,
+        );
+    }
+    if let Some(call_id) = &query.call_id {
+        push(
+            &mut sql,
+            "call_id =",
+            CdrBind::Text(call_id.to_string()),
+            &mut binds,
+        );
+    }
+    if let Some(from_uri) = &query.from_uri {
+        push(
+            &mut sql,
+            "from_uri LIKE",
+            CdrBind::Text(format!("%{from_uri}%")),
+            &mut binds,
+        );
+    }
+    if let Some(to_uri) = &query.to_uri {
+        push(
+            &mut sql,
+            "to_uri LIKE",
+            CdrBind::Text(format!("%{to_uri}%")),
+            &mut binds,
+        );
+    }
+    if let Some(from) = query.start_time_from {
+        push(
+            &mut sql,
+            "start_time >=",
+            CdrBind::Time(system_time_to_datetime(from)),
+            &mut binds,
+        );
+    }
+    if let Some(to) = query.start_time_to {
+        push(
+            &mut sql,
+            "start_time <=",
+            CdrBind::Time(system_time_to_datetime(to)),
+            &mut binds,
+        );
+    }
+    if let Some(disposition) = &query.disposition {
+        let disp = serde_json::to_string(disposition)?
+            .trim_matches('"')
+            .to_string();
+        push(&mut sql, "disposition =", CdrBind::Text(disp), &mut binds);
+    }
+
+    Ok((sql, binds))
+}
+
+fn bind_cdr_filters<'q>(
+    mut query: sqlx::query::Query<'q, Postgres, sqlx::postgres::PgArguments>,
+    binds: Vec<CdrBind>,
+) -> sqlx::query::Query<'q, Postgres, sqlx::postgres::PgArguments> {
+    for bind in binds {
+        query = match bind {
+            CdrBind::Text(v) => query.bind(v),
+            CdrBind::Time(v) => query.bind(v),
+        };
+    }
+    query
 }
 
 // ============================================================================
@@ -5933,23 +5941,6 @@ impl PortingStore for PostgresStorage {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    // Note: Integration tests require a running PostgreSQL instance
-    // Run these tests with: cargo test --features integration-tests -- --ignored
-    // Or manually with a PostgreSQL instance:
-    // 1. Start PostgreSQL: docker run --rm -p 5432:5432 -e POSTGRES_PASSWORD=postgres postgres
-    // 2. Run: DATABASE_URL=postgresql://postgres:postgres@localhost/postgres cargo test
-
-    #[tokio::test]
-    #[ignore] // Requires PostgreSQL instance
-    async fn test_connection() {
-        // This test requires a running PostgreSQL instance
-        // Uncomment and adjust connection string as needed
-        /*
-        let config = PostgresConfig::new("postgresql://postgres:postgres@localhost/fcp");
-        let storage = PostgresStorage::new(config).await;
-        assert!(storage.is_ok());
-        */
-    }
-}
+// Database-backed tests live in `tests/integration.rs`; they run whenever
+// `FCP_TEST_DATABASE_URL` points at a PostgreSQL superuser connection (CI
+// provides one) and skip otherwise.
