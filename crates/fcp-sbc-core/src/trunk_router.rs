@@ -15,7 +15,7 @@ use crate::lcr::{LcrConfig, LcrRouteTable, LoadBalanceStrategy};
 use crate::trunk::{TrunkConfig, TrunkDirection};
 use crate::trunk_health::TrunkHealthMonitor;
 use crate::trunk_quality::TrunkQualityTracker;
-use fcp_sip::{OutboundRoute, OutboundRouteProvider};
+use fcp_sip::{OutboundRoute, OutboundRouteProvider, RouteResolution};
 use rand::Rng;
 use std::sync::Arc;
 
@@ -105,11 +105,10 @@ impl TrunkRouter {
             degraded
         };
 
-        let selected = self.select_from_pool(&pool)?;
-
-        // Record the call in the per-trunk CPS sliding window
-        self.cps.record_trunk_call(&selected.name);
-        Some(selected)
+        // Selection is pure: call accounting (health concurrency + CPS
+        // window) is recorded once at the OutboundRouteProvider layer for
+        // the route actually returned, not here.
+        self.select_from_pool(&pool)
     }
 
     /// Select ordered list of trunks for the given destination, applying LCR
@@ -399,6 +398,14 @@ impl TrunkRouter {
             .next()
             .unwrap_or(destination_uri);
 
+        // Transform stage: apply the trunk's egress number transform so the
+        // carrier receives the dialed number in the format it expects.
+        let user_part = match trunk.egress_number_transform {
+            Some(ref transform) if !transform.is_noop() => transform.apply(user_part),
+            _ => user_part.to_string(),
+        };
+        let user_part = user_part.as_str();
+
         let host = trunk.hosts.first()?;
         let port = trunk
             .transport
@@ -423,34 +430,90 @@ impl TrunkRouter {
     }
 }
 
+impl TrunkRouter {
+    /// Record call accounting for the trunk a call is actually placed on.
+    ///
+    /// Paired with the Terminated-event decrement in the SBC hooks, which is
+    /// keyed by the call's recorded trunk name.
+    fn record_call_on(&self, trunk_name: &str) {
+        self.health.call_started(trunk_name);
+        self.cps.record_trunk_call(trunk_name);
+    }
+
+    /// Whether any trunk is *configured* to carry this destination upstream,
+    /// regardless of current health/capacity. Used to distinguish "no route
+    /// exists" (404) from "routes exist but none is available right now"
+    /// (503) — the reachability stage.
+    pub fn has_configured_route(&self, direction: TrunkDirection, destination: &str) -> bool {
+        let dir_matches = |t: &TrunkConfig| {
+            t.direction == direction
+                || t.direction == TrunkDirection::Bidirectional
+                || direction == TrunkDirection::Bidirectional
+        };
+
+        if let Some(ref table) = self.lcr {
+            let matched = table.find_routes_ordered(destination);
+            if !matched.is_empty() {
+                return matched.iter().any(|route| {
+                    self.trunks
+                        .iter()
+                        .any(|t| t.name == route.trunk_name && dir_matches(t))
+                });
+            }
+        }
+        self.trunks.iter().any(dir_matches)
+    }
+}
+
 #[async_trait::async_trait]
 impl OutboundRouteProvider for TrunkRouter {
     async fn resolve_outbound(&self, destination_uri: &str) -> Option<OutboundRoute> {
         // Use first result from ordered selection if LCR is enabled
         let trunks = self.select_trunks_ordered(TrunkDirection::Upstream, destination_uri);
         if let Some(trunk) = trunks.first() {
-            self.health.call_started(&trunk.name);
-            self.cps.record_trunk_call(&trunk.name);
-            return self.build_outbound_route(trunk, destination_uri);
+            let route = self.build_outbound_route(trunk, destination_uri)?;
+            self.record_call_on(&trunk.name);
+            return Some(route);
         }
 
         // Fall through to legacy (should not normally reach here, but safety net)
         let trunk = self.select_trunk(TrunkDirection::Upstream)?;
-        let trunk_name = trunk.name.clone();
-        self.health.call_started(&trunk_name);
-        self.build_outbound_route(trunk, destination_uri)
+        let route = self.build_outbound_route(trunk, destination_uri)?;
+        self.record_call_on(&trunk.name.clone());
+        Some(route)
     }
 
     async fn resolve_outbound_ordered(&self, destination_uri: &str) -> Vec<OutboundRoute> {
         let trunks = self.select_trunks_ordered(TrunkDirection::Upstream, destination_uri);
-        trunks
+        let routes: Vec<OutboundRoute> = trunks
             .iter()
-            .filter_map(|trunk| {
-                self.health.call_started(&trunk.name);
-                self.cps.record_trunk_call(&trunk.name);
-                self.build_outbound_route(trunk, destination_uri)
-            })
-            .collect()
+            .filter_map(|trunk| self.build_outbound_route(trunk, destination_uri))
+            .collect();
+
+        // Account only the primary route. Previously every failover candidate
+        // was recorded as a started call, but the Terminated event decrements
+        // only the call's recorded trunk — unused candidates leaked
+        // concurrency until they appeared permanently at max capacity. The
+        // B2BUA records the call under the primary route's trunk
+        // (call.trunk_name), so start/end stay balanced on that trunk.
+        if let Some(first) = routes.first() {
+            if let Some(ref name) = first.trunk_name {
+                self.record_call_on(name);
+            }
+        }
+        routes
+    }
+
+    async fn resolve_outbound_classified(&self, destination_uri: &str) -> RouteResolution {
+        let routes = self.resolve_outbound_ordered(destination_uri).await;
+        if !routes.is_empty() {
+            return RouteResolution::Routes(routes);
+        }
+        if self.has_configured_route(TrunkDirection::Upstream, destination_uri) {
+            RouteResolution::Unavailable
+        } else {
+            RouteResolution::NoRoute
+        }
     }
 }
 
@@ -922,5 +985,119 @@ mod tests {
         let route = route.unwrap();
         assert_eq!(route.trunk_name, Some("plain-trunk".to_string()));
         assert_eq!(route.allowed_codecs, None);
+    }
+
+    fn lcr_router_two_trunks() -> (TrunkRouter, Arc<TrunkHealthMonitor>) {
+        let trunks = vec![
+            make_trunk("primary", 100, 100, TrunkDirection::Upstream),
+            make_trunk("backup", 200, 100, TrunkDirection::Upstream),
+        ];
+        let health = Arc::new(TrunkHealthMonitor::new(&trunks));
+        let lcr = LcrConfig {
+            enabled: true,
+            routes: vec![
+                LcrRouteEntry {
+                    prefix: "1".into(),
+                    trunk_name: "primary".into(),
+                    cost_per_minute: 0.01,
+                    priority: 100,
+                    enabled: true,
+                },
+                LcrRouteEntry {
+                    prefix: "1".into(),
+                    trunk_name: "backup".into(),
+                    cost_per_minute: 0.02,
+                    priority: 100,
+                    enabled: true,
+                },
+            ],
+            load_balance_strategy: LoadBalanceStrategy::LeastCost,
+            min_asr: 0.0,
+            max_failover_attempts: 2,
+            ..Default::default()
+        };
+        let names = vec!["primary".to_string(), "backup".to_string()];
+        let quality = Arc::new(TrunkQualityTracker::new(&names, 300));
+        let router = TrunkRouter::with_lcr(trunks, Arc::clone(&health), no_cps(), lcr, quality);
+        (router, health)
+    }
+
+    #[tokio::test]
+    async fn test_ordered_resolve_accounts_only_primary_trunk() {
+        let (router, health) = lcr_router_two_trunks();
+
+        let routes = router.resolve_outbound_ordered("sip:14155550100@sbc").await;
+        assert_eq!(routes.len(), 2, "both candidates returned for failover");
+
+        // Regression: previously every candidate was recorded as a started
+        // call, leaking concurrency on unused failover trunks.
+        assert_eq!(health.concurrent_calls("primary"), 1);
+        assert_eq!(health.concurrent_calls("backup"), 0);
+    }
+
+    #[tokio::test]
+    async fn test_classified_resolution_reachability() {
+        // No trunks at all → NoRoute (404).
+        let router = TrunkRouter::new(vec![], Arc::new(TrunkHealthMonitor::new(&[])), no_cps());
+        assert!(matches!(
+            router
+                .resolve_outbound_classified("sip:14155550100@sbc")
+                .await,
+            RouteResolution::NoRoute
+        ));
+
+        // Routes configured but the only trunks are at capacity → Unavailable (503).
+        let (router, health) = lcr_router_two_trunks();
+        // make_trunk uses max_concurrent_calls = 0 (unlimited); saturate via
+        // health "down" state instead: repeated failures mark trunks unhealthy.
+        for _ in 0..10 {
+            health.record_failure("primary");
+            health.record_failure("backup");
+        }
+        assert!(matches!(
+            router
+                .resolve_outbound_classified("sip:14155550100@sbc")
+                .await,
+            RouteResolution::Unavailable
+        ));
+
+        // Healthy again → Routes.
+        health.record_success("primary");
+        health.record_success("backup");
+        assert!(matches!(
+            router
+                .resolve_outbound_classified("sip:14155550100@sbc")
+                .await,
+            RouteResolution::Routes(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_egress_number_transform_applied_to_route() {
+        let mut trunk = make_trunk("carrier", 100, 100, TrunkDirection::Upstream);
+        trunk.egress_number_transform = Some(crate::number_transform::NumberTransform {
+            strip_prefixes: vec!["+".into()],
+            prepend: String::new(),
+        });
+        let trunks = vec![trunk];
+        let health = Arc::new(TrunkHealthMonitor::new(&trunks));
+        let router = TrunkRouter::new(trunks, health, no_cps());
+
+        let route = router
+            .resolve_outbound("sip:+14155550100@sbc")
+            .await
+            .expect("route");
+        assert!(
+            route.target_uri.starts_with("sip:14155550100@"),
+            "'+' must be stripped for this carrier, got {}",
+            route.target_uri
+        );
+
+        // Named users pass through untransformed.
+        let route = router
+            .resolve_outbound("sip:alice@sbc")
+            .await
+            .expect("route");
+        assert!(route.target_uri.starts_with("sip:alice@"));
     }
 }
