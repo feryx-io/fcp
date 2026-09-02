@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Ferrous Communications Platform (FCP)** is a next-generation, carrier-grade unified communications platform written entirely in Rust. The project aims to be a multi-tenant, API-first alternative to FreeSWITCH/Kamailio/Asterisk with built-in memory safety, modern async I/O, and observability.
 
-The repository contains 35 workspace crates spanning core libraries, application services, storage backends, and standalone binaries, plus two git submodules under `external/`: the siphon-rs SIP stack and the forge-media media stack. Both submodule repositories are public.
+The repository contains 36 workspace crates spanning core libraries, application services, storage backends, and standalone binaries, plus two git submodules under `external/`: the siphon-rs SIP stack and the forge-media media stack. Both submodule repositories are public.
 
 > **Current status lives in [STATUS.md](STATUS.md)** — the phase notes below describe scope, but STATUS.md is the maintained source of truth for what is done, partial, or absent.
 
@@ -128,6 +128,7 @@ fcp/
 │   ├── fcp-pbx/                  # PBX feature library (parking, pickup, intercom, hunt groups)
 │   ├── fcp-policy/               # Dedicated policy engine (rules, evaluator, YAML store)
 │   ├── fcp-billing/              # Billing engine (rating, balance enforcement, settlement, hooks)
+│   ├── fcp-crypto/               # Encryption at rest (AES-256-GCM field cipher, local/AWS KMS key providers)
 │   ├── fcp-routing/              # Policy-based call routing engine (re-exports fcp-policy)
 │   │
 │   │ # ── Application ───────────────────────────────────────
@@ -491,7 +492,7 @@ async fn handle_request(request: Request, tenant_id: TenantId) -> Result<()> {
 - ✅ `fcp-policy`: Dedicated policy engine — rule model, evaluator, and YAML rule store extracted from fcp-routing (which re-exports for compatibility); timezone-correct time-of-day windows and per-tenant feature toggles included. Number manipulation remains with the SBC transform stage (future)
 - ✅ Billing — `fcp-billing` crate: rate plans with prefix rates (model in `fcp-core/src/billing.rs`, admin CRUD at `/v1/rate-plans`), calls rated and settled at CDR creation, per-tenant balance enforcement (402 at admission, mid-call cut-off; `/v1/billing/balance`), ledger with credits/adjustments, and `billing.*` events / `BillingHook` for external billing systems (`docs/BILLING.md`)
 - ✅ SBC pipeline stages 3–5: reachability (classified 404/503 resolution), trunk routing/failover/LB (`TrunkRouter` + LCR), transform (HMR headers + per-trunk `egress_number_transform` digit plans)
-- Encryption at rest (KMS integration)
+- ✅ Encryption at rest — `fcp-crypto` envelope encryption (DEKs wrapped by a local master key or AWS KMS), secret columns sealed in the Postgres backend, platform-admin rotate/re-encrypt API (`docs/ENCRYPTION.md`)
 
 ### Phase 5 (Planned - Carrier Grade)
 

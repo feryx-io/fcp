@@ -1,0 +1,310 @@
+//! Encryption at rest for the PostgreSQL backend: key-ring persistence
+//! (`data_encryption_keys`), seal/open helpers, rotation and bulk re-seal.
+//!
+//! See `fcp-crypto` for the cipher and provider model. This module owns the
+//! part that touches the database: which DEKs exist, which one is active,
+//! and which columns are sealed.
+
+use anyhow::{bail, Context, Result};
+use fcp_core::encryption::{EncryptionStatus, ReencryptReport};
+use fcp_crypto::{CryptoError, FieldCipher, Kek};
+use sqlx::{Pool, Postgres, Row};
+use std::sync::{Arc, RwLock};
+use tracing::{info, warn};
+
+/// A sealed column: `table.column`, addressed by `id`. `json_field` marks a
+/// key inside a JSONB column instead of a plain text column.
+pub(crate) struct SealedColumn {
+    pub table: &'static str,
+    pub column: &'static str,
+    pub json_field: Option<&'static str>,
+}
+
+impl SealedColumn {
+    pub fn name(&self) -> String {
+        match self.json_field {
+            Some(f) => format!("{}.{}->>{}", self.table, self.column, f),
+            None => format!("{}.{}", self.table, self.column),
+        }
+    }
+}
+
+/// Every column the backend seals. Keep in sync with the seal/open call
+/// sites in `lib.rs`; the re-encrypt pass walks this list.
+pub(crate) const SEALED_COLUMNS: &[SealedColumn] = &[
+    SealedColumn {
+        table: "users",
+        column: "digest_password",
+        json_field: None,
+    },
+    SealedColumn {
+        table: "users",
+        column: "sip_ha1_hash",
+        json_field: None,
+    },
+    SealedColumn {
+        table: "users",
+        column: "sip_provisioning_password",
+        json_field: None,
+    },
+    SealedColumn {
+        table: "trunks",
+        column: "auth_password",
+        json_field: None,
+    },
+    SealedColumn {
+        table: "conference_meetings",
+        column: "guest_pin",
+        json_field: None,
+    },
+    SealedColumn {
+        table: "conference_meetings",
+        column: "host_pin",
+        json_field: None,
+    },
+    SealedColumn {
+        table: "webhook_endpoints",
+        column: "endpoint_json",
+        json_field: Some("secret"),
+    },
+];
+
+/// Live encryption state for one backend instance.
+pub(crate) struct EncryptionState {
+    kek: Arc<dyn Kek>,
+    provider: &'static str,
+    cipher: RwLock<FieldCipher>,
+}
+
+impl std::fmt::Debug for EncryptionState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EncryptionState")
+            .field("provider", &self.provider)
+            .field("kek_id", &self.kek.id())
+            .finish()
+    }
+}
+
+impl EncryptionState {
+    /// Load the key ring, creating the first DEK when the table is empty.
+    pub async fn load(
+        pool: &Pool<Postgres>,
+        kek: Arc<dyn Kek>,
+        provider: &'static str,
+    ) -> Result<Self> {
+        let cipher = match load_ring(pool, kek.as_ref()).await? {
+            Some(cipher) => cipher,
+            None => {
+                create_dek(pool, kek.as_ref(), true).await?;
+                load_ring(pool, kek.as_ref())
+                    .await?
+                    .context("data encryption key ring empty after creating the first key")?
+            }
+        };
+        info!(
+            provider,
+            kek_id = kek.id(),
+            active_key = cipher.active_key_id(),
+            keys = cipher.key_ids().len(),
+            "Encryption at rest enabled"
+        );
+        Ok(Self {
+            kek,
+            provider,
+            cipher: RwLock::new(cipher),
+        })
+    }
+
+    pub fn seal(&self, plaintext: &str) -> Result<String> {
+        Ok(self.cipher.read().expect("cipher lock").seal(plaintext)?)
+    }
+
+    /// Open a stored value; a DEK this process has not seen yet (another
+    /// node rotated) triggers one key-ring refresh before failing.
+    pub async fn open(&self, pool: &Pool<Postgres>, stored: &str) -> Result<String> {
+        let first = self.cipher.read().expect("cipher lock").open(stored);
+        match first {
+            Ok(opened) => Ok(opened.into_value()),
+            Err(CryptoError::UnknownKey(id)) => {
+                warn!(key_id = %id, "Sealed value uses an unknown DEK; refreshing key ring");
+                self.refresh(pool).await?;
+                Ok(self
+                    .cipher
+                    .read()
+                    .expect("cipher lock")
+                    .open(stored)?
+                    .into_value())
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Re-read the key ring from the database.
+    pub async fn refresh(&self, pool: &Pool<Postgres>) -> Result<()> {
+        let cipher = load_ring(pool, self.kek.as_ref())
+            .await?
+            .context("data encryption key ring is empty")?;
+        *self.cipher.write().expect("cipher lock") = cipher;
+        Ok(())
+    }
+
+    /// Create a new active DEK and pick it up.
+    pub async fn rotate(&self, pool: &Pool<Postgres>) -> Result<EncryptionStatus> {
+        let id = create_dek(pool, self.kek.as_ref(), true).await?;
+        self.refresh(pool).await?;
+        info!(key_id = %id, "Data encryption key rotated");
+        Ok(self.status())
+    }
+
+    pub fn status(&self) -> EncryptionStatus {
+        let cipher = self.cipher.read().expect("cipher lock");
+        EncryptionStatus {
+            enabled: true,
+            provider: self.provider.to_string(),
+            kek_id: Some(self.kek.id().to_string()),
+            active_key_id: Some(cipher.active_key_id().to_string()),
+            key_ids: cipher.key_ids(),
+            sealed_columns: SEALED_COLUMNS.iter().map(|c| c.name()).collect(),
+        }
+    }
+
+    /// Re-seal every stored secret that is plaintext or uses a non-active DEK.
+    pub async fn reencrypt(&self, pool: &Pool<Postgres>) -> Result<ReencryptReport> {
+        let mut report = ReencryptReport::default();
+        for col in SEALED_COLUMNS {
+            let select = match col.json_field {
+                Some(field) => format!(
+                    "SELECT id, {col}->>'{field}' AS value FROM {table} WHERE {col}->>'{field}' IS NOT NULL",
+                    col = col.column,
+                    table = col.table,
+                ),
+                None => format!(
+                    "SELECT id, {col} AS value FROM {table} WHERE {col} IS NOT NULL",
+                    col = col.column,
+                    table = col.table,
+                ),
+            };
+            let update = match col.json_field {
+                Some(field) => format!(
+                    "UPDATE {table} SET {col} = jsonb_set({col}, '{{{field}}}', to_jsonb($1::text)) WHERE id = $2",
+                    col = col.column,
+                    table = col.table,
+                ),
+                None => format!(
+                    "UPDATE {table} SET {col} = $1 WHERE id = $2",
+                    col = col.column,
+                    table = col.table,
+                ),
+            };
+
+            let rows = sqlx::query(&select).fetch_all(pool).await?;
+            let mut rewritten = 0u64;
+            for row in rows {
+                let id: String = row.get("id");
+                let value: String = row.get("value");
+                let resealed = self
+                    .cipher
+                    .read()
+                    .expect("cipher lock")
+                    .reseal_if_stale(&value);
+                match resealed {
+                    Ok(Some(new_value)) => {
+                        sqlx::query(&update)
+                            .bind(new_value)
+                            .bind(&id)
+                            .execute(pool)
+                            .await?;
+                        rewritten += 1;
+                    }
+                    Ok(None) => report.already_current += 1,
+                    Err(e) => bail!("cannot re-seal {} id={id}: {e}", col.name()),
+                }
+            }
+            report.rewritten += rewritten;
+            report.by_column.push((col.name(), rewritten));
+        }
+        info!(
+            rewritten = report.rewritten,
+            already_current = report.already_current,
+            "Re-encryption pass complete"
+        );
+        Ok(report)
+    }
+}
+
+/// Read every DEK, unwrap with `kek`, and build the cipher. `None` when the
+/// table is empty.
+async fn load_ring(pool: &Pool<Postgres>, kek: &dyn Kek) -> Result<Option<FieldCipher>> {
+    let rows = sqlx::query(
+        "SELECT id, kek_id, wrapped_key, active FROM data_encryption_keys ORDER BY created_at",
+    )
+    .fetch_all(pool)
+    .await?;
+    if rows.is_empty() {
+        return Ok(None);
+    }
+
+    let mut keys = Vec::with_capacity(rows.len());
+    let mut active: Option<String> = None;
+    for row in rows {
+        let id: String = row.get("id");
+        let kek_id: String = row.get("kek_id");
+        let wrapped: Vec<u8> = row.get("wrapped_key");
+        let is_active: bool = row.get("active");
+
+        if kek_id != kek.id() {
+            if is_active {
+                bail!(
+                    "active data encryption key {id} was wrapped by KEK {kek_id} but this process \
+                     is configured with KEK {} — the master key or KMS key does not match the database",
+                    kek.id()
+                );
+            }
+            warn!(
+                key_id = %id,
+                wrapped_by = %kek_id,
+                "Skipping data encryption key wrapped by a different KEK; values sealed with it cannot be read"
+            );
+            continue;
+        }
+
+        let dek = kek
+            .unwrap_dek(&wrapped)
+            .await
+            .with_context(|| format!("unwrapping data encryption key {id}"))?;
+        keys.push((id.clone(), dek));
+        if is_active {
+            active = Some(id);
+        }
+    }
+
+    let active = active.context("no active data encryption key in data_encryption_keys")?;
+    Ok(Some(FieldCipher::new(keys, &active)?))
+}
+
+/// Generate, wrap and insert a DEK. With `activate`, the previous active key
+/// is demoted in the same transaction. Returns the new key id.
+async fn create_dek(pool: &Pool<Postgres>, kek: &dyn Kek, activate: bool) -> Result<String> {
+    let (_dek, wrapped) = kek.generate_dek().await?;
+    let id = format!("dek-{}", &uuid::Uuid::new_v4().simple().to_string()[..12]);
+
+    let mut tx = pool.begin().await?;
+    if activate {
+        sqlx::query("UPDATE data_encryption_keys SET active = FALSE WHERE active")
+            .execute(&mut *tx)
+            .await?;
+    }
+    sqlx::query(
+        "INSERT INTO data_encryption_keys (id, kek_id, wrapped_key, active, created_at)
+         VALUES ($1, $2, $3, $4, NOW())",
+    )
+    .bind(&id)
+    .bind(kek.id())
+    .bind(&wrapped)
+    .bind(activate)
+    .execute(&mut *tx)
+    .await
+    .context("inserting data encryption key")?;
+    tx.commit().await?;
+    Ok(id)
+}

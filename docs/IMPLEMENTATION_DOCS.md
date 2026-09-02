@@ -145,6 +145,10 @@ GET /api/v1/cdrs?from_uri=sip:alice@example.com
 - Call screening
 - Max duration enforcement
 
+## Security
+
+- **[ENCRYPTION.md](./ENCRYPTION.md)** - Encryption at rest: envelope-wrapped data keys, local/AWS KMS providers, sealed columns, rotate and re-encrypt operations
+
 ## Billing
 
 - **[BILLING.md](./BILLING.md)** - Rate plans, prepaid balance enforcement (402 + cut-off), settlement, and external billing hooks (`billing.*` events)

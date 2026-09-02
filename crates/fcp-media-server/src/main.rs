@@ -125,6 +125,7 @@ async fn main() -> Result<()> {
             connection_string: db_url.clone(),
             max_connections: config.storage.max_connections,
             connection_timeout: Duration::from_secs(30),
+            encryption: None,
         })
         .await
         {

@@ -1,0 +1,42 @@
+[package]
+name = "fcp-crypto"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Encryption at rest for FCP: AES-256-GCM field encryption with envelope-wrapped data keys (local master key or AWS KMS)"
+
+[features]
+default = []
+# AWS KMS as the key-encryption-key provider (GenerateDataKey / Decrypt).
+aws-kms = ["dep:aws-config", "dep:aws-sdk-kms"]
+
+[dependencies]
+aes-gcm = "0.11"
+anyhow.workspace = true
+async-trait = "0.1"
+base64 = "0.22"
+rand = "0.8"
+sha2 = "0.10"
+thiserror.workspace = true
+tracing.workspace = true
+zeroize = { version = "1", features = ["derive"] }
+
+# Default features of the AWS SDK enable its legacy hyper 0.14 / rustls 0.21
+# HTTP client (`tls-rustls`), which carries open RUSTSEC advisories. Select
+# the hyper 1 / rustls 0.23 client explicitly instead.
+aws-config = { version = "1", optional = true, default-features = false, features = [
+    "behavior-version-latest",
+    "rt-tokio",
+    "default-https-client",
+    "credentials-process",
+    "sso",
+] }
+aws-sdk-kms = { version = "1", optional = true, default-features = false, features = [
+    "rt-tokio",
+    "default-https-client",
+] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

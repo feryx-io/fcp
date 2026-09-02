@@ -190,6 +190,15 @@ autovacuum = on
 autovacuum_naptime = 30s
 ```
 
+## Encryption at rest
+
+Secret columns (SIP digest/HA1/provisioning passwords, trunk passwords,
+conference PINs, webhook secrets) are sealed with AES-256-GCM when
+`FCP_ENCRYPTION_PROVIDER` is set (`local` master key or `aws-kms`, the latter
+behind the `aws-kms` cargo feature). Legacy plaintext stays readable; see
+[docs/ENCRYPTION.md](../../docs/ENCRYPTION.md) for the key model, rotation and
+the re-encrypt endpoint.
+
 ## Testing
 
 `tests/integration.rs` exercises the backend against a real PostgreSQL:
