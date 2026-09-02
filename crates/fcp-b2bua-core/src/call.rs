@@ -254,6 +254,10 @@ pub struct Call {
     /// notifies this to wake up the forking task so it can CANCEL all B-legs immediately.
     pub cancel_notify: Option<Arc<Notify>>,
 
+    /// Cap on the answered duration imposed by balance enforcement; the
+    /// handler hangs the call up when it is reached.
+    pub max_duration: Option<std::time::Duration>,
+
     /// Arbitrary custom data attached to this call (flows through to CDR).
     /// Used by PBX features such as CMC/FAC billing codes.
     pub custom_data: Option<serde_json::Value>,
@@ -348,6 +352,7 @@ impl Call {
             trunk_name: None,
             outbound_allowed_codecs: None,
             cancel_notify: None,
+            max_duration: None,
             custom_data: None,
             parked_orbit: None,
             parker_extension: None,
@@ -437,6 +442,7 @@ impl Call {
             trunk_name: None,
             outbound_allowed_codecs: None,
             cancel_notify: None,
+            max_duration: None,
             custom_data: None,
             parked_orbit: None,
             parker_extension: None,

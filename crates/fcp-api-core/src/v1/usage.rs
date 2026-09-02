@@ -71,6 +71,8 @@ pub struct BillingSummaryResponse {
     pub period_end: u64,
     pub usage: UsageResponse,
     pub resource_counts: ResourceCounts,
+    /// The tenant's prepaid/credit balance, when one is configured.
+    pub balance: Option<super::billing::BalanceResponse>,
 }
 
 /// Counts of provisioned resources for the tenant.
@@ -299,6 +301,12 @@ pub async fn billing_summary(
     // Filter users to this tenant
     let user_count = users.iter().filter(|u| u.tenant_id == tenant.0).count();
 
+    let balance = storage
+        .get_balance(&tenant.0)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to load balance: {}", e)))?
+        .map(super::billing::BalanceResponse::from);
+
     Ok(Json(BillingSummaryResponse {
         period_start: to_epoch(from),
         period_end: to_epoch(to),
@@ -317,5 +325,6 @@ pub async fn billing_summary(
             users: user_count,
             devices: devices.len(),
         },
+        balance,
     }))
 }

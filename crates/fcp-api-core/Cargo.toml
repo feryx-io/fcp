@@ -12,6 +12,7 @@ fcp-core = { path = "../fcp-core" }
 fcp-sip = { path = "../fcp-sip" }
 fcp-media = { path = "../fcp-media" }
 fcp-events = { path = "../fcp-events" }
+fcp-billing = { path = "../fcp-billing" }
 fcp-flow = { path = "../fcp-flow" }
 fcp-queue = { path = "../fcp-queue" }
 fcp-presence = { path = "../fcp-presence" }

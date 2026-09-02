@@ -1,10 +1,11 @@
-//! Billing: per-tenant rate plans and call rating.
+//! Billing data model: per-tenant rate plans, prefix rates, prepaid balances
+//! and the balance ledger.
 //!
-//! MVP scope (Phase 4): a tenant has at most one *default* rate plan; a plan
-//! carries a currency, a default per-minute rate, a connect fee, a billing
-//! increment, and a set of longest-prefix-match rates. Calls are rated once,
-//! at CDR creation time, and the cost/currency are stamped onto the CDR.
-//! Balance enforcement and external billing-system hooks are follow-up work.
+//! This module holds only the *model* shared by the storage contract
+//! ([`crate::storage::CdrStore`]) and the admin API. The billing *engine* —
+//! call rating, balance admission, settlement at call end and external
+//! billing hooks — lives in the dedicated `fcp-billing` crate, which
+//! re-exports these types.
 
 use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
@@ -47,207 +48,107 @@ pub struct Rate {
     pub description: Option<String>,
 }
 
-/// Outcome of rating one call.
-#[derive(Debug, Clone, PartialEq)]
-pub struct RatedCall {
-    /// Total cost in the plan's currency, rounded to 4 decimal places.
-    pub cost: f64,
-    pub currency: String,
-    /// The rate prefix that matched, or `None` when the default rate applied.
-    pub matched_prefix: Option<String>,
-    /// Seconds actually billed after applying the billing increment.
-    pub billable_secs: u64,
-}
-
-/// Extract the dialed digits from a SIP or tel URI for prefix matching.
+/// A tenant's prepaid/credit balance and its enforcement settings.
 ///
-/// `sip:+14155550100@example.com;user=phone` → `14155550100`,
-/// `tel:+44-20-7946-0000` → `442079460000`, `sip:2001@pbx` → `2001`.
-/// Returns `None` when the user part contains no digits (e.g. `sip:alice@…`).
-pub fn dialed_digits_from_uri(uri: &str) -> Option<String> {
-    let without_scheme = uri
-        .strip_prefix("sips:")
-        .or_else(|| uri.strip_prefix("sip:"))
-        .or_else(|| uri.strip_prefix("tel:"))
-        .unwrap_or(uri);
-    let user_part = without_scheme
-        .split('@')
-        .next()
-        .unwrap_or(without_scheme)
-        .split(';')
-        .next()
-        .unwrap_or_default();
-    let digits: String = user_part.chars().filter(|c| c.is_ascii_digit()).collect();
-    // Reject user parts that are names with incidental digits (e.g. "bob2"):
-    // billable destinations are all-digit (after stripping +, separators).
-    let significant: String = user_part
-        .chars()
-        .filter(|c| !matches!(c, '+' | '-' | '.' | '(' | ')' | ' '))
-        .collect();
-    if digits.is_empty() || !significant.chars().all(|c| c.is_ascii_digit()) {
-        return None;
-    }
-    Some(digits)
+/// The balance is debited by the settlement step at call end (the rated
+/// cost of every answered call) and credited by top-ups/adjustments through
+/// the admin API. When `enforce` is set, calls whose first billing
+/// increment cannot be covered by `balance + credit_limit` are rejected at
+/// admission with 402 Payment Required, and established calls are cut off
+/// when the affordable duration runs out.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TenantBalance {
+    pub tenant_id: crate::TenantId,
+    /// Current balance in `currency`. May go negative up to `credit_limit`.
+    pub balance: f64,
+    /// ISO 4217 currency code. Expected to match the tenant's rate plan;
+    /// settlement logs a warning and still debits when they differ.
+    pub currency: String,
+    /// How far below zero the balance may go before calls are refused
+    /// (0 = strictly prepaid).
+    pub credit_limit: f64,
+    /// Whether admission control and mid-call cut-off are active. Off means
+    /// the ledger is still maintained but never blocks a call.
+    pub enforce: bool,
+    /// Emit a `billing.balance_low` event when the balance crosses below
+    /// this value.
+    pub low_balance_threshold: Option<f64>,
+    pub updated_at: SystemTime,
 }
 
-/// Rate a call against a plan. `duration_ms` is the *answered* duration
-/// (`call_duration_ms`); unanswered calls (zero duration) cost nothing.
-pub fn rate_call(
-    plan: &RatePlan,
-    rates: &[Rate],
-    dialed_digits: &str,
-    duration_ms: u64,
-) -> RatedCall {
-    if duration_ms == 0 {
-        return RatedCall {
-            cost: 0.0,
-            currency: plan.currency.clone(),
-            matched_prefix: None,
-            billable_secs: 0,
-        };
-    }
-
-    // Longest matching prefix wins; ties cannot occur (prefixes are unique
-    // per plan, enforced by the storage layer).
-    let best = rates
-        .iter()
-        .filter(|r| dialed_digits.starts_with(r.prefix.trim_start_matches('+')))
-        .max_by_key(|r| r.prefix.trim_start_matches('+').len());
-
-    let (rate_per_minute, connect_fee, matched_prefix) = match best {
-        Some(rate) => (
-            rate.rate_per_minute,
-            rate.connect_fee.unwrap_or(plan.connect_fee),
-            Some(rate.prefix.clone()),
-        ),
-        None => (plan.default_rate_per_minute, plan.connect_fee, None),
-    };
-
-    let increment = u64::from(plan.billing_increment_secs.max(1));
-    let duration_secs = duration_ms.div_ceil(1000);
-    let billable_secs = duration_secs.div_ceil(increment) * increment;
-
-    let cost = connect_fee + rate_per_minute * (billable_secs as f64) / 60.0;
-    RatedCall {
-        cost: (cost * 10_000.0).round() / 10_000.0,
-        currency: plan.currency.clone(),
-        matched_prefix,
-        billable_secs,
+impl TenantBalance {
+    /// Funds that may still be spent: balance plus the allowed overdraft.
+    pub fn available(&self) -> f64 {
+        self.balance + self.credit_limit
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// Why a balance changed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BalanceTransactionKind {
+    /// Credit added by an operator or an external billing system.
+    TopUp,
+    /// Debit for a rated call (settlement at call end).
+    CallCharge,
+    /// Manual correction in either direction (refund, write-off, ...).
+    Adjustment,
+}
 
-    fn plan() -> RatePlan {
-        RatePlan {
-            id: Uuid::new_v4(),
-            tenant_id: crate::TenantId::new(),
-            name: "standard".into(),
-            currency: "USD".into(),
-            default_rate_per_minute: 0.02,
-            connect_fee: 0.0,
-            billing_increment_secs: 60,
-            is_default: true,
-            enabled: true,
-            created_at: SystemTime::now(),
-            updated_at: SystemTime::now(),
+impl BalanceTransactionKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::TopUp => "top_up",
+            Self::CallCharge => "call_charge",
+            Self::Adjustment => "adjustment",
         }
     }
+}
 
-    fn rate(plan_id: Uuid, prefix: &str, per_minute: f64) -> Rate {
-        Rate {
-            id: Uuid::new_v4(),
-            rate_plan_id: plan_id,
-            prefix: prefix.into(),
-            rate_per_minute: per_minute,
-            connect_fee: None,
-            description: None,
+impl std::str::FromStr for BalanceTransactionKind {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "top_up" => Ok(Self::TopUp),
+            "call_charge" => Ok(Self::CallCharge),
+            "adjustment" => Ok(Self::Adjustment),
+            other => Err(format!("unknown balance transaction kind: {other}")),
         }
     }
+}
 
-    #[test]
-    fn test_dialed_digits_from_uri() {
-        assert_eq!(
-            dialed_digits_from_uri("sip:+14155550100@example.com;user=phone").as_deref(),
-            Some("14155550100")
-        );
-        assert_eq!(
-            dialed_digits_from_uri("tel:+44-20-7946-0000").as_deref(),
-            Some("442079460000")
-        );
-        assert_eq!(
-            dialed_digits_from_uri("sip:2001@pbx.local").as_deref(),
-            Some("2001")
-        );
-        assert_eq!(dialed_digits_from_uri("sip:alice@example.com"), None);
-        assert_eq!(dialed_digits_from_uri("sip:bob2@example.com"), None);
-        assert_eq!(dialed_digits_from_uri("queue:support"), None);
-    }
+/// One ledger entry: a signed change to a tenant's balance.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BalanceTransaction {
+    pub id: Uuid,
+    pub tenant_id: crate::TenantId,
+    pub kind: BalanceTransactionKind,
+    /// Signed amount: positive credits, negative debits.
+    pub amount: f64,
+    /// Balance after this entry was applied.
+    pub balance_after: f64,
+    pub currency: String,
+    /// The call this charge settles, for `CallCharge` entries.
+    pub call_id: Option<crate::CallId>,
+    /// Free-form note (top-up reference, adjustment reason, ...).
+    pub description: Option<String>,
+    /// Opaque reference to the external billing system's record, if any.
+    pub external_ref: Option<String>,
+    pub created_at: SystemTime,
+}
 
-    #[test]
-    fn test_longest_prefix_wins() {
-        let p = plan();
-        let rates = vec![
-            rate(p.id, "1", 0.01),
-            rate(p.id, "1415", 0.005),
-            rate(p.id, "44", 0.03),
-        ];
-        let rated = rate_call(&p, &rates, "14155550100", 60_000);
-        assert_eq!(rated.matched_prefix.as_deref(), Some("1415"));
-        assert!((rated.cost - 0.005).abs() < 1e-9);
-    }
-
-    #[test]
-    fn test_default_rate_when_no_prefix_matches() {
-        let p = plan();
-        let rates = vec![rate(p.id, "44", 0.03)];
-        let rated = rate_call(&p, &rates, "3312345678", 120_000);
-        assert_eq!(rated.matched_prefix, None);
-        assert!((rated.cost - 0.04).abs() < 1e-9); // 2 min * 0.02
-    }
-
-    #[test]
-    fn test_billing_increment_rounds_up() {
-        let mut p = plan();
-        p.billing_increment_secs = 60;
-        let rated = rate_call(&p, &[], "15550100", 61_000); // 61s → 120s billed
-        assert_eq!(rated.billable_secs, 120);
-        assert!((rated.cost - 0.04).abs() < 1e-9);
-
-        p.billing_increment_secs = 1; // per-second billing
-        let rated = rate_call(&p, &[], "15550100", 61_000);
-        assert_eq!(rated.billable_secs, 61);
-        assert!((rated.cost - 0.0203).abs() < 1e-9); // rounded to 4 dp
-    }
-
-    #[test]
-    fn test_connect_fee_and_override() {
-        let mut p = plan();
-        p.connect_fee = 0.01;
-        let mut r = rate(p.id, "44", 0.03);
-        let rated = rate_call(&p, std::slice::from_ref(&r), "442079460000", 60_000);
-        assert!((rated.cost - 0.04).abs() < 1e-9); // 0.01 + 0.03
-
-        r.connect_fee = Some(0.05);
-        let rated = rate_call(&p, &[r], "442079460000", 60_000);
-        assert!((rated.cost - 0.08).abs() < 1e-9); // 0.05 + 0.03
-    }
-
-    #[test]
-    fn test_unanswered_call_costs_nothing() {
-        let p = plan();
-        let rated = rate_call(&p, &[], "15550100", 0);
-        assert_eq!(rated.cost, 0.0);
-        assert_eq!(rated.billable_secs, 0);
-    }
-
-    #[test]
-    fn test_plus_prefix_in_rate_matches_bare_digits() {
-        let p = plan();
-        let rates = vec![rate(p.id, "+44", 0.03)];
-        let rated = rate_call(&p, &rates, "442079460000", 60_000);
-        assert_eq!(rated.matched_prefix.as_deref(), Some("+44"));
-    }
+/// Request to append one ledger entry (see
+/// [`crate::storage::CdrStore::apply_balance_transaction`]).
+#[derive(Debug, Clone)]
+pub struct BalanceTransactionRequest {
+    pub tenant_id: crate::TenantId,
+    pub kind: BalanceTransactionKind,
+    /// Signed amount: positive credits, negative debits.
+    pub amount: f64,
+    /// Currency used to create the balance row when the tenant has none yet.
+    pub currency: String,
+    pub call_id: Option<crate::CallId>,
+    pub description: Option<String>,
+    pub external_ref: Option<String>,
 }

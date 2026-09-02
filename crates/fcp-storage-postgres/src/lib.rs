@@ -1548,6 +1548,139 @@ impl CdrStore for PostgresStorage {
             .collect::<Result<Vec<_>>>()?;
         Ok(Some((plan, rates)))
     }
+
+    async fn get_balance(
+        &self,
+        tenant_id: &TenantId,
+    ) -> Result<Option<fcp_core::billing::TenantBalance>> {
+        let row = sqlx::query("SELECT * FROM tenant_balances WHERE tenant_id = $1")
+            .bind(tenant_id.to_string())
+            .fetch_optional(&self.pool)
+            .await?;
+        row.map(row_to_tenant_balance).transpose()
+    }
+
+    async fn upsert_balance(&self, balance: fcp_core::billing::TenantBalance) -> Result<()> {
+        // The amount is only taken on insert; settings are replaced on conflict.
+        sqlx::query(
+            "INSERT INTO tenant_balances (
+                tenant_id, balance, currency, credit_limit, enforce,
+                low_balance_threshold, updated_at
+             ) VALUES ($1, $2, $3, $4, $5, $6, NOW())
+             ON CONFLICT (tenant_id) DO UPDATE SET
+                currency = EXCLUDED.currency,
+                credit_limit = EXCLUDED.credit_limit,
+                enforce = EXCLUDED.enforce,
+                low_balance_threshold = EXCLUDED.low_balance_threshold,
+                updated_at = NOW()",
+        )
+        .bind(balance.tenant_id.to_string())
+        .bind(balance.balance)
+        .bind(&balance.currency)
+        .bind(balance.credit_limit)
+        .bind(balance.enforce)
+        .bind(balance.low_balance_threshold)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn apply_balance_transaction(
+        &self,
+        request: fcp_core::billing::BalanceTransactionRequest,
+    ) -> Result<fcp_core::billing::BalanceTransaction> {
+        let mut tx = self.pool.begin().await?;
+
+        // Upsert-and-add in one statement so concurrent settlements serialize
+        // on the row lock rather than racing on a read-modify-write.
+        let row = sqlx::query(
+            "INSERT INTO tenant_balances (tenant_id, balance, currency, updated_at)
+             VALUES ($1, $2, $3, NOW())
+             ON CONFLICT (tenant_id) DO UPDATE SET
+                balance = tenant_balances.balance + EXCLUDED.balance,
+                updated_at = NOW()
+             RETURNING balance, currency",
+        )
+        .bind(request.tenant_id.to_string())
+        .bind(request.amount)
+        .bind(&request.currency)
+        .fetch_one(&mut *tx)
+        .await?;
+        let balance_after: f64 = row.get("balance");
+        let currency: String = row.get("currency");
+
+        let id = uuid::Uuid::new_v4();
+        let created_at = SystemTime::now();
+        let insert = sqlx::query(
+            "INSERT INTO balance_transactions (
+                id, tenant_id, kind, amount, balance_after, currency,
+                call_id, description, external_ref, created_at
+             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+        )
+        .bind(id.to_string())
+        .bind(request.tenant_id.to_string())
+        .bind(request.kind.as_str())
+        .bind(request.amount)
+        .bind(balance_after)
+        .bind(&currency)
+        .bind(request.call_id.as_ref().map(|c| c.to_string()))
+        .bind(&request.description)
+        .bind(&request.external_ref)
+        .bind(system_time_to_datetime(created_at))
+        .execute(&mut *tx)
+        .await;
+
+        if let Err(err) = insert {
+            // A second settlement for the same call rolls back the debit and
+            // reports Conflict so the caller can treat it as already applied.
+            let conflict = err
+                .as_database_error()
+                .map(|e| e.code().as_deref() == Some("23505"))
+                .unwrap_or(false);
+            tx.rollback().await?;
+            if conflict {
+                return Err(anyhow::Error::new(fcp_core::Error::Storage(
+                    fcp_core::StorageError::Conflict(format!(
+                        "call {} has already been settled",
+                        request.call_id.map(|c| c.to_string()).unwrap_or_default()
+                    )),
+                )));
+            }
+            return Err(err.into());
+        }
+        tx.commit().await?;
+
+        Ok(fcp_core::billing::BalanceTransaction {
+            id,
+            tenant_id: request.tenant_id,
+            kind: request.kind,
+            amount: request.amount,
+            balance_after,
+            currency,
+            call_id: request.call_id,
+            description: request.description,
+            external_ref: request.external_ref,
+            created_at,
+        })
+    }
+
+    async fn list_balance_transactions(
+        &self,
+        tenant_id: &TenantId,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<fcp_core::billing::BalanceTransaction>> {
+        let rows = sqlx::query(
+            "SELECT * FROM balance_transactions WHERE tenant_id = $1
+             ORDER BY created_at DESC LIMIT $2 OFFSET $3",
+        )
+        .bind(tenant_id.to_string())
+        .bind(limit.min(1000) as i64)
+        .bind(offset as i64)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(row_to_balance_transaction).collect()
+    }
 }
 
 // ============================================================================
@@ -1593,6 +1726,41 @@ fn row_to_rate(row: sqlx::postgres::PgRow) -> Result<fcp_core::billing::Rate> {
         rate_per_minute: row.get("rate_per_minute"),
         connect_fee: row.get("connect_fee"),
         description: row.get("description"),
+    })
+}
+
+/// Convert PostgreSQL row to TenantBalance
+fn row_to_tenant_balance(row: sqlx::postgres::PgRow) -> Result<fcp_core::billing::TenantBalance> {
+    Ok(fcp_core::billing::TenantBalance {
+        tenant_id: TenantId::from_str(&row.get::<String, _>("tenant_id"))?,
+        balance: row.get("balance"),
+        currency: row.get("currency"),
+        credit_limit: row.get("credit_limit"),
+        enforce: row.get("enforce"),
+        low_balance_threshold: row.get("low_balance_threshold"),
+        updated_at: datetime_to_system_time(row.get::<DateTime<Utc>, _>("updated_at")),
+    })
+}
+
+/// Convert PostgreSQL row to BalanceTransaction
+fn row_to_balance_transaction(
+    row: sqlx::postgres::PgRow,
+) -> Result<fcp_core::billing::BalanceTransaction> {
+    let kind: String = row.get("kind");
+    let call_id: Option<String> = row.get("call_id");
+    Ok(fcp_core::billing::BalanceTransaction {
+        id: parse_uuid_column(&row.get::<String, _>("id"))?,
+        tenant_id: TenantId::from_str(&row.get::<String, _>("tenant_id"))?,
+        kind: kind.parse().map_err(|e: String| anyhow::anyhow!("{e}"))?,
+        amount: row.get("amount"),
+        balance_after: row.get("balance_after"),
+        currency: row.get("currency"),
+        call_id: call_id
+            .map(|c| fcp_core::CallId::from_str(&c))
+            .transpose()?,
+        description: row.get("description"),
+        external_ref: row.get("external_ref"),
+        created_at: datetime_to_system_time(row.get::<DateTime<Utc>, _>("created_at")),
     })
 }
 

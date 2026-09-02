@@ -26,6 +26,10 @@ pub struct CallManager {
 
     /// Node ID for event publishing (identifies which call-manager node owns the call)
     node_id: Option<String>,
+
+    /// Billing engine: rates and settles calls at CDR creation. Present
+    /// whenever storage is; publishes billing events when events are too.
+    billing: Option<Arc<fcp_billing::BillingEngine>>,
 }
 
 impl CallManager {
@@ -36,16 +40,19 @@ impl CallManager {
             storage: None,
             events: None,
             node_id: None,
+            billing: None,
         }
     }
 
     /// Create a new call manager with storage backend for CDR creation.
     pub fn with_storage(storage: Arc<fcp_core::DynStorage>) -> Self {
+        let billing = Arc::new(fcp_billing::BillingEngine::new(Arc::clone(&storage)));
         Self {
             calls: Arc::new(DashMap::new()),
             storage: Some(storage),
             events: None,
             node_id: None,
+            billing: Some(billing),
         }
     }
 
@@ -54,11 +61,15 @@ impl CallManager {
         storage: Arc<fcp_core::DynStorage>,
         events: Arc<dyn EventPublisher>,
     ) -> Self {
+        let billing = Arc::new(
+            fcp_billing::BillingEngine::new(Arc::clone(&storage)).with_events(Arc::clone(&events)),
+        );
         Self {
             calls: Arc::new(DashMap::new()),
             storage: Some(storage),
             events: Some(events),
             node_id: None,
+            billing: Some(billing),
         }
     }
 
@@ -69,7 +80,19 @@ impl CallManager {
             storage: None,
             events: Some(events),
             node_id: None,
+            billing: None,
         }
+    }
+
+    /// Replace the billing engine (e.g. to add custom billing hooks).
+    pub fn set_billing(&mut self, billing: Arc<fcp_billing::BillingEngine>) {
+        self.billing = Some(billing);
+    }
+
+    /// The billing engine used for settlement, shared with the SIP handler
+    /// for admission control.
+    pub fn billing(&self) -> Option<&Arc<fcp_billing::BillingEngine>> {
+        self.billing.as_ref()
     }
 
     /// Set the node ID for event publishing.
@@ -289,9 +312,12 @@ impl CallManager {
         // Create CDR asynchronously if storage is available
         if let Some(storage) = &self.storage {
             let storage = Arc::clone(storage);
+            let billing = self.billing.clone();
             let call_clone = call.clone();
             tokio::spawn(async move {
-                if let Err(e) = create_and_insert_cdr(&storage, &call_clone).await {
+                if let Err(e) =
+                    create_and_insert_cdr(&storage, billing.as_deref(), &call_clone).await
+                {
                     tracing::error!(
                         call_id = %call_clone.id,
                         error = %e,
@@ -545,7 +571,11 @@ fn extract_user_from_uri(uri: &str) -> Option<&str> {
 /// This function maps call state to disposition, extracts timing information,
 /// and creates a complete CDR record. It is non-blocking and errors are logged
 /// but do not prevent call termination.
-async fn create_and_insert_cdr(storage: &fcp_core::DynStorage, call: &Call) -> Result<()> {
+async fn create_and_insert_cdr(
+    storage: &fcp_core::DynStorage,
+    billing: Option<&fcp_billing::BillingEngine>,
+    call: &Call,
+) -> Result<()> {
     use fcp_core::storage::{CallDetailRecord, CdrStore};
 
     // Map CallState to CallDisposition
@@ -596,7 +626,10 @@ async fn create_and_insert_cdr(storage: &fcp_core::DynStorage, call: &Call) -> R
     // Rate the call against the tenant's default rate plan. Rating is
     // best-effort: a missing plan, an unratable destination (named URI,
     // internal target), or a storage error must never block CDR insertion.
-    let (cost, currency) = rate_cdr_cost(storage, call, &to_uri, call_duration_ms).await;
+    let (cost, currency) = match billing {
+        Some(engine) => settle_cdr_cost(engine, call, &to_uri, call_duration_ms).await,
+        None => (None, None),
+    };
 
     // Build CallDetailRecord
     let cdr = CallDetailRecord {
@@ -642,48 +675,28 @@ async fn create_and_insert_cdr(storage: &fcp_core::DynStorage, call: &Call) -> R
     Ok(())
 }
 
-/// Rate a finished call against the tenant's default rate plan, returning
+/// Rate and settle a finished call through the billing engine, returning
 /// `(cost, currency)` for the CDR. `(None, None)` when billing is not
-/// configured for the tenant, the destination has no dialable digits, or the
-/// rate lookup fails (logged, never fatal).
-async fn rate_cdr_cost(
-    storage: &fcp_core::DynStorage,
+/// configured for the tenant or the destination has no dialable digits.
+/// Never fatal: settlement failures are logged by the engine.
+async fn settle_cdr_cost(
+    billing: &fcp_billing::BillingEngine,
     call: &Call,
     to_uri: &str,
     call_duration_ms: Option<u64>,
 ) -> (Option<f64>, Option<String>) {
-    use fcp_core::storage::CdrStore;
-
-    let Some(dialed) = fcp_core::billing::dialed_digits_from_uri(to_uri) else {
-        return (None, None);
-    };
-
-    match storage
-        .get_default_rate_plan_with_rates(&call.tenant_id)
+    let call_id = fcp_core::CallId::from_uuid(*call.id.as_uuid());
+    match billing
+        .settle(
+            &call.tenant_id,
+            call_id,
+            to_uri,
+            call_duration_ms.unwrap_or(0),
+        )
         .await
     {
-        Ok(Some((plan, rates))) => {
-            let rated =
-                fcp_core::billing::rate_call(&plan, &rates, &dialed, call_duration_ms.unwrap_or(0));
-            tracing::debug!(
-                call_id = %call.id,
-                cost = rated.cost,
-                currency = %rated.currency,
-                matched_prefix = ?rated.matched_prefix,
-                billable_secs = rated.billable_secs,
-                "Call rated"
-            );
-            (Some(rated.cost), Some(rated.currency))
-        }
-        Ok(None) => (None, None),
-        Err(e) => {
-            tracing::warn!(
-                call_id = %call.id,
-                error = %e,
-                "Rate plan lookup failed - CDR will carry no cost"
-            );
-            (None, None)
-        }
+        Some(settlement) => (Some(settlement.rated.cost), Some(settlement.rated.currency)),
+        None => (None, None),
     }
 }
 

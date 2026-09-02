@@ -299,6 +299,10 @@ pub struct SipMessageHandler {
     /// Call manager for B2BUA functionality
     call_manager: Arc<fcp_b2bua_core::CallManager>,
 
+    /// Billing engine for balance admission (402) and mid-call cut-off.
+    /// Defaults to the call manager's engine; `None` disables enforcement.
+    billing: Option<Arc<fcp_billing::BillingEngine>>,
+
     /// User Agent Client for making outbound calls (B-leg)
     uac: Option<Arc<SipUserAgentClient>>,
 
@@ -691,6 +695,7 @@ impl SipMessageHandler {
             rtp_port,
             registrar,
             routing_service,
+            billing: call_manager.billing().cloned(),
             call_manager,
             uac,
             storage,
@@ -743,6 +748,87 @@ impl SipMessageHandler {
     pub fn with_default_tenant_id(mut self, tenant_id: fcp_core::TenantId) -> Self {
         self.default_tenant_id = Some(tenant_id);
         self
+    }
+
+    /// Override the billing engine used for balance admission and cut-off
+    /// (`None` disables enforcement at the edge; settlement still happens
+    /// in the call manager).
+    pub fn with_billing(mut self, billing: Option<Arc<fcp_billing::BillingEngine>>) -> Self {
+        self.billing = billing;
+        self
+    }
+
+    /// Hang the call up once its affordable duration is exhausted.
+    ///
+    /// Waits for the call to be answered (giving up if it fails or is torn
+    /// down first), sleeps until `established_at + max_duration`, then sends
+    /// BYE on both legs if the call is still up. Only calls admitted with a
+    /// finite cap get a watchdog.
+    fn spawn_balance_watchdog(
+        &self,
+        call_id: fcp_b2bua_core::CallId,
+        tenant_id: fcp_core::TenantId,
+        max_duration: Duration,
+    ) {
+        use fcp_b2bua_core::CallState;
+        const POLL: Duration = Duration::from_secs(1);
+        // Longest we wait for an answer before assuming the call will not
+        // be established (ringing timers are far shorter).
+        const MAX_WAIT_FOR_ANSWER: Duration = Duration::from_secs(600);
+
+        let handler = self.clone();
+        tokio::spawn(async move {
+            let started = std::time::Instant::now();
+            let established_at = loop {
+                match handler.call_manager.get_call(&call_id) {
+                    None => return,
+                    Some(call) => match call.state {
+                        CallState::Terminating | CallState::Terminated | CallState::Failed => {
+                            return
+                        }
+                        _ => {
+                            if let Some(at) = call.established_at {
+                                break at;
+                            }
+                        }
+                    },
+                }
+                if started.elapsed() > MAX_WAIT_FOR_ANSWER {
+                    return;
+                }
+                tokio::time::sleep(POLL).await;
+            };
+
+            let deadline = established_at + max_duration;
+            if let Ok(remaining) = deadline.duration_since(std::time::SystemTime::now()) {
+                tokio::time::sleep(remaining).await;
+            }
+
+            let still_up = handler
+                .call_manager
+                .get_call(&call_id)
+                .map(|c| matches!(c.state, CallState::Established | CallState::Parked))
+                .unwrap_or(false);
+            if !still_up {
+                return;
+            }
+            if let Err(e) = handler.hangup_call_by_id(
+                &call_id,
+                Some("Balance exhausted: affordable duration reached".to_string()),
+            ) {
+                warn!(call_id = %call_id, error = %e, "Balance cut-off hangup failed");
+                return;
+            }
+            if let Some(billing) = &handler.billing {
+                billing
+                    .report_cut_off(
+                        &tenant_id,
+                        fcp_core::CallId::from_uuid(*call_id.as_uuid()),
+                        max_duration,
+                    )
+                    .await;
+            }
+        });
     }
 
     /// Get a reference to the B2BUA policy configuration.
@@ -1494,13 +1580,56 @@ impl SipMessageHandler {
             }
         }
 
+        // Balance enforcement: refuse calls the tenant cannot pay for, and
+        // remember how long an affordable call may last.
+        let mut billing_max_duration: Option<Duration> = None;
+        if let Some(billing) = &self.billing {
+            let destination = sip_parse::header(request.headers(), "To")
+                .map(|to| {
+                    let to = to.as_str();
+                    to.split('<')
+                        .nth(1)
+                        .and_then(|s| s.split('>').next())
+                        .unwrap_or(to)
+                        .trim()
+                        .to_string()
+                })
+                .unwrap_or_default();
+            match billing.admit(&tenant_id, &destination).await {
+                fcp_billing::AdmissionDecision::Allow { max_duration } => {
+                    billing_max_duration = max_duration;
+                }
+                fcp_billing::AdmissionDecision::Deny {
+                    available,
+                    required,
+                    currency,
+                } => {
+                    info!(
+                        tenant_id = %tenant_id,
+                        destination = %destination,
+                        available,
+                        required,
+                        currency = %currency,
+                        "Rejecting INVITE: insufficient balance"
+                    );
+                    let response = self.create_simple_response(request, 402, "Payment Required");
+                    handle.send_final(response).await;
+                    return Ok(());
+                }
+            }
+        }
+
         // Create Call object from the incoming INVITE with tenant context
         let mut call = fcp_b2bua_core::Call::from_invite(request.clone(), peer, tenant_id);
         call.state = fcp_b2bua_core::CallState::RoutingPending;
         call.a_leg_invite_tx = Some(handle.key().clone());
+        call.max_duration = billing_max_duration;
 
         // Store call in CallManager
         let call_id = self.call_manager.create_call(call);
+        if let Some(max_duration) = billing_max_duration {
+            self.spawn_balance_watchdog(call_id, tenant_id, max_duration);
+        }
 
         // Register A-leg SIP Call-ID → FCP CallId mapping for trace correlation
         if let Some(sip_cid) = sip_parse::header(request.headers(), "Call-ID") {
