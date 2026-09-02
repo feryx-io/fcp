@@ -28,6 +28,7 @@
 //! ```
 
 pub mod api_token;
+pub mod compliance;
 pub mod config;
 pub mod emergency;
 pub mod encryption;
@@ -1238,6 +1239,48 @@ impl CdrStore for PostgresStorage {
             .await?;
         let count: i64 = row.get("count");
         Ok(count as usize)
+    }
+
+    async fn delete_cdrs_before(&self, tenant_id: &TenantId, before: SystemTime) -> Result<u64> {
+        let result = sqlx::query("DELETE FROM cdrs WHERE tenant_id = $1 AND start_time < $2")
+            .bind(tenant_id.to_string())
+            .bind(system_time_to_datetime(before))
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected())
+    }
+
+    async fn list_recordings_before(
+        &self,
+        tenant_id: &TenantId,
+        before: SystemTime,
+    ) -> Result<Vec<(fcp_core::CallId, String)>> {
+        let rows = sqlx::query(
+            "SELECT call_id, recording_url FROM cdrs
+             WHERE tenant_id = $1 AND start_time < $2 AND recording_url IS NOT NULL
+             LIMIT 1000",
+        )
+        .bind(tenant_id.to_string())
+        .bind(system_time_to_datetime(before))
+        .fetch_all(&self.pool)
+        .await?;
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            let call_id: String = row.try_get("call_id")?;
+            let url: String = row.try_get("recording_url")?;
+            if let Ok(id) = call_id.parse::<fcp_core::CallId>() {
+                out.push((id, url));
+            }
+        }
+        Ok(out)
+    }
+
+    async fn clear_recording_url(&self, call_id: &fcp_core::CallId) -> Result<()> {
+        sqlx::query("UPDATE cdrs SET recording_url = NULL WHERE call_id = $1")
+            .bind(call_id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 
     async fn aggregate_usage(

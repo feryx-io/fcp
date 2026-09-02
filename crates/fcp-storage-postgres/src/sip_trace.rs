@@ -133,6 +133,20 @@ impl SipTraceStore for PostgresSipTraceStore {
         Ok(rows.iter().map(row_to_sip_trace).collect())
     }
 
+    async fn delete_sip_traces_for_tenant_before(
+        &self,
+        tenant_id: &str,
+        before: SystemTime,
+    ) -> anyhow::Result<u64> {
+        let result =
+            sqlx::query("DELETE FROM sip_trace_messages WHERE tenant_id = $1 AND timestamp < $2")
+                .bind(tenant_id)
+                .bind(system_time_to_datetime(before))
+                .execute(&self.pool)
+                .await?;
+        Ok(result.rows_affected())
+    }
+
     async fn delete_sip_traces_older_than(&self, days: u32) -> anyhow::Result<u64> {
         let result =
             sqlx::query("DELETE FROM sip_trace_messages WHERE timestamp < NOW() - $1::interval")

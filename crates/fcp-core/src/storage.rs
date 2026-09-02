@@ -1027,6 +1027,31 @@ pub trait CdrStore: Send + Sync {
     /// Get CDR count for a query
     async fn count_cdrs(&self, query: CdrQuery) -> Result<usize>;
 
+    /// Delete a tenant's CDRs that started before `before` (retention).
+    /// Backends without retention support keep everything.
+    async fn delete_cdrs_before(
+        &self,
+        _tenant_id: &crate::TenantId,
+        _before: SystemTime,
+    ) -> Result<u64> {
+        Ok(0)
+    }
+
+    /// `(call_id, recording_url)` for a tenant's CDRs that started before
+    /// `before` and still reference a recording.
+    async fn list_recordings_before(
+        &self,
+        _tenant_id: &crate::TenantId,
+        _before: SystemTime,
+    ) -> Result<Vec<(crate::CallId, String)>> {
+        Ok(Vec::new())
+    }
+
+    /// Forget a CDR's recording after the file has been removed.
+    async fn clear_recording_url(&self, _call_id: &crate::CallId) -> Result<()> {
+        Ok(())
+    }
+
     /// Aggregate CDR usage statistics for a tenant within a time range.
     async fn aggregate_usage(
         &self,
@@ -2629,6 +2654,7 @@ pub struct DynStorage {
     config_template_store: Option<Arc<dyn ConfigTemplateStore>>,
     encryption_store: Option<Arc<dyn crate::encryption::EncryptionStore>>,
     emergency_store: Option<Arc<dyn crate::e911::EmergencyStore>>,
+    compliance_store: Option<Arc<dyn crate::compliance::ComplianceStore>>,
 }
 
 impl DynStorage {
@@ -2688,6 +2714,7 @@ impl DynStorage {
             config_template_store: None,
             encryption_store: None,
             emergency_store: None,
+            compliance_store: None,
         }
     }
 
@@ -2749,6 +2776,7 @@ impl DynStorage {
             config_template_store: Some(storage),
             encryption_store: None,
             emergency_store: None,
+            compliance_store: None,
         }
     }
 
@@ -2890,6 +2918,19 @@ impl DynStorage {
 
     pub fn emergency_store(&self) -> Option<&Arc<dyn crate::e911::EmergencyStore>> {
         self.emergency_store.as_ref()
+    }
+
+    /// Attach the compliance store (retention/consent policy, admin audit log).
+    pub fn with_compliance_store(
+        mut self,
+        store: Arc<dyn crate::compliance::ComplianceStore>,
+    ) -> Self {
+        self.compliance_store = Some(store);
+        self
+    }
+
+    pub fn compliance_store(&self) -> Option<&Arc<dyn crate::compliance::ComplianceStore>> {
+        self.compliance_store.as_ref()
     }
 
     /// Get the config template store, if one has been set.
@@ -3034,6 +3075,28 @@ impl CdrStore for DynStorage {
 
     async fn count_cdrs(&self, query: CdrQuery) -> Result<usize> {
         self.cdr_store.count_cdrs(query).await
+    }
+
+    async fn delete_cdrs_before(
+        &self,
+        tenant_id: &crate::TenantId,
+        before: SystemTime,
+    ) -> Result<u64> {
+        self.cdr_store.delete_cdrs_before(tenant_id, before).await
+    }
+
+    async fn list_recordings_before(
+        &self,
+        tenant_id: &crate::TenantId,
+        before: SystemTime,
+    ) -> Result<Vec<(crate::CallId, String)>> {
+        self.cdr_store
+            .list_recordings_before(tenant_id, before)
+            .await
+    }
+
+    async fn clear_recording_url(&self, call_id: &crate::CallId) -> Result<()> {
+        self.cdr_store.clear_recording_url(call_id).await
     }
 
     async fn aggregate_usage(

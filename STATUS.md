@@ -4,7 +4,7 @@
 Update this file when feature status changes; keep other docs describing scope, not status.
 
 - **Last reviewed:** 2026-09-01 (full code audit against ARCHITECTURE-v0.2.md)
-- **Version:** v0.25.80 · 37 workspace crates
+- **Version:** v0.25.81 · 37 workspace crates
 - **Submodules:** siphon-rs `v2026.08.25` · forge-media `v2026.09.01.1` (both at their repos' current release tips)
 - **Health:** CI green (fmt, clippy `-D warnings`, tests, cargo-audit) · 0 Dependabot alerts · 0 future-incompat warnings
 
@@ -41,7 +41,7 @@ Update this file when feature status changes; keep other docs describing scope, 
 | Multi-region | ❌ `fcp-cluster` is flat single-region SWIM membership |
 | E911 | 🟡 Block 1 done (2026-09-02, `docs/E911.md`): emergency-number detection (tenant-configurable, `911`/`933` + `9` prefix by default) before any admission control, dispatchable-location resolution (device override → device site → user site → DID address) with ELIN callback numbers per site, emergency-capable trunks tried first, callback number as caller ID + `P-Asserted-Identity` + `Priority: emergency`, `call.emergency` event with notification contacts, `emergency_calls` audit table, admin API (config, readiness report, validate-address, per-number validation) and a pluggable `E911AddressValidator`. Not yet: PIDF-LO location by value, subnet-based location for softphones, provider-backed validation, in-platform notification delivery |
 | Video conferencing | ❌ Conference server and WebRTC gateway are audio-only |
-| Regulatory compliance | ❌ Not started |
+| Regulatory compliance | 🟡 Basics done (2026-09-02, `docs/COMPLIANCE.md`): per-tenant retention policy (CDRs, SIP traces, flow traces, recordings, audit events) applied hourly by fcp-admin and on demand, with recorded runs; recording-consent mode with a prompt played before API-started recordings; admin audit log written by an API middleware (every mutating request + exports, actor/tenant/route/status) with `GET /audit-log`; CSV CDR export. Not yet: consent announcement on B2BUA auto-recorded calls, legal hold, data-subject export/erasure |
 | Distributed conferencing | 📋 Ready plan in `docs/TO_DO_CONFERENCE_LOADBALANCE_HA.md` (~2–3 weeks) |
 
 ## Phase 5 gate decisions (made 2026-09-02)
@@ -76,7 +76,7 @@ Vision items in `docs/ARCHITECTURE-v0.2.md` that are descoped above remain in th
 ## Phase 5 engineering order (agreed 2026-09-02)
 
 1. ~~**E911** block 1~~ (done 2026-09-02, see the Phase 5 table and `docs/E911.md`). Block 2, unscheduled: PIDF-LO by value for NG911 trunks, subnet-based location, a provider-backed validator, notification delivery.
-2. **Compliance basics**: call recording consent/retention controls, CDR retention and export, audit log for admin actions.
+2. ~~**Compliance basics**~~ (done 2026-09-02, see the Phase 5 table and `docs/COMPLIANCE.md`). Follow-ups, unscheduled: consent announcement on auto-recorded calls, legal hold, per-subject export/erasure.
 3. **Distributed conferencing**: the cascaded-mixing plan on file.
 4. **Multi-region**: CockroachDB compatibility pass + CI service first, then region-aware cluster membership and event bus.
 5. Video conferencing and the dedicated CDR pipeline remain unscheduled carrier-scale items.

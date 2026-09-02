@@ -50,6 +50,10 @@ pub struct AdminConfig {
     #[serde(default)]
     pub prompts_dir: Option<String>,
 
+    /// Directory holding call recordings; pruned by tenant retention policies.
+    #[serde(default)]
+    pub call_recordings_dir: Option<String>,
+
     /// Security policy configuration (account lockout, password expiration)
     #[serde(default)]
     pub security: SecurityConfig,

@@ -37,10 +37,78 @@ pub struct StartRecordingRequest {
     pub path: String,
 }
 
+/// Play the tenant's recording-consent prompt, if policy asks for one.
+/// Returns whether a prompt was played; failures are logged, not fatal.
+async fn announce_recording_consent(
+    state: &ApiState,
+    tenant: &TenantContext,
+    call_id: &fcp_core::CallId,
+) -> bool {
+    use fcp_core::compliance::RecordingConsentMode;
+
+    let Some(storage) = state.storage.as_ref() else {
+        return false;
+    };
+    let (Some(compliance), Some(prompts), Some(media)) = (
+        storage.compliance_store(),
+        storage.prompt_store(),
+        state.media_manager.as_ref(),
+    ) else {
+        return false;
+    };
+    let policy = match compliance.get_compliance_policy(&tenant.0).await {
+        Ok(Some(p)) => p,
+        Ok(None) => return false,
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to load compliance policy for consent");
+            return false;
+        }
+    };
+    if policy.recording_consent != RecordingConsentMode::Announce {
+        return false;
+    }
+    let Some(prompt_id) = policy
+        .recording_consent_prompt_id
+        .as_deref()
+        .and_then(|p| p.parse::<fcp_core::PromptId>().ok())
+    else {
+        tracing::warn!(tenant_id = %tenant.0, "Consent announcement configured without a valid prompt");
+        return false;
+    };
+    let audio = match prompts.get_prompt(&prompt_id).await {
+        Ok(Some(p)) => p.audio_path,
+        _ => None,
+    };
+    let Some(path) = audio else {
+        tracing::warn!(tenant_id = %tenant.0, prompt = %prompt_id, "Consent prompt has no audio");
+        return false;
+    };
+    match media
+        .play_file(
+            call_id,
+            path.to_string_lossy().into_owned(),
+            fcp_media::AudioTarget::Both,
+        )
+        .await
+    {
+        Ok(_) => {
+            tracing::info!(call_id = %call_id, prompt = %prompt_id, "Recording consent announced");
+            true
+        }
+        Err(e) => {
+            tracing::warn!(call_id = %call_id, error = %e, "Failed to play recording consent prompt");
+            false
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct RecordingResponse {
     pub call_id: String,
     pub message: String,
+    /// True when a recording-consent prompt was played first.
+    #[serde(default)]
+    pub consent_announced: bool,
 }
 
 /// POST /v1/calls/:call_id/recording/start
@@ -73,6 +141,10 @@ pub async fn start_recording(
         .ok_or_else(|| ApiError::NotFound("Media manager not available".into()))?;
 
     // Start recording
+    // Recording consent: when the tenant policy says "announce", play the
+    // configured prompt to the call before recording starts.
+    let consent_announced = announce_recording_consent(&state, &tenant, &core_call_id).await;
+
     let result: Result<(), fcp_media::Error> = media_manager
         .start_recording(&core_call_id, req.path.clone())
         .await;
@@ -84,6 +156,7 @@ pub async fn start_recording(
         Json(RecordingResponse {
             call_id: call_id_str,
             message: format!("Recording started to {}", req.path),
+            consent_announced,
         }),
     ))
 }
@@ -126,6 +199,7 @@ pub async fn stop_recording(
         Json(RecordingResponse {
             call_id: call_id_str,
             message: "Recording stopped".into(),
+            consent_announced: false,
         }),
     ))
 }
