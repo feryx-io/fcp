@@ -21,8 +21,10 @@ Database-backed tests live next to the crates they exercise and are gated on
   runtime (live `QueueManager`), voicemail mailboxes, flows and flow traces,
   registrations, the presence runtime (live `PresenceManager`), the
   self-service `/me` routes, the `/events` WebSocket first-message auth
-  (served on a real loopback socket), and the multipart uploads (avatars,
-  voicemail greetings, audio prompts). The `ApiState` it needs is built on a
+  (served on a real loopback socket), the multipart uploads (avatars,
+  voicemail greetings, audio prompts), SIP traces, and the `/debug` runtime
+  views (real dialogs, subscriptions, and calls inserted into the managers).
+  The `ApiState` it needs is built on a
   no-op SIP transport dispatcher (no sockets, no SIP traffic), so no separate
   harness crate was required.
 
@@ -57,9 +59,10 @@ Covered by `crates/fcp-api-core/tests/api_postgres.rs`:
    owner's credentials, including the HA1 read back through the sealed
    column.
 
-Still uncovered: the SIP trace and debug routes, TTS synthesis endpoints
-(they need a TTS provider), and phone-number porting (no API exists yet; only
-the `PortingStore` model).
+Still uncovered: TTS synthesis endpoints (they need a TTS provider) and
+phone-number porting (no API exists yet; only the `PortingStore` model).
+Subscriptions in `/debug` are visible platform-wide only: SUBSCRIBE dialogs
+carry no tenant, so tenant-scoped callers see none.
 
 ## When adding tests here
 
