@@ -86,7 +86,7 @@ pub async fn get_profile(
         location: user.location,
         language: user.language,
         timezone: user.timezone,
-        role: format!("{:?}", user.role).to_lowercase(),
+        role: crate::v1::auth_session::role_to_string(&user.role),
         has_profile_picture,
     }))
 }
@@ -147,7 +147,7 @@ pub async fn update_profile(
         location: user.location,
         language: user.language,
         timezone: user.timezone,
-        role: format!("{:?}", user.role).to_lowercase(),
+        role: crate::v1::auth_session::role_to_string(&user.role),
         has_profile_picture,
     }))
 }

@@ -1,12 +1,13 @@
 //! Flow execution trace API endpoints.
 
 use crate::{
-    auth::{can_access_all_tenants, AuthIdentity, TenantContext},
+    auth::{can_access_all_tenants, AuthIdentity, TenantContext, PLATFORM_TENANT_HEADER},
     error::ApiError,
     state::ApiState,
 };
 use axum::{
     extract::{Extension, Path, Query, State},
+    http::HeaderMap,
     response::IntoResponse,
     Json,
 };
@@ -126,6 +127,7 @@ pub async fn list_flow_traces(
     State(state): State<ApiState>,
     tenant: TenantContext,
     identity: Option<Extension<AuthIdentity>>,
+    headers: HeaderMap,
     Query(params): Query<ListFlowTracesQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = state
@@ -194,7 +196,10 @@ pub async fn list_flow_traces(
         ApiError::Internal("Failed to query flow traces".to_string())
     })?;
 
-    let allow_all_tenants = can_access_all_tenants(identity.as_ref().map(|ext| &ext.0));
+    // Platform admins see every tenant unless they selected one with the
+    // override header (then `tenant` already carries it).
+    let allow_all_tenants = can_access_all_tenants(identity.as_ref().map(|ext| &ext.0))
+        && !headers.contains_key(PLATFORM_TENANT_HEADER);
     let mut scoped_entries = Vec::new();
     for entry in entries {
         if allow_all_tenants || call_is_visible_to_tenant(&state, &tenant, &entry.call_id).await? {
@@ -227,11 +232,12 @@ pub async fn get_call_flow_traces(
     State(state): State<ApiState>,
     tenant: TenantContext,
     identity: Option<Extension<AuthIdentity>>,
+    headers: HeaderMap,
     Path(call_id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    if !can_access_all_tenants(identity.as_ref().map(|ext| &ext.0))
-        && !call_is_visible_to_tenant(&state, &tenant, &call_id).await?
-    {
+    let allow_all_tenants = can_access_all_tenants(identity.as_ref().map(|ext| &ext.0))
+        && !headers.contains_key(PLATFORM_TENANT_HEADER);
+    if !allow_all_tenants && !call_is_visible_to_tenant(&state, &tenant, &call_id).await? {
         return Err(ApiError::NotFound("Flow traces not found".to_string()));
     }
 

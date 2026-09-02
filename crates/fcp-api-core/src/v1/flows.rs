@@ -268,7 +268,10 @@ pub async fn create_flow(
 
     info!(flow_id = %req.id, "Flow created successfully");
 
-    Ok(Json(FlowResponse::from(flow)))
+    Ok((
+        axum::http::StatusCode::CREATED,
+        Json(FlowResponse::from(flow)),
+    ))
 }
 
 /// Update a flow.
