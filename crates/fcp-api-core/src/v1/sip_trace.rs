@@ -4,12 +4,13 @@
 //! ladder diagram visualization in the admin UI.
 
 use crate::{
-    auth::{can_access_all_tenants, AuthIdentity, TenantContext},
+    auth::{can_access_all_tenants, AuthIdentity, TenantContext, PLATFORM_TENANT_HEADER},
     error::ApiError,
     state::ApiState,
 };
 use axum::{
     extract::{Extension, Path, Query, State},
+    http::HeaderMap,
     response::IntoResponse,
     Json,
 };
@@ -84,6 +85,7 @@ pub async fn get_sip_messages(
     State(state): State<ApiState>,
     tenant: TenantContext,
     identity: Option<Extension<AuthIdentity>>,
+    headers: HeaderMap,
     Path(call_id): Path<String>,
     Query(params): Query<SipTraceQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
@@ -104,8 +106,18 @@ pub async fn get_sip_messages(
 
     debug!(call_id = %normalized_call_id, sip_call_id = ?params.sip_call_id, "Retrieving SIP trace messages");
 
-    let allow_all_tenants = can_access_all_tenants(identity.as_ref().map(|ext| &ext.0));
+    // Platform admins see every tenant unless they selected one with the
+    // override header (then `tenant` already carries it).
+    let allow_all_tenants = can_access_all_tenants(identity.as_ref().map(|ext| &ext.0))
+        && !headers.contains_key(PLATFORM_TENANT_HEADER);
     let tenant_id = tenant.0.to_string();
+    // Traces are written with the canonical `call-<uuid>` form; accept the
+    // bare uuid from callers too.
+    let call_id_with_prefix = if call_id.starts_with("call-") {
+        call_id.clone()
+    } else {
+        format!("call-{}", call_id)
+    };
 
     let messages = if let Some(ref sip_call_id) = params.sip_call_id {
         // Look up by SIP Call-ID header
@@ -117,25 +129,27 @@ pub async fn get_sip_messages(
                 ApiError::Internal("Failed to retrieve SIP trace messages".to_string())
             })?
     } else {
-        // Look up by FCP call_id (normalized, without "call-" prefix)
+        // Look up by FCP call_id. The B2BUA writes the canonical
+        // `call-<uuid>` form (CallId's Display), so query that first; the
+        // bare-uuid form covers rows written before the id was canonicalised.
         let mut traces = sip_trace_store
-            .get_sip_traces(&normalized_call_id)
+            .get_sip_traces(&call_id_with_prefix)
             .await
             .map_err(|e| {
                 warn!(call_id = %normalized_call_id, error = %e, "Failed to retrieve SIP traces");
                 ApiError::Internal("Failed to retrieve SIP trace messages".to_string())
             })?;
+        if traces.is_empty() {
+            traces = sip_trace_store
+                .get_sip_traces(&normalized_call_id)
+                .await
+                .unwrap_or_default();
+        }
 
         // Fallback: if no traces found by call_id, look up the CDR to get sip_call_id
         // and try querying by that. This handles the initial INVITE and messages that
         // were stored before the FCP CallId mapping was established.
         if traces.is_empty() {
-            // Try both "call-{uuid}" and raw "{uuid}" formats for CDR lookup
-            let call_id_with_prefix = if call_id.starts_with("call-") {
-                call_id.clone()
-            } else {
-                format!("call-{}", call_id)
-            };
             if let Ok(call_id_parsed) = call_id_with_prefix.parse::<fcp_core::CallId>() {
                 if let Some(cdr) = storage.get_cdr(&call_id_parsed).await.unwrap_or(None) {
                     debug!(

@@ -14,24 +14,36 @@ use axum::{
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 
+/// SIP Call-IDs a tenant-scoped caller may see (`None` = everything).
+///
+/// Dialogs and subscriptions are keyed by the SIP `Call-ID` header, not by
+/// FCP's internal `call-…` id, so the visible set is built from the SIP
+/// dialogs attached to the tenant's B2BUA call legs. The internal ids are
+/// included as well for callers that key on them.
 fn visible_call_ids(
     state: &ApiState,
     tenant: &TenantContext,
     identity: Option<&AuthIdentity>,
 ) -> Option<HashSet<String>> {
     if can_access_all_tenants(identity) {
-        None
-    } else {
-        Some(
-            state
-                .call_manager
-                .all_calls()
-                .into_iter()
-                .filter(|call| call.tenant_id == tenant.0)
-                .map(|call| call.id.to_string())
-                .collect(),
-        )
+        return None;
     }
+    let mut visible = HashSet::new();
+    for call in state
+        .call_manager
+        .all_calls()
+        .into_iter()
+        .filter(|call| call.tenant_id == tenant.0)
+    {
+        visible.insert(call.id.to_string());
+        if let Some(dialog) = &call.a_leg.dialog {
+            visible.insert(dialog.id().call_id().to_string());
+        }
+        if let Some(dialog) = call.b_leg.as_ref().and_then(|leg| leg.dialog.as_ref()) {
+            visible.insert(dialog.id().call_id().to_string());
+        }
+    }
+    Some(visible)
 }
 
 /// Dialog information response.

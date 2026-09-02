@@ -21,6 +21,7 @@ use bytes::Bytes;
 use fcp_api_core::{create_router, ApiState};
 use fcp_core::flow_trace::{FlowTraceEntry, FlowTraceEventType, FlowTraceStore};
 use fcp_core::permissions::DeploymentMode;
+use fcp_core::sip_trace::{SipTraceMessage, SipTraceStore};
 use fcp_core::storage::{CallDetailRecord, CallDisposition, CdrStore, DeviceStore, HangupCause};
 use fcp_core::storage::{Registration, RegistrationStore};
 use fcp_core::{ApiConfig, CallId, DynStorage, Tenant, TenantId, TenantStore, UserId};
@@ -28,13 +29,16 @@ use fcp_events::InMemoryEventBus;
 use fcp_events::{EventPublisher, PlatformEvent, SystemEvent};
 use fcp_flow::FlowStore;
 use fcp_sip::handler::SipMessageHandler;
+use fcp_sip::prelude::{parse_request, parse_response, Dialog, Subscription};
 use fcp_sip::prelude::{
     DialogManager, SubscriptionManager, TransactionManager, TransportContext, TransportDispatcher,
 };
+use fcp_sip::Call;
 use fcp_sip::{B2buaConfig, CallManager};
 use fcp_storage_postgres::api_token::PostgresApiTokenStore;
 use fcp_storage_postgres::flow_trace::PostgresFlowTraceStore;
 use fcp_storage_postgres::prompt::PostgresPromptStore;
+use fcp_storage_postgres::sip_trace::PostgresSipTraceStore;
 use fcp_storage_postgres::{PostgresConfig, PostgresStorage};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
@@ -82,7 +86,11 @@ struct App {
     router: Router,
     storage: Arc<PostgresStorage>,
     traces: Arc<PostgresFlowTraceStore>,
+    sip_traces: Arc<PostgresSipTraceStore>,
     event_bus: Arc<InMemoryEventBus>,
+    dialog_manager: Arc<DialogManager>,
+    subscription_manager: Arc<SubscriptionManager>,
+    call_manager: Arc<CallManager>,
     /// Upload directories (avatars, greetings, prompts); removed on drop.
     _dir: tempfile::TempDir,
     admin_url: String,
@@ -120,10 +128,12 @@ impl App {
         // token store is a separate Postgres store attached to DynStorage.
         let api_tokens = Arc::new(PostgresApiTokenStore::new(storage.pool().clone()));
         let traces = Arc::new(PostgresFlowTraceStore::new(storage.pool().clone()));
+        let sip_traces = Arc::new(PostgresSipTraceStore::new(storage.pool().clone()));
         let dyn_storage = Arc::new(
             DynStorage::from_all_in_one(Arc::clone(&storage))
                 .with_api_token_store(api_tokens)
                 .with_flow_trace_store(Arc::clone(&traces) as Arc<dyn FlowTraceStore>)
+                .with_sip_trace_store(Arc::clone(&sip_traces) as Arc<dyn SipTraceStore>)
                 .with_prompt_store(Arc::new(PostgresPromptStore::new(storage.pool().clone()))
                     as Arc<dyn fcp_core::prompt::PromptStore>),
         );
@@ -183,9 +193,9 @@ impl App {
         let state = ApiState::new(
             Some(dyn_storage),
             Some(Arc::clone(&storage) as Arc<dyn FlowStore>),
-            dialog_manager,
-            subscription_manager,
-            call_manager,
+            Arc::clone(&dialog_manager),
+            Arc::clone(&subscription_manager),
+            Arc::clone(&call_manager),
             Arc::new(handler),
             None,
             Arc::clone(&event_bus) as Arc<dyn fcp_events::EventBus>,
@@ -211,7 +221,11 @@ impl App {
             router: create_router(state, &api_config),
             storage,
             traces,
+            sip_traces,
             event_bus,
+            dialog_manager,
+            subscription_manager,
+            call_manager,
             _dir: dir,
             admin_url,
             db_name,
@@ -383,6 +397,16 @@ impl App {
         answered_ms: Option<u64>,
         cost: Option<f64>,
     ) -> CallId {
+        self.seed_cdr_full(tenant, answered_ms, cost).await.0
+    }
+
+    /// Like [`seed_cdr`] but also returns the SIP Call-ID it recorded.
+    async fn seed_cdr_full(
+        &self,
+        tenant: TenantId,
+        answered_ms: Option<u64>,
+        cost: Option<f64>,
+    ) -> (CallId, String) {
         let start = SystemTime::now() - Duration::from_secs(300);
         let (disposition, answer_time) = match answered_ms {
             Some(_) => (
@@ -425,8 +449,9 @@ impl App {
             custom_data: None,
         };
         let id = cdr.call_id;
+        let sip_call_id = cdr.sip_call_id.clone();
         self.storage.insert_cdr(cdr).await.expect("insert cdr");
-        id
+        (id, sip_call_id)
     }
 
     /// Serve the router on a loopback TCP port (for WebSocket tests, which
@@ -481,6 +506,37 @@ impl App {
             })
             .await
             .expect("insert trace");
+    }
+
+    /// Insert one SIP trace row the way the B2BUA writes it.
+    async fn seed_sip_trace(
+        &self,
+        call_id: &str,
+        sip_call_id: &str,
+        tenant: TenantId,
+        direction: &str,
+        method_or_status: &str,
+    ) {
+        self.sip_traces
+            .insert_sip_trace(&SipTraceMessage {
+                id: 0,
+                call_id: call_id.to_string(),
+                sip_call_id: sip_call_id.to_string(),
+                tenant_id: tenant.to_string(),
+                timestamp: SystemTime::now(),
+                direction: direction.to_string(),
+                method_or_status: method_or_status.to_string(),
+                cseq: "1 INVITE".to_string(),
+                from_uri: "sip:alice@pbx.example.com".to_string(),
+                to_uri: "sip:bob@pbx.example.com".to_string(),
+                source_addr: "10.0.0.5:5060".to_string(),
+                dest_addr: "10.0.0.1:5060".to_string(),
+                transport: "udp".to_string(),
+                raw_message: format!("{method_or_status} sip:bob@pbx.example.com SIP/2.0\r\n"),
+                node_id: Some("node-test".to_string()),
+            })
+            .await
+            .expect("insert sip trace");
     }
 
     /// Authenticated request as the static admin token, scoped to `tenant`.
@@ -3182,6 +3238,375 @@ async fn prompts_crud_and_audio_upload() {
             .status,
         StatusCode::NOT_FOUND
     );
+
+    app.finish().await;
+}
+
+// ─── SIP traces ──────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn sip_traces_by_call_id_sip_call_id_and_cdr_fallback() {
+    let app = require_app!();
+
+    // A live call: traces exist, no CDR yet. Stored with the canonical id.
+    let live = CallId::new();
+    let live_sip = format!("{}@10.0.0.5", Uuid::new_v4());
+    app.seed_sip_trace(
+        &live.to_string(),
+        &live_sip,
+        app.tenant_a,
+        "inbound",
+        "INVITE",
+    )
+    .await;
+    app.seed_sip_trace(
+        &live.to_string(),
+        &live_sip,
+        app.tenant_a,
+        "outbound",
+        "200",
+    )
+    .await;
+
+    let by_id = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/calls/{live}/sip-messages"),
+            None,
+        )
+        .await;
+    assert_eq!(by_id.status, StatusCode::OK, "{}", by_id.text);
+    assert_eq!(
+        by_id.json["messages"].as_array().unwrap().len(),
+        2,
+        "{}",
+        by_id.text
+    );
+    assert_eq!(by_id.json["messages"][0]["method_or_status"], "INVITE");
+    assert_eq!(by_id.json["messages"][0]["direction"], "inbound");
+    // The bare uuid works as well.
+    let bare = live.to_string().trim_start_matches("call-").to_string();
+    let by_bare = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/calls/{bare}/sip-messages"),
+            None,
+        )
+        .await;
+    assert_eq!(
+        by_bare.json["messages"].as_array().unwrap().len(),
+        2,
+        "{}",
+        by_bare.text
+    );
+    assert_eq!(by_bare.json["call_id"], bare);
+
+    // Direct SIP Call-ID lookup.
+    let by_sip = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/calls/{live}/sip-messages?sip_call_id={live_sip}"),
+            None,
+        )
+        .await;
+    assert_eq!(
+        by_sip.json["messages"].as_array().unwrap().len(),
+        2,
+        "{}",
+        by_sip.text
+    );
+
+    // A finished call whose traces were keyed only by SIP Call-ID: found via its CDR.
+    let (ended, ended_sip) = app.seed_cdr_full(app.tenant_a, Some(5_000), None).await;
+    app.seed_sip_trace("", &ended_sip, app.tenant_a, "inbound", "BYE")
+        .await;
+    let via_cdr = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/calls/{ended}/sip-messages"),
+            None,
+        )
+        .await;
+    assert_eq!(via_cdr.status, StatusCode::OK, "{}", via_cdr.text);
+    assert_eq!(
+        via_cdr.json["messages"].as_array().unwrap().len(),
+        1,
+        "{}",
+        via_cdr.text
+    );
+    assert_eq!(via_cdr.json["messages"][0]["method_or_status"], "BYE");
+
+    // Unknown calls are an empty list, and tenant scoping filters rows.
+    let unknown = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/calls/{}/sip-messages", CallId::new()),
+            None,
+        )
+        .await;
+    assert_eq!(unknown.status, StatusCode::OK, "{}", unknown.text);
+    assert!(unknown.json["messages"].as_array().unwrap().is_empty());
+
+    let b_call = CallId::new();
+    app.seed_sip_trace(
+        &b_call.to_string(),
+        "b@10.0.1.5",
+        app.tenant_b,
+        "inbound",
+        "INVITE",
+    )
+    .await;
+    let scoped_a = app
+        .admin_in(
+            app.tenant_a,
+            Method::GET,
+            &format!("/api/v1/calls/{b_call}/sip-messages"),
+            None,
+        )
+        .await;
+    assert!(
+        scoped_a.json["messages"].as_array().unwrap().is_empty(),
+        "{}",
+        scoped_a.text
+    );
+    let scoped_b = app
+        .admin_in(
+            app.tenant_b,
+            Method::GET,
+            &format!("/api/v1/calls/{b_call}/sip-messages"),
+            None,
+        )
+        .await;
+    assert_eq!(
+        scoped_b.json["messages"].as_array().unwrap().len(),
+        1,
+        "{}",
+        scoped_b.text
+    );
+    let platform = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/calls/{b_call}/sip-messages"),
+            None,
+        )
+        .await;
+    assert_eq!(
+        platform.json["messages"].as_array().unwrap().len(),
+        1,
+        "{}",
+        platform.text
+    );
+
+    app.finish().await;
+}
+
+// ─── Debug endpoints ─────────────────────────────────────────────────────
+
+fn sip_dialog(sip_call_id: &str) -> Dialog {
+    let invite = format!(
+        "INVITE sip:bob@{REALM} SIP/2.0\r\n\
+         Via: SIP/2.0/UDP 10.0.0.5:5060;branch=z9hG4bKtest1\r\n\
+         From: <sip:alice@{REALM}>;tag=alice-tag\r\n\
+         To: <sip:bob@{REALM}>\r\n\
+         Call-ID: {sip_call_id}\r\n\
+         CSeq: 1 INVITE\r\n\
+         Contact: <sip:alice@10.0.0.5:5060>\r\n\
+         Max-Forwards: 70\r\n\
+         Content-Length: 0\r\n\r\n"
+    );
+    let ok = format!(
+        "SIP/2.0 200 OK\r\n\
+         Via: SIP/2.0/UDP 10.0.0.5:5060;branch=z9hG4bKtest1\r\n\
+         From: <sip:alice@{REALM}>;tag=alice-tag\r\n\
+         To: <sip:bob@{REALM}>;tag=bob-tag\r\n\
+         Call-ID: {sip_call_id}\r\n\
+         CSeq: 1 INVITE\r\n\
+         Contact: <sip:bob@10.0.0.6:5060>\r\n\
+         Content-Length: 0\r\n\r\n"
+    );
+    let req = parse_request(&Bytes::from(invite)).expect("parse INVITE");
+    let resp = parse_response(&Bytes::from(ok)).expect("parse 200");
+    Dialog::new_uas(
+        &req,
+        &resp,
+        fcp_sip::prelude::SipUri::parse(&format!("sip:bob@{REALM}")).unwrap(),
+        fcp_sip::prelude::SipUri::parse(&format!("sip:alice@{REALM}")).unwrap(),
+    )
+    .expect("dialog from INVITE/200")
+}
+
+fn sip_subscription(sip_call_id: &str) -> Subscription {
+    let subscribe = format!(
+        "SUBSCRIBE sip:bob@{REALM} SIP/2.0\r\n\
+         Via: SIP/2.0/UDP 10.0.0.5:5060;branch=z9hG4bKsub1\r\n\
+         From: <sip:alice@{REALM}>;tag=sub-from\r\n\
+         To: <sip:bob@{REALM}>\r\n\
+         Call-ID: {sip_call_id}\r\n\
+         CSeq: 1 SUBSCRIBE\r\n\
+         Event: presence\r\n\
+         Expires: 3600\r\n\
+         Contact: <sip:alice@10.0.0.5:5060>\r\n\
+         Content-Length: 0\r\n\r\n"
+    );
+    let ok = format!(
+        "SIP/2.0 200 OK\r\n\
+         Via: SIP/2.0/UDP 10.0.0.5:5060;branch=z9hG4bKsub1\r\n\
+         From: <sip:alice@{REALM}>;tag=sub-from\r\n\
+         To: <sip:bob@{REALM}>;tag=sub-to\r\n\
+         Call-ID: {sip_call_id}\r\n\
+         CSeq: 1 SUBSCRIBE\r\n\
+         Event: presence\r\n\
+         Expires: 3600\r\n\
+         Contact: <sip:bob@10.0.0.6:5060>\r\n\
+         Content-Length: 0\r\n\r\n"
+    );
+    let req = parse_request(&Bytes::from(subscribe)).expect("parse SUBSCRIBE");
+    let resp = parse_response(&Bytes::from(ok)).expect("parse 200");
+    Subscription::new_notifier(
+        &req,
+        &resp,
+        fcp_sip::prelude::SipUri::parse(&format!("sip:bob@{REALM}")).unwrap(),
+        fcp_sip::prelude::SipUri::parse(&format!("sip:alice@{REALM}")).unwrap(),
+    )
+    .expect("subscription from SUBSCRIBE/200")
+}
+
+#[tokio::test]
+async fn debug_endpoints_reflect_runtime_state_per_tenant() {
+    let app = require_app!();
+
+    // Empty runtime first.
+    let empty = app.admin(Method::GET, "/api/v1/debug/summary", None).await;
+    assert_eq!(empty.status, StatusCode::OK, "{}", empty.text);
+    assert_eq!(empty.json["active_dialogs"], 0, "{}", empty.text);
+    assert_eq!(empty.json["active_calls"], 0);
+    let limits = app
+        .admin(Method::GET, "/api/v1/debug/rate-limits", None)
+        .await;
+    assert_eq!(limits.status, StatusCode::OK, "{}", limits.text);
+    assert!(limits.json.is_array(), "{}", limits.text);
+
+    // One confirmed dialog attached to a tenant-A call, one subscription.
+    let sip_call_id = format!("{}@10.0.0.5", Uuid::new_v4());
+    let dialog = sip_dialog(&sip_call_id);
+    app.dialog_manager
+        .insert(dialog.clone())
+        .expect("insert dialog");
+    let mut call = Call::new_originated(
+        format!("sip:alice@{REALM}"),
+        Some("Alice".to_string()),
+        format!("sip:bob@{REALM}"),
+        app.tenant_a,
+    );
+    call.a_leg.dialog = Some(dialog);
+    let internal_id = app.call_manager.create_call(call);
+    let sub_call_id = format!("{}@10.0.0.5", Uuid::new_v4());
+    app.subscription_manager
+        .insert(sip_subscription(&sub_call_id))
+        .expect("insert subscription");
+
+    // Platform view sees everything.
+    let summary = app.admin(Method::GET, "/api/v1/debug/summary", None).await;
+    assert_eq!(summary.json["active_dialogs"], 1, "{}", summary.text);
+    assert_eq!(summary.json["active_subscriptions"], 1, "{}", summary.text);
+    assert_eq!(summary.json["active_calls"], 1, "{}", summary.text);
+    let dialogs = app.admin(Method::GET, "/api/v1/debug/dialogs", None).await;
+    assert_eq!(
+        dialogs.json.as_array().unwrap().len(),
+        1,
+        "{}",
+        dialogs.text
+    );
+    assert_eq!(dialogs.json[0]["call_id"], sip_call_id);
+    assert_eq!(dialogs.json[0]["state"], "Confirmed");
+    assert_eq!(dialogs.json[0]["local_tag"], "bob-tag");
+    assert_eq!(dialogs.json[0]["remote_tag"], "alice-tag");
+    let subs = app
+        .admin(Method::GET, "/api/v1/debug/subscriptions", None)
+        .await;
+    assert_eq!(subs.json.as_array().unwrap().len(), 1, "{}", subs.text);
+    assert_eq!(subs.json[0]["event"], "presence");
+    let calls = app.admin(Method::GET, "/api/v1/debug/calls", None).await;
+    assert_eq!(calls.json.as_array().unwrap().len(), 1, "{}", calls.text);
+    assert_eq!(calls.json[0]["call_id"], internal_id.to_string());
+
+    // A tenant-A admin sees its own call and the dialog behind it.
+    app.create_user_with_role("dbg-a", "tenant_admin").await;
+    let jwt_a = app.login("dbg-a", PASSWORD).await.json["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let a_calls = app
+        .send_as(&jwt_a, Method::GET, "/api/v1/debug/calls", None)
+        .await;
+    assert_eq!(a_calls.status, StatusCode::OK, "{}", a_calls.text);
+    assert_eq!(
+        a_calls.json.as_array().unwrap().len(),
+        1,
+        "{}",
+        a_calls.text
+    );
+    let a_dialogs = app
+        .send_as(&jwt_a, Method::GET, "/api/v1/debug/dialogs", None)
+        .await;
+    assert_eq!(
+        a_dialogs.json.as_array().unwrap().len(),
+        1,
+        "{}",
+        a_dialogs.text
+    );
+    let a_summary = app
+        .send_as(&jwt_a, Method::GET, "/api/v1/debug/summary", None)
+        .await;
+    assert_eq!(a_summary.json["active_dialogs"], 1, "{}", a_summary.text);
+    assert_eq!(a_summary.json["active_calls"], 1, "{}", a_summary.text);
+
+    // A tenant-B admin sees nothing of it.
+    let b_user = app
+        .admin_in(
+            app.tenant_b,
+            Method::POST,
+            "/api/v1/users",
+            Some(json!({ "username": "dbg-b", "password": PASSWORD, "role": "tenant_admin" })),
+        )
+        .await;
+    assert_eq!(b_user.status, StatusCode::CREATED, "{}", b_user.text);
+    let jwt_b = app.login("dbg-b", PASSWORD).await.json["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let b_calls = app
+        .send_as(&jwt_b, Method::GET, "/api/v1/debug/calls", None)
+        .await;
+    assert!(
+        b_calls.json.as_array().unwrap().is_empty(),
+        "{}",
+        b_calls.text
+    );
+    let b_dialogs = app
+        .send_as(&jwt_b, Method::GET, "/api/v1/debug/dialogs", None)
+        .await;
+    assert!(
+        b_dialogs.json.as_array().unwrap().is_empty(),
+        "{}",
+        b_dialogs.text
+    );
+    let b_summary = app
+        .send_as(&jwt_b, Method::GET, "/api/v1/debug/summary", None)
+        .await;
+    assert_eq!(b_summary.json["active_dialogs"], 0, "{}", b_summary.text);
+    assert_eq!(b_summary.json["active_calls"], 0, "{}", b_summary.text);
+
+    // End users are kept out of debug entirely.
+    app.create_user_with_role("dbg-eu", "end_user").await;
+    let jwt_eu = app.login("dbg-eu", PASSWORD).await.json["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let denied = app
+        .send_as(&jwt_eu, Method::GET, "/api/v1/debug/summary", None)
+        .await;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN, "{}", denied.text);
 
     app.finish().await;
 }
