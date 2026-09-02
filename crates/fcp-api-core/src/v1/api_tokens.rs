@@ -185,7 +185,7 @@ pub async fn create_api_token(
         secret,
     };
 
-    Ok(Json(response))
+    Ok((axum::http::StatusCode::CREATED, Json(response)))
 }
 
 /// Delete an API token by ID.

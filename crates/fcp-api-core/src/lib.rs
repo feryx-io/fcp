@@ -37,7 +37,21 @@ use tower_http::{
 ///
 /// Panics if `auth_enabled` is true but `auth_token` is not configured.
 /// This is intentional — fail closed rather than silently running without auth.
-pub fn create_router(mut state: ApiState, api_config: &ApiConfig) -> Router {
+pub fn create_router(state: ApiState, api_config: &ApiConfig) -> Router {
+    create_router_with(state, api_config, Router::new())
+}
+
+/// [`create_router`] with extra routes merged *inside* the `/api/v1` nest.
+///
+/// Binaries that add their own v1 endpoints (fcp-admin's cluster routes)
+/// use this so they share the auth, CORS, and pre-auth wiring instead of
+/// re-implementing it. Routes merged outside the nest would be shadowed by
+/// axum's prefix matching.
+pub fn create_router_with(
+    mut state: ApiState,
+    api_config: &ApiConfig,
+    extra_v1: Router<ApiState>,
+) -> Router {
     // CORS configuration
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -55,7 +69,7 @@ pub fn create_router(mut state: ApiState, api_config: &ApiConfig) -> Router {
             axum::routing::get(v1::metrics::prometheus_metrics)
                 .route_layer(middleware::from_fn(auth::require_admin)),
         )
-        .nest("/api/v1", v1::router());
+        .nest("/api/v1", v1::router().merge(extra_v1));
 
     // Always derive JWT secret from auth_token when available.
     // JWT session auth (admin UI login) is independent of bearer middleware.
@@ -77,6 +91,15 @@ pub fn create_router(mut state: ApiState, api_config: &ApiConfig) -> Router {
 
         tracing::info!("API authentication enabled");
         let mut auth_config = auth::AuthConfig::new(auth_token.clone());
+        // Database-backed `fcp_…` tokens (created via /api/v1/api-tokens)
+        if let Some(store) = state
+            .storage
+            .as_ref()
+            .and_then(|s| s.api_token_store().cloned())
+        {
+            auth_config = auth_config.with_api_token_store(store);
+            tracing::info!("API token authentication enabled");
+        }
         // Share JWT secret so bearer middleware also accepts JWT session tokens
         if let Some(ref jwt_secret) = state.jwt_secret {
             auth_config = auth_config.with_jwt_secret(jwt_secret.clone());

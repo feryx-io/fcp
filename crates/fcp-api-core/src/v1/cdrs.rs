@@ -1,12 +1,13 @@
 //! CDR (Call Detail Record) API endpoints.
 
 use crate::{
-    auth::{can_access_all_tenants, AuthIdentity, TenantContext},
+    auth::{can_access_all_tenants, AuthIdentity, TenantContext, PLATFORM_TENANT_HEADER},
     error::ApiError,
     state::ApiState,
 };
 use axum::{
     extract::{Extension, Path, Query, State},
+    http::HeaderMap,
     response::IntoResponse,
     Json,
 };
@@ -156,10 +157,14 @@ pub async fn list_cdrs(
     State(state): State<ApiState>,
     tenant: TenantContext,
     identity: Option<Extension<AuthIdentity>>,
+    headers: HeaderMap,
     Query(params): Query<ListCdrsQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = require_storage!(state);
-    let allow_all_tenants = can_access_all_tenants(identity.as_ref().map(|ext| &ext.0));
+    // Platform admins see every tenant unless they picked one with the
+    // override header (then `tenant` already carries it) or `?tenant_id=`.
+    let allow_all_tenants = can_access_all_tenants(identity.as_ref().map(|ext| &ext.0))
+        && !headers.contains_key(PLATFORM_TENANT_HEADER);
 
     // Validate and cap limit
     let limit = if params.limit > 1000 {
@@ -291,9 +296,12 @@ pub async fn get_cdr(
     State(state): State<ApiState>,
     tenant: TenantContext,
     identity: Option<Extension<AuthIdentity>>,
+    headers: HeaderMap,
     Path(call_id_str): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = require_storage!(state);
+    let allow_all_tenants = can_access_all_tenants(identity.as_ref().map(|ext| &ext.0))
+        && !headers.contains_key(PLATFORM_TENANT_HEADER);
 
     // Parse call_id
     let call_id = call_id_str
@@ -312,7 +320,7 @@ pub async fn get_cdr(
         })?
         .ok_or_else(|| ApiError::NotFound(format!("CDR not found for call_id: {}", call_id)))?;
 
-    if !can_access_all_tenants(identity.as_ref().map(|ext| &ext.0)) && cdr.tenant_id != tenant.0 {
+    if !allow_all_tenants && cdr.tenant_id != tenant.0 {
         return Err(ApiError::NotFound(format!(
             "CDR not found for call_id: {}",
             call_id

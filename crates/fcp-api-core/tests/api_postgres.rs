@@ -19,18 +19,21 @@ use axum::http::{header, HeaderMap, Method, Request, StatusCode};
 use axum::Router;
 use bytes::Bytes;
 use fcp_api_core::{create_router, ApiState};
-use fcp_core::storage::DeviceStore;
-use fcp_core::{ApiConfig, DynStorage, Tenant, TenantId, TenantStore, UserId};
+use fcp_core::permissions::DeploymentMode;
+use fcp_core::storage::{CallDetailRecord, CallDisposition, CdrStore, DeviceStore, HangupCause};
+use fcp_core::{ApiConfig, CallId, DynStorage, Tenant, TenantId, TenantStore, UserId};
 use fcp_events::InMemoryEventBus;
 use fcp_sip::handler::SipMessageHandler;
 use fcp_sip::prelude::{
     DialogManager, SubscriptionManager, TransactionManager, TransportContext, TransportDispatcher,
 };
 use fcp_sip::{B2buaConfig, CallManager};
+use fcp_storage_postgres::api_token::PostgresApiTokenStore;
 use fcp_storage_postgres::{PostgresConfig, PostgresStorage};
 use serde_json::{json, Value};
 use sqlx::{Connection, PgConnection};
 use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -43,7 +46,10 @@ const REALM: &str = "pbx.example.com";
 /// Skip the test (returning early) unless a database is configured.
 macro_rules! require_app {
     () => {
-        match App::new().await {
+        require_app!(DeploymentMode::default())
+    };
+    ($mode:expr) => {
+        match App::with_mode($mode).await {
             Some(app) => app,
             None => {
                 eprintln!("FCP_TEST_DATABASE_URL not set; skipping PostgreSQL API handler test");
@@ -77,7 +83,7 @@ struct App {
 }
 
 impl App {
-    async fn new() -> Option<Self> {
+    async fn with_mode(mode: DeploymentMode) -> Option<Self> {
         let admin_url = std::env::var("FCP_TEST_DATABASE_URL").ok()?;
         let db_name = format!("fcp_test_{}", Uuid::new_v4().simple());
 
@@ -99,7 +105,12 @@ impl App {
         let tenant_a = seed_tenant(&storage, "tenant-a").await;
         let tenant_b = seed_tenant(&storage, "tenant-b").await;
 
-        let dyn_storage = Arc::new(DynStorage::from_all_in_one(Arc::clone(&storage)));
+        // Mirror the production wiring in fcp-admin/src/storage.rs: the API
+        // token store is a separate Postgres store attached to DynStorage.
+        let api_tokens = Arc::new(PostgresApiTokenStore::new(storage.pool().clone()));
+        let dyn_storage = Arc::new(
+            DynStorage::from_all_in_one(Arc::clone(&storage)).with_api_token_store(api_tokens),
+        );
 
         // SIP components with no transport behind them.
         let transaction_manager = Arc::new(TransactionManager::new(
@@ -148,7 +159,8 @@ impl App {
             None,
             REALM.to_string(),
             tenant_a,
-        );
+        )
+        .with_deployment_mode(mode);
 
         let api_config = ApiConfig {
             auth_enabled: true,
@@ -213,6 +225,100 @@ impl App {
     async fn admin(&self, method: Method, path: &str, body: Option<Value>) -> Response {
         self.send(method, path, &[(AUTH_HEADER, BEARER)], body)
             .await
+    }
+
+    /// Request with an arbitrary bearer token (JWT session or `fcp_…` token).
+    async fn send_as(
+        &self,
+        token: &str,
+        method: Method,
+        path: &str,
+        body: Option<Value>,
+    ) -> Response {
+        let header = format!("Bearer {token}");
+        self.send(method, path, &[(AUTH_HEADER, header.as_str())], body)
+            .await
+    }
+
+    /// POST /auth/login for a user in the default tenant.
+    async fn login(&self, username: &str, password: &str) -> Response {
+        self.send(
+            Method::POST,
+            "/api/v1/auth/login",
+            &[],
+            Some(json!({ "username": username, "password": password })),
+        )
+        .await
+    }
+
+    /// Create a user with a role; returns its id.
+    async fn create_user_with_role(&self, username: &str, role: &str) -> String {
+        let res = self
+            .admin(
+                Method::POST,
+                "/api/v1/users",
+                Some(json!({
+                    "username": username,
+                    "password": PASSWORD,
+                    "role": role,
+                })),
+            )
+            .await;
+        assert_eq!(res.status, StatusCode::CREATED, "create user: {}", res.text);
+        res.json["id"].as_str().expect("user id").to_string()
+    }
+
+    /// Insert a CDR directly through storage (there is no create endpoint).
+    async fn seed_cdr(
+        &self,
+        tenant: TenantId,
+        answered_ms: Option<u64>,
+        cost: Option<f64>,
+    ) -> CallId {
+        let start = SystemTime::now() - Duration::from_secs(300);
+        let (disposition, answer_time) = match answered_ms {
+            Some(_) => (
+                CallDisposition::Answered,
+                Some(start + Duration::from_secs(2)),
+            ),
+            None => (CallDisposition::NoAnswer, None),
+        };
+        let cdr = CallDetailRecord {
+            call_id: CallId::new(),
+            tenant_id: tenant,
+            sip_call_id: format!("{}@test", Uuid::new_v4()),
+            from_uri: "sip:alice@pbx.example.com".to_string(),
+            from_display_name: Some("Alice".to_string()),
+            to_uri: "sip:+15551234567@pbx.example.com".to_string(),
+            to_display_name: None,
+            start_time: start,
+            answer_time,
+            end_time: Some(start + Duration::from_secs(60)),
+            setup_duration_ms: Some(2000),
+            call_duration_ms: answered_ms,
+            total_duration_ms: Some(60_000),
+            disposition,
+            hangup_cause: HangupCause::NormalClearing,
+            hangup_party: None,
+            sip_status_code: Some(200),
+            sip_reason: None,
+            route_id: None,
+            gateway_id: None,
+            media_anchored: true,
+            codec_a_leg: Some("PCMU".to_string()),
+            codec_b_leg: Some("PCMU".to_string()),
+            rtp_packets_sent: None,
+            rtp_packets_received: None,
+            rtp_bytes_sent: None,
+            rtp_bytes_received: None,
+            recording_url: None,
+            cost,
+            currency: cost.map(|_| "USD".to_string()),
+            custom_data: None,
+        };
+        let id = cdr.call_id;
+        self.storage.insert_cdr(cdr).await.expect("insert cdr");
+        id
     }
 
     /// Authenticated request as the static admin token, scoped to `tenant`.
@@ -351,6 +457,7 @@ impl App {
 }
 
 const AUTH_HEADER: &str = "authorization";
+const PASSWORD: &str = "Str0ng-Passw0rd!";
 const BEARER: &str = "Bearer test-admin-token";
 
 struct Response {
@@ -773,6 +880,910 @@ async fn provisioning_failures_are_indistinguishable_404s() {
     let bodies: std::collections::HashSet<&str> =
         failures.iter().map(|(_, r)| r.text.as_str()).collect();
     assert_eq!(bodies.len(), 1, "all failure bodies must be identical");
+
+    app.finish().await;
+}
+
+// ─── JWT sessions ────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn jwt_login_sessions_and_role_gating() {
+    let app = require_app!();
+    app.create_user_with_role("ops", "tenant_admin").await;
+    app.create_user_with_role("phone-user", "end_user").await;
+
+    let bad = app.login("ops", "not-the-password").await;
+    assert_eq!(bad.status, StatusCode::UNAUTHORIZED, "{}", bad.text);
+    let unknown = app.login("nobody", PASSWORD).await;
+    assert_eq!(unknown.status, StatusCode::UNAUTHORIZED, "{}", unknown.text);
+
+    let ok = app.login("ops", PASSWORD).await;
+    assert_eq!(ok.status, StatusCode::OK, "{}", ok.text);
+    assert_eq!(ok.json["user"]["role"], "tenant_admin");
+    assert_eq!(ok.json["user"]["tenant_id"], app.tenant_a.to_string());
+    let jwt = ok.json["token"].as_str().expect("jwt").to_string();
+
+    // The session works on the bearer middleware and resolves its tenant.
+    let me = app
+        .send_as(&jwt, Method::GET, "/api/v1/auth/me", None)
+        .await;
+    assert_eq!(me.status, StatusCode::OK, "{}", me.text);
+    assert_eq!(me.json["username"], "ops");
+    let devices = app
+        .send_as(&jwt, Method::GET, "/api/v1/devices", None)
+        .await;
+    assert_eq!(devices.status, StatusCode::OK, "{}", devices.text);
+
+    // A tenant admin is not a platform admin: it sees only its own tenant,
+    // cannot create tenants, and the tenant override header is ignored.
+    let tenants = app
+        .send_as(&jwt, Method::GET, "/api/v1/tenants", None)
+        .await;
+    assert_eq!(tenants.status, StatusCode::OK, "{}", tenants.text);
+    let ids: Vec<&str> = tenants
+        .json
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|t| t["id"].as_str())
+        .collect();
+    assert_eq!(
+        ids,
+        vec![app.tenant_a.to_string().as_str()],
+        "{}",
+        tenants.text
+    );
+    let create_tenant = app
+        .send_as(
+            &jwt,
+            Method::POST,
+            "/api/v1/tenants",
+            Some(json!({ "name": "rogue" })),
+        )
+        .await;
+    assert_eq!(
+        create_tenant.status,
+        StatusCode::FORBIDDEN,
+        "{}",
+        create_tenant.text
+    );
+    let other = app
+        .send(
+            Method::GET,
+            "/api/v1/users",
+            &[
+                (AUTH_HEADER, &format!("Bearer {jwt}")),
+                ("x-fcp-tenant-id", &app.tenant_b.to_string()),
+            ],
+            None,
+        )
+        .await;
+    assert_eq!(other.status, StatusCode::OK, "{}", other.text);
+    let names: Vec<&str> = other
+        .json
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|u| u["username"].as_str())
+        .collect();
+    assert!(
+        names.contains(&"ops"),
+        "tenant admin sees its own tenant, got {names:?}"
+    );
+
+    // Refresh issues a new usable token.
+    let refreshed = app
+        .send_as(&jwt, Method::POST, "/api/v1/auth/refresh", None)
+        .await;
+    assert_eq!(refreshed.status, StatusCode::OK, "{}", refreshed.text);
+    let jwt2 = refreshed.json["token"]
+        .as_str()
+        .expect("refreshed jwt")
+        .to_string();
+    // (Within the same second the claims, and thus the token, may repeat;
+    // what matters is that the refreshed token is accepted.)
+    let me2 = app
+        .send_as(&jwt2, Method::GET, "/api/v1/auth/me", None)
+        .await;
+    assert_eq!(me2.status, StatusCode::OK, "{}", me2.text);
+
+    // End users authenticate but are kept off admin routes.
+    let eu = app.login("phone-user", PASSWORD).await;
+    assert_eq!(eu.status, StatusCode::OK, "{}", eu.text);
+    let eu_jwt = eu.json["token"].as_str().unwrap().to_string();
+    let me = app
+        .send_as(&eu_jwt, Method::GET, "/api/v1/auth/me", None)
+        .await;
+    assert_eq!(me.status, StatusCode::OK, "{}", me.text);
+    let denied = app
+        .send_as(&eu_jwt, Method::GET, "/api/v1/devices", None)
+        .await;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN, "{}", denied.text);
+
+    // Disabling the account invalidates live sessions immediately.
+    let disabled = app
+        .admin(
+            Method::PUT,
+            "/api/v1/users/ops",
+            Some(json!({ "enabled": false })),
+        )
+        .await;
+    assert_eq!(disabled.status, StatusCode::OK, "{}", disabled.text);
+    let dead = app
+        .send_as(&jwt2, Method::GET, "/api/v1/auth/me", None)
+        .await;
+    assert_eq!(dead.status, StatusCode::UNAUTHORIZED, "{}", dead.text);
+    let relogin = app.login("ops", PASSWORD).await;
+    assert_eq!(relogin.status, StatusCode::FORBIDDEN, "{}", relogin.text);
+
+    app.finish().await;
+}
+
+#[tokio::test]
+async fn login_lockout_after_repeated_failures() {
+    let app = require_app!();
+    app.create_user_with_role("locky", "tenant_admin").await;
+
+    // SecurityPolicy::default() allows 5 failures; each is a generic 401.
+    for attempt in 1..=5 {
+        let res = app.login("locky", "wrong").await;
+        assert_eq!(
+            res.status,
+            StatusCode::UNAUTHORIZED,
+            "attempt {attempt}: {}",
+            res.text
+        );
+    }
+    // Now locked: even the right password is refused, and the reason is explicit.
+    let locked = app.login("locky", PASSWORD).await;
+    assert_eq!(locked.status, StatusCode::FORBIDDEN, "{}", locked.text);
+
+    let unlock = app
+        .admin(Method::POST, "/api/v1/users/locky/unlock", None)
+        .await;
+    assert!(
+        unlock.status.is_success(),
+        "unlock: {} {}",
+        unlock.status,
+        unlock.text
+    );
+    let ok = app.login("locky", PASSWORD).await;
+    assert_eq!(ok.status, StatusCode::OK, "{}", ok.text);
+
+    app.finish().await;
+}
+
+// ─── Database API tokens ─────────────────────────────────────────────────
+
+#[tokio::test]
+async fn database_api_tokens_authenticate_and_are_scoped() {
+    let app = require_app!();
+    app.create_phone("Phone", "AA:BB:CC:DD:EE:10", None).await;
+
+    let create = |name: &str, perms: Value, expires: Option<&str>| json!({ "name": name, "permissions": perms, "expires_at": expires });
+
+    // Scoped token: authenticates, but admin routes need "admin"/"*".
+    let scoped = app
+        .admin(
+            Method::POST,
+            "/api/v1/api-tokens",
+            Some(create("scoped", json!(["device_read"]), None)),
+        )
+        .await;
+    assert_eq!(scoped.status, StatusCode::CREATED, "{}", scoped.text);
+    let secret = scoped.json["secret"].as_str().expect("secret").to_string();
+    assert!(secret.starts_with("fcp_"), "{secret}");
+    let scoped_id = scoped.json["token"]["id"].as_str().unwrap().to_string();
+    assert_eq!(scoped.json["token"]["tenant_id"], app.tenant_a.to_string());
+
+    // 403 (not 401) proves the token authenticated but lacks admin rights.
+    // (/auth/me is a JWT-session endpoint, so it is not usable as a probe.)
+    let denied = app
+        .send_as(&secret, Method::GET, "/api/v1/devices", None)
+        .await;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN, "{}", denied.text);
+
+    // Admin token: full access, scoped to its tenant.
+    let admin = app
+        .admin(
+            Method::POST,
+            "/api/v1/api-tokens",
+            Some(create("automation", json!(["admin"]), None)),
+        )
+        .await;
+    assert_eq!(admin.status, StatusCode::CREATED, "{}", admin.text);
+    let admin_secret = admin.json["secret"].as_str().unwrap().to_string();
+    let devices = app
+        .send_as(&admin_secret, Method::GET, "/api/v1/devices", None)
+        .await;
+    assert_eq!(devices.status, StatusCode::OK, "{}", devices.text);
+    assert_eq!(devices.json.as_array().unwrap().len(), 1);
+    // API tokens are never platform admins: they see their own tenant only
+    // and cannot create tenants.
+    let tenants = app
+        .send_as(&admin_secret, Method::GET, "/api/v1/tenants", None)
+        .await;
+    assert_eq!(tenants.status, StatusCode::OK, "{}", tenants.text);
+    assert_eq!(
+        tenants.json.as_array().unwrap().len(),
+        1,
+        "{}",
+        tenants.text
+    );
+    assert_eq!(tenants.json[0]["id"], app.tenant_a.to_string());
+    let create_tenant = app
+        .send_as(
+            &admin_secret,
+            Method::POST,
+            "/api/v1/tenants",
+            Some(json!({ "name": "rogue" })),
+        )
+        .await;
+    assert_eq!(
+        create_tenant.status,
+        StatusCode::FORBIDDEN,
+        "{}",
+        create_tenant.text
+    );
+
+    // Listing never returns secrets, and the last-used stamp moves.
+    let list = app.admin(Method::GET, "/api/v1/api-tokens", None).await;
+    assert_eq!(list.status, StatusCode::OK, "{}", list.text);
+    let listed = list.json.as_array().unwrap();
+    assert_eq!(listed.len(), 2);
+    assert!(listed.iter().all(|t| t.get("secret").is_none()));
+    let used = listed.iter().find(|t| t["name"] == "automation").unwrap();
+    assert!(
+        !used["last_used_at"].is_null(),
+        "last_used_at not stamped: {used}"
+    );
+
+    // Expired tokens are refused; unknown and wrong tokens too.
+    let expired = app
+        .admin(
+            Method::POST,
+            "/api/v1/api-tokens",
+            Some(create("expired", json!(["admin"]), Some("2020-01-01"))),
+        )
+        .await;
+    assert_eq!(expired.status, StatusCode::CREATED, "{}", expired.text);
+    let expired_secret = expired.json["secret"].as_str().unwrap().to_string();
+    let refused = app
+        .send_as(&expired_secret, Method::GET, "/api/v1/devices", None)
+        .await;
+    assert_eq!(refused.status, StatusCode::UNAUTHORIZED, "{}", refused.text);
+    let bogus = app
+        .send_as(
+            "fcp_definitely-not-a-token",
+            Method::GET,
+            "/api/v1/devices",
+            None,
+        )
+        .await;
+    assert_eq!(bogus.status, StatusCode::UNAUTHORIZED);
+
+    // Tokens cannot be deleted across tenants; deletion revokes immediately.
+    let cross = app
+        .admin_in(
+            app.tenant_b,
+            Method::DELETE,
+            &format!("/api/v1/api-tokens/{scoped_id}"),
+            None,
+        )
+        .await;
+    assert_eq!(cross.status, StatusCode::NOT_FOUND, "{}", cross.text);
+    let del = app
+        .admin(
+            Method::DELETE,
+            &format!("/api/v1/api-tokens/{scoped_id}"),
+            None,
+        )
+        .await;
+    assert_eq!(del.status, StatusCode::NO_CONTENT, "{}", del.text);
+    let revoked = app
+        .send_as(&secret, Method::GET, "/api/v1/auth/me", None)
+        .await;
+    assert_eq!(revoked.status, StatusCode::UNAUTHORIZED, "{}", revoked.text);
+
+    app.finish().await;
+}
+
+// ─── CDRs, usage, billing ────────────────────────────────────────────────
+
+#[tokio::test]
+async fn cdrs_usage_and_billing_summary() {
+    let app = require_app!();
+    let a1 = app.seed_cdr(app.tenant_a, Some(58_000), Some(0.25)).await;
+    let _a2 = app.seed_cdr(app.tenant_a, Some(30_000), Some(0.10)).await;
+    let _a3 = app.seed_cdr(app.tenant_a, None, None).await;
+    let b1 = app.seed_cdr(app.tenant_b, Some(10_000), Some(1.00)).await;
+
+    // The platform token is a cross-tenant reporting identity: with no
+    // tenant selected it sees every tenant's records...
+    let all = app.admin(Method::GET, "/api/v1/cdrs", None).await;
+    assert_eq!(all.status, StatusCode::OK, "{}", all.text);
+    assert_eq!(all.json["total"], 4, "{}", all.text);
+    let by_param = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/cdrs?tenant_id={}", app.tenant_b),
+            None,
+        )
+        .await;
+    assert_eq!(by_param.json["total"], 1, "{}", by_param.text);
+
+    // ...and the override header scopes it like every other endpoint.
+    let list = app
+        .admin_in(app.tenant_a, Method::GET, "/api/v1/cdrs", None)
+        .await;
+    assert_eq!(list.status, StatusCode::OK, "{}", list.text);
+    assert_eq!(list.json["total"], 3, "{}", list.text);
+    assert_eq!(list.json["cdrs"].as_array().unwrap().len(), 3);
+
+    let answered = app
+        .admin_in(
+            app.tenant_a,
+            Method::GET,
+            "/api/v1/cdrs?disposition=answered&limit=1",
+            None,
+        )
+        .await;
+    assert_eq!(answered.status, StatusCode::OK, "{}", answered.text);
+    assert_eq!(answered.json["total"], 2, "{}", answered.text);
+    assert_eq!(
+        answered.json["cdrs"].as_array().unwrap().len(),
+        1,
+        "limit applies"
+    );
+    assert_eq!(answered.json["cdrs"][0]["disposition"], "answered");
+
+    let one = app
+        .admin(Method::GET, &format!("/api/v1/cdrs/{a1}"), None)
+        .await;
+    assert_eq!(one.status, StatusCode::OK, "{}", one.text);
+    assert_eq!(one.json["cost"], 0.25);
+    assert_eq!(one.json["currency"], "USD");
+    assert_eq!(one.json["call_duration_ms"], 58_000);
+
+    // Single records follow the same rule: unscoped platform access finds
+    // B's record, a tenant-A-scoped request does not.
+    let any = app
+        .admin(Method::GET, &format!("/api/v1/cdrs/{b1}"), None)
+        .await;
+    assert_eq!(any.status, StatusCode::OK, "{}", any.text);
+    let cross = app
+        .admin_in(
+            app.tenant_a,
+            Method::GET,
+            &format!("/api/v1/cdrs/{b1}"),
+            None,
+        )
+        .await;
+    assert_eq!(cross.status, StatusCode::NOT_FOUND, "{}", cross.text);
+    let b_list = app
+        .admin_in(app.tenant_b, Method::GET, "/api/v1/cdrs", None)
+        .await;
+    assert_eq!(b_list.status, StatusCode::OK, "{}", b_list.text);
+    assert_eq!(b_list.json["total"], 1, "{}", b_list.text);
+
+    // Usage aggregates the same rows.
+    let usage = app
+        .admin(Method::GET, "/api/v1/usage?period=current_month", None)
+        .await;
+    assert_eq!(usage.status, StatusCode::OK, "{}", usage.text);
+    assert_eq!(usage.json["total_calls"], 3, "{}", usage.text);
+    assert_eq!(usage.json["answered_calls"], 2);
+    assert_eq!(usage.json["total_duration_ms"], 88_000);
+    assert!(
+        (usage.json["total_cost"].as_f64().unwrap() - 0.35).abs() < 1e-9,
+        "{}",
+        usage.text
+    );
+
+    let summary = app
+        .admin(Method::GET, "/api/v1/billing/summary", None)
+        .await;
+    assert_eq!(summary.status, StatusCode::OK, "{}", summary.text);
+    assert_eq!(summary.json["usage"]["total_calls"], 3);
+    assert_eq!(summary.json["resource_counts"]["users"], 0);
+
+    app.finish().await;
+}
+
+#[tokio::test]
+async fn rate_plans_and_balance_ledger() {
+    let app = require_app!();
+
+    let plan = app
+        .admin(
+            Method::POST,
+            "/api/v1/rate-plans",
+            Some(json!({
+                "name": "Standard",
+                "currency": "USD",
+                "default_rate_per_minute": 0.02,
+                "connect_fee": 0.0,
+                "billing_increment_secs": 6,
+                "is_default": true,
+            })),
+        )
+        .await;
+    assert_eq!(plan.status, StatusCode::CREATED, "{}", plan.text);
+    let plan_id = plan.json["id"].as_str().unwrap().to_string();
+    assert_eq!(plan.json["tenant_id"], app.tenant_a.to_string());
+
+    let rate = app
+        .admin(
+            Method::POST,
+            &format!("/api/v1/rate-plans/{plan_id}/rates"),
+            Some(json!({ "prefix": "1555", "rate_per_minute": 0.05, "description": "test range" })),
+        )
+        .await;
+    assert_eq!(rate.status, StatusCode::CREATED, "{}", rate.text);
+    let rate_id = rate.json["id"].as_str().unwrap().to_string();
+    let rates = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/rate-plans/{plan_id}/rates"),
+            None,
+        )
+        .await;
+    assert_eq!(rates.json.as_array().unwrap().len(), 1, "{}", rates.text);
+
+    let renamed = app
+        .admin(
+            Method::PATCH,
+            &format!("/api/v1/rate-plans/{plan_id}"),
+            Some(json!({ "name": "Standard v2" })),
+        )
+        .await;
+    assert_eq!(renamed.status, StatusCode::OK, "{}", renamed.text);
+    assert_eq!(renamed.json["name"], "Standard v2");
+
+    // Other tenants cannot see or touch the plan.
+    let cross = app
+        .admin_in(
+            app.tenant_b,
+            Method::GET,
+            &format!("/api/v1/rate-plans/{plan_id}"),
+            None,
+        )
+        .await;
+    assert_eq!(cross.status, StatusCode::NOT_FOUND, "{}", cross.text);
+
+    let del_rate = app
+        .admin(
+            Method::DELETE,
+            &format!("/api/v1/rate-plans/{plan_id}/rates/{rate_id}"),
+            None,
+        )
+        .await;
+    assert_eq!(del_rate.status, StatusCode::NO_CONTENT, "{}", del_rate.text);
+    let del_plan = app
+        .admin(
+            Method::DELETE,
+            &format!("/api/v1/rate-plans/{plan_id}"),
+            None,
+        )
+        .await;
+    assert_eq!(del_plan.status, StatusCode::NO_CONTENT, "{}", del_plan.text);
+    let gone = app
+        .admin(Method::GET, &format!("/api/v1/rate-plans/{plan_id}"), None)
+        .await;
+    assert_eq!(gone.status, StatusCode::NOT_FOUND);
+
+    // No balance row exists until it is configured; the first PUT creates it.
+    let balance = app
+        .admin(Method::GET, "/api/v1/billing/balance", None)
+        .await;
+    assert_eq!(balance.status, StatusCode::NOT_FOUND, "{}", balance.text);
+
+    let settings = app
+        .admin(
+            Method::PUT,
+            "/api/v1/billing/balance",
+            Some(json!({ "credit_limit": 10.0, "enforce": true })),
+        )
+        .await;
+    assert_eq!(
+        settings.status,
+        StatusCode::CREATED,
+        "first PUT creates the row: {}",
+        settings.text
+    );
+    assert_eq!(settings.json["credit_limit"], 10.0);
+    assert_eq!(settings.json["enforce"], true);
+    assert_eq!(settings.json["balance"], 0.0);
+    let again = app
+        .admin(
+            Method::PUT,
+            "/api/v1/billing/balance",
+            Some(json!({ "low_balance_threshold": 5.0 })),
+        )
+        .await;
+    assert_eq!(
+        again.status,
+        StatusCode::OK,
+        "second PUT updates: {}",
+        again.text
+    );
+    assert_eq!(again.json["low_balance_threshold"], 5.0);
+    assert_eq!(again.json["credit_limit"], 10.0, "unchanged fields persist");
+
+    let top_up = app
+        .admin(
+            Method::POST,
+            "/api/v1/billing/balance/transactions",
+            Some(json!({ "kind": "top_up", "amount": 25.0, "description": "prepay" })),
+        )
+        .await;
+    assert_eq!(top_up.status, StatusCode::CREATED, "{}", top_up.text);
+    assert_eq!(top_up.json["balance_after"], 25.0);
+
+    let negative_top_up = app
+        .admin(
+            Method::POST,
+            "/api/v1/billing/balance/transactions",
+            Some(json!({ "kind": "top_up", "amount": -5.0 })),
+        )
+        .await;
+    assert_eq!(
+        negative_top_up.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        negative_top_up.text
+    );
+
+    let adjustment = app
+        .admin(
+            Method::POST,
+            "/api/v1/billing/balance/transactions",
+            Some(
+                json!({ "kind": "adjustment", "amount": -5.0, "description": "goodwill reversal" }),
+            ),
+        )
+        .await;
+    assert_eq!(
+        adjustment.status,
+        StatusCode::CREATED,
+        "{}",
+        adjustment.text
+    );
+    assert_eq!(adjustment.json["balance_after"], 20.0);
+
+    let after = app
+        .admin(Method::GET, "/api/v1/billing/balance", None)
+        .await;
+    assert_eq!(after.json["balance"], 20.0, "{}", after.text);
+    assert_eq!(
+        after.json["available"], 30.0,
+        "balance plus credit limit: {}",
+        after.text
+    );
+    let ledger = app
+        .admin(Method::GET, "/api/v1/billing/balance/transactions", None)
+        .await;
+    assert_eq!(ledger.status, StatusCode::OK, "{}", ledger.text);
+    assert_eq!(ledger.json.as_array().unwrap().len(), 2, "{}", ledger.text);
+
+    // Tenant B's ledger is untouched (still unconfigured).
+    let b = app
+        .admin_in(app.tenant_b, Method::GET, "/api/v1/billing/balance", None)
+        .await;
+    assert_eq!(b.status, StatusCode::NOT_FOUND, "{}", b.text);
+
+    app.finish().await;
+}
+
+// ─── Trunks ──────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn trunks_crud_hides_secrets_and_respects_deployment_mode() {
+    // Carrier mode so a tenant admin session may manage trunks.
+    let app = require_app!(DeploymentMode::Carrier);
+
+    let created = app
+        .admin(
+            Method::POST,
+            "/api/v1/trunks",
+            Some(json!({
+                "name": "upstream",
+                "hosts": ["sip.carrier.example.net"],
+                "transport_protocol": "udp",
+                "auth_username": "acct1",
+                "auth_password": "trunk-secret-pw",
+                "auth_realm": "carrier.example.net",
+                "max_concurrent_calls": 30,
+            })),
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.text);
+    let id = created.json["id"].as_str().unwrap().to_string();
+    assert_eq!(created.json["has_credentials"], true);
+    assert_eq!(created.json["auth_username"], "acct1");
+    assert!(
+        !created.text.contains("trunk-secret-pw"),
+        "password must never be echoed: {}",
+        created.text
+    );
+
+    let got = app
+        .admin(Method::GET, &format!("/api/v1/trunks/{id}"), None)
+        .await;
+    assert_eq!(got.status, StatusCode::OK, "{}", got.text);
+    assert!(!got.text.contains("trunk-secret-pw"));
+
+    let updated = app
+        .admin(
+            Method::PATCH,
+            &format!("/api/v1/trunks/{id}"),
+            Some(json!({ "max_concurrent_calls": 45, "enabled": false })),
+        )
+        .await;
+    assert_eq!(updated.status, StatusCode::OK, "{}", updated.text);
+    assert_eq!(updated.json["max_concurrent_calls"], 45);
+    assert_eq!(updated.json["enabled"], false);
+    assert_eq!(
+        updated.json["has_credentials"], true,
+        "update must keep the sealed password"
+    );
+
+    // A tenant admin session can manage trunks in Carrier mode.
+    app.create_user_with_role("carrier-ops", "tenant_admin")
+        .await;
+    let jwt = app.login("carrier-ops", PASSWORD).await.json["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let listed = app.send_as(&jwt, Method::GET, "/api/v1/trunks", None).await;
+    assert_eq!(listed.status, StatusCode::OK, "{}", listed.text);
+    assert_eq!(listed.json.as_array().unwrap().len(), 1);
+
+    let cross = app
+        .admin_in(
+            app.tenant_b,
+            Method::GET,
+            &format!("/api/v1/trunks/{id}"),
+            None,
+        )
+        .await;
+    assert_eq!(cross.status, StatusCode::NOT_FOUND, "{}", cross.text);
+
+    let del = app
+        .admin(Method::DELETE, &format!("/api/v1/trunks/{id}"), None)
+        .await;
+    assert_eq!(del.status, StatusCode::NO_CONTENT, "{}", del.text);
+    assert_eq!(
+        app.admin(Method::GET, &format!("/api/v1/trunks/{id}"), None)
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+
+    app.finish().await;
+}
+
+#[tokio::test]
+async fn trunks_are_closed_to_tenant_admins_in_enterprise_mode() {
+    let app = require_app!(DeploymentMode::Enterprise);
+    app.create_user_with_role("ent-ops", "tenant_admin").await;
+    let jwt = app.login("ent-ops", PASSWORD).await.json["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let listed = app.send_as(&jwt, Method::GET, "/api/v1/trunks", None).await;
+    assert_eq!(listed.status, StatusCode::FORBIDDEN, "{}", listed.text);
+    let created = app
+        .send_as(
+            &jwt,
+            Method::POST,
+            "/api/v1/trunks",
+            Some(json!({ "name": "nope", "hosts": ["sip.example.net"] })),
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::FORBIDDEN, "{}", created.text);
+
+    // The static platform token is unrestricted regardless of mode.
+    let listed = app.admin(Method::GET, "/api/v1/trunks", None).await;
+    assert_eq!(listed.status, StatusCode::OK, "{}", listed.text);
+
+    app.finish().await;
+}
+
+// ─── Queues ──────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn queue_configs_crud_and_runtime_absent() {
+    let app = require_app!();
+    let agent = app.create_user("agent1", None).await;
+
+    let created = app
+        .admin(
+            Method::POST,
+            "/api/v1/queue-configs",
+            Some(json!({
+                "name": "support",
+                "extension": "7000",
+                "strategy": "ring_all",
+                "max_wait_time_secs": 120,
+                "agents": [agent],
+            })),
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.text);
+    let id = created.json["id"].as_str().unwrap().to_string();
+    assert_eq!(created.json["name"], "support");
+    assert_eq!(created.json["extension"], "7000");
+
+    let list = app.admin(Method::GET, "/api/v1/queue-configs", None).await;
+    assert_eq!(list.status, StatusCode::OK, "{}", list.text);
+    assert_eq!(list.json.as_array().unwrap().len(), 1);
+
+    let cross = app
+        .admin_in(
+            app.tenant_b,
+            Method::GET,
+            &format!("/api/v1/queue-configs/{id}"),
+            None,
+        )
+        .await;
+    assert_eq!(cross.status, StatusCode::NOT_FOUND, "{}", cross.text);
+
+    // The queue listing is served from stored configs even without a live
+    // QueueManager; runtime-only endpoints report its absence as 404, not 500.
+    let queues = app.admin(Method::GET, "/api/v1/queues", None).await;
+    assert_eq!(queues.status, StatusCode::OK, "{}", queues.text);
+    assert_eq!(queues.json[0]["name"], "support", "{}", queues.text);
+    assert_eq!(queues.json[0]["calls_waiting"], 0);
+    let stats = app
+        .admin(Method::GET, "/api/v1/queues/support/stats", None)
+        .await;
+    assert_eq!(stats.status, StatusCode::NOT_FOUND, "{}", stats.text);
+
+    let del = app
+        .admin(Method::DELETE, &format!("/api/v1/queue-configs/{id}"), None)
+        .await;
+    assert_eq!(del.status, StatusCode::NO_CONTENT, "{}", del.text);
+
+    app.finish().await;
+}
+
+// ─── Voicemail ───────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn voicemail_mailboxes_crud() {
+    let app = require_app!();
+    let owner = app.create_user("vm-owner", None).await;
+
+    let number = app
+        .admin(
+            Method::POST,
+            "/api/v1/phone-numbers",
+            Some(json!({ "e164": "+15550001111", "tenant_id": app.tenant_a })),
+        )
+        .await;
+    assert_eq!(number.status, StatusCode::CREATED, "{}", number.text);
+    let number_id = number.json["id"].as_str().unwrap().to_string();
+
+    let binding = app
+        .admin(
+            Method::POST,
+            "/api/v1/line-bindings",
+            Some(json!({
+                "phone_number_id": number_id,
+                "owner_user_id": owner,
+                "binding_type": "user",
+                "tenant_id": app.tenant_a,
+            })),
+        )
+        .await;
+    assert_eq!(binding.status, StatusCode::CREATED, "{}", binding.text);
+    let binding_id = binding.json["id"].as_str().unwrap().to_string();
+
+    let mailbox = app
+        .admin(
+            Method::POST,
+            "/api/v1/voicemail/mailboxes",
+            Some(json!({
+                "tenant_id": app.tenant_a,
+                "user_id": owner,
+                "line_binding_id": binding_id,
+                "pin": "4321",
+                "max_messages": 25,
+            })),
+        )
+        .await;
+    assert_eq!(mailbox.status, StatusCode::CREATED, "{}", mailbox.text);
+    let id = mailbox.json["id"].as_str().unwrap().to_string();
+    assert_eq!(mailbox.json["user_id"], owner);
+    assert_eq!(mailbox.json["max_messages"], 25);
+    assert!(
+        mailbox.json.get("pin").is_none() && !mailbox.text.contains("4321"),
+        "pin must not be echoed: {}",
+        mailbox.text
+    );
+
+    let got = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/voicemail/mailboxes/{id}"),
+            None,
+        )
+        .await;
+    assert_eq!(got.status, StatusCode::OK, "{}", got.text);
+    assert_eq!(got.json["enabled"], true);
+
+    let disabled = app
+        .admin(
+            Method::POST,
+            &format!("/api/v1/voicemail/mailboxes/{id}/disable"),
+            None,
+        )
+        .await;
+    assert!(
+        disabled.status.is_success(),
+        "disable: {} {}",
+        disabled.status,
+        disabled.text
+    );
+    let got = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/voicemail/mailboxes/{id}"),
+            None,
+        )
+        .await;
+    assert_eq!(got.json["enabled"], false, "{}", got.text);
+
+    let updated = app
+        .admin(
+            Method::PUT,
+            &format!("/api/v1/voicemail/mailboxes/{id}"),
+            Some(json!({ "max_messages": 50, "email_notification": true, "email_address": "vm@example.com" })),
+        )
+        .await;
+    assert_eq!(updated.status, StatusCode::OK, "{}", updated.text);
+    assert_eq!(updated.json["max_messages"], 50);
+    assert_eq!(updated.json["email_address"], "vm@example.com");
+
+    let stats = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/voicemail/mailboxes/{id}/stats"),
+            None,
+        )
+        .await;
+    assert_eq!(stats.status, StatusCode::OK, "{}", stats.text);
+
+    let cross = app
+        .admin_in(
+            app.tenant_b,
+            Method::GET,
+            &format!("/api/v1/voicemail/mailboxes/{id}"),
+            None,
+        )
+        .await;
+    assert_eq!(cross.status, StatusCode::NOT_FOUND, "{}", cross.text);
+
+    let del = app
+        .admin(
+            Method::DELETE,
+            &format!("/api/v1/voicemail/mailboxes/{id}"),
+            None,
+        )
+        .await;
+    assert_eq!(del.status, StatusCode::NO_CONTENT, "{}", del.text);
+    assert_eq!(
+        app.admin(
+            Method::GET,
+            &format!("/api/v1/voicemail/mailboxes/{id}"),
+            None
+        )
+        .await
+        .status,
+        StatusCode::NOT_FOUND
+    );
 
     app.finish().await;
 }
