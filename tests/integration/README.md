@@ -6,44 +6,45 @@ in-process stubs.
 
 ## Current state
 
-The storage layer has database-backed tests in
-`crates/fcp-storage-postgres/tests/integration.rs` (gated on
-`FCP_TEST_DATABASE_URL`, run in CI against a `postgres:16` service; see that
-crate's README). Nothing runnable lives in this directory yet; cross-service
-tests (API + SIP + media) are still a gap.
+Database-backed tests live next to the crates they exercise and are gated on
+`FCP_TEST_DATABASE_URL` (CI runs them against a `postgres:16` service):
+
+- `crates/fcp-storage-postgres/tests/integration.rs` — the storage layer
+  (see that crate's README).
+- `crates/fcp-api-core/tests/api_postgres.rs` — REST handlers through the
+  full router built by `fcp_api_core::create_router`: bearer middleware,
+  platform-admin tenant override (`x-fcp-tenant-id`), users, devices, config
+  templates, and device auto-provisioning. The `ApiState` it needs is built
+  on a no-op SIP transport dispatcher (no sockets, no SIP traffic), so no
+  separate harness crate was required.
+
+Nothing runnable lives in this directory yet; cross-service tests (API + SIP
++ media) and binary smoke tests are still a gap.
 
 ## Known coverage gaps
 
 ### Device auto-provisioning (`GET /api/v1/provisioning/:mac_address`)
 
-Per-device and deployment provisioning tokens plus MAC uniqueness landed in
-migration 046 (`046_device_provisioning_tokens.sql`). The pure auth helpers are
-unit-tested in
-`crates/fcp-api-core/src/v1/provisioning.rs`, but the full Axum handler path is
-not. An end-to-end test should construct an `ApiState` against an ephemeral
-Postgres instance and verify:
+Covered by `crates/fcp-api-core/tests/api_postgres.rs`:
 
-1. Missing / invalid `X-FCP-Provisioning-Token` returns 404 **without** hitting
-   the devices table (locks in the shared-token gate).
-2. Unknown MAC returns 404 after the shared-token check. Response timing must
-   be indistinguishable from the "found but wrong per-device token" case
-   (locks in the timing-attack fix in
-   `provisioning.rs::auto_provision`).
-3. Disabled device with correct tokens returns 404 (locks in the ordering:
-   `authorize_device_provisioning_token` runs before the `enabled` check).
-4. MAC normalization collision: creating a second device with the same
-   normalized MAC (e.g. `AA:BB:CC:DD:EE:FF` vs `aa-bb-cc-dd-ee-ff`) rejects
-   with 409 at the API layer and fails the unique index at the DB layer.
-5. `list_devices_by_user` returns the `has_provisioning_token` flag correctly
-   (regression guard for the silent-drop bug fixed in v0.25.49).
-6. Successful provisioning returns `Cache-Control: no-store` and renders the
-   template with the device's credentials.
+1. Missing / invalid shared provisioning token, the admin API token used in
+   its place, and plain-HTTP requests all return the uniform 404.
+2. Unknown MAC, wrong or missing per-device token, disabled device, and a
+   device without a template return the same 404 with a byte-identical body.
+   Response *timing* is not asserted (too noisy for CI); the ordering that
+   makes the cases indistinguishable is locked in by the handler's structure.
+3. MAC normalization collision (`AA:BB:CC:DD:EE:FF` vs `aa-bb-cc-dd-ee-ff`)
+   rejects with 409 at the API layer; the DB-level unique index is covered by
+   the storage suite.
+4. `list_devices_by_user` keeps the `provisioning_token_hash` (regression
+   guard for the silent-drop bug fixed in v0.25.49).
+5. Successful provisioning returns `Cache-Control: no-store` and renders the
+   owner's credentials, including the HA1 read back through the sealed
+   column.
 
-The main blocker is that `ApiState::new()` requires a populated
-`SipMessageHandler`, `CallManager`, `DialogManager`, and `SubscriptionManager`,
-which in turn need a running SIP transport layer. A lightweight test harness
-(e.g. a `testkit::ApiHarness` builder that stubs out the SIP layer behind
-trait objects) would unlock these tests.
+Still uncovered: the remaining handler families (CDRs, billing, trunks,
+queues, voicemail, presence), JWT session login flows, and API-token
+(`fcp_…`) authentication against the database.
 
 ## When adding tests here
 
