@@ -1182,6 +1182,7 @@ fn extract_node_id_from_call_event(event: &CallEvent) -> Option<String> {
         | CallEvent::Answered { node_id, .. }
         | CallEvent::Ended { node_id, .. }
         | CallEvent::Failed { node_id, .. } => node_id.clone(),
+        CallEvent::Emergency { node_id, .. } => node_id.clone(),
         CallEvent::Parked { .. } | CallEvent::Unparked { .. } => None,
     }
 }

@@ -190,6 +190,16 @@ impl CallLeg {
     }
 }
 
+/// Emergency-call context attached to a [`Call`] when the dialed number is
+/// an emergency number for the tenant.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct EmergencyCallInfo {
+    pub dialed: String,
+    pub kind: fcp_core::e911::EmergencyKind,
+    pub callback_number: Option<String>,
+    pub location: Option<fcp_core::e911::DispatchableLocation>,
+}
+
 /// A B2BUA call with two legs.
 #[derive(Clone)]
 pub struct Call {
@@ -280,6 +290,11 @@ pub struct Call {
 
     /// Caller's phone number or extension.
     pub caller_number: Option<String>,
+
+    /// Set when the dialed number is an emergency number: what was dialed,
+    /// the callback number used as caller ID, and the dispatchable
+    /// location resolved for the caller.
+    pub emergency: Option<EmergencyCallInfo>,
 }
 
 impl fmt::Debug for CallLeg {
@@ -360,6 +375,7 @@ impl Call {
             no_answer_timeout: None,
             original_callee: None,
             caller_number: None,
+            emergency: None,
         }
     }
 
@@ -450,6 +466,7 @@ impl Call {
             no_answer_timeout: None,
             original_callee: None,
             caller_number: None,
+            emergency: None,
         }
     }
 

@@ -4,7 +4,7 @@
 Update this file when feature status changes; keep other docs describing scope, not status.
 
 - **Last reviewed:** 2026-09-01 (full code audit against ARCHITECTURE-v0.2.md)
-- **Version:** v0.25.79 · 37 workspace crates
+- **Version:** v0.25.80 · 37 workspace crates
 - **Submodules:** siphon-rs `v2026.08.25` · forge-media `v2026.09.01.1` (both at their repos' current release tips)
 - **Health:** CI green (fmt, clippy `-D warnings`, tests, cargo-audit) · 0 Dependabot alerts · 0 future-incompat warnings
 
@@ -39,7 +39,7 @@ Update this file when feature status changes; keep other docs describing scope, 
 | Item | Status |
 |---|---|
 | Multi-region | ❌ `fcp-cluster` is flat single-region SWIM membership |
-| E911 | ❌ `E911Address` data model + CRUD only; no validation service, PSAP, or emergency routing |
+| E911 | 🟡 Block 1 done (2026-09-02, `docs/E911.md`): emergency-number detection (tenant-configurable, `911`/`933` + `9` prefix by default) before any admission control, dispatchable-location resolution (device override → device site → user site → DID address) with ELIN callback numbers per site, emergency-capable trunks tried first, callback number as caller ID + `P-Asserted-Identity` + `Priority: emergency`, `call.emergency` event with notification contacts, `emergency_calls` audit table, admin API (config, readiness report, validate-address, per-number validation) and a pluggable `E911AddressValidator`. Not yet: PIDF-LO location by value, subnet-based location for softphones, provider-backed validation, in-platform notification delivery |
 | Video conferencing | ❌ Conference server and WebRTC gateway are audio-only |
 | Regulatory compliance | ❌ Not started |
 | Distributed conferencing | 📋 Ready plan in `docs/TO_DO_CONFERENCE_LOADBALANCE_HA.md` (~2–3 weeks) |
@@ -75,7 +75,7 @@ Vision items in `docs/ARCHITECTURE-v0.2.md` that are descoped above remain in th
 
 ## Phase 5 engineering order (agreed 2026-09-02)
 
-1. **E911**: address validation, dispatchable location per device/line (Kari's Law / RAY BAUM's Act), emergency call routing with location delivery, notification on emergency calls. Builds on the existing `E911Address` model and per-device overrides.
+1. ~~**E911** block 1~~ (done 2026-09-02, see the Phase 5 table and `docs/E911.md`). Block 2, unscheduled: PIDF-LO by value for NG911 trunks, subnet-based location, a provider-backed validator, notification delivery.
 2. **Compliance basics**: call recording consent/retention controls, CDR retention and export, audit log for admin actions.
 3. **Distributed conferencing**: the cascaded-mixing plan on file.
 4. **Multi-region**: CockroachDB compatibility pass + CI service first, then region-aware cluster membership and event bus.

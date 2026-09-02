@@ -108,6 +108,37 @@ impl CallManager {
         self.node_id.as_deref()
     }
 
+    /// Publish `call.emergency` for an emergency call that was just placed.
+    /// Best-effort and asynchronous like the other call events.
+    pub fn publish_emergency(&self, call: &Call, notify_contacts: Vec<String>) {
+        let Some(events) = &self.events else {
+            return;
+        };
+        let Some(em) = &call.emergency else {
+            return;
+        };
+        let event = PlatformEvent::Call(CallEvent::Emergency {
+            call_id: fcp_core::CallId::from_uuid(*call.id.as_uuid()),
+            tenant_id: call.tenant_id,
+            from: call.a_leg.remote_uri.clone(),
+            dialed: em.dialed.clone(),
+            kind: em.kind.to_string(),
+            callback_number: em.callback_number.clone(),
+            location_source: em.location.as_ref().map(|l| l.source.to_string()),
+            location_summary: em.location.as_ref().map(|l| l.summary()),
+            trunk_name: call.trunk_name.clone(),
+            notify_contacts,
+            timestamp: std::time::SystemTime::now(),
+            node_id: self.node_id.clone(),
+        });
+        let events = Arc::clone(events);
+        tokio::spawn(async move {
+            if let Err(e) = events.publish(event).await {
+                tracing::warn!(error = %e, "Failed to publish call.emergency event");
+            }
+        });
+    }
+
     /// Create a new call and store it.
     ///
     /// Returns the CallId for the new call.

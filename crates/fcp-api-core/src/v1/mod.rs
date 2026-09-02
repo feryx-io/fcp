@@ -10,6 +10,7 @@ pub mod config_templates;
 pub mod dashboard;
 pub mod debug;
 pub mod devices;
+pub mod emergency;
 pub mod encryption;
 pub mod events;
 pub mod extensions;
@@ -165,6 +166,21 @@ pub fn router() -> Router<ApiState> {
         .route("/system/encryption", get(encryption::status))
         .route("/system/encryption/rotate", post(encryption::rotate))
         .route("/system/encryption/reencrypt", post(encryption::reencrypt))
+        // Emergency calling (E911)
+        .route(
+            "/emergency/config",
+            get(emergency::get_config).put(emergency::update_config),
+        )
+        .route("/emergency/readiness", get(emergency::readiness))
+        .route("/emergency/calls", get(emergency::list_calls))
+        .route(
+            "/emergency/validate-address",
+            post(emergency::validate_address),
+        )
+        .route(
+            "/phone-numbers/:id/e911/validate",
+            post(emergency::validate_phone_number),
+        )
         // Usage & Billing
         .route("/usage", get(usage::get_usage))
         .route("/usage/by-number", get(usage::get_usage_by_number))

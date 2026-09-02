@@ -12,6 +12,7 @@ pub mod config;
 pub mod config_store;
 pub mod config_template;
 pub mod device;
+pub mod e911;
 pub mod encryption;
 pub mod error;
 pub mod extension;

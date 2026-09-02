@@ -48,6 +48,7 @@ pub struct TrunkResponse {
     pub max_failures: i32,
     pub recovery_interval_secs: i32,
     pub health_check_enabled: bool,
+    pub emergency_capable: bool,
     pub health_check_interval_secs: i32,
     pub codec_prefs: Vec<String>,
     pub caller_id_override: Option<String>,
@@ -93,6 +94,7 @@ impl From<Trunk> for TrunkResponse {
             max_failures: t.max_failures,
             recovery_interval_secs: t.recovery_interval_secs,
             health_check_enabled: t.health_check_enabled,
+            emergency_capable: t.emergency_capable,
             health_check_interval_secs: t.health_check_interval_secs,
             codec_prefs: t.codec_prefs,
             caller_id_override: t.caller_id_override,
@@ -172,6 +174,8 @@ pub struct CreateTrunkRequest {
     #[serde(default)]
     pub health_check_enabled: Option<bool>,
     #[serde(default)]
+    pub emergency_capable: Option<bool>,
+    #[serde(default)]
     pub health_check_interval_secs: Option<i32>,
     #[serde(default)]
     pub codec_prefs: Option<Vec<String>>,
@@ -215,6 +219,8 @@ pub struct UpdateTrunkRequest {
     pub max_failures: Option<i32>,
     pub recovery_interval_secs: Option<i32>,
     pub health_check_enabled: Option<bool>,
+    #[serde(default)]
+    pub emergency_capable: Option<bool>,
     pub health_check_interval_secs: Option<i32>,
     pub codec_prefs: Option<Vec<String>>,
     pub caller_id_override: Option<String>,
@@ -346,6 +352,9 @@ pub async fn create_trunk(
     if let Some(enabled) = req.health_check_enabled {
         trunk.health_check_enabled = enabled;
     }
+    if let Some(capable) = req.emergency_capable {
+        trunk.emergency_capable = capable;
+    }
     if let Some(secs) = req.health_check_interval_secs {
         trunk.health_check_interval_secs = secs;
     }
@@ -464,6 +473,9 @@ pub async fn update_trunk(
     }
     if let Some(enabled) = req.health_check_enabled {
         trunk.health_check_enabled = enabled;
+    }
+    if let Some(capable) = req.emergency_capable {
+        trunk.emergency_capable = capable;
     }
     if let Some(secs) = req.health_check_interval_secs {
         trunk.health_check_interval_secs = secs;

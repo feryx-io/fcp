@@ -67,6 +67,10 @@ pub struct SiteLocation {
 
     /// Emergency contact phone number
     pub emergency_contact_phone: Option<String>,
+    /// E911 callback number (ELIN) the carrier maps to this address; sent as
+    /// caller ID on emergency calls placed from this site.
+    #[serde(default)]
+    pub e911_callback_number: Option<String>,
 
     // ===== Timestamps =====
     /// Created timestamp
@@ -99,6 +103,7 @@ impl SiteLocation {
             timezone: None,
             emergency_contact_name: None,
             emergency_contact_phone: None,
+            e911_callback_number: None,
             created_at: now,
             updated_at: now,
         }

@@ -2628,6 +2628,7 @@ pub struct DynStorage {
     flow_trace_store: Option<Arc<dyn crate::flow_trace::FlowTraceStore>>,
     config_template_store: Option<Arc<dyn ConfigTemplateStore>>,
     encryption_store: Option<Arc<dyn crate::encryption::EncryptionStore>>,
+    emergency_store: Option<Arc<dyn crate::e911::EmergencyStore>>,
 }
 
 impl DynStorage {
@@ -2686,6 +2687,7 @@ impl DynStorage {
             flow_trace_store: None,
             config_template_store: None,
             encryption_store: None,
+            emergency_store: None,
         }
     }
 
@@ -2746,6 +2748,7 @@ impl DynStorage {
             flow_trace_store: None,
             config_template_store: Some(storage),
             encryption_store: None,
+            emergency_store: None,
         }
     }
 
@@ -2877,6 +2880,16 @@ impl DynStorage {
     /// The encryption-at-rest management surface, if the backend has one.
     pub fn encryption_store(&self) -> Option<&Arc<dyn crate::encryption::EncryptionStore>> {
         self.encryption_store.as_ref()
+    }
+
+    /// Attach the emergency (E911) configuration and audit store.
+    pub fn with_emergency_store(mut self, store: Arc<dyn crate::e911::EmergencyStore>) -> Self {
+        self.emergency_store = Some(store);
+        self
+    }
+
+    pub fn emergency_store(&self) -> Option<&Arc<dyn crate::e911::EmergencyStore>> {
+        self.emergency_store.as_ref()
     }
 
     /// Get the config template store, if one has been set.

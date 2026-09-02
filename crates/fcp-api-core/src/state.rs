@@ -124,6 +124,10 @@ pub struct ApiState {
 
     /// Deployment mode for permission evaluation (Enterprise, ServiceProvider, Carrier).
     pub deployment_mode: fcp_core::permissions::DeploymentMode,
+
+    /// E911 address validator (completeness checks by default; a
+    /// provider-backed validator can be injected).
+    pub e911_validator: Arc<dyn fcp_core::e911::E911AddressValidator>,
 }
 
 impl ApiState {
@@ -171,6 +175,7 @@ impl ApiState {
             provisioning_require_https: true,
             trunk_health: None,
             deployment_mode: fcp_core::permissions::DeploymentMode::default(),
+            e911_validator: Arc::new(fcp_core::e911::BasicAddressValidator),
         }
     }
 
@@ -243,6 +248,15 @@ impl ApiState {
     /// Set whether the provisioning endpoint requires HTTPS.
     pub fn with_provisioning_require_https(mut self, require: bool) -> Self {
         self.provisioning_require_https = require;
+        self
+    }
+
+    /// Replace the E911 address validator.
+    pub fn with_e911_validator(
+        mut self,
+        validator: Arc<dyn fcp_core::e911::E911AddressValidator>,
+    ) -> Self {
+        self.e911_validator = validator;
         self
     }
 

@@ -249,6 +249,13 @@ pub trait OutboundRouteProvider: Send + Sync {
     /// Classified resolution (reachability stage). The default cannot tell
     /// "nothing configured" from "nothing available" and reports `NoRoute`
     /// for any empty result; providers with a route table should override.
+    /// Routes for an emergency call, best first. Providers that know about
+    /// emergency-capable trunks put them ahead of the normal choice; the
+    /// default is the ordinary ordered resolution so the call still goes out.
+    async fn resolve_emergency_ordered(&self, destination_uri: &str) -> Vec<OutboundRoute> {
+        self.resolve_outbound_ordered(destination_uri).await
+    }
+
     async fn resolve_outbound_classified(&self, destination_uri: &str) -> RouteResolution {
         let routes = self.resolve_outbound_ordered(destination_uri).await;
         if routes.is_empty() {
@@ -1582,8 +1589,23 @@ impl SipMessageHandler {
 
         // Balance enforcement: refuse calls the tenant cannot pay for, and
         // remember how long an affordable call may last.
+        // Emergency calls (911 and the tenant's emergency/test numbers) are
+        // detected before any admission control: they are never rejected for
+        // balance, and they carry the caller's dispatchable location.
+        let emergency = self.detect_emergency(&tenant_id, request).await;
+        if let Some(em) = &emergency {
+            info!(
+                tenant_id = %tenant_id,
+                dialed = %em.dialed,
+                kind = %em.kind,
+                callback = ?em.callback_number,
+                location = ?em.location.as_ref().map(|l| l.summary()),
+                "Emergency call detected"
+            );
+        }
+
         let mut billing_max_duration: Option<Duration> = None;
-        if let Some(billing) = &self.billing {
+        if let (Some(billing), None) = (&self.billing, &emergency) {
             let destination = sip_parse::header(request.headers(), "To")
                 .map(|to| {
                     let to = to.as_str();
@@ -1624,11 +1646,16 @@ impl SipMessageHandler {
         call.state = fcp_b2bua_core::CallState::RoutingPending;
         call.a_leg_invite_tx = Some(handle.key().clone());
         call.max_duration = billing_max_duration;
+        call.emergency = emergency.clone();
 
         // Store call in CallManager
         let call_id = self.call_manager.create_call(call);
         if let Some(max_duration) = billing_max_duration {
             self.spawn_balance_watchdog(call_id, tenant_id, max_duration);
+        }
+        if let Some(em) = &emergency {
+            self.record_emergency_call(call_id, tenant_id, request, em)
+                .await;
         }
 
         // Register A-leg SIP Call-ID → FCP CallId mapping for trace correlation
@@ -2813,7 +2840,68 @@ impl SipMessageHandler {
 
         // Check if destination is a phone number (E.164 format)
         // If so, look up line binding to find which user/devices to route to
-        let destination_contacts = if is_e164_number(&normalized_aor) {
+        // Emergency calls skip extension/DID lookup entirely: an extension
+        // named "911" must never capture them. They go to emergency-capable
+        // trunks first, then whatever the provider would normally choose.
+        let emergency_ctx = self
+            .call_manager
+            .get_call(&call_id)
+            .and_then(|call| call.emergency.clone());
+        let emergency_bindings = if emergency_ctx.is_some() {
+            let routes = match &self.outbound_route_provider {
+                Some(provider) => provider.resolve_emergency_ordered(destination_aor).await,
+                None => Vec::new(),
+            };
+            if let Some(route) = routes.first() {
+                info!(
+                    call_id = %call_id,
+                    target = %route.target_uri,
+                    trunk = ?route.trunk_name,
+                    routes = routes.len(),
+                    "Routing emergency call via trunk"
+                );
+                let trunk_name = route.trunk_name.clone();
+                let allowed_codecs = route.allowed_codecs.clone();
+                let _ = self.call_manager.update_call(&call_id, |call| {
+                    call.trunk_name = trunk_name;
+                    call.outbound_allowed_codecs = allowed_codecs;
+                });
+            }
+            let mut bindings = Vec::with_capacity(routes.len());
+            for r in &routes {
+                match sip_registrar::Binding::new(
+                    SmolStr::new(destination_aor),
+                    SmolStr::new(&r.target_uri),
+                    Duration::from_secs(3600),
+                ) {
+                    Ok(binding) => bindings.push(binding),
+                    Err(e) => {
+                        warn!(call_id = %call_id, target = %r.target_uri, error = %e, "Skipping emergency route: failed to create binding");
+                    }
+                }
+            }
+            if bindings.is_empty() {
+                error!(
+                    call_id = %call_id,
+                    destination = %destination_aor,
+                    "EMERGENCY CALL COULD NOT BE ROUTED: no upstream trunk available"
+                );
+                let response = self.create_simple_response(request, 503, "Service Unavailable");
+                a_leg_handle.send_final(response).await;
+                let _ = self.call_manager.terminate_call(
+                    &call_id,
+                    Some("No trunk available for emergency call".to_string()),
+                );
+                return Ok(());
+            }
+            Some(bindings)
+        } else {
+            None
+        };
+
+        let destination_contacts = if let Some(bindings) = emergency_bindings {
+            bindings
+        } else if is_e164_number(&normalized_aor) {
             debug!(
                 call_id = %call_id,
                 destination = %normalized_aor,
@@ -4959,6 +5047,34 @@ impl SipMessageHandler {
         let caller_display_name = extract_from_display_name(request);
         let caller_from_uri = extract_from_uri(request).ok().map(normalize_from_uri);
 
+        // Emergency calls go out with the location's callback number (ELIN)
+        // as caller ID so the PSAP's ALI lookup and callback both work, and
+        // carry P-Asserted-Identity + Priority: emergency for the trunk.
+        let (caller_from_uri, emergency_headers) = match &emergency_ctx {
+            Some(em) => {
+                let host = caller_from_uri
+                    .as_ref()
+                    .map(|u| u.host().to_string())
+                    .unwrap_or_else(|| self.local_addr.clone());
+                let from_uri = match &em.callback_number {
+                    Some(cb) => sip_core::SipUri::parse(&format!("sip:{cb}@{host}"))
+                        .ok()
+                        .or(caller_from_uri),
+                    None => caller_from_uri,
+                };
+                let mut headers = sip_core::Headers::new();
+                if let Some(cb) = &em.callback_number {
+                    let _ = headers.push(
+                        SmolStr::new("P-Asserted-Identity"),
+                        SmolStr::new(format!("<sip:{cb}@{host}>")),
+                    );
+                }
+                let _ = headers.push(SmolStr::new("Priority"), SmolStr::new("emergency"));
+                (from_uri, Some(headers))
+            }
+            None => (caller_from_uri, None),
+        };
+
         if let Some(ref name) = caller_display_name {
             debug!(call_id = %call_id, caller_name = %name, "Preserving caller display name for B-leg");
         }
@@ -5017,6 +5133,7 @@ impl SipMessageHandler {
             let a_leg_sdp_clone = a_leg_sdp.clone();
             let call_id_clone = call_id;
             let flow_token_clone = target_contact.flow_token.clone();
+            let emergency_headers_clone = emergency_headers.clone();
             let flow_registry_clone = Arc::clone(&self.flow_registry);
             let sip_call_id_map_clone = Arc::clone(&self.sip_call_id_map);
             let sip_trace_tx_clone = self.sip_trace_tx.clone();
@@ -5061,7 +5178,11 @@ impl SipMessageHandler {
                         );
                         tokio::time::timeout(
                             std::time::Duration::from_secs(5),
-                            uac_clone.invite(&target_uri_clone, a_leg_sdp_clone.as_deref()),
+                            uac_clone.invite_with_optional_headers(
+                                &target_uri_clone,
+                                a_leg_sdp_clone.as_deref(),
+                                emergency_headers_clone.clone(),
+                            ),
                         )
                         .await
                     }
@@ -5069,7 +5190,11 @@ impl SipMessageHandler {
                     // Normal INVITE (UDP/TCP without flow)
                     tokio::time::timeout(
                         std::time::Duration::from_secs(5),
-                        uac_clone.invite(&target_uri_clone, a_leg_sdp_clone.as_deref()),
+                        uac_clone.invite_with_optional_headers(
+                            &target_uri_clone,
+                            a_leg_sdp_clone.as_deref(),
+                            emergency_headers_clone.clone(),
+                        ),
                     )
                     .await
                 };
@@ -8247,6 +8372,149 @@ impl SipMessageHandler {
     }
 
     /// Create a simple SIP response with standard headers.
+    /// Classify the dialed destination against the tenant's emergency
+    /// numbers and, when it is one, resolve the caller's dispatchable
+    /// location and callback number. Never fails: without storage the US
+    /// defaults apply and the call goes out without a location.
+    async fn detect_emergency(
+        &self,
+        tenant_id: &fcp_core::TenantId,
+        request: &sip_core::Request,
+    ) -> Option<fcp_b2bua_core::EmergencyCallInfo> {
+        use fcp_core::e911::{dialed_user_part, resolve_for_user, EmergencyConfig};
+
+        let destination = sip_parse::header(request.headers(), "To")
+            .map(|to| {
+                let to = to.as_str();
+                to.split('<')
+                    .nth(1)
+                    .and_then(|s| s.split('>').next())
+                    .unwrap_or(to)
+                    .trim()
+                    .to_string()
+            })
+            .unwrap_or_default();
+
+        let stored = match self.storage.as_ref().and_then(|s| s.emergency_store()) {
+            Some(store) => store
+                .get_emergency_config(tenant_id)
+                .await
+                .unwrap_or_else(|e| {
+                    warn!(error = %e, "Failed to load emergency config; using defaults");
+                    None
+                }),
+            None => None,
+        };
+        let config = stored.unwrap_or_else(|| EmergencyConfig::defaults(*tenant_id));
+        let kind = config.classify(&destination)?;
+        let dialed = dialed_user_part(&destination).to_string();
+
+        let mut info = fcp_b2bua_core::EmergencyCallInfo {
+            dialed,
+            kind,
+            callback_number: None,
+            location: None,
+        };
+
+        let Some(storage) = &self.storage else {
+            return Some(info);
+        };
+        let caller = extract_from_uri(request).ok();
+        let username = caller
+            .as_ref()
+            .and_then(|u| u.user().map(str::to_string))
+            .unwrap_or_default();
+        let user = if username.is_empty() {
+            None
+        } else {
+            storage
+                .get_user_in_tenant(&username, tenant_id)
+                .await
+                .ok()
+                .flatten()
+        };
+
+        let caller_aor = caller
+            .as_ref()
+            .map(|u| format!("{}@{}", u.user().unwrap_or_default(), u.host()));
+        if let Some(user) = &user {
+            info.location = resolve_for_user(storage.as_ref(), user, caller_aor.as_deref()).await;
+        }
+        info.callback_number = info
+            .location
+            .as_ref()
+            .and_then(|l| l.callback_number.clone());
+        if info.location.is_none() {
+            warn!(
+                tenant_id = %tenant_id,
+                caller = %username,
+                dialed = %info.dialed,
+                "Emergency call without a dispatchable location"
+            );
+        }
+        Some(info)
+    }
+
+    /// Write the audit record and publish `call.emergency` (both best-effort).
+    async fn record_emergency_call(
+        &self,
+        call_id: fcp_b2bua_core::CallId,
+        tenant_id: fcp_core::TenantId,
+        request: &sip_core::Request,
+        info: &fcp_b2bua_core::EmergencyCallInfo,
+    ) {
+        let notify_contacts = match self.storage.as_ref().and_then(|s| s.emergency_store()) {
+            Some(store) => store
+                .get_emergency_config(&tenant_id)
+                .await
+                .ok()
+                .flatten()
+                .map(|c| c.notify_contacts)
+                .unwrap_or_default(),
+            None => Vec::new(),
+        };
+        if let Some(call) = self.call_manager.get_call(&call_id) {
+            self.call_manager.publish_emergency(&call, notify_contacts);
+        }
+
+        let Some(store) = self
+            .storage
+            .as_ref()
+            .and_then(|s| s.emergency_store())
+            .cloned()
+        else {
+            return;
+        };
+        let caller_uri = extract_from_uri(request)
+            .map(|u| format!("sip:{}@{}", u.user().unwrap_or_default(), u.host()))
+            .unwrap_or_default();
+        let caller_username = extract_from_uri(request)
+            .ok()
+            .and_then(|u| u.user().map(str::to_string));
+        let record = fcp_core::e911::EmergencyCallRecord {
+            id: 0,
+            tenant_id,
+            call_id: call_id.to_string(),
+            sip_call_id: sip_parse::header(request.headers(), "Call-ID")
+                .map(|h| h.as_str().to_string()),
+            caller_uri,
+            caller_username,
+            dialed_number: info.dialed.clone(),
+            kind: info.kind,
+            callback_number: info.callback_number.clone(),
+            location: info.location.clone(),
+            trunk_name: None,
+            outcome: "placed".to_string(),
+            placed_at: std::time::SystemTime::now(),
+            notified: false,
+        };
+        tokio::spawn(async move {
+            if let Err(e) = store.insert_emergency_call(&record).await {
+                error!(error = %e, call_id = %record.call_id, "Failed to write emergency call record");
+            }
+        });
+    }
+
     fn create_simple_response(
         &self,
         request: &sip_core::Request,
