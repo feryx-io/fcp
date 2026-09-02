@@ -505,11 +505,15 @@ async fn handle_request(request: Request, tenant_id: TenantId) -> Result<()> {
 
 **Focus:** Carrier-scale deployment
 
-**Key Components:**
-- Multi-region support
+**Key Components (in the agreed order, see STATUS.md):**
 - E911 integration
-- Video conferencing
 - Regulatory compliance features
+- Distributed conferencing (cascaded mixing)
+- Multi-region support (CockroachDB compatibility pass first; Postgres stays the system of record)
+- Video conferencing
+
+Descoped on 2026-09-02: SQLite backend, plugin runtime (WASM/Lua), gRPC API, standalone
+proxy worker. The vision document keeps them as history; STATUS.md is authoritative.
 
 ## Working with the Submodules (siphon-rs and forge-media)
 

@@ -4,7 +4,7 @@
 Update this file when feature status changes; keep other docs describing scope, not status.
 
 - **Last reviewed:** 2026-09-01 (full code audit against ARCHITECTURE-v0.2.md)
-- **Version:** v0.25.78 · 37 workspace crates
+- **Version:** v0.25.79 · 37 workspace crates
 - **Submodules:** siphon-rs `v2026.08.25` · forge-media `v2026.09.01.1` (both at their repos' current release tips)
 - **Health:** CI green (fmt, clippy `-D warnings`, tests, cargo-audit) · 0 Dependabot alerts · 0 future-incompat warnings
 
@@ -44,15 +44,18 @@ Update this file when feature status changes; keep other docs describing scope, 
 | Regulatory compliance | ❌ Not started |
 | Distributed conferencing | 📋 Ready plan in `docs/TO_DO_CONFERENCE_LOADBALANCE_HA.md` (~2–3 weeks) |
 
-## Descoped / undecided (vision items with zero code)
+## Phase 5 gate decisions (made 2026-09-02)
 
-Each needs a deliberate keep-or-descope decision:
+| Item | Decision | Rationale |
+|---|---|---|
+| Storage strategy | **Postgres stays the system of record. SQLite is dropped.** CockroachDB support comes as a compatibility pass on the existing backend (same wire protocol) plus a CI service, scheduled as the first step of multi-region work, not before | A second dialect backend would be ~7k lines to maintain for single-box deployments that docker-compose already covers. Only ~12 of 45 migrations use Postgres-specific features (triggers, PL/pgSQL, GIN), all supported by current CockroachDB |
+| Plugin runtime (WASM/Lua) + `fcp-plugins` SDK | **Descoped** | Flows, webhooks, and the `BillingHook`/policy traits are the extension points. Revisit only on a concrete customer need |
+| gRPC API (`fcp-api-grpc`) | **Descoped** | REST (~150 routes) + WebSocket cover the surface; a gRPC mirror would be permanent double maintenance |
+| Distributed conferencing (cascaded mixing) | **Kept, scheduled after E911 and compliance basics** | Plan on file in `docs/TO_DO_CONFERENCE_LOADBALANCE_HA.md` (~2–3 weeks). Dispatchable-location and compliance items are legal requirements for US enterprise UC; 1000-participant conferences are a scale feature |
+| Dedicated CDR-processor pipeline | **Kept, deferred** | Inline CDR creation + `fcp-jobs` post-processing is sufficient until carrier call volumes; keep on the roadmap as a Phase 5 carrier-scale item |
+| Standalone proxy worker | **Descoped** | Registrar, B2BUA, and SBC binaries cover signaling; a pure proxy only serves load-distribution topologies the SBC can already front |
 
-- Plugin runtime (WASM/Lua) + `fcp-plugins` SDK
-- gRPC API (`fcp-api-grpc`)
-- Dedicated CDR-processor pipeline (currently inline + `fcp-jobs`)
-- Standalone proxy worker (registrar/B2BUA/SBC exist; proxy does not)
-- SQLite and CockroachDB storage backends (workspace is Postgres + Redis only; this also gates the multi-region storage strategy)
+Vision items in `docs/ARCHITECTURE-v0.2.md` that are descoped above remain in that document as history; this table is authoritative.
 
 ## Known weak spots
 
@@ -68,7 +71,15 @@ Each needs a deliberate keep-or-descope decision:
 5. ~~Extract `fcp-policy`~~ (done 2026-09-01: policy engine in its own crate + timezone fix + tenant feature toggles; admission deliberately left in fcp-sbc-core as capacity control)
 6. ~~SBC pipeline stages 3–5~~ (done 2026-09-01: reachability classification, routing accounting fix, per-trunk number transforms)
 7. Parallel: raise the test floor — ~~containerized Postgres integration tests~~ (done 2026-09-01: `fcp-storage-postgres/tests/integration.rs` runs against a Postgres service in CI, gated on `FCP_TEST_DATABASE_URL`; first run caught two production bugs — `query_cdrs` emitted unnumbered `$` placeholders so every filtered CDR query failed, and `aggregate_usage*` could not decode `SUM(bigint)` (NUMERIC) so usage/billing summaries failed for any tenant with answered calls — both fixed in v0.25.71); → ~~API handler tests against Postgres~~ (done 2026-09-02: `fcp-api-core/tests/api_postgres.rs` drives the full Axum router — bearer middleware, platform-admin tenant override, users, devices, config templates, and the device auto-provisioning endpoint including its uniform-404 failure surface — against the same CI Postgres service; the SIP side of `ApiState` is built on a no-op transport dispatcher, which turned out to need no new harness); → ~~binary smoke tests~~ (done 2026-09-02: every service binary has `tests/smoke.rs` on the new `fcp-testkit` harness — `--version`/`--help`, malformed-config rejection, and start → `/health` 200 → SIGTERM → clean exit on free loopback ports, DB-backed ones against the CI Postgres service, `fcp-jobs` against a Redis service. First run caught five startup bugs: `fcp-registrar` panicked on every start (rustls had no `CryptoProvider` because the tree links both ring and aws-lc-rs — now `fcp-sip` installs one before building TLS configs), `fcp-sbc` could not load any config file (flattened `SbcConfig` never matched the documented `[core]` layout and sub-configs had no serde defaults, so `fcp-sbc-local.toml` failed to parse), `fcp-admin` and `fcp-api-gateway` died on SIGTERM instead of shutting down (Ctrl+C only), and `fcp-presence` had no `--version`); → ~~widen the handler suite~~ (done 2026-09-02: `api_postgres.rs` now also covers JWT login/refresh/lockout/role gating, database `fcp_…` API tokens (scoping, expiry, revocation), CDRs + usage + billing summary, rate plans + the balance ledger, trunks in Carrier and Enterprise modes, queue configs, and voicemail mailboxes — 16 tests. Findings fixed: `fcp_api_core::create_router` never attached the API token store (only fcp-admin's inlined copy did — admin now calls the shared `create_router_with`), platform tokens ignored the `x-fcp-tenant-id` override on `/cdrs`, and `POST /api-tokens` answered 200 instead of 201). → ~~remaining API gaps~~ (done 2026-09-02: 23 tests — added flows + versions, flow traces (call-visibility scoping), registrations, the presence runtime (state, watchers, auth policy, pres-rules XML) on a live `PresenceManager`, the queue runtime (agent login/pause/resume/logout, stats) on a live `QueueManager`, the self-service `/me` routes (profile, password, forwarding, voicemail) as an end-user session, and the `/events` WebSocket first-message auth over a real socket. Fixes: registrations and flow traces ignored the platform-admin `x-fcp-tenant-id` override like `/cdrs` had, `POST /flows` answered 200, and `/me/profile` spelled roles differently from login (`enduser` vs `end_user`). Phone-number porting has no API surface at all — only the `PortingStore` data model — so nothing to test there) → ~~multipart uploads~~ (done 2026-09-02: 26 tests — avatar upload/download/replace/delete with type, size, and field validation; voicemail greetings through both the admin and `/me` routes (upload, activate, audio download, expiring temporary greeting, delete); audio prompts create, upload, download, category filter, tenant scoping, delete. No product changes needed) → ~~SIP trace + debug routes~~ (done 2026-09-02: 28 tests — `/calls/:id/sip-messages` by call id, bare uuid, `?sip_call_id=`, and the CDR fallback, with tenant scoping; `/debug/*` summary, dialogs, subscriptions, calls, and rate limits against real `Dialog`/`Subscription`/`Call` objects inserted into the runtime managers, per tenant. Two bugs fixed: the SIP trace handler stripped the `call-` prefix before querying while the B2BUA stores the prefixed id, so live calls were untraceable until their CDR existed; and `/debug/dialogs` compared SIP Call-IDs against internal call ids, so tenant admins never saw any dialog — it now maps through the tenant's call legs. The trace handler also honours the `x-fcp-tenant-id` override now
-8. ~~KMS design~~ (done 2026-09-01: envelope encryption in `fcp-crypto`, local + AWS KMS providers). Phase 5 gate decisions: storage strategy, plugin/gRPC keep-or-descope, schedule distributed conferencing
+8. ~~KMS design~~ (done 2026-09-01: envelope encryption in `fcp-crypto`, local + AWS KMS providers). ~~Phase 5 gate decisions~~ (made 2026-09-02: see the *Phase 5 gate decisions* table above)
+
+## Phase 5 engineering order (agreed 2026-09-02)
+
+1. **E911**: address validation, dispatchable location per device/line (Kari's Law / RAY BAUM's Act), emergency call routing with location delivery, notification on emergency calls. Builds on the existing `E911Address` model and per-device overrides.
+2. **Compliance basics**: call recording consent/retention controls, CDR retention and export, audit log for admin actions.
+3. **Distributed conferencing**: the cascaded-mixing plan on file.
+4. **Multi-region**: CockroachDB compatibility pass + CI service first, then region-aware cluster membership and event bus.
+5. Video conferencing and the dedicated CDR pipeline remain unscheduled carrier-scale items.
 
 ## Historical documents
 
