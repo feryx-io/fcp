@@ -16,6 +16,7 @@ ws = ["sip-transport/ws"]
 # FCP core types
 fcp-core = { path = "../fcp-core" }
 fcp-b2bua-core = { path = "../fcp-b2bua-core" }
+fcp-billing = { path = "../fcp-billing" }
 fcp-routing = { path = "../fcp-routing" }
 fcp-media = { path = "../fcp-media" }
 fcp-events = { path = "../fcp-events" }

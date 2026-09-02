@@ -1,0 +1,22 @@
+[package]
+name = "fcp-billing"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Billing engine for FCP: call rating, prepaid balance enforcement, settlement and external billing hooks"
+
+[dependencies]
+fcp-core = { path = "../fcp-core" }
+fcp-events = { path = "../fcp-events" }
+
+anyhow.workspace = true
+async-trait = "0.1"
+serde.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

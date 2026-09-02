@@ -2,6 +2,7 @@
 
 pub mod api_tokens;
 pub mod auth_session;
+pub mod billing;
 pub mod cdrs;
 pub mod conferences;
 pub mod config;
@@ -163,6 +164,14 @@ pub fn router() -> Router<ApiState> {
         .route("/usage", get(usage::get_usage))
         .route("/usage/by-number", get(usage::get_usage_by_number))
         .route("/billing/summary", get(usage::billing_summary))
+        .route(
+            "/billing/balance",
+            get(billing::get_balance).put(billing::update_balance),
+        )
+        .route(
+            "/billing/balance/transactions",
+            get(billing::list_transactions).post(billing::create_transaction),
+        )
         .route(
             "/rate-plans",
             get(rate_plans::list_rate_plans).post(rate_plans::create_rate_plan),

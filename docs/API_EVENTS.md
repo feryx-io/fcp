@@ -251,6 +251,57 @@ Sent when a call fails (4xx/5xx response or timeout).
 }
 ```
 
+### Billing Events
+
+Emitted by the billing engine; subscribe a webhook to `billing.*` to mirror
+the ledger into an external billing system. See [BILLING.md](BILLING.md).
+
+#### Call Rated
+
+```json
+{
+  "event_type": "billing",
+  "billing": {
+    "type": "call_rated",
+    "tenant_id": "tenant-123e4567-e89b-12d3-a456-426614174000",
+    "call_id": "call-123e4567-e89b-12d3-a456-426614174000",
+    "cost": 0.06,
+    "currency": "USD",
+    "matched_prefix": "44",
+    "billable_secs": 120,
+    "destination": "442079460000",
+    "balance_after": 24.94,
+    "timestamp": 1705584060
+  }
+}
+```
+
+#### Balance Changed
+
+```json
+{
+  "event_type": "billing",
+  "billing": {
+    "type": "balance_changed",
+    "tenant_id": "tenant-123e4567-e89b-12d3-a456-426614174000",
+    "transaction_id": "7e1c…",
+    "kind": "top_up",
+    "amount": 25.0,
+    "balance_after": 25.0,
+    "currency": "USD",
+    "call_id": null,
+    "description": "card payment",
+    "external_ref": "pay_01H…",
+    "timestamp": 1705584000
+  }
+}
+```
+
+Other billing types: `balance_low` (`balance`, `threshold`, `currency`),
+`balance_depleted` (`balance`, `credit_limit`, `currency`),
+`call_rejected` (`destination`, `available`, `required`, `currency`) and
+`call_cut_off` (`call_id`, `max_duration_secs`).
+
 ## Client Handling
 
 ### Receiving Events

@@ -1170,6 +1170,63 @@ pub trait CdrStore: Send + Sync {
         let _ = tenant_id;
         Ok(None)
     }
+
+    // ── Balances (billing follow-up) ─────────────────────────────────────
+
+    /// The tenant's balance row, if one has been created. `None` means no
+    /// balance is tracked for the tenant: settlement skips the debit and
+    /// admission never blocks.
+    async fn get_balance(
+        &self,
+        tenant_id: &crate::TenantId,
+    ) -> Result<Option<crate::billing::TenantBalance>> {
+        let _ = tenant_id;
+        Ok(None)
+    }
+
+    /// Create or replace the balance *settings* (currency, credit limit,
+    /// enforcement, low-balance threshold). The stored `balance` amount is
+    /// preserved for an existing row and taken from `balance.balance` only
+    /// when the row is created.
+    async fn upsert_balance(&self, balance: crate::billing::TenantBalance) -> Result<()> {
+        let _ = balance;
+        Err(anyhow::Error::new(crate::Error::Storage(
+            crate::error::StorageError::Database(
+                "balances are not supported by this storage backend".to_string(),
+            ),
+        )))
+    }
+
+    /// Atomically apply a signed amount to the tenant's balance and append
+    /// the ledger entry, returning that entry (with `balance_after`). When
+    /// the tenant has no balance row yet, one is created with default
+    /// settings (enforcement off) in the request's currency.
+    async fn apply_balance_transaction(
+        &self,
+        request: crate::billing::BalanceTransactionRequest,
+    ) -> Result<crate::billing::BalanceTransaction> {
+        let _ = request;
+        Err(anyhow::Error::new(crate::Error::Storage(
+            crate::error::StorageError::Database(
+                "balances are not supported by this storage backend".to_string(),
+            ),
+        )))
+    }
+
+    /// The tenant's ledger, newest first.
+    async fn list_balance_transactions(
+        &self,
+        tenant_id: &crate::TenantId,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<crate::billing::BalanceTransaction>> {
+        let _ = (tenant_id, limit, offset);
+        Err(anyhow::Error::new(crate::Error::Storage(
+            crate::error::StorageError::Database(
+                "balances are not supported by this storage backend".to_string(),
+            ),
+        )))
+    }
 }
 
 /// Query parameters for searching available pool phone numbers.
@@ -3033,6 +3090,35 @@ impl CdrStore for DynStorage {
     ) -> Result<Option<(crate::billing::RatePlan, Vec<crate::billing::Rate>)>> {
         self.cdr_store
             .get_default_rate_plan_with_rates(tenant_id)
+            .await
+    }
+
+    async fn get_balance(
+        &self,
+        tenant_id: &crate::TenantId,
+    ) -> Result<Option<crate::billing::TenantBalance>> {
+        self.cdr_store.get_balance(tenant_id).await
+    }
+
+    async fn upsert_balance(&self, balance: crate::billing::TenantBalance) -> Result<()> {
+        self.cdr_store.upsert_balance(balance).await
+    }
+
+    async fn apply_balance_transaction(
+        &self,
+        request: crate::billing::BalanceTransactionRequest,
+    ) -> Result<crate::billing::BalanceTransaction> {
+        self.cdr_store.apply_balance_transaction(request).await
+    }
+
+    async fn list_balance_transactions(
+        &self,
+        tenant_id: &crate::TenantId,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<crate::billing::BalanceTransaction>> {
+        self.cdr_store
+            .list_balance_transactions(tenant_id, limit, offset)
             .await
     }
 }

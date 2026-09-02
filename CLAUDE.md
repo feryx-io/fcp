@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Ferrous Communications Platform (FCP)** is a next-generation, carrier-grade unified communications platform written entirely in Rust. The project aims to be a multi-tenant, API-first alternative to FreeSWITCH/Kamailio/Asterisk with built-in memory safety, modern async I/O, and observability.
 
-The repository contains 34 workspace crates spanning core libraries, application services, storage backends, and standalone binaries, plus two git submodules under `external/`: the siphon-rs SIP stack and the forge-media media stack. Both submodule repositories are public.
+The repository contains 35 workspace crates spanning core libraries, application services, storage backends, and standalone binaries, plus two git submodules under `external/`: the siphon-rs SIP stack and the forge-media media stack. Both submodule repositories are public.
 
 > **Current status lives in [STATUS.md](STATUS.md)** — the phase notes below describe scope, but STATUS.md is the maintained source of truth for what is done, partial, or absent.
 
@@ -127,6 +127,7 @@ fcp/
 │   ├── fcp-sbc-core/             # SBC enforcement library (admission, HMR, topology hiding)
 │   ├── fcp-pbx/                  # PBX feature library (parking, pickup, intercom, hunt groups)
 │   ├── fcp-policy/               # Dedicated policy engine (rules, evaluator, YAML store)
+│   ├── fcp-billing/              # Billing engine (rating, balance enforcement, settlement, hooks)
 │   ├── fcp-routing/              # Policy-based call routing engine (re-exports fcp-policy)
 │   │
 │   │ # ── Application ───────────────────────────────────────
@@ -488,7 +489,7 @@ async fn handle_request(request: Request, tenant_id: TenantId) -> Result<()> {
 - ✅ Audio transcoding pipeline — `fcp-media` syncs the payload-type map from each leg's SDP and arms forge-engine's per-packet transcoders on codec mismatch (single-session and bridged modes); gated by `media.enable_transcoding`; transcodable set PCMU/PCMA/Opus/PCM
 - ✅ Vendor provisioning templates — built-in Yealink/Polycom/Grandstream/Cisco starters (`config_template::builtin_templates`), instantiated per tenant via `/v1/config-templates/library`
 - ✅ `fcp-policy`: Dedicated policy engine — rule model, evaluator, and YAML rule store extracted from fcp-routing (which re-exports for compatibility); timezone-correct time-of-day windows and per-tenant feature toggles included. Number manipulation remains with the SBC transform stage (future)
-- ⏳ Billing — MVP shipped (per-tenant rate plans with prefix rates in `fcp-core/src/billing.rs`, calls rated at CDR creation, cost in usage reports, admin CRUD at `/v1/rate-plans`); remaining: balance enforcement, external billing-system hooks, extraction into a dedicated `fcp-billing` crate
+- ✅ Billing — `fcp-billing` crate: rate plans with prefix rates (model in `fcp-core/src/billing.rs`, admin CRUD at `/v1/rate-plans`), calls rated and settled at CDR creation, per-tenant balance enforcement (402 at admission, mid-call cut-off; `/v1/billing/balance`), ledger with credits/adjustments, and `billing.*` events / `BillingHook` for external billing systems (`docs/BILLING.md`)
 - ✅ SBC pipeline stages 3–5: reachability (classified 404/503 resolution), trunk routing/failover/LB (`TrunkRouter` + LCR), transform (HMR headers + per-trunk `egress_number_transform` digit plans)
 - Encryption at rest (KMS integration)
 

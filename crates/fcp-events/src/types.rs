@@ -47,6 +47,9 @@ pub enum PlatformEvent {
 
     /// SIP protocol trace event
     Sip(SipTraceEvent),
+
+    /// Billing event (rating, balance changes, enforcement)
+    Billing(BillingEvent),
 }
 
 /// Call lifecycle events.
@@ -1182,6 +1185,14 @@ impl PlatformEvent {
             PlatformEvent::Sip(e) => match e {
                 SipTraceEvent::MessageCaptured { .. } => "sip.message_captured",
             },
+            PlatformEvent::Billing(e) => match e {
+                BillingEvent::CallRated { .. } => "billing.call_rated",
+                BillingEvent::BalanceChanged { .. } => "billing.balance_changed",
+                BillingEvent::BalanceLow { .. } => "billing.balance_low",
+                BillingEvent::BalanceDepleted { .. } => "billing.balance_depleted",
+                BillingEvent::CallRejected { .. } => "billing.call_rejected",
+                BillingEvent::CallCutOff { .. } => "billing.call_cut_off",
+            },
         }
     }
 
@@ -1264,6 +1275,7 @@ impl PlatformEvent {
                 | SystemEvent::NodeJoined { .. }
                 | SystemEvent::NodeLeft { .. } => None,
             },
+            PlatformEvent::Billing(e) => Some(e.tenant_id()),
             PlatformEvent::Media(_)
             | PlatformEvent::Ivr(_)
             | PlatformEvent::Recording(_)
@@ -1289,6 +1301,7 @@ impl PlatformEvent {
             PlatformEvent::Queue(_) => None,
             PlatformEvent::Presence(_) => None,
             PlatformEvent::Sip(_) => None,
+            PlatformEvent::Billing(event) => event.call_id(),
         }
     }
 
@@ -1308,6 +1321,7 @@ impl PlatformEvent {
             PlatformEvent::Queue(event) => event.timestamp(),
             PlatformEvent::Presence(event) => event.timestamp(),
             PlatformEvent::Sip(event) => event.timestamp(),
+            PlatformEvent::Billing(event) => event.timestamp(),
         }
     }
 }
@@ -1552,6 +1566,133 @@ impl SipTraceEvent {
     pub fn timestamp(&self) -> SystemTime {
         match self {
             SipTraceEvent::MessageCaptured { timestamp, .. } => *timestamp,
+        }
+    }
+}
+
+/// Billing events: call rating, balance movements and enforcement actions.
+///
+/// These are the external billing-system hooks: subscribe a webhook to
+/// `billing.*` to mirror the ledger into an invoicing system, alert on low
+/// balances, or audit rejected/cut-off calls.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum BillingEvent {
+    /// An answered call was rated against the tenant's rate plan.
+    CallRated {
+        tenant_id: TenantId,
+        call_id: CallId,
+        /// Total cost in `currency` (4 decimal places).
+        cost: f64,
+        currency: String,
+        /// Rate prefix that matched, `None` when the plan default applied.
+        matched_prefix: Option<String>,
+        /// Seconds billed after applying the billing increment.
+        billable_secs: u64,
+        /// Destination the call was rated for (dialed digits).
+        destination: String,
+        /// Balance after the charge was applied, when the tenant tracks one.
+        balance_after: Option<f64>,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// A ledger entry was applied (top-up, call charge, adjustment).
+    BalanceChanged {
+        tenant_id: TenantId,
+        transaction_id: String,
+        /// `top_up`, `call_charge` or `adjustment`.
+        kind: String,
+        /// Signed amount: positive credits, negative debits.
+        amount: f64,
+        balance_after: f64,
+        currency: String,
+        call_id: Option<CallId>,
+        description: Option<String>,
+        external_ref: Option<String>,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// The balance crossed below the tenant's low-balance threshold.
+    BalanceLow {
+        tenant_id: TenantId,
+        balance: f64,
+        threshold: f64,
+        currency: String,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// The balance (plus credit limit) reached zero on an enforcing tenant;
+    /// further billable calls will be refused.
+    BalanceDepleted {
+        tenant_id: TenantId,
+        balance: f64,
+        credit_limit: f64,
+        currency: String,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// A call was refused at admission (402) for insufficient balance.
+    CallRejected {
+        tenant_id: TenantId,
+        /// Dialed digits the admission check priced.
+        destination: String,
+        /// Funds available (balance + credit limit).
+        available: f64,
+        /// Cost of the first billing increment that could not be covered.
+        required: f64,
+        currency: String,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// An established call was hung up because its affordable duration
+    /// ran out.
+    CallCutOff {
+        tenant_id: TenantId,
+        call_id: CallId,
+        /// Seconds the call was allowed to run.
+        max_duration_secs: u64,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+}
+
+impl BillingEvent {
+    pub fn tenant_id(&self) -> &TenantId {
+        match self {
+            BillingEvent::CallRated { tenant_id, .. }
+            | BillingEvent::BalanceChanged { tenant_id, .. }
+            | BillingEvent::BalanceLow { tenant_id, .. }
+            | BillingEvent::BalanceDepleted { tenant_id, .. }
+            | BillingEvent::CallRejected { tenant_id, .. }
+            | BillingEvent::CallCutOff { tenant_id, .. } => tenant_id,
+        }
+    }
+
+    pub fn call_id(&self) -> Option<&CallId> {
+        match self {
+            BillingEvent::CallRated { call_id, .. } | BillingEvent::CallCutOff { call_id, .. } => {
+                Some(call_id)
+            }
+            BillingEvent::BalanceChanged { call_id, .. } => call_id.as_ref(),
+            BillingEvent::BalanceLow { .. }
+            | BillingEvent::BalanceDepleted { .. }
+            | BillingEvent::CallRejected { .. } => None,
+        }
+    }
+
+    pub fn timestamp(&self) -> SystemTime {
+        match self {
+            BillingEvent::CallRated { timestamp, .. }
+            | BillingEvent::BalanceChanged { timestamp, .. }
+            | BillingEvent::BalanceLow { timestamp, .. }
+            | BillingEvent::BalanceDepleted { timestamp, .. }
+            | BillingEvent::CallRejected { timestamp, .. }
+            | BillingEvent::CallCutOff { timestamp, .. } => *timestamp,
         }
     }
 }
