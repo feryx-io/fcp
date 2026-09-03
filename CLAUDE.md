@@ -508,7 +508,7 @@ async fn handle_request(request: Request, tenant_id: TenantId) -> Result<()> {
 **Key Components (in the agreed order, see STATUS.md):**
 - E911 integration — block 1 shipped (`docs/E911.md`): detection, dispatchable location, ELIN caller ID, emergency-capable trunks, audit + event, admin API
 - Regulatory compliance features — basics shipped (`docs/COMPLIANCE.md`): retention policy + sweep, recording consent, admin audit log, CDR export
-- Distributed conferencing (cascaded mixing)
+- Distributed conferencing (cascaded mixing) — phase 1 shipped (registry + placement, `docs/DISTRIBUTED_CONFERENCING.md`); trunks gated on siphon-rs #129 (mutual TLS)
 - Multi-region support (CockroachDB compatibility pass first; Postgres stays the system of record)
 - Video conferencing
 
@@ -643,6 +643,7 @@ cargo run -p siphond -- --mode registrar
 - **ARCHITECTURE-v0.2.md**: Complete architecture vision and roadmap
 - **docs/E911.md**: Emergency calling — location precedence, call flow, admin API, tenant checklist
 - **docs/COMPLIANCE.md**: Retention policy and sweep, recording consent, admin audit log, CDR export
+- **docs/DISTRIBUTED_CONFERENCING.md**: Conference registry, placement rule, trunk phases and the mutual-TLS gate
 - **Phase1 plan.md**: Detailed MVP implementation plan with sprint breakdowns
 - **IMPLEMENTATION_DOCS.md**: Index of implementation documentation for completed features
   - **Dial Node B2BUA**: Complete 4-phase implementation (outbound calls, response handling, media bridging)

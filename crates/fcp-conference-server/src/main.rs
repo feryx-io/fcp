@@ -423,7 +423,10 @@ async fn main() -> Result<()> {
                     );
             let _handle = cm.start();
             info!("Cluster membership started");
-            Some(cm)
+            Some((
+                cm,
+                fcp_cluster::ConferenceRegistry::new(redis.clone(), config.service.node_id.clone()),
+            ))
         } else {
             warn!("cluster.enabled = true but redis_url is not set; cluster disabled");
             None
@@ -801,6 +804,58 @@ async fn main() -> Result<()> {
     }
 
     let conference_handler = Arc::new(conference_handler);
+
+    // Conference registry: publish this node's per-room participant counts
+    // so the call manager can place new participants (and, later, so peer
+    // nodes can cascade audio). Event-driven on join/leave plus a periodic
+    // refresh that also keeps the Redis TTL alive.
+    #[cfg(feature = "storage-redis")]
+    if let Some((_, ref registry)) = _cluster_manager {
+        struct RedisRoomRegistry(fcp_cluster::ConferenceRegistry);
+        impl conference_handler::RoomRegistry for RedisRoomRegistry {
+            fn room_participants_changed(
+                &self,
+                tenant_id: String,
+                room_number: String,
+                participants: usize,
+            ) {
+                let registry = self.0.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = registry
+                        .set_participants(&tenant_id, &room_number, participants)
+                        .await
+                    {
+                        warn!(error = %e, room = %room_number, "Conference registry update failed");
+                    }
+                });
+            }
+        }
+        conference_handler.set_room_registry(Arc::new(RedisRoomRegistry(registry.clone())));
+
+        let refresh_handler = Arc::clone(&conference_handler);
+        let refresh_registry = registry.clone();
+        let refresh_secs = config.cluster.heartbeat_interval_secs.clamp(5, 30);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(refresh_secs));
+            loop {
+                interval.tick().await;
+                for (room, _) in refresh_handler.active_rooms() {
+                    let tenant = refresh_handler
+                        .tenant_for_room(&room)
+                        .unwrap_or(refresh_handler.default_tenant_id)
+                        .to_string();
+                    let count = refresh_handler.countable_participants(&room);
+                    if let Err(e) = refresh_registry
+                        .set_participants(&tenant, &room, count)
+                        .await
+                    {
+                        warn!(error = %e, room = %room, "Conference registry refresh failed");
+                    }
+                }
+            }
+        });
+        info!("Conference registry publishing enabled");
+    }
 
     if config.ai.enabled {
         info!(model = %config.ai.model, "AI participant support enabled");
@@ -1237,7 +1292,7 @@ async fn main() -> Result<()> {
 
     // Shutdown cluster manager
     #[cfg(feature = "storage-redis")]
-    if let Some(ref cm) = _cluster_manager {
+    if let Some((ref cm, _)) = _cluster_manager {
         cm.shutdown().await;
     }
 

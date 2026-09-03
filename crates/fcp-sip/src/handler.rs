@@ -231,6 +231,21 @@ pub enum RouteResolution {
 ///
 /// Used by the SBC to route calls to trunks when the destination
 /// is not locally registered.
+/// Picks the conference node a new participant should be sent to.
+///
+/// Implemented by binaries with cluster membership (the call manager uses
+/// the conference registry and the least-loaded conference node). Returns
+/// `host[:port]` of the chosen node's SIP address, or `None` to fall back
+/// to the configured `conference_server_uri`.
+#[async_trait::async_trait]
+pub trait ConferenceNodeSelector: Send + Sync {
+    async fn select_conference_node(
+        &self,
+        tenant_id: &fcp_core::TenantId,
+        room_number: &str,
+    ) -> Option<String>;
+}
+
 #[async_trait::async_trait]
 pub trait OutboundRouteProvider: Send + Sync {
     /// Given a destination URI (e.g. "sip:+15551234@example.com"),
@@ -390,6 +405,9 @@ pub struct SipMessageHandler {
 
     /// Optional cluster-wide parking store for cross-node park/pickup.
     cluster_parking: Option<Arc<dyn fcp_core::ClusterParkingStore>>,
+
+    /// Cluster-aware conference placement (None = static conference_server_uri).
+    conference_node_selector: Option<Arc<dyn ConferenceNodeSelector>>,
 
     /// This node's identifier (for cluster parking writes).
     node_id: String,
@@ -733,6 +751,7 @@ impl SipMessageHandler {
             pbx_handler,
             presence_handler,
             cluster_parking,
+            conference_node_selector: None,
             node_id,
             flow_registry: Arc::new(crate::flow::FlowRegistry::new()),
             sip_trace_tx: None,
@@ -752,6 +771,48 @@ impl SipMessageHandler {
     }
 
     /// Set the explicit default tenant used when SIP addressing carries no tenant domain.
+    /// Route conference calls through a cluster-aware node selector.
+    pub fn with_conference_node_selector(
+        mut self,
+        selector: Arc<dyn ConferenceNodeSelector>,
+    ) -> Self {
+        self.conference_node_selector = Some(selector);
+        self
+    }
+
+    /// `host[:port]` of the conference server that should receive a new
+    /// participant of `room_number`: the cluster selector first, then the
+    /// hot-reloadable override, then the static config.
+    async fn conference_target_host(
+        &self,
+        tenant_id: &fcp_core::TenantId,
+        room_number: &str,
+    ) -> Option<String> {
+        if let Some(selector) = &self.conference_node_selector {
+            if let Some(host) = selector
+                .select_conference_node(tenant_id, room_number)
+                .await
+            {
+                return Some(host);
+            }
+        }
+        let configured = {
+            let guard = self.conference_server_uri_override.read().unwrap();
+            guard
+                .clone()
+                .or_else(|| self.b2bua_config.conference_server_uri.clone())
+        }?;
+        let host = configured
+            .strip_prefix("sip:")
+            .or_else(|| configured.strip_prefix("sips:"))
+            .unwrap_or(&configured)
+            .split('@')
+            .next_back()
+            .unwrap_or(&configured)
+            .to_string();
+        Some(host)
+    }
+
     pub fn with_default_tenant_id(mut self, tenant_id: fcp_core::TenantId) -> Self {
         self.default_tenant_id = Some(tenant_id);
         self
@@ -3427,27 +3488,13 @@ impl SipMessageHandler {
 
                                         match meeting_result {
                                             Ok(Some(meeting)) if meeting.enabled => {
-                                                let conf_uri = {
-                                                    let guard = self
-                                                        .conference_server_uri_override
-                                                        .read()
-                                                        .unwrap();
-                                                    guard.clone().or_else(|| {
-                                                        self.b2bua_config
-                                                            .conference_server_uri
-                                                            .clone()
-                                                    })
-                                                };
-                                                if let Some(ref server_uri) = conf_uri {
-                                                    let host = server_uri
-                                                        .strip_prefix("sip:")
-                                                        .or_else(|| {
-                                                            server_uri.strip_prefix("sips:")
-                                                        })
-                                                        .unwrap_or(server_uri)
-                                                        .split('@')
-                                                        .next_back()
-                                                        .unwrap_or(server_uri);
+                                                let conf_host = self
+                                                    .conference_target_host(
+                                                        &meeting.tenant_id,
+                                                        room_number,
+                                                    )
+                                                    .await;
+                                                if let Some(host) = conf_host.as_deref() {
                                                     let target_uri =
                                                         format!("sip:{}@{}", room_number, host);
                                                     match sip_registrar::Binding::new(
@@ -4397,21 +4444,13 @@ impl SipMessageHandler {
 
                                 match meeting_result {
                                     Ok(Some(meeting)) if meeting.enabled => {
-                                        let conf_uri = {
-                                            let guard =
-                                                self.conference_server_uri_override.read().unwrap();
-                                            guard.clone().or_else(|| {
-                                                self.b2bua_config.conference_server_uri.clone()
-                                            })
-                                        };
-                                        if let Some(ref server_uri) = conf_uri {
-                                            let host = server_uri
-                                                .strip_prefix("sip:")
-                                                .or_else(|| server_uri.strip_prefix("sips:"))
-                                                .unwrap_or(server_uri)
-                                                .split('@')
-                                                .next_back()
-                                                .unwrap_or(server_uri);
+                                        let conf_host = self
+                                            .conference_target_host(
+                                                &meeting.tenant_id,
+                                                extension_number,
+                                            )
+                                            .await;
+                                        if let Some(host) = conf_host.as_deref() {
                                             let target_uri =
                                                 format!("sip:{}@{}", extension_number, host);
                                             info!(

@@ -33,6 +33,8 @@ use std::time::{Duration, Instant};
 use tracing::{info, warn};
 
 mod cli;
+#[cfg(feature = "storage-redis")]
+mod conference_placement;
 mod config;
 mod health;
 mod queue_audio;
@@ -214,7 +216,20 @@ async fn main() -> Result<()> {
                 config.service.node_id.clone(),
                 config.cluster.call_ttl_secs,
             );
-            Some((cm, call_registry))
+            let conference_selector: Arc<dyn fcp_sip::ConferenceNodeSelector> =
+                Arc::new(conference_placement::ClusterConferenceSelector::new(
+                    fcp_cluster::ConferenceRegistry::new(
+                        redis.clone(),
+                        config.service.node_id.clone(),
+                    ),
+                    Arc::clone(cm.members_map()),
+                    config.b2bua.conference_node_capacity,
+                ));
+            info!(
+                capacity = config.b2bua.conference_node_capacity,
+                "Cluster-aware conference placement enabled"
+            );
+            Some((cm, call_registry, conference_selector))
         } else {
             warn!("cluster.enabled = true but redis_url is not set; cluster disabled");
             None
@@ -585,7 +600,7 @@ async fn main() -> Result<()> {
 
     // 15a. Wire cluster active-call counter to CallManager
     #[cfg(feature = "storage-redis")]
-    if let Some((ref cm, _)) = _cluster_manager {
+    if let Some((ref cm, _, _)) = _cluster_manager {
         let counter = cm.active_calls_counter();
         let call_mgr = Arc::clone(&call_manager);
         tokio::spawn(async move {
@@ -954,6 +969,10 @@ async fn main() -> Result<()> {
         config.service.node_id.clone(),
     )?
     .with_default_tenant_id(default_tenant_id);
+    #[cfg(feature = "storage-redis")]
+    if let Some((_, _, selector)) = &_cluster_manager {
+        handler = handler.with_conference_node_selector(Arc::clone(selector));
+    }
 
     // Set up SIP trace channel for raw message capture to PostgreSQL
     let sip_trace_store: Option<Arc<dyn fcp_core::SipTraceStore>> =
@@ -1559,7 +1578,7 @@ async fn main() -> Result<()> {
     // 21. Graceful shutdown
     // Signal cluster manager to shutdown (removes heartbeat key)
     #[cfg(feature = "storage-redis")]
-    if let Some((cm, _)) = &_cluster_manager {
+    if let Some((cm, _, _)) = &_cluster_manager {
         cm.shutdown().await;
     }
 

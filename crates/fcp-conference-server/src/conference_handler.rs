@@ -117,6 +117,18 @@ pub struct ParticipantSession {
     pub last_refreshed: Instant,
 }
 
+/// Sink for "this node now has N local participants in room R" updates.
+/// The cluster-backed implementation writes the conference registry; without
+/// clustering nothing is attached.
+pub trait RoomRegistry: Send + Sync {
+    fn room_participants_changed(
+        &self,
+        tenant_id: String,
+        room_number: String,
+        participants: usize,
+    );
+}
+
 /// Handles SIP INVITEs for conference rooms.
 ///
 /// When a SIP INVITE arrives targeting a conference room number:
@@ -154,6 +166,9 @@ pub struct ConferenceCallHandler {
     draining: std::sync::atomic::AtomicBool,
     /// Secondary index: room_number → Vec<call_id> for O(1) room-to-session lookups.
     room_sessions: DashMap<String, Vec<String>>,
+
+    /// Cluster conference registry hook (see [`RoomRegistry`]).
+    room_registry: std::sync::RwLock<Option<Arc<dyn RoomRegistry>>>,
     /// Latency telemetry for trait methods (INVITE, re-INVITE, BYE, etc.)
     pub handler_latency: HandlerLatency,
     /// Optional TTS service for synthesizing prompts from text
@@ -568,6 +583,7 @@ impl ConferenceCallHandler {
             local_sip_uri,
             draining: std::sync::atomic::AtomicBool::new(false),
             room_sessions: DashMap::new(),
+            room_registry: std::sync::RwLock::new(None),
             handler_latency: HandlerLatency::new(),
             tts_service: None,
             pending_pin_auth: DashMap::new(),
@@ -585,6 +601,37 @@ impl ConferenceCallHandler {
     }
 
     /// Signal that this handler should reject new INVITEs (graceful shutdown draining).
+    /// Attach the cluster conference registry hook.
+    pub fn set_room_registry(&self, registry: Arc<dyn RoomRegistry>) {
+        *self.room_registry.write().unwrap() = Some(registry);
+    }
+
+    /// Local participants of a room that count towards placement: real
+    /// callers only, not the `__…` virtual participants (audio feedback,
+    /// AI, inter-node trunks).
+    pub fn countable_participants(&self, room_number: &str) -> usize {
+        self.room_participants(room_number)
+            .map(|ids| ids.iter().filter(|id| !id.starts_with("__")).count())
+            .unwrap_or(0)
+    }
+
+    /// Push this node's current participant count for a room to the
+    /// registry hook (no-op without clustering).
+    pub fn sync_room_registry(&self, room_number: &str) {
+        let Some(registry) = self.room_registry.read().unwrap().clone() else {
+            return;
+        };
+        let tenant = self
+            .tenant_for_room(room_number)
+            .unwrap_or(self.default_tenant_id)
+            .to_string();
+        registry.room_participants_changed(
+            tenant,
+            room_number.to_string(),
+            self.countable_participants(room_number),
+        );
+    }
+
     pub fn start_draining(&self) {
         self.draining.store(true, Ordering::Relaxed);
         info!("Conference handler entering drain mode — rejecting new INVITEs");
@@ -1601,6 +1648,7 @@ impl ConferenceCallHandler {
             tenant_id,
             timestamp: SystemTime::now(),
         });
+        self.sync_room_registry(room_number);
         self.publish_event(ConferenceEvent::ParticipantJoined {
             room_number: room_number.to_string(),
             participant_id: participant_id.clone(),
@@ -1727,6 +1775,8 @@ impl ConferenceCallHandler {
         }
 
         info!(room = %room_number, participants = kicked, "Conference room force-destroyed");
+        // The room is gone on this node: drop it from the cluster registry.
+        self.sync_room_registry(room_number);
         Ok(kicked)
     }
 
@@ -2093,6 +2143,7 @@ impl ConferenceCallHandler {
             });
 
             // Publish leave event
+            self.sync_room_registry(&session.room_number);
             self.publish_event(ConferenceEvent::ParticipantLeft {
                 room_number: session.room_number.clone(),
                 participant_id: session.participant_id.clone(),
@@ -3399,6 +3450,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         }
 
         // Publish join event
+        self.sync_room_registry(&room_number);
         self.publish_event(ConferenceEvent::ParticipantJoined {
             room_number: room_number.clone(),
             participant_id: participant_id.clone(),

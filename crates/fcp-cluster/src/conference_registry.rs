@@ -1,0 +1,256 @@
+//! Conference registry: which nodes host which conference room, and how
+//! many participants each has there.
+//!
+//! Redis layout: one hash per room, `cluster:conference:<tenant>:<room>`,
+//! field = node id, value = local participant count. Every write refreshes
+//! the key's TTL, so a node that stops heartbeating its rooms disappears
+//! from the registry on its own.
+//!
+//! [`choose_conference_node`] is the placement rule the call manager uses
+//! when a new participant dials a room: stay on a node already hosting the
+//! room while it is under the configured capacity, otherwise the
+//! least-loaded conference node in the cluster.
+
+use crate::membership::ClusterMember;
+use fcp_storage_redis::RedisStorage;
+use redis::AsyncCommands;
+use tracing::debug;
+
+/// Node type advertised by conference servers in cluster membership.
+pub const CONFERENCE_NODE_TYPE: &str = "conference";
+
+/// One node hosting a room.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConferenceHost {
+    pub node_id: String,
+    pub participants: usize,
+}
+
+#[derive(Clone)]
+pub struct ConferenceRegistry {
+    storage: RedisStorage,
+    node_id: String,
+    ttl_secs: u64,
+}
+
+impl ConferenceRegistry {
+    /// Registry for `node_id`; room entries expire 60 s after their last
+    /// refresh.
+    pub fn new(storage: RedisStorage, node_id: String) -> Self {
+        Self::with_ttl(storage, node_id, 60)
+    }
+
+    pub fn with_ttl(storage: RedisStorage, node_id: String, ttl_secs: u64) -> Self {
+        Self {
+            storage,
+            node_id,
+            ttl_secs,
+        }
+    }
+
+    pub fn node_id(&self) -> &str {
+        &self.node_id
+    }
+
+    fn room_key(&self, tenant_id: &str, room_number: &str) -> String {
+        self.storage
+            .key(&format!("cluster:conference:{tenant_id}:{room_number}"))
+    }
+
+    /// Publish this node's local participant count for a room (0 removes
+    /// the node from the room) and refresh the room's TTL.
+    pub async fn set_participants(
+        &self,
+        tenant_id: &str,
+        room_number: &str,
+        participants: usize,
+    ) -> anyhow::Result<()> {
+        let key = self.room_key(tenant_id, room_number);
+        let mut conn = self.storage.connection();
+        if participants == 0 {
+            let _: () = conn.hdel(&key, &self.node_id).await?;
+        } else {
+            let _: () = redis::pipe()
+                .atomic()
+                .hset(&key, &self.node_id, participants as i64)
+                .expire(&key, self.ttl_secs as i64)
+                .query_async(&mut conn)
+                .await?;
+        }
+        debug!(tenant_id, room_number, participants, node = %self.node_id, "Conference registry updated");
+        Ok(())
+    }
+
+    /// Drop this node from a room regardless of count.
+    pub async fn leave_room(&self, tenant_id: &str, room_number: &str) -> anyhow::Result<()> {
+        self.set_participants(tenant_id, room_number, 0).await
+    }
+
+    /// Every node hosting the room, with its participant count.
+    pub async fn hosts(
+        &self,
+        tenant_id: &str,
+        room_number: &str,
+    ) -> anyhow::Result<Vec<ConferenceHost>> {
+        let key = self.room_key(tenant_id, room_number);
+        let mut conn = self.storage.connection();
+        let raw: Vec<(String, i64)> = conn.hgetall(&key).await?;
+        let mut hosts: Vec<ConferenceHost> = raw
+            .into_iter()
+            .map(|(node_id, participants)| ConferenceHost {
+                node_id,
+                participants: participants.max(0) as usize,
+            })
+            .collect();
+        hosts.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+        Ok(hosts)
+    }
+
+    /// Nodes hosting the room other than this one.
+    pub async fn peers(
+        &self,
+        tenant_id: &str,
+        room_number: &str,
+    ) -> anyhow::Result<Vec<ConferenceHost>> {
+        Ok(self
+            .hosts(tenant_id, room_number)
+            .await?
+            .into_iter()
+            .filter(|h| h.node_id != self.node_id)
+            .collect())
+    }
+}
+
+/// Pick the node a new participant of `room` should be sent to.
+///
+/// - `hosts`: nodes currently hosting the room (from the registry).
+/// - `members`: live cluster members; only `conference` nodes qualify.
+/// - `capacity`: participants per node per room before the room is spread
+///   to another node; `0` means never spread.
+///
+/// A hosting node that is still live and under capacity wins (the fullest
+/// one, so a room stays on as few nodes as possible). Otherwise the
+/// least-loaded live conference node. `None` when no conference node is
+/// alive, so callers fall back to static configuration.
+pub fn choose_conference_node(
+    hosts: &[ConferenceHost],
+    members: &[ClusterMember],
+    capacity: usize,
+) -> Option<ClusterMember> {
+    let live: Vec<&ClusterMember> = members
+        .iter()
+        .filter(|m| m.node_type == CONFERENCE_NODE_TYPE)
+        .collect();
+    if live.is_empty() {
+        return None;
+    }
+
+    let mut hosting: Vec<(&ConferenceHost, &ClusterMember)> = hosts
+        .iter()
+        .filter_map(|h| {
+            live.iter()
+                .find(|m| m.node_id == h.node_id)
+                .map(|m| (h, *m))
+        })
+        .filter(|(h, _)| capacity == 0 || h.participants < capacity)
+        .collect();
+    hosting.sort_by(|a, b| {
+        b.0.participants
+            .cmp(&a.0.participants)
+            .then(a.0.node_id.cmp(&b.0.node_id))
+    });
+    if let Some((_, member)) = hosting.first() {
+        return Some((*member).clone());
+    }
+
+    live.iter()
+        .min_by_key(|m| (m.active_calls, m.node_id.clone()))
+        .map(|m| (*m).clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn member(id: &str, node_type: &str, calls: usize) -> ClusterMember {
+        ClusterMember {
+            node_id: id.to_string(),
+            node_type: node_type.to_string(),
+            http_address: "127.0.0.1:8090".parse().unwrap(),
+            sip_address: "127.0.0.1:5074".parse().unwrap(),
+            capabilities: vec![],
+            active_calls: calls,
+            started_at: 0,
+            version: "test".to_string(),
+        }
+    }
+
+    fn host(id: &str, n: usize) -> ConferenceHost {
+        ConferenceHost {
+            node_id: id.to_string(),
+            participants: n,
+        }
+    }
+
+    #[test]
+    fn new_room_goes_to_least_loaded_conference_node() {
+        let members = vec![
+            member("conf-a", "conference", 40),
+            member("conf-b", "conference", 12),
+            member("cm-1", "call_manager", 0),
+        ];
+        let pick = choose_conference_node(&[], &members, 0).unwrap();
+        assert_eq!(pick.node_id, "conf-b");
+    }
+
+    #[test]
+    fn running_room_stays_on_its_node_under_capacity() {
+        let members = vec![
+            member("conf-a", "conference", 40),
+            member("conf-b", "conference", 1),
+        ];
+        // conf-a hosts the room with 30 participants; capacity 100 → stay.
+        let pick = choose_conference_node(&[host("conf-a", 30)], &members, 100).unwrap();
+        assert_eq!(pick.node_id, "conf-a");
+        // capacity 0 = never spread, even when a node is busy.
+        let pick = choose_conference_node(&[host("conf-a", 30)], &members, 0).unwrap();
+        assert_eq!(pick.node_id, "conf-a");
+    }
+
+    #[test]
+    fn full_host_spreads_to_least_loaded_other_node() {
+        let members = vec![
+            member("conf-a", "conference", 40),
+            member("conf-b", "conference", 5),
+            member("conf-c", "conference", 9),
+        ];
+        let pick = choose_conference_node(&[host("conf-a", 100)], &members, 100).unwrap();
+        assert_eq!(pick.node_id, "conf-b");
+        // Once conf-b hosts too, it is preferred until it is full as well.
+        let pick = choose_conference_node(&[host("conf-a", 100), host("conf-b", 3)], &members, 100)
+            .unwrap();
+        assert_eq!(pick.node_id, "conf-b");
+        // The fullest under-capacity host wins, to keep the room compact.
+        let pick = choose_conference_node(
+            &[host("conf-a", 100), host("conf-b", 3), host("conf-c", 50)],
+            &members,
+            100,
+        )
+        .unwrap();
+        assert_eq!(pick.node_id, "conf-c");
+    }
+
+    #[test]
+    fn dead_hosts_are_ignored_and_no_conference_nodes_means_none() {
+        let members = vec![member("conf-b", "conference", 5)];
+        // conf-a is in the registry but not in membership: skip it.
+        let pick = choose_conference_node(&[host("conf-a", 3)], &members, 100).unwrap();
+        assert_eq!(pick.node_id, "conf-b");
+        assert!(choose_conference_node(
+            &[host("conf-a", 3)],
+            &[member("cm-1", "call_manager", 0)],
+            100
+        )
+        .is_none());
+    }
+}
