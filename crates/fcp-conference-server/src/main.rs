@@ -35,6 +35,7 @@ mod cli;
 mod conference_handler;
 mod health;
 mod storage;
+mod trunks;
 
 use cli::Cli;
 use conference_handler::ConferenceCallHandler;
@@ -404,6 +405,7 @@ async fn main() -> Result<()> {
                     .udp_bind
                     .parse()
                     .unwrap_or_else(|_| "0.0.0.0:5060".parse().unwrap()),
+                sip_tls_address: config.sip.advertised_tls_address(),
                 capabilities: vec!["conference".to_string(), "audio_mixing".to_string()],
                 active_calls: 0,
                 started_at: std::time::SystemTime::now()
@@ -496,7 +498,14 @@ async fn main() -> Result<()> {
     // 17. Create ConferenceBridge + ConferenceCallHandler
     // Use config sample_rate for the mixer (8kHz for G.711, 16kHz for G.722 wideband)
     let audio_format = AudioFormat::new(config.conference.sample_rate, 1, ForgeAudioCodec::PCM);
-    let mixer_options = MixerOptions::default();
+    // Frame-clock mixing: one clock per room takes a frame from every
+    // participant per tick, and every reader (each participant's N-1 mix,
+    // the recorder, an AI tap, each inter-node trunk's send-mix) sees that
+    // same frame without consuming it from the others.
+    let mixer_options = MixerOptions {
+        frame_clock: true,
+        ..MixerOptions::default()
+    };
     let bridge = Arc::new(
         ConferenceBridge::new(audio_format, config.conference.frame_size, mixer_options)
             .context("Failed to create ConferenceBridge")?,
@@ -543,6 +552,7 @@ async fn main() -> Result<()> {
         Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>,
         Arc::clone(&uac),
         config.ai.clone(),
+        config.service.node_id.clone(),
     );
 
     // Initialize TTS service if configured (supports local/Kokoro + cloud providers)
@@ -810,8 +820,42 @@ async fn main() -> Result<()> {
     // nodes can cascade audio). Event-driven on join/leave plus a periodic
     // refresh that also keeps the Redis TTL alive.
     #[cfg(feature = "storage-redis")]
-    if let Some((_, ref registry)) = _cluster_manager {
-        struct RedisRoomRegistry(fcp_cluster::ConferenceRegistry);
+    if let Some((ref cm, ref registry)) = _cluster_manager {
+        // Inter-node trunks (phase 2) need a TLS listener to receive on,
+        // the cluster CA to authenticate peers with, and a certificate to
+        // present. Without all three this node still places and hosts
+        // rooms, but a room spread across nodes would not carry audio
+        // between them — so say so loudly.
+        let trunk_manager = if config.sip.tls_bind.is_some()
+            && config.sip.tls_client_ca_path.is_some()
+            && config.sip.tls_client_identity().is_some()
+        {
+            let manager = Arc::new(trunks::TrunkManager::new(
+                config.service.node_id.clone(),
+                registry.clone(),
+                Arc::clone(cm.members_map()),
+                Arc::clone(&conference_handler),
+            ));
+            let interval = Duration::from_secs(config.cluster.trunk_reconcile_interval_secs);
+            let _reconcile = Arc::clone(&manager).spawn_reconcile_loop(interval);
+            info!(
+                interval_secs = config.cluster.trunk_reconcile_interval_secs,
+                tls = ?config.sip.advertised_tls_address(),
+                "Inter-node conference trunks enabled"
+            );
+            Some(manager)
+        } else {
+            warn!(
+                "Inter-node conference trunks disabled: set sip.tls_bind, sip.tls_client_ca_path \
+                 and a TLS certificate so rooms can span conference nodes"
+            );
+            None
+        };
+
+        struct RedisRoomRegistry {
+            registry: fcp_cluster::ConferenceRegistry,
+            trunks: Option<Arc<trunks::TrunkManager>>,
+        }
         impl conference_handler::RoomRegistry for RedisRoomRegistry {
             fn room_participants_changed(
                 &self,
@@ -819,7 +863,8 @@ async fn main() -> Result<()> {
                 room_number: String,
                 participants: usize,
             ) {
-                let registry = self.0.clone();
+                let registry = self.registry.clone();
+                let trunks = self.trunks.clone();
                 tokio::spawn(async move {
                     if let Err(e) = registry
                         .set_participants(&tenant_id, &room_number, participants)
@@ -827,10 +872,18 @@ async fn main() -> Result<()> {
                     {
                         warn!(error = %e, room = %room_number, "Conference registry update failed");
                     }
+                    // Our own count just changed: dial or drop trunks now
+                    // rather than waiting for the next reconcile tick.
+                    if let Some(trunks) = trunks {
+                        trunks.reconcile_room(&tenant_id, &room_number).await;
+                    }
                 });
             }
         }
-        conference_handler.set_room_registry(Arc::new(RedisRoomRegistry(registry.clone())));
+        conference_handler.set_room_registry(Arc::new(RedisRoomRegistry {
+            registry: registry.clone(),
+            trunks: trunk_manager,
+        }));
 
         let refresh_handler = Arc::clone(&conference_handler);
         let refresh_registry = registry.clone();
@@ -924,15 +977,35 @@ async fn main() -> Result<()> {
         .map(|bind| bind.parse().context("Invalid WSS bind address"))
         .transpose()?;
 
+    #[cfg(feature = "tls")]
+    let tls_bind = config
+        .sip
+        .tls_bind
+        .as_deref()
+        .map(|bind| bind.parse().context("Invalid TLS bind address"))
+        .transpose()?;
+    #[cfg(feature = "tls")]
+    let tls_client_auth = Some(
+        config
+            .sip
+            .tls_client_auth
+            .parse::<fcp_sip::ClientAuthMode>()
+            .map_err(|e| anyhow::anyhow!("sip.tls_client_auth: {e}"))?,
+    );
+
     let listener_config = ListenerConfig {
         udp_bind: Some(udp_bind),
         tcp_bind: Some(tcp_bind),
         #[cfg(feature = "tls")]
-        tls_bind: None,
+        tls_bind,
         #[cfg(feature = "tls")]
         tls_cert: config.sip.tls_cert_path.clone(),
         #[cfg(feature = "tls")]
         tls_key: config.sip.tls_key_path.clone(),
+        #[cfg(feature = "tls")]
+        tls_client_ca: config.sip.tls_client_ca_path.clone(),
+        #[cfg(feature = "tls")]
+        tls_client_auth,
         ws_bind,
         wss_bind,
     };
@@ -966,6 +1039,7 @@ async fn main() -> Result<()> {
                     packet.peer(),
                     packet.payload().clone(),
                     packet.stream().cloned(),
+                    packet.peer_identity().cloned(),
                 )
                 .await
             {
@@ -1330,7 +1404,27 @@ async fn create_transport_dispatcher(
     let std_socket: std::net::UdpSocket = socket.into();
     let udp_socket = tokio::net::UdpSocket::from_std(std_socket)?;
 
-    let dispatcher = RealTransportDispatcher::new_with_pool(Some(Arc::new(udp_socket)), tcp_pool);
+    #[allow(unused_mut)]
+    let mut dispatcher =
+        RealTransportDispatcher::new_with_pool(Some(Arc::new(udp_socket)), tcp_pool);
+
+    // Outbound TLS: system roots plus the cluster CA (peers dialed by
+    // address are accepted under the name their certificate carries), and
+    // this node's certificate presented to peers that ask (mutual TLS).
+    #[cfg(feature = "tls")]
+    if config.sip.tls_client_ca_path.is_some() || config.sip.tls_client_identity().is_some() {
+        let tls_client = RealTransportDispatcher::load_tls_client_config_with(
+            config.sip.tls_client_ca_path.as_deref(),
+            config.sip.tls_client_identity(),
+        )
+        .context("Failed to build outbound TLS client config")?;
+        dispatcher = dispatcher.with_tls_config(tls_client);
+        info!(
+            client_ca = ?config.sip.tls_client_ca_path,
+            client_cert = ?config.sip.tls_client_identity().map(|(c, _)| c.to_string()),
+            "Outbound SIP/TLS configured"
+        );
+    }
 
     Ok(Arc::new(dispatcher))
 }

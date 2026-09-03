@@ -290,6 +290,7 @@ async fn main() -> Result<()> {
                     .udp_bind
                     .parse()
                     .unwrap_or_else(|_| "0.0.0.0:5060".parse().unwrap()),
+                sip_tls_address: None,
                 capabilities: vec!["voicemail".to_string(), "mwi".to_string()],
                 active_calls: 0,
                 started_at: std::time::SystemTime::now()
@@ -711,6 +712,10 @@ async fn main() -> Result<()> {
         tls_cert: config.sip.tls_cert_path.clone(),
         #[cfg(feature = "tls")]
         tls_key: config.sip.tls_key_path.clone(),
+        #[cfg(feature = "tls")]
+        tls_client_ca: None,
+        #[cfg(feature = "tls")]
+        tls_client_auth: None,
         ws_bind,
         wss_bind,
     };
@@ -744,6 +749,7 @@ async fn main() -> Result<()> {
                     packet.peer(),
                     packet.payload().clone(),
                     packet.stream().cloned(),
+                    packet.peer_identity().cloned(),
                 )
                 .await
             {

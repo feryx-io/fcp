@@ -618,6 +618,10 @@ async fn main() -> Result<()> {
         tls_cert: tls_cert.map(|s| s.to_string()),
         #[cfg(feature = "tls")]
         tls_key: tls_key.map(|s| s.to_string()),
+        #[cfg(feature = "tls")]
+        tls_client_ca: None,
+        #[cfg(feature = "tls")]
+        tls_client_auth: None,
         ws_bind: ws_bind_addr,
         wss_bind: wss_bind_addr,
     };
@@ -652,6 +656,7 @@ async fn main() -> Result<()> {
                     packet.peer(),
                     packet.payload().clone(),
                     packet.stream().cloned(),
+                    packet.peer_identity().cloned(),
                 )
                 .await
             {
@@ -712,6 +717,7 @@ async fn main() -> Result<()> {
                             .parse()
                             .unwrap_or_else(|_| "0.0.0.0:8080".parse().unwrap()),
                         sip_address: bind_addr,
+                        sip_tls_address: None,
                         capabilities: vec!["sbc".to_string(), "trunking".to_string()],
                         active_calls: 0,
                         started_at: std::time::SystemTime::now()

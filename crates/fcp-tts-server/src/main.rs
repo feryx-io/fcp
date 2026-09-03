@@ -302,6 +302,7 @@ async fn start_cluster(config: &TtsServerConfig) {
             .parse()
             .unwrap_or_else(|_| "0.0.0.0:8093".parse().unwrap()),
         sip_address: "0.0.0.0:0".parse().unwrap(),
+        sip_tls_address: None,
         capabilities: vec!["tts".to_string(), "synthesis".to_string()],
         active_calls: 0,
         started_at: SystemTime::now()

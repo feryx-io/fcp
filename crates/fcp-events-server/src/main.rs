@@ -296,6 +296,7 @@ async fn main() -> Result<()> {
                         node_type: config.service.service_type.clone(),
                         http_address: config.websocket.bind_address,
                         sip_address: "0.0.0.0:0".parse().unwrap(),
+                        sip_tls_address: None,
                         capabilities: vec!["events".to_string(), "websocket".to_string()],
                         active_calls: 0,
                         started_at: std::time::SystemTime::now()

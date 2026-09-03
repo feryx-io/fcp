@@ -201,6 +201,33 @@ pub struct SipSection {
     #[serde(default)]
     pub tls_key_path: Option<String>,
 
+    /// SIP-over-TLS listener bind address (e.g. `0.0.0.0:5061`). Needs
+    /// `tls_cert_path` / `tls_key_path`. Inter-node conference trunks
+    /// arrive here and nowhere else.
+    #[serde(default)]
+    pub tls_bind: Option<String>,
+
+    /// PEM bundle of the CA(s) that (a) client certificates presented on
+    /// the TLS and WSS listeners must chain to and (b) the certificates
+    /// of peer nodes this node dials over TLS are accepted under. This is
+    /// the cluster CA; it is what authenticates a trunk INVITE.
+    #[serde(default)]
+    pub tls_client_ca_path: Option<String>,
+
+    /// With `tls_client_ca_path`: `required` (default) refuses a TLS peer
+    /// without a client certificate at the handshake; `optional` admits
+    /// it with no identity, which a trunk INVITE is then rejected for.
+    #[serde(default = "default_tls_client_auth")]
+    pub tls_client_auth: String,
+
+    /// Certificate this node presents on outbound TLS (its identity to
+    /// peers). Defaults to `tls_cert_path` / `tls_key_path`.
+    #[serde(default)]
+    pub tls_client_cert_path: Option<String>,
+
+    #[serde(default)]
+    pub tls_client_key_path: Option<String>,
+
     pub local_ip: Option<String>,
 
     pub local_uri: Option<String>,
@@ -208,6 +235,38 @@ pub struct SipSection {
 
 fn default_sip_bind() -> String {
     "0.0.0.0:5060".to_string()
+}
+
+fn default_tls_client_auth() -> String {
+    "required".to_string()
+}
+
+impl SipSection {
+    /// The `(cert, key)` this node presents on outbound TLS, if any.
+    pub fn tls_client_identity(&self) -> Option<(&str, &str)> {
+        let cert = self
+            .tls_client_cert_path
+            .as_deref()
+            .or(self.tls_cert_path.as_deref())?;
+        let key = self
+            .tls_client_key_path
+            .as_deref()
+            .or(self.tls_key_path.as_deref())?;
+        Some((cert, key))
+    }
+
+    /// The TLS listener address peers should dial: `tls_bind` with an
+    /// unspecified IP replaced by `local_ip`. `None` without a TLS
+    /// listener, or when the bind is unspecified and no `local_ip` is
+    /// set (nothing routable to advertise).
+    pub fn advertised_tls_address(&self) -> Option<std::net::SocketAddr> {
+        let bind: std::net::SocketAddr = self.tls_bind.as_deref()?.parse().ok()?;
+        if !bind.ip().is_unspecified() {
+            return Some(bind);
+        }
+        let ip: std::net::IpAddr = self.local_ip.as_deref()?.parse().ok()?;
+        Some(std::net::SocketAddr::new(ip, bind.port()))
+    }
 }
 
 impl Default for SipSection {
@@ -219,6 +278,11 @@ impl Default for SipSection {
             wss_bind: None,
             tls_cert_path: None,
             tls_key_path: None,
+            tls_bind: None,
+            tls_client_ca_path: None,
+            tls_client_auth: default_tls_client_auth(),
+            tls_client_cert_path: None,
+            tls_client_key_path: None,
             local_ip: None,
             local_uri: None,
         }
@@ -747,6 +811,13 @@ pub struct ClusterSection {
     /// Heartbeat TTL in seconds (default: 15).
     #[serde(default = "default_heartbeat_ttl")]
     pub heartbeat_ttl_secs: u64,
+
+    /// How often inter-node conference trunks are reconciled against the
+    /// conference registry, in seconds (default: 2). Trunks are also
+    /// reconciled immediately on every local join and leave; this bounds
+    /// how long a peer that started hosting a room waits to be trunked.
+    #[serde(default = "default_trunk_reconcile_interval")]
+    pub trunk_reconcile_interval_secs: u64,
 }
 
 fn default_heartbeat_interval() -> u64 {
@@ -755,6 +826,9 @@ fn default_heartbeat_interval() -> u64 {
 fn default_heartbeat_ttl() -> u64 {
     15
 }
+fn default_trunk_reconcile_interval() -> u64 {
+    2
+}
 
 impl Default for ClusterSection {
     fn default() -> Self {
@@ -762,6 +836,7 @@ impl Default for ClusterSection {
             enabled: false,
             heartbeat_interval_secs: default_heartbeat_interval(),
             heartbeat_ttl_secs: default_heartbeat_ttl(),
+            trunk_reconcile_interval_secs: default_trunk_reconcile_interval(),
         }
     }
 }
@@ -787,6 +862,29 @@ pub fn validate_config(config: &ConferenceServerConfig) -> Result<()> {
         config.sip.tls_cert_path.as_deref(),
         config.sip.tls_key_path.as_deref(),
     )?;
+
+    // SIP/TLS listener and mutual-TLS material
+    if let Some(ref tls_bind) = config.sip.tls_bind {
+        tls_bind.parse::<std::net::SocketAddr>().map_err(|e| {
+            anyhow::anyhow!("sip.tls_bind '{}' is not a socket address: {}", tls_bind, e)
+        })?;
+        if config.sip.tls_cert_path.is_none() || config.sip.tls_key_path.is_none() {
+            anyhow::bail!("sip.tls_bind requires sip.tls_cert_path and sip.tls_key_path");
+        }
+    }
+    match config.sip.tls_client_auth.as_str() {
+        "required" | "optional" => {}
+        other => anyhow::bail!(
+            "sip.tls_client_auth must be 'required' or 'optional', got '{}'",
+            other
+        ),
+    }
+    if config.sip.tls_client_cert_path.is_some() != config.sip.tls_client_key_path.is_some() {
+        anyhow::bail!("sip.tls_client_cert_path and sip.tls_client_key_path must be set together");
+    }
+    if config.cluster.enabled && config.cluster.trunk_reconcile_interval_secs == 0 {
+        anyhow::bail!("cluster.trunk_reconcile_interval_secs must be at least 1");
+    }
 
     // Sample rate must be a standard telephony rate
     match config.conference.sample_rate {
@@ -991,5 +1089,81 @@ max_pin_attempts = 5
             max_body_size_kb: default_max_body_size_kb(),
         };
         assert!(validate_http_config(&http).is_ok());
+    }
+
+    #[test]
+    fn tls_bind_requires_certificate_material() {
+        let mut config = ConferenceServerConfig::default();
+        config.sip.tls_bind = Some("0.0.0.0:5061".to_string());
+        assert!(
+            validate_config(&config).is_err(),
+            "tls_bind without cert/key"
+        );
+
+        config.sip.tls_cert_path = Some("/etc/fcp/node.crt".to_string());
+        config.sip.tls_key_path = Some("/etc/fcp/node.key".to_string());
+        assert!(validate_config(&config).is_ok());
+
+        config.sip.tls_bind = Some("not-an-address".to_string());
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn tls_client_auth_mode_and_identity_pairing_are_checked() {
+        let mut config = ConferenceServerConfig::default();
+        config.sip.tls_client_auth = "sometimes".to_string();
+        assert!(validate_config(&config).is_err());
+        config.sip.tls_client_auth = "optional".to_string();
+        assert!(validate_config(&config).is_ok());
+
+        config.sip.tls_client_cert_path = Some("/etc/fcp/client.crt".to_string());
+        assert!(validate_config(&config).is_err(), "cert without key");
+        config.sip.tls_client_key_path = Some("/etc/fcp/client.key".to_string());
+        assert!(validate_config(&config).is_ok());
+    }
+
+    #[test]
+    fn tls_client_identity_falls_back_to_listener_certificate() {
+        let mut sip = SipSection::default();
+        assert!(sip.tls_client_identity().is_none());
+        sip.tls_cert_path = Some("node.crt".to_string());
+        sip.tls_key_path = Some("node.key".to_string());
+        assert_eq!(sip.tls_client_identity(), Some(("node.crt", "node.key")));
+        sip.tls_client_cert_path = Some("client.crt".to_string());
+        sip.tls_client_key_path = Some("client.key".to_string());
+        assert_eq!(
+            sip.tls_client_identity(),
+            Some(("client.crt", "client.key"))
+        );
+    }
+
+    #[test]
+    fn advertised_tls_address_substitutes_local_ip_for_unspecified_bind() {
+        let mut sip = SipSection::default();
+        assert!(sip.advertised_tls_address().is_none());
+        sip.tls_bind = Some("0.0.0.0:5061".to_string());
+        assert!(
+            sip.advertised_tls_address().is_none(),
+            "nothing routable to advertise"
+        );
+        sip.local_ip = Some("10.0.0.20".to_string());
+        assert_eq!(
+            sip.advertised_tls_address(),
+            Some("10.0.0.20:5061".parse().unwrap())
+        );
+        sip.tls_bind = Some("10.0.0.21:5062".to_string());
+        assert_eq!(
+            sip.advertised_tls_address(),
+            Some("10.0.0.21:5062".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn trunk_reconcile_interval_must_be_positive_in_cluster_mode() {
+        let mut config = ConferenceServerConfig::default();
+        assert_eq!(config.cluster.trunk_reconcile_interval_secs, 2);
+        config.cluster.enabled = true;
+        config.cluster.trunk_reconcile_interval_secs = 0;
+        assert!(validate_config(&config).is_err());
     }
 }

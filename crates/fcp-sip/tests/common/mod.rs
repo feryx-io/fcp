@@ -68,7 +68,7 @@ impl TestHarness {
         let payload = sip_parse::serialize_request(request);
         let peer: SocketAddr = "127.0.0.1:15060".parse().unwrap();
         self.handler
-            .handle_inbound(TransportKind::Udp, peer, payload, None)
+            .handle_inbound(TransportKind::Udp, peer, payload, None, None)
             .await
             .ok();
     }

@@ -26,6 +26,11 @@ pub struct ClusterMember {
     pub http_address: SocketAddr,
     /// SIP signaling address.
     pub sip_address: SocketAddr,
+    /// SIP-over-TLS address, when the node runs a TLS listener. Peers
+    /// dial inter-node conference trunks here (mutual TLS); absent on
+    /// nodes without one and on records written by older versions.
+    #[serde(default)]
+    pub sip_tls_address: Option<SocketAddr>,
     /// Node capabilities (e.g. ["registrar", "b2bua", "queue"]).
     pub capabilities: Vec<String>,
     /// Number of active calls on this node.

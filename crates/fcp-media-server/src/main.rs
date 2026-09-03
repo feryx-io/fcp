@@ -257,6 +257,7 @@ async fn main() -> Result<()> {
                         node_type: config.service.service_type.clone(),
                         http_address: config.http.bind_address,
                         sip_address: "0.0.0.0:0".parse().unwrap(),
+                        sip_tls_address: None,
                         capabilities: vec![
                             "media".to_string(),
                             "rtp".to_string(),

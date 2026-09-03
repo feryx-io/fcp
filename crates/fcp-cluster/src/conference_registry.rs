@@ -178,6 +178,7 @@ mod tests {
             node_type: node_type.to_string(),
             http_address: "127.0.0.1:8090".parse().unwrap(),
             sip_address: "127.0.0.1:5074".parse().unwrap(),
+            sip_tls_address: None,
             capabilities: vec![],
             active_calls: calls,
             started_at: 0,

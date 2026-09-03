@@ -237,6 +237,7 @@ async fn main() -> Result<()> {
                             .udp_bind
                             .parse()
                             .unwrap_or_else(|_| "0.0.0.0:5060".parse().unwrap()),
+                        sip_tls_address: None,
                         capabilities: vec!["webrtc".to_string(), "oap_session".to_string()],
                         active_calls: 0,
                         started_at: std::time::SystemTime::now()

@@ -33,6 +33,19 @@ pub struct ListenerConfig {
     #[cfg(feature = "tls")]
     pub tls_key: Option<String>,
 
+    /// PEM bundle of the CA(s) a client certificate on the TLS and WSS
+    /// listeners must chain to (mutual TLS). `None` never asks a peer
+    /// for a certificate. A bundle that fails to load is a startup
+    /// error, never a fallback to an unauthenticated listener.
+    #[cfg(feature = "tls")]
+    pub tls_client_ca: Option<String>,
+
+    /// With `tls_client_ca`: whether a peer that presents no certificate
+    /// is admitted with no identity (`Optional`) or refused at the
+    /// handshake (`Required`, the default).
+    #[cfg(feature = "tls")]
+    pub tls_client_auth: Option<sip_transport::ClientAuthMode>,
+
     /// WebSocket bind address
     pub ws_bind: Option<SocketAddr>,
 
@@ -48,12 +61,17 @@ pub trait InboundMessageHandler: Send + Sync {
     /// The handler should parse the message, route it to the appropriate
     /// component (transaction manager, dialog manager, etc.), and send
     /// any necessary responses.
+    ///
+    /// `peer_identity` is the verified certificate identity of the
+    /// connection the message arrived on (mutual TLS), `None` on any
+    /// other transport or when the peer presented no certificate.
     async fn handle_inbound(
         &self,
         transport: sip_transaction::TransportKind,
         peer: SocketAddr,
         payload: Bytes,
         stream: Option<mpsc::Sender<Bytes>>,
+        peer_identity: Option<Arc<sip_transport::PeerIdentity>>,
     ) -> Result<()>;
 }
 
@@ -173,9 +191,7 @@ impl TransportListener {
             {
                 info!(%tls_bind, "Starting TLS listener");
 
-                // Load TLS server config
-                let tls_config = sip_transport::load_rustls_server_config(cert_path, key_path)
-                    .context("Failed to load TLS server config")?;
+                let tls_config = self.load_server_config(cert_path, key_path, "TLS")?;
 
                 let handler = Arc::clone(&self.handler);
                 let mut shutdown = shutdown_rx.resubscribe();
@@ -218,8 +234,7 @@ impl TransportListener {
             {
                 info!(%wss_bind, "Starting WSS listener");
 
-                let tls_config = sip_transport::load_rustls_server_config(cert_path, key_path)
-                    .context("Failed to load WSS TLS server config")?;
+                let tls_config = self.load_server_config(cert_path, key_path, "WSS")?;
 
                 let handler = Arc::clone(&self.handler);
                 let mut shutdown = shutdown_rx.resubscribe();
@@ -282,6 +297,7 @@ impl TransportListener {
                             packet.peer(),
                             packet.payload().clone(),
                             packet.stream().cloned(),
+                            packet.peer_identity().cloned(),
                         ).await {
                             error!("Failed to handle inbound message: {}", e);
                         }
@@ -334,6 +350,7 @@ impl TransportListener {
                             packet.peer(),
                             packet.payload().clone(),
                             packet.stream().cloned(),
+                            packet.peer_identity().cloned(),
                         ).await {
                             error!("Failed to handle TCP message: {}", e);
                         }
@@ -347,6 +364,34 @@ impl TransportListener {
         }
 
         Ok(())
+    }
+
+    /// Build the rustls `ServerConfig` for a TLS-family listener: the
+    /// listener's own certificate, plus client-certificate verification
+    /// against `tls_client_ca` when configured (mutual TLS).
+    #[cfg(feature = "tls")]
+    fn load_server_config(
+        &self,
+        cert_path: &str,
+        key_path: &str,
+        what: &str,
+    ) -> Result<Arc<tokio_rustls::rustls::ServerConfig>> {
+        crate::transport::ensure_crypto_provider();
+        match &self.config.tls_client_ca {
+            Some(client_ca) => {
+                let mode = self
+                    .config
+                    .tls_client_auth
+                    .unwrap_or(sip_transport::ClientAuthMode::Required);
+                info!(client_ca = %client_ca, %mode, "{what} listener verifies client certificates (mutual TLS)");
+                sip_transport::load_rustls_server_config_with_client_auth(
+                    cert_path, key_path, client_ca, mode,
+                )
+                .with_context(|| format!("Failed to load {what} server config with client auth"))
+            }
+            None => sip_transport::load_rustls_server_config(cert_path, key_path)
+                .with_context(|| format!("Failed to load {what} server config")),
+        }
     }
 
     /// Run TLS listener loop.
@@ -385,6 +430,7 @@ impl TransportListener {
                         packet.peer(),
                         packet.payload().clone(),
                         packet.stream().cloned(),
+                        packet.peer_identity().cloned(),
                     ).await {
                         error!("Failed to handle TLS message: {}", e);
                     }
@@ -433,6 +479,7 @@ impl TransportListener {
                             packet.peer(),
                             packet.payload().clone(),
                             packet.stream().cloned(),
+                            packet.peer_identity().cloned(),
                         ).await {
                             error!("Failed to handle WS message: {}", e);
                         }
@@ -483,6 +530,7 @@ impl TransportListener {
                             packet.peer(),
                             packet.payload().clone(),
                             packet.stream().cloned(),
+                            packet.peer_identity().cloned(),
                         ).await {
                             error!("Failed to handle WSS message: {}", e);
                         }

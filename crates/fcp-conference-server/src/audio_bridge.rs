@@ -1,6 +1,10 @@
+use crate::trunks::is_trunk_participant;
 use bytes::Bytes;
 use forge_codecs::AudioCodec;
-use forge_conference::{ConferenceRoom, DtmfCommand, DtmfCommandHandler, ParticipantState};
+use forge_conference::{
+    ConferenceRoom, DtmfCommand, DtmfCommandHandler, ParticipantState,
+    AUDIO_FEEDBACK_PARTICIPANT_ID,
+};
 use forge_dtmf::rfc2833::Rfc2833Detector;
 use forge_dtmf::{DtmfDigit, DtmfEventType};
 use forge_resampler::Resampler;
@@ -109,6 +113,7 @@ pub async fn run_audio_bridge(
     dtmf_locked_samples: Option<Arc<Vec<i16>>>,
     dtmf_unlocked_samples: Option<Arc<Vec<i16>>>,
     _dtmf_ending_samples: Option<Arc<Vec<i16>>>,
+    is_trunk: bool,
 ) {
     let span = info_span!(
         "audio_bridge",
@@ -116,12 +121,15 @@ pub async fn run_audio_bridge(
         room = %room.id(),
         codec = %encoder.name(),
         srtp = srtp_context.is_some(),
+        trunk = is_trunk,
     );
     async move {
     let mut seq: u16 = rand::random();
     let ssrc: u32 = rand::random();
     let mut timestamp: u32 = 0;
-    let mut interval = tokio::time::interval(Duration::from_millis(20));
+    // The room's frame clock paces the outbound leg: one tick per mixing
+    // frame, the same frame for every participant reading it.
+    let mut frame_clock = room.frame_clock();
     let mut jitter_buffer = JitterBuffer::new(Duration::from_millis(jitter_buffer_ms));
 
     // Output gain: controls how loud the conference mix sounds to THIS participant.
@@ -379,10 +387,24 @@ pub async fn run_audio_bridge(
                 }
             }
 
-            // Branch 2: 20ms tick → read mix-minus → encode → send RTP
-            _ = interval.tick() => {
+            // Branch 2: frame-clock tick → read mix-minus → encode → send RTP
+            changed = frame_clock.changed() => {
+                if changed.is_err() {
+                    // Room gone
+                    break;
+                }
                 let mix_start = Instant::now();
-                let mix_result = room.mix_for_participant(&participant_id);
+                let mix_result = if is_trunk {
+                    // A trunk carries this node's local callers only: not
+                    // the other trunks (the peers mix those themselves,
+                    // and a mesh must never echo audio back) and not the
+                    // local feedback tones.
+                    Ok(room.mix_frame_filtered(|id| {
+                        !is_trunk_participant(id) && id != AUDIO_FEEDBACK_PARTICIPANT_ID
+                    }))
+                } else {
+                    room.mix_for_participant(&participant_id)
+                };
                 let mix_elapsed = mix_start.elapsed();
                 // Deadlock detection: warn if mixing takes longer than 10ms
                 // (should normally be sub-millisecond for in-memory mixing)
@@ -462,11 +484,8 @@ pub async fn run_audio_bridge(
                         }
                     }
                     Ok(None) => {
-                        // No mix available (solo participant or nobody has enough
-                        // samples). Drain our own buffered audio so it doesn't
-                        // accumulate and hit the buffer limit while we wait for
-                        // another participant to join.
-                        let _ = room.get_all_participant_audio(frame_size, None);
+                        // Nothing to send this frame (solo participant, or
+                        // nobody contributed). Keep the RTP clock moving.
                         timestamp = timestamp.wrapping_add(frame_size as u32);
                     }
                     Err(e) => {
