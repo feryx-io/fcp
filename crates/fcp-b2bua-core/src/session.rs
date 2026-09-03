@@ -161,6 +161,12 @@ pub struct B2buaConfig {
     /// Example: `"sip:conference@192.168.1.225:5074"`.
     #[serde(default)]
     pub conference_server_uri: Option<String>,
+
+    /// Participants a conference node hosts for one room before new joiners
+    /// are placed on another conference node (cascaded mixing). `0` keeps
+    /// every room on a single node. Only used with cluster membership.
+    #[serde(default)]
+    pub conference_node_capacity: usize,
 }
 
 impl Default for B2buaConfig {
@@ -177,6 +183,7 @@ impl Default for B2buaConfig {
             max_extension_digits: default_max_extension_digits(),
             voicemail_server_uri: None,
             conference_server_uri: None,
+            conference_node_capacity: 0,
         }
     }
 }
@@ -267,6 +274,7 @@ mod tests {
             max_extension_digits: 6,
             voicemail_server_uri: None,
             conference_server_uri: None,
+            conference_node_capacity: 0,
         };
         let session = B2buaSession::with_config(call_id, config.clone());
         assert_eq!(session.call_id, call_id);
@@ -314,6 +322,7 @@ mod tests {
             max_extension_digits: 6,
             voicemail_server_uri: None,
             conference_server_uri: None,
+            conference_node_capacity: 0,
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let deserialized: B2buaConfig = serde_json::from_str(&json).unwrap();

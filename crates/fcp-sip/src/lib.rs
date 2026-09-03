@@ -40,7 +40,7 @@ pub use fcp_b2bua_core::{
 pub use exports::*;
 
 // Re-export outbound route provider trait and types
-pub use handler::{OutboundRoute, OutboundRouteProvider, RouteResolution};
+pub use handler::{ConferenceNodeSelector, OutboundRoute, OutboundRouteProvider, RouteResolution};
 
 /// Prelude module for convenient imports.
 pub mod prelude {

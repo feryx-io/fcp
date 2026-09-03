@@ -6,11 +6,13 @@
 //! - Call ownership is tracked via `cluster:call:{call_id}` keys
 
 pub mod call_registry;
+pub mod conference_registry;
 pub mod membership;
 pub mod node_client;
 pub mod reader;
 
 pub use call_registry::CallRegistry;
+pub use conference_registry::{choose_conference_node, ConferenceHost, ConferenceRegistry};
 pub use membership::{ClusterManager, ClusterMember};
 pub use node_client::NodeClient;
 pub use reader::{ClusterNodeInfo, ClusterNodeStatus, ClusterReader, ClusterStats};

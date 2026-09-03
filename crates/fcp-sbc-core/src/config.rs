@@ -169,6 +169,7 @@ impl Default for SbcConfig {
                 max_extension_digits: 6,
                 voicemail_server_uri: None,
                 conference_server_uri: None,
+                conference_node_capacity: 0,
             },
             admission: AdmissionConfig::default(),
             rate_limit: RateLimitPolicyConfig::default(),
