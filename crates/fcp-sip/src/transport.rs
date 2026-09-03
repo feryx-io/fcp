@@ -37,6 +37,13 @@ pub struct RealTransportDispatcher {
     /// TLS configuration for secure connections
     #[cfg(feature = "tls")]
     tls_config: Option<Arc<tokio_rustls::rustls::ClientConfig>>,
+
+    /// TLS connection pool. Keeps outbound TLS connections open so the
+    /// responses to a request we sent (and in-dialog requests the peer
+    /// sends back down the same connection) reach the inbound sink,
+    /// exactly as the TCP pool does.
+    #[cfg(feature = "tls")]
+    tls_pool: Arc<sip_transport::pool::TlsPool>,
 }
 
 impl RealTransportDispatcher {
@@ -52,6 +59,8 @@ impl RealTransportDispatcher {
             tcp_pool: Arc::new(ConnectionPool::new()),
             #[cfg(feature = "tls")]
             tls_config: None,
+            #[cfg(feature = "tls")]
+            tls_pool: Arc::new(sip_transport::pool::TlsPool::new()),
         }
     }
 
@@ -75,6 +84,8 @@ impl RealTransportDispatcher {
             tcp_pool,
             #[cfg(feature = "tls")]
             tls_config: None,
+            #[cfg(feature = "tls")]
+            tls_pool: Arc::new(sip_transport::pool::TlsPool::new()),
         }
     }
 
@@ -106,10 +117,7 @@ impl RealTransportDispatcher {
     pub async fn set_inbound_tx(&self, tx: mpsc::Sender<sip_transport::InboundPacket>) {
         self.tcp_pool.set_inbound_tx(tx.clone()).await;
         #[cfg(feature = "tls")]
-        {
-            // For symmetry, TLS pool will reuse the same sink once TLS pooling is added.
-            let _ = &self.tls_config;
-        }
+        self.tls_pool.set_inbound_tx(tx).await;
     }
 
     /// Load TLS client configuration from system root certificates.
@@ -117,7 +125,28 @@ impl RealTransportDispatcher {
     /// This creates a client config suitable for outbound SIPS connections.
     #[cfg(feature = "tls")]
     pub fn load_tls_client_config() -> Result<Arc<tokio_rustls::rustls::ClientConfig>> {
-        use tokio_rustls::rustls::{ClientConfig, RootCertStore};
+        Self::load_tls_client_config_with(None, None)
+    }
+
+    /// Load TLS client configuration for outbound SIPS connections.
+    ///
+    /// Servers are verified against the system roots. With
+    /// `private_ca` (a PEM bundle), a server whose chain reaches that
+    /// CA is also accepted under *any DNS name its certificate carries*:
+    /// cluster peers are dialed by the address they advertise in
+    /// membership, while their certificates name the node, so the
+    /// usual name check would fail for exactly the peers the private CA
+    /// exists to identify. Public roots keep the strict check.
+    ///
+    /// `client_identity` is `(cert_path, key_path)` presented to a
+    /// server that asks for a client certificate (mutual TLS).
+    #[cfg(feature = "tls")]
+    pub fn load_tls_client_config_with(
+        private_ca: Option<&str>,
+        client_identity: Option<(&str, &str)>,
+    ) -> Result<Arc<tokio_rustls::rustls::ClientConfig>> {
+        use anyhow::Context as _;
+        use tokio_rustls::rustls::{client::WebPkiServerVerifier, ClientConfig, RootCertStore};
 
         ensure_crypto_provider();
 
@@ -132,11 +161,160 @@ impl RealTransportDispatcher {
             root_store.add(cert).ok();
         }
 
-        let config = ClientConfig::builder()
-            .with_root_certificates(root_store)
-            .with_no_client_auth();
+        let identity = match client_identity {
+            Some((cert, key)) => Some(
+                sip_transport::ClientIdentity::load(cert, key)
+                    .context("Failed to load TLS client certificate")?,
+            ),
+            None => None,
+        };
 
+        let Some(private_ca) = private_ca else {
+            return sip_transport::build_rustls_client_config(root_store, identity)
+                .context("Failed to build TLS client config");
+        };
+
+        let private_roots = sip_transport::load_client_ca_roots(private_ca)
+            .context("Failed to load private CA bundle")?;
+        let private = WebPkiServerVerifier::builder(Arc::new(private_roots))
+            .build()
+            .context("Failed to build private-CA verifier")?;
+        let public = if root_store.is_empty() {
+            None
+        } else {
+            Some(
+                WebPkiServerVerifier::builder(Arc::new(root_store))
+                    .build()
+                    .context("Failed to build system-roots verifier")?,
+            )
+        };
+        let verifier = Arc::new(PrivateCaServerVerifier { public, private });
+
+        let builder = ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(verifier);
+        let config = match identity {
+            Some(identity) => {
+                let (certs, key) = identity.into_parts();
+                builder
+                    .with_client_auth_cert(certs, key)
+                    .context("Failed to install TLS client certificate")?
+            }
+            None => builder.with_no_client_auth(),
+        };
         Ok(Arc::new(config))
+    }
+}
+
+/// Server-certificate verifier for a mixed world: public servers under
+/// the system roots with the ordinary name check, cluster peers under a
+/// private CA under any DNS name their certificate names. See
+/// [`RealTransportDispatcher::load_tls_client_config_with`].
+#[cfg(feature = "tls")]
+#[derive(Debug)]
+struct PrivateCaServerVerifier {
+    public: Option<Arc<tokio_rustls::rustls::client::WebPkiServerVerifier>>,
+    private: Arc<tokio_rustls::rustls::client::WebPkiServerVerifier>,
+}
+
+#[cfg(feature = "tls")]
+impl tokio_rustls::rustls::client::danger::ServerCertVerifier for PrivateCaServerVerifier {
+    fn verify_server_cert(
+        &self,
+        end_entity: &tokio_rustls::rustls::pki_types::CertificateDer<'_>,
+        intermediates: &[tokio_rustls::rustls::pki_types::CertificateDer<'_>],
+        server_name: &tokio_rustls::rustls::pki_types::ServerName<'_>,
+        ocsp_response: &[u8],
+        now: tokio_rustls::rustls::pki_types::UnixTime,
+    ) -> std::result::Result<
+        tokio_rustls::rustls::client::danger::ServerCertVerified,
+        tokio_rustls::rustls::Error,
+    > {
+        use tokio_rustls::rustls::client::danger::ServerCertVerified;
+        use tokio_rustls::rustls::pki_types::ServerName;
+        use tokio_rustls::rustls::{CertificateError, Error};
+
+        match self.private.verify_server_cert(
+            end_entity,
+            intermediates,
+            server_name,
+            ocsp_response,
+            now,
+        ) {
+            Ok(verified) => return Ok(verified),
+            Err(Error::InvalidCertificate(
+                CertificateError::NotValidForName | CertificateError::NotValidForNameContext { .. },
+            )) => {
+                // Chain, validity and usage all passed under the private
+                // CA; only the dialed name is not in the certificate.
+                // Accept the certificate under a name it does carry.
+                if let Ok(identity) = sip_transport::PeerIdentity::from_der(end_entity.as_ref()) {
+                    for name in identity.dns_names() {
+                        let Ok(candidate) = ServerName::try_from(name.clone()) else {
+                            continue;
+                        };
+                        if self
+                            .private
+                            .verify_server_cert(
+                                end_entity,
+                                intermediates,
+                                &candidate,
+                                ocsp_response,
+                                now,
+                            )
+                            .is_ok()
+                        {
+                            tracing::debug!(
+                                dialed = ?server_name,
+                                certificate_name = %name,
+                                "accepted private-CA server certificate under its own name"
+                            );
+                            return Ok(ServerCertVerified::assertion());
+                        }
+                    }
+                }
+            }
+            Err(_) => {}
+        }
+
+        match &self.public {
+            Some(public) => public.verify_server_cert(
+                end_entity,
+                intermediates,
+                server_name,
+                ocsp_response,
+                now,
+            ),
+            None => Err(Error::InvalidCertificate(CertificateError::UnknownIssuer)),
+        }
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &tokio_rustls::rustls::pki_types::CertificateDer<'_>,
+        dss: &tokio_rustls::rustls::DigitallySignedStruct,
+    ) -> std::result::Result<
+        tokio_rustls::rustls::client::danger::HandshakeSignatureValid,
+        tokio_rustls::rustls::Error,
+    > {
+        self.private.verify_tls12_signature(message, cert, dss)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &tokio_rustls::rustls::pki_types::CertificateDer<'_>,
+        dss: &tokio_rustls::rustls::DigitallySignedStruct,
+    ) -> std::result::Result<
+        tokio_rustls::rustls::client::danger::HandshakeSignatureValid,
+        tokio_rustls::rustls::Error,
+    > {
+        self.private.verify_tls13_signature(message, cert, dss)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<tokio_rustls::rustls::SignatureScheme> {
+        self.private.supported_verify_schemes()
     }
 }
 
@@ -247,10 +425,9 @@ impl TransportDispatcher for RealTransportDispatcher {
                             }
                         };
 
-                        let tls_cfg =
-                            sip_transport::TlsConfig::new(server_name, tls_config.clone());
-
-                        sip_transport::send_tls(&peer, &payload, &tls_cfg).await?;
+                        self.tls_pool
+                            .send_tls(peer, server_name, tls_config.clone(), payload)
+                            .await?;
                     } else {
                         error!("TLS configuration not set");
                         anyhow::bail!("TLS configuration not set");

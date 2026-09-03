@@ -30,6 +30,9 @@ pub mod uac;
 
 // Re-export shared config validation helper
 pub use config::validate_sip_binds;
+#[cfg(feature = "tls")]
+pub use sip_transport::ClientAuthMode;
+pub use sip_transport::PeerIdentity;
 
 // Re-export B2BUA types from fcp-b2bua-core
 pub use fcp_b2bua_core::{

@@ -24,11 +24,17 @@ pub trait ConferenceHandler: Send + Sync {
     /// - Sending provisional/final SIP responses via `handle`
     /// - Setting up RTP and the audio bridge
     /// - PIN authentication (if required)
+    ///
+    /// `peer_identity` is the verified TLS client certificate of the
+    /// connection the INVITE arrived on (mutual TLS), `None` otherwise.
+    /// An inter-node conference trunk is authorized by it and by
+    /// nothing in the message.
     async fn handle_invite(
         &self,
         request: &sip_core::Request,
         handle: &sip_transaction::ServerTransactionHandle,
         peer: SocketAddr,
+        peer_identity: Option<std::sync::Arc<sip_transport::PeerIdentity>>,
     ) -> Result<()>;
 
     /// Handle a mid-dialog re-INVITE for a conference participant.

@@ -1084,6 +1084,7 @@ impl SipMessageHandler {
         peer: SocketAddr,
         transport: sip_transaction::TransportKind,
         stream: Option<mpsc::Sender<Bytes>>,
+        peer_identity: Option<Arc<sip_transport::PeerIdentity>>,
     ) -> Result<()> {
         use sip_core::Method;
 
@@ -1112,7 +1113,7 @@ impl SipMessageHandler {
                     let handle_clone = handle.clone();
                     tokio::spawn(async move {
                         if let Err(e) = handler
-                            .handle_invite(&request_clone, &handle_clone, peer)
+                            .handle_invite(&request_clone, &handle_clone, peer, peer_identity)
                             .await
                         {
                             error!("INVITE handling failed: {}", e);
@@ -1383,6 +1384,7 @@ impl SipMessageHandler {
         request: &sip_core::Request,
         handle: &ServerTransactionHandle,
         peer: SocketAddr,
+        peer_identity: Option<Arc<sip_transport::PeerIdentity>>,
     ) -> Result<()> {
         debug!("Handling INVITE request (B2BUA mode)");
 
@@ -1815,7 +1817,9 @@ impl SipMessageHandler {
         if let Some(conf_handler) = &self.conference_handler {
             if conf_handler.can_handle(request).await {
                 debug!(call_id = %call_id, "Routing to conference handler");
-                return conf_handler.handle_invite(request, handle, peer).await;
+                return conf_handler
+                    .handle_invite(request, handle, peer, peer_identity)
+                    .await;
             }
         }
 
@@ -11910,6 +11914,7 @@ impl InboundMessageHandler for SipMessageHandler {
         peer: SocketAddr,
         payload: Bytes,
         stream: Option<mpsc::Sender<Bytes>>,
+        peer_identity: Option<Arc<sip_transport::PeerIdentity>>,
     ) -> Result<()> {
         // Convert transport to string to avoid non-Send issues
         let transport_str = format!("{:?}", transport);
@@ -11983,8 +11988,10 @@ impl InboundMessageHandler for SipMessageHandler {
             // Clone stream for REGISTER flow token support (RFC 5626)
             let stream_for_register = stream.clone();
 
-            // Create transport context
-            let ctx = sip_transaction::TransportContext::new(transport, peer, stream);
+            // Create transport context, carrying the peer's verified
+            // certificate identity (mutual TLS) for transaction users.
+            let ctx = sip_transaction::TransportContext::new(transport, peer, stream)
+                .with_peer_identity(peer_identity.clone());
 
             // Create server transaction
             let handle = self
@@ -11994,7 +12001,14 @@ impl InboundMessageHandler for SipMessageHandler {
 
             // Handle request and send response(s)
             if let Err(e) = self
-                .handle_request(&req, &handle, peer, transport, stream_for_register)
+                .handle_request(
+                    &req,
+                    &handle,
+                    peer,
+                    transport,
+                    stream_for_register,
+                    peer_identity,
+                )
                 .await
             {
                 error!("Failed to handle request: {}", e);

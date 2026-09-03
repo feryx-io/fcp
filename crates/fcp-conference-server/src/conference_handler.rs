@@ -8,6 +8,7 @@ use fcp_media::{
     parse_sdes_crypto, parse_sdp_codecs, SrtpSdpContext,
 };
 use fcp_sip::prelude::SipUserAgentClient;
+use fcp_sip::PeerIdentity;
 use forge_codecs::{g711, g722, AudioCodec};
 use forge_conference::{
     ConferenceAIConfig, ConferenceAIManager, ConferenceBridge, ConferenceConfig,
@@ -24,7 +25,7 @@ use forge_rtp::{
     SrtpKeyMaterial,
 };
 use parking_lot::RwLock;
-use sip_core::{SipUri, Uri};
+use sip_core::{Headers, SipUri, Uri};
 use sip_dialog::Dialog;
 use sip_uas::UserAgentServer;
 use std::collections::BTreeSet;
@@ -37,6 +38,7 @@ use tracing::{debug, info, warn};
 
 use crate::audio_bridge::{self, AudioStats};
 use crate::config::{AiSection, ConferenceSection};
+use crate::trunks::{self, TRUNK_NODE_HEADER, TRUNK_TENANT_HEADER};
 
 /// Fallback remote address used when SDP parsing fails to extract the caller's RTP endpoint.
 const UNKNOWN_REMOTE: SocketAddr =
@@ -97,6 +99,9 @@ pub struct ParticipantSession {
     pub is_host: bool,
     /// True if this participant was invited via dial-out
     pub is_dial_out: bool,
+    /// For an inter-node conference trunk: the peer node's id. The
+    /// participant is `__trunk__<peer>` and carries that node's mix.
+    pub trunk_peer: Option<String>,
     pub audio_bridge_handle: JoinHandle<()>,
     pub port_pair: PortPair,
     pub rtp_socket: Arc<RtpSocketPair>,
@@ -166,6 +171,9 @@ pub struct ConferenceCallHandler {
     draining: std::sync::atomic::AtomicBool,
     /// Secondary index: room_number → Vec<call_id> for O(1) room-to-session lookups.
     room_sessions: DashMap<String, Vec<String>>,
+    /// This node's cluster id: what peers see in our trunk INVITEs and in
+    /// our certificate.
+    node_id: String,
 
     /// Cluster conference registry hook (see [`RoomRegistry`]).
     room_registry: std::sync::RwLock<Option<Arc<dyn RoomRegistry>>>,
@@ -552,6 +560,7 @@ impl ConferenceCallHandler {
         event_bus: Arc<dyn EventPublisher>,
         uac: Arc<SipUserAgentClient>,
         ai_config: AiSection,
+        node_id: String,
     ) -> Self {
         // Parse the local SIP URI once at construction time — avoids runtime .expect()
         let local_sip_uri = Uri::parse(&local_uri)
@@ -583,6 +592,7 @@ impl ConferenceCallHandler {
             local_sip_uri,
             draining: std::sync::atomic::AtomicBool::new(false),
             room_sessions: DashMap::new(),
+            node_id,
             room_registry: std::sync::RwLock::new(None),
             handler_latency: HandlerLatency::new(),
             tts_service: None,
@@ -1322,10 +1332,7 @@ impl ConferenceCallHandler {
             anyhow::bail!("Conference is disabled");
         }
 
-        let room = self
-            .bridge
-            .get_or_create_room(room_number, None)
-            .context("Failed to create conference room")?;
+        let room = self.room_for(room_number)?;
 
         // Configure room from meeting settings (idempotent)
         let room_config = self.meeting_to_room_config(&meeting);
@@ -1606,6 +1613,7 @@ impl ConferenceCallHandler {
             self.dtmf_locked_samples.clone(),
             self.dtmf_unlocked_samples.clone(),
             self.dtmf_ending_samples.clone(),
+            false,
         ));
 
         // 12. Store session
@@ -1623,6 +1631,7 @@ impl ConferenceCallHandler {
                 participant_id: participant_id.clone(),
                 is_host: false,
                 is_dial_out: true,
+                trunk_peer: None,
                 audio_bridge_handle,
                 port_pair,
                 rtp_socket,
@@ -1922,7 +1931,12 @@ impl ConferenceCallHandler {
         let expired: Vec<String> = self
             .sessions
             .iter()
-            .filter(|entry| entry.value().last_refreshed.elapsed() > max_age)
+            .filter(|entry| {
+                // Trunks carry no session timer; the trunk reconciler
+                // tears them down when the peer is gone.
+                entry.value().trunk_peer.is_none()
+                    && entry.value().last_refreshed.elapsed() > max_age
+            })
             .map(|entry| entry.key().clone())
             .collect();
 
@@ -2142,14 +2156,16 @@ impl ConferenceCallHandler {
                 port_pool.deallocate(port_pair).await;
             });
 
-            // Publish leave event
+            // Publish leave event (trunks are infrastructure, not participants)
             self.sync_room_registry(&session.room_number);
-            self.publish_event(ConferenceEvent::ParticipantLeft {
-                room_number: session.room_number.clone(),
-                participant_id: session.participant_id.clone(),
-                tenant_id: session.tenant_id,
-                timestamp: SystemTime::now(),
-            });
+            if session.trunk_peer.is_none() {
+                self.publish_event(ConferenceEvent::ParticipantLeft {
+                    room_number: session.room_number.clone(),
+                    participant_id: session.participant_id.clone(),
+                    tenant_id: session.tenant_id,
+                    timestamp: SystemTime::now(),
+                });
+            }
 
             // Remove from forge-conference room
             if let Ok(room) = self.bridge.get_room(&session.room_number) {
@@ -2430,9 +2446,500 @@ pub async fn play_prompt_to_rtp(
     }
 }
 
+/// Inter-node conference trunks (see [`crate::trunks`]).
+impl ConferenceCallHandler {
+    /// Get or create a room and make sure its frame clock is running.
+    /// Every room this server mixes runs on the frame clock: it is what
+    /// lets each participant, the recorder, an AI tap and every trunk
+    /// read the same frame without consuming it from one another.
+    fn room_for(&self, room_number: &str) -> Result<Arc<forge_conference::ConferenceRoom>> {
+        let room = self
+            .bridge
+            .get_or_create_room(room_number, None)
+            .context("Failed to create conference room")?;
+        room.start_frame_clock()
+            .context("Failed to start the room's frame clock")?;
+        Ok(room)
+    }
+
+    /// This node's cluster id.
+    pub fn node_id(&self) -> &str {
+        &self.node_id
+    }
+
+    /// Peer nodes this node has a trunk with for a room, whichever side
+    /// dialed.
+    pub fn room_trunk_peers(&self, room_number: &str) -> Vec<String> {
+        let Some(call_ids) = self.room_sessions.get(room_number) else {
+            return Vec::new();
+        };
+        let mut peers: Vec<String> = call_ids
+            .iter()
+            .filter_map(|call_id| self.sessions.get(call_id))
+            .filter_map(|session| session.trunk_peer.clone())
+            .collect();
+        peers.sort();
+        peers.dedup();
+        peers
+    }
+
+    /// Hang up every trunk to `peer` in a room (BYE, then local teardown).
+    pub async fn hangup_trunk(&self, room_number: &str, peer: &str) {
+        let call_ids: Vec<String> = self
+            .room_sessions
+            .get(room_number)
+            .map(|ids| ids.clone())
+            .unwrap_or_default();
+        for call_id in call_ids {
+            let dialog = match self.sessions.get(&call_id) {
+                Some(session) if session.trunk_peer.as_deref() == Some(peer) => {
+                    session.dialog.clone()
+                }
+                _ => continue,
+            };
+            if let Err(e) = self.uac.bye(&dialog).await {
+                warn!(room = %room_number, peer = %peer, error = %e, "BYE for conference trunk failed");
+            }
+            self.remove_session(&call_id);
+        }
+    }
+
+    /// Codec list this node offers a peer, in preference order: wideband
+    /// first, filtered by `allowed_codecs`.
+    fn trunk_offer_codecs(&self) -> Vec<(&'static str, u8)> {
+        const ALL: [(&str, u8); 3] = [("G722", 9), ("PCMU", 0), ("PCMA", 8)];
+        let allowed = self.conference_config.read().allowed_codecs.clone();
+        let filtered: Vec<(&'static str, u8)> = match allowed {
+            Some(list) => ALL
+                .iter()
+                .copied()
+                .filter(|(name, _)| list.iter().any(|a| a.eq_ignore_ascii_case(name)))
+                .collect(),
+            None => ALL.to_vec(),
+        };
+        if filtered.is_empty() {
+            ALL.to_vec()
+        } else {
+            filtered
+        }
+    }
+
+    /// Dial the trunk to `peer_node` for a room this node hosts. Called by
+    /// the trunk manager on the lower-id side only.
+    pub async fn dial_trunk(
+        &self,
+        tenant_id: TenantId,
+        room_number: &str,
+        peer_node: &str,
+        target: SocketAddr,
+    ) -> Result<()> {
+        let room = self
+            .bridge
+            .get_room(room_number)
+            .map_err(|_| anyhow::anyhow!("room {} is not hosted on this node", room_number))?;
+        if self.countable_participants(room_number) == 0 {
+            bail!("room {} has no local participants to trunk", room_number);
+        }
+        let conf = self.conference_config.read().clone();
+
+        let port_pair = self
+            .port_pool
+            .allocate()
+            .await
+            .context("Failed to allocate RTP port pair for conference trunk")?;
+        let dealloc = |pool: Arc<PortPool>, pair: PortPair| {
+            tokio::spawn(async move { pool.deallocate(pair).await });
+        };
+
+        let ip = self
+            .local_addr
+            .split(':')
+            .next()
+            .unwrap_or(&self.local_addr);
+        let codecs = self.trunk_offer_codecs();
+        let pt_list: Vec<String> = codecs.iter().map(|(_, pt)| pt.to_string()).collect();
+        let rtpmaps: String = codecs
+            .iter()
+            .map(|(name, pt)| format!("a=rtpmap:{pt} {name}/8000\r\n"))
+            .collect();
+        let sdp_offer = format!(
+            "v=0\r\n\
+             o=fcp-conference 0 0 IN IP4 {ip}\r\n\
+             s=FCP Conference Trunk\r\n\
+             c=IN IP4 {ip}\r\n\
+             t=0 0\r\n\
+             m=audio {rtp_port} RTP/AVP {pts}\r\n\
+             {rtpmaps}\
+             a=sendrecv\r\n\
+             a=ptime:20\r\n",
+            ip = ip,
+            rtp_port = port_pair.rtp_port,
+            pts = pt_list.join(" "),
+            rtpmaps = rtpmaps,
+        );
+
+        let target_uri = format!("sip:{}@{};transport=tls", room_number, target);
+        let mut headers = Headers::new();
+        headers
+            .push(TRUNK_NODE_HEADER, &self.node_id)
+            .map_err(|e| anyhow::anyhow!("trunk header: {e}"))?;
+        headers
+            .push(TRUNK_TENANT_HEADER, tenant_id.to_string())
+            .map_err(|e| anyhow::anyhow!("trunk header: {e}"))?;
+
+        info!(room = %room_number, peer = %peer_node, target = %target_uri, "Sending conference trunk INVITE");
+        let call_handle = match self
+            .uac
+            .invite_with_headers(&target_uri, Some(&sdp_offer), headers)
+            .await
+        {
+            Ok(h) => h,
+            Err(e) => {
+                dealloc(Arc::clone(&self.port_pool), port_pair);
+                bail!("trunk INVITE failed: {}", e);
+            }
+        };
+
+        let timeout = Duration::from_secs(conf.dial_out_timeout_secs);
+        let response = match tokio::time::timeout(timeout, call_handle.await_final()).await {
+            Ok(Ok(response)) => response,
+            Ok(Err(e)) => {
+                dealloc(Arc::clone(&self.port_pool), port_pair);
+                bail!("trunk call failed: {}", e);
+            }
+            Err(_) => {
+                let _ = call_handle.cancel().await;
+                dealloc(Arc::clone(&self.port_pool), port_pair);
+                bail!(
+                    "trunk INVITE timed out after {}s",
+                    conf.dial_out_timeout_secs
+                );
+            }
+        };
+        let status_code = response.code();
+        if !(200..300).contains(&status_code) {
+            dealloc(Arc::clone(&self.port_pool), port_pair);
+            bail!("peer rejected trunk: {} {}", status_code, response.reason());
+        }
+
+        let answer_body = response.body();
+        let answer_sdp = std::str::from_utf8(&answer_body[..]).unwrap_or("");
+        let answer_codecs = parse_sdp_codecs(answer_sdp);
+        let (codec_name, payload_type) = answer_codecs
+            .iter()
+            .find(|c| !c.encoding_name.eq_ignore_ascii_case("telephone-event"))
+            .map(|c| (c.encoding_name.to_uppercase(), c.payload_type))
+            .unwrap_or_else(|| ("PCMU".to_string(), 0));
+        let frame_size: usize = if codec_name == "G722" { 320 } else { 160 };
+
+        let dialog = call_handle.dialog.read().await.clone();
+        let call_id = dialog.id().call_id().to_string();
+
+        let rtp_socket = match RtpSocketPair::new(port_pair, RtpSocketConfig::default()).await {
+            Ok(s) => Arc::new(s),
+            Err(e) => {
+                let _ = self.uac.bye(&dialog).await;
+                dealloc(Arc::clone(&self.port_pool), port_pair);
+                bail!("failed to create RTP socket for trunk: {}", e);
+            }
+        };
+        let remote_addr = parse_remote_rtp_addr(answer_sdp);
+        if let Some(remote_addr) = remote_addr {
+            rtp_socket
+                .set_remote_endpoint(RemoteEndpoint {
+                    rtp_addr: remote_addr,
+                    rtcp_addr: None,
+                })
+                .await;
+        } else {
+            warn!(room = %room_number, peer = %peer_node, "Trunk answer has no RTP address");
+        }
+
+        self.attach_trunk(
+            TrunkLeg {
+                room,
+                room_number: room_number.to_string(),
+                peer_node: peer_node.to_string(),
+                tenant_id,
+                call_id,
+                dialog,
+                port_pair,
+                rtp_socket,
+                remote_addr,
+                codec_name,
+                payload_type,
+                frame_size,
+            },
+            &conf,
+        )
+        .await
+    }
+
+    /// Answer a trunk INVITE from a peer node. The peer certificate must
+    /// name the node the INVITE claims to come from; nothing else in the
+    /// message is trusted for admission.
+    #[allow(clippy::too_many_arguments)]
+    async fn handle_trunk_invite(
+        &self,
+        request: &sip_core::Request,
+        handle: &sip_transaction::ServerTransactionHandle,
+        peer: SocketAddr,
+        peer_identity: Option<Arc<PeerIdentity>>,
+        peer_node: &str,
+        tenant: Option<String>,
+    ) -> Result<()> {
+        let reject =
+            |code: u16, reason: &str| UserAgentServer::create_response(request, code, reason);
+
+        let Some(identity) = peer_identity else {
+            warn!(peer = %peer, node = %peer_node, "Trunk INVITE without a verified client certificate");
+            handle
+                .send_final(reject(403, "Trunk Requires Mutual TLS"))
+                .await;
+            return Ok(());
+        };
+        if peer_node.is_empty()
+            || peer_node == self.node_id
+            || !trunks::identity_names_node(&identity, peer_node)
+        {
+            warn!(
+                peer = %peer,
+                node = %peer_node,
+                identity = %identity,
+                "Trunk INVITE: certificate does not name the claimed node"
+            );
+            handle
+                .send_final(reject(403, "Certificate Does Not Name Node"))
+                .await;
+            return Ok(());
+        }
+        let tenant_id: TenantId = match tenant.as_deref().map(str::parse) {
+            Some(Ok(t)) => t,
+            _ => {
+                handle.send_final(reject(400, "Missing Trunk Tenant")).await;
+                return Ok(());
+            }
+        };
+        let Some(room_number) = extract_room_number(request) else {
+            handle.send_final(reject(400, "Bad Room")).await;
+            return Ok(());
+        };
+        // A trunk only makes sense between two nodes that both have
+        // callers in the room. Without local callers there is nothing to
+        // send, and the peer's own reconcile will not hold the trunk.
+        if self.countable_participants(&room_number) == 0 {
+            handle.send_final(reject(480, "Room Not Hosted Here")).await;
+            return Ok(());
+        }
+        let Ok(room) = self.bridge.get_room(&room_number) else {
+            handle.send_final(reject(480, "Room Not Hosted Here")).await;
+            return Ok(());
+        };
+        let conf = self.conference_config.read().clone();
+
+        let body = request.body();
+        if body.is_empty() {
+            handle.send_final(reject(400, "Missing SDP")).await;
+            return Ok(());
+        }
+        let sdp_offer = std::str::from_utf8(&body[..]).context("SDP body is not valid UTF-8")?;
+        let offered_codecs = parse_sdp_codecs(sdp_offer);
+        let Some((codec_name, payload_type, frame_size)) =
+            pick_codec(&offered_codecs, conf.allowed_codecs.as_deref())
+        else {
+            handle.send_final(reject(488, "Not Acceptable Here")).await;
+            return Ok(());
+        };
+
+        let port_pair = self
+            .port_pool
+            .allocate()
+            .await
+            .context("Failed to allocate RTP port pair for conference trunk")?;
+        let sdp_answer =
+            construct_answer_for_a_leg(sdp_offer, &self.local_addr, port_pair.rtp_port, None);
+        let local_sip_uri = self.parse_local_sip_uri();
+        let uas = UserAgentServer::new(local_sip_uri.clone(), local_sip_uri);
+        let (response, dialog) = match uas.accept_invite(request, Some(&sdp_answer)) {
+            Ok(v) => v,
+            Err(e) => {
+                let pool = Arc::clone(&self.port_pool);
+                tokio::spawn(async move { pool.deallocate(port_pair).await });
+                return Err(anyhow::anyhow!("Failed to create 200 OK for trunk: {}", e));
+            }
+        };
+        handle.send_final(response).await;
+
+        let rtp_socket = match RtpSocketPair::new(port_pair, RtpSocketConfig::default()).await {
+            Ok(s) => Arc::new(s),
+            Err(e) => {
+                let _ = self.uac.bye(&dialog).await;
+                let pool = Arc::clone(&self.port_pool);
+                tokio::spawn(async move { pool.deallocate(port_pair).await });
+                return Err(anyhow::anyhow!(
+                    "Failed to create RTP socket for trunk: {}",
+                    e
+                ));
+            }
+        };
+        let remote_addr = parse_remote_rtp_addr(sdp_offer);
+        if let Some(remote_addr) = remote_addr {
+            rtp_socket
+                .set_remote_endpoint(RemoteEndpoint {
+                    rtp_addr: remote_addr,
+                    rtcp_addr: None,
+                })
+                .await;
+        } else {
+            warn!(room = %room_number, peer = %peer_node, "Trunk offer has no RTP address");
+        }
+
+        // A trunk to this peer that we still hold is stale: the peer would
+        // not dial again if it thought it had one.
+        let stale: Vec<String> = self
+            .room_sessions
+            .get(&room_number)
+            .map(|ids| ids.clone())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|id| {
+                self.sessions
+                    .get(id)
+                    .map(|s| s.trunk_peer.as_deref() == Some(peer_node))
+                    .unwrap_or(false)
+            })
+            .collect();
+        for call_id in stale {
+            info!(room = %room_number, peer = %peer_node, call_id = %call_id, "Replacing stale conference trunk");
+            self.remove_session(&call_id);
+        }
+
+        let call_id = extract_call_id(request);
+        self.attach_trunk(
+            TrunkLeg {
+                room,
+                room_number,
+                peer_node: peer_node.to_string(),
+                tenant_id,
+                call_id,
+                dialog,
+                port_pair,
+                rtp_socket,
+                remote_addr,
+                codec_name,
+                payload_type,
+                frame_size,
+            },
+            &conf,
+        )
+        .await
+    }
+
+    /// Join an established trunk leg to the room: a virtual participant,
+    /// an audio bridge in trunk mode (send-mix of local callers only),
+    /// and a session so BYE and reconcile can find it.
+    async fn attach_trunk(&self, leg: TrunkLeg, conf: &ConferenceSection) -> Result<()> {
+        let participant_id = trunks::trunk_participant_id(&leg.peer_node);
+        if let Err(e) = leg.room.add_virtual_participant(&participant_id) {
+            let _ = self.uac.bye(&leg.dialog).await;
+            let pool = Arc::clone(&self.port_pool);
+            let pair = leg.port_pair;
+            tokio::spawn(async move { pool.deallocate(pair).await });
+            bail!("failed to add trunk participant: {}", e);
+        }
+
+        let encoder = create_codec_instance(&leg.codec_name)?;
+        let decoder = create_codec_instance(&leg.codec_name)?;
+        let stats = Arc::new(AudioStats::new());
+        let audio_bridge_handle = tokio::spawn(audio_bridge::run_audio_bridge(
+            Arc::clone(&leg.room),
+            participant_id.clone(),
+            Arc::clone(&leg.rtp_socket),
+            encoder,
+            decoder,
+            leg.payload_type,
+            leg.frame_size,
+            conf.jitter_buffer_ms,
+            None, // no DTMF over a trunk
+            8000,
+            None,
+            false,
+            Arc::clone(&stats),
+            None, // plain RTP between nodes
+            conf.sample_rate,
+            None,
+            None,
+            None,
+            None,
+            None,
+            true,
+        ));
+
+        self.room_sessions
+            .entry(leg.room_number.clone())
+            .or_default()
+            .push(leg.call_id.clone());
+        self.sessions.insert(
+            leg.call_id.clone(),
+            ParticipantSession {
+                call_id: leg.call_id,
+                room_number: leg.room_number.clone(),
+                participant_id: participant_id.clone(),
+                is_host: false,
+                is_dial_out: false,
+                trunk_peer: Some(leg.peer_node.clone()),
+                audio_bridge_handle,
+                port_pair: leg.port_pair,
+                rtp_socket: leg.rtp_socket,
+                remote_addr: leg.remote_addr.unwrap_or(UNKNOWN_REMOTE),
+                codec_name: leg.codec_name.clone(),
+                tenant_id: leg.tenant_id,
+                dialog: leg.dialog,
+                joined_at: SystemTime::now(),
+                te_pt: None,
+                stats,
+                display_name: Some(format!("Trunk: {}", leg.peer_node)),
+                caller_id: None,
+                srtp_context: None,
+                last_refreshed: Instant::now(),
+            },
+        );
+        info!(
+            room = %leg.room_number,
+            peer = %leg.peer_node,
+            participant = %participant_id,
+            codec = %leg.codec_name,
+            "Conference trunk connected"
+        );
+        Ok(())
+    }
+}
+
+/// An established trunk leg, before it is attached to the room.
+struct TrunkLeg {
+    room: Arc<forge_conference::ConferenceRoom>,
+    room_number: String,
+    peer_node: String,
+    tenant_id: TenantId,
+    call_id: String,
+    dialog: Dialog,
+    port_pair: PortPair,
+    rtp_socket: Arc<RtpSocketPair>,
+    remote_addr: Option<SocketAddr>,
+    codec_name: String,
+    payload_type: u8,
+    frame_size: usize,
+}
+
 #[async_trait::async_trait]
 impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
     async fn can_handle(&self, request: &sip_core::Request) -> bool {
+        // A trunk INVITE names its tenant in a header and is authorized by
+        // the peer certificate; handle_invite does that. Deciding here by
+        // the Request-URI host would resolve the wrong tenant.
+        if sip_parse::header(request.headers(), TRUNK_NODE_HEADER).is_some() {
+            return true;
+        }
         let room_number = match extract_room_number(request) {
             Some(rn) => rn,
             None => {
@@ -2469,6 +2976,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         request: &sip_core::Request,
         handle: &sip_transaction::ServerTransactionHandle,
         peer: SocketAddr,
+        peer_identity: Option<Arc<PeerIdentity>>,
     ) -> Result<()> {
         let _invite_start = Instant::now();
 
@@ -2487,6 +2995,17 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             let reject = UserAgentServer::create_response(request, 486, "Busy Here");
             handle.send_final(reject).await;
             return Ok(());
+        }
+
+        // 0a'. Inter-node conference trunk: authorized by the peer
+        // certificate, admitted past the caller-facing checks below.
+        if let Some(node) = sip_parse::header(request.headers(), TRUNK_NODE_HEADER) {
+            let node = node.as_str().trim().to_string();
+            let tenant = sip_parse::header(request.headers(), TRUNK_TENANT_HEADER)
+                .map(|v| v.as_str().trim().to_string());
+            return self
+                .handle_trunk_invite(request, handle, peer, peer_identity, &node, tenant)
+                .await;
         }
 
         // 0b. Per-node participant limit (OOM protection)
@@ -2691,10 +3210,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         let participant_id = format!("{}-{}", &call_id[..call_id.len().min(8)], &short_uuid[..8]);
 
         // 13. Get or create conference room, configure with meeting settings
-        let room = self
-            .bridge
-            .get_or_create_room(&room_number, None)
-            .context("Failed to create conference room")?;
+        let room = self.room_for(&room_number)?;
 
         // Wire room configuration from meeting → forge-conference
         let room_config = self.meeting_to_room_config(&meeting);
@@ -3376,6 +3892,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                                 wait_locked_samples.clone(),
                                 wait_unlocked_samples.clone(),
                                 wait_ending_samples.clone(),
+                                false,
                             )
                             .await;
                         }
@@ -3398,6 +3915,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                     participant_id,
                     is_host,
                     is_dial_out: false,
+                    trunk_peer: None,
                     audio_bridge_handle: wait_handle,
                     port_pair,
                     rtp_socket: Arc::clone(&rtp_socket),
@@ -3626,6 +4144,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             self.dtmf_locked_samples.clone(),
             self.dtmf_unlocked_samples.clone(),
             self.dtmf_ending_samples.clone(),
+            false,
         ));
 
         // 19. Store session (room_sessions already updated above for MeetingStarted dedup)
@@ -3638,6 +4157,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 participant_id,
                 is_host,
                 is_dial_out: false,
+                trunk_peer: None,
                 audio_bridge_handle,
                 port_pair,
                 rtp_socket,
@@ -3764,6 +4284,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 };
                 let reinvite_stats = Arc::clone(&session.stats);
                 let reinvite_is_host = session.is_host;
+                let reinvite_is_trunk = session.trunk_peer.is_some();
                 let reinvite_te_pt = session.te_pt;
                 let reinvite_dtmf_clock_rate =
                     find_telephone_event_clock_rate(&offered_codecs, sdp_offer);
@@ -3801,6 +4322,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                         reinvite_locked,
                         reinvite_unlocked,
                         reinvite_ending,
+                        reinvite_is_trunk,
                     )
                     .await;
                 });

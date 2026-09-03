@@ -915,6 +915,7 @@ async fn get_conference_handler(
     match state.bridge.get_room(&room_number) {
         Ok(room) => {
             let participants = room.participants();
+            let trunks = state.conference_handler.room_trunk_peers(&room_number);
             (
                 StatusCode::OK,
                 Json(serde_json::json!({
@@ -923,6 +924,8 @@ async fn get_conference_handler(
                     "participants": participants,
                     "is_locked": room.is_locked(),
                     "is_recording": room.is_recording(),
+                    "node_id": state.conference_handler.node_id(),
+                    "trunks": trunks,
                 })),
             )
         }

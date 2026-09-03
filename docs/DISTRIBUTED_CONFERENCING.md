@@ -12,7 +12,7 @@ The work lands in four phases. This document tracks what is in place.
 | Phase | What | Status |
 |---|---|---|
 | 1 | Conference registry + cluster-aware placement | ✅ v0.25.82 |
-| 2 | Inter-node trunks (cascaded mixing) | ⏳ gated on [siphon-rs #129](https://github.com/thevoiceguy/siphon-rs/issues/129) (mutual TLS) |
+| 2 | Inter-node trunks (cascaded mixing) | ✅ v0.25.83 |
 | 3 | Cross-node control (kick, gain, lock, announce, end) | planned |
 | 4 | Resilience (registry expiry, trunk teardown, draining) | planned |
 
@@ -68,20 +68,131 @@ Conference nodes advertise themselves in cluster membership with node type
 `conference` (the `[service] service_type`) and their SIP bind address; the
 selector returns that address as the target host.
 
-## Phase 2 preview: trunks
+## Phase 2: trunks
 
-When node B starts hosting a room that node A already hosts, the node with
-the lower id dials the other over SIPS with a trunk header. The callee
-admits it as a hidden `__trunk__<node>` participant that skips PIN, lock,
-waiting room, and capacity checks. Each trunk carries only the sending
-node's local participants (a local-only mix computed in the conference
-server from the room's per-participant audio), so a full mesh never
-duplicates audio. Trunks follow the registry: connect when a peer appears,
-hang up when it leaves or the room empties.
+When two conference nodes host the same room, the node with the lower id
+dials the other over SIP/TLS, and the callee admits the call as a hidden
+`__trunk__<node>` participant. Each trunk carries only the sending node's
+local participants, so a room spread over three nodes is a full mesh of
+three trunks and no participant is ever mixed twice.
 
-Because a trunk participant bypasses every admission check, accepting one
-requires proof of who is calling. That is mutual TLS on the SIP transport,
-which siphon-rs does not provide yet: the TLS listener asks for no client
-certificate, outbound TLS carries none, and inbound requests expose no peer
-identity. siphon-rs issue #129 specifies the transport work; phase 2 starts
-once it is released and the submodule is bumped.
+### What proves a trunk is a trunk
+
+A trunk participant bypasses every caller-facing admission check — PIN,
+lock, waiting room, room capacity, the per-node participant limit. It can,
+because the *connection* proves who is calling, not the message:
+
+- The trunk INVITE arrives on the callee's TLS listener (`sip.tls_bind`),
+  which requests a client certificate and verifies it against the cluster
+  CA (`sip.tls_client_ca_path`; siphon-rs `v2026.09.03` mutual TLS). The
+  verified identity travels with the request as `TransportContext ::
+  peer_identity` into the conference handler.
+- The INVITE names the dialing node in `X-FCP-Trunk-Node` and the tenant in
+  `X-FCP-Trunk-Tenant`. The node header is never trusted on its own: the
+  certificate must **name that node** — as its Common Name, a DNS SAN, or
+  the user or host part of a `sip:` / `sips:` URI SAN (RFC 5922 §7.1).
+  No certificate, or a certificate for another node, is a 403.
+- The room must already have local callers on the callee (480 otherwise);
+  a trunk to a node with nobody to mix is pointless and the caller's own
+  reconcile would not hold it.
+
+Outbound, the dialing node presents its own certificate (`sip.tls_cert_path`
+/ `sip.tls_key_path`, or the `tls_client_*` overrides) and verifies the
+peer's certificate against the cluster CA. Peers are dialed by the address
+they advertise in cluster membership while their certificates name the
+node, so a certificate chaining to the cluster CA is accepted under any DNS
+name it carries; public servers under the system roots keep the ordinary
+name check. Outbound TLS connections are pooled and read (siphon-rs
+`TlsPool`), so responses and in-dialog requests come back on the connection
+the INVITE went out on.
+
+### Certificates
+
+Every conference node needs, from one cluster CA:
+
+- a certificate whose CN or a DNS SAN is the node's `service.node_id`
+  (a `sip:<node_id>@…` URI SAN also works for the inbound check, but the
+  outbound name check needs a DNS SAN);
+- extended key usage covering both `serverAuth` and `clientAuth` (or no
+  EKU extension at all) — the same certificate is presented both ways;
+- a private key file readable only by its owner (siphon-rs refuses to load
+  anything more permissive).
+
+`sip.tls_client_auth = "required"` (the default when a CA is set) refuses
+any TLS peer without a certificate at the handshake. Use `"optional"` only
+while rolling certificates out across a fleet; a trunk INVITE from a peer
+that presented nothing is still rejected.
+
+### When trunks connect and disconnect
+
+The trunk manager reconciles each room against the conference registry
+(phase 1) on every local join and leave, and every
+`cluster.trunk_reconcile_interval_secs` (default 2 s) for every room the
+node hosts:
+
+- for each other node the registry shows hosting the room (with local
+  participants, and alive in cluster membership), the node with the lower
+  id dials if no trunk exists yet;
+- a trunk whose peer no longer hosts the room, or is no longer a live
+  member, is hung up;
+- when this node's last local participant leaves, all of its trunks are
+  hung up.
+
+A failed dial is retried after 10 s. A trunk INVITE from a peer this node
+believes it already has a trunk with replaces the old one (the peer would
+not redial if it thought its trunk was up). Trunk sessions carry no SIP
+session timer and are exempt from the session-expiry reaper; the
+reconciler is what tears them down. Trunks publish no participant events
+and are excluded from placement counts (the `__` prefix rule).
+
+`GET /conferences/{room}` on a conference node lists the room's `trunks`
+(peer node ids) alongside its participants.
+
+### Media: the frame-clock mixer
+
+Cascaded mixing needs each trunk's outbound audio to be a mix of the local
+callers only — not the other trunks, or a mesh would echo every node's
+audio back to it — while every local caller hears everyone. forge-media
+`v2026.09.03` adds a frame-clock mode to `forge-mixer` for this, and the
+conference server runs every room on it:
+
+- one clock task per room takes one frame from every participant per
+  20 ms tick and snapshots it; nothing is consumed by reading;
+- each participant's outbound loop awaits the tick and reads its N-1 mix;
+  a trunk reads `mix_frame_filtered(not a trunk, not the feedback channel)`;
+- the recorder and an attached AI participant read the same snapshot.
+
+This also fixes a defect in single-node conferences: the previous mixer
+drained a participant's buffer on read, and with three or more callers each
+frame of speech reached only the listener whose tick came first.
+
+Trunk media is plain RTP with the codec negotiated from `G722`, `PCMU`,
+`PCMA` (wideband first, filtered by `conference.allowed_codecs`), no DTMF,
+no SRTP — the inter-node network is assumed private; trunk SRTP is a phase
+4 item.
+
+### Configuration
+
+```toml
+[service]
+node_id = "conf-a"                      # what the certificate must name
+
+[sip]
+udp_bind = "0.0.0.0:5060"
+tcp_bind = "0.0.0.0:5060"
+tls_bind = "0.0.0.0:5061"               # trunks arrive here
+tls_cert_path = "/etc/fcp/conf-a.crt"    # CN or DNS SAN = conf-a
+tls_key_path  = "/etc/fcp/conf-a.key"    # mode 0600
+tls_client_ca_path = "/etc/fcp/cluster-ca.pem"
+tls_client_auth = "required"            # default when a CA is set
+local_ip = "10.0.0.20"                  # advertised with tls_bind's port
+
+[cluster]
+enabled = true
+trunk_reconcile_interval_secs = 2
+```
+
+and, on the call manager, `b2bua.conference_node_capacity` set to the
+per-node room size at which new joiners spread to another node (phase 1).
+A conference node without `tls_bind`, a client CA and a certificate logs a
+warning at startup and hosts rooms on its own only.

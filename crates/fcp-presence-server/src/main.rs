@@ -229,6 +229,7 @@ async fn main() -> Result<()> {
                             .udp_bind
                             .parse()
                             .unwrap_or_else(|_| "0.0.0.0:5060".parse().unwrap()),
+                        sip_tls_address: None,
                         capabilities: vec!["presence".to_string(), "blf".to_string()],
                         active_calls: 0,
                         started_at: std::time::SystemTime::now()
@@ -351,6 +352,8 @@ async fn main() -> Result<()> {
         tls_bind: None,
         tls_cert: config.sip.tls_cert_path.clone(),
         tls_key: config.sip.tls_key_path.clone(),
+        tls_client_ca: None,
+        tls_client_auth: None,
         ws_bind,
         wss_bind,
     };
@@ -382,6 +385,7 @@ async fn main() -> Result<()> {
                     packet.peer(),
                     packet.payload().clone(),
                     packet.stream().cloned(),
+                    packet.peer_identity().cloned(),
                 )
                 .await
             {

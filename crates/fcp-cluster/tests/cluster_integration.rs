@@ -34,6 +34,7 @@ fn test_member(name: &str, http_port: u16) -> ClusterMember {
         node_type: "call_manager".to_string(),
         http_address: SocketAddr::from(([127, 0, 0, 1], http_port)),
         sip_address: SocketAddr::from(([127, 0, 0, 1], 5060)),
+        sip_tls_address: None,
         capabilities: vec!["registrar".to_string(), "b2bua".to_string()],
         active_calls: 0,
         started_at: 1000,

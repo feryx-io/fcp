@@ -126,6 +126,7 @@ impl InboundMessageHandler for SbcEnforcementHandler {
         peer: SocketAddr,
         payload: Bytes,
         stream: Option<mpsc::Sender<Bytes>>,
+        peer_identity: Option<Arc<sip_transport::PeerIdentity>>,
     ) -> anyhow::Result<()> {
         // 0. SIP responses bypass security enforcement — they are replies to
         //    our own outbound requests and must reach the transaction layer.
@@ -145,7 +146,7 @@ impl InboundMessageHandler for SbcEnforcementHandler {
             };
             return self
                 .inner
-                .handle_inbound(transport, peer, payload, stream)
+                .handle_inbound(transport, peer, payload, stream, peer_identity)
                 .await;
         }
 
@@ -398,7 +399,7 @@ impl InboundMessageHandler for SbcEnforcementHandler {
 
         // 8. Delegate to inner handler
         self.inner
-            .handle_inbound(transport, peer, payload, stream)
+            .handle_inbound(transport, peer, payload, stream, peer_identity)
             .await
     }
 }
@@ -777,6 +778,7 @@ mod tests {
             peer: SocketAddr,
             payload: Bytes,
             _stream: Option<mpsc::Sender<Bytes>>,
+            _peer_identity: Option<Arc<sip_transport::PeerIdentity>>,
         ) -> anyhow::Result<()> {
             self.calls.lock().await.push((transport, peer, payload));
             Ok(())
@@ -890,6 +892,7 @@ mod tests {
                 test_peer(),
                 valid_invite(),
                 Some(tx),
+                None,
             )
             .await
             .unwrap();
@@ -919,6 +922,7 @@ mod tests {
                 sip_transaction::TransportKind::Udp,
                 test_peer(),
                 valid_options(),
+                None,
                 None,
             )
             .await
@@ -953,6 +957,7 @@ mod tests {
                 test_peer(),
                 valid_invite(), // > 100 bytes
                 Some(tx),
+                None,
             )
             .await
             .unwrap();
@@ -993,6 +998,7 @@ mod tests {
                 test_peer(),
                 valid_options(),
                 None,
+                None,
             )
             .await
             .unwrap();
@@ -1006,6 +1012,7 @@ mod tests {
                 test_peer(),
                 valid_options(),
                 Some(tx),
+                None,
             )
             .await
             .unwrap();
@@ -1041,6 +1048,7 @@ mod tests {
                 sip_transaction::TransportKind::Udp,
                 test_peer(),
                 bad_payload,
+                None,
                 None,
             )
             .await
@@ -1081,6 +1089,7 @@ mod tests {
                 test_peer(),
                 bad_payload,
                 Some(tx),
+                None,
             )
             .await
             .unwrap();
@@ -1117,6 +1126,7 @@ mod tests {
                 test_peer(),
                 valid_invite(),
                 Some(tx),
+                None,
             )
             .await
             .unwrap();
@@ -1154,6 +1164,7 @@ mod tests {
                 test_peer(),
                 valid_register(),
                 Some(tx),
+                None,
             )
             .await
             .unwrap();
@@ -1192,6 +1203,7 @@ mod tests {
                 sip_transaction::TransportKind::Udp,
                 test_peer(),
                 response_payload,
+                None,
                 None,
             )
             .await
@@ -1257,6 +1269,7 @@ mod tests {
                 test_peer(),
                 payload,
                 None,
+                None,
             )
             .await
             .unwrap();
@@ -1302,6 +1315,7 @@ mod tests {
                 sip_transaction::TransportKind::Udp,
                 test_peer(),
                 valid_invite(),
+                None,
                 None,
             )
             .await
