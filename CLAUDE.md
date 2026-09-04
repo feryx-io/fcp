@@ -137,7 +137,7 @@ fcp/
 │   ├── fcp-queue/                # ACD queue service (ring strategies, agent management)
 │   ├── fcp-presence/             # Presence and BLF (SUBSCRIBE/NOTIFY, dialog events)
 │   ├── fcp-webhooks/             # Webhook dispatcher (HMAC-signed, retry with backoff)
-│   ├── fcp-cluster/              # Clustering (SWIM protocol, node membership)
+│   ├── fcp-cluster/              # Clustering (Redis heartbeats, node membership, regions)
 │   │
 │   │ # ── Media ─────────────────────────────────────────────
 │   ├── fcp-media/                # Media session management, RTP relay, DTMF, recording
@@ -477,7 +477,7 @@ async fn handle_request(request: Request, tenant_id: TenantId) -> Result<()> {
 
 **Focus:** HA clustering and application suite
 
-- ✅ `fcp-cluster`: SWIM protocol clustering
+- ✅ `fcp-cluster`: Redis-heartbeat clustering (membership, call/conference registries, region labels)
 - ✅ `fcp-queue`: ACD queue service
 - ✅ `fcp-presence` / `fcp-presence-server`: Presence and BLF
 - ✅ `fcp-conference-server`: Conference bridge
@@ -509,7 +509,7 @@ async fn handle_request(request: Request, tenant_id: TenantId) -> Result<()> {
 - E911 integration — block 1 shipped (`docs/E911.md`): detection, dispatchable location, ELIN caller ID, emergency-capable trunks, audit + event, admin API
 - Regulatory compliance features — basics shipped (`docs/COMPLIANCE.md`): retention policy + sweep, recording consent, admin audit log, CDR export
 - Distributed conferencing (cascaded mixing) — all four phases shipped (registry + placement, mutual-TLS inter-node trunks with cascaded mixing, cross-node control under a shared `cluster.secret`, resilience: registry freshness, trunk liveness, draining, trunk SRTP; `docs/DISTRIBUTED_CONFERENCING.md`). Participant migration off a draining node is not done
-- Multi-region support — read replicas shipped (`docs/MULTI_REGION.md`: Postgres primary + per-region streaming replicas, configuration reads routed to a healthy replica; CockroachDB dropped); region-aware cluster membership and event bus next
+- Multi-region support — read replicas and region-aware cluster membership shipped (`docs/MULTI_REGION.md`: Postgres primary + per-region streaming replicas with configuration reads routed to a healthy replica; `[cluster] region` on every node's heartbeat, conference placement prefers the caller's region, admin API/UI show regions; CockroachDB dropped); cross-region event-bus fan-out next
 - Video conferencing
 
 Descoped on 2026-09-02: SQLite backend, plugin runtime (WASM/Lua), gRPC API, standalone

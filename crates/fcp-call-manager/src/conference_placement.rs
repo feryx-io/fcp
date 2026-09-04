@@ -4,8 +4,9 @@
 //! registry (which nodes host a room, with how many participants) and live
 //! cluster membership: a new participant stays on a node already hosting
 //! the room while that node is under `conference_node_capacity`, otherwise
-//! goes to the least-loaded conference node. See
-//! `docs/DISTRIBUTED_CONFERENCING.md`.
+//! goes to the least-loaded conference node, preferring this node's region
+//! at every step. See `docs/DISTRIBUTED_CONFERENCING.md` and
+//! `docs/MULTI_REGION.md`.
 
 use dashmap::DashMap;
 use fcp_cluster::{choose_conference_node, ClusterMember, ConferenceRegistry};
@@ -17,6 +18,8 @@ pub struct ClusterConferenceSelector {
     registry: ConferenceRegistry,
     members: Arc<DashMap<String, ClusterMember>>,
     capacity: usize,
+    /// This node's region: participants it places are joining from here.
+    local_region: Option<String>,
 }
 
 impl ClusterConferenceSelector {
@@ -24,11 +27,13 @@ impl ClusterConferenceSelector {
         registry: ConferenceRegistry,
         members: Arc<DashMap<String, ClusterMember>>,
         capacity: usize,
+        local_region: Option<String>,
     ) -> Self {
         Self {
             registry,
             members,
             capacity,
+            local_region,
         }
     }
 }
@@ -52,10 +57,17 @@ impl fcp_sip::ConferenceNodeSelector for ClusterConferenceSelector {
             }
         };
         let members: Vec<ClusterMember> = self.members.iter().map(|e| e.value().clone()).collect();
-        let pick = choose_conference_node(&hosts, &members, self.capacity)?;
+        let pick = choose_conference_node(
+            &hosts,
+            &members,
+            self.capacity,
+            self.local_region.as_deref(),
+        )?;
         debug!(
             room = %room_number,
             node = %pick.node_id,
+            node_region = pick.region.as_deref().unwrap_or("-"),
+            local_region = self.local_region.as_deref().unwrap_or("-"),
             hosting = hosts.len(),
             capacity = self.capacity,
             "Conference participant placed"

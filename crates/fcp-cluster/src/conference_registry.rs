@@ -22,7 +22,8 @@
 //! [`choose_conference_node`] is the placement rule the call manager uses
 //! when a new participant dials a room: stay on a node already hosting the
 //! room while it is under the configured capacity, otherwise the
-//! least-loaded conference node in the cluster.
+//! least-loaded conference node in the cluster — preferring, at each step,
+//! nodes in the caller's own region (`docs/MULTI_REGION.md`).
 
 use crate::membership::ClusterMember;
 use fcp_storage_redis::RedisStorage;
@@ -226,17 +227,30 @@ impl ConferenceRegistry {
 ///   not draining qualify.
 /// - `capacity`: participants per node per room before the room is spread
 ///   to another node; `0` means never spread.
+/// - `local_region`: the region the participant is joining from (the
+///   placing node's own region); `None` places without regard to region.
 ///
-/// A hosting node that is still live and under capacity wins (the fullest
-/// one, so a room stays on as few nodes as possible). Otherwise the
-/// least-loaded live conference node. `None` when no conference node is
-/// alive, so callers fall back to static configuration. A draining node
-/// (shutting down, still hosting its current callers) never takes new
-/// participants, even for a room it hosts.
+/// In order:
+///
+/// 1. A node in the local region already hosting the room, live and under
+///    capacity — the fullest, so a room stays on as few nodes as possible.
+/// 2. The least-loaded live conference node in the local region, even
+///    when another region hosts the room with room to spare: the
+///    participant's media then stays in region, and the cascade trunk
+///    between hosting nodes carries the cross-region audio once.
+/// 3. A hosting node under capacity in any region, the fullest.
+/// 4. The least-loaded live conference node anywhere.
+///
+/// `None` when no conference node is alive, so callers fall back to static
+/// configuration. A draining node (shutting down, still hosting its
+/// current callers) never takes new participants, even for a room it
+/// hosts. Nodes without a region are never local; they take part in
+/// steps 3 and 4 only. Without a `local_region`, only steps 3 and 4 apply.
 pub fn choose_conference_node(
     hosts: &[ConferenceHost],
     members: &[ClusterMember],
     capacity: usize,
+    local_region: Option<&str>,
 ) -> Option<ClusterMember> {
     let live: Vec<&ClusterMember> = members
         .iter()
@@ -246,6 +260,7 @@ pub fn choose_conference_node(
         return None;
     }
 
+    // Hosting nodes that can take one more participant, fullest first.
     let mut hosting: Vec<(&ConferenceHost, &ClusterMember)> = hosts
         .iter()
         .filter_map(|h| {
@@ -260,13 +275,32 @@ pub fn choose_conference_node(
             .cmp(&a.0.participants)
             .then(a.0.node_id.cmp(&b.0.node_id))
     });
+
+    let least_loaded = |candidates: &[&ClusterMember]| -> Option<ClusterMember> {
+        candidates
+            .iter()
+            .min_by_key(|m| (m.active_calls, m.node_id.clone()))
+            .map(|m| (*m).clone())
+    };
+
+    if let Some(region) = local_region {
+        if let Some((_, member)) = hosting.iter().find(|(_, m)| m.in_region(region)) {
+            return Some((*member).clone());
+        }
+        let local: Vec<&ClusterMember> = live
+            .iter()
+            .copied()
+            .filter(|m| m.in_region(region))
+            .collect();
+        if let Some(pick) = least_loaded(&local) {
+            return Some(pick);
+        }
+    }
+
     if let Some((_, member)) = hosting.first() {
         return Some((*member).clone());
     }
-
-    live.iter()
-        .min_by_key(|m| (m.active_calls, m.node_id.clone()))
-        .map(|m| (*m).clone())
+    least_loaded(&live)
 }
 
 #[cfg(test)]
@@ -356,15 +390,15 @@ mod tests {
         draining.draining = true;
         let members = vec![draining, member("conf-b", "conference", 50)];
         // conf-a hosts the room and is under capacity, but is draining.
-        let pick = choose_conference_node(&[host("conf-a", 3)], &members, 100).unwrap();
+        let pick = choose_conference_node(&[host("conf-a", 3)], &members, 100, None).unwrap();
         assert_eq!(pick.node_id, "conf-b");
         // A brand-new room avoids it too, whatever its load.
-        let pick = choose_conference_node(&[], &members, 0).unwrap();
+        let pick = choose_conference_node(&[], &members, 0, None).unwrap();
         assert_eq!(pick.node_id, "conf-b");
         // With every conference node draining there is nothing to pick.
         let mut all = members.clone();
         all[1].draining = true;
-        assert!(choose_conference_node(&[], &all, 0).is_none());
+        assert!(choose_conference_node(&[], &all, 0, None).is_none());
     }
 
     fn member(id: &str, node_type: &str, calls: usize) -> ClusterMember {
@@ -379,7 +413,13 @@ mod tests {
             started_at: 0,
             version: "test".to_string(),
             draining: false,
+            region: None,
         }
+    }
+
+    fn in_region(mut m: ClusterMember, region: &str) -> ClusterMember {
+        m.region = Some(region.to_string());
+        m
     }
 
     fn host(id: &str, n: usize) -> ConferenceHost {
@@ -396,7 +436,7 @@ mod tests {
             member("conf-b", "conference", 12),
             member("cm-1", "call_manager", 0),
         ];
-        let pick = choose_conference_node(&[], &members, 0).unwrap();
+        let pick = choose_conference_node(&[], &members, 0, None).unwrap();
         assert_eq!(pick.node_id, "conf-b");
     }
 
@@ -407,10 +447,10 @@ mod tests {
             member("conf-b", "conference", 1),
         ];
         // conf-a hosts the room with 30 participants; capacity 100 → stay.
-        let pick = choose_conference_node(&[host("conf-a", 30)], &members, 100).unwrap();
+        let pick = choose_conference_node(&[host("conf-a", 30)], &members, 100, None).unwrap();
         assert_eq!(pick.node_id, "conf-a");
         // capacity 0 = never spread, even when a node is busy.
-        let pick = choose_conference_node(&[host("conf-a", 30)], &members, 0).unwrap();
+        let pick = choose_conference_node(&[host("conf-a", 30)], &members, 0, None).unwrap();
         assert_eq!(pick.node_id, "conf-a");
     }
 
@@ -421,17 +461,23 @@ mod tests {
             member("conf-b", "conference", 5),
             member("conf-c", "conference", 9),
         ];
-        let pick = choose_conference_node(&[host("conf-a", 100)], &members, 100).unwrap();
+        let pick = choose_conference_node(&[host("conf-a", 100)], &members, 100, None).unwrap();
         assert_eq!(pick.node_id, "conf-b");
         // Once conf-b hosts too, it is preferred until it is full as well.
-        let pick = choose_conference_node(&[host("conf-a", 100), host("conf-b", 3)], &members, 100)
-            .unwrap();
+        let pick = choose_conference_node(
+            &[host("conf-a", 100), host("conf-b", 3)],
+            &members,
+            100,
+            None,
+        )
+        .unwrap();
         assert_eq!(pick.node_id, "conf-b");
         // The fullest under-capacity host wins, to keep the room compact.
         let pick = choose_conference_node(
             &[host("conf-a", 100), host("conf-b", 3), host("conf-c", 50)],
             &members,
             100,
+            None,
         )
         .unwrap();
         assert_eq!(pick.node_id, "conf-c");
@@ -441,13 +487,93 @@ mod tests {
     fn dead_hosts_are_ignored_and_no_conference_nodes_means_none() {
         let members = vec![member("conf-b", "conference", 5)];
         // conf-a is in the registry but not in membership: skip it.
-        let pick = choose_conference_node(&[host("conf-a", 3)], &members, 100).unwrap();
+        let pick = choose_conference_node(&[host("conf-a", 3)], &members, 100, None).unwrap();
         assert_eq!(pick.node_id, "conf-b");
         assert!(choose_conference_node(
             &[host("conf-a", 3)],
             &[member("cm-1", "call_manager", 0)],
-            100
+            100,
+            None
         )
         .is_none());
+    }
+
+    #[test]
+    fn local_region_host_wins_over_a_fuller_remote_host() {
+        let members = vec![
+            in_region(member("conf-us", "conference", 40), "us-east"),
+            in_region(member("conf-eu", "conference", 1), "eu-west"),
+        ];
+        let hosts = [host("conf-eu", 50), host("conf-us", 2)];
+        // From the US the US host wins although the EU host is fuller.
+        let pick = choose_conference_node(&hosts, &members, 100, Some("us-east")).unwrap();
+        assert_eq!(pick.node_id, "conf-us");
+        // From the EU, the EU host.
+        let pick = choose_conference_node(&hosts, &members, 100, Some("eu-west")).unwrap();
+        assert_eq!(pick.node_id, "conf-eu");
+        // Region-blind placement keeps the old rule: the fullest host.
+        let pick = choose_conference_node(&hosts, &members, 100, None).unwrap();
+        assert_eq!(pick.node_id, "conf-eu");
+    }
+
+    #[test]
+    fn room_spreads_into_the_local_region_before_using_a_remote_host() {
+        let members = vec![
+            in_region(member("conf-us-a", "conference", 9), "us-east"),
+            in_region(member("conf-us-b", "conference", 4), "us-east"),
+            in_region(member("conf-eu", "conference", 0), "eu-west"),
+        ];
+        // The EU hosts the room with plenty of capacity, but a US caller
+        // is placed on the least-loaded US node, starting a cascade.
+        let pick =
+            choose_conference_node(&[host("conf-eu", 3)], &members, 100, Some("us-east")).unwrap();
+        assert_eq!(pick.node_id, "conf-us-b");
+        // A brand-new room from the US also starts in the US.
+        let pick = choose_conference_node(&[], &members, 0, Some("us-east")).unwrap();
+        assert_eq!(pick.node_id, "conf-us-b");
+        // Once a US node hosts it, that node is preferred over the emptier US node.
+        let pick = choose_conference_node(
+            &[host("conf-eu", 3), host("conf-us-a", 1)],
+            &members,
+            100,
+            Some("us-east"),
+        )
+        .unwrap();
+        assert_eq!(pick.node_id, "conf-us-a");
+    }
+
+    #[test]
+    fn full_or_draining_local_region_falls_back_to_other_regions() {
+        let mut draining = in_region(member("conf-us", "conference", 1), "us-east");
+        draining.draining = true;
+        let members = vec![
+            draining,
+            in_region(member("conf-eu", "conference", 7), "eu-west"),
+            member("conf-anywhere", "conference", 3),
+        ];
+        // Nothing usable in the US: a hosting node elsewhere wins first …
+        let pick =
+            choose_conference_node(&[host("conf-eu", 10)], &members, 100, Some("us-east")).unwrap();
+        assert_eq!(pick.node_id, "conf-eu");
+        // … else the least-loaded node anywhere, unlabeled nodes included.
+        let pick = choose_conference_node(&[], &members, 0, Some("us-east")).unwrap();
+        assert_eq!(pick.node_id, "conf-anywhere");
+        // A region nobody is in behaves the same.
+        let pick = choose_conference_node(&[], &members, 0, Some("ap-south")).unwrap();
+        assert_eq!(pick.node_id, "conf-anywhere");
+    }
+
+    #[test]
+    fn unlabeled_nodes_are_never_local() {
+        let members = vec![
+            member("conf-unlabeled", "conference", 0),
+            in_region(member("conf-us", "conference", 30), "us-east"),
+        ];
+        // A US caller stays in the US even though the unlabeled node is idle.
+        let pick = choose_conference_node(&[], &members, 0, Some("us-east")).unwrap();
+        assert_eq!(pick.node_id, "conf-us");
+        // A caller with no region of their own takes the idle node.
+        let pick = choose_conference_node(&[], &members, 0, None).unwrap();
+        assert_eq!(pick.node_id, "conf-unlabeled");
     }
 }

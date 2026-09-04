@@ -4,6 +4,8 @@
 //! - Each node writes `cluster:node:{node_id}` with a 15s TTL, refreshed every 5s
 //! - If a node crashes, its key expires and other nodes detect it
 //! - Call ownership is tracked via `cluster:call:{call_id}` keys
+//! - Each node may advertise a deployment region; placement prefers the
+//!   caller's region (`docs/MULTI_REGION.md`)
 
 pub mod call_registry;
 pub mod conference_registry;
@@ -15,6 +17,6 @@ pub use call_registry::CallRegistry;
 pub use conference_registry::{
     choose_conference_node, ConferenceHost, ConferenceRegistry, RoomRecord, CONFERENCE_NODE_TYPE,
 };
-pub use membership::{ClusterManager, ClusterMember};
+pub use membership::{resolve_region, ClusterManager, ClusterMember};
 pub use node_client::NodeClient;
 pub use reader::{ClusterNodeInfo, ClusterNodeStatus, ClusterReader, ClusterStats};

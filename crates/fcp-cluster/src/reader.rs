@@ -42,6 +42,11 @@ pub struct ClusterNodeInfo {
     pub version: String,
     pub status: ClusterNodeStatus,
     pub uptime_seconds: u64,
+    /// Shutting down; taking nothing new.
+    pub draining: bool,
+    /// Deployment region the node advertises, when it has one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
 }
 
 /// Aggregate statistics across all cluster nodes.
@@ -53,6 +58,10 @@ pub struct ClusterStats {
     pub offline_nodes: usize,
     pub total_active_calls: usize,
     pub nodes_by_type: HashMap<String, usize>,
+    /// Nodes per advertised region; nodes without one are not counted here.
+    pub nodes_by_region: HashMap<String, usize>,
+    /// Nodes that advertise no region.
+    pub nodes_without_region: usize,
 }
 
 impl ClusterReader {
@@ -142,6 +151,8 @@ impl ClusterReader {
                     version: member.version,
                     status,
                     uptime_seconds,
+                    draining: member.draining,
+                    region: member.region,
                 });
             }
 
@@ -155,33 +166,94 @@ impl ClusterReader {
         Ok(nodes)
     }
 
+    /// The cluster nodes in `region` (by advertised region label).
+    pub async fn list_nodes_in_region(&self, region: &str) -> anyhow::Result<Vec<ClusterNodeInfo>> {
+        Ok(self
+            .list_nodes()
+            .await?
+            .into_iter()
+            .filter(|n| n.region.as_deref() == Some(region))
+            .collect())
+    }
+
     /// Get aggregate statistics across all cluster nodes.
     pub async fn get_stats(&self) -> anyhow::Result<ClusterStats> {
         let nodes = self.list_nodes().await?;
+        Ok(summarize(&nodes))
+    }
+}
 
-        let mut healthy = 0usize;
-        let mut degraded = 0usize;
-        let mut offline = 0usize;
-        let mut total_calls = 0usize;
-        let mut by_type: HashMap<String, usize> = HashMap::new();
+/// Aggregate a node listing.
+fn summarize(nodes: &[ClusterNodeInfo]) -> ClusterStats {
+    let mut healthy = 0usize;
+    let mut degraded = 0usize;
+    let mut offline = 0usize;
+    let mut total_calls = 0usize;
+    let mut by_type: HashMap<String, usize> = HashMap::new();
+    let mut by_region: HashMap<String, usize> = HashMap::new();
+    let mut without_region = 0usize;
 
-        for node in &nodes {
-            match node.status {
-                ClusterNodeStatus::Healthy => healthy += 1,
-                ClusterNodeStatus::Degraded => degraded += 1,
-                ClusterNodeStatus::Offline => offline += 1,
-            }
-            total_calls += node.active_calls;
-            *by_type.entry(node.node_type.clone()).or_default() += 1;
+    for node in nodes {
+        match node.status {
+            ClusterNodeStatus::Healthy => healthy += 1,
+            ClusterNodeStatus::Degraded => degraded += 1,
+            ClusterNodeStatus::Offline => offline += 1,
         }
+        total_calls += node.active_calls;
+        *by_type.entry(node.node_type.clone()).or_default() += 1;
+        match &node.region {
+            Some(region) => *by_region.entry(region.clone()).or_default() += 1,
+            None => without_region += 1,
+        }
+    }
 
-        Ok(ClusterStats {
-            total_nodes: nodes.len(),
-            healthy_nodes: healthy,
-            degraded_nodes: degraded,
-            offline_nodes: offline,
-            total_active_calls: total_calls,
-            nodes_by_type: by_type,
-        })
+    ClusterStats {
+        total_nodes: nodes.len(),
+        healthy_nodes: healthy,
+        degraded_nodes: degraded,
+        offline_nodes: offline,
+        total_active_calls: total_calls,
+        nodes_by_type: by_type,
+        nodes_by_region: by_region,
+        nodes_without_region: without_region,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn node(id: &str, node_type: &str, region: Option<&str>, calls: usize) -> ClusterNodeInfo {
+        ClusterNodeInfo {
+            node_id: id.to_string(),
+            node_type: node_type.to_string(),
+            http_address: "10.0.0.1:8080".to_string(),
+            sip_address: "10.0.0.1:5060".to_string(),
+            capabilities: Vec::new(),
+            active_calls: calls,
+            started_at: 0,
+            version: "test".to_string(),
+            status: ClusterNodeStatus::Healthy,
+            uptime_seconds: 0,
+            draining: false,
+            region: region.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn stats_count_nodes_per_region_and_the_unlabeled() {
+        let stats = summarize(&[
+            node("cm-1", "call_manager", Some("us-east"), 3),
+            node("conf-1", "conference", Some("us-east"), 10),
+            node("cm-2", "call_manager", Some("eu-west"), 1),
+            node("legacy", "call_manager", None, 0),
+        ]);
+        assert_eq!(stats.total_nodes, 4);
+        assert_eq!(stats.total_active_calls, 14);
+        assert_eq!(stats.nodes_by_region["us-east"], 2);
+        assert_eq!(stats.nodes_by_region["eu-west"], 1);
+        assert_eq!(stats.nodes_by_region.len(), 2);
+        assert_eq!(stats.nodes_without_region, 1);
+        assert_eq!(stats.nodes_by_type["call_manager"], 3);
     }
 }

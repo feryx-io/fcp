@@ -199,6 +199,7 @@ async fn main() -> Result<()> {
                     .as_secs(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
                 draining: false,
+                region: fcp_cluster::resolve_region(config.cluster.region.as_deref()),
             };
 
             let cm =
@@ -226,9 +227,11 @@ async fn main() -> Result<()> {
                     ),
                     Arc::clone(cm.members_map()),
                     config.b2bua.conference_node_capacity,
+                    cm.region().map(str::to_owned),
                 ));
             info!(
                 capacity = config.b2bua.conference_node_capacity,
+                region = cm.region().unwrap_or("-"),
                 "Cluster-aware conference placement enabled"
             );
             Some((cm, call_registry, conference_selector))
