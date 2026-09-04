@@ -11,6 +11,12 @@ use fcp_storage_redis::{RedisConfig, RedisStorage};
 use std::time::{Duration, SystemTime};
 
 fn redis_url() -> Option<String> {
+    // The bridge's own log lines are the diagnostics when this fails in an
+    // environment we cannot reproduce; the harness prints them on failure.
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("fcp_storage_redis=debug")
+        .with_test_writer()
+        .try_init();
     match std::env::var("FCP_TEST_REDIS_URL") {
         Ok(u) => Some(u),
         Err(_) => {

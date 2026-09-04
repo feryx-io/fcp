@@ -536,6 +536,8 @@ pub struct PeerBridgeStatus {
     /// Entries read or claimed that were not forwarded because they were
     /// themselves relayed from another region.
     pub skipped_relayed: u64,
+    /// Forwarding attempts started (each batch, each retry).
+    pub attempts: u64,
     /// Forwarding attempts that failed since start (each is retried).
     pub failed: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -548,6 +550,7 @@ struct PeerCounters {
     forwarded: AtomicU64,
     claimed: AtomicU64,
     skipped_relayed: AtomicU64,
+    attempts: AtomicU64,
     failed: AtomicU64,
     last_error: Mutex<Option<String>>,
 }
@@ -564,6 +567,7 @@ impl PeerCounters {
             forwarded: self.forwarded.load(Ordering::Relaxed),
             claimed: self.claimed.load(Ordering::Relaxed),
             skipped_relayed: self.skipped_relayed.load(Ordering::Relaxed),
+            attempts: self.attempts.load(Ordering::Relaxed),
             failed: self.failed.load(Ordering::Relaxed),
             last_error: self
                 .last_error
@@ -633,6 +637,7 @@ impl EventBridge {
                     forwarded: AtomicU64::new(0),
                     claimed: AtomicU64::new(0),
                     skipped_relayed: AtomicU64::new(0),
+                    attempts: AtomicU64::new(0),
                     failed: AtomicU64::new(0),
                     last_error: Mutex::new(None),
                 });
@@ -754,6 +759,8 @@ async fn run_peer(
         let counters = Arc::clone(&counters);
         let peer_region = peer.region.clone();
         async move {
+            counters.attempts.fetch_add(1, Ordering::Relaxed);
+            info!(peer = %peer_region, entries = entries.len(), reconnect, "Event bridge: forwarding a batch");
             // After a failure, write on a fresh connection: the shared one
             // may be wedged.
             let peer_storage = if reconnect {
@@ -781,7 +788,9 @@ async fn run_peer(
                 let mut conn = peer_storage.connection();
                 let write = pipe.query_async::<()>(&mut conn);
                 match tokio::time::timeout(PEER_WRITE_TIMEOUT, write).await {
-                    Ok(Ok(())) => {}
+                    Ok(Ok(())) => {
+                        info!(peer = %peer_region, forwarded = n, "Event bridge: peer accepted the batch");
+                    }
                     Ok(Err(e)) => return Err(anyhow::anyhow!("forwarding to peer failed: {e}")),
                     Err(_) => {
                         return Err(anyhow::anyhow!(
@@ -861,7 +870,7 @@ async fn run_peer(
         counters.connected.store(true, Ordering::Relaxed);
         counters.forwarded.fetch_add(n as u64, Ordering::Relaxed);
         if n > 0 {
-            debug!(peer = %peer.region, forwarded = n, "Event bridge: batch forwarded");
+            info!(peer = %peer.region, forwarded = n, ids = ?ids, "Event bridge: batch forwarded");
         }
         if let Err(e) = consumer.ack(&ids).await {
             counters.fail(&e);
