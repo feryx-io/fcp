@@ -6,6 +6,12 @@
 //! the key's TTL, so a node that stops heartbeating its rooms disappears
 //! from the registry on its own.
 //!
+//! The same hash carries the room-wide lock flag in the `__locked` field
+//! (phase 3, cross-node control): a node that starts hosting a room other
+//! nodes already host inherits the lock from here, so a locked room stays
+//! locked when placement spreads it to a fresh node. Fields starting with
+//! `__` are never node ids.
+//!
 //! [`choose_conference_node`] is the placement rule the call manager uses
 //! when a new participant dials a room: stay on a node already hosting the
 //! room while it is under the configured capacity, otherwise the
@@ -19,11 +25,41 @@ use tracing::debug;
 /// Node type advertised by conference servers in cluster membership.
 pub const CONFERENCE_NODE_TYPE: &str = "conference";
 
+/// Hash field holding the room-wide lock flag. Not a node id.
+const LOCKED_FIELD: &str = "__locked";
+
 /// One node hosting a room.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConferenceHost {
     pub node_id: String,
     pub participants: usize,
+}
+
+/// Everything the registry knows about one room.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RoomRecord {
+    /// Nodes hosting the room, sorted by node id.
+    pub hosts: Vec<ConferenceHost>,
+    /// Room-wide lock flag (see [`ConferenceRegistry::set_locked`]).
+    pub locked: bool,
+}
+
+/// Interpret a room hash: node fields become hosts, `__locked` becomes the
+/// flag, anything else starting with `__` is ignored.
+fn parse_room_hash(raw: Vec<(String, String)>) -> RoomRecord {
+    let mut record = RoomRecord::default();
+    for (field, value) in raw {
+        if field == LOCKED_FIELD {
+            record.locked = value == "1";
+        } else if !field.starts_with("__") {
+            record.hosts.push(ConferenceHost {
+                node_id: field,
+                participants: value.parse::<i64>().unwrap_or(0).max(0) as usize,
+            });
+        }
+    }
+    record.hosts.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+    record
 }
 
 #[derive(Clone)]
@@ -86,24 +122,49 @@ impl ConferenceRegistry {
         self.set_participants(tenant_id, room_number, 0).await
     }
 
+    /// Set or clear the room-wide lock flag. Setting it also refreshes the
+    /// room's TTL, so the flag never outlives the room by more than one TTL
+    /// once every host has left.
+    pub async fn set_locked(
+        &self,
+        tenant_id: &str,
+        room_number: &str,
+        locked: bool,
+    ) -> anyhow::Result<()> {
+        let key = self.room_key(tenant_id, room_number);
+        let mut conn = self.storage.connection();
+        if locked {
+            let _: () = redis::pipe()
+                .atomic()
+                .hset(&key, LOCKED_FIELD, "1")
+                .expire(&key, self.ttl_secs as i64)
+                .query_async(&mut conn)
+                .await?;
+        } else {
+            let _: () = conn.hdel(&key, LOCKED_FIELD).await?;
+        }
+        debug!(
+            tenant_id,
+            room_number, locked, "Conference registry lock flag updated"
+        );
+        Ok(())
+    }
+
+    /// The room's hosts and lock flag in one read.
+    pub async fn room(&self, tenant_id: &str, room_number: &str) -> anyhow::Result<RoomRecord> {
+        let key = self.room_key(tenant_id, room_number);
+        let mut conn = self.storage.connection();
+        let raw: Vec<(String, String)> = conn.hgetall(&key).await?;
+        Ok(parse_room_hash(raw))
+    }
+
     /// Every node hosting the room, with its participant count.
     pub async fn hosts(
         &self,
         tenant_id: &str,
         room_number: &str,
     ) -> anyhow::Result<Vec<ConferenceHost>> {
-        let key = self.room_key(tenant_id, room_number);
-        let mut conn = self.storage.connection();
-        let raw: Vec<(String, i64)> = conn.hgetall(&key).await?;
-        let mut hosts: Vec<ConferenceHost> = raw
-            .into_iter()
-            .map(|(node_id, participants)| ConferenceHost {
-                node_id,
-                participants: participants.max(0) as usize,
-            })
-            .collect();
-        hosts.sort_by(|a, b| a.node_id.cmp(&b.node_id));
-        Ok(hosts)
+        Ok(self.room(tenant_id, room_number).await?.hosts)
     }
 
     /// Nodes hosting the room other than this one.
@@ -171,6 +232,45 @@ pub fn choose_conference_node(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn raw(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(f, v)| (f.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn room_hash_separates_hosts_from_flags() {
+        let record = parse_room_hash(raw(&[
+            ("conf-b", "12"),
+            ("__locked", "1"),
+            ("conf-a", "3"),
+            ("__future", "x"),
+            ("conf-c", "garbage"),
+        ]));
+        assert!(record.locked);
+        assert_eq!(
+            record.hosts,
+            vec![
+                ConferenceHost {
+                    node_id: "conf-a".into(),
+                    participants: 3
+                },
+                ConferenceHost {
+                    node_id: "conf-b".into(),
+                    participants: 12
+                },
+                ConferenceHost {
+                    node_id: "conf-c".into(),
+                    participants: 0
+                },
+            ]
+        );
+        let unlocked = parse_room_hash(raw(&[("conf-a", "1"), ("__locked", "0")]));
+        assert!(!unlocked.locked);
+        assert!(!parse_room_hash(Vec::new()).locked);
+    }
 
     fn member(id: &str, node_type: &str, calls: usize) -> ClusterMember {
         ClusterMember {

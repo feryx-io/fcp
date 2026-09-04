@@ -70,3 +70,35 @@ async fn hosts_are_tracked_per_node_and_removed_at_zero() {
     b.leave_room("t1", "8000").await.unwrap();
     assert!(a.hosts("t1", "8000").await.unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn lock_flag_is_room_wide_and_separate_from_hosts() {
+    let Some((a, b)) = two_nodes().await else {
+        return;
+    };
+    a.set_participants("t1", "8000", 2).await.unwrap();
+    assert!(!b.room("t1", "8000").await.unwrap().locked);
+
+    // Locked by one node, seen by the other; hosts unaffected.
+    a.set_locked("t1", "8000", true).await.unwrap();
+    let record = b.room("t1", "8000").await.unwrap();
+    assert!(record.locked);
+    assert_eq!(record.hosts.len(), 1);
+    assert_eq!(record.hosts[0].node_id, "conf-a");
+    assert_eq!(a.hosts("t1", "8000").await.unwrap().len(), 1);
+
+    // A node that starts hosting the room later inherits the flag.
+    b.set_participants("t1", "8000", 1).await.unwrap();
+    assert!(b.room("t1", "8000").await.unwrap().locked);
+    assert_eq!(b.peers("t1", "8000").await.unwrap().len(), 1);
+
+    b.set_locked("t1", "8000", false).await.unwrap();
+    let record = a.room("t1", "8000").await.unwrap();
+    assert!(!record.locked);
+    assert_eq!(record.hosts.len(), 2);
+
+    // Other rooms are untouched.
+    a.set_locked("t1", "9000", true).await.unwrap();
+    assert!(!a.room("t1", "8000").await.unwrap().locked);
+    assert!(a.room("t1", "9000").await.unwrap().locked);
+}

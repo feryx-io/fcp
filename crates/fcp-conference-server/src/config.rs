@@ -48,6 +48,32 @@ pub struct ConferenceServerConfig {
     pub cluster: ClusterSection,
 }
 
+impl ConferenceServerConfig {
+    /// The HTTP API address to advertise in cluster membership, where peer
+    /// conference nodes send cross-node control requests:
+    /// `http.advertised_address` if set, else `http.bind_address` with an
+    /// unspecified IP replaced by `sip.local_ip`. Falls back to the bind
+    /// address as-is when nothing routable is known.
+    pub fn advertised_http_address(&self) -> SocketAddr {
+        if let Some(addr) = self.http.advertised_address {
+            return addr;
+        }
+        let bind = self.http.bind_address;
+        if !bind.ip().is_unspecified() {
+            return bind;
+        }
+        match self
+            .sip
+            .local_ip
+            .as_deref()
+            .and_then(|ip| ip.parse::<std::net::IpAddr>().ok())
+        {
+            Some(ip) => SocketAddr::new(ip, bind.port()),
+            None => bind,
+        }
+    }
+}
+
 /// Text-to-Speech configuration for synthesizing conference audio prompts.
 ///
 /// When enabled, meetings with `pin_prompt_tts` or `invalid_pin_tts` fields
@@ -341,6 +367,13 @@ pub struct HttpSection {
     /// Maximum HTTP request body size in kilobytes (default: 64 KB).
     #[serde(default = "default_max_body_size_kb")]
     pub max_body_size_kb: usize,
+
+    /// Address peer nodes reach this HTTP API on, advertised in cluster
+    /// membership for cross-node conference control. Defaults to
+    /// `bind_address`, with an unspecified IP (`0.0.0.0`) replaced by
+    /// `sip.local_ip`.
+    #[serde(default)]
+    pub advertised_address: Option<SocketAddr>,
 }
 
 fn default_http_bind() -> SocketAddr {
@@ -359,6 +392,7 @@ impl Default for HttpSection {
             auth_token: None,
             rate_limit_rps: None,
             max_body_size_kb: default_max_body_size_kb(),
+            advertised_address: None,
         }
     }
 }
@@ -818,6 +852,14 @@ pub struct ClusterSection {
     /// how long a peer that started hosting a room waits to be trunked.
     #[serde(default = "default_trunk_reconcile_interval")]
     pub trunk_reconcile_interval_secs: u64,
+
+    /// Shared secret conference nodes present to one another for
+    /// cross-node control (lock, kick, mute, gain, announce, end) over
+    /// each other's `/internal` HTTP routes. The same value on every
+    /// conference node. Without it a control request only reaches the
+    /// node it was sent to.
+    #[serde(default)]
+    pub secret: Option<String>,
 }
 
 fn default_heartbeat_interval() -> u64 {
@@ -837,6 +879,7 @@ impl Default for ClusterSection {
             heartbeat_interval_secs: default_heartbeat_interval(),
             heartbeat_ttl_secs: default_heartbeat_ttl(),
             trunk_reconcile_interval_secs: default_trunk_reconcile_interval(),
+            secret: None,
         }
     }
 }
@@ -1069,6 +1112,7 @@ max_pin_attempts = 5
             auth_token: None,
             rate_limit_rps: None,
             max_body_size_kb: default_max_body_size_kb(),
+            advertised_address: None,
         };
         assert!(validate_http_config(&http).is_err());
 
@@ -1078,6 +1122,7 @@ max_pin_attempts = 5
             auth_token: None,
             rate_limit_rps: None,
             max_body_size_kb: default_max_body_size_kb(),
+            advertised_address: None,
         };
         assert!(validate_http_config(&http).is_err());
 
@@ -1087,6 +1132,7 @@ max_pin_attempts = 5
             auth_token: Some("secret".to_string()),
             rate_limit_rps: None,
             max_body_size_kb: default_max_body_size_kb(),
+            advertised_address: None,
         };
         assert!(validate_http_config(&http).is_ok());
     }
@@ -1156,6 +1202,52 @@ max_pin_attempts = 5
             sip.advertised_tls_address(),
             Some("10.0.0.21:5062".parse().unwrap())
         );
+    }
+
+    #[test]
+    fn advertised_http_address_prefers_explicit_then_routable_bind() {
+        let mut config = ConferenceServerConfig::default();
+        // Default bind is loopback: routable as-is.
+        assert_eq!(config.advertised_http_address(), config.http.bind_address);
+
+        config.http.bind_address = "0.0.0.0:8090".parse().unwrap();
+        // Nothing better known: the bind is all there is.
+        assert_eq!(
+            config.advertised_http_address(),
+            "0.0.0.0:8090".parse().unwrap()
+        );
+        config.sip.local_ip = Some("10.0.0.20".to_string());
+        assert_eq!(
+            config.advertised_http_address(),
+            "10.0.0.20:8090".parse().unwrap()
+        );
+        config.http.advertised_address = Some("192.0.2.5:9000".parse().unwrap());
+        assert_eq!(
+            config.advertised_http_address(),
+            "192.0.2.5:9000".parse().unwrap()
+        );
+    }
+
+    #[test]
+    fn cluster_secret_and_advertised_address_parse() {
+        let toml_str = r#"
+[http]
+bind_address = "0.0.0.0:8090"
+advertised_address = "10.0.0.20:8090"
+
+[cluster]
+enabled = true
+secret = "s3cret"
+"#;
+        let config: ConferenceServerConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.cluster.secret.as_deref(), Some("s3cret"));
+        assert_eq!(
+            config.http.advertised_address,
+            Some("10.0.0.20:8090".parse().unwrap())
+        );
+        let defaults = ConferenceServerConfig::default();
+        assert!(defaults.cluster.secret.is_none());
+        assert!(defaults.http.advertised_address.is_none());
     }
 
     #[test]

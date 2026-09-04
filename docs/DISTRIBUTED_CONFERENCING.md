@@ -13,7 +13,7 @@ The work lands in four phases. This document tracks what is in place.
 |---|---|---|
 | 1 | Conference registry + cluster-aware placement | ✅ v0.25.82 |
 | 2 | Inter-node trunks (cascaded mixing) | ✅ v0.25.83 |
-| 3 | Cross-node control (kick, gain, lock, announce, end) | planned |
+| 3 | Cross-node control (kick, gain, lock, announce, end) | ✅ v0.25.84 |
 | 4 | Resilience (registry expiry, trunk teardown, draining) | planned |
 
 Decisions (2026-09-02): full-mesh trunks between hosting nodes; new
@@ -196,3 +196,89 @@ and, on the call manager, `b2bua.conference_node_capacity` set to the
 per-node room size at which new joiners spread to another node (phase 1).
 A conference node without `tls_bind`, a client CA and a certificate logs a
 warning at startup and hosts rooms on its own only.
+
+## Phase 3: cross-node control
+
+A control request can be sent to **any** conference node — the one an
+operator's tooling happens to know — and takes effect across the whole
+room. Nodes talk to each other over the HTTP API address each advertises
+in cluster membership (`http.advertised_address`, or the bind address
+with an unspecified IP replaced by `sip.local_ip`), on `/internal`
+routes authenticated with a shared `cluster.secret`. A forwarded request
+is applied by the receiving node only and never forwarded again, so every
+request travels exactly one hop.
+
+| Operation | Endpoint | Reach |
+|---|---|---|
+| Lock / unlock | `POST /conferences/{room}/lock`, `/unlock` | every hosting node, plus the registry |
+| End | `DELETE /conferences/{room}` | every hosting node |
+| Kick | `POST /conferences/{room}/kick/{pid}` | the node the participant is on |
+| Mute / unmute | `POST /conferences/{room}/mute/{pid}`, `/unmute/{pid}` | the node the participant is on |
+| Gain | `POST /conferences/{room}/participants/{pid}/gain` | the node the participant is on |
+| Announce | `POST /conferences/{room}/announce` | one hosting node (the trunks carry it) |
+
+**Room-wide operations** (lock, unlock, end) are applied locally and, at
+the same time, on every other node the registry shows hosting the room
+(with participants, and alive as a conference node in cluster
+membership). The response succeeds when any node applied it and lists
+each peer's answer:
+
+```json
+{
+  "status": "locked", "room": "8000",
+  "node": "conf-a", "hosted_here": true,
+  "peers": [ { "node": "conf-b", "ok": true, "status": 200, "body": { "status": "locked", "room": "8000" } } ]
+}
+```
+
+`DELETE` also reports `participants_removed` summed across the cluster,
+with this node's share in `participants_removed_here`. A peer that could
+not be reached shows `ok: false` with no `status`; when the registry
+itself is unreachable the operation still applies locally and the
+response carries `peers_error` instead of `peers`.
+
+**Participant operations** (kick, mute, unmute, gain) are applied locally
+when the participant is here. When it is not — this node answers 404 —
+the hosting peers are asked one at a time until one has the participant;
+its answer comes back with `node` set to that peer. A 404 from every node
+returns `peers` with each answer.
+
+**Announcements** are played on one node only: the announcer is mixed
+like any caller, so its audio crosses the inter-node trunks and every
+participant on every node hears it once. The request is played here when
+the room is active here, otherwise forwarded to one hosting peer. The
+`audio_path` is forwarded unresolved, so a bare filename is looked up in
+the *peer's* `conference.announcements_dir` — keep announcement files in
+step across conference nodes.
+
+### The lock and the registry
+
+The room-wide lock is also written to the conference registry (a
+`__locked` field in the room's hash — fields starting with `__` are never
+node ids). A node that starts hosting a room other nodes already host
+reads the flag when it creates its local copy and starts the room locked,
+so placement cannot spread a locked room to a fresh, unlocked node. The
+flag is cleared on unlock and otherwise lives as long as the room's key:
+it expires with the last host's TTL (60 s after the last node stops
+publishing). Trunk INVITEs still bypass the lock, as before.
+
+`RoomLocked` / `RoomUnlocked` events are published once, by the node that
+received the request; nodes applying a forwarded lock publish nothing.
+
+### Configuration
+
+```toml
+[http]
+bind_address = "0.0.0.0:8090"
+advertised_address = "10.0.0.20:8090"   # optional; else sip.local_ip + bind port
+
+[cluster]
+enabled = true
+secret = "…the same value on every conference node…"
+```
+
+Without `cluster.secret` the node logs a warning at startup, its
+`/internal` routes answer 404, and a control request only affects the
+node it was sent to. The API's own bearer token (`http.auth_token`) is
+not involved in node-to-node calls, and the `/internal` routes are not
+rate limited.
