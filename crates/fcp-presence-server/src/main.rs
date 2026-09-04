@@ -595,6 +595,8 @@ async fn initialize_storage(config: &PresenceServerConfig) -> Result<StorageResu
 
     let pg_config = PostgresConfig {
         connection_string: config.storage.database_url.clone(),
+        read_replica_url: config.storage.read_replica_url.clone(),
+        max_replica_lag: Duration::from_secs(config.storage.max_replica_lag_secs),
         max_connections: config.storage.max_connections,
         connection_timeout: Duration::from_secs(30),
         encryption: None,

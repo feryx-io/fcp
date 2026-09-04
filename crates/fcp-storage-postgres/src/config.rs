@@ -62,7 +62,7 @@ impl ConfigStore for PostgresStorage {
         .bind(service)
         .bind(section)
         .bind(tenant_id)
-        .fetch_optional(self.pool())
+        .fetch_optional(self.reads())
         .await
         .map_err(|e| fcp_core::Error::Storage(fcp_core::StorageError::Database(e.to_string())))?;
 
@@ -90,7 +90,7 @@ impl ConfigStore for PostgresStorage {
         )
         .bind(service)
         .bind(tenant_id)
-        .fetch_all(self.pool())
+        .fetch_all(self.reads())
         .await
         .map_err(|e| fcp_core::Error::Storage(fcp_core::StorageError::Database(e.to_string())))?;
 
@@ -111,7 +111,7 @@ impl ConfigStore for PostgresStorage {
         updated_by: Option<&str>,
     ) -> fcp_core::Result<i64> {
         // Use a transaction for atomic upsert + audit log insert
-        let mut tx = self.pool().begin().await.map_err(|e| {
+        let mut tx = self.writes().begin().await.map_err(|e| {
             fcp_core::Error::Storage(fcp_core::StorageError::Database(e.to_string()))
         })?;
 
@@ -193,7 +193,7 @@ impl ConfigStore for PostgresStorage {
         .bind(service)
         .bind(section)
         .bind(tenant_id)
-        .execute(self.pool())
+        .execute(self.writes())
         .await
         .map_err(|e| fcp_core::Error::Storage(fcp_core::StorageError::Database(e.to_string())))?;
 
@@ -215,7 +215,7 @@ impl ConfigStore for PostgresStorage {
                 )
                 .bind(svc)
                 .bind(tid)
-                .fetch_all(self.pool())
+                .fetch_all(self.reads())
                 .await
             }
             (Some(svc), None) => {
@@ -226,7 +226,7 @@ impl ConfigStore for PostgresStorage {
                      ORDER BY service, section",
                 )
                 .bind(svc)
-                .fetch_all(self.pool())
+                .fetch_all(self.reads())
                 .await
             }
             (None, Some(tid)) => {
@@ -237,7 +237,7 @@ impl ConfigStore for PostgresStorage {
                      ORDER BY service, section",
                 )
                 .bind(tid)
-                .fetch_all(self.pool())
+                .fetch_all(self.reads())
                 .await
             }
             (None, None) => {
@@ -246,7 +246,7 @@ impl ConfigStore for PostgresStorage {
                      FROM config_settings
                      ORDER BY service, section",
                 )
-                .fetch_all(self.pool())
+                .fetch_all(self.reads())
                 .await
             }
         }

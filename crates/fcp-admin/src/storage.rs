@@ -20,6 +20,8 @@ pub struct StorageResult {
 pub async fn initialize_storage(config: &StorageConfig) -> Result<StorageResult> {
     let pg_config = PostgresConfig {
         connection_string: config.database_url.clone(),
+        read_replica_url: config.read_replica_url.clone(),
+        max_replica_lag: Duration::from_secs(config.max_replica_lag_secs),
         max_connections: config.max_connections,
         connection_timeout: Duration::from_secs(30),
         encryption: None,

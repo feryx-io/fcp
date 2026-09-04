@@ -123,6 +123,8 @@ async fn main() -> Result<()> {
     {
         match fcp_storage_postgres::PostgresStorage::new(fcp_storage_postgres::PostgresConfig {
             connection_string: db_url.clone(),
+            read_replica_url: config.storage.read_replica_url.clone(),
+            max_replica_lag: Duration::from_secs(config.storage.max_replica_lag_secs),
             max_connections: config.storage.max_connections,
             connection_timeout: Duration::from_secs(30),
             encryption: None,
