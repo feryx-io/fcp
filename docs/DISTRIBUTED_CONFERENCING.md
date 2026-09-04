@@ -53,6 +53,14 @@ When the call manager routes a call to a conference room it asks its
    `b2bua.conference_server_uri` (and its hot-reload override), exactly as
    before.
 
+Since v0.25.87 the rule is region-aware (`docs/MULTI_REGION.md`): steps 1
+and 2 are tried first among the nodes in the call manager's own region,
+then across the whole cluster. A caller therefore joins on a conference
+node in their region even when another region already hosts the room; the
+cascade trunk between the two hosts carries the cross-region audio once.
+Nodes without a `[cluster] region` are never "local" and only take part in
+the cluster-wide pass.
+
 `conference_node_capacity` lives in the call manager's `[b2bua]` section.
 `0` (the default) never spreads a room, which is the right setting until
 phase 2 lands: without trunks, participants on a second node would not hear

@@ -380,6 +380,13 @@ pub struct ClusterSection {
     #[serde(default)]
     pub enabled: bool,
 
+    /// Deployment region this node advertises in cluster membership, e.g.
+    /// `us-east`; falls back to the `FCP_REGION` environment variable.
+    /// Placement prefers nodes in the caller's region. See
+    /// `docs/MULTI_REGION.md`.
+    #[serde(default)]
+    pub region: Option<String>,
+
     /// Heartbeat interval in seconds (default: 5).
     #[serde(default = "default_heartbeat_interval")]
     pub heartbeat_interval_secs: u64,
@@ -400,6 +407,7 @@ impl Default for ClusterSection {
     fn default() -> Self {
         Self {
             enabled: false,
+            region: None,
             heartbeat_interval_secs: default_heartbeat_interval(),
             heartbeat_ttl_secs: default_heartbeat_ttl(),
         }

@@ -926,6 +926,8 @@ export interface ClusterNodeInfo {
   version: string
   status: 'healthy' | 'degraded' | 'offline'
   uptime_seconds: number
+  draining: boolean
+  region?: string
 }
 
 export interface ClusterNodesResponse {
@@ -944,6 +946,8 @@ export interface ClusterStatsResponse {
     offline_nodes: number
     total_active_calls: number
     nodes_by_type: Record<string, number>
+    nodes_by_region: Record<string, number>
+    nodes_without_region: number
   }
 }
 

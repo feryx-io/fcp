@@ -231,6 +231,7 @@ mod tests {
             started_at: 0,
             version: String::new(),
             draining: false,
+            region: None,
         }
     }
 

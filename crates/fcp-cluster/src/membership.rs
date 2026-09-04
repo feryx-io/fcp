@@ -44,6 +44,33 @@ pub struct ClusterMember {
     /// written by older versions.
     #[serde(default)]
     pub draining: bool,
+    /// Deployment region this node runs in (`[cluster] region`, or
+    /// `FCP_REGION`), e.g. `us-east`. A free-form label that only has to
+    /// agree across nodes; it is not the geographic routing `Region`.
+    /// Placement prefers nodes in the caller's region. Absent on nodes
+    /// without one and on records written by older versions. See
+    /// `docs/MULTI_REGION.md`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+}
+
+/// The region a node should advertise: the configured value when it is
+/// non-blank, else the `FCP_REGION` environment variable, else none.
+/// Surrounding whitespace is dropped.
+pub fn resolve_region(configured: Option<&str>) -> Option<String> {
+    configured
+        .map(str::to_owned)
+        .or_else(|| std::env::var("FCP_REGION").ok())
+        .map(|r| r.trim().to_string())
+        .filter(|r| !r.is_empty())
+}
+
+impl ClusterMember {
+    /// Whether this node is in `region`. A node without a region is in
+    /// no region.
+    pub fn in_region(&self, region: &str) -> bool {
+        self.region.as_deref() == Some(region)
+    }
 }
 
 /// Manages cluster membership via Redis heartbeats.
@@ -103,6 +130,12 @@ impl ClusterManager {
         let active_calls_counter = Arc::clone(&self.active_calls_counter);
         let draining = Arc::clone(&self.draining);
 
+        info!(
+            node_id = %self_info.node_id,
+            node_type = %self_info.node_type,
+            region = self_info.region.as_deref().unwrap_or("-"),
+            "Cluster membership starting"
+        );
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(std::time::Duration::from_secs(interval));
             loop {
@@ -177,13 +210,56 @@ impl ClusterManager {
         self.members.get(node_id).map(|e| e.value().clone())
     }
 
-    /// Get the least loaded member of a given type.
+    /// Get the least loaded member of a given type, anywhere in the cluster.
     pub fn least_loaded(&self, node_type: &str) -> Option<ClusterMember> {
         self.members
             .iter()
             .filter(|e| e.value().node_type == node_type)
-            .min_by_key(|e| e.value().active_calls)
+            .min_by_key(|e| (e.value().active_calls, e.value().node_id.clone()))
             .map(|e| e.value().clone())
+    }
+
+    // ── Regions ────────────────────────────────────────────────────────
+
+    /// This node's region, if it advertises one.
+    pub fn region(&self) -> Option<&str> {
+        self.self_info.region.as_deref()
+    }
+
+    /// Known members (excluding self) in `region`.
+    pub fn members_in_region(&self, region: &str) -> Vec<ClusterMember> {
+        self.members
+            .iter()
+            .filter(|e| e.value().in_region(region))
+            .map(|e| e.value().clone())
+            .collect()
+    }
+
+    /// Known members (excluding self) in this node's region. Empty when
+    /// this node has no region: without one, nothing is local.
+    pub fn local_members(&self) -> Vec<ClusterMember> {
+        match self.region() {
+            Some(region) => self.members_in_region(region),
+            None => Vec::new(),
+        }
+    }
+
+    /// The least loaded member of a given type in this node's region, or,
+    /// when the region has none, anywhere in the cluster. Callers that
+    /// must stay in region use [`members_in_region`](Self::members_in_region).
+    pub fn least_loaded_near(&self, node_type: &str) -> Option<ClusterMember> {
+        if let Some(region) = self.region() {
+            let local = self
+                .members
+                .iter()
+                .filter(|e| e.value().node_type == node_type && e.value().in_region(region))
+                .min_by_key(|e| (e.value().active_calls, e.value().node_id.clone()))
+                .map(|e| e.value().clone());
+            if local.is_some() {
+                return local;
+            }
+        }
+        self.least_loaded(node_type)
     }
 
     /// Get the local node info.
@@ -323,9 +399,15 @@ async fn discover_members(
                 node_id: member.node_id.clone(),
                 node_type: member.node_type.clone(),
                 address: member.http_address.to_string(),
+                region: member.region.clone(),
                 timestamp: now,
             });
-            info!(node_id = %member.node_id, node_type = %member.node_type, "Cluster member joined");
+            info!(
+                node_id = %member.node_id,
+                node_type = %member.node_type,
+                region = member.region.as_deref().unwrap_or("-"),
+                "Cluster member joined"
+            );
             if let Err(e) = publisher.publish(event).await {
                 warn!(error = %e, "Failed to publish NodeJoined event");
             }
@@ -346,4 +428,64 @@ async fn discover_members(
 
     debug!(member_count = seen_ids.len(), "Cluster discovery complete");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn member(id: &str, region: Option<&str>) -> ClusterMember {
+        ClusterMember {
+            node_id: id.to_string(),
+            node_type: "call_manager".to_string(),
+            http_address: "127.0.0.1:8080".parse().unwrap(),
+            sip_address: "127.0.0.1:5060".parse().unwrap(),
+            sip_tls_address: None,
+            capabilities: Vec::new(),
+            active_calls: 0,
+            started_at: 0,
+            version: "test".to_string(),
+            draining: false,
+            region: region.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn region_is_optional_on_the_wire_and_absent_from_old_records() {
+        // A record written before regions existed still parses.
+        let old = r#"{"node_id":"cm-1","node_type":"call_manager","http_address":"10.0.0.1:8080",
+            "sip_address":"10.0.0.1:5060","capabilities":[],"active_calls":0,"started_at":1,
+            "version":"0.25.0"}"#;
+        let m: ClusterMember = serde_json::from_str(old).unwrap();
+        assert_eq!(m.region, None);
+        assert!(!m.in_region("us-east"));
+
+        // Without a region the field is omitted, so old readers see the
+        // same shape they always did.
+        let json = serde_json::to_string(&member("cm-1", None)).unwrap();
+        assert!(!json.contains("region"));
+
+        let json = serde_json::to_string(&member("cm-2", Some("eu-west"))).unwrap();
+        let back: ClusterMember = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.region.as_deref(), Some("eu-west"));
+        assert!(back.in_region("eu-west"));
+        assert!(!back.in_region("us-east"));
+    }
+
+    #[test]
+    fn configured_region_is_trimmed_and_blank_means_none() {
+        assert_eq!(
+            resolve_region(Some(" us-east ")).as_deref(),
+            Some("us-east")
+        );
+        assert_eq!(resolve_region(Some("   ")), None);
+        // No configured value and no FCP_REGION in the test environment.
+        // (If the environment sets one, that is what a node would use.)
+        match std::env::var("FCP_REGION") {
+            Ok(env) if !env.trim().is_empty() => {
+                assert_eq!(resolve_region(None).as_deref(), Some(env.trim()))
+            }
+            _ => assert_eq!(resolve_region(None), None),
+        }
+    }
 }

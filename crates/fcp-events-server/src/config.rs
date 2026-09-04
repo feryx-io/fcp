@@ -157,6 +157,13 @@ pub struct ClusterConfig {
     #[serde(default)]
     pub enabled: bool,
 
+    /// Deployment region this node advertises in cluster membership, e.g.
+    /// `us-east`; falls back to the `FCP_REGION` environment variable.
+    /// Placement prefers nodes in the caller's region. See
+    /// `docs/MULTI_REGION.md`.
+    #[serde(default)]
+    pub region: Option<String>,
+
     /// Redis URL for cluster membership (if different from event_bus.redis_url).
     #[serde(default)]
     pub redis_url: Option<String>,
@@ -181,6 +188,7 @@ impl Default for ClusterConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            region: None,
             redis_url: None,
             heartbeat_interval_secs: default_cluster_heartbeat_interval(),
             heartbeat_ttl_secs: default_cluster_heartbeat_ttl(),

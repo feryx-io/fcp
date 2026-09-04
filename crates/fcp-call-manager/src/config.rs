@@ -532,6 +532,13 @@ pub struct ClusterSection {
     #[serde(default)]
     pub enabled: bool,
 
+    /// Deployment region this node advertises in cluster membership, e.g.
+    /// `us-east`; falls back to the `FCP_REGION` environment variable.
+    /// Placement prefers nodes in the caller's region. See
+    /// `docs/MULTI_REGION.md`.
+    #[serde(default)]
+    pub region: Option<String>,
+
     /// Shared secret for inter-node HTTP authentication.
     #[serde(default)]
     pub cluster_secret: Option<String>,
@@ -583,6 +590,7 @@ impl Default for ClusterSection {
     fn default() -> Self {
         Self {
             enabled: false,
+            region: None,
             cluster_secret: None,
             heartbeat_interval_secs: default_heartbeat_interval(),
             heartbeat_ttl_secs: default_heartbeat_ttl(),

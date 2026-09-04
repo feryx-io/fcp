@@ -383,6 +383,9 @@ pub enum SystemEvent {
         node_id: String,
         node_type: String,
         address: String,
+        /// Deployment region the node advertises, when it has one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        region: Option<String>,
         #[serde(with = "system_time_serde")]
         timestamp: SystemTime,
     },

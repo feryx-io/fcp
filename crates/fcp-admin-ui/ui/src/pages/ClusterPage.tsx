@@ -64,6 +64,20 @@ const columns: ColumnDef<ClusterNodeInfo>[] = [
     ),
   },
   {
+    accessorKey: 'region',
+    header: ({ column }) => (
+      <Button variant="ghost" onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}>
+        Region <ArrowUpDown className="ml-2 h-4 w-4" />
+      </Button>
+    ),
+    cell: ({ row }) =>
+      row.original.region ? (
+        <Badge variant="outline">{row.original.region}</Badge>
+      ) : (
+        <span className="text-xs text-muted-foreground">—</span>
+      ),
+  },
+  {
     accessorKey: 'version',
     header: 'Version',
     cell: ({ row }) => (
@@ -190,6 +204,31 @@ export function ClusterPage() {
                     </CardContent>
                   </Card>
                 ))}
+              </div>
+            </div>
+          )}
+
+          {/* Nodes by Region */}
+          {stats && Object.keys(stats.nodes_by_region).length > 0 && (
+            <div>
+              <h2 className="text-lg font-semibold mb-3">Nodes by Region</h2>
+              <div className="grid gap-4 md:grid-cols-3 lg:grid-cols-6">
+                {Object.entries(stats.nodes_by_region).map(([region, count]) => (
+                  <Card key={region}>
+                    <CardContent className="p-4 text-center">
+                      <p className="text-2xl font-bold">{count}</p>
+                      <p className="text-xs text-muted-foreground">{region}</p>
+                    </CardContent>
+                  </Card>
+                ))}
+                {stats.nodes_without_region > 0 && (
+                  <Card key="__none">
+                    <CardContent className="p-4 text-center">
+                      <p className="text-2xl font-bold">{stats.nodes_without_region}</p>
+                      <p className="text-xs text-muted-foreground">No region</p>
+                    </CardContent>
+                  </Card>
+                )}
               </div>
             </div>
           )}

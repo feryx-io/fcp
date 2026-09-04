@@ -4,9 +4,13 @@
 //! When Redis is not configured, endpoints return `{ available: false }` with
 //! setup instructions.
 
-use axum::{extract::Extension, routing::get, Json, Router};
+use axum::{
+    extract::{Extension, Query},
+    routing::get,
+    Json, Router,
+};
 use fcp_cluster::ClusterReader;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 /// Shared state for cluster API handlers, injected via Extension.
@@ -14,6 +18,13 @@ use std::sync::Arc;
 pub struct ClusterApiState {
     /// None when Redis is not configured.
     pub reader: Option<Arc<ClusterReader>>,
+}
+
+/// Query for GET /api/v1/cluster/nodes.
+#[derive(Debug, Default, Deserialize)]
+pub struct ClusterNodesQuery {
+    /// Only nodes advertising this region.
+    pub region: Option<String>,
 }
 
 /// Response for GET /api/v1/cluster/nodes
@@ -39,8 +50,8 @@ pub struct ClusterStatsResponse {
 ///
 /// Uses `Extension<ClusterApiState>` for state injection so it can be
 /// merged into any `Router<S>` regardless of the outer state type.
-/// The returned router has routes at `/cluster/nodes` and `/cluster/stats`,
-/// intended to be nested under `/api/v1`.
+/// The returned router has routes at `/cluster/nodes` (optionally
+/// `?region=…`) and `/cluster/stats`, intended to be nested under `/api/v1`.
 pub fn cluster_router<S>(state: ClusterApiState) -> Router<S>
 where
     S: Clone + Send + Sync + 'static,
@@ -51,7 +62,10 @@ where
         .layer(Extension(state))
 }
 
-async fn list_nodes(Extension(state): Extension<ClusterApiState>) -> Json<ClusterNodesResponse> {
+async fn list_nodes(
+    Extension(state): Extension<ClusterApiState>,
+    Query(query): Query<ClusterNodesQuery>,
+) -> Json<ClusterNodesResponse> {
     let Some(reader) = &state.reader else {
         return Json(ClusterNodesResponse {
             available: false,
@@ -62,7 +76,11 @@ async fn list_nodes(Extension(state): Extension<ClusterApiState>) -> Json<Cluste
         });
     };
 
-    match reader.list_nodes().await {
+    let listed = match query.region.as_deref().map(str::trim) {
+        Some(region) if !region.is_empty() => reader.list_nodes_in_region(region).await,
+        _ => reader.list_nodes().await,
+    };
+    match listed {
         Ok(nodes) => Json(ClusterNodesResponse {
             available: true,
             message: None,

@@ -14,7 +14,7 @@ Update this file when feature status changes; keep other docs describing scope, 
 |---|---|---|
 | 1 — MVP foundation | ✅ Complete | Core types, siphon-rs stack, B2BUA, call-manager, REST API, Postgres, Docker |
 | 2 — Programmable voice | ✅ Complete | Flow engine, IVR, voicemail, webhooks, events, admin UI, DB-backed flow store, TTS service |
-| 3 — Clustering & apps | ✅ Complete* | SWIM cluster, queue, presence, conference, WebRTC, Redis. *Lua plugin runtime and gRPC API from the original Phase 3 scope were never built (see Descoped/undecided) |
+| 3 — Clustering & apps | ✅ Complete* | Redis-heartbeat cluster, queue, presence, conference, WebRTC, Redis. *Lua plugin runtime and gRPC API from the original Phase 3 scope were never built (see Descoped/undecided) |
 | 4 — Enterprise | ⏳ In progress | Detailed audit below |
 | 5 — Carrier grade | 📋 Planned | Multi-region, E911, video, compliance — data-model stubs at most |
 
@@ -38,7 +38,7 @@ Update this file when feature status changes; keep other docs describing scope, 
 
 | Item | Status |
 |---|---|
-| Multi-region | 🟡 Read replicas done (2026-09-04, `docs/MULTI_REGION.md`): every binary's `[storage]` takes `read_replica_url` + `max_replica_lag_secs`; configuration reads go to a healthy replica, everything else and every write to the primary; lag probe every 5 s, read-after-write window per process. CockroachDB dropped (see doc). Not done: region-aware cluster membership and event-bus fan-out |
+| Multi-region | 🟡 Read replicas done (2026-09-04, `docs/MULTI_REGION.md`): every binary's `[storage]` takes `read_replica_url` + `max_replica_lag_secs`; configuration reads go to a healthy replica, everything else and every write to the primary; lag probe every 5 s, read-after-write window per process. CockroachDB dropped (see doc). Region-aware membership done (2026-09-04, v0.25.87): `[cluster] region` / `FCP_REGION` on every node's heartbeat, `local_members` / `members_in_region` / `least_loaded_near` on `ClusterManager`, conference placement prefers the caller's region (local host → local node → any host → any node), admin cluster API and UI show regions (`?region=` filter, `nodes_by_region`). Not done: event-bus fan-out across regions, region affinity beyond conference placement |
 | E911 | 🟡 Block 1 done (2026-09-02, `docs/E911.md`): emergency-number detection (tenant-configurable, `911`/`933` + `9` prefix by default) before any admission control, dispatchable-location resolution (device override → device site → user site → DID address) with ELIN callback numbers per site, emergency-capable trunks tried first, callback number as caller ID + `P-Asserted-Identity` + `Priority: emergency`, `call.emergency` event with notification contacts, `emergency_calls` audit table, admin API (config, readiness report, validate-address, per-number validation) and a pluggable `E911AddressValidator`. Not yet: PIDF-LO location by value, subnet-based location for softphones, provider-backed validation, in-platform notification delivery |
 | Video conferencing | ❌ Conference server and WebRTC gateway are audio-only |
 | Regulatory compliance | 🟡 Basics done (2026-09-02, `docs/COMPLIANCE.md`): per-tenant retention policy (CDRs, SIP traces, flow traces, recordings, audit events) applied hourly by fcp-admin and on demand, with recorded runs; recording-consent mode with a prompt played before API-started recordings; admin audit log written by an API middleware (every mutating request + exports, actor/tenant/route/status) with `GET /audit-log`; CSV CDR export. Not yet: consent announcement on B2BUA auto-recorded calls, legal hold, data-subject export/erasure |
@@ -78,7 +78,7 @@ Vision items in `docs/ARCHITECTURE-v0.2.md` that are descoped above remain in th
 1. ~~**E911** block 1~~ (done 2026-09-02, see the Phase 5 table and `docs/E911.md`). Block 2, unscheduled: PIDF-LO by value for NG911 trunks, subnet-based location, a provider-backed validator, notification delivery.
 2. ~~**Compliance basics**~~ (done 2026-09-02, see the Phase 5 table and `docs/COMPLIANCE.md`). Follow-ups, unscheduled: consent announcement on auto-recorded calls, legal hold, per-subject export/erasure.
 3. **Distributed conferencing**: phase 1 (registry + placement) done 2026-09-02; phases 2–4 (mutual-TLS trunks and cascaded mixing, cross-node control, resilience) done 2026-09-03. Participant migration off a draining node remains open.
-4. **Multi-region**: read replicas done 2026-09-04 (CockroachDB dropped); region-aware cluster membership and event bus next.
+4. **Multi-region**: read replicas and region-aware cluster membership done 2026-09-04 (CockroachDB dropped); cross-region event-bus fan-out next.
 5. Video conferencing and the dedicated CDR pipeline remain unscheduled carrier-scale items.
 
 ## Historical documents
