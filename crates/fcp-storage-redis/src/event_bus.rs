@@ -531,6 +531,8 @@ pub struct PeerBridgeStatus {
     pub connected: bool,
     /// Envelopes forwarded since start.
     pub forwarded: u64,
+    /// Entries taken over from consumers that stopped acknowledging.
+    pub claimed: u64,
     /// Forwarding attempts that failed since start (each is retried).
     pub failed: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -541,6 +543,7 @@ struct PeerCounters {
     region: String,
     connected: AtomicBool,
     forwarded: AtomicU64,
+    claimed: AtomicU64,
     failed: AtomicU64,
     last_error: Mutex<Option<String>>,
 }
@@ -555,6 +558,7 @@ impl PeerCounters {
             region: self.region.clone(),
             connected: self.connected.load(Ordering::Relaxed),
             forwarded: self.forwarded.load(Ordering::Relaxed),
+            claimed: self.claimed.load(Ordering::Relaxed),
             failed: self.failed.load(Ordering::Relaxed),
             last_error: self
                 .last_error
@@ -577,8 +581,11 @@ pub struct EventBridge {
     peers: Vec<(PeerRegion, Arc<PeerCounters>)>,
 }
 
-/// How often stale pending entries are re-claimed.
+/// How often stale pending entries are re-claimed while entries flow.
 const CLAIM_INTERVAL: Duration = Duration::from_secs(60);
+/// How often they are re-claimed while nothing is flowing: a dead
+/// consumer's leftovers are all there is to do then, so look sooner.
+const IDLE_CLAIM_INTERVAL: Duration = Duration::from_secs(5);
 /// Entries read per batch.
 const BATCH: usize = 100;
 
@@ -616,6 +623,7 @@ impl EventBridge {
                     region: p.region.clone(),
                     connected: AtomicBool::new(false),
                     forwarded: AtomicU64::new(0),
+                    claimed: AtomicU64::new(0),
                     failed: AtomicU64::new(0),
                     last_error: Mutex::new(None),
                 });
@@ -653,24 +661,29 @@ impl EventBridge {
         self.local_region.as_deref()
     }
 
-    /// Start one forwarding task per peer. Each connects to its peer with
-    /// backoff, forwards batches (retrying until the peer takes them), and
-    /// never gives up.
+    /// Start one forwarding task per peer. Each reads the local stream on
+    /// a connection of its own (its reads block), connects to its peer
+    /// with backoff, forwards batches (retrying until the peer takes
+    /// them), and never gives up.
     pub fn spawn(&self) -> Vec<JoinHandle<()>> {
         self.peers
             .iter()
             .map(|(peer, counters)| {
-                let consumer = RedisStreamConsumer::new(
-                    self.local.clone(),
-                    self.stream_key.clone(),
-                    Self::group_name(&peer.region),
-                    self.consumer_name.clone(),
-                );
+                let local = self.local.clone();
+                let stream_key = self.stream_key.clone();
+                let group = Self::group_name(&peer.region);
+                let consumer_name = self.consumer_name.clone();
                 let peer = peer.clone();
                 let counters = Arc::clone(counters);
                 let local_region = self.local_region.clone();
                 let claim_min_idle = self.claim_min_idle;
                 tokio::spawn(async move {
+                    let local = until_ok("opening a local Redis connection", &counters, || {
+                        local.detached()
+                    })
+                    .await;
+                    let consumer =
+                        RedisStreamConsumer::new(local, stream_key, group, consumer_name);
                     run_peer(consumer, peer, counters, local_region, claim_min_idle).await
                 })
             })
@@ -756,17 +769,28 @@ async fn run_peer(
     };
 
     let mut last_claim: Option<Instant> = None;
+    let mut idle = true;
     loop {
-        let due = last_claim.is_none_or(|t| t.elapsed() >= CLAIM_INTERVAL);
+        let interval = if idle {
+            IDLE_CLAIM_INTERVAL
+        } else {
+            CLAIM_INTERVAL
+        };
+        let due = last_claim.is_none_or(|t| t.elapsed() >= interval);
         let entries = if due {
-            last_claim = Some(Instant::now());
             match consumer.claim_stale(claim_min_idle, BATCH).await {
-                Ok(stale) if !stale.is_empty() => {
-                    info!(peer = %peer.region, count = stale.len(), "Event bridge: took over unacknowledged entries");
+                Ok(stale) => {
+                    last_claim = Some(Instant::now());
+                    if !stale.is_empty() {
+                        counters
+                            .claimed
+                            .fetch_add(stale.len() as u64, Ordering::Relaxed);
+                        info!(peer = %peer.region, count = stale.len(), "Event bridge: took over unacknowledged entries");
+                    }
                     stale
                 }
-                Ok(_) => Vec::new(),
                 Err(e) => {
+                    // Try again on the next pass rather than in a minute.
                     counters.fail(&e);
                     warn!(peer = %peer.region, error = %e, "Event bridge: claiming stale entries failed");
                     Vec::new()
@@ -788,7 +812,8 @@ async fn run_peer(
         } else {
             entries
         };
-        if entries.is_empty() {
+        idle = entries.is_empty();
+        if idle {
             continue;
         }
 
