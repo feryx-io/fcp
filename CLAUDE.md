@@ -508,7 +508,7 @@ async fn handle_request(request: Request, tenant_id: TenantId) -> Result<()> {
 **Key Components (in the agreed order, see STATUS.md):**
 - E911 integration — block 1 shipped (`docs/E911.md`): detection, dispatchable location, ELIN caller ID, emergency-capable trunks, audit + event, admin API
 - Regulatory compliance features — basics shipped (`docs/COMPLIANCE.md`): retention policy + sweep, recording consent, admin audit log, CDR export
-- Distributed conferencing (cascaded mixing) — phases 1–2 shipped (registry + placement, mutual-TLS inter-node trunks with cascaded mixing, `docs/DISTRIBUTED_CONFERENCING.md`); phases 3–4 (cross-node control, resilience) follow
+- Distributed conferencing (cascaded mixing) — phases 1–3 shipped (registry + placement, mutual-TLS inter-node trunks with cascaded mixing, cross-node control under a shared `cluster.secret`, `docs/DISTRIBUTED_CONFERENCING.md`); phase 4 (resilience) follows
 - Multi-region support (CockroachDB compatibility pass first; Postgres stays the system of record)
 - Video conferencing
 

@@ -122,9 +122,12 @@ pub struct ParticipantSession {
     pub last_refreshed: Instant,
 }
 
-/// Sink for "this node now has N local participants in room R" updates.
-/// The cluster-backed implementation writes the conference registry; without
+/// Sink for "this node now has N local participants in room R" updates,
+/// and the source of room-wide state a node inherits when it starts
+/// hosting a room other nodes already host. The cluster-backed
+/// implementation reads and writes the conference registry; without
 /// clustering nothing is attached.
+#[async_trait::async_trait]
 pub trait RoomRegistry: Send + Sync {
     fn room_participants_changed(
         &self,
@@ -132,6 +135,13 @@ pub trait RoomRegistry: Send + Sync {
         room_number: String,
         participants: usize,
     );
+
+    /// Whether the room is locked cluster-wide. Consulted once, when this
+    /// node creates its local copy of a room, so a locked room stays
+    /// locked when placement spreads it to a fresh node.
+    async fn room_locked(&self, _tenant_id: &str, _room_number: &str) -> bool {
+        false
+    }
 }
 
 /// Handles SIP INVITEs for conference rooms.
@@ -1332,7 +1342,7 @@ impl ConferenceCallHandler {
             anyhow::bail!("Conference is disabled");
         }
 
-        let room = self.room_for(room_number)?;
+        let room = self.room_for_join(&tenant_id, room_number).await?;
 
         // Configure room from meeting settings (idempotent)
         let room_config = self.meeting_to_room_config(&meeting);
@@ -2462,6 +2472,48 @@ impl ConferenceCallHandler {
         Ok(room)
     }
 
+    /// [`room_for`](Self::room_for) for a caller joining: when this call
+    /// creates the room on this node, the room inherits the cluster-wide
+    /// lock flag (phase 3), so a room locked on the nodes already hosting
+    /// it is locked here too before anyone is admitted.
+    async fn room_for_join(
+        &self,
+        tenant_id: &TenantId,
+        room_number: &str,
+    ) -> Result<Arc<forge_conference::ConferenceRoom>> {
+        let existed = self.bridge.get_room(room_number).is_ok();
+        let room = self.room_for(room_number)?;
+        if existed {
+            return Ok(room);
+        }
+        let registry = self.room_registry.read().unwrap().clone();
+        if let Some(registry) = registry {
+            if registry
+                .room_locked(&tenant_id.to_string(), room_number)
+                .await
+            {
+                room.lock();
+                info!(room = %room_number, "Room created locked: inherited the cluster-wide lock");
+            }
+        }
+        Ok(room)
+    }
+
+    /// Lock or unlock the room on this node only. `Err` when the room is
+    /// not active here.
+    pub fn set_room_locked(&self, room_number: &str, locked: bool) -> Result<()> {
+        let room = self
+            .bridge
+            .get_room(room_number)
+            .map_err(|_| anyhow::anyhow!("Conference room not active: {}", room_number))?;
+        if locked {
+            room.lock();
+        } else {
+            room.unlock();
+        }
+        Ok(())
+    }
+
     /// This node's cluster id.
     pub fn node_id(&self) -> &str {
         &self.node_id
@@ -3210,7 +3262,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         let participant_id = format!("{}-{}", &call_id[..call_id.len().min(8)], &short_uuid[..8]);
 
         // 13. Get or create conference room, configure with meeting settings
-        let room = self.room_for(&room_number)?;
+        let room = self.room_for_join(&tenant_id, &room_number).await?;
 
         // Wire room configuration from meeting → forge-conference
         let room_config = self.meeting_to_room_config(&meeting);

@@ -33,6 +33,7 @@ use tracing::{info, warn};
 mod audio_bridge;
 mod cli;
 mod conference_handler;
+mod control;
 mod health;
 mod storage;
 mod trunks;
@@ -399,7 +400,7 @@ async fn main() -> Result<()> {
             let member = fcp_cluster::ClusterMember {
                 node_id: config.service.node_id.clone(),
                 node_type: config.service.service_type.clone(),
-                http_address: config.http.bind_address,
+                http_address: config.advertised_http_address(),
                 sip_address: config
                     .sip
                     .udp_bind
@@ -815,6 +816,9 @@ async fn main() -> Result<()> {
 
     let conference_handler = Arc::new(conference_handler);
 
+    #[allow(unused_mut)]
+    let mut cluster_control: Option<Arc<control::ClusterControl>> = None;
+
     // Conference registry: publish this node's per-room participant counts
     // so the call manager can place new participants (and, later, so peer
     // nodes can cascade audio). Event-driven on join/leave plus a periodic
@@ -852,11 +856,49 @@ async fn main() -> Result<()> {
             None
         };
 
+        // Cross-node control (phase 3): forward lock/kick/mute/gain/
+        // announce/end to the other nodes hosting a room, and accept the
+        // same from them on /internal, all under one shared secret.
+        let control = match config.cluster.secret.as_deref() {
+            Some(secret) if !secret.is_empty() => {
+                info!(
+                    http = %config.advertised_http_address(),
+                    "Cross-node conference control enabled"
+                );
+                Some(Arc::new(control::ClusterControl::new(
+                    config.service.node_id.clone(),
+                    registry.clone(),
+                    Arc::clone(cm.members_map()),
+                    secret.to_string(),
+                )))
+            }
+            _ => {
+                warn!(
+                    "Cross-node conference control disabled: set cluster.secret (the same on \
+                     every conference node) so lock, kick, mute, gain, announce and end reach \
+                     every node hosting a room"
+                );
+                None
+            }
+        };
+        cluster_control = control;
+
         struct RedisRoomRegistry {
             registry: fcp_cluster::ConferenceRegistry,
             trunks: Option<Arc<trunks::TrunkManager>>,
         }
+        #[async_trait::async_trait]
         impl conference_handler::RoomRegistry for RedisRoomRegistry {
+            async fn room_locked(&self, tenant_id: &str, room_number: &str) -> bool {
+                match self.registry.room(tenant_id, room_number).await {
+                    Ok(record) => record.locked,
+                    Err(e) => {
+                        warn!(error = %e, room = %room_number, "Conference registry lock lookup failed; room starts unlocked");
+                        false
+                    }
+                }
+            }
+
             fn room_participants_changed(
                 &self,
                 tenant_id: String,
@@ -1064,6 +1106,11 @@ async fn main() -> Result<()> {
         event_subscriber: Arc::clone(&event_bus),
         events_dropped: Arc::clone(&events_dropped),
         max_body_size_bytes: config.http.max_body_size_kb * 1024,
+        cluster_secret: cluster_control
+            .as_ref()
+            .and(config.cluster.secret.clone())
+            .filter(|s| !s.is_empty()),
+        control: cluster_control,
     });
     let http_bind = config.http.bind_address;
     tokio::spawn(supervise_task("http-server", async move {

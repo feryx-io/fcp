@@ -13,7 +13,7 @@ pub mod reader;
 
 pub use call_registry::CallRegistry;
 pub use conference_registry::{
-    choose_conference_node, ConferenceHost, ConferenceRegistry, CONFERENCE_NODE_TYPE,
+    choose_conference_node, ConferenceHost, ConferenceRegistry, RoomRecord, CONFERENCE_NODE_TYPE,
 };
 pub use membership::{ClusterManager, ClusterMember};
 pub use node_client::NodeClient;
