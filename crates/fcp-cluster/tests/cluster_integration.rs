@@ -39,6 +39,7 @@ fn test_member(name: &str, http_port: u16) -> ClusterMember {
         active_calls: 0,
         started_at: 1000,
         version: "0.1.0".to_string(),
+        draining: false,
     }
 }
 

@@ -9,7 +9,7 @@ use fcp_storage_redis::RedisStorage;
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
@@ -39,6 +39,11 @@ pub struct ClusterMember {
     pub started_at: u64,
     /// Software version.
     pub version: String,
+    /// Shutting down: still serving what it has, taking nothing new.
+    /// Conference placement skips a draining node. Absent on records
+    /// written by older versions.
+    #[serde(default)]
+    pub draining: bool,
 }
 
 /// Manages cluster membership via Redis heartbeats.
@@ -52,6 +57,8 @@ pub struct ClusterManager {
     event_publisher: Option<Arc<dyn EventPublisher>>,
     /// Shared counter for active calls, updated externally and read by heartbeat loop.
     active_calls_counter: Arc<AtomicUsize>,
+    /// Set by [`set_draining`](Self::set_draining); published with every heartbeat.
+    draining: Arc<AtomicBool>,
 }
 
 impl ClusterManager {
@@ -67,6 +74,7 @@ impl ClusterManager {
             shutdown_tx: Arc::new(shutdown_tx),
             event_publisher: None,
             active_calls_counter: Arc::new(AtomicUsize::new(0)),
+            draining: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -93,6 +101,7 @@ impl ClusterManager {
         let mut shutdown_rx = self.shutdown_tx.subscribe();
         let event_publisher = self.event_publisher.clone();
         let active_calls_counter = Arc::clone(&self.active_calls_counter);
+        let draining = Arc::clone(&self.draining);
 
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(std::time::Duration::from_secs(interval));
@@ -110,6 +119,7 @@ impl ClusterManager {
 
                 // Read latest active call count from shared counter
                 self_info.active_calls = active_calls_counter.load(Ordering::Relaxed);
+                self_info.draining = draining.load(Ordering::Relaxed);
 
                 // Publish heartbeat
                 if let Err(e) = publish_heartbeat(&storage, &self_info, ttl).await {
@@ -129,6 +139,25 @@ impl ClusterManager {
                 }
             }
         })
+    }
+
+    /// Mark this node as draining (or not) and publish the change at once
+    /// rather than on the next heartbeat, so placement stops sending new
+    /// work here before the node starts letting go of what it has. The
+    /// flag is repeated with every later heartbeat.
+    pub async fn set_draining(&self, draining: bool) -> anyhow::Result<()> {
+        self.draining.store(draining, Ordering::Relaxed);
+        let mut info = self.self_info.clone();
+        info.active_calls = self.active_calls_counter.load(Ordering::Relaxed);
+        info.draining = draining;
+        publish_heartbeat(&self.storage, &info, self.heartbeat_ttl_secs).await?;
+        info!(node_id = %info.node_id, draining, "Cluster draining flag published");
+        Ok(())
+    }
+
+    /// Whether this node is draining.
+    pub fn is_draining(&self) -> bool {
+        self.draining.load(Ordering::Relaxed)
     }
 
     /// Signal the heartbeat loop to stop and remove this node's heartbeat key.

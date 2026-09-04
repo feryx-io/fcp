@@ -17,7 +17,11 @@
 //! Trunks follow the conference registry: a peer that starts hosting the
 //! room is dialed within one reconcile interval, and a trunk is hung up
 //! when its peer stops hosting the room, leaves cluster membership, or
-//! this node's last local participant leaves.
+//! this node's last local participant leaves. A trunk that has gone
+//! silent for `cluster.trunk_rtp_timeout_secs` — a peer sends a frame
+//! every 20 ms while its side is up — is torn down and dialed again, so
+//! a peer that crashed and came back inside the membership TTL, or lost
+//! the session without a BYE, does not leave a dead trunk behind.
 
 use crate::conference_handler::ConferenceCallHandler;
 use dashmap::DashMap;
@@ -150,6 +154,8 @@ pub struct TrunkManager {
     failed: DashMap<TrunkKey, Instant>,
     /// Peers already warned about for advertising no TLS address.
     warned_no_tls: DashMap<String, ()>,
+    /// Tear down a trunk with no RTP for this long; `None` disables.
+    rtp_timeout: Option<Duration>,
 }
 
 impl TrunkManager {
@@ -158,6 +164,7 @@ impl TrunkManager {
         registry: ConferenceRegistry,
         members: Arc<DashMap<String, ClusterMember>>,
         handler: Arc<ConferenceCallHandler>,
+        rtp_timeout: Option<Duration>,
     ) -> Self {
         Self {
             node_id,
@@ -167,12 +174,30 @@ impl TrunkManager {
             dialing: DashMap::new(),
             failed: DashMap::new(),
             warned_no_tls: DashMap::new(),
+            rtp_timeout,
         }
     }
 
     /// Reconcile one room: dial the peers this node should be trunked to
     /// and hang up the trunks that no longer belong.
     pub async fn reconcile_room(self: &Arc<Self>, tenant_id: &str, room_number: &str) {
+        // Dead trunks first, so the plan below sees them as missing and
+        // dials again (if this is the dialing side; otherwise the peer's
+        // next INVITE replaces what it thinks it still has).
+        if let Some(timeout) = self.rtp_timeout {
+            for peer in self.handler.silent_trunks(room_number, timeout) {
+                warn!(
+                    room = %room_number,
+                    peer = %peer,
+                    timeout_secs = timeout.as_secs(),
+                    "Conference trunk received no RTP; tearing it down"
+                );
+                self.handler.hangup_trunk(room_number, &peer).await;
+                // Retry at once rather than waiting out a failed-dial backoff.
+                self.failed
+                    .remove(&(tenant_id.to_string(), room_number.to_string(), peer));
+            }
+        }
         let local = self.handler.countable_participants(room_number);
         let trunked = self.handler.room_trunk_peers(room_number);
         let hosting: Vec<String> = if local == 0 {

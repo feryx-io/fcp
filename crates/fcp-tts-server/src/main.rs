@@ -310,6 +310,7 @@ async fn start_cluster(config: &TtsServerConfig) {
             .unwrap_or_default()
             .as_secs(),
         version: env!("CARGO_PKG_VERSION").to_string(),
+        draining: false,
     };
 
     let cm = ClusterManager::new(redis, member).with_intervals(

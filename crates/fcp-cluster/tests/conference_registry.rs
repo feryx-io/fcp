@@ -102,3 +102,47 @@ async fn lock_flag_is_room_wide_and_separate_from_hosts() {
     assert!(!a.room("t1", "8000").await.unwrap().locked);
     assert!(a.room("t1", "9000").await.unwrap().locked);
 }
+
+/// A node that stops publishing vanishes from a room after one TTL even
+/// while another node keeps the room's key alive.
+#[tokio::test]
+async fn dead_node_entries_go_stale_while_others_keep_the_room() {
+    let url = match std::env::var("FCP_TEST_REDIS_URL") {
+        Ok(u) => u,
+        Err(_) => {
+            eprintln!("FCP_TEST_REDIS_URL not set; skipping conference registry test");
+            return;
+        }
+    };
+    let prefix = format!("test:{}:", uuid::Uuid::new_v4().simple());
+    let storage = |_: &str| {
+        let url = url.clone();
+        let prefix = prefix.clone();
+        async move {
+            RedisStorage::new(RedisConfig {
+                url,
+                key_prefix: prefix,
+            })
+            .await
+            .expect("connect to redis")
+        }
+    };
+    // The reader's TTL is what decides staleness: 1 s here.
+    let a = ConferenceRegistry::with_ttl(storage("a").await, "conf-a".into(), 1);
+    let b = ConferenceRegistry::with_ttl(storage("b").await, "conf-b".into(), 60);
+
+    a.set_participants("t1", "8000", 4).await.unwrap();
+    b.set_participants("t1", "8000", 2).await.unwrap();
+    assert_eq!(a.hosts("t1", "8000").await.unwrap().len(), 2);
+
+    // conf-a dies. conf-b keeps refreshing, which also keeps the key alive.
+    tokio::time::sleep(std::time::Duration::from_millis(2100)).await;
+    b.set_participants("t1", "8000", 2).await.unwrap();
+
+    let hosts = a.hosts("t1", "8000").await.unwrap();
+    assert_eq!(hosts.len(), 1, "stale conf-a entry dropped: {hosts:?}");
+    assert_eq!(hosts[0].node_id, "conf-b");
+    assert_eq!(hosts[0].participants, 2);
+    // conf-b (60 s tolerance) still sees the raw entry as fresh enough.
+    assert_eq!(b.hosts("t1", "8000").await.unwrap().len(), 2);
+}

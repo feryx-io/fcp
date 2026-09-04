@@ -14,7 +14,7 @@ The work lands in four phases. This document tracks what is in place.
 | 1 | Conference registry + cluster-aware placement | ✅ v0.25.82 |
 | 2 | Inter-node trunks (cascaded mixing) | ✅ v0.25.83 |
 | 3 | Cross-node control (kick, gain, lock, announce, end) | ✅ v0.25.84 |
-| 4 | Resilience (registry expiry, trunk teardown, draining) | planned |
+| 4 | Resilience (registry expiry, trunk teardown, draining, trunk SRTP) | ✅ v0.25.85 |
 
 Decisions (2026-09-02): full-mesh trunks between hosting nodes; new
 participants stay on a hosting node until it reaches a capacity setting;
@@ -282,3 +282,93 @@ Without `cluster.secret` the node logs a warning at startup, its
 node it was sent to. The API's own bearer token (`http.auth_token`) is
 not involved in node-to-node calls, and the `/internal` routes are not
 rate limited.
+
+
+## Phase 4: resilience
+
+What happens when a conference node dies, restarts, or is taken down on
+purpose — and what keeps the inter-node media private.
+
+### A node dies
+
+- **Membership** expires its heartbeat after `cluster.heartbeat_ttl_secs`
+  (15 s). Placement, trunking and cross-node control only ever consider
+  live members, so from then on nothing new is sent to the node.
+- **Registry entries** are stamped: each node's field in a room's hash is
+  `<participants>@<unix seconds>`, and readers drop any field older than
+  the registry TTL (60 s). Before this, the key's TTL was the only expiry,
+  and a live node refreshing the room kept a dead node's field alive
+  forever — a node coming back with the same id was then "hosting" rooms
+  it knew nothing about, and was dialed for them. A bare count written by
+  an older version is taken as fresh.
+- **Trunks to the dead node** are hung up by the reconciler as soon as the
+  peer leaves membership, or sooner by the RTP timeout below. Hanging up
+  a trunk tears it down locally first and sends the BYE in the background
+  with a 5 s bound, so a peer that will never answer cannot stall the
+  reconciler (a BYE over TCP/TLS otherwise waits out the full transaction
+  timer).
+- **Its callers** are gone with it. They redial and are placed on a
+  surviving node. Participant migration (moving a caller between nodes
+  without a redial) is not part of this phase.
+
+### A trunk goes quiet
+
+A peer that crashes and comes back inside the membership TTL, or drops a
+trunk session without a BYE, leaves the other side holding a trunk that
+carries nothing — and, on the dialing side, never redialing because it
+believes the trunk is up. So a trunk sends a frame every 20 ms whether or
+not anyone is talking (an empty mix becomes a silent frame), and the
+reconciler tears down any trunk that has received no RTP for
+`cluster.trunk_rtp_timeout_secs` (default 30; `0` disables) and dials it
+again at once. The callee side of a redial replaces the stale trunk it
+still holds, as in phase 2.
+
+### Taking a node down: draining
+
+On SIGTERM / SIGINT a conference node:
+
+1. **Advertises `draining`** in cluster membership, published immediately
+   and with every later heartbeat. Placement never sends a new
+   participant to a draining node, not even for a room it already hosts;
+   trunking and cross-node control still treat it as a host while it has
+   callers.
+2. **Refuses new callers** (503). Trunk INVITEs from peers are still
+   accepted, so the callers already here keep hearing the rest of the
+   room until they leave.
+3. **Waits up to `service.drain_wait_secs`** (default 0) for its callers to
+   leave on their own, checking once a second.
+4. **Hangs up whoever remains**: BYEs go out 32 at a time, each bounded
+   to 5 s, under the existing `service.shutdown_timeout_secs`.
+5. **Leaves every room in the registry** (awaited, not fire-and-forget)
+   and removes its heartbeat.
+
+```toml
+[service]
+shutdown_timeout_secs = 30
+drain_wait_secs = 300          # let a meeting finish before hanging up
+```
+
+### Trunk media: SRTP
+
+Trunk media is SDES-SRTP (`AES_CM_128_HMAC_SHA1_80`) by default. The
+dialing node generates its key and offers `RTP/SAVP` with an `a=crypto`
+line; the callee answers with its own key whenever the offer carries one,
+regardless of `conference.enable_srtp` (which governs callers). Keys travel
+inside the mutual-TLS INVITE, so only the two nodes see them. A dialing
+node that offered SRTP and gets an answer without it hangs up and logs
+why: set `cluster.trunk_srtp` to the same value on every conference node
+(`false` for plain RTP on a network you trust).
+
+```toml
+[cluster]
+trunk_rtp_timeout_secs = 30    # 0 disables the liveness check
+trunk_srtp = true
+```
+
+### Not in this phase
+
+- Participant migration off a draining node (REFER back into the room, or
+  a call-manager-side re-INVITE) — callers on a node that goes away redial.
+- Registry and membership when Redis itself is unreachable: every node
+  keeps what it has (trunks are left as they are on a registry read
+  failure) and reconciles when Redis returns.

@@ -39,6 +39,7 @@ use tracing::{debug, info, warn};
 use crate::audio_bridge::{self, AudioStats};
 use crate::config::{AiSection, ConferenceSection};
 use crate::trunks::{self, TRUNK_NODE_HEADER, TRUNK_TENANT_HEADER};
+use futures::StreamExt;
 
 /// Fallback remote address used when SDP parsing fails to extract the caller's RTP endpoint.
 const UNKNOWN_REMOTE: SocketAddr =
@@ -179,6 +180,8 @@ pub struct ConferenceCallHandler {
     local_sip_uri: SipUri,
     /// Set to true during graceful shutdown to reject new INVITEs while draining existing sessions
     draining: std::sync::atomic::AtomicBool,
+    /// Offer SDES-SRTP on the trunks this node dials (`cluster.trunk_srtp`).
+    trunk_srtp: std::sync::atomic::AtomicBool,
     /// Secondary index: room_number → Vec<call_id> for O(1) room-to-session lookups.
     room_sessions: DashMap<String, Vec<String>>,
     /// This node's cluster id: what peers see in our trunk INVITEs and in
@@ -601,6 +604,7 @@ impl ConferenceCallHandler {
             conference_subscriptions: DashMap::new(),
             local_sip_uri,
             draining: std::sync::atomic::AtomicBool::new(false),
+            trunk_srtp: std::sync::atomic::AtomicBool::new(true),
             room_sessions: DashMap::new(),
             node_id,
             room_registry: std::sync::RwLock::new(None),
@@ -1814,14 +1818,31 @@ impl ConferenceCallHandler {
             .map(|entry| entry.key().clone())
             .collect();
 
-        // Send BYE and remove each session
-        for call_id in &call_ids {
-            if let Some(session) = self.sessions.get(call_id) {
-                if let Err(e) = self.uac.bye(&session.dialog).await {
-                    warn!(call_id = %call_id, error = %e, "Failed to send BYE during shutdown");
+        // BYE every session, a batch at a time, each BYE bounded so a
+        // peer that is already gone (a dead trunk, a phone off the
+        // network) cannot hold up the rest of the shutdown.
+        let dialogs: Vec<(String, Dialog)> = call_ids
+            .iter()
+            .filter_map(|call_id| {
+                self.sessions
+                    .get(call_id)
+                    .map(|s| (call_id.clone(), s.dialog.clone()))
+            })
+            .collect();
+        futures::stream::iter(dialogs)
+            .for_each_concurrent(SHUTDOWN_BYE_CONCURRENCY, |(call_id, dialog)| async move {
+                match tokio::time::timeout(BYE_TIMEOUT, self.uac.bye(&dialog)).await {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(e)) => {
+                        warn!(call_id = %call_id, error = %e, "Failed to send BYE during shutdown")
+                    }
+                    Err(_) => {
+                        warn!(call_id = %call_id, "BYE unanswered during shutdown; closing anyway")
+                    }
                 }
-                drop(session); // Release DashMap ref before remove_session
-            }
+            })
+            .await;
+        for call_id in &call_ids {
             self.remove_session(call_id);
         }
 
@@ -2535,7 +2556,10 @@ impl ConferenceCallHandler {
         peers
     }
 
-    /// Hang up every trunk to `peer` in a room (BYE, then local teardown).
+    /// Hang up every trunk to `peer` in a room: local teardown at once,
+    /// the BYE sent in the background with a bound. The peer may be the
+    /// reason for the hangup — dead, or gone from the cluster — and a
+    /// BYE that never gets answered must not stall the reconciler.
     pub async fn hangup_trunk(&self, room_number: &str, peer: &str) {
         let call_ids: Vec<String> = self
             .room_sessions
@@ -2549,11 +2573,54 @@ impl ConferenceCallHandler {
                 }
                 _ => continue,
             };
-            if let Err(e) = self.uac.bye(&dialog).await {
-                warn!(room = %room_number, peer = %peer, error = %e, "BYE for conference trunk failed");
-            }
             self.remove_session(&call_id);
+            let uac = Arc::clone(&self.uac);
+            let room = room_number.to_string();
+            let peer = peer.to_string();
+            tokio::spawn(async move {
+                match tokio::time::timeout(BYE_TIMEOUT, uac.bye(&dialog)).await {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(e)) => {
+                        warn!(room = %room, peer = %peer, error = %e, "BYE for conference trunk failed")
+                    }
+                    Err(_) => {
+                        debug!(room = %room, peer = %peer, "BYE for conference trunk unanswered")
+                    }
+                }
+            });
         }
+    }
+
+    /// Trunks in a room that look dead: joined at least `timeout` ago and
+    /// no RTP received for `timeout` (or ever). A peer sends a frame
+    /// every 20 ms while its trunk is up, so silence this long means the
+    /// peer crashed, restarted, or dropped the session without a BYE.
+    pub fn silent_trunks(&self, room_number: &str, timeout: Duration) -> Vec<String> {
+        let Some(call_ids) = self.room_sessions.get(room_number) else {
+            return Vec::new();
+        };
+        let mut peers: Vec<String> = call_ids
+            .iter()
+            .filter_map(|call_id| self.sessions.get(call_id))
+            .filter(|session| {
+                session.trunk_peer.is_some()
+                    && session.joined_at.elapsed().unwrap_or_default() >= timeout
+                    && session
+                        .stats
+                        .last_rx_age()
+                        .map(|age| age >= timeout)
+                        .unwrap_or(true)
+            })
+            .filter_map(|session| session.trunk_peer.clone())
+            .collect();
+        peers.sort();
+        peers.dedup();
+        peers
+    }
+
+    /// Whether trunks this node dials offer SRTP (`cluster.trunk_srtp`).
+    pub fn set_trunk_srtp(&self, enabled: bool) {
+        self.trunk_srtp.store(enabled, Ordering::Relaxed);
     }
 
     /// Codec list this node offers a peer, in preference order: wideband
@@ -2614,20 +2681,35 @@ impl ConferenceCallHandler {
             .iter()
             .map(|(name, pt)| format!("a=rtpmap:{pt} {name}/8000\r\n"))
             .collect();
+        // SRTP: offer our key; the peer's comes back in the answer.
+        let offer_srtp = self.trunk_srtp.load(Ordering::Relaxed);
+        let (local_srtp_key, crypto_line) = if offer_srtp {
+            let (key, b64) = generate_srtp_key_material()
+                .map_err(|e| anyhow::anyhow!("SRTP key generation failed: {}", e))?;
+            (
+                Some(key),
+                format!("a=crypto:1 {TRUNK_SRTP_SUITE} inline:{b64}\r\n"),
+            )
+        } else {
+            (None, String::new())
+        };
         let sdp_offer = format!(
             "v=0\r\n\
              o=fcp-conference 0 0 IN IP4 {ip}\r\n\
              s=FCP Conference Trunk\r\n\
              c=IN IP4 {ip}\r\n\
              t=0 0\r\n\
-             m=audio {rtp_port} RTP/AVP {pts}\r\n\
+             m=audio {rtp_port} {profile} {pts}\r\n\
              {rtpmaps}\
+             {crypto}\
              a=sendrecv\r\n\
              a=ptime:20\r\n",
             ip = ip,
             rtp_port = port_pair.rtp_port,
+            profile = if offer_srtp { "RTP/SAVP" } else { "RTP/AVP" },
             pts = pt_list.join(" "),
             rtpmaps = rtpmaps,
+            crypto = crypto_line,
         );
 
         let target_uri = format!("sip:{}@{};transport=tls", room_number, target);
@@ -2687,6 +2769,31 @@ impl ConferenceCallHandler {
         let dialog = call_handle.dialog.read().await.clone();
         let call_id = dialog.id().call_id().to_string();
 
+        // We offered SRTP: the answer must carry the peer's key, or the
+        // trunk would silently run in the clear on one side.
+        let srtp = match local_srtp_key {
+            Some(local_key) => {
+                let crypto_lines = parse_sdes_crypto(answer_sdp);
+                let Some(crypto) = crypto_lines.first() else {
+                    let _ = tokio::time::timeout(BYE_TIMEOUT, self.uac.bye(&dialog)).await;
+                    dealloc(Arc::clone(&self.port_pool), port_pair);
+                    bail!(
+                        "peer {} answered the trunk without SRTP; set cluster.trunk_srtp the same on every conference node",
+                        peer_node
+                    );
+                };
+                match Self::trunk_srtp_context(crypto, local_key) {
+                    Ok(ctx) => Some(ctx),
+                    Err(e) => {
+                        let _ = tokio::time::timeout(BYE_TIMEOUT, self.uac.bye(&dialog)).await;
+                        dealloc(Arc::clone(&self.port_pool), port_pair);
+                        bail!("trunk SRTP answer from {} unusable: {}", peer_node, e);
+                    }
+                }
+            }
+            None => None,
+        };
+
         let rtp_socket = match RtpSocketPair::new(port_pair, RtpSocketConfig::default()).await {
             Ok(s) => Arc::new(s),
             Err(e) => {
@@ -2721,10 +2828,26 @@ impl ConferenceCallHandler {
                 codec_name,
                 payload_type,
                 frame_size,
+                srtp,
             },
             &conf,
         )
         .await
+    }
+
+    /// SRTP context for a trunk from the peer's crypto line and our own
+    /// key material.
+    fn trunk_srtp_context(
+        crypto: &fcp_media::SdesCryptoLine,
+        local_key: SrtpKeyMaterial,
+    ) -> Result<SrtpContext> {
+        let (key, salt, profile) = decode_sdes_key_params(&crypto.key_params, &crypto.suite)?;
+        let remote_key = SrtpKeyMaterial::new(key, salt, profile)
+            .map_err(|e| anyhow::anyhow!("Invalid SRTP key material: {}", e))?;
+        let mut ctx = SrtpContext::new();
+        ctx.set_remote_key(remote_key);
+        ctx.set_local_key(local_key);
+        Ok(ctx)
     }
 
     /// Answer a trunk INVITE from a peer node. The peer certificate must
@@ -2803,13 +2926,31 @@ impl ConferenceCallHandler {
             return Ok(());
         };
 
+        // SRTP whenever the peer offers it: the dialing side decides, and
+        // a peer that offered a key expects ours back.
+        let (srtp, srtp_sdp) = match parse_sdes_crypto(sdp_offer).first() {
+            Some(crypto) => match Self::negotiate_srtp(crypto) {
+                Ok((ctx, sdp_ctx)) => (Some(ctx), Some(sdp_ctx)),
+                Err(e) => {
+                    warn!(room = %room_number, peer = %peer_node, error = %e, "Trunk SRTP offer unusable");
+                    handle.send_final(reject(488, "Not Acceptable Here")).await;
+                    return Ok(());
+                }
+            },
+            None => (None, None),
+        };
+
         let port_pair = self
             .port_pool
             .allocate()
             .await
             .context("Failed to allocate RTP port pair for conference trunk")?;
-        let sdp_answer =
-            construct_answer_for_a_leg(sdp_offer, &self.local_addr, port_pair.rtp_port, None);
+        let sdp_answer = construct_answer_for_a_leg(
+            sdp_offer,
+            &self.local_addr,
+            port_pair.rtp_port,
+            srtp_sdp.as_ref(),
+        );
         let local_sip_uri = self.parse_local_sip_uri();
         let uas = UserAgentServer::new(local_sip_uri.clone(), local_sip_uri);
         let (response, dialog) = match uas.accept_invite(request, Some(&sdp_answer)) {
@@ -2881,6 +3022,7 @@ impl ConferenceCallHandler {
                 codec_name,
                 payload_type,
                 frame_size,
+                srtp,
             },
             &conf,
         )
@@ -2903,6 +3045,7 @@ impl ConferenceCallHandler {
         let encoder = create_codec_instance(&leg.codec_name)?;
         let decoder = create_codec_instance(&leg.codec_name)?;
         let stats = Arc::new(AudioStats::new());
+        let srtp_context = leg.srtp.map(|ctx| Arc::new(tokio::sync::RwLock::new(ctx)));
         let audio_bridge_handle = tokio::spawn(audio_bridge::run_audio_bridge(
             Arc::clone(&leg.room),
             participant_id.clone(),
@@ -2917,7 +3060,7 @@ impl ConferenceCallHandler {
             None,
             false,
             Arc::clone(&stats),
-            None, // plain RTP between nodes
+            srtp_context.clone(),
             conf.sample_rate,
             None,
             None,
@@ -2952,7 +3095,7 @@ impl ConferenceCallHandler {
                 stats,
                 display_name: Some(format!("Trunk: {}", leg.peer_node)),
                 caller_id: None,
-                srtp_context: None,
+                srtp_context,
                 last_refreshed: Instant::now(),
             },
         );
@@ -2968,6 +3111,14 @@ impl ConferenceCallHandler {
 }
 
 /// An established trunk leg, before it is attached to the room.
+/// How long a BYE may wait for its answer before the session is closed
+/// regardless.
+const BYE_TIMEOUT: Duration = Duration::from_secs(5);
+/// SDES-SRTP suite offered on inter-node trunks.
+const TRUNK_SRTP_SUITE: &str = "AES_CM_128_HMAC_SHA1_80";
+/// BYEs in flight at once during shutdown.
+const SHUTDOWN_BYE_CONCURRENCY: usize = 32;
+
 struct TrunkLeg {
     room: Arc<forge_conference::ConferenceRoom>,
     room_number: String,
@@ -2981,6 +3132,8 @@ struct TrunkLeg {
     codec_name: String,
     payload_type: u8,
     frame_size: usize,
+    /// SDES-SRTP keys when negotiated on the trunk.
+    srtp: Option<SrtpContext>,
 }
 
 #[async_trait::async_trait]
@@ -3032,8 +3185,12 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
     ) -> Result<()> {
         let _invite_start = Instant::now();
 
-        // 0. Reject new calls during shutdown draining
-        if self.draining.load(Ordering::Relaxed) {
+        // 0. Reject new calls during shutdown draining. Trunk INVITEs
+        // still land: the callers already here must keep hearing the
+        // rest of the room until they leave.
+        if self.draining.load(Ordering::Relaxed)
+            && sip_parse::header(request.headers(), TRUNK_NODE_HEADER).is_none()
+        {
             info!(peer = %peer, "Rejecting INVITE during shutdown drain");
             let reject = UserAgentServer::create_response(request, 503, "Service Unavailable");
             handle.send_final(reject).await;
