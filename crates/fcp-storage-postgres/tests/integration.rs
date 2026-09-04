@@ -1245,3 +1245,88 @@ async fn encryption_fails_closed_on_wrong_master_key_or_no_cipher() {
 
     db.finish().await;
 }
+
+// ─── Read replica ────────────────────────────────────────────────────────
+
+/// Routing is proved with two databases on the same server: reads served
+/// by the "replica" cannot see what was written to the primary.
+#[tokio::test]
+async fn replica_reads_follow_health_and_the_read_after_write_window() {
+    let primary = require_db!();
+    let replica = require_db!();
+    let s = PostgresStorage::new(
+        PostgresConfig::new(TestDb::url(&primary.admin_url, &primary.name))
+            .with_read_replica(TestDb::url(&replica.admin_url, &replica.name))
+            .with_max_replica_lag(Duration::from_millis(500))
+            .with_encryption(EncryptionSettings::Disabled),
+    )
+    .await
+    .expect("connect with a read replica");
+
+    // Probed at connect: same server, not a standby, so lag is zero.
+    let status = s.replica_status().expect("replica configured");
+    assert!(status.reachable, "{status:?}");
+    assert!(status.healthy, "{status:?}");
+    assert_eq!(status.lag_ms, 0);
+    assert_eq!(status.max_lag_ms, 500);
+    assert!(s.reads_from_replica());
+
+    // Written through another backend, so `s` has no write of its own.
+    let t = tenant("replica-routing");
+    primary.storage().put_tenant(t.clone()).await.unwrap();
+    assert!(
+        s.get_tenant(&t.id).await.unwrap().is_none(),
+        "configuration read served by the replica, which has no such tenant"
+    );
+
+    // A write through `s` pins its reads to the primary for the window.
+    s.put_tenant(tenant("replica-writer")).await.unwrap();
+    assert!(!s.reads_from_replica());
+    assert!(
+        s.get_tenant(&t.id).await.unwrap().is_some(),
+        "read-after-write goes to the primary"
+    );
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    assert!(s.reads_from_replica(), "window elapsed");
+    assert!(s.get_tenant(&t.id).await.unwrap().is_none());
+
+    // Reads that must be current never use the replica: registrations.
+    assert!(s.get_registrations("nobody@example.com").await.is_ok());
+
+    // An unhealthy replica sends every read to the primary.
+    s.set_replica_healthy(false);
+    assert!(!s.reads_from_replica());
+    assert!(s.get_tenant(&t.id).await.unwrap().is_some());
+
+    // A fresh probe sees it healthy again.
+    s.probe_replica().await;
+    assert!(s.reads_from_replica());
+
+    s.close().await;
+    primary.finish().await;
+    replica.finish().await;
+}
+
+#[tokio::test]
+async fn unreachable_replica_is_tolerated_and_reads_use_the_primary() {
+    let primary = require_db!();
+    let s = PostgresStorage::new(
+        PostgresConfig::new(TestDb::url(&primary.admin_url, &primary.name))
+            .with_read_replica("postgresql://nobody@127.0.0.1:1/nowhere")
+            .with_encryption(EncryptionSettings::Disabled),
+    )
+    .await
+    .expect("a replica that is down must not stop the node");
+    let status = s.replica_status().expect("replica configured");
+    assert!(!status.reachable);
+    assert!(!status.healthy);
+    assert_eq!(status.host, "127.0.0.1:1");
+    assert!(!s.reads_from_replica());
+
+    let t = tenant("no-replica");
+    s.put_tenant(t.clone()).await.unwrap();
+    assert!(s.get_tenant(&t.id).await.unwrap().is_some());
+
+    s.close().await;
+    primary.finish().await;
+}

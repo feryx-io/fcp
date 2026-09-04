@@ -38,7 +38,7 @@ Update this file when feature status changes; keep other docs describing scope, 
 
 | Item | Status |
 |---|---|
-| Multi-region | ❌ `fcp-cluster` is flat single-region SWIM membership |
+| Multi-region | 🟡 Read replicas done (2026-09-04, `docs/MULTI_REGION.md`): every binary's `[storage]` takes `read_replica_url` + `max_replica_lag_secs`; configuration reads go to a healthy replica, everything else and every write to the primary; lag probe every 5 s, read-after-write window per process. CockroachDB dropped (see doc). Not done: region-aware cluster membership and event-bus fan-out |
 | E911 | 🟡 Block 1 done (2026-09-02, `docs/E911.md`): emergency-number detection (tenant-configurable, `911`/`933` + `9` prefix by default) before any admission control, dispatchable-location resolution (device override → device site → user site → DID address) with ELIN callback numbers per site, emergency-capable trunks tried first, callback number as caller ID + `P-Asserted-Identity` + `Priority: emergency`, `call.emergency` event with notification contacts, `emergency_calls` audit table, admin API (config, readiness report, validate-address, per-number validation) and a pluggable `E911AddressValidator`. Not yet: PIDF-LO location by value, subnet-based location for softphones, provider-backed validation, in-platform notification delivery |
 | Video conferencing | ❌ Conference server and WebRTC gateway are audio-only |
 | Regulatory compliance | 🟡 Basics done (2026-09-02, `docs/COMPLIANCE.md`): per-tenant retention policy (CDRs, SIP traces, flow traces, recordings, audit events) applied hourly by fcp-admin and on demand, with recorded runs; recording-consent mode with a prompt played before API-started recordings; admin audit log written by an API middleware (every mutating request + exports, actor/tenant/route/status) with `GET /audit-log`; CSV CDR export. Not yet: consent announcement on B2BUA auto-recorded calls, legal hold, data-subject export/erasure |
@@ -48,7 +48,7 @@ Update this file when feature status changes; keep other docs describing scope, 
 
 | Item | Decision | Rationale |
 |---|---|---|
-| Storage strategy | **Postgres stays the system of record. SQLite is dropped.** CockroachDB support comes as a compatibility pass on the existing backend (same wire protocol) plus a CI service, scheduled as the first step of multi-region work, not before | A second dialect backend would be ~7k lines to maintain for single-box deployments that docker-compose already covers. Only ~12 of 45 migrations use Postgres-specific features (triggers, PL/pgSQL, GIN), all supported by current CockroachDB |
+| Storage strategy | **Postgres stays the system of record, single writer, streaming read replicas per region. SQLite is dropped. CockroachDB dropped (2026-09-04)** — its compatibility pass was started and abandoned: applied migrations are checksum-frozen so every gap needs a permanent CockroachDB-only SQL rewrite, serializable-only isolation needs a retry loop the backend lacks, and DDL is ~50× slower. YugabyteDB is the untested candidate if active-active SQL is ever required (`docs/MULTI_REGION.md`) | A second dialect backend would be ~7k lines to maintain for single-box deployments that docker-compose already covers. Only ~12 of 45 migrations use Postgres-specific features (triggers, PL/pgSQL, GIN), all supported by current CockroachDB |
 | Plugin runtime (WASM/Lua) + `fcp-plugins` SDK | **Descoped** | Flows, webhooks, and the `BillingHook`/policy traits are the extension points. Revisit only on a concrete customer need |
 | gRPC API (`fcp-api-grpc`) | **Descoped** | REST (~150 routes) + WebSocket cover the surface; a gRPC mirror would be permanent double maintenance |
 | Distributed conferencing (cascaded mixing) | **Kept, scheduled after E911 and compliance basics** | Plan on file in `docs/TO_DO_CONFERENCE_LOADBALANCE_HA.md` (~2–3 weeks). Dispatchable-location and compliance items are legal requirements for US enterprise UC; 1000-participant conferences are a scale feature |
@@ -78,7 +78,7 @@ Vision items in `docs/ARCHITECTURE-v0.2.md` that are descoped above remain in th
 1. ~~**E911** block 1~~ (done 2026-09-02, see the Phase 5 table and `docs/E911.md`). Block 2, unscheduled: PIDF-LO by value for NG911 trunks, subnet-based location, a provider-backed validator, notification delivery.
 2. ~~**Compliance basics**~~ (done 2026-09-02, see the Phase 5 table and `docs/COMPLIANCE.md`). Follow-ups, unscheduled: consent announcement on auto-recorded calls, legal hold, per-subject export/erasure.
 3. **Distributed conferencing**: phase 1 (registry + placement) done 2026-09-02; phases 2–4 (mutual-TLS trunks and cascaded mixing, cross-node control, resilience) done 2026-09-03. Participant migration off a draining node remains open.
-4. **Multi-region**: CockroachDB compatibility pass + CI service first, then region-aware cluster membership and event bus.
+4. **Multi-region**: read replicas done 2026-09-04 (CockroachDB dropped); region-aware cluster membership and event bus next.
 5. Video conferencing and the dedicated CDR pipeline remain unscheduled carrier-scale items.
 
 ## Historical documents

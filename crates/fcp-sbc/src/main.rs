@@ -319,6 +319,8 @@ async fn main() -> Result<()> {
     ) = if sbc_config.storage.enabled {
         let pg_config = fcp_storage_postgres::PostgresConfig {
             connection_string: sbc_config.storage.database_url.clone(),
+            read_replica_url: sbc_config.storage.read_replica_url.clone(),
+            max_replica_lag: Duration::from_secs(sbc_config.storage.max_replica_lag_secs),
             max_connections: 10,
             connection_timeout: std::time::Duration::from_secs(30),
             encryption: None,

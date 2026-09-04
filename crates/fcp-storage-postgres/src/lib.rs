@@ -64,6 +64,7 @@ use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{Pool, Postgres, Row};
 use std::collections::HashMap;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing::{debug, info};
@@ -157,6 +158,16 @@ pub struct PostgresConfig {
     /// connect time (`FCP_ENCRYPTION_PROVIDER`, `FCP_MASTER_KEY`, …), so
     /// every binary configures it the same way; tests pass explicit settings.
     pub encryption: Option<EncryptionSettings>,
+    /// A streaming read replica (hot standby) to serve configuration reads
+    /// from — typically the one in this node's region. Writes, and reads
+    /// that must be current, always go to `connection_string`. See
+    /// `docs/MULTI_REGION.md`.
+    pub read_replica_url: Option<String>,
+    /// Replication lag beyond which the replica is left alone and reads go
+    /// to the primary until it catches up. Also the read-after-write window:
+    /// for this long after a write through this backend, its reads go to
+    /// the primary so the writer sees its own change.
+    pub max_replica_lag: Duration,
 }
 
 impl PostgresConfig {
@@ -167,7 +178,21 @@ impl PostgresConfig {
             max_connections: 10,
             connection_timeout: Duration::from_secs(30),
             encryption: None,
+            read_replica_url: None,
+            max_replica_lag: Duration::from_secs(5),
         }
+    }
+
+    /// Serve configuration reads from a streaming replica.
+    pub fn with_read_replica<S: Into<String>>(mut self, url: S) -> Self {
+        self.read_replica_url = Some(url.into());
+        self
+    }
+
+    /// Replication lag tolerated before reads return to the primary.
+    pub fn with_max_replica_lag(mut self, lag: Duration) -> Self {
+        self.max_replica_lag = lag;
+        self
     }
 
     /// Use explicit encryption settings instead of the environment.
@@ -201,6 +226,102 @@ pub struct PostgresStorage {
     pool: Pool<Postgres>,
     /// Present when encryption at rest is enabled for this deployment.
     encryption: Option<Arc<EncryptionState>>,
+    /// Present when a read replica is configured.
+    replica: Option<Arc<ReplicaState>>,
+    /// When this backend last wrote, as milliseconds since the Unix epoch
+    /// (0 = never). Reads within `max_replica_lag` of it go to the primary.
+    last_write_unix_ms: Arc<AtomicU64>,
+}
+
+/// A read replica and what the last probe found out about it.
+struct ReplicaState {
+    pool: Pool<Postgres>,
+    /// Reachable and within `max_lag` at the last probe.
+    healthy: AtomicBool,
+    /// Replication lag at the last probe, in milliseconds.
+    lag_ms: AtomicU64,
+    /// Whether the last probe reached the replica at all.
+    reachable: AtomicBool,
+    max_lag: Duration,
+    /// The URL's host (for logs and health), never its credentials.
+    host: String,
+    /// The replica turned out to be a primary (not in recovery); said once.
+    warned_not_standby: AtomicBool,
+}
+
+/// What a health endpoint can say about the read replica.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ReplicaStatus {
+    /// Host part of the replica URL.
+    pub host: String,
+    /// Reachable at the last probe.
+    pub reachable: bool,
+    /// Reachable and within the lag limit: configuration reads go here.
+    pub healthy: bool,
+    /// Replication lag at the last probe, in milliseconds.
+    pub lag_ms: u64,
+    /// The lag limit, in milliseconds.
+    pub max_lag_ms: u64,
+}
+
+/// How often the replica is probed for reachability and lag.
+const REPLICA_PROBE_INTERVAL: Duration = Duration::from_secs(5);
+/// How long one probe may take before the replica counts as unreachable
+/// (the pool would otherwise keep retrying for its whole acquire timeout).
+const REPLICA_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
+
+fn unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Host part of a connection URL, for logs.
+fn url_host(url: &str) -> String {
+    url.split("://")
+        .nth(1)
+        .unwrap_or(url)
+        .split('/')
+        .next()
+        .unwrap_or("")
+        .rsplit('@')
+        .next()
+        .unwrap_or("")
+        .to_string()
+}
+
+/// Parse a Postgres LSN (`X/Y`, hex) into a comparable number.
+fn parse_lsn(lsn: &str) -> Option<u64> {
+    let (hi, lo) = lsn.trim().split_once('/')?;
+    Some((u64::from_str_radix(hi, 16).ok()? << 32) | u64::from_str_radix(lo, 16).ok()?)
+}
+
+/// Replication lag from what the primary and the replica report.
+///
+/// A replica that has replayed everything the primary has written lags by
+/// nothing, whatever `pg_last_xact_replay_timestamp()` says — on an idle
+/// primary that timestamp only grows older. Otherwise the age of the last
+/// replayed transaction is the lag. A "replica" that is not in recovery is
+/// a primary; it lags by nothing.
+fn replication_lag(
+    in_recovery: bool,
+    primary_lsn: Option<&str>,
+    replay_lsn: Option<&str>,
+    replay_age: Option<f64>,
+) -> Duration {
+    if !in_recovery {
+        return Duration::ZERO;
+    }
+    if let (Some(p), Some(r)) = (
+        primary_lsn.and_then(parse_lsn),
+        replay_lsn.and_then(parse_lsn),
+    ) {
+        if r >= p {
+            return Duration::ZERO;
+        }
+    }
+    Duration::from_secs_f64(replay_age.unwrap_or(0.0).max(0.0))
 }
 
 impl PostgresStorage {
@@ -263,7 +384,183 @@ impl PostgresStorage {
             }
         };
 
-        Ok(Self { pool, encryption })
+        // Read replica: connect lazily so a replica that is down at start
+        // does not stop the node; the probe decides whether reads go there.
+        let replica = match config.read_replica_url.as_deref() {
+            Some(url) if !url.is_empty() => {
+                let options = PgConnectOptions::from_str(url)
+                    .context("Invalid read replica connection string")?;
+                let pool = PgPoolOptions::new()
+                    .max_connections(config.max_connections)
+                    .acquire_timeout(config.connection_timeout)
+                    .connect_lazy_with(options);
+                let state = Arc::new(ReplicaState {
+                    pool,
+                    healthy: AtomicBool::new(false),
+                    lag_ms: AtomicU64::new(0),
+                    reachable: AtomicBool::new(false),
+                    max_lag: config.max_replica_lag,
+                    host: url_host(url),
+                    warned_not_standby: AtomicBool::new(false),
+                });
+                info!(
+                    replica = %state.host,
+                    max_lag_ms = config.max_replica_lag.as_millis() as u64,
+                    "Read replica configured; configuration reads go there while it is healthy"
+                );
+                Some(state)
+            }
+            _ => None,
+        };
+
+        let storage = Self {
+            pool,
+            encryption,
+            replica,
+            last_write_unix_ms: Arc::new(AtomicU64::new(0)),
+        };
+        if storage.replica.is_some() {
+            // First probe before serving, then in the background.
+            storage.probe_replica().await;
+            let probe = storage.clone();
+            tokio::spawn(async move {
+                let mut tick = tokio::time::interval(REPLICA_PROBE_INTERVAL);
+                tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                loop {
+                    tick.tick().await;
+                    probe.probe_replica().await;
+                }
+            });
+        }
+        Ok(storage)
+    }
+
+    // ── Read replica routing ───────────────────────────────────────────
+
+    /// The pool for a read that may be served by the replica: the replica
+    /// while it is healthy and this backend has not written within the
+    /// lag window, else the primary. Configuration-type reads use this;
+    /// anything that must be current, and every write, uses
+    /// [`writes`](Self::writes).
+    pub(crate) fn reads(&self) -> &Pool<Postgres> {
+        let Some(replica) = &self.replica else {
+            return &self.pool;
+        };
+        if !replica.healthy.load(Ordering::Relaxed) {
+            return &self.pool;
+        }
+        let last_write = self.last_write_unix_ms.load(Ordering::Relaxed);
+        if last_write != 0
+            && unix_ms().saturating_sub(last_write) < replica.max_lag.as_millis() as u64
+        {
+            return &self.pool;
+        }
+        &replica.pool
+    }
+
+    /// The primary. Records the write so the next reads from this backend
+    /// see it even with a lagging replica.
+    pub(crate) fn writes(&self) -> &Pool<Postgres> {
+        if self.replica.is_some() {
+            self.last_write_unix_ms.store(unix_ms(), Ordering::Relaxed);
+        }
+        &self.pool
+    }
+
+    /// Whether the next replica-eligible read would go to the replica.
+    pub fn reads_from_replica(&self) -> bool {
+        match &self.replica {
+            Some(replica) => std::ptr::eq(self.reads(), &replica.pool),
+            None => false,
+        }
+    }
+
+    /// The replica's state as of the last probe; `None` without a replica.
+    pub fn replica_status(&self) -> Option<ReplicaStatus> {
+        self.replica.as_ref().map(|r| ReplicaStatus {
+            host: r.host.clone(),
+            reachable: r.reachable.load(Ordering::Relaxed),
+            healthy: r.healthy.load(Ordering::Relaxed),
+            lag_ms: r.lag_ms.load(Ordering::Relaxed),
+            max_lag_ms: r.max_lag.as_millis() as u64,
+        })
+    }
+
+    /// Probe the replica once: reachable, in recovery, and how far behind
+    /// the primary. Updates what [`reads`](Self::reads) decides on. Runs
+    /// every few seconds in the background; public so tests and health
+    /// checks can force one.
+    pub async fn probe_replica(&self) {
+        let Some(replica) = &self.replica else {
+            return;
+        };
+        let was_healthy = replica.healthy.load(Ordering::Relaxed);
+        let probe = async {
+            let primary_lsn: Option<String> =
+                sqlx::query_scalar("SELECT pg_current_wal_lsn()::text")
+                    .fetch_one(&self.pool)
+                    .await
+                    .ok();
+            let row = sqlx::query(
+                "SELECT pg_is_in_recovery() AS in_recovery,                         pg_last_wal_replay_lsn()::text AS replay_lsn,                         EXTRACT(EPOCH FROM (now() - pg_last_xact_replay_timestamp()))::float8 AS replay_age",
+            )
+            .fetch_one(&replica.pool)
+            .await?;
+            let in_recovery: bool = row.try_get("in_recovery")?;
+            let replay_lsn: Option<String> = row.try_get("replay_lsn")?;
+            let replay_age: Option<f64> = row.try_get("replay_age")?;
+            Ok::<_, sqlx::Error>((in_recovery, primary_lsn, replay_lsn, replay_age))
+        };
+        let outcome = match tokio::time::timeout(REPLICA_PROBE_TIMEOUT, probe).await {
+            Ok(outcome) => outcome,
+            Err(_) => Err(sqlx::Error::PoolTimedOut),
+        };
+        match outcome {
+            Ok((in_recovery, primary_lsn, replay_lsn, replay_age)) => {
+                if !in_recovery && !replica.warned_not_standby.swap(true, Ordering::Relaxed) {
+                    tracing::warn!(
+                        replica = %replica.host,
+                        "Read replica is not in recovery (it is a primary, not a standby); using it as-is"
+                    );
+                }
+                let lag = replication_lag(
+                    in_recovery,
+                    primary_lsn.as_deref(),
+                    replay_lsn.as_deref(),
+                    replay_age,
+                );
+                let healthy = lag <= replica.max_lag;
+                replica.reachable.store(true, Ordering::Relaxed);
+                replica
+                    .lag_ms
+                    .store(lag.as_millis() as u64, Ordering::Relaxed);
+                replica.healthy.store(healthy, Ordering::Relaxed);
+                if healthy != was_healthy {
+                    if healthy {
+                        info!(replica = %replica.host, lag_ms = lag.as_millis() as u64, "Read replica healthy; configuration reads go to it");
+                    } else {
+                        tracing::warn!(replica = %replica.host, lag_ms = lag.as_millis() as u64, max_lag_ms = replica.max_lag.as_millis() as u64, "Read replica lagging; configuration reads back on the primary");
+                    }
+                }
+            }
+            Err(e) => {
+                replica.reachable.store(false, Ordering::Relaxed);
+                replica.healthy.store(false, Ordering::Relaxed);
+                if was_healthy {
+                    tracing::warn!(replica = %replica.host, error = %e, "Read replica unreachable; configuration reads back on the primary");
+                } else {
+                    debug!(replica = %replica.host, error = %e, "Read replica probe failed");
+                }
+            }
+        }
+    }
+
+    /// Force the replica's health flag (tests only).
+    #[doc(hidden)]
+    pub fn set_replica_healthy(&self, healthy: bool) {
+        if let Some(replica) = &self.replica {
+            replica.healthy.store(healthy, Ordering::Relaxed);
+        }
     }
 
     // ── Encryption at rest helpers ───────────────────────────────────────
@@ -359,6 +656,9 @@ impl PostgresStorage {
     /// Close the connection pool and wait for all connections to be released.
     pub async fn close(&self) {
         self.pool.close().await;
+        if let Some(replica) = &self.replica {
+            replica.pool.close().await;
+        }
     }
 
     /// Helper method to get device bindings for a line binding
@@ -440,7 +740,7 @@ impl CredentialStore for PostgresStorage {
              WHERE username = $1",
         )
         .bind(username)
-        .fetch_all(&self.pool)
+        .fetch_all(self.reads())
         .await?;
 
         match rows.len() {
@@ -471,7 +771,7 @@ impl CredentialStore for PostgresStorage {
         )
         .bind(username)
         .bind(tenant_id.to_string())
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.reads())
         .await?;
 
         match row {
@@ -494,7 +794,7 @@ impl CredentialStore for PostgresStorage {
              ORDER BY tenant_id",
         )
         .bind(username)
-        .fetch_all(&self.pool)
+        .fetch_all(self.reads())
         .await?;
 
         let users = rows
@@ -519,7 +819,7 @@ impl CredentialStore for PostgresStorage {
              WHERE id = $1",
         )
         .bind(user_id.to_string())
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.reads())
         .await?;
 
         match row {
@@ -626,7 +926,7 @@ impl CredentialStore for PostgresStorage {
         .bind(&user.profile_picture)
         .bind(user.failed_login_attempts)
         .bind(account_locked_until)
-        .execute(&self.pool)
+        .execute(self.writes())
         .await?;
 
         debug!(username = %user.username, "User stored");
@@ -636,7 +936,7 @@ impl CredentialStore for PostgresStorage {
     async fn delete_user(&self, username: &str) -> Result<()> {
         let rows = sqlx::query("SELECT tenant_id FROM users WHERE username = $1")
             .bind(username)
-            .fetch_all(&self.pool)
+            .fetch_all(self.writes())
             .await?;
 
         if rows.len() > 1 {
@@ -645,7 +945,7 @@ impl CredentialStore for PostgresStorage {
 
         sqlx::query("DELETE FROM users WHERE username = $1")
             .bind(username)
-            .execute(&self.pool)
+            .execute(self.writes())
             .await?;
 
         debug!(username = %username, "User deleted");
@@ -656,7 +956,7 @@ impl CredentialStore for PostgresStorage {
         sqlx::query("DELETE FROM users WHERE username = $1 AND tenant_id = $2")
             .bind(username)
             .bind(tenant_id.to_string())
-            .execute(&self.pool)
+            .execute(self.writes())
             .await?;
 
         debug!(username = %username, tenant_id = %tenant_id, "User deleted");
@@ -675,7 +975,7 @@ impl CredentialStore for PostgresStorage {
              FROM users
              ORDER BY username",
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.reads())
         .await?;
 
         let users = rows
@@ -766,7 +1066,7 @@ impl RegistrationStore for PostgresStorage {
         .bind(registered_at)
         .bind(&registration.path)
         .bind(&registration.flow_token)
-        .execute(&self.pool)
+        .execute(self.writes())
         .await?;
 
         debug!(aor = %registration.aor, contact = %registration.contact, "Registration stored");
@@ -777,7 +1077,7 @@ impl RegistrationStore for PostgresStorage {
         sqlx::query("DELETE FROM registrations WHERE aor = $1 AND contact = $2")
             .bind(aor)
             .bind(contact)
-            .execute(&self.pool)
+            .execute(self.writes())
             .await?;
 
         debug!(aor = %aor, contact = %contact, "Registration deleted");
@@ -794,7 +1094,7 @@ impl RegistrationStore for PostgresStorage {
             .bind(tenant_id.to_string())
             .bind(aor)
             .bind(contact)
-            .execute(&self.pool)
+            .execute(self.writes())
             .await?;
 
         debug!(tenant_id = %tenant_id, aor = %aor, contact = %contact, "Registration deleted");
@@ -804,7 +1104,7 @@ impl RegistrationStore for PostgresStorage {
     async fn delete_all_registrations(&self, aor: &str) -> Result<()> {
         sqlx::query("DELETE FROM registrations WHERE aor = $1")
             .bind(aor)
-            .execute(&self.pool)
+            .execute(self.writes())
             .await?;
 
         debug!(aor = %aor, "All registrations for AOR deleted");
@@ -819,7 +1119,7 @@ impl RegistrationStore for PostgresStorage {
         sqlx::query("DELETE FROM registrations WHERE tenant_id = $1 AND aor = $2")
             .bind(tenant_id.to_string())
             .bind(aor)
-            .execute(&self.pool)
+            .execute(self.writes())
             .await?;
 
         debug!(tenant_id = %tenant_id, aor = %aor, "All registrations for AOR deleted");
@@ -828,7 +1128,7 @@ impl RegistrationStore for PostgresStorage {
 
     async fn cleanup_expired(&self) -> Result<usize> {
         let result = sqlx::query("DELETE FROM registrations WHERE expires_at <= NOW()")
-            .execute(&self.pool)
+            .execute(self.writes())
             .await?;
 
         let count = result.rows_affected() as usize;
@@ -906,7 +1206,7 @@ impl TenantStore for PostgresStorage {
             TENANT_SELECT_COLS
         ))
         .bind(id.to_string())
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.reads())
         .await?;
 
         match row {
@@ -921,7 +1221,7 @@ impl TenantStore for PostgresStorage {
             TENANT_SELECT_COLS
         ))
         .bind(name)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.reads())
         .await?;
 
         match row {
@@ -947,7 +1247,7 @@ impl TenantStore for PostgresStorage {
             TENANT_SELECT_COLS
         ))
         .bind(&needle)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.reads())
         .await?;
 
         match row {
@@ -961,7 +1261,7 @@ impl TenantStore for PostgresStorage {
             "SELECT {} FROM tenants ORDER BY name",
             TENANT_SELECT_COLS
         ))
-        .fetch_all(&self.pool)
+        .fetch_all(self.reads())
         .await?;
 
         let tenants = rows
@@ -1028,7 +1328,7 @@ impl TenantStore for PostgresStorage {
         .bind(trial_expires_at)
         .bind(&tenant.metadata)
         .bind(&sip_domains)
-        .execute(&self.pool)
+        .execute(self.writes())
         .await?;
 
         debug!(id = %tenant.id, name = %tenant.name, "Tenant stored");
@@ -1038,7 +1338,7 @@ impl TenantStore for PostgresStorage {
     async fn delete_tenant(&self, id: &TenantId) -> Result<()> {
         sqlx::query("DELETE FROM tenants WHERE id = $1")
             .bind(id.to_string())
-            .execute(&self.pool)
+            .execute(self.writes())
             .await?;
 
         debug!(id = %id, "Tenant deleted");
@@ -1190,7 +1490,7 @@ impl CdrStore for PostgresStorage {
         .bind(cdr.cost)
         .bind(&cdr.currency)
         .bind(&custom_data)
-        .execute(&self.pool)
+        .execute(self.writes())
         .await?;
 
         debug!(call_id = %call_id, "CDR stored");
@@ -1245,7 +1545,7 @@ impl CdrStore for PostgresStorage {
         let result = sqlx::query("DELETE FROM cdrs WHERE tenant_id = $1 AND start_time < $2")
             .bind(tenant_id.to_string())
             .bind(system_time_to_datetime(before))
-            .execute(&self.pool)
+            .execute(self.writes())
             .await?;
         Ok(result.rows_affected())
     }
@@ -1278,7 +1578,7 @@ impl CdrStore for PostgresStorage {
     async fn clear_recording_url(&self, call_id: &fcp_core::CallId) -> Result<()> {
         sqlx::query("UPDATE cdrs SET recording_url = NULL WHERE call_id = $1")
             .bind(call_id.to_string())
-            .execute(&self.pool)
+            .execute(self.writes())
             .await?;
         Ok(())
     }
@@ -1426,7 +1726,7 @@ impl CdrStore for PostgresStorage {
     }
 
     async fn create_rate_plan(&self, plan: fcp_core::billing::RatePlan) -> Result<()> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.writes().begin().await?;
         if plan.is_default {
             sqlx::query(
                 "UPDATE rate_plans SET is_default = FALSE WHERE tenant_id = $1 AND is_default",
@@ -1485,7 +1785,7 @@ impl CdrStore for PostgresStorage {
     }
 
     async fn update_rate_plan(&self, plan: fcp_core::billing::RatePlan) -> Result<()> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.writes().begin().await?;
         if plan.is_default {
             sqlx::query(
                 "UPDATE rate_plans SET is_default = FALSE
@@ -1532,7 +1832,7 @@ impl CdrStore for PostgresStorage {
         let result = sqlx::query("DELETE FROM rate_plans WHERE id = $1 AND tenant_id = $2")
             .bind(plan_id.to_string())
             .bind(tenant_id.to_string())
-            .execute(&self.pool)
+            .execute(self.writes())
             .await?;
         if result.rows_affected() == 0 {
             return Err(anyhow::Error::new(fcp_core::Error::Storage(
@@ -1565,7 +1865,7 @@ impl CdrStore for PostgresStorage {
         .bind(rate.connect_fee)
         .bind(&rate.description)
         .bind(tenant_id.to_string())
-        .execute(&self.pool)
+        .execute(self.writes())
         .await?;
         if result.rows_affected() == 0 {
             return Err(anyhow::Error::new(fcp_core::Error::Storage(
@@ -1608,7 +1908,7 @@ impl CdrStore for PostgresStorage {
         .bind(rate_id.to_string())
         .bind(plan_id.to_string())
         .bind(tenant_id.to_string())
-        .execute(&self.pool)
+        .execute(self.writes())
         .await?;
         if result.rows_affected() == 0 {
             return Err(anyhow::Error::new(fcp_core::Error::Storage(
@@ -1670,7 +1970,7 @@ impl CdrStore for PostgresStorage {
         .bind(balance.credit_limit)
         .bind(balance.enforce)
         .bind(balance.low_balance_threshold)
-        .execute(&self.pool)
+        .execute(self.writes())
         .await?;
         Ok(())
     }
@@ -1679,7 +1979,7 @@ impl CdrStore for PostgresStorage {
         &self,
         request: fcp_core::billing::BalanceTransactionRequest,
     ) -> Result<fcp_core::billing::BalanceTransaction> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.writes().begin().await?;
 
         // Upsert-and-add in one statement so concurrent settlements serialize
         // on the row lock rather than racing on a read-modify-write.
@@ -1787,7 +2087,7 @@ impl EncryptionStore for PostgresStorage {
             .encryption
             .as_ref()
             .context("encryption at rest is not enabled (set FCP_ENCRYPTION_PROVIDER)")?;
-        enc.rotate(&self.pool).await
+        enc.rotate(self.writes()).await
     }
 
     async fn reencrypt_secrets(&self) -> Result<ReencryptReport> {
@@ -1795,7 +2095,7 @@ impl EncryptionStore for PostgresStorage {
             .encryption
             .as_ref()
             .context("encryption at rest is not enabled (set FCP_ENCRYPTION_PROVIDER)")?;
-        enc.reencrypt(&self.pool).await
+        enc.reencrypt(self.writes()).await
     }
 }
 
@@ -2190,7 +2490,7 @@ impl PhoneNumberStore for PostgresStorage {
              WHERE id = $1",
         )
         .bind(id.to_string())
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.reads())
         .await?;
 
         match row {
@@ -2211,7 +2511,7 @@ impl PhoneNumberStore for PostgresStorage {
              WHERE e164 = $1",
         )
         .bind(e164)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.reads())
         .await?;
 
         match row {
@@ -2233,7 +2533,7 @@ impl PhoneNumberStore for PostgresStorage {
              ORDER BY e164",
         )
         .bind(tenant_id.to_string())
-        .fetch_all(&self.pool)
+        .fetch_all(self.reads())
         .await?;
 
         let numbers = rows
@@ -2329,7 +2629,7 @@ impl PhoneNumberStore for PostgresStorage {
         .bind(&location_id)
         .bind(created_at)
         .bind(updated_at)
-        .execute(&self.pool)
+        .execute(self.writes())
         .await?;
 
         debug!(id = %phone_number.id, e164 = %phone_number.e164, "Phone number stored");
@@ -2357,7 +2657,7 @@ impl PhoneNumberStore for PostgresStorage {
         .bind(tenant_id.to_string())
         .bind(system_time_to_datetime(acquired_at))
         .bind(TenantId::nil().to_string())
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.writes())
         .await?;
 
         match row {
@@ -2369,7 +2669,7 @@ impl PhoneNumberStore for PostgresStorage {
     async fn delete_phone_number(&self, id: &PhoneNumberId) -> Result<()> {
         sqlx::query("DELETE FROM phone_numbers WHERE id = $1")
             .bind(id.to_string())
-            .execute(&self.pool)
+            .execute(self.writes())
             .await?;
 
         debug!(id = %id, "Phone number deleted");
@@ -2425,7 +2725,7 @@ impl PhoneNumberStore for PostgresStorage {
         }
         q = q.bind(limit as i64);
 
-        let rows = q.fetch_all(&self.pool).await?;
+        let rows = q.fetch_all(self.reads()).await?;
 
         let numbers = rows
             .into_iter()
@@ -2453,7 +2753,7 @@ impl LineBindingStore for PostgresStorage {
              WHERE id = $1",
         )
         .bind(id.to_string())
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.reads())
         .await?;
 
         match row {
@@ -2480,7 +2780,7 @@ impl LineBindingStore for PostgresStorage {
              WHERE phone_number_id = $1",
         )
         .bind(phone_number_id.to_string())
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.reads())
         .await?;
 
         match row {
@@ -2504,7 +2804,7 @@ impl LineBindingStore for PostgresStorage {
              ORDER BY created_at",
         )
         .bind(tenant_id.to_string())
-        .fetch_all(&self.pool)
+        .fetch_all(self.reads())
         .await?;
 
         let mut bindings = Vec::new();
@@ -2528,7 +2828,7 @@ impl LineBindingStore for PostgresStorage {
              ORDER BY created_at",
         )
         .bind(user_id.to_string())
-        .fetch_all(&self.pool)
+        .fetch_all(self.reads())
         .await?;
 
         let mut bindings = Vec::new();
@@ -2553,7 +2853,7 @@ impl LineBindingStore for PostgresStorage {
              ORDER BY lb.created_at",
         )
         .bind(device_id.to_string())
-        .fetch_all(&self.pool)
+        .fetch_all(self.reads())
         .await?;
 
         let mut bindings = Vec::new();
@@ -2610,13 +2910,13 @@ impl LineBindingStore for PostgresStorage {
         .bind(&binding.flow_id)
         .bind(created_at)
         .bind(updated_at)
-        .execute(&self.pool)
+        .execute(self.writes())
         .await?;
 
         // Delete existing device bindings
         sqlx::query("DELETE FROM device_bindings WHERE line_binding_id = $1")
             .bind(&id)
-            .execute(&self.pool)
+            .execute(self.writes())
             .await?;
 
         // Insert new device bindings
@@ -2631,7 +2931,7 @@ impl LineBindingStore for PostgresStorage {
     async fn delete_line_binding(&self, id: &LineBindingId) -> Result<()> {
         sqlx::query("DELETE FROM line_bindings WHERE id = $1")
             .bind(id.to_string())
-            .execute(&self.pool)
+            .execute(self.writes())
             .await?;
 
         debug!(id = %id, "Line binding deleted");
@@ -2649,7 +2949,7 @@ impl ExtensionStore for PostgresStorage {
              WHERE id = $1",
         )
         .bind(id.to_string())
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.reads())
         .await?;
 
         match row {
@@ -2671,7 +2971,7 @@ impl ExtensionStore for PostgresStorage {
         )
         .bind(tenant_id.to_string())
         .bind(number)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.reads())
         .await?;
 
         match row {
@@ -2689,7 +2989,7 @@ impl ExtensionStore for PostgresStorage {
              ORDER BY number",
         )
         .bind(tenant_id.to_string())
-        .fetch_all(&self.pool)
+        .fetch_all(self.reads())
         .await?;
 
         let extensions = rows
@@ -2737,7 +3037,7 @@ impl ExtensionStore for PostgresStorage {
         .bind(extension.enabled)
         .bind(created_at)
         .bind(updated_at)
-        .execute(&self.pool)
+        .execute(self.writes())
         .await?;
 
         debug!(id = %extension.id, number = %extension.number, "Extension stored");
@@ -2747,7 +3047,7 @@ impl ExtensionStore for PostgresStorage {
     async fn delete_extension(&self, id: &ExtensionId) -> Result<()> {
         sqlx::query("DELETE FROM extensions WHERE id = $1")
             .bind(id.to_string())
-            .execute(&self.pool)
+            .execute(self.writes())
             .await?;
 
         debug!(id = %id, "Extension deleted");
@@ -2772,7 +3072,7 @@ impl DeviceStore for PostgresStorage {
              WHERE id = $1",
         )
         .bind(id.to_string())
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.reads())
         .await?;
 
         match row {
@@ -2792,7 +3092,7 @@ impl DeviceStore for PostgresStorage {
              WHERE sip_uri = $1",
         )
         .bind(sip_uri)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.reads())
         .await?;
 
         match row {
@@ -2813,7 +3113,7 @@ impl DeviceStore for PostgresStorage {
              ORDER BY name",
         )
         .bind(tenant_id.to_string())
-        .fetch_all(&self.pool)
+        .fetch_all(self.reads())
         .await?;
 
         rows.into_iter().map(row_to_device).collect()
@@ -2831,7 +3131,7 @@ impl DeviceStore for PostgresStorage {
              ORDER BY name",
         )
         .bind(user_id.to_string())
-        .fetch_all(&self.pool)
+        .fetch_all(self.reads())
         .await?;
 
         rows.into_iter().map(row_to_device).collect()
@@ -2918,7 +3218,7 @@ impl DeviceStore for PostgresStorage {
         .bind(device.enabled)
         .bind(created_at)
         .bind(updated_at)
-        .execute(&self.pool)
+        .execute(self.writes())
         .await
         .map_err(map_device_write_error)?;
 
@@ -2937,7 +3237,7 @@ impl DeviceStore for PostgresStorage {
              WHERE LOWER(REPLACE(REPLACE(REPLACE(mac_address, ':', ''), '-', ''), '.', '')) = $1",
         )
         .bind(mac_address)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.reads())
         .await?;
 
         match row {
@@ -2949,7 +3249,7 @@ impl DeviceStore for PostgresStorage {
     async fn delete_device(&self, id: &DeviceId) -> Result<()> {
         sqlx::query("DELETE FROM devices WHERE id = $1")
             .bind(id.to_string())
-            .execute(&self.pool)
+            .execute(self.writes())
             .await?;
 
         debug!(id = %id, "Device deleted");
@@ -2970,7 +3270,7 @@ impl fcp_core::storage::ConfigTemplateStore for PostgresStorage {
              WHERE id = $1",
         )
         .bind(id.to_string())
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.reads())
         .await?;
 
         match row {
@@ -2991,7 +3291,7 @@ impl fcp_core::storage::ConfigTemplateStore for PostgresStorage {
              ORDER BY name",
         )
         .bind(tenant_id.to_string())
-        .fetch_all(&self.pool)
+        .fetch_all(self.reads())
         .await?;
 
         rows.into_iter().map(row_to_config_template).collect()
@@ -3027,7 +3327,7 @@ impl fcp_core::storage::ConfigTemplateStore for PostgresStorage {
         .bind(&template.description)
         .bind(created_at)
         .bind(updated_at)
-        .execute(&self.pool)
+        .execute(self.writes())
         .await?;
 
         Ok(())
@@ -3036,7 +3336,7 @@ impl fcp_core::storage::ConfigTemplateStore for PostgresStorage {
     async fn delete_config_template(&self, id: &fcp_core::ConfigTemplateId) -> Result<()> {
         sqlx::query("DELETE FROM config_templates WHERE id = $1")
             .bind(id.to_string())
-            .execute(&self.pool)
+            .execute(self.writes())
             .await?;
         Ok(())
     }
@@ -3056,7 +3356,7 @@ impl ConferenceStore for PostgresStorage {
              FROM conference_meetings WHERE id = $1",
         )
         .bind(id.to_string())
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.reads())
         .await?;
 
         match row {
@@ -3082,7 +3382,7 @@ impl ConferenceStore for PostgresStorage {
         )
         .bind(tenant_id.to_string())
         .bind(room_number)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.reads())
         .await?;
 
         match row {
@@ -3103,7 +3403,7 @@ impl ConferenceStore for PostgresStorage {
              FROM conference_meetings WHERE tenant_id = $1 ORDER BY room_number",
         )
         .bind(tenant_id.to_string())
-        .fetch_all(&self.pool)
+        .fetch_all(self.reads())
         .await?;
 
         let meetings = rows
@@ -3134,7 +3434,7 @@ impl ConferenceStore for PostgresStorage {
         )
         .bind(tenant_id.to_string())
         .bind(owner_id)
-        .fetch_all(&self.pool)
+        .fetch_all(self.reads())
         .await?;
 
         let meetings = rows
@@ -3211,7 +3511,7 @@ impl ConferenceStore for PostgresStorage {
         .bind(meeting.exit_sound.as_deref())
         .bind(created_at)
         .bind(updated_at)
-        .execute(&self.pool)
+        .execute(self.writes())
         .await?;
 
         debug!(id = %meeting.id, "Meeting stored");
@@ -3221,7 +3521,7 @@ impl ConferenceStore for PostgresStorage {
     async fn delete_meeting(&self, id: &fcp_core::MeetingId) -> Result<()> {
         sqlx::query("DELETE FROM conference_meetings WHERE id = $1")
             .bind(id.to_string())
-            .execute(&self.pool)
+            .execute(self.writes())
             .await?;
 
         debug!(id = %id, "Meeting deleted");
@@ -3734,7 +4034,7 @@ impl TrunkStore for PostgresStorage {
              FROM trunks WHERE id = $1",
         )
         .bind(id.to_string())
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.reads())
         .await?;
 
         match row {
@@ -3760,7 +4060,7 @@ impl TrunkStore for PostgresStorage {
              ORDER BY priority, name",
         )
         .bind(tenant_id.to_string())
-        .fetch_all(&self.pool)
+        .fetch_all(self.reads())
         .await?;
 
         let trunks = rows
@@ -3860,7 +4160,7 @@ impl TrunkStore for PostgresStorage {
         .bind(system_time_to_datetime(trunk.created_at))
         .bind(system_time_to_datetime(trunk.updated_at))
         .bind(trunk.emergency_capable)
-        .execute(&self.pool)
+        .execute(self.writes())
         .await?;
 
         Ok(())
@@ -3869,7 +4169,7 @@ impl TrunkStore for PostgresStorage {
     async fn delete_trunk(&self, id: &TrunkId) -> Result<()> {
         sqlx::query("DELETE FROM trunks WHERE id = $1")
             .bind(id.to_string())
-            .execute(&self.pool)
+            .execute(self.writes())
             .await?;
         Ok(())
     }
@@ -3891,7 +4191,7 @@ impl TrunkStore for PostgresStorage {
         )
         .bind(trunk_name)
         .bind(cutoff)
-        .fetch_one(&self.pool)
+        .fetch_one(self.reads())
         .await?;
 
         let total: i64 = row.try_get("total").unwrap_or(0);
@@ -3917,7 +4217,7 @@ impl TrunkStore for PostgresStorage {
         )
         .bind(trunk_name)
         .bind(cutoff)
-        .fetch_all(&self.pool)
+        .fetch_all(self.reads())
         .await?;
 
         // Build 24-slot vector
@@ -3989,7 +4289,7 @@ impl RoutingRuleStore for PostgresStorage {
     async fn get_routing_rule(&self, id: &RoutingRuleId) -> Result<Option<RoutingRule>> {
         let row = sqlx::query("SELECT * FROM routing_rules WHERE id = $1")
             .bind(id.to_string())
-            .fetch_optional(&self.pool)
+            .fetch_optional(self.reads())
             .await?;
         match row {
             Some(row) => Ok(Some(row_to_routing_rule(row)?)),
@@ -4001,7 +4301,7 @@ impl RoutingRuleStore for PostgresStorage {
         let rows =
             sqlx::query("SELECT * FROM routing_rules WHERE tenant_id = $1 ORDER BY priority, name")
                 .bind(tenant_id.to_string())
-                .fetch_all(&self.pool)
+                .fetch_all(self.reads())
                 .await?;
         let rules = rows
             .into_iter()
@@ -4053,7 +4353,7 @@ impl RoutingRuleStore for PostgresStorage {
         .bind(&rule.reason)
         .bind(system_time_to_datetime(rule.created_at))
         .bind(system_time_to_datetime(rule.updated_at))
-        .execute(&self.pool)
+        .execute(self.writes())
         .await?;
         Ok(())
     }
@@ -4061,7 +4361,7 @@ impl RoutingRuleStore for PostgresStorage {
     async fn delete_routing_rule(&self, id: &RoutingRuleId) -> Result<()> {
         sqlx::query("DELETE FROM routing_rules WHERE id = $1")
             .bind(id.to_string())
-            .execute(&self.pool)
+            .execute(self.writes())
             .await?;
         Ok(())
     }
@@ -4113,7 +4413,7 @@ impl QueueConfigStore for PostgresStorage {
     async fn get_queue_config(&self, id: &QueueConfigId) -> Result<Option<QueueConfigRecord>> {
         let row = sqlx::query("SELECT * FROM queue_configs WHERE id = $1")
             .bind(id.to_string())
-            .fetch_optional(&self.pool)
+            .fetch_optional(self.reads())
             .await?;
         match row {
             Some(row) => Ok(Some(row_to_queue_config(row)?)),
@@ -4125,7 +4425,7 @@ impl QueueConfigStore for PostgresStorage {
         let rows =
             sqlx::query("SELECT * FROM queue_configs WHERE tenant_id = $1 ORDER BY priority, name")
                 .bind(tenant_id.to_string())
-                .fetch_all(&self.pool)
+                .fetch_all(self.reads())
                 .await?;
         let configs = rows
             .into_iter()
@@ -4183,7 +4483,7 @@ impl QueueConfigStore for PostgresStorage {
         .bind(config.enabled)
         .bind(system_time_to_datetime(config.created_at))
         .bind(system_time_to_datetime(config.updated_at))
-        .execute(&self.pool)
+        .execute(self.writes())
         .await?;
         Ok(())
     }
@@ -4191,7 +4491,7 @@ impl QueueConfigStore for PostgresStorage {
     async fn delete_queue_config(&self, id: &QueueConfigId) -> Result<()> {
         sqlx::query("DELETE FROM queue_configs WHERE id = $1")
             .bind(id.to_string())
-            .execute(&self.pool)
+            .execute(self.writes())
             .await?;
         Ok(())
     }
@@ -4212,7 +4512,7 @@ impl SiteLocationStore for PostgresStorage {
              WHERE id = $1",
         )
         .bind(id.to_string())
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.reads())
         .await?;
 
         match row {
@@ -4233,7 +4533,7 @@ impl SiteLocationStore for PostgresStorage {
              ORDER BY name",
         )
         .bind(tenant_id.to_string())
-        .fetch_all(&self.pool)
+        .fetch_all(self.reads())
         .await?;
 
         let locations = rows
@@ -4300,7 +4600,7 @@ impl SiteLocationStore for PostgresStorage {
         .bind(created_at)
         .bind(updated_at)
         .bind(&location.e911_callback_number)
-        .execute(&self.pool)
+        .execute(self.writes())
         .await?;
 
         debug!(id = %location.id, name = %location.name, "Location stored");
@@ -4310,7 +4610,7 @@ impl SiteLocationStore for PostgresStorage {
     async fn delete_location(&self, id: &LocationId) -> Result<()> {
         sqlx::query("DELETE FROM locations WHERE id = $1")
             .bind(id.to_string())
-            .execute(&self.pool)
+            .execute(self.writes())
             .await?;
 
         debug!(id = %id, "Location deleted");
@@ -4325,7 +4625,7 @@ impl SiteLocationStore for PostgresStorage {
 #[async_trait]
 impl QueueStore for PostgresStorage {
     async fn save_agents(&self, tenant_id: &TenantId, agents: Vec<StoredAgent>) -> Result<()> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.writes().begin().await?;
 
         sqlx::query("DELETE FROM queue_agents WHERE tenant_id = $1")
             .bind(tenant_id.to_string())
@@ -4391,7 +4691,7 @@ impl QueueStore for PostgresStorage {
         sqlx::query("DELETE FROM queue_agents WHERE tenant_id = $1 AND agent_id = $2")
             .bind(tenant_id.to_string())
             .bind(agent_id)
-            .execute(&self.pool)
+            .execute(self.writes())
             .await?;
         Ok(())
     }
@@ -4399,7 +4699,7 @@ impl QueueStore for PostgresStorage {
     async fn clear_agents(&self, tenant_id: &TenantId) -> Result<()> {
         sqlx::query("DELETE FROM queue_agents WHERE tenant_id = $1")
             .bind(tenant_id.to_string())
-            .execute(&self.pool)
+            .execute(self.writes())
             .await?;
         Ok(())
     }
@@ -4438,7 +4738,7 @@ impl PresenceStore for PostgresStorage {
         .bind(&sub.sip_call_id)
         .bind(&sub.sip_from_tag)
         .bind(&sub.sip_to_tag)
-        .execute(&self.pool)
+        .execute(self.writes())
         .await?;
         Ok(())
     }
@@ -4485,7 +4785,7 @@ impl PresenceStore for PostgresStorage {
     async fn remove_subscription(&self, subscription_id: &str) -> Result<()> {
         sqlx::query("DELETE FROM presence_subscriptions WHERE subscription_id = $1")
             .bind(subscription_id)
-            .execute(&self.pool)
+            .execute(self.writes())
             .await?;
         Ok(())
     }
@@ -4500,7 +4800,7 @@ impl PresenceStore for PostgresStorage {
         )
         .bind(tenant_id.to_string())
         .bind(presentity_aor)
-        .execute(&self.pool)
+        .execute(self.writes())
         .await?;
         Ok(())
     }
@@ -4513,7 +4813,7 @@ impl PresenceStore for PostgresStorage {
 
         let result = sqlx::query("DELETE FROM presence_subscriptions WHERE expires_at_epoch <= $1")
             .bind(now_epoch)
-            .execute(&self.pool)
+            .execute(self.writes())
             .await?;
 
         Ok(result.rows_affected() as usize)
@@ -4534,7 +4834,7 @@ impl PresenceStore for PostgresStorage {
         .bind(&p.note)
         .bind(p.tenant_id.to_string())
         .bind(p.updated_at_epoch as i64)
-        .execute(&self.pool)
+        .execute(self.writes())
         .await?;
         Ok(())
     }
@@ -4569,7 +4869,7 @@ impl PresenceStore for PostgresStorage {
         sqlx::query("DELETE FROM presence_presentities WHERE tenant_id = $1 AND aor = $2")
             .bind(tenant_id.to_string())
             .bind(aor)
-            .execute(&self.pool)
+            .execute(self.writes())
             .await?;
         Ok(())
     }
@@ -4601,7 +4901,7 @@ impl PresenceStore for PostgresStorage {
         .bind(&policy.time_windows_json)
         .bind(&policy.allow_patterns_json)
         .bind(&policy.block_patterns_json)
-        .execute(&self.pool)
+        .execute(self.writes())
         .await?;
         Ok(())
     }
@@ -4643,7 +4943,7 @@ impl PresenceStore for PostgresStorage {
         sqlx::query("DELETE FROM presence_auth_policies WHERE tenant_id = $1 AND aor = $2")
             .bind(tenant_id.to_string())
             .bind(aor)
-            .execute(&self.pool)
+            .execute(self.writes())
             .await?;
         Ok(())
     }
@@ -4663,7 +4963,7 @@ impl PresenceHistoryStore for PostgresStorage {
         .bind(&change.old_state)
         .bind(&change.new_state)
         .bind(change.timestamp_epoch as i64)
-        .execute(&self.pool)
+        .execute(self.writes())
         .await?;
         Ok(())
     }
@@ -4798,7 +5098,7 @@ impl ResourceListStore for PostgresStorage {
         .bind(&list.name)
         .bind(&list.entries_json)
         .bind(list.tenant_id.to_string())
-        .execute(&self.pool)
+        .execute(self.writes())
         .await?;
         Ok(())
     }
@@ -4815,7 +5115,7 @@ impl ResourceListStore for PostgresStorage {
         )
         .bind(tenant_id.to_string())
         .bind(uri)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.reads())
         .await?;
 
         Ok(row.map(|r| StoredResourceList {
@@ -4834,7 +5134,7 @@ impl ResourceListStore for PostgresStorage {
             "SELECT uri, name, entries_json, tenant_id FROM resource_lists WHERE tenant_id = $1",
         )
         .bind(tenant_id.to_string())
-        .fetch_all(&self.pool)
+        .fetch_all(self.reads())
         .await?;
 
         Ok(rows
@@ -4852,7 +5152,7 @@ impl ResourceListStore for PostgresStorage {
         sqlx::query("DELETE FROM resource_lists WHERE tenant_id = $1 AND uri = $2")
             .bind(tenant_id.to_string())
             .bind(uri)
-            .execute(&self.pool)
+            .execute(self.writes())
             .await?;
         Ok(())
     }
@@ -4876,7 +5176,7 @@ impl WebhookStore for PostgresStorage {
         .bind(endpoint_json)
         .bind(system_time_to_datetime(endpoint.created_at))
         .bind(system_time_to_datetime(endpoint.updated_at))
-        .execute(&self.pool)
+        .execute(self.writes())
         .await?;
         Ok(())
     }
@@ -4931,7 +5231,7 @@ impl WebhookStore for PostgresStorage {
         .bind(endpoint.tenant_id.to_string())
         .bind(endpoint_json)
         .bind(system_time_to_datetime(endpoint.updated_at))
-        .execute(&self.pool)
+        .execute(self.writes())
         .await?;
         Ok(())
     }
@@ -4939,7 +5239,7 @@ impl WebhookStore for PostgresStorage {
     async fn delete_endpoint(&self, id: &WebhookId) -> Result<()> {
         sqlx::query("DELETE FROM webhook_endpoints WHERE id = $1")
             .bind(id.to_string())
-            .execute(&self.pool)
+            .execute(self.writes())
             .await?;
         Ok(())
     }
@@ -4956,7 +5256,7 @@ impl WebhookStore for PostgresStorage {
         .bind(log.delivered)
         .bind(log.next_retry_at.map(system_time_to_datetime))
         .bind(system_time_to_datetime(log.created_at))
-        .execute(&self.pool)
+        .execute(self.writes())
         .await?;
         Ok(())
     }
@@ -4993,7 +5293,7 @@ impl WebhookStore for PostgresStorage {
         .bind(delivery_json)
         .bind(log.delivered)
         .bind(log.next_retry_at.map(system_time_to_datetime))
-        .execute(&self.pool)
+        .execute(self.writes())
         .await?;
         Ok(())
     }
@@ -5097,7 +5397,7 @@ impl FlowStore for PostgresStorage {
              LIMIT 1",
         )
         .bind(id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.reads())
         .await
         .map_err(|e| FlowError::StorageError(e.to_string()))?;
 
@@ -5120,7 +5420,7 @@ impl FlowStore for PostgresStorage {
         )
         .bind(id)
         .bind(version as i32)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.reads())
         .await
         .map_err(|e| FlowError::StorageError(e.to_string()))?;
 
@@ -5143,7 +5443,7 @@ impl FlowStore for PostgresStorage {
                  ORDER BY updated_at DESC",
             )
             .bind(tid)
-            .fetch_all(&self.pool)
+            .fetch_all(self.reads())
             .await
             .map_err(|e| FlowError::StorageError(e.to_string()))?
         } else {
@@ -5153,7 +5453,7 @@ impl FlowStore for PostgresStorage {
                  FROM flows
                  ORDER BY updated_at DESC",
             )
-            .fetch_all(&self.pool)
+            .fetch_all(self.reads())
             .await
             .map_err(|e| FlowError::StorageError(e.to_string()))?
         };
@@ -5234,7 +5534,7 @@ impl FlowStore for PostgresStorage {
         }
 
         let count_row = count_q
-            .fetch_one(&self.pool)
+            .fetch_one(self.reads())
             .await
             .map_err(|e| FlowError::StorageError(e.to_string()))?;
         let total: i64 = count_row.get("count");
@@ -5271,7 +5571,7 @@ impl FlowStore for PostgresStorage {
         select_q = select_q.bind(query.offset as i64);
 
         let rows = select_q
-            .fetch_all(&self.pool)
+            .fetch_all(self.reads())
             .await
             .map_err(|e| FlowError::StorageError(e.to_string()))?;
 
@@ -5317,7 +5617,7 @@ impl FlowStore for PostgresStorage {
         .bind(&flow.webhook_url)
         .bind(now)
         .bind(now)
-        .execute(&self.pool)
+        .execute(self.writes())
         .await
         .map_err(|e| FlowError::StorageError(e.to_string()))?;
 
@@ -5345,7 +5645,7 @@ impl FlowStore for PostgresStorage {
         .bind(flow.enabled)
         .bind(&flow.webhook_url)
         .bind(&flow.id)
-        .execute(&self.pool)
+        .execute(self.writes())
         .await
         .map_err(|e| FlowError::StorageError(e.to_string()))?;
 
@@ -5360,7 +5660,7 @@ impl FlowStore for PostgresStorage {
     async fn delete_flow(&self, id: &str) -> std::result::Result<(), FlowError> {
         let result = sqlx::query("DELETE FROM flows WHERE id = $1")
             .bind(id)
-            .execute(&self.pool)
+            .execute(self.writes())
             .await
             .map_err(|e| FlowError::StorageError(e.to_string()))?;
 
@@ -5384,7 +5684,7 @@ impl FlowStore for PostgresStorage {
              ORDER BY version DESC",
         )
         .bind(id)
-        .fetch_all(&self.pool)
+        .fetch_all(self.reads())
         .await
         .map_err(|e| FlowError::StorageError(e.to_string()))?;
 
@@ -5405,7 +5705,7 @@ impl FlowStore for PostgresStorage {
         let result =
             sqlx::query("UPDATE flows SET enabled = true, updated_at = NOW() WHERE id = $1")
                 .bind(id)
-                .execute(&self.pool)
+                .execute(self.writes())
                 .await
                 .map_err(|e| FlowError::StorageError(e.to_string()))?;
 
@@ -5421,7 +5721,7 @@ impl FlowStore for PostgresStorage {
         let result =
             sqlx::query("UPDATE flows SET enabled = false, updated_at = NOW() WHERE id = $1")
                 .bind(id)
-                .execute(&self.pool)
+                .execute(self.writes())
                 .await
                 .map_err(|e| FlowError::StorageError(e.to_string()))?;
 
@@ -5727,13 +6027,13 @@ impl VoicemailStore for PostgresStorage {
         .bind(mailbox.retention_days.map(|d| d as i32))
         .bind(created_at)
         .bind(now)
-        .execute(&self.pool)
+        .execute(self.writes())
         .await?;
 
         // Delete existing greetings for this mailbox
         sqlx::query("DELETE FROM voicemail_greetings WHERE mailbox_id = $1")
             .bind(&mailbox.id)
-            .execute(&self.pool)
+            .execute(self.writes())
             .await?;
 
         // Insert greetings
@@ -5752,7 +6052,7 @@ impl VoicemailStore for PostgresStorage {
             .bind(greeting.is_active)
             .bind(greeting_created_at)
             .bind(expires_at)
-            .execute(&self.pool)
+            .execute(self.writes())
             .await?;
         }
 
@@ -5762,7 +6062,7 @@ impl VoicemailStore for PostgresStorage {
     async fn delete_mailbox(&self, id: &str) -> Result<()> {
         sqlx::query("DELETE FROM voicemail_mailboxes WHERE id = $1")
             .bind(id)
-            .execute(&self.pool)
+            .execute(self.writes())
             .await?;
         Ok(())
     }
@@ -5836,7 +6136,7 @@ impl VoicemailStore for PostgresStorage {
         .bind(message.transcription.as_deref())
         .bind(created_at)
         .bind(accessed_at)
-        .execute(&self.pool)
+        .execute(self.writes())
         .await?;
 
         Ok(())
@@ -5845,7 +6145,7 @@ impl VoicemailStore for PostgresStorage {
     async fn delete_message(&self, id: &str) -> Result<()> {
         sqlx::query("DELETE FROM voicemail_messages WHERE id = $1")
             .bind(id)
-            .execute(&self.pool)
+            .execute(self.writes())
             .await?;
         Ok(())
     }
@@ -5949,7 +6249,7 @@ impl GeoRoutingStore for PostgresStorage {
     async fn get_geo_rule(&self, id: &str) -> Result<Option<fcp_core::GeoRoutingRule>> {
         let row = sqlx::query("SELECT rule_json FROM geo_routing_rules WHERE id = $1")
             .bind(id)
-            .fetch_optional(&self.pool)
+            .fetch_optional(self.reads())
             .await?;
 
         row.map(|row| geo_rule_from_value(row.get("rule_json")))
@@ -5967,7 +6267,7 @@ impl GeoRoutingStore for PostgresStorage {
              ORDER BY priority ASC, updated_at DESC",
         )
         .bind(tenant_id.to_string())
-        .fetch_all(&self.pool)
+        .fetch_all(self.reads())
         .await?;
 
         rows.into_iter()
@@ -5991,7 +6291,7 @@ impl GeoRoutingStore for PostgresStorage {
         .bind(rule.priority as i32)
         .bind(system_time_to_datetime(rule.updated_at))
         .bind(rule_json)
-        .execute(&self.pool)
+        .execute(self.writes())
         .await?;
         Ok(())
     }
@@ -5999,7 +6299,7 @@ impl GeoRoutingStore for PostgresStorage {
     async fn delete_geo_rule(&self, id: &str) -> Result<()> {
         sqlx::query("DELETE FROM geo_routing_rules WHERE id = $1")
             .bind(id)
-            .execute(&self.pool)
+            .execute(self.writes())
             .await?;
         Ok(())
     }
@@ -6014,7 +6314,7 @@ impl GeoRoutingStore for PostgresStorage {
              WHERE phone_number_id = $1",
         )
         .bind(phone_number_id.to_string())
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.reads())
         .await?;
 
         row.map(|row| phone_number_location_from_value(row.get("location_json")))
@@ -6032,7 +6332,7 @@ impl GeoRoutingStore for PostgresStorage {
              ORDER BY verified_at DESC",
         )
         .bind(tenant_id.to_string())
-        .fetch_all(&self.pool)
+        .fetch_all(self.reads())
         .await?;
 
         rows.into_iter()
@@ -6057,7 +6357,7 @@ impl GeoRoutingStore for PostgresStorage {
         .bind(location.tenant_id.to_string())
         .bind(system_time_to_datetime(location.verified_at))
         .bind(location_json)
-        .execute(&self.pool)
+        .execute(self.writes())
         .await?;
         Ok(())
     }
@@ -6068,7 +6368,7 @@ impl GeoRoutingStore for PostgresStorage {
     ) -> Result<()> {
         sqlx::query("DELETE FROM phone_number_locations WHERE phone_number_id = $1")
             .bind(phone_number_id.to_string())
-            .execute(&self.pool)
+            .execute(self.writes())
             .await?;
         Ok(())
     }
@@ -6129,7 +6429,7 @@ impl PortingStore for PostgresStorage {
         .bind(system_time_to_datetime(request.created_at))
         .bind(system_time_to_datetime(request.updated_at))
         .bind(request_json)
-        .execute(&self.pool)
+        .execute(self.writes())
         .await?;
         Ok(())
     }
@@ -6137,7 +6437,7 @@ impl PortingStore for PostgresStorage {
     async fn delete_port_request(&self, id: &fcp_core::PortRequestId) -> Result<()> {
         sqlx::query("DELETE FROM port_requests WHERE id = $1")
             .bind(id.to_string())
-            .execute(&self.pool)
+            .execute(self.writes())
             .await?;
         Ok(())
     }
@@ -6167,3 +6467,67 @@ impl PortingStore for PostgresStorage {
 // Database-backed tests live in `tests/integration.rs`; they run whenever
 // `FCP_TEST_DATABASE_URL` points at a PostgreSQL superuser connection (CI
 // provides one) and skip otherwise.
+
+#[cfg(test)]
+mod replica_tests {
+    use super::*;
+
+    #[test]
+    fn lsn_parses_as_a_64_bit_position() {
+        assert_eq!(parse_lsn("0/0"), Some(0));
+        assert_eq!(parse_lsn("0/16B3748"), Some(0x16B3748));
+        assert_eq!(parse_lsn("1/0"), Some(1 << 32));
+        assert_eq!(parse_lsn(" 2/A "), Some((2 << 32) | 0xA));
+        assert!(parse_lsn("garbage").is_none());
+        assert!(parse_lsn("1/xyz").is_none());
+    }
+
+    #[test]
+    fn lag_is_zero_when_caught_up_or_not_a_standby() {
+        // Fully replayed: the replay timestamp's age is irrelevant.
+        assert_eq!(
+            replication_lag(true, Some("0/100"), Some("0/100"), Some(900.0)),
+            Duration::ZERO
+        );
+        assert_eq!(
+            replication_lag(true, Some("0/100"), Some("0/200"), Some(900.0)),
+            Duration::ZERO
+        );
+        // Not in recovery: a primary masquerading as a replica.
+        assert_eq!(
+            replication_lag(false, None, None, Some(900.0)),
+            Duration::ZERO
+        );
+    }
+
+    #[test]
+    fn lag_is_the_replay_age_when_behind() {
+        assert_eq!(
+            replication_lag(true, Some("0/200"), Some("0/100"), Some(2.5)),
+            Duration::from_millis(2500)
+        );
+        // Unknown positions: trust the replay age.
+        assert_eq!(
+            replication_lag(true, None, None, Some(1.0)),
+            Duration::from_secs(1)
+        );
+        // No replayed transaction yet, or a negative clock skew: zero.
+        assert_eq!(
+            replication_lag(true, Some("0/200"), Some("0/100"), None),
+            Duration::ZERO
+        );
+        assert_eq!(
+            replication_lag(true, Some("0/200"), Some("0/100"), Some(-3.0)),
+            Duration::ZERO
+        );
+    }
+
+    #[test]
+    fn url_host_strips_scheme_credentials_and_path() {
+        assert_eq!(
+            url_host("postgresql://fcp:s3cret@replica-eu.internal:5432/fcp?sslmode=require"),
+            "replica-eu.internal:5432"
+        );
+        assert_eq!(url_host("postgres://db/fcp"), "db");
+    }
+}

@@ -158,6 +158,17 @@ pub struct StorageSection {
     #[serde(default = "default_database_url")]
     pub database_url: String,
 
+    /// Streaming read replica (hot standby) that configuration reads are
+    /// served from while it is healthy; writes always go to `database_url`.
+    /// See `docs/MULTI_REGION.md`.
+    #[serde(default)]
+    pub read_replica_url: Option<String>,
+
+    /// Replication lag (seconds) beyond which reads return to the primary;
+    /// also the read-after-write window. Default: 5.
+    #[serde(default = "default_max_replica_lag_secs")]
+    pub max_replica_lag_secs: u64,
+
     /// Maximum database connections
     #[serde(default = "default_max_connections")]
     pub max_connections: u32,
@@ -165,6 +176,10 @@ pub struct StorageSection {
     /// Redis connection URL for cluster membership.
     #[serde(default)]
     pub redis_url: Option<String>,
+}
+
+fn default_max_replica_lag_secs() -> u64 {
+    5
 }
 
 fn default_database_url() -> String {
@@ -179,6 +194,8 @@ impl Default for StorageSection {
     fn default() -> Self {
         Self {
             database_url: default_database_url(),
+            read_replica_url: None,
+            max_replica_lag_secs: default_max_replica_lag_secs(),
             max_connections: default_max_connections(),
             redis_url: None,
         }
