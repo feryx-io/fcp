@@ -25,10 +25,15 @@ and FCP (audio-only conference server, WebRTC gateway, and SDP handling):
    tests run without them.
 4. **Quality over schedule.** Phases are sized to be reviewed; each ships
    with tests and capacity numbers measured, not estimated.
+5. **GPU is a first-class backend, designed in now, built after the CPU
+   path.** Frames know where they live (host or device), the whole
+   pipeline runs on one device, and nodes advertise what they can mix.
+   The CPU path is the reference implementation the GPU path is tested
+   against. Rationale in §9.1.
 
 The questions raised by the first draft were settled the same day (§16):
 15 fps and 720p by default, own tile included, OpenH264 built from
-source, WebM recordings, screen share and hardware acceleration deferred.
+source, WebM recordings, screen share deferred, GPU designed in.
 
 ## 2. Why mixing
 
@@ -72,9 +77,9 @@ Goals, in delivery order (§15):
 Non-goals for now: simulcast/SVC *egress* (we send one layer per
 output; simulcast *ingress* from browsers is accepted and the best layer
 is used), screen-share as a distinct stream type (a second video section;
-after phase 4), hardware acceleration (an encoder trait boundary is kept
-for it), H.265 encode (no permissively licensed encoder; decode is
-optional), end-to-end encryption, per-participant private layouts beyond
+after phase 4), H.265 encode on the CPU path (no permissively licensed
+encoder; decode is optional; hardware H.265 encode comes with the GPU
+backend), end-to-end encryption, per-participant private layouts beyond
 "exclude self".
 
 ## 4. Architecture
@@ -105,8 +110,8 @@ forge-media (new or extended crates):
 | Crate | Role |
 |---|---|
 | `forge-rtp` (extend) | RTCP feedback (PLI, FIR, NACK, REMB, transport-cc), per-codec payload inspection (frame start, keyframe), depacketizers and packetizers (RFC 6184 H.264, RFC 7798 H.265, RFC 7741 VP8, RFC 9628 VP9, AV1 RTP), frame-aware jitter buffer / assembler, retransmission cache, stream rewriter for the passthrough path |
-| `forge-video` (new) | `VideoFrame` (I420, owned planes, stride, pts), scaling and colour conversion (own Rust, SIMD later), `Compositor` + `Layout` engine, `VideoClock`, flavor management, the `VideoDecoder` / `VideoEncoder` traits, the raw test codec |
-| `forge-video-codecs` (new) | Bindings behind features: `vpx` (VP8/VP9, libvpx), `openh264` (H.264), `av1` (rav1e encode, dav1d decode). Each implements the traits |
+| `forge-video` (new) | `VideoFrame` (host I420 or a device-resident handle; §5.5), scaling and colour conversion (own Rust, SIMD later), `Compositor` + `Layout` engine, `VideoClock`, flavor management, the `VideoDecoder` / `VideoEncoder` / `Scaler` / `Compositor` traits with device affinity, the `MediaDevice` abstraction, the raw test codec |
+| `forge-video-codecs` (new) | Bindings behind features: `vpx` (VP8/VP9, libvpx), `openh264` (H.264), `av1` (rav1e encode, dav1d decode), and `hwaccel` (FFmpeg hardware contexts: VAAPI / QuickSync, NVENC / NVDEC, AMF) providing device codecs, scaling and compositing on the device. Each implements the traits |
 | `forge-sdp` (extend) | Video sections, `a=rtcp-fb`, H.264 fmtp, codec choice |
 | `forge-webrtc` (extend) | A video section in offers and answers, BUNDLE with two mids, video SRTP, feedback on the shared RTCP path |
 | `forge-conference` (extend) | `VideoRoom` beside the audio room: participant video state, subscriptions, layout state, the video clock task |
@@ -198,7 +203,25 @@ and lossy links recover on their own. Because subscribers share an
 encoder, a new subscriber costs every other subscriber of that flavor one
 keyframe; that is the price of sharing and is bounded by the rate limit.
 
-### 5.5 Passthrough fast path (later)
+### 5.5 Devices and frame residency
+
+Every stage of the pipeline is bound to a **media device**: the host
+(CPU), or a GPU (`vaapi:/dev/dri/renderD128`, `cuda:0`, …). A
+`VideoFrame` is either host I420 or a handle to memory on one device,
+and a stage only accepts frames resident where it runs. A room's video
+pipeline is placed on **one device end to end** — decode, frame slot,
+compositor, scaler, encoder — so on a GPU node nothing but RTP crosses
+the PCIe bus. Mixing devices within a room (a GPU decode feeding a CPU
+compositor) is a copy the design allows but the scheduler avoids; it is
+what happens when a GPU's decoder cannot handle a codec (an AV1 source on
+a card without AV1 decode falls back to dav1d on the host, and its
+frames are uploaded once per tick).
+
+The host device is the reference implementation: a GPU device must
+produce the same layouts within a PSNR tolerance and the same RTP shape,
+and the golden-image tests run against both when hardware is present.
+
+### 5.6 Passthrough fast path (later)
 
 When a layout output is a single source (spotlight, or active speaker
 with one video participant) and a subscriber's flavor matches the source
@@ -218,7 +241,8 @@ is transparent to signaling and can be turned off per room.
 | H.264 | OpenH264 (built from source) | BSD-2 | `openh264` crate (`source` feature) | Cisco's patent grant covers only Cisco's binary; building from source means H.264 royalties are the deployer's matter. Documented in deployment notes. Encoder is constrained baseline/main only (no B-frames), which is what SIP phones want anyway |
 | AV1 encode | rav1e | BSD-2 | `rav1e` (pure Rust) | Speed presets 8–10 for real time; CPU-heavy, browsers only |
 | AV1 decode | dav1d | BSD-2 | `dav1d` crate (system lib) | Fast; multi-threaded |
-| H.265 | — | — | — | Decode only if a permissive decoder is adopted later; no encode |
+| H.265 | — | — | — | CPU path: decode only if a permissive decoder is adopted later; no encode. GPU path: encode and decode where the hardware has it |
+| GPU (all of the above) | FFmpeg hardware acceleration: VAAPI and oneVPL/QuickSync (Intel), NVENC/NVDEC (NVIDIA, via `nv-codec-headers`, MIT), AMF (AMD) | FFmpeg LGPL 2.1+ (dynamic link, built without GPL parts such as x264); vendor drivers proprietary at runtime | `ffmpeg-next` / `ffmpeg-sys-next` behind the `hwaccel` feature | One API over every vendor, with device frame contexts and hardware scale/overlay filters for composition. Direct vendor SDKs are the fallback if FFmpeg's overlay path proves too slow |
 
 Each binding lives behind its own cargo feature in `forge-video-codecs`;
 `forge-video` depends on none of them and ships a **raw I420 test codec**
@@ -269,7 +293,32 @@ resolution cap (default 720p, up to 1080p), fps (default 15, up to 30),
 `exclude_self` (default off). At runtime the host (or the API)
 changes layout, pins, spotlights, and can turn a participant's video off.
 
-## 9. Threading, CPU and capacity
+## 9. Threading, CPU, GPU and capacity
+
+### 9.1 Why the GPU matters here
+
+Composition is cheap on either side: scaling and blitting a 720p canvas
+is memory bandwidth. The cost is codecs, and a mixer pays a decode per
+participant and an encode per flavor. Fixed-function video engines
+change that by an order of magnitude. Expected density for 720p30 H.264,
+from vendor material and public benchmarks, **to be replaced by phase 0
+measurements**:
+
+| Device | Encode streams | Decode streams |
+|---|---|---|
+| One CPU core, software | ~1 | ~3–5 |
+| Consumer NVIDIA GeForce | driver-capped at 8 sessions | ~30+ |
+| Intel iGPU / Arc (QuickSync), one media engine | ~20–40 | ~60–100 |
+| Datacenter (NVIDIA T4 / L4 / A10, Intel Flex 140 / 170) | ~40–100+ | ~100–250 |
+
+Caveats the design carries: hardware encoders are worse per bit than
+software (expect 20–30 % more bitrate for the same quality; the ladder
+absorbs it), GeForce parts are session-capped by the driver whatever
+their throughput, and cloud GPU instances are a specific SKU. Hence: GPU
+is an advertised capability, the CPU path is always there, and placement
+decides.
+
+### 9.2 Threading
 
 - Decoders and encoders run on a **dedicated codec thread pool** (size =
   cores − 2 by default), never on tokio workers; the async side hands
@@ -280,24 +329,29 @@ changes layout, pins, spotlights, and can turn a participant's video off.
   overruns three ticks in a row the room's fps is halved and an event is
   emitted.
 
-**Capacity model.** Each node advertises a video budget in "work units"
-alongside `active_calls` in cluster membership. Costs (measured in
-phase 0 on reference hardware, re-measured per node at start with a
-30-second self-benchmark):
+### 9.3 Capacity model
+
+Each node advertises a video budget **per device** in "work units"
+alongside `active_calls` in cluster membership: `video_budget: [{device,
+codecs, left, total}]`. Costs (measured in phase 0 on reference hardware,
+re-measured per node and per device at start with a 30-second
+self-benchmark):
 
 ```
-decode_cost(codec, W×H, fps)   ≈ k_dec(codec) × W×H×fps
-encode_cost(codec, W×H, fps)   ≈ k_enc(codec) × W×H×fps
-compose_cost(tiles, W×H, fps)  ≈ k_cmp × W×H×fps × (1 + 0.1×tiles)
-room_cost = Σ decode + Σ_flavors encode + Σ_outputs compose
+decode_cost(device, codec, W×H, fps)   ≈ k_dec(device, codec) × W×H×fps
+encode_cost(device, codec, W×H, fps)   ≈ k_enc(device, codec) × W×H×fps
+compose_cost(device, tiles, W×H, fps)  ≈ k_cmp(device) × W×H×fps × (1 + 0.1×tiles)
+room_cost(device) = Σ decode + Σ_flavors encode + Σ_outputs compose
 ```
 
-Admission: a join that would push the node over budget is refused with
-the same 503 path as the participant cap, and placement
-(`choose_conference_node`) prefers the node with the most video budget
-left among those in the caller's region. `conference_node_capacity`
+Admission: a join that would push every device on the node over budget
+is refused with the same 503 path as the participant cap. Placement
+(`choose_conference_node`) prefers, among live conference nodes in the
+caller's region, the one with the most budget left on a device that has
+the room's codecs; a GPU node therefore takes video rooms before a CPU
+node does, and CPU nodes are the overflow. `conference_node_capacity`
 remains the participant count cap; the video budget is the second
-constraint.
+constraint. A room stays on the device it started on.
 
 The dev machine (12 cores, AVX2, **2 GB RAM**) is enough for the phase 0
 benchmarks at 720p; memory, not CPU, bounds how many 1080p encoders can
@@ -383,6 +437,9 @@ selector uses it (§9).
   libraries installed): encode → decode round trips per codec with PSNR
   thresholds, keyframe-on-demand, bitrate targeting, and the phase 0
   benchmark as a test that records numbers rather than asserting them.
+  With the `hwaccel` feature on a GPU host: the same round trips per
+  device, and layout parity against the host compositor within a PSNR
+  threshold.
 - **Conference server**: SIP-level tests with `m=audio + m=video` offers
   (fixtures beside `minimal_sdp()`): accept, reject-properly, re-INVITE
   add/remove, and a loopback RTP test that a raw-codec participant's
@@ -399,13 +456,14 @@ compound parsing), per-codec keyframe inspection, the stream rewriter,
 
 | Phase | Deliverable | Where | Rough size |
 |---|---|---|---|
-| 0 | **Spike and numbers**: install build prerequisites, get libvpx, OpenH264, rav1e/dav1d building through their crates, write the benchmark, record `k_dec` / `k_enc` / `k_cmp` for this machine; confirm crate choices and pin versions | forge-media (throwaway branch) | 1 week |
+| 0 | **Spike and numbers**: install build prerequisites, get libvpx, OpenH264, rav1e/dav1d building through their crates, write the benchmark, record `k_dec` / `k_enc` / `k_cmp` for this machine; confirm crate choices and pin versions. On a machine with an Intel or NVIDIA GPU (this VM has none): FFmpeg hardware encode/decode through `ffmpeg-next`, the same constants per device | forge-media (throwaway branch) | 1 week + GPU access |
 | 1 | **Substrate**: RTCP feedback, payload formats (depacketize/packetize) for H.264, VP8, VP9, AV1, frame assembler, retransmission cache, SDP video, `VideoCodec`; the branch from §14 finished | forge-rtp, forge-sdp, forge-core | 2 weeks |
 | 2 | **forge-video**: frames, scaling, compositor + layouts, clock, flavors, codec traits, raw codec; **forge-video-codecs** with the four bindings | forge-media | 3–4 weeks |
 | 3 | **Conference video (SIP)**: fcp-media/fcp-sip SDP per section, meeting model + API + events, conference server ingress/egress, layouts and host controls, capacity accounting and placement | FCP | 3–4 weeks |
 | 4 | **WebRTC**: video section in forge-webrtc, gateway join-room, browser test | forge-media, FCP | 2 weeks |
 | 5 | **Recording and cascade**: WebM/MP4 muxing, trunk video, cross-node speaker state | both | 2–3 weeks |
 | 6 | **Passthrough fast path, bitrate ladder, polish**: single-source forwarding, ladder switching, overload handling, fuzzing | both | 2 weeks |
+| 7 | **GPU backend**: `hwaccel` feature (FFmpeg device contexts), device codecs, device scale/overlay composition, per-device budgets and self-benchmark, placement by capability, PSNR parity tests against the host path | forge-media, FCP | 3–4 weeks + a GPU box |
 
 Each phase is one PR per repository (forge-media release tag, then the
 FCP bump), reviewed before the next starts. Sizes are for one person and
@@ -422,9 +480,9 @@ Raised with the first draft and decided 2026-09-04, each as recommended.
 | H.264 library | **OpenH264 built from source**, feature-gated. Reproducible; the C++ toolchain is only needed with the feature on |
 | Recording container | **WebM** (VP8/VP9 + Opus) by default, every part permissively licensed; MP4 (H.264 + Opus) as an option |
 | Screen share | Section handling designed in phase 3 so a second video section (RFC 4796 `a=content:slides`) is additive; **implemented after phase 6** |
-| Hardware acceleration | **No work now.** The encoder trait boundary is kept so VAAPI / NVENC via ffmpeg can be added |
+| Hardware acceleration | Revised after review: **designed in now** (device-resident frames, pipeline per device, per-device budgets, placement by capability; §5.5, §9), **built as phase 7** on FFmpeg hardware contexts once the CPU path is the proven reference |
 | Maximum resolution | **720p** by default; 1080p per meeting |
-| Dev machine memory | Phase 0 measures **relative** constants here (12 cores, 2 GB); absolute capacity is re-measured once on a production-shaped node before phase 3, and every node self-benchmarks at start |
+| Dev machine memory | Phase 0 measures **relative** constants here (12 cores, 2 GB, a Microsoft VM with no GPU device); absolute capacity is re-measured once on a production-shaped node before phase 3, GPU constants on a GPU box, and every node self-benchmarks at start |
 
 ## 17. References
 
