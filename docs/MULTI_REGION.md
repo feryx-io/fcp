@@ -17,8 +17,8 @@ How FCP is meant to run across regions, and what is in place.
   candidate to evaluate — untested.
 - **Regional state lives in Redis and memory**: registrations, cluster
   membership, the conference registry, parking, the event bus. Membership
-  is region-aware (below); event-bus fan-out across regions is the next
-  step (not done).
+  is region-aware and the events server bridges events between regions
+  (both below).
 
 ## Read replicas (done, v0.25.86)
 
@@ -142,4 +142,85 @@ simpler) deployment; regions then never place across each other.
 - Fencing: a region cut off from the shared Redis keeps serving what it
   has and loses the cluster view (nodes expire after 15 s). Nothing
   detects a partition as such.
-- Event-bus fan-out between regions (next).
+
+## Cross-region event fan-out (done, v0.25.88)
+
+Each region's nodes publish to their own Redis (`events` Pub/Sub channel
+plus the `event_stream` stream), so without help a region's events stay in
+it: WebSocket clients, the events server's call/registration/node views,
+and webhooks in the EU never hear about a US call. The events server now
+bridges them.
+
+```toml
+[cluster]
+region = "us-east"
+
+[event_bus]
+bus_type = "redis"
+redis_url = "redis://redis.us-east.internal:6379"
+
+[[event_bus.peer_regions]]
+region = "eu-west"
+redis_url = "redis://redis.eu-west.internal:6379"
+# key_prefix = "fcp:"        # defaults to this server's redis_key_prefix
+
+[[event_bus.peer_regions]]
+region = "ap-south"
+redis_url = "redis://redis.ap-south.internal:6379"
+```
+
+### How it works
+
+`fcp_storage_redis::event_bus::EventBridge` runs one task per peer inside
+the events server. Each task reads the local `event_stream` through its
+own consumer group (`bridge:<peer region>`) and writes every entry that
+**originated here** into the peer's Redis with the same `PUBLISH` +
+`XADD` a local publisher would do — so the peer's nodes see it on Pub/Sub
+and the peer's events server reads it from its stream, nothing special
+on the receiving side.
+
+The envelope around each event carries `origin_region` (what the
+publishing node advertised; a bridge fills it in with its own region for
+an unlabeled publisher) and `relayed`. A bridge only forwards entries
+that are not `relayed`, and marks what it forwards. That is the whole
+loop guard: **peer every region with every other region** (a full mesh)
+and each event reaches each region exactly once. A chain (A → B → C) does
+not forward A's events on to C.
+
+Delivery is at-least-once, in order per region:
+
+- A batch is forwarded, then acknowledged. If the peer is unreachable the
+  same batch is retried with backoff (1 s → 60 s) until it goes through;
+  reading pauses meanwhile, and the local stream keeps the backlog
+  (`MAXLEN ~ 10000` — a peer down for longer than that many events loses
+  the oldest).
+- Entries a dead bridge instance read but never acknowledged are claimed
+  (`XAUTOCLAIM`, idle > 60 s) at start and once a minute by whichever
+  instance is alive, so a restart or a second events server in the region
+  picks them up. Several events servers in one region share the per-peer
+  groups: each entry is forwarded once.
+- Nothing is deduplicated on the receiving side; a batch acknowledged
+  after a crash can arrive twice, the same as for any stream consumer.
+
+### What the receiving region does with them
+
+The events server routes every stream entry by its `relayed` flag:
+
+- **Local** entries go to the bus WebSocket clients, state tracking
+  **and webhooks** subscribe to.
+- **Relayed** entries go to a second bus that only WebSocket clients and
+  state tracking read. Webhooks fire once, in the region the event
+  happened in; a tenant's webhook endpoint does not get one delivery per
+  region.
+
+`GET /status` on the events server reports `region.local` and
+`region.bridge` (per peer: connected, forwarded, failed, last error).
+
+### Not covered
+
+- Selecting which events cross regions: everything does, including
+  `system.node_joined` / `node_left` of the origin region's nodes (which
+  is how a remote events server's node list fills in). A per-peer event
+  filter is a small addition if cross-region volume ever matters.
+- Regional affinity for the WebSocket clients themselves: a client
+  connects to whichever events server it is pointed at.

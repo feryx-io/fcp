@@ -509,7 +509,7 @@ async fn handle_request(request: Request, tenant_id: TenantId) -> Result<()> {
 - E911 integration — block 1 shipped (`docs/E911.md`): detection, dispatchable location, ELIN caller ID, emergency-capable trunks, audit + event, admin API
 - Regulatory compliance features — basics shipped (`docs/COMPLIANCE.md`): retention policy + sweep, recording consent, admin audit log, CDR export
 - Distributed conferencing (cascaded mixing) — all four phases shipped (registry + placement, mutual-TLS inter-node trunks with cascaded mixing, cross-node control under a shared `cluster.secret`, resilience: registry freshness, trunk liveness, draining, trunk SRTP; `docs/DISTRIBUTED_CONFERENCING.md`). Participant migration off a draining node is not done
-- Multi-region support — read replicas and region-aware cluster membership shipped (`docs/MULTI_REGION.md`: Postgres primary + per-region streaming replicas with configuration reads routed to a healthy replica; `[cluster] region` on every node's heartbeat, conference placement prefers the caller's region, admin API/UI show regions; CockroachDB dropped); cross-region event-bus fan-out next
+- Multi-region support — read replicas and region-aware cluster membership shipped (`docs/MULTI_REGION.md`: Postgres primary + per-region streaming replicas with configuration reads routed to a healthy replica; `[cluster] region` on every node's heartbeat, conference placement prefers the caller's region, admin API/UI show regions; the events server's `EventBridge` forwards each region's event stream to its `[[event_bus.peer_regions]]` with loop-safe envelopes, webhooks firing only in the origin region; CockroachDB dropped)
 - Video conferencing
 
 Descoped on 2026-09-02: SQLite backend, plugin runtime (WASM/Lua), gRPC API, standalone

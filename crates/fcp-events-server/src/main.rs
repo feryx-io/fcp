@@ -60,6 +60,11 @@ struct AppState {
     node_registry: Arc<NodeRegistry>,
     #[allow(dead_code)]
     webhook_dispatcher: Option<Arc<WebhookDispatcher>>,
+    /// This server's region (`[cluster] region` / `FCP_REGION`), if any.
+    local_region: Option<String>,
+    /// Cross-region event bridge, when peer regions are configured.
+    #[cfg(feature = "redis-events")]
+    bridge: Option<Arc<fcp_storage_redis::event_bus::EventBridge>>,
 }
 
 #[derive(Clone)]
@@ -272,8 +277,14 @@ async fn main() -> Result<()> {
     validate_listener_auth(&config)?;
     let auth = build_auth_state(&config, storage_result.as_ref());
 
-    // Create event bus
+    // Create event bus. Events that originated in this region go on
+    // `event_bus` (WebSocket clients, webhooks, state). Events a bridge
+    // brought in from another region go on `remote_event_bus`: WebSocket
+    // clients and state see them, webhooks do not — each event's webhooks
+    // fire once, in the region it happened in (`docs/MULTI_REGION.md`).
     let event_bus = Arc::new(InMemoryEventBus::new());
+    let remote_event_bus = Arc::new(InMemoryEventBus::new());
+    let local_region = fcp_core::region::resolve_region(config.cluster.region.as_deref());
 
     // Initialize cluster membership (if configured)
     #[cfg(feature = "storage-redis")]
@@ -379,6 +390,93 @@ async fn main() -> Result<()> {
         }
     };
 
+    // Cross-region event bridge (set below when peer regions are configured).
+    #[cfg(feature = "redis-events")]
+    let mut event_bridge: Option<Arc<fcp_storage_redis::event_bus::EventBridge>> = None;
+
+    // Start Redis stream consumer if configured
+    #[cfg(feature = "redis-events")]
+    if config.event_bus.bus_type == "redis" {
+        if let Some(ref redis_url) = config.event_bus.redis_url {
+            let redis_config = fcp_storage_redis::RedisConfig {
+                url: redis_url.clone(),
+                key_prefix: config.event_bus.redis_key_prefix.clone(),
+            };
+
+            match fcp_storage_redis::RedisStorage::new(redis_config).await {
+                Ok(redis_storage) => {
+                    let stream_key = format!("{}event_stream", config.event_bus.redis_key_prefix);
+                    let consumer = fcp_storage_redis::event_bus::RedisStreamConsumer::new(
+                        redis_storage.clone(),
+                        stream_key,
+                        config.event_bus.consumer_group.clone(),
+                        config.event_bus.consumer_name.clone(),
+                    );
+
+                    // Ensure consumer group exists
+                    if let Err(e) = consumer.ensure_group().await {
+                        error!(error = %e, "Failed to create Redis consumer group");
+                    } else {
+                        let event_bus_redis = event_bus.clone();
+                        let remote_bus_redis = remote_event_bus.clone();
+                        let call_store_redis = call_store.clone();
+                        let registration_store_redis = registration_store.clone();
+                        let node_registry_redis = node_registry.clone();
+
+                        tokio::spawn(async move {
+                            redis_stream_consumer_task(
+                                consumer,
+                                event_bus_redis,
+                                remote_bus_redis,
+                                call_store_redis,
+                                registration_store_redis,
+                                node_registry_redis,
+                            )
+                            .await;
+                        });
+                        info!("Redis stream consumer started (replacing HTTP /ingest)");
+                    }
+
+                    // Cross-region fan-out: forward this region's events to
+                    // every configured peer region.
+                    if !config.event_bus.peer_regions.is_empty() {
+                        let peers = config
+                            .event_bus
+                            .peer_regions
+                            .iter()
+                            .map(|p| fcp_storage_redis::event_bus::PeerRegion {
+                                region: p.region.clone(),
+                                redis_url: p.redis_url.clone(),
+                                key_prefix: p
+                                    .key_prefix
+                                    .clone()
+                                    .unwrap_or_else(|| config.event_bus.redis_key_prefix.clone()),
+                            })
+                            .collect::<Vec<_>>();
+                        let bridge = Arc::new(fcp_storage_redis::event_bus::EventBridge::new(
+                            redis_storage.clone(),
+                            local_region.clone(),
+                            config.event_bus.consumer_name.clone(),
+                            peers,
+                        ));
+                        let _bridge_handles = bridge.spawn();
+                        info!(
+                            local_region = local_region.as_deref().unwrap_or("-"),
+                            peers = ?config.event_bus.peer_regions.iter().map(|p| p.region.as_str()).collect::<Vec<_>>(),
+                            "Cross-region event bridge started"
+                        );
+                        event_bridge = Some(bridge);
+                    }
+                }
+                Err(e) => {
+                    error!(error = %e, "Failed to connect to Redis for event streaming");
+                }
+            }
+        } else {
+            warn!("event_bus.bus_type = \"redis\" but redis_url is not set");
+        }
+    }
+
     // Create application state
     let state = AppState {
         config: config.clone(),
@@ -389,6 +487,9 @@ async fn main() -> Result<()> {
         registration_store: registration_store.clone(),
         node_registry: node_registry.clone(),
         webhook_dispatcher: webhook_dispatcher.clone(),
+        local_region: local_region.clone(),
+        #[cfg(feature = "redis-events")]
+        bridge: event_bridge.clone(),
     };
 
     // Build router with new endpoints
@@ -424,56 +525,6 @@ async fn main() -> Result<()> {
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http());
 
-    // Start Redis stream consumer if configured
-    #[cfg(feature = "redis-events")]
-    if config.event_bus.bus_type == "redis" {
-        if let Some(ref redis_url) = config.event_bus.redis_url {
-            let redis_config = fcp_storage_redis::RedisConfig {
-                url: redis_url.clone(),
-                key_prefix: config.event_bus.redis_key_prefix.clone(),
-            };
-
-            match fcp_storage_redis::RedisStorage::new(redis_config).await {
-                Ok(redis_storage) => {
-                    let stream_key = format!("{}event_stream", config.event_bus.redis_key_prefix);
-                    let consumer = fcp_storage_redis::event_bus::RedisStreamConsumer::new(
-                        redis_storage,
-                        stream_key,
-                        config.event_bus.consumer_group.clone(),
-                        config.event_bus.consumer_name.clone(),
-                    );
-
-                    // Ensure consumer group exists
-                    if let Err(e) = consumer.ensure_group().await {
-                        error!(error = %e, "Failed to create Redis consumer group");
-                    } else {
-                        let event_bus_redis = event_bus.clone();
-                        let call_store_redis = call_store.clone();
-                        let registration_store_redis = registration_store.clone();
-                        let node_registry_redis = node_registry.clone();
-
-                        tokio::spawn(async move {
-                            redis_stream_consumer_task(
-                                consumer,
-                                event_bus_redis,
-                                call_store_redis,
-                                registration_store_redis,
-                                node_registry_redis,
-                            )
-                            .await;
-                        });
-                        info!("Redis stream consumer started (replacing HTTP /ingest)");
-                    }
-                }
-                Err(e) => {
-                    error!(error = %e, "Failed to connect to Redis for event streaming");
-                }
-            }
-        } else {
-            warn!("event_bus.bus_type = \"redis\" but redis_url is not set");
-        }
-    }
-
     // Start background tasks
     let manager_clone = manager.clone();
     tokio::spawn(async move {
@@ -481,10 +532,17 @@ async fn main() -> Result<()> {
     });
 
     let event_bus_clone = event_bus.clone();
+    let remote_bus_clone = remote_event_bus.clone();
     let manager_clone = manager.clone();
     let call_store_broadcast = call_store.clone();
     tokio::spawn(async move {
-        event_broadcast_task(event_bus_clone, manager_clone, call_store_broadcast).await;
+        event_broadcast_task(
+            event_bus_clone,
+            remote_bus_clone,
+            manager_clone,
+            call_store_broadcast,
+        )
+        .await;
     });
 
     // Spawn stale cleanup task
@@ -861,6 +919,10 @@ async fn status_handler(State(state): State<AppState>) -> impl IntoResponse {
             "total": node_stats.total,
             "healthy": node_stats.healthy,
         },
+        "region": {
+            "local": state.local_region,
+            "bridge": bridge_status(&state),
+        },
         "config": {
             "heartbeat_interval_secs": state.config.websocket.heartbeat_interval.as_secs(),
             "client_timeout_secs": state.config.websocket.client_timeout.as_secs(),
@@ -869,6 +931,21 @@ async fn status_handler(State(state): State<AppState>) -> impl IntoResponse {
     });
 
     Json(status)
+}
+
+/// Per-peer bridge status for `/status`; empty without a bridge.
+#[cfg(feature = "redis-events")]
+fn bridge_status(state: &AppState) -> Vec<fcp_storage_redis::event_bus::PeerBridgeStatus> {
+    state
+        .bridge
+        .as_ref()
+        .map(|b| b.status())
+        .unwrap_or_default()
+}
+
+#[cfg(not(feature = "redis-events"))]
+fn bridge_status(_state: &AppState) -> Vec<serde_json::Value> {
+    Vec::new()
 }
 
 /// WebSocket upgrade handler
@@ -1190,19 +1267,28 @@ fn extract_node_id_from_call_event(event: &CallEvent) -> Option<String> {
     }
 }
 
-/// Background task to broadcast events from event bus to connections
+/// Background task to broadcast events from both event buses (this
+/// region's and what bridges brought in from others) to connections.
 async fn event_broadcast_task(
     event_bus: Arc<InMemoryEventBus>,
+    remote_event_bus: Arc<InMemoryEventBus>,
     manager: Arc<ConnectionManager>,
     call_store: Arc<CallStateStore>,
 ) {
     use fcp_events::{EventFilter, EventSubscriber};
 
-    // Subscribe to all events
-    let mut stream = match event_bus.subscribe(EventFilter::new()).await {
+    // Subscribe to all events on both buses
+    let mut local = match event_bus.subscribe(EventFilter::new()).await {
         Ok(stream) => stream,
         Err(e) => {
             error!(error = %e, "Failed to subscribe to event bus");
+            return;
+        }
+    };
+    let mut remote = match remote_event_bus.subscribe(EventFilter::new()).await {
+        Ok(stream) => stream,
+        Err(e) => {
+            error!(error = %e, "Failed to subscribe to remote event bus");
             return;
         }
     };
@@ -1210,7 +1296,11 @@ async fn event_broadcast_task(
     info!("Event broadcast task started");
 
     loop {
-        match stream.next().await {
+        let next = tokio::select! {
+            e = local.next() => e,
+            e = remote.next() => e,
+        };
+        match next {
             Some(event) => {
                 let event_tenant = resolve_event_tenant_id(&event, &call_store);
                 // Broadcast to WebSocket connections
@@ -1280,10 +1370,15 @@ async fn stale_cleanup_task(
 /// This replaces the HTTP `/ingest` endpoint for clustered deployments.
 /// Events published by any fcp-call-manager node are durably stored in the
 /// Redis Stream and consumed here with at-least-once delivery.
+///
+/// Entries a bridge relayed from another region go to `remote_event_bus`
+/// (WebSocket clients and state, no webhooks); everything else to
+/// `event_bus`.
 #[cfg(feature = "redis-events")]
 async fn redis_stream_consumer_task(
     consumer: fcp_storage_redis::event_bus::RedisStreamConsumer,
     event_bus: Arc<InMemoryEventBus>,
+    remote_event_bus: Arc<InMemoryEventBus>,
     call_store: Arc<CallStateStore>,
     registration_store: Arc<RegistrationStateStore>,
     node_registry: Arc<NodeRegistry>,
@@ -1291,15 +1386,17 @@ async fn redis_stream_consumer_task(
     info!("Redis stream consumer task running");
 
     loop {
-        match consumer.read_events(100, 2000).await {
-            Ok(events) => {
-                if events.is_empty() {
+        match consumer.read_entries(100, 2000).await {
+            Ok(entries) => {
+                if entries.is_empty() {
                     continue;
                 }
 
-                let mut ack_ids = Vec::with_capacity(events.len());
+                let mut ack_ids = Vec::with_capacity(entries.len());
 
-                for (stream_id, event) in events {
+                for entry in entries {
+                    let relayed = entry.envelope.relayed;
+                    let event = entry.envelope.event;
                     // Process event for state tracking (same as ingest_handler)
                     process_event_for_state(
                         &event,
@@ -1309,10 +1406,15 @@ async fn redis_stream_consumer_task(
                         None,
                     );
 
-                    // Publish to local event bus for WebSocket broadcast
-                    let _ = event_bus.publish(event).await;
+                    // Publish for WebSocket broadcast (and webhooks, if local)
+                    let bus = if relayed {
+                        &remote_event_bus
+                    } else {
+                        &event_bus
+                    };
+                    let _ = bus.publish(event).await;
 
-                    ack_ids.push(stream_id);
+                    ack_ids.push(entry.id);
                 }
 
                 // Acknowledge processed events

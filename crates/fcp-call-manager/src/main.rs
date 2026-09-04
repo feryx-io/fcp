@@ -492,7 +492,10 @@ async fn main() -> Result<()> {
             let redis_bus = fcp_storage_redis::event_bus::RedisEventBus::new(
                 redis.clone(),
                 config.service.node_id.clone(),
-            );
+            )
+            .with_region(fcp_cluster::resolve_region(
+                config.cluster.region.as_deref(),
+            ));
 
             // Start subscriber: listens for remote events on Redis Pub/Sub,
             // filters self-published, and re-publishes to local InMemoryEventBus.
