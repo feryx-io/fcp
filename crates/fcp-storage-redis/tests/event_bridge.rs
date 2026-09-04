@@ -101,6 +101,26 @@ fn left_node_id(event: &PlatformEvent) -> &str {
     }
 }
 
+/// Poll the bridge's status until `pred` holds or `timeout` passes. The
+/// counters are updated by the bridge task after the peer has accepted a
+/// batch, which is also the moment a reader on the peer can see it, so a
+/// reader that returns promptly can be ahead of the counters by a
+/// scheduling tick.
+async fn wait_status(
+    bridge: &EventBridge,
+    pred: impl Fn(&fcp_storage_redis::event_bus::PeerBridgeStatus) -> bool,
+    timeout: Duration,
+) -> fcp_storage_redis::event_bus::PeerBridgeStatus {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let status = bridge.status().remove(0);
+        if pred(&status) || tokio::time::Instant::now() >= deadline {
+            return status;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
 /// Read until `n` entries have arrived or `timeout` passes.
 async fn collect(consumer: &RedisStreamConsumer, n: usize, timeout: Duration) -> Vec<StreamEntry> {
     let deadline = tokio::time::Instant::now() + timeout;
@@ -196,12 +216,13 @@ async fn events_cross_regions_once_and_never_loop_back() {
     );
 
     // The bridges report what they did.
-    let us_status = &us_bridge.status()[0];
+    let us_status = wait_status(&us_bridge, |s| s.forwarded == 2, Duration::from_secs(5)).await;
     assert_eq!(us_status.region, "eu-west");
     assert!(us_status.connected);
     assert_eq!(us_status.forwarded, 2, "{us_status:?}");
     assert_eq!(us_status.claimed, 0, "{us_status:?}");
-    assert_eq!(eu_bridge.status()[0].forwarded, 1);
+    let eu_status = wait_status(&eu_bridge, |s| s.forwarded == 1, Duration::from_secs(5)).await;
+    assert_eq!(eu_status.forwarded, 1, "{eu_status:?}");
 
     for h in handles {
         h.abort();
@@ -246,7 +267,7 @@ async fn a_bridge_takes_over_entries_a_dead_consumer_left_pending() {
     assert_eq!(got.len(), 1, "bridge status: {:?}", bridge.status());
     assert_eq!(left_node_id(&got[0].envelope.event), "orphan");
     assert!(got[0].envelope.relayed);
-    let status = &bridge.status()[0];
+    let status = wait_status(&bridge, |s| s.forwarded == 1, Duration::from_secs(5)).await;
     assert_eq!(status.forwarded, 1, "{status:?}");
     assert_eq!(status.claimed, 1, "{status:?}");
 
