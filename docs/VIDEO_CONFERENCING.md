@@ -239,7 +239,7 @@ is transparent to signaling and can be turned off per room.
 |---|---|---|---|---|
 | VP8, VP9 | libvpx | BSD-3 | `env-libvpx-sys` (system lib via pkg-config) | Mature; VP8 is the WebRTC baseline codec |
 | H.264 | OpenH264 (built from source) | BSD-2 | `openh264` crate (`source` feature) | Cisco's patent grant covers only Cisco's binary; building from source means H.264 royalties are the deployer's matter. Documented in deployment notes. Encoder is constrained baseline/main only (no B-frames), which is what SIP phones want anyway |
-| AV1 encode | **SVT-AV1** (libsvtav1) | BSD-2 + patent grant | `svt-av1-sys` / `shiguredo_svt_av1` (system lib) | rav1e was the first choice and measured at 1.8 fps for 720p on one core at its fastest preset (§9.4): not a real-time encoder. SVT-AV1's real-time presets are; to be measured. AV1 egress stays optional on the CPU path and comes for free on GPUs with AV1 engines |
+| AV1 encode | **SVT-AV1** (libsvtav1 ≥ 2.3) | BSD-2 + patent grant | own bindgen against the system header (the published `svt-av1-sys` crate pins a bindgen that conflicts with libvpx's) | rav1e was the first choice and measured at 1.8 fps for 720p on one core at its fastest preset (§9.4): not a real-time encoder. SVT-AV1 preset 12 in low-delay CBR mode is (2–4 streams per core, §9.4). Its packet API blocks in low-delay mode, so the encoder gets a reader thread. AV1 egress stays optional on the CPU path and comes for free on GPUs with AV1 engines |
 | AV1 decode | dav1d | BSD-2 | `dav1d` crate (system lib) | Fast; multi-threaded |
 | H.265 | — | — | — | CPU path: decode only if a permissive decoder is adopted later; no encode. GPU path: encode and decode where the hardware has it |
 | GPU (all of the above) | FFmpeg hardware acceleration: VAAPI and oneVPL/QuickSync (Intel), NVENC/NVDEC (NVIDIA, via `nv-codec-headers`, MIT), AMF (AMD) | FFmpeg LGPL 2.1+ (dynamic link, built without GPL parts such as x264); vendor drivers proprietary at runtime | `ffmpeg-next` / `ffmpeg-sys-next` behind the `hwaccel` feature | One API over every vendor, with device frame contexts and hardware scale/overlay filters for composition. Direct vendor SDKs are the fallback if FFmpeg's overlay path proves too slow |
@@ -377,7 +377,10 @@ core.
 | VP9 encode, libvpx cpu-used 8 | 6.9 | 9.1 | 5 / 4 |
 | VP9 decode, libvpx | 1.2 | 1.7 | 31 / 22 |
 | AV1 encode, rav1e speed 10 | 596 | — | 0.06 (not real time) |
-| AV1 decode, dav1d, 1 thread | 9.3 | — | 4 |
+| AV1 encode, SVT-AV1 2.3 preset 12 (maps to 11), low delay, CBR — *CPU time* | 9.5 | 17.2 | 3.8 / 2.1 |
+| AV1 encode, SVT-AV1 preset 10 — *CPU time* | 13.5 | 21.7 | 2.7 / 1.7 |
+| AV1 encode, SVT-AV1 preset 8 — *CPU time* | 20.5 | 75.6 | 1.8 / 0.5 |
+| AV1 decode, dav1d, 1 thread, of SVT-AV1 output | 1.1 | 1.9 | 32 / 19 |
 | compose 3×3 grid of 720p sources → 720p, scalar Rust bilinear | 1.8 | 1.9 | 19 canvases |
 | compose 4×4 | 2.0 | 2.0 | 18 canvases |
 | 4 encoders in parallel | 3.9× one encoder's throughput | 3.9× | cores add up |
@@ -393,10 +396,15 @@ What this changes:
   as one H.264 encode of easy content and a fifth of a VP8 encode, before
   any SIMD. §9.3's `k_cmp` term is real but small.
 - **Decode is cheap**: 20–45 streams per core for every codec but AV1.
-- **rav1e is out for encoding.** At its fastest preset it manages 1.8 fps
-  on one core; the design's AV1 encoder becomes SVT-AV1 (§6), still to be
-  measured, and AV1 egress stays optional on CPU nodes. dav1d decode is
-  fine (4 streams per core single-threaded; it scales with threads).
+- **rav1e is out for encoding; SVT-AV1 is in.** rav1e manages 1.8 fps on
+  one core at its fastest preset. SVT-AV1 preset 12 in low-delay CBR mode
+  costs 9.5–17 CPU-ns/px — 2–4 720p30 streams per core, about half of
+  VP8 — with 1.2 Mb/s held on the easy source (wall-clock throughput is
+  ~3× higher because the library threads internally whatever `lp` says,
+  so its constant is measured in CPU time). Preset 10 buys little; preset
+  8 is not real time on hard content. dav1d decodes SVT-AV1 output at
+  19–32 streams per core; the 4-per-core figure above came from rav1e's
+  17 Mb/s bitstream, not from AV1 itself.
 - **Rate control needs tuning per codec**: VP9 at cpu-used 8 overshot
   1.2 Mb/s by 25 %; OpenH264 cannot hold a bitrate without frame
   skipping, which the pipeline must expect (a skipped frame is a repeated
@@ -511,7 +519,7 @@ compound parsing), per-codec keyframe inspection, the stream rewriter,
 
 | Phase | Deliverable | Where | Rough size |
 |---|---|---|---|
-| 0 | **Spike and numbers** — CPU half done 2026-09-04 (§9.4): libvpx, OpenH264, rav1e/dav1d build through their crates, constants recorded, rav1e replaced by SVT-AV1 (to measure). Open: SVT-AV1 numbers; on a machine with an Intel or NVIDIA GPU (this VM has none), FFmpeg hardware encode/decode through `ffmpeg-next` and the same constants per device | forge-media (`spike/video-codecs`) | done except SVT-AV1 + GPU |
+| 0 | **Spike and numbers** — CPU half done 2026-09-04 (§9.4): libvpx, OpenH264, dav1d, SVT-AV1 build and are measured; rav1e dropped. Open: on a machine with an Intel or NVIDIA GPU (this VM has none), FFmpeg hardware encode/decode through `ffmpeg-next` and the same constants per device | forge-media (`spike/video-codecs`) | done except GPU |
 | 1 | **Substrate**: RTCP feedback, payload formats (depacketize/packetize) for H.264, VP8, VP9, AV1, frame assembler, retransmission cache, SDP video, `VideoCodec`; the branch from §14 finished | forge-rtp, forge-sdp, forge-core | 2 weeks |
 | 2 | **forge-video**: frames, scaling, compositor + layouts, clock, flavors, codec traits, raw codec; **forge-video-codecs** with the four bindings | forge-media | 3–4 weeks |
 | 3 | **Conference video (SIP)**: fcp-media/fcp-sip SDP per section, meeting model + API + events, conference server ingress/egress, layouts and host controls, capacity accounting and placement | FCP | 3–4 weeks |
