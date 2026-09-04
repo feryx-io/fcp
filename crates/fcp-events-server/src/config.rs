@@ -316,6 +316,25 @@ pub struct EventBusConfig {
     /// Redis consumer name (unique per instance within a consumer group)
     #[serde(default = "default_consumer_name")]
     pub consumer_name: String,
+
+    /// Other regions' Redis instances to forward this region's events to
+    /// (cross-region fan-out, `docs/MULTI_REGION.md`). Needs
+    /// `bus_type = "redis"`. Every region should list every other region.
+    #[serde(default)]
+    pub peer_regions: Vec<PeerRegionConfig>,
+}
+
+/// One peer region for the event bridge.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PeerRegionConfig {
+    /// The peer's `[cluster] region` label.
+    pub region: String,
+    /// The peer region's Redis.
+    pub redis_url: String,
+    /// Key prefix the peer's nodes use; defaults to this server's
+    /// `redis_key_prefix`.
+    #[serde(default)]
+    pub key_prefix: Option<String>,
 }
 
 fn default_event_bus_type() -> String {
@@ -347,6 +366,7 @@ impl Default for EventBusConfig {
             redis_key_prefix: default_redis_key_prefix(),
             consumer_group: default_consumer_group(),
             consumer_name: default_consumer_name(),
+            peer_regions: Vec::new(),
         }
     }
 }
@@ -508,6 +528,33 @@ mod tests {
         assert!(!config.webhook.enabled);
         assert_eq!(config.webhook.max_retries, 5);
         assert!(config.auth.token.is_none());
+    }
+
+    #[test]
+    fn peer_regions_parse_with_optional_prefix() {
+        let toml_src = r#"
+[event_bus]
+bus_type = "redis"
+redis_url = "redis://us:6379"
+
+[[event_bus.peer_regions]]
+region = "eu-west"
+redis_url = "redis://eu:6379"
+
+[[event_bus.peer_regions]]
+region = "ap-south"
+redis_url = "redis://ap:6379"
+key_prefix = "fcp-ap:"
+"#;
+        let config: EventsConfig = toml::from_str(toml_src).unwrap();
+        assert_eq!(config.event_bus.peer_regions.len(), 2);
+        assert_eq!(config.event_bus.peer_regions[0].region, "eu-west");
+        assert_eq!(config.event_bus.peer_regions[0].key_prefix, None);
+        assert_eq!(
+            config.event_bus.peer_regions[1].key_prefix.as_deref(),
+            Some("fcp-ap:")
+        );
+        assert!(EventsConfig::default().event_bus.peer_regions.is_empty());
     }
 
     #[test]

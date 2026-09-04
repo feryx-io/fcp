@@ -29,6 +29,7 @@ pub mod phone_number;
 pub mod porting;
 pub mod prompt;
 pub mod queue_config;
+pub mod region;
 pub mod routing;
 pub mod routing_engine;
 pub mod routing_rule;

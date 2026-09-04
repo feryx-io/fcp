@@ -54,16 +54,7 @@ pub struct ClusterMember {
     pub region: Option<String>,
 }
 
-/// The region a node should advertise: the configured value when it is
-/// non-blank, else the `FCP_REGION` environment variable, else none.
-/// Surrounding whitespace is dropped.
-pub fn resolve_region(configured: Option<&str>) -> Option<String> {
-    configured
-        .map(str::to_owned)
-        .or_else(|| std::env::var("FCP_REGION").ok())
-        .map(|r| r.trim().to_string())
-        .filter(|r| !r.is_empty())
-}
+pub use fcp_core::region::resolve_region;
 
 impl ClusterMember {
     /// Whether this node is in `region`. A node without a region is in
@@ -470,22 +461,5 @@ mod tests {
         assert_eq!(back.region.as_deref(), Some("eu-west"));
         assert!(back.in_region("eu-west"));
         assert!(!back.in_region("us-east"));
-    }
-
-    #[test]
-    fn configured_region_is_trimmed_and_blank_means_none() {
-        assert_eq!(
-            resolve_region(Some(" us-east ")).as_deref(),
-            Some("us-east")
-        );
-        assert_eq!(resolve_region(Some("   ")), None);
-        // No configured value and no FCP_REGION in the test environment.
-        // (If the environment sets one, that is what a node would use.)
-        match std::env::var("FCP_REGION") {
-            Ok(env) if !env.trim().is_empty() => {
-                assert_eq!(resolve_region(None).as_deref(), Some(env.trim()))
-            }
-            _ => assert_eq!(resolve_region(None), None),
-        }
     }
 }
