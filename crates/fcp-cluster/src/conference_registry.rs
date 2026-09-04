@@ -6,6 +6,13 @@
 //! the key's TTL, so a node that stops heartbeating its rooms disappears
 //! from the registry on its own.
 //!
+//! Each node's field is `<participants>@<unix seconds>` (phase 4): the key's
+//! TTL only expires the whole room, and a live host refreshing it would
+//! keep a dead node's field alive forever. Readers drop any field older
+//! than the TTL, so a node that stops publishing disappears from a room
+//! within one TTL even while other nodes keep hosting it. A bare integer
+//! (written by older versions) is taken as fresh.
+//!
 //! The same hash carries the room-wide lock flag in the `__locked` field
 //! (phase 3, cross-node control): a node that starts hosting a room other
 //! nodes already host inherits the lock from here, so a locked room stays
@@ -44,18 +51,45 @@ pub struct RoomRecord {
     pub locked: bool,
 }
 
-/// Interpret a room hash: node fields become hosts, `__locked` becomes the
-/// flag, anything else starting with `__` is ignored.
-fn parse_room_hash(raw: Vec<(String, String)>) -> RoomRecord {
+/// Seconds since the Unix epoch.
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Decode one node's field: `<participants>@<unix seconds>`, or a bare
+/// count from an older writer (taken as fresh). `None` when the entry is
+/// older than `stale_after_secs`.
+fn parse_host_value(value: &str, now: u64, stale_after_secs: u64) -> Option<usize> {
+    let (count, written_at) = match value.split_once('@') {
+        Some((count, ts)) => (count, ts.parse::<u64>().ok()),
+        None => (value, None),
+    };
+    if let Some(written_at) = written_at {
+        if now.saturating_sub(written_at) > stale_after_secs {
+            return None;
+        }
+    }
+    Some(count.parse::<i64>().unwrap_or(0).max(0) as usize)
+}
+
+/// Interpret a room hash: node fields become hosts (unless stale),
+/// `__locked` becomes the flag, anything else starting with `__` is
+/// ignored.
+fn parse_room_hash(raw: Vec<(String, String)>, now: u64, stale_after_secs: u64) -> RoomRecord {
     let mut record = RoomRecord::default();
     for (field, value) in raw {
         if field == LOCKED_FIELD {
             record.locked = value == "1";
         } else if !field.starts_with("__") {
-            record.hosts.push(ConferenceHost {
-                node_id: field,
-                participants: value.parse::<i64>().unwrap_or(0).max(0) as usize,
-            });
+            if let Some(participants) = parse_host_value(&value, now, stale_after_secs) {
+                record.hosts.push(ConferenceHost {
+                    node_id: field,
+                    participants,
+                });
+            }
         }
     }
     record.hosts.sort_by(|a, b| a.node_id.cmp(&b.node_id));
@@ -94,7 +128,9 @@ impl ConferenceRegistry {
     }
 
     /// Publish this node's local participant count for a room (0 removes
-    /// the node from the room) and refresh the room's TTL.
+    /// the node from the room) and refresh the room's TTL. The entry is
+    /// stamped with the current time; a node that stops refreshing it is
+    /// dropped by readers after one TTL.
     pub async fn set_participants(
         &self,
         tenant_id: &str,
@@ -106,9 +142,10 @@ impl ConferenceRegistry {
         if participants == 0 {
             let _: () = conn.hdel(&key, &self.node_id).await?;
         } else {
+            let value = format!("{}@{}", participants, unix_now());
             let _: () = redis::pipe()
                 .atomic()
-                .hset(&key, &self.node_id, participants as i64)
+                .hset(&key, &self.node_id, value)
                 .expire(&key, self.ttl_secs as i64)
                 .query_async(&mut conn)
                 .await?;
@@ -155,7 +192,7 @@ impl ConferenceRegistry {
         let key = self.room_key(tenant_id, room_number);
         let mut conn = self.storage.connection();
         let raw: Vec<(String, String)> = conn.hgetall(&key).await?;
-        Ok(parse_room_hash(raw))
+        Ok(parse_room_hash(raw, unix_now(), self.ttl_secs))
     }
 
     /// Every node hosting the room, with its participant count.
@@ -185,14 +222,17 @@ impl ConferenceRegistry {
 /// Pick the node a new participant of `room` should be sent to.
 ///
 /// - `hosts`: nodes currently hosting the room (from the registry).
-/// - `members`: live cluster members; only `conference` nodes qualify.
+/// - `members`: live cluster members; only `conference` nodes that are
+///   not draining qualify.
 /// - `capacity`: participants per node per room before the room is spread
 ///   to another node; `0` means never spread.
 ///
 /// A hosting node that is still live and under capacity wins (the fullest
 /// one, so a room stays on as few nodes as possible). Otherwise the
 /// least-loaded live conference node. `None` when no conference node is
-/// alive, so callers fall back to static configuration.
+/// alive, so callers fall back to static configuration. A draining node
+/// (shutting down, still hosting its current callers) never takes new
+/// participants, even for a room it hosts.
 pub fn choose_conference_node(
     hosts: &[ConferenceHost],
     members: &[ClusterMember],
@@ -200,7 +240,7 @@ pub fn choose_conference_node(
 ) -> Option<ClusterMember> {
     let live: Vec<&ClusterMember> = members
         .iter()
-        .filter(|m| m.node_type == CONFERENCE_NODE_TYPE)
+        .filter(|m| m.node_type == CONFERENCE_NODE_TYPE && !m.draining)
         .collect();
     if live.is_empty() {
         return None;
@@ -242,13 +282,17 @@ mod tests {
 
     #[test]
     fn room_hash_separates_hosts_from_flags() {
-        let record = parse_room_hash(raw(&[
-            ("conf-b", "12"),
-            ("__locked", "1"),
-            ("conf-a", "3"),
-            ("__future", "x"),
-            ("conf-c", "garbage"),
-        ]));
+        let record = parse_room_hash(
+            raw(&[
+                ("conf-b", "12@1000"),
+                ("__locked", "1"),
+                ("conf-a", "3"),
+                ("__future", "x"),
+                ("conf-c", "garbage"),
+            ]),
+            1000,
+            60,
+        );
         assert!(record.locked);
         assert_eq!(
             record.hosts,
@@ -267,9 +311,60 @@ mod tests {
                 },
             ]
         );
-        let unlocked = parse_room_hash(raw(&[("conf-a", "1"), ("__locked", "0")]));
+        let unlocked = parse_room_hash(raw(&[("conf-a", "1"), ("__locked", "0")]), 0, 60);
         assert!(!unlocked.locked);
-        assert!(!parse_room_hash(Vec::new()).locked);
+        assert!(!parse_room_hash(Vec::new(), 0, 60).locked);
+    }
+
+    #[test]
+    fn stale_host_entries_are_dropped_and_bare_counts_are_fresh() {
+        let now = 10_000;
+        let record = parse_room_hash(
+            raw(&[
+                ("conf-dead", "40@9000"), // 1000 s old: gone
+                ("conf-edge", "5@9940"),  // exactly 60 s old: kept
+                ("conf-live", "7@9999"),
+                ("conf-old-writer", "2"),   // no stamp: fresh
+                ("conf-future", "1@10005"), // clock skew: kept
+                ("conf-bad-stamp", "3@x"),  // unparsable stamp: treated as unstamped
+            ]),
+            now,
+            60,
+        );
+        let ids: Vec<(&str, usize)> = record
+            .hosts
+            .iter()
+            .map(|h| (h.node_id.as_str(), h.participants))
+            .collect();
+        assert_eq!(
+            ids,
+            vec![
+                ("conf-bad-stamp", 3),
+                ("conf-edge", 5),
+                ("conf-future", 1),
+                ("conf-live", 7),
+                ("conf-old-writer", 2),
+            ]
+        );
+        assert_eq!(parse_host_value("9@100", 161, 60), None);
+        assert_eq!(parse_host_value("-4@100", 100, 60), Some(0));
+    }
+
+    #[test]
+    fn draining_nodes_never_take_new_participants() {
+        let mut draining = member("conf-a", "conference", 1);
+        draining.draining = true;
+        let members = vec![draining, member("conf-b", "conference", 50)];
+        // conf-a hosts the room and is under capacity, but is draining.
+        let pick = choose_conference_node(&[host("conf-a", 3)], &members, 100).unwrap();
+        assert_eq!(pick.node_id, "conf-b");
+        // A brand-new room avoids it too, whatever its load.
+        let pick = choose_conference_node(&[], &members, 0).unwrap();
+        assert_eq!(pick.node_id, "conf-b");
+        // With every conference node draining there is nothing to pick.
+        let mut all = members.clone();
+        all[1].draining = true;
+        assert!(choose_conference_node(&[], &all, 0).is_none());
     }
 
     fn member(id: &str, node_type: &str, calls: usize) -> ClusterMember {
@@ -283,6 +378,7 @@ mod tests {
             active_calls: calls,
             started_at: 0,
             version: "test".to_string(),
+            draining: false,
         }
     }
 

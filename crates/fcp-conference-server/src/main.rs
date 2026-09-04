@@ -414,6 +414,7 @@ async fn main() -> Result<()> {
                     .unwrap_or_default()
                     .as_secs(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
+                draining: false,
             };
             let cm =
                 fcp_cluster::ClusterManager::new(redis.clone(), member)
@@ -834,17 +835,25 @@ async fn main() -> Result<()> {
             && config.sip.tls_client_ca_path.is_some()
             && config.sip.tls_client_identity().is_some()
         {
+            conference_handler.set_trunk_srtp(config.cluster.trunk_srtp);
+            let rtp_timeout = match config.cluster.trunk_rtp_timeout_secs {
+                0 => None,
+                secs => Some(Duration::from_secs(secs)),
+            };
             let manager = Arc::new(trunks::TrunkManager::new(
                 config.service.node_id.clone(),
                 registry.clone(),
                 Arc::clone(cm.members_map()),
                 Arc::clone(&conference_handler),
+                rtp_timeout,
             ));
             let interval = Duration::from_secs(config.cluster.trunk_reconcile_interval_secs);
             let _reconcile = Arc::clone(&manager).spawn_reconcile_loop(interval);
             info!(
                 interval_secs = config.cluster.trunk_reconcile_interval_secs,
                 tls = ?config.sip.advertised_tls_address(),
+                srtp = config.cluster.trunk_srtp,
+                rtp_timeout_secs = config.cluster.trunk_rtp_timeout_secs,
                 "Inter-node conference trunks enabled"
             );
             Some(manager)
@@ -1389,9 +1398,62 @@ async fn main() -> Result<()> {
         }
     }
 
-    // 25. Graceful shutdown with timeout
-    // First, stop accepting new INVITEs (drain mode)
+    // 25. Graceful shutdown: drain, then hang up, then leave the cluster.
+    //
+    // Tell the cluster first, so placement stops sending participants
+    // here before this node stops taking them; then refuse new callers;
+    // then, if configured, give the callers already here a while to
+    // leave on their own before hanging up whoever remains.
+    #[cfg(feature = "storage-redis")]
+    if let Some((ref cm, _)) = _cluster_manager {
+        if let Err(e) = cm.set_draining(true).await {
+            warn!(error = %e, "Could not advertise draining to the cluster");
+        }
+    }
     conference_handler.start_draining();
+
+    if config.service.drain_wait_secs > 0 {
+        let deadline = Instant::now() + Duration::from_secs(config.service.drain_wait_secs);
+        let remaining_callers = || -> usize {
+            conference_handler
+                .active_rooms()
+                .iter()
+                .map(|(room, _)| conference_handler.countable_participants(room))
+                .sum()
+        };
+        let mut callers = remaining_callers();
+        info!(
+            callers,
+            wait_secs = config.service.drain_wait_secs,
+            "Draining: waiting for callers to leave"
+        );
+        while callers > 0 && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            callers = remaining_callers();
+        }
+        if callers > 0 {
+            warn!(
+                callers,
+                "Drain wait elapsed; hanging up the remaining callers"
+            );
+        } else {
+            info!("Drained: every caller has left");
+        }
+    }
+
+    // Rooms this node hosts, for the registry once they are gone.
+    #[cfg(feature = "storage-redis")]
+    let hosted_rooms: Vec<(String, String)> = conference_handler
+        .active_rooms()
+        .into_iter()
+        .map(|(room, _)| {
+            let tenant = conference_handler
+                .tenant_for_room(&room)
+                .unwrap_or(conference_handler.default_tenant_id)
+                .to_string();
+            (tenant, room)
+        })
+        .collect();
 
     let shutdown_timeout = Duration::from_secs(config.service.shutdown_timeout_secs);
     info!(
@@ -1411,9 +1473,16 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Shutdown cluster manager
+    // Leave every room in the registry now, awaited, rather than trusting
+    // the per-session updates spawned during shutdown to land before the
+    // process exits; then drop out of membership.
     #[cfg(feature = "storage-redis")]
-    if let Some((ref cm, _)) = _cluster_manager {
+    if let Some((ref cm, ref registry)) = _cluster_manager {
+        for (tenant, room) in &hosted_rooms {
+            if let Err(e) = registry.leave_room(tenant, room).await {
+                warn!(room = %room, error = %e, "Could not leave room in conference registry");
+            }
+        }
         cm.shutdown().await;
     }
 

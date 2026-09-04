@@ -170,6 +170,13 @@ pub struct ServiceSection {
     #[serde(default = "default_shutdown_timeout_secs")]
     pub shutdown_timeout_secs: u64,
 
+    /// On shutdown, how long (seconds) to keep serving the callers already
+    /// here — refusing new ones and, in a cluster, advertised as draining so
+    /// placement sends new participants elsewhere — before hanging up
+    /// whoever is still connected. Default: 0 (hang up at once, as before).
+    #[serde(default)]
+    pub drain_wait_secs: u64,
+
     /// Interval in seconds for polling config file changes (hot-reload). Default: 10.
     #[serde(default = "default_config_reload_interval_secs")]
     pub config_reload_interval_secs: u64,
@@ -202,6 +209,7 @@ impl Default for ServiceSection {
             node_id: default_node_id(),
             default_tenant_id: default_tenant_id(),
             shutdown_timeout_secs: default_shutdown_timeout_secs(),
+            drain_wait_secs: 0,
             config_reload_interval_secs: default_config_reload_interval_secs(),
         }
     }
@@ -853,6 +861,21 @@ pub struct ClusterSection {
     #[serde(default = "default_trunk_reconcile_interval")]
     pub trunk_reconcile_interval_secs: u64,
 
+    /// An inter-node trunk that has received no RTP for this long (seconds)
+    /// is presumed dead — its peer crashed, restarted, or lost the session
+    /// — and is torn down so the reconciler dials it again. Trunks send a
+    /// frame every 20 ms even when silent, so this measures liveness, not
+    /// speech. Default: 30. `0` disables the check.
+    #[serde(default = "default_trunk_rtp_timeout")]
+    pub trunk_rtp_timeout_secs: u64,
+
+    /// Encrypt inter-node trunk media with SDES-SRTP (AES_CM_128_HMAC_SHA1_80),
+    /// keyed over the mutual-TLS signaling. Default: true. A dialing node
+    /// that offers SRTP refuses an answer without it, so set the same value
+    /// on every conference node.
+    #[serde(default = "default_trunk_srtp")]
+    pub trunk_srtp: bool,
+
     /// Shared secret conference nodes present to one another for
     /// cross-node control (lock, kick, mute, gain, announce, end) over
     /// each other's `/internal` HTTP routes. The same value on every
@@ -871,6 +894,12 @@ fn default_heartbeat_ttl() -> u64 {
 fn default_trunk_reconcile_interval() -> u64 {
     2
 }
+fn default_trunk_rtp_timeout() -> u64 {
+    30
+}
+fn default_trunk_srtp() -> bool {
+    true
+}
 
 impl Default for ClusterSection {
     fn default() -> Self {
@@ -879,6 +908,8 @@ impl Default for ClusterSection {
             heartbeat_interval_secs: default_heartbeat_interval(),
             heartbeat_ttl_secs: default_heartbeat_ttl(),
             trunk_reconcile_interval_secs: default_trunk_reconcile_interval(),
+            trunk_rtp_timeout_secs: default_trunk_rtp_timeout(),
+            trunk_srtp: default_trunk_srtp(),
             secret: None,
         }
     }
@@ -1226,6 +1257,30 @@ max_pin_attempts = 5
             config.advertised_http_address(),
             "192.0.2.5:9000".parse().unwrap()
         );
+    }
+
+    #[test]
+    fn resilience_settings_have_safe_defaults_and_parse() {
+        let defaults = ConferenceServerConfig::default();
+        assert_eq!(
+            defaults.service.drain_wait_secs, 0,
+            "hang up at once, as before"
+        );
+        assert_eq!(defaults.cluster.trunk_rtp_timeout_secs, 30);
+        assert!(defaults.cluster.trunk_srtp);
+
+        let toml_str = r#"
+[service]
+drain_wait_secs = 120
+
+[cluster]
+trunk_rtp_timeout_secs = 0
+trunk_srtp = false
+"#;
+        let config: ConferenceServerConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.service.drain_wait_secs, 120);
+        assert_eq!(config.cluster.trunk_rtp_timeout_secs, 0);
+        assert!(!config.cluster.trunk_srtp);
     }
 
     #[test]

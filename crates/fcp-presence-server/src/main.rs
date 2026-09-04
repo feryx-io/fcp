@@ -237,6 +237,7 @@ async fn main() -> Result<()> {
                             .unwrap_or_default()
                             .as_secs(),
                         version: env!("CARGO_PKG_VERSION").to_string(),
+                        draining: false,
                     };
                     let cm = fcp_cluster::ClusterManager::new(redis, member)
                         .with_intervals(

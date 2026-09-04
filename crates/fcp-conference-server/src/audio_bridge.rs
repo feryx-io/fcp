@@ -39,6 +39,17 @@ pub struct AudioStats {
     /// Consecutive silent frames (PCM samples below threshold).
     /// Reset to 0 when voice activity is detected. Used for presence detection.
     pub silence_frames: AtomicU64,
+    /// When the last RTP packet arrived, as milliseconds since the Unix
+    /// epoch; 0 until the first one. Liveness, not speech: a trunk sends
+    /// every frame, silent or not.
+    pub last_rx_unix_ms: AtomicU64,
+}
+
+fn unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 impl AudioStats {
@@ -51,6 +62,15 @@ impl AudioStats {
             encode_errors: AtomicU64::new(0),
             dtmf_events: AtomicU64::new(0),
             silence_frames: AtomicU64::new(0),
+            last_rx_unix_ms: AtomicU64::new(0),
+        }
+    }
+
+    /// Time since the last RTP packet arrived; `None` before the first.
+    pub fn last_rx_age(&self) -> Option<Duration> {
+        match self.last_rx_unix_ms.load(Ordering::Relaxed) {
+            0 => None,
+            then => Some(Duration::from_millis(unix_ms().saturating_sub(then))),
         }
     }
 
@@ -191,6 +211,7 @@ pub async fn run_audio_bridge(
                 match result {
                     Ok((raw_data, _addr)) => {
                         stats.packets_received.fetch_add(1, Ordering::Relaxed);
+                        stats.last_rx_unix_ms.store(unix_ms(), Ordering::Relaxed);
 
                         // SRTP: decrypt if enabled (acquire and release lock before continuing)
                         let plain_data = if let Some(ref ctx) = srtp_context {
@@ -415,6 +436,14 @@ pub async fn run_audio_bridge(
                         "Slow room mix operation — possible lock contention"
                     );
                 }
+                // A trunk sends every frame, silence included: the peer
+                // reads a trunk that goes quiet as a dead one
+                // (`cluster.trunk_rtp_timeout_secs`), and a mesh must never
+                // mistake an empty mix for a lost node.
+                let mix_result = match mix_result {
+                    Ok(None) if is_trunk => Ok(Some(vec![0i16; (mixer_sample_rate / 50) as usize])),
+                    other => other,
+                };
                 match mix_result {
                     Ok(Some(mixed_pcm)) => {
                         // Apply output gain (DTMF *7/*8 volume control)
@@ -754,5 +783,22 @@ fn dtmf_digit_to_char(digit: &DtmfDigit) -> Option<char> {
         DtmfDigit::B => Some('B'),
         DtmfDigit::C => Some('C'),
         DtmfDigit::D => Some('D'),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn last_rx_age_is_none_until_a_packet_arrives() {
+        let stats = AudioStats::new();
+        assert!(stats.last_rx_age().is_none());
+        stats.last_rx_unix_ms.store(unix_ms(), Ordering::Relaxed);
+        assert!(stats.last_rx_age().unwrap() < Duration::from_secs(1));
+        stats
+            .last_rx_unix_ms
+            .store(unix_ms().saturating_sub(45_000), Ordering::Relaxed);
+        assert!(stats.last_rx_age().unwrap() >= Duration::from_secs(45));
     }
 }

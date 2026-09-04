@@ -230,6 +230,7 @@ mod tests {
             active_calls: 0,
             started_at: 0,
             version: String::new(),
+            draining: false,
         }
     }
 
