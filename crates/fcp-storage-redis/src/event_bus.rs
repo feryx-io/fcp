@@ -533,6 +533,9 @@ pub struct PeerBridgeStatus {
     pub forwarded: u64,
     /// Entries taken over from consumers that stopped acknowledging.
     pub claimed: u64,
+    /// Entries read or claimed that were not forwarded because they were
+    /// themselves relayed from another region.
+    pub skipped_relayed: u64,
     /// Forwarding attempts that failed since start (each is retried).
     pub failed: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -544,6 +547,7 @@ struct PeerCounters {
     connected: AtomicBool,
     forwarded: AtomicU64,
     claimed: AtomicU64,
+    skipped_relayed: AtomicU64,
     failed: AtomicU64,
     last_error: Mutex<Option<String>>,
 }
@@ -559,6 +563,7 @@ impl PeerCounters {
             connected: self.connected.load(Ordering::Relaxed),
             forwarded: self.forwarded.load(Ordering::Relaxed),
             claimed: self.claimed.load(Ordering::Relaxed),
+            skipped_relayed: self.skipped_relayed.load(Ordering::Relaxed),
             failed: self.failed.load(Ordering::Relaxed),
             last_error: self
                 .last_error
@@ -588,6 +593,9 @@ const CLAIM_INTERVAL: Duration = Duration::from_secs(60);
 const IDLE_CLAIM_INTERVAL: Duration = Duration::from_secs(5);
 /// Entries read per batch.
 const BATCH: usize = 100;
+/// A write to the peer that takes longer than this is treated as a dead
+/// connection: the batch is retried on a fresh one.
+const PEER_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Whether a stream entry should be forwarded to peers: only what was
 /// published here, never what a bridge brought in.
@@ -624,6 +632,7 @@ impl EventBridge {
                     connected: AtomicBool::new(false),
                     forwarded: AtomicU64::new(0),
                     claimed: AtomicU64::new(0),
+                    skipped_relayed: AtomicU64::new(0),
                     failed: AtomicU64::new(0),
                     last_error: Mutex::new(None),
                 });
@@ -737,17 +746,28 @@ async fn run_peer(
         "Event bridge forwarding to peer region"
     );
 
-    let forward = |entries: Vec<StreamEntry>| {
+    let forward = |entries: Vec<StreamEntry>, reconnect: bool| {
         let peer_storage = peer_storage.clone();
         let peer_channel = peer_channel.clone();
         let peer_stream = peer_stream.clone();
         let local_region = local_region.clone();
+        let counters = Arc::clone(&counters);
+        let peer_region = peer.region.clone();
         async move {
+            // After a failure, write on a fresh connection: the shared one
+            // may be wedged.
+            let peer_storage = if reconnect {
+                peer_storage.detached().await?
+            } else {
+                peer_storage
+            };
             let ids: Vec<String> = entries.iter().map(|e| e.id.clone()).collect();
             let mut pipe = redis::pipe();
             let mut n = 0usize;
             for entry in entries {
                 if !forwardable(&entry.envelope) {
+                    counters.skipped_relayed.fetch_add(1, Ordering::Relaxed);
+                    debug!(peer = %peer_region, id = %entry.id, origin = ?entry.envelope.origin_region, "Event bridge: not forwarding a relayed entry");
                     continue;
                 }
                 let json = serde_json::to_string(&relayed_envelope(
@@ -759,10 +779,17 @@ async fn run_peer(
             }
             if n > 0 {
                 let mut conn = peer_storage.connection();
-                let _: () = pipe
-                    .query_async(&mut conn)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("forwarding to peer failed: {e}"))?;
+                let write = pipe.query_async::<()>(&mut conn);
+                match tokio::time::timeout(PEER_WRITE_TIMEOUT, write).await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => return Err(anyhow::anyhow!("forwarding to peer failed: {e}")),
+                    Err(_) => {
+                        return Err(anyhow::anyhow!(
+                            "forwarding to peer timed out after {}s",
+                            PEER_WRITE_TIMEOUT.as_secs()
+                        ))
+                    }
+                }
             }
             Ok::<_, anyhow::Error>((ids, n))
         }
@@ -821,10 +848,12 @@ async fn run_peer(
         // acknowledge everything in it (relayed entries included: they are
         // done as far as this group is concerned).
         let mut batch = Some(entries);
+        let mut attempt = 0u32;
         let (ids, n) = until_ok("forwarding a batch", &counters, || {
             let entries = batch.take().expect("batch retried after success");
             let clone = entries.clone();
-            let fut = forward(entries);
+            let fut = forward(entries, attempt > 0);
+            attempt += 1;
             batch = Some(clone);
             fut
         })
