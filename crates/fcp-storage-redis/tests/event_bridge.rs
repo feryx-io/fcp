@@ -194,6 +194,7 @@ async fn events_cross_regions_once_and_never_loop_back() {
     assert_eq!(us_status.region, "eu-west");
     assert!(us_status.connected);
     assert_eq!(us_status.forwarded, 2, "{us_status:?}");
+    assert_eq!(us_status.claimed, 0, "{us_status:?}");
     assert_eq!(eu_bridge.status()[0].forwarded, 1);
 
     for h in handles {
@@ -235,11 +236,13 @@ async fn a_bridge_takes_over_entries_a_dead_consumer_left_pending() {
     let eu_reader = eu.consumer("fcp-events-server").await;
     let handles = bridge.spawn();
 
-    let got = collect(&eu_reader, 1, Duration::from_secs(10)).await;
-    assert_eq!(got.len(), 1);
+    let got = collect(&eu_reader, 1, Duration::from_secs(20)).await;
+    assert_eq!(got.len(), 1, "bridge status: {:?}", bridge.status());
     assert_eq!(left_node_id(&got[0].envelope.event), "orphan");
     assert!(got[0].envelope.relayed);
-    assert_eq!(bridge.status()[0].forwarded, 1);
+    let status = &bridge.status()[0];
+    assert_eq!(status.forwarded, 1, "{status:?}");
+    assert_eq!(status.claimed, 1, "{status:?}");
 
     for h in handles {
         h.abort();

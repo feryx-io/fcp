@@ -135,6 +135,22 @@ impl RedisStorage {
         self.conn.clone()
     }
 
+    /// The same Redis and key prefix on a **separate** connection. The
+    /// shared connection is multiplexed, so a blocking command on it
+    /// (`XREADGROUP … BLOCK`) holds up every other command behind it;
+    /// consumers that block should read on a connection of their own.
+    pub async fn detached(&self) -> Result<Self> {
+        let conn = redis::aio::ConnectionManager::new(self.client.clone())
+            .await
+            .context("Failed to open a detached Redis connection")?;
+        Ok(Self {
+            client: self.client.clone(),
+            conn,
+            key_prefix: self.key_prefix.clone(),
+            circuit_breaker: self.circuit_breaker.clone(),
+        })
+    }
+
     /// Get the underlying Redis client (for creating PubSub connections).
     pub fn client(&self) -> &redis::Client {
         &self.client

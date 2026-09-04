@@ -531,6 +531,11 @@ pub struct PeerBridgeStatus {
     pub connected: bool,
     /// Envelopes forwarded since start.
     pub forwarded: u64,
+    /// Entries taken over from consumers that stopped acknowledging.
+    pub claimed: u64,
+    /// Entries read or claimed that were not forwarded because they were
+    /// themselves relayed from another region.
+    pub skipped_relayed: u64,
     /// Forwarding attempts that failed since start (each is retried).
     pub failed: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -541,6 +546,8 @@ struct PeerCounters {
     region: String,
     connected: AtomicBool,
     forwarded: AtomicU64,
+    claimed: AtomicU64,
+    skipped_relayed: AtomicU64,
     failed: AtomicU64,
     last_error: Mutex<Option<String>>,
 }
@@ -555,6 +562,8 @@ impl PeerCounters {
             region: self.region.clone(),
             connected: self.connected.load(Ordering::Relaxed),
             forwarded: self.forwarded.load(Ordering::Relaxed),
+            claimed: self.claimed.load(Ordering::Relaxed),
+            skipped_relayed: self.skipped_relayed.load(Ordering::Relaxed),
             failed: self.failed.load(Ordering::Relaxed),
             last_error: self
                 .last_error
@@ -577,10 +586,16 @@ pub struct EventBridge {
     peers: Vec<(PeerRegion, Arc<PeerCounters>)>,
 }
 
-/// How often stale pending entries are re-claimed.
+/// How often stale pending entries are re-claimed while entries flow.
 const CLAIM_INTERVAL: Duration = Duration::from_secs(60);
+/// How often they are re-claimed while nothing is flowing: a dead
+/// consumer's leftovers are all there is to do then, so look sooner.
+const IDLE_CLAIM_INTERVAL: Duration = Duration::from_secs(5);
 /// Entries read per batch.
 const BATCH: usize = 100;
+/// A write to the peer that takes longer than this is treated as a dead
+/// connection: the batch is retried on a fresh one.
+const PEER_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Whether a stream entry should be forwarded to peers: only what was
 /// published here, never what a bridge brought in.
@@ -616,6 +631,8 @@ impl EventBridge {
                     region: p.region.clone(),
                     connected: AtomicBool::new(false),
                     forwarded: AtomicU64::new(0),
+                    claimed: AtomicU64::new(0),
+                    skipped_relayed: AtomicU64::new(0),
                     failed: AtomicU64::new(0),
                     last_error: Mutex::new(None),
                 });
@@ -653,24 +670,29 @@ impl EventBridge {
         self.local_region.as_deref()
     }
 
-    /// Start one forwarding task per peer. Each connects to its peer with
-    /// backoff, forwards batches (retrying until the peer takes them), and
-    /// never gives up.
+    /// Start one forwarding task per peer. Each reads the local stream on
+    /// a connection of its own (its reads block), connects to its peer
+    /// with backoff, forwards batches (retrying until the peer takes
+    /// them), and never gives up.
     pub fn spawn(&self) -> Vec<JoinHandle<()>> {
         self.peers
             .iter()
             .map(|(peer, counters)| {
-                let consumer = RedisStreamConsumer::new(
-                    self.local.clone(),
-                    self.stream_key.clone(),
-                    Self::group_name(&peer.region),
-                    self.consumer_name.clone(),
-                );
+                let local = self.local.clone();
+                let stream_key = self.stream_key.clone();
+                let group = Self::group_name(&peer.region);
+                let consumer_name = self.consumer_name.clone();
                 let peer = peer.clone();
                 let counters = Arc::clone(counters);
                 let local_region = self.local_region.clone();
                 let claim_min_idle = self.claim_min_idle;
                 tokio::spawn(async move {
+                    let local = until_ok("opening a local Redis connection", &counters, || {
+                        local.detached()
+                    })
+                    .await;
+                    let consumer =
+                        RedisStreamConsumer::new(local, stream_key, group, consumer_name);
                     run_peer(consumer, peer, counters, local_region, claim_min_idle).await
                 })
             })
@@ -724,17 +746,28 @@ async fn run_peer(
         "Event bridge forwarding to peer region"
     );
 
-    let forward = |entries: Vec<StreamEntry>| {
+    let forward = |entries: Vec<StreamEntry>, reconnect: bool| {
         let peer_storage = peer_storage.clone();
         let peer_channel = peer_channel.clone();
         let peer_stream = peer_stream.clone();
         let local_region = local_region.clone();
+        let counters = Arc::clone(&counters);
+        let peer_region = peer.region.clone();
         async move {
+            // After a failure, write on a fresh connection: the shared one
+            // may be wedged.
+            let peer_storage = if reconnect {
+                peer_storage.detached().await?
+            } else {
+                peer_storage
+            };
             let ids: Vec<String> = entries.iter().map(|e| e.id.clone()).collect();
             let mut pipe = redis::pipe();
             let mut n = 0usize;
             for entry in entries {
                 if !forwardable(&entry.envelope) {
+                    counters.skipped_relayed.fetch_add(1, Ordering::Relaxed);
+                    debug!(peer = %peer_region, id = %entry.id, origin = ?entry.envelope.origin_region, "Event bridge: not forwarding a relayed entry");
                     continue;
                 }
                 let json = serde_json::to_string(&relayed_envelope(
@@ -746,27 +779,45 @@ async fn run_peer(
             }
             if n > 0 {
                 let mut conn = peer_storage.connection();
-                let _: () = pipe
-                    .query_async(&mut conn)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("forwarding to peer failed: {e}"))?;
+                let write = pipe.query_async::<()>(&mut conn);
+                match tokio::time::timeout(PEER_WRITE_TIMEOUT, write).await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => return Err(anyhow::anyhow!("forwarding to peer failed: {e}")),
+                    Err(_) => {
+                        return Err(anyhow::anyhow!(
+                            "forwarding to peer timed out after {}s",
+                            PEER_WRITE_TIMEOUT.as_secs()
+                        ))
+                    }
+                }
             }
             Ok::<_, anyhow::Error>((ids, n))
         }
     };
 
     let mut last_claim: Option<Instant> = None;
+    let mut idle = true;
     loop {
-        let due = last_claim.is_none_or(|t| t.elapsed() >= CLAIM_INTERVAL);
+        let interval = if idle {
+            IDLE_CLAIM_INTERVAL
+        } else {
+            CLAIM_INTERVAL
+        };
+        let due = last_claim.is_none_or(|t| t.elapsed() >= interval);
         let entries = if due {
-            last_claim = Some(Instant::now());
             match consumer.claim_stale(claim_min_idle, BATCH).await {
-                Ok(stale) if !stale.is_empty() => {
-                    info!(peer = %peer.region, count = stale.len(), "Event bridge: took over unacknowledged entries");
+                Ok(stale) => {
+                    last_claim = Some(Instant::now());
+                    if !stale.is_empty() {
+                        counters
+                            .claimed
+                            .fetch_add(stale.len() as u64, Ordering::Relaxed);
+                        info!(peer = %peer.region, count = stale.len(), "Event bridge: took over unacknowledged entries");
+                    }
                     stale
                 }
-                Ok(_) => Vec::new(),
                 Err(e) => {
+                    // Try again on the next pass rather than in a minute.
                     counters.fail(&e);
                     warn!(peer = %peer.region, error = %e, "Event bridge: claiming stale entries failed");
                     Vec::new()
@@ -788,7 +839,8 @@ async fn run_peer(
         } else {
             entries
         };
-        if entries.is_empty() {
+        idle = entries.is_empty();
+        if idle {
             continue;
         }
 
@@ -796,10 +848,12 @@ async fn run_peer(
         // acknowledge everything in it (relayed entries included: they are
         // done as far as this group is concerned).
         let mut batch = Some(entries);
+        let mut attempt = 0u32;
         let (ids, n) = until_ok("forwarding a batch", &counters, || {
             let entries = batch.take().expect("batch retried after success");
             let clone = entries.clone();
-            let fut = forward(entries);
+            let fut = forward(entries, attempt > 0);
+            attempt += 1;
             batch = Some(clone);
             fut
         })
