@@ -1207,6 +1207,13 @@ export interface MeetingResponse {
   play_exit_tone: boolean
   join_sound?: string | null
   exit_sound?: string | null
+  video_enabled: boolean
+  video_layout: string
+  video_max_participants: number
+  video_max_resolution: string
+  video_fps: number
+  video_exclude_self: boolean
+  video_codecs: string[]
   created_at: string
   updated_at: string
 }
@@ -1234,6 +1241,13 @@ export interface CreateMeetingRequest {
   play_exit_tone?: boolean
   join_sound?: string | null
   exit_sound?: string | null
+  video_enabled?: boolean
+  video_layout?: string
+  video_max_participants?: number
+  video_max_resolution?: string
+  video_fps?: number
+  video_exclude_self?: boolean
+  video_codecs?: string[]
 }
 
 export interface UpdateMeetingRequest {
@@ -1258,4 +1272,11 @@ export interface UpdateMeetingRequest {
   play_exit_tone?: boolean
   join_sound?: string | null
   exit_sound?: string | null
+  video_enabled?: boolean
+  video_layout?: string
+  video_max_participants?: number
+  video_max_resolution?: string
+  video_fps?: number
+  video_exclude_self?: boolean
+  video_codecs?: string[]
 }

@@ -3352,6 +3352,8 @@ impl ConferenceStore for PostgresStorage {
                     pin_prompt_sound, invalid_pin_sound, moh_sound,
                     pin_prompt_tts, invalid_pin_tts, welcome_tts,
                     play_entry_tone, play_exit_tone, join_sound, exit_sound,
+                    video_enabled, video_layout, video_max_participants,
+                    video_max_resolution, video_fps, video_exclude_self, video_codecs,
                     created_at, updated_at
              FROM conference_meetings WHERE id = $1",
         )
@@ -3377,6 +3379,8 @@ impl ConferenceStore for PostgresStorage {
                     pin_prompt_sound, invalid_pin_sound, moh_sound,
                     pin_prompt_tts, invalid_pin_tts, welcome_tts,
                     play_entry_tone, play_exit_tone, join_sound, exit_sound,
+                    video_enabled, video_layout, video_max_participants,
+                    video_max_resolution, video_fps, video_exclude_self, video_codecs,
                     created_at, updated_at
              FROM conference_meetings WHERE tenant_id = $1 AND room_number = $2",
         )
@@ -3399,6 +3403,8 @@ impl ConferenceStore for PostgresStorage {
                     pin_prompt_sound, invalid_pin_sound, moh_sound,
                     pin_prompt_tts, invalid_pin_tts, welcome_tts,
                     play_entry_tone, play_exit_tone, join_sound, exit_sound,
+                    video_enabled, video_layout, video_max_participants,
+                    video_max_resolution, video_fps, video_exclude_self, video_codecs,
                     created_at, updated_at
              FROM conference_meetings WHERE tenant_id = $1 ORDER BY room_number",
         )
@@ -3427,6 +3433,8 @@ impl ConferenceStore for PostgresStorage {
                     pin_prompt_sound, invalid_pin_sound, moh_sound,
                     pin_prompt_tts, invalid_pin_tts, welcome_tts,
                     play_entry_tone, play_exit_tone, join_sound, exit_sound,
+                    video_enabled, video_layout, video_max_participants,
+                    video_max_resolution, video_fps, video_exclude_self, video_codecs,
                     created_at, updated_at
              FROM conference_meetings
              WHERE tenant_id = $1 AND owner_id = $2
@@ -3457,8 +3465,10 @@ impl ConferenceStore for PostgresStorage {
               pin_prompt_sound, invalid_pin_sound, moh_sound,
               pin_prompt_tts, invalid_pin_tts, welcome_tts,
               play_entry_tone, play_exit_tone, join_sound, exit_sound,
+              video_enabled, video_layout, video_max_participants,
+              video_max_resolution, video_fps, video_exclude_self, video_codecs,
               created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33)
              ON CONFLICT (id) DO UPDATE SET
               tenant_id = EXCLUDED.tenant_id,
               room_number = EXCLUDED.room_number,
@@ -3483,6 +3493,13 @@ impl ConferenceStore for PostgresStorage {
               play_exit_tone = EXCLUDED.play_exit_tone,
               join_sound = EXCLUDED.join_sound,
               exit_sound = EXCLUDED.exit_sound,
+              video_enabled = EXCLUDED.video_enabled,
+              video_layout = EXCLUDED.video_layout,
+              video_max_participants = EXCLUDED.video_max_participants,
+              video_max_resolution = EXCLUDED.video_max_resolution,
+              video_fps = EXCLUDED.video_fps,
+              video_exclude_self = EXCLUDED.video_exclude_self,
+              video_codecs = EXCLUDED.video_codecs,
               updated_at = EXCLUDED.updated_at",
         )
         .bind(meeting.id.to_string())
@@ -3509,6 +3526,13 @@ impl ConferenceStore for PostgresStorage {
         .bind(meeting.play_exit_tone)
         .bind(meeting.join_sound.as_deref())
         .bind(meeting.exit_sound.as_deref())
+        .bind(meeting.video_enabled)
+        .bind(&meeting.video_layout)
+        .bind(meeting.video_max_participants as i32)
+        .bind(&meeting.video_max_resolution)
+        .bind(meeting.video_fps as i32)
+        .bind(meeting.video_exclude_self)
+        .bind(video_codecs_to_column(&meeting.video_codecs))
         .bind(created_at)
         .bind(updated_at)
         .execute(self.writes())
@@ -3562,9 +3586,34 @@ fn map_meeting_row_pg(row: sqlx::postgres::PgRow) -> Result<fcp_core::Meeting> {
         play_exit_tone: row.get("play_exit_tone"),
         join_sound: row.get("join_sound"),
         exit_sound: row.get("exit_sound"),
+        video_enabled: row.get("video_enabled"),
+        video_layout: row.get("video_layout"),
+        video_max_participants: row.get::<i32, _>("video_max_participants").max(0) as u32,
+        video_max_resolution: row.get("video_max_resolution"),
+        video_fps: row.get::<i32, _>("video_fps").max(0) as u32,
+        video_exclude_self: row.get("video_exclude_self"),
+        video_codecs: video_codecs_from_column(&row.get::<String, _>("video_codecs")),
         created_at: datetime_to_system_time(created_at),
         updated_at: datetime_to_system_time(updated_at),
     })
+}
+
+/// Serialise the codec preference list for the `video_codecs` column:
+/// SDP encoding names joined by ','.
+fn video_codecs_to_column(codecs: &[fcp_core::VideoCodec]) -> String {
+    codecs
+        .iter()
+        .map(|c| c.sdp_name())
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// Parse the `video_codecs` column, skipping names this build does not know.
+fn video_codecs_from_column(value: &str) -> Vec<fcp_core::VideoCodec> {
+    value
+        .split(',')
+        .filter_map(fcp_core::VideoCodec::from_sdp_name)
+        .collect()
 }
 
 fn row_to_phone_number(row: sqlx::postgres::PgRow) -> Result<PhoneNumber> {

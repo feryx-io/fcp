@@ -7,8 +7,12 @@ use axum::{
     response::IntoResponse,
     Json,
 };
+use fcp_core::meeting::{
+    default_video_codecs, default_video_fps, default_video_layout, default_video_max_participants,
+    default_video_max_resolution,
+};
 use fcp_core::storage::ConferenceStore;
-use fcp_core::{Meeting, MeetingId};
+use fcp_core::{Meeting, MeetingId, VideoCodec};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use std::time::SystemTime;
@@ -59,6 +63,13 @@ pub struct MeetingResponse {
     pub join_sound: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exit_sound: Option<String>,
+    pub video_enabled: bool,
+    pub video_layout: String,
+    pub video_max_participants: u32,
+    pub video_max_resolution: String,
+    pub video_fps: u32,
+    pub video_exclude_self: bool,
+    pub video_codecs: Vec<VideoCodec>,
     pub created_at: SystemTime,
     pub updated_at: SystemTime,
 }
@@ -90,6 +101,13 @@ impl From<Meeting> for MeetingResponse {
             play_exit_tone: m.play_exit_tone,
             join_sound: m.join_sound,
             exit_sound: m.exit_sound,
+            video_enabled: m.video_enabled,
+            video_layout: m.video_layout,
+            video_max_participants: m.video_max_participants,
+            video_max_resolution: m.video_max_resolution,
+            video_fps: m.video_fps,
+            video_exclude_self: m.video_exclude_self,
+            video_codecs: m.video_codecs,
             created_at: m.created_at,
             updated_at: m.updated_at,
         }
@@ -141,6 +159,20 @@ pub struct CreateMeetingRequest {
     pub join_sound: Option<String>,
     #[serde(default)]
     pub exit_sound: Option<String>,
+    #[serde(default)]
+    pub video_enabled: bool,
+    #[serde(default = "default_video_layout")]
+    pub video_layout: String,
+    #[serde(default = "default_video_max_participants")]
+    pub video_max_participants: u32,
+    #[serde(default = "default_video_max_resolution")]
+    pub video_max_resolution: String,
+    #[serde(default = "default_video_fps")]
+    pub video_fps: u32,
+    #[serde(default)]
+    pub video_exclude_self: bool,
+    #[serde(default = "default_video_codecs")]
+    pub video_codecs: Vec<VideoCodec>,
 }
 
 fn default_true() -> bool {
@@ -195,6 +227,13 @@ pub struct UpdateMeetingRequest {
     pub play_exit_tone: Option<bool>,
     pub join_sound: Option<Option<String>>,
     pub exit_sound: Option<Option<String>>,
+    pub video_enabled: Option<bool>,
+    pub video_layout: Option<String>,
+    pub video_max_participants: Option<u32>,
+    pub video_max_resolution: Option<String>,
+    pub video_fps: Option<u32>,
+    pub video_exclude_self: Option<bool>,
+    pub video_codecs: Option<Vec<VideoCodec>>,
 }
 
 /// GET /conferences/meetings — List all meetings for the default tenant.
@@ -263,9 +302,19 @@ pub async fn create_meeting(
         play_exit_tone: req.play_exit_tone,
         join_sound: req.join_sound,
         exit_sound: req.exit_sound,
+        video_enabled: req.video_enabled,
+        video_layout: req.video_layout,
+        video_max_participants: req.video_max_participants,
+        video_max_resolution: req.video_max_resolution,
+        video_fps: req.video_fps,
+        video_exclude_self: req.video_exclude_self,
+        video_codecs: req.video_codecs,
         created_at: now,
         updated_at: now,
     };
+    meeting
+        .validate_video_settings()
+        .map_err(ApiError::BadRequest)?;
 
     storage
         .put_meeting(meeting.clone())
@@ -391,6 +440,30 @@ pub async fn update_meeting(
     if let Some(v) = req.exit_sound {
         meeting.exit_sound = v;
     }
+    if let Some(v) = req.video_enabled {
+        meeting.video_enabled = v;
+    }
+    if let Some(v) = req.video_layout {
+        meeting.video_layout = v;
+    }
+    if let Some(v) = req.video_max_participants {
+        meeting.video_max_participants = v;
+    }
+    if let Some(v) = req.video_max_resolution {
+        meeting.video_max_resolution = v;
+    }
+    if let Some(v) = req.video_fps {
+        meeting.video_fps = v;
+    }
+    if let Some(v) = req.video_exclude_self {
+        meeting.video_exclude_self = v;
+    }
+    if let Some(v) = req.video_codecs {
+        meeting.video_codecs = v;
+    }
+    meeting
+        .validate_video_settings()
+        .map_err(ApiError::BadRequest)?;
     meeting.updated_at = SystemTime::now();
 
     storage

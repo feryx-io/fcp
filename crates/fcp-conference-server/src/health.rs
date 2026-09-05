@@ -527,6 +527,20 @@ struct CreateMeetingRequest {
     join_sound: Option<String>,
     #[serde(default)]
     exit_sound: Option<String>,
+    #[serde(default)]
+    video_enabled: bool,
+    #[serde(default = "fcp_core::meeting::default_video_layout")]
+    video_layout: String,
+    #[serde(default = "fcp_core::meeting::default_video_max_participants")]
+    video_max_participants: u32,
+    #[serde(default = "fcp_core::meeting::default_video_max_resolution")]
+    video_max_resolution: String,
+    #[serde(default = "fcp_core::meeting::default_video_fps")]
+    video_fps: u32,
+    #[serde(default)]
+    video_exclude_self: bool,
+    #[serde(default = "fcp_core::meeting::default_video_codecs")]
+    video_codecs: Vec<fcp_core::VideoCodec>,
 }
 
 fn default_true() -> bool {
@@ -660,9 +674,22 @@ async fn create_meeting_handler(
         play_exit_tone: payload.play_exit_tone,
         join_sound: payload.join_sound,
         exit_sound: payload.exit_sound,
+        video_enabled: payload.video_enabled,
+        video_layout: payload.video_layout,
+        video_max_participants: payload.video_max_participants,
+        video_max_resolution: payload.video_max_resolution,
+        video_fps: payload.video_fps,
+        video_exclude_self: payload.video_exclude_self,
+        video_codecs: payload.video_codecs,
         created_at: now,
         updated_at: now,
     };
+    if let Err(msg) = meeting.validate_video_settings() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": msg })),
+        );
+    }
 
     match state.storage.put_meeting(meeting.clone()).await {
         Ok(()) => {
@@ -749,6 +776,13 @@ struct UpdateMeetingRequest {
     play_exit_tone: Option<bool>,
     join_sound: Option<Option<String>>,
     exit_sound: Option<Option<String>>,
+    video_enabled: Option<bool>,
+    video_layout: Option<String>,
+    video_max_participants: Option<u32>,
+    video_max_resolution: Option<String>,
+    video_fps: Option<u32>,
+    video_exclude_self: Option<bool>,
+    video_codecs: Option<Vec<fcp_core::VideoCodec>>,
 }
 
 async fn update_meeting_handler(
@@ -876,6 +910,40 @@ async fn update_meeting_handler(
     if let Some(v) = payload.exit_sound {
         meeting.exit_sound = v;
         changed_fields.push("exit_sound".to_string());
+    }
+    if let Some(v) = payload.video_enabled {
+        meeting.video_enabled = v;
+        changed_fields.push("video_enabled".to_string());
+    }
+    if let Some(v) = payload.video_layout {
+        meeting.video_layout = v;
+        changed_fields.push("video_layout".to_string());
+    }
+    if let Some(v) = payload.video_max_participants {
+        meeting.video_max_participants = v;
+        changed_fields.push("video_max_participants".to_string());
+    }
+    if let Some(v) = payload.video_max_resolution {
+        meeting.video_max_resolution = v;
+        changed_fields.push("video_max_resolution".to_string());
+    }
+    if let Some(v) = payload.video_fps {
+        meeting.video_fps = v;
+        changed_fields.push("video_fps".to_string());
+    }
+    if let Some(v) = payload.video_exclude_self {
+        meeting.video_exclude_self = v;
+        changed_fields.push("video_exclude_self".to_string());
+    }
+    if let Some(v) = payload.video_codecs {
+        meeting.video_codecs = v;
+        changed_fields.push("video_codecs".to_string());
+    }
+    if let Err(msg) = meeting.validate_video_settings() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": msg })),
+        );
     }
     meeting.updated_at = SystemTime::now();
 
@@ -2532,6 +2600,13 @@ fn meeting_to_json(meeting: &Meeting) -> serde_json::Value {
         "play_exit_tone": meeting.play_exit_tone,
         "join_sound": meeting.join_sound,
         "exit_sound": meeting.exit_sound,
+        "video_enabled": meeting.video_enabled,
+        "video_layout": meeting.video_layout,
+        "video_max_participants": meeting.video_max_participants,
+        "video_max_resolution": meeting.video_max_resolution,
+        "video_fps": meeting.video_fps,
+        "video_exclude_self": meeting.video_exclude_self,
+        "video_codecs": meeting.video_codecs,
         "created_at": meeting.created_at
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())

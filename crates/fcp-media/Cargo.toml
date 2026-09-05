@@ -1,6 +1,6 @@
 [package]
 name = "fcp-media"
-version = "0.4.1"
+version = "0.5.0"
 edition = "2021"
 authors = ["FCP Contributors"]
 description = "Media integration layer for FCP - bridges SIP signaling with forge-media engine"
@@ -30,6 +30,8 @@ forge-codecs = { path = "../../external/forge-media/crates/forge-codecs", option
 forge-transcoder = { path = "../../external/forge-media/crates/forge-transcoder", optional = false }
 forge-recorder = { path = "../../external/forge-media/crates/forge-recorder", optional = false }
 forge-injection = { path = "../../external/forge-media/crates/forge-injection", optional = false }
+# Video SDP helpers (answer_video, reject_section, codec choice, feedback attributes)
+forge-sdp = { path = "../../external/forge-media/crates/forge-sdp" }
 
 # SIP dependencies (for SDP handling)
 sip-core = { path = "../../external/siphon-rs/crates/sip-core" }
