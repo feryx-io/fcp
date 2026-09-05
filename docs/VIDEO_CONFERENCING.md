@@ -510,17 +510,19 @@ selector uses it (§9).
 - **Browser**: the existing `tests/browser` page gains `video: true`.
 - **Fuzz**: depacketizers and the H.264/VP8/VP9/AV1 inspectors.
 
-Substrate already written (unmerged, forge-media branch
-`feature/video-foundation`): RTCP feedback packets (PLI, FIR, NACK, REMB,
-compound parsing), per-codec keyframe inspection, the stream rewriter,
-`VideoCodec`, and SDP video helpers. It is kept for phase 1.
+The substrate shipped in phase 1 (forge-media `v2026.09.05`): RTCP
+feedback packets (PLI, FIR, NACK, REMB, compound parsing), per-codec
+keyframe inspection, packetizers and depacketizers, the frame assembler,
+the retransmission cache and keyframe gate, the stream rewriter,
+`VideoCodec`, and the SDP video helpers — each with unit tests in its
+crate (`forge-rtp` 111, `forge-sdp` 90, `forge-core` 22).
 
 ## 15. Phases
 
 | Phase | Deliverable | Where | Rough size |
 |---|---|---|---|
 | 0 | **Spike and numbers** — CPU half done 2026-09-04 (§9.4): libvpx, OpenH264, dav1d, SVT-AV1 build and are measured; rav1e dropped. Open: on a machine with an Intel or NVIDIA GPU (this VM has none), FFmpeg hardware encode/decode through `ffmpeg-next` and the same constants per device | forge-media (`spike/video-codecs`) | done except GPU |
-| 1 | **Substrate**: RTCP feedback, payload formats (depacketize/packetize) for H.264, VP8, VP9, AV1, frame assembler, retransmission cache, SDP video, `VideoCodec`; the branch from §14 finished | forge-rtp, forge-sdp, forge-core | 2 weeks |
+| 1 | **Substrate** — done 2026-09-05, forge-media `v2026.09.05` (forge-rtp 0.4.0, forge-core 0.2.1, forge-sdp 0.2.1): RTCP feedback, payload formats for H.264, H.265, VP8, VP9, AV1, frame assembler, retransmission cache, keyframe gate, stream rewriter, SDP video negotiation (`answer_video`, `reject_section`). Open for phase 3: sip-sdp lacks an `RTP/AVPF` protocol variant | forge-rtp, forge-sdp, forge-core | done |
 | 2 | **forge-video**: frames, scaling, compositor + layouts, clock, flavors, codec traits, raw codec; **forge-video-codecs** with the four bindings | forge-media | 3–4 weeks |
 | 3 | **Conference video (SIP)**: fcp-media/fcp-sip SDP per section, meeting model + API + events, conference server ingress/egress, layouts and host controls, capacity accounting and placement | FCP | 3–4 weeks |
 | 4 | **WebRTC**: video section in forge-webrtc, gateway join-room, browser test | forge-media, FCP | 2 weeks |
