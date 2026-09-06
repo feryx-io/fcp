@@ -62,6 +62,12 @@ jobs:
       - uses: actions/checkout@v5
         with:
           submodules: recursive
+      # `--all-features` turns on fcp-conference-server's `video-*` features,
+      # which link the native video codecs (libvpx, dav1d, OpenH264 built from
+      # source, SVT-AV1). forge-media's composite action installs them the way
+      # its own CI does.
+      - name: Install native video codec libraries
+        uses: ./external/forge-media/.github/actions/video-codecs
       - name: Install toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
