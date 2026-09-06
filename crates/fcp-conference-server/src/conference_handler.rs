@@ -203,6 +203,8 @@ pub struct ConferenceCallHandler {
     /// The codec registry, thread pool and device video rooms run on;
     /// `None` leaves every meeting audio-only.
     video_backend: Option<Arc<VideoBackend>>,
+    /// Rooms whose video events are being forwarded to the bus.
+    video_event_pumps: Arc<DashMap<String, ()>>,
     /// Calls that have been answered and are waiting for PIN input.
     pending_pin_auth: DashMap<String, PendingPinAuth>,
     /// Pre-loaded DTMF feedback audio: "Muted" / "Unmuted" PCM samples
@@ -620,6 +622,7 @@ impl ConferenceCallHandler {
             handler_latency: HandlerLatency::new(),
             tts_service: None,
             video_backend: None,
+            video_event_pumps: Arc::new(DashMap::new()),
             pending_pin_auth: DashMap::new(),
             dtmf_muted_samples: None,
             dtmf_unmuted_samples: None,
@@ -2474,6 +2477,7 @@ impl ConferenceCallHandler {
             event_bus: Arc::clone(&self.event_bus),
             tenant_id,
             room_number: room_number.to_string(),
+            pumps: Arc::clone(&self.video_event_pumps),
         };
         match video_bridge::attach_video(room, backend, participant_id, display_name, &leg, sink) {
             Some(fut) => {
@@ -3694,8 +3698,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                     error = %e,
                     "Failed to create RTP socket pair, deallocating port"
                 );
-                let pool = Arc::clone(&self.port_pool);
-                tokio::spawn(async move { pool.deallocate(port_pair).await });
+                self.release_ports(port_pair, video_pair);
                 return Err(anyhow::anyhow!("Failed to create RTP socket pair: {}", e));
             }
         };
@@ -4019,8 +4022,10 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                                 if let Err(e) = self.uac.bye(&dialog).await {
                                     warn!(error = %e, "Failed to send BYE after PIN lockout");
                                 }
-                                let pool = Arc::clone(&self.port_pool);
-                                tokio::spawn(async move { pool.deallocate(port_pair).await });
+                                self.release_ports(
+                                    port_pair,
+                                    pending_video.as_ref().map(|v| v.port_pair),
+                                );
                                 return Ok(());
                             }
                             PinAuthResult::NoPinRequired => {
@@ -4050,8 +4055,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 if let Err(e) = self.uac.bye(&dialog).await {
                     warn!(error = %e, "Failed to send BYE after PIN failure");
                 }
-                let pool = Arc::clone(&self.port_pool);
-                tokio::spawn(async move { pool.deallocate(port_pair).await });
+                self.release_ports(port_pair, pending_video.as_ref().map(|v| v.port_pair));
                 return Ok(());
             }
 
@@ -4179,6 +4183,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 event_bus: Arc::clone(&self.event_bus),
                 tenant_id,
                 room_number: room_number.clone(),
+                pumps: Arc::clone(&self.video_event_pumps),
             };
 
             // Load announcement sound (short TTS message like "Please wait...")

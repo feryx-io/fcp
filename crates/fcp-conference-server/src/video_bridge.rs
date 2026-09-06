@@ -237,6 +237,9 @@ pub struct VideoEventSink {
     pub event_bus: Arc<dyn EventPublisher>,
     pub tenant_id: TenantId,
     pub room_number: String,
+    /// Rooms with a pump running, so two callers joining at once start
+    /// one pump, not two.
+    pub pumps: Arc<dashmap::DashMap<String, ()>>,
 }
 
 /// Put the participant on the room's video: enable the room's video if
@@ -252,9 +255,8 @@ pub fn attach_video(
     leg: &VideoLeg,
     sink: VideoEventSink,
 ) -> Option<impl Future<Output = ()> + Send + 'static> {
-    let fresh = room.video().is_none();
     let video = room.enable_video(leg.settings.clone(), backend);
-    if fresh {
+    if sink.pumps.insert(sink.room_number.clone(), ()).is_none() {
         spawn_event_pump(&video, sink);
     }
     if let Some(name) = display_name {
@@ -307,6 +309,13 @@ pub fn detach_video(room: &ConferenceRoom, participant_id: &str) {
 fn spawn_event_pump(video: &Arc<VideoRoom>, sink: VideoEventSink) {
     let mut events = video.events();
     tokio::spawn(async move {
+        struct Done(Arc<dashmap::DashMap<String, ()>>, String);
+        impl Drop for Done {
+            fn drop(&mut self) {
+                self.0.remove(&self.1);
+            }
+        }
+        let _done = Done(Arc::clone(&sink.pumps), sink.room_number.clone());
         loop {
             let ev = match events.recv().await {
                 Ok(ev) => ev,
@@ -445,8 +454,8 @@ pub async fn run_video_bridge(
                     let (raw, _addr) = match result {
                         Ok(r) => r,
                         Err(e) => {
-                            trace!(error = %e, "video RTCP receive failed");
-                            continue;
+                            warn!(error = %e, "video RTCP receive failed; bridge stopping");
+                            break;
                         }
                     };
                     stats.rtcp_received.fetch_add(1, Ordering::Relaxed);
@@ -794,10 +803,12 @@ mod tests {
         )
         .unwrap();
         let bus = Arc::new(InMemoryEventBus::new());
+        let pumps = Arc::new(dashmap::DashMap::new());
         let sink = VideoEventSink {
             event_bus: bus.clone() as Arc<dyn EventPublisher>,
             tenant_id: TenantId::new(),
             room_number: "1000".into(),
+            pumps: Arc::clone(&pumps),
         };
 
         // Server-side sockets for the two legs, and the "phones".
@@ -855,6 +866,7 @@ mod tests {
             legs.push((tokio::spawn(fut), leg));
         }
         assert!(room.video().is_some());
+        assert_eq!(pumps.len(), 1, "two attaches, one event pump");
 
         // Alice's phone sends solid frames; Bob's phone decodes what it gets.
         let enc_settings = EncoderSettings {
@@ -949,6 +961,11 @@ mod tests {
             .await
             .expect("bob's bridge ended when his subscription closed")
             .unwrap();
+        // Stopping the room's video ends the pump once the last holder of
+        // the room (here: this test's own handle, and alice's bridge) lets go.
+        drop(video);
         room.disable_video();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(pumps.is_empty(), "the pump ended with the room's video");
     }
 }
