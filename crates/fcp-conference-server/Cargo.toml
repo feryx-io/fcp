@@ -11,6 +11,14 @@ description = "Standalone conference bridge server for the Ferrous Communication
 default = ["tls", "storage-redis"]
 tls = ["fcp-sip/tls"]
 storage-redis = ["dep:fcp-storage-redis", "dep:fcp-cluster"]
+# Native video codec bindings (see docs/VIDEO_CONFERENCING.md §6). Without
+# them the server has only the raw test codec and offers callers no video
+# unless `conference.video_native_codecs_only = false`.
+video-vpx = ["forge-video-codecs/vpx"]
+video-openh264 = ["forge-video-codecs/openh264"]
+video-dav1d = ["forge-video-codecs/dav1d"]
+video-svt-av1 = ["forge-video-codecs/svt-av1"]
+video-all = ["video-vpx", "video-openh264", "video-dav1d", "video-svt-av1"]
 
 [[bin]]
 name = "fcp-conference"
@@ -40,6 +48,8 @@ forge-rtp = { path = "../../external/forge-media/crates/forge-rtp" }
 forge-codecs = { path = "../../external/forge-media/crates/forge-codecs" }
 forge-dtmf = { path = "../../external/forge-media/crates/forge-dtmf" }
 forge-resampler = { path = "../../external/forge-media/crates/forge-resampler" }
+forge-video = { path = "../../external/forge-media/crates/forge-video" }
+forge-video-codecs = { path = "../../external/forge-media/crates/forge-video-codecs" }
 
 # SIP stack from siphon-rs
 sip-core = { path = "../../external/siphon-rs/crates/sip-core" }

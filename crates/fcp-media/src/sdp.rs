@@ -278,6 +278,17 @@ pub fn parse_sdes_crypto(sdp_body: &str) -> Vec<SdesCryptoLine> {
     parse_sdes_crypto_manual(sdp_body)
 }
 
+/// SDES crypto lines of the first video section (each section carries
+/// its own key; the audio section's never applies to video).
+pub fn parse_video_sdes_crypto(sdp_body: &str) -> Vec<SdesCryptoLine> {
+    match SessionDescription::parse(sdp_body) {
+        Ok(sdp) => first_section(&sdp, MediaType::Video)
+            .map(crypto_of_section)
+            .unwrap_or_default(),
+        Err(_) => Vec::new(),
+    }
+}
+
 /// Parse a single crypto attribute value.
 ///
 /// Format: `<tag> <suite> <key-params> [session-params]`
@@ -1814,6 +1825,32 @@ mod section_tests {
         let answer = construct_answer(AV_OFFER, &opts).unwrap();
         assert_eq!(sections(&answer.sdp)[1], "m=video 0 RTP/AVPF 96 97");
         assert!(answer.video.is_none());
+    }
+
+    #[test]
+    fn video_crypto_is_read_from_the_video_section_only() {
+        let offer = "v=0\r\n\
+o=- 1 1 IN IP4 192.168.1.50\r\n\
+s=-\r\n\
+c=IN IP4 192.168.1.50\r\n\
+t=0 0\r\n\
+m=audio 4000 RTP/SAVP 0\r\n\
+a=rtpmap:0 PCMU/8000\r\n\
+a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:audiokeyaudiokeyaudiokeyaudiokeyaudio\r\n\
+m=video 4002 RTP/SAVPF 96\r\n\
+a=rtpmap:96 VP8/90000\r\n\
+a=crypto:2 AES_CM_128_HMAC_SHA1_32 inline:videokeyvideokeyvideokeyvideokeyvideo\r\n";
+        let video = parse_video_sdes_crypto(offer);
+        assert_eq!(video.len(), 1);
+        assert_eq!(video[0].tag, 2);
+        assert_eq!(video[0].suite, "AES_CM_128_HMAC_SHA1_32");
+        assert!(video[0].key_params.starts_with("inline:videokey"));
+        let audio = parse_sdes_crypto(offer);
+        assert_eq!(audio.len(), 1);
+        assert_eq!(audio[0].tag, 1);
+        // An audio-only offer has no video crypto; garbage has none.
+        assert!(parse_video_sdes_crypto(&offer[..offer.find("m=video").unwrap()]).is_empty());
+        assert!(parse_video_sdes_crypto("not sdp").is_empty());
     }
 
     #[test]

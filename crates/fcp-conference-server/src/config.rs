@@ -650,6 +650,19 @@ pub struct ConferenceSection {
     #[serde(default)]
     pub enable_srtp: bool,
 
+    /// Threads in the video codec pool (decode, compose, encode never run
+    /// on the async runtime). Default: two fewer than the machine's cores,
+    /// at least one.
+    #[serde(default)]
+    pub video_codec_threads: Option<usize>,
+
+    /// Offer callers only video codecs with a native binding compiled in
+    /// (`video-vpx`, `video-openh264`, `video-dav1d` + `video-svt-av1`).
+    /// Off, the raw test codec answers for every codec — for loopback
+    /// tests only, never for a real phone. Default: on.
+    #[serde(default = "default_true")]
+    pub video_native_codecs_only: bool,
+
     /// Directory for pre-recorded announcement WAV files.
     #[serde(default = "default_announcements_dir")]
     pub announcements_dir: String,
@@ -834,6 +847,8 @@ impl Default for ConferenceSection {
             recording_retention_days: None,
             allowed_codecs: None,
             enable_srtp: false,
+            video_codec_threads: None,
+            video_native_codecs_only: true,
             announcements_dir: default_announcements_dir(),
             max_wait_for_moderator_secs: default_max_wait_for_moderator_secs(),
             moh_announcement_interval_secs: default_moh_announcement_interval_secs(),

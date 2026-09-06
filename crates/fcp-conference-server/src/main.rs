@@ -37,6 +37,7 @@ mod control;
 mod health;
 mod storage;
 mod trunks;
+mod video_bridge;
 
 use cli::Cli;
 use conference_handler::ConferenceCallHandler;
@@ -544,6 +545,25 @@ async fn main() -> Result<()> {
         info!(path = %config.conference.announcements_dir, "Announcements directory ready");
     }
 
+    // Video: the codec registry (native bindings behind the `video-*`
+    // features, the raw test codec otherwise) and the codec thread pool
+    // every room shares. Decode, compose and encode run there, never on
+    // the async runtime.
+    let codec_threads = config
+        .conference
+        .video_codec_threads
+        .unwrap_or_else(forge_conference::video::CodecPool::default_size);
+    let video_backend = forge_conference::video::VideoBackend::new(
+        forge_video_codecs::default_registry(),
+        forge_conference::video::CodecPool::new(codec_threads),
+    );
+    info!(
+        threads = codec_threads,
+        native_backends = ?forge_video_codecs::enabled_backends(),
+        native_only = config.conference.video_native_codecs_only,
+        "Video codec pool ready"
+    );
+
     let mut conference_handler = ConferenceCallHandler::new(
         Arc::clone(&bridge),
         Arc::clone(&dyn_storage),
@@ -557,6 +577,7 @@ async fn main() -> Result<()> {
         config.ai.clone(),
         config.service.node_id.clone(),
     );
+    conference_handler.set_video_backend(video_backend);
 
     // Initialize TTS service if configured (supports local/Kokoro + cloud providers)
     let tts_service: Option<Arc<fcp_media::TtsService>> = if config.tts.enabled {

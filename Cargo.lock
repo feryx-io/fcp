@@ -311,6 +311,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
+name = "av-data"
+version = "0.4.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fca67ba5d317924c02180c576157afd54babe48a76ebc66ce6d34bb8ba08308e"
+dependencies = [
+ "byte-slice-cast",
+ "bytes",
+ "num-derive",
+ "num-rational",
+ "num-traits",
+]
+
+[[package]]
 name = "aws-config"
 version = "1.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -942,6 +955,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "bindgen"
+version = "0.68.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "726e4313eb6ec35d2730258ad4e15b547ee75d6afaa1361a922e78e59b7d8078"
+dependencies = [
+ "bitflags 2.11.1",
+ "cexpr",
+ "clang-sys",
+ "lazy_static",
+ "lazycell",
+ "log",
+ "peeking_take_while",
+ "prettyplease",
+ "proc-macro2",
+ "quote",
+ "regex",
+ "rustc-hash 1.1.0",
+ "shlex",
+ "syn 2.0.117",
+ "which",
+]
+
+[[package]]
 name = "bit-set"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1086,6 +1122,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6d43a04d8753f35258c91f8ec639f792891f748a1edbd759cf1dcea3382ad83c"
 
 [[package]]
+name = "cexpr"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6fac387a98bb7c37292057cffc56d62ecb629900026402633ae9160df93a8766"
+dependencies = [
+ "nom",
+]
+
+[[package]]
+name = "cfg-expr"
+version = "0.20.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fe4ece8474b5f766c63426647e7b4b316b67431ade1036a8313cee24a03ae917"
+dependencies = [
+ "smallvec",
+ "target-lexicon",
+]
+
+[[package]]
 name = "cfg-if"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1151,6 +1206,17 @@ dependencies = [
  "block-buffer 0.12.1",
  "crypto-common 0.2.2",
  "inout 0.2.2",
+]
+
+[[package]]
+name = "clang-sys"
+version = "1.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "157a8ba7b480713b56f4c09fd13fc3e0a22a5dfab8097ba61cbc5feef950788a"
+dependencies = [
+ "glob",
+ "libc",
+ "libloading",
 ]
 
 [[package]]
@@ -1462,7 +1528,7 @@ dependencies = [
  "document-features",
  "mio",
  "parking_lot",
- "rustix",
+ "rustix 1.1.4",
  "signal-hook",
  "signal-hook-mio",
  "winapi",
@@ -1725,6 +1791,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d7a1e2f27636f116493b8b860f5546edb47c8d8f8ea73e1d2a20be88e28d1fea"
 
 [[package]]
+name = "dav1d"
+version = "0.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3ee89cb860616069c67520dcd66cacdb900b57c799f634a0eb6d91f6e2a82b61"
+dependencies = [
+ "av-data",
+ "bitflags 2.11.1",
+ "dav1d-sys",
+ "static_assertions",
+]
+
+[[package]]
+name = "dav1d-sys"
+version = "0.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c3c91aea6668645415331133ed6f8ddf0e7f40160cd97a12d59e68716a58704b"
+dependencies = [
+ "libc",
+ "system-deps",
+]
+
+[[package]]
 name = "deltae"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1948,6 +2036,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "env-libvpx-sys"
+version = "5.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "26ecdc636a02003406cc821aa9d703c888a966a3fd9bbdae9f7cf27d71720147"
+dependencies = [
+ "bindgen",
+ "pkg-config",
+]
+
+[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2081,7 +2179,7 @@ checksum = "9f1f227452a390804cdb637b74a86990f2a7d7ba4b7d5693aac9b4dd6defd8d6"
 
 [[package]]
 name = "fcp-admin"
-version = "0.25.96"
+version = "0.25.98"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2118,7 +2216,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-admin-ui"
-version = "0.25.96"
+version = "0.25.98"
 dependencies = [
  "axum 0.7.9",
  "include_dir",
@@ -2127,7 +2225,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-api-core"
-version = "0.25.96"
+version = "0.25.98"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2166,7 +2264,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-api-gateway"
-version = "0.25.96"
+version = "0.25.98"
 dependencies = [
  "anyhow",
  "axum 0.7.9",
@@ -2196,7 +2294,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-b2bua-core"
-version = "0.25.96"
+version = "0.25.98"
 dependencies = [
  "anyhow",
  "bytes",
@@ -2219,7 +2317,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-billing"
-version = "0.25.96"
+version = "0.25.98"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2233,7 +2331,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-call-manager"
-version = "0.25.96"
+version = "0.25.98"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2291,7 +2389,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-cli"
-version = "0.25.96"
+version = "0.25.98"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2324,7 +2422,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-cluster"
-version = "0.25.96"
+version = "0.25.98"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2343,7 +2441,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-conference-server"
-version = "0.25.96"
+version = "0.25.98"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -2371,6 +2469,8 @@ dependencies = [
  "forge-mixer",
  "forge-resampler",
  "forge-rtp",
+ "forge-video",
+ "forge-video-codecs",
  "futures",
  "hound",
  "parking_lot",
@@ -2422,7 +2522,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-crypto"
-version = "0.25.96"
+version = "0.25.98"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -2440,7 +2540,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-events"
-version = "0.25.96"
+version = "0.25.98"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2457,7 +2557,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-events-server"
-version = "0.25.96"
+version = "0.25.98"
 dependencies = [
  "anyhow",
  "axum 0.7.9",
@@ -2514,7 +2614,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-ivr"
-version = "0.25.96"
+version = "0.25.98"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2555,7 +2655,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-jobs"
-version = "0.25.96"
+version = "0.25.98"
 dependencies = [
  "anyhow",
  "axum 0.7.9",
@@ -2615,7 +2715,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-media-server"
-version = "0.25.96"
+version = "0.25.98"
 dependencies = [
  "anyhow",
  "clap",
@@ -2638,7 +2738,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-pbx"
-version = "0.25.96"
+version = "0.25.98"
 dependencies = [
  "dashmap 6.1.0",
  "fcp-b2bua-core",
@@ -2677,7 +2777,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-presence"
-version = "0.25.96"
+version = "0.25.98"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -2704,7 +2804,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-presence-server"
-version = "0.25.96"
+version = "0.25.98"
 dependencies = [
  "anyhow",
  "axum 0.7.9",
@@ -2735,7 +2835,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-queue"
-version = "0.25.96"
+version = "0.25.98"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2757,7 +2857,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-registrar"
-version = "0.25.96"
+version = "0.25.98"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2803,7 +2903,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-sbc"
-version = "0.25.96"
+version = "0.25.98"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2854,7 +2954,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-sbc-core"
-version = "0.25.96"
+version = "0.25.98"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2932,7 +3032,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-storage-postgres"
-version = "0.25.96"
+version = "0.25.98"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2953,7 +3053,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-storage-redis"
-version = "0.25.96"
+version = "0.25.98"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2973,7 +3073,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-testkit"
-version = "0.25.96"
+version = "0.25.98"
 dependencies = [
  "anyhow",
  "libc",
@@ -2985,7 +3085,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-tts-server"
-version = "0.25.96"
+version = "0.25.98"
 dependencies = [
  "anyhow",
  "axum 0.7.9",
@@ -3023,7 +3123,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-voicemail-server"
-version = "0.25.96"
+version = "0.25.98"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3067,7 +3167,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-webhooks"
-version = "0.25.96"
+version = "0.25.98"
 dependencies = [
  "fcp-core",
  "fcp-events",
@@ -3085,7 +3185,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-webrtc-gateway"
-version = "0.25.96"
+version = "0.25.98"
 dependencies = [
  "anyhow",
  "axum 0.8.9",
@@ -3286,7 +3386,7 @@ dependencies = [
 
 [[package]]
 name = "forge-conference"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "bytes",
  "dashmap 6.1.0",
@@ -3294,9 +3394,12 @@ dependencies = [
  "forge-engine",
  "forge-mixer",
  "forge-recorder",
+ "forge-rtp",
+ "forge-video",
  "hound",
  "metrics",
  "parking_lot",
+ "rand 0.10.1",
  "serde",
  "thiserror 2.0.18",
  "tokio",
@@ -3406,7 +3509,7 @@ dependencies = [
 
 [[package]]
 name = "forge-mixer"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bytes",
  "dashmap 6.1.0",
@@ -3527,6 +3630,35 @@ version = "0.2.0"
 dependencies = [
  "forge-core",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "forge-video"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "forge-core",
+ "forge-rtp",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "forge-video-codecs"
+version = "0.1.0"
+dependencies = [
+ "bindgen",
+ "bytes",
+ "dav1d",
+ "env-libvpx-sys",
+ "forge-core",
+ "forge-rtp",
+ "forge-video",
+ "openh264",
+ "pkg-config",
+ "thiserror 2.0.18",
+ "tracing",
 ]
 
 [[package]]
@@ -3771,6 +3903,12 @@ checksum = "2eecf2d5dc9b66b732b97707a0210906b1d30523eb773193ab777c0c84b3e8d5"
 dependencies = [
  "polyval",
 ]
+
+[[package]]
+name = "glob"
+version = "0.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
 
 [[package]]
 name = "governor"
@@ -4668,6 +4806,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "lazycell"
+version = "1.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "830d08ce1d1d941e6b30645f1a0eb5643013d835ce3779a5fc208261dbe10f55"
+
+[[package]]
 name = "leb128fmt"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4689,6 +4833,16 @@ name = "libc"
 version = "0.2.185"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "52ff2c0fe9bc6cb6b14a0592c2ff4fa9ceb83eea9db979b0487cd054946a2b8f"
+
+[[package]]
+name = "libloading"
+version = "0.8.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d7c4b02199fee7c5d21a5ae7d8cfa79a6ef5bb2fc834d6e9058e89c825efdc55"
+dependencies = [
+ "cfg-if",
+ "windows-link",
+]
 
 [[package]]
 name = "libm"
@@ -4726,6 +4880,12 @@ checksum = "3f50e8f47623268b5407192d26876c4d7f89d686ca130fdc53bced4814cd29f8"
 dependencies = [
  "bitflags 2.11.1",
 ]
+
+[[package]]
+name = "linux-raw-sys"
+version = "0.4.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d26c52dbd32dccf2d10cac7725f8eae5296885fb5703b261f7d0a0739ec807ab"
 
 [[package]]
 name = "linux-raw-sys"
@@ -5036,6 +5196,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "nasm-rs"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "706bf8a5e8c8ddb99128c3291d31bd21f4bcde17f0f4c20ec678d85c74faa149"
+dependencies = [
+ "log",
+]
+
+[[package]]
 name = "native-tls"
 version = "0.2.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5202,6 +5371,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "num-rational"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f83d14da390562dca69fc84082e73e548e1ad308d24accdedd2720017cb37824"
+dependencies = [
+ "num-bigint",
+ "num-integer",
+ "num-traits",
+]
+
+[[package]]
 name = "num-traits"
 version = "0.2.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5263,6 +5443,27 @@ name = "once_cell_polyfill"
 version = "1.70.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
+
+[[package]]
+name = "openh264"
+version = "0.9.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fcc9071a0b5f9c501ddd01066c2600d922cc799dc450a52975222bcda7755a08"
+dependencies = [
+ "openh264-sys2",
+ "wide",
+]
+
+[[package]]
+name = "openh264-sys2"
+version = "0.9.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6ada29a4cadc13d4d326737af87c13e224210d7d99fe47594e9f3f9b0102fd70"
+dependencies = [
+ "cc",
+ "nasm-rs",
+ "walkdir",
+]
 
 [[package]]
 name = "openssl"
@@ -5378,6 +5579,12 @@ dependencies = [
  "smallvec",
  "windows-link",
 ]
+
+[[package]]
+name = "peeking_take_while"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "19b17cddbe7ec3f8bc800887bab5e717348c95ea2ca0b1bf0837fb964dc67099"
 
 [[package]]
 name = "pem-rfc7468"
@@ -5759,7 +5966,7 @@ dependencies = [
  "pin-project-lite",
  "quinn-proto",
  "quinn-udp",
- "rustc-hash",
+ "rustc-hash 2.1.2",
  "rustls",
  "socket2 0.6.3",
  "thiserror 2.0.18",
@@ -5781,7 +5988,7 @@ dependencies = [
  "rand 0.10.1",
  "rand_pcg",
  "ring",
- "rustc-hash",
+ "rustc-hash 2.1.2",
  "rustls",
  "rustls-pki-types",
  "slab",
@@ -6342,6 +6549,12 @@ dependencies = [
 
 [[package]]
 name = "rustc-hash"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "08d43f7aa6b08d49f382cde6a7982047c3426db949b1424bc4b7ec9ae12c6ce2"
+
+[[package]]
+name = "rustc-hash"
 version = "2.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94300abf3f1ae2e2b8ffb7b58043de3d399c73fa6f4b73826402a5c457614dbe"
@@ -6380,6 +6593,19 @@ dependencies = [
 
 [[package]]
 name = "rustix"
+version = "0.38.44"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fdb5bc1ae2baa591800df16c9ca78619bf65c0488b41b96ccec5d11220d8c154"
+dependencies = [
+ "bitflags 2.11.1",
+ "errno",
+ "libc",
+ "linux-raw-sys 0.4.15",
+ "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "rustix"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6fe4565b9518b83ef4f91bb47ce29620ca828bd32cb7e408f0062e9930ba190"
@@ -6387,7 +6613,7 @@ dependencies = [
  "bitflags 2.11.1",
  "errno",
  "libc",
- "linux-raw-sys",
+ "linux-raw-sys 0.12.1",
  "windows-sys 0.61.2",
 ]
 
@@ -6479,6 +6705,15 @@ name = "ryu"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
+
+[[package]]
+name = "safe_arch"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "42c6efa15875e6ecb39ca61fb0b0c1a40b84fac5a5ffe71eef7d1000c8eb3f5f"
+dependencies = [
+ "bytemuck",
+]
 
 [[package]]
 name = "same-file"
@@ -7630,10 +7865,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "system-deps"
+version = "7.0.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "396a35feb67335377e0251fcbc1092fc85c484bd4e3a7a54319399da127796e7"
+dependencies = [
+ "cfg-expr",
+ "heck",
+ "pkg-config",
+ "toml 1.1.4+spec-1.1.0",
+ "version-compare",
+]
+
+[[package]]
 name = "tagptr"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7b2093cf4c8eb1e67749a6762251bc9cd836b6fc171623bd0a9d324d37af2417"
+
+[[package]]
+name = "target-lexicon"
+version = "0.13.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "adb6935a6f5c20170eeceb1a3835a49e12e19d792f6dd344ccc76a985ca5a6ca"
 
 [[package]]
 name = "tempfile"
@@ -7644,7 +7898,7 @@ dependencies = [
  "fastrand",
  "getrandom 0.4.2",
  "once_cell",
- "rustix",
+ "rustix 1.1.4",
  "windows-sys 0.61.2",
 ]
 
@@ -8474,6 +8728,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
+name = "version-compare"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "03c2856837ef78f57382f06b2b8563a2f512f7185d732608fd9176cb3b8edf0e"
+
+[[package]]
 name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8779,6 +9039,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "which"
+version = "4.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "87ba24419a2078cd2b0f2ede2691b6c66d8e47836da3b6db8265ebad47afbfc7"
+dependencies = [
+ "either",
+ "home",
+ "once_cell",
+ "rustix 0.38.44",
+]
+
+[[package]]
 name = "whoami"
 version = "1.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8786,6 +9058,16 @@ checksum = "5d4a4db5077702ca3015d3d02d74974948aba2ad9e12ab7df718ee64ccd7e97d"
 dependencies = [
  "libredox",
  "wasite",
+]
+
+[[package]]
+name = "wide"
+version = "1.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8cf05ca94c9fba0c51316899caa1d1e74a064fc310a5efa7375e614343d415be"
+dependencies = [
+ "bytemuck",
+ "safe_arch",
 ]
 
 [[package]]

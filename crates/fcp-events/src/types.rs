@@ -530,6 +530,30 @@ pub enum ConferenceEvent {
         timestamp: SystemTime,
     },
 
+    /// A participant's video changed state: `off` (no video negotiated),
+    /// `on` (frames arriving), `lost` (negotiated but nothing decodable
+    /// lately), `disabled` (a host turned it off) or `failed` (the decoder
+    /// gave up on it).
+    VideoStateChanged {
+        room_number: String,
+        participant_id: String,
+        state: String,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// The room's video compositor overran its budget three ticks in a
+    /// row and the frame rate was halved.
+    VideoOverload {
+        room_number: String,
+        from_fps: u32,
+        to_fps: u32,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
     /// Conference room was locked
     RoomLocked {
         room_number: String,
@@ -1181,6 +1205,8 @@ impl PlatformEvent {
                 ConferenceEvent::MeetingEnded { .. } => "conference.meeting_ended",
                 ConferenceEvent::DialOutInvited { .. } => "conference.dial_out_invited",
                 ConferenceEvent::DialOutFailed { .. } => "conference.dial_out_failed",
+                ConferenceEvent::VideoStateChanged { .. } => "conference.video_state_changed",
+                ConferenceEvent::VideoOverload { .. } => "conference.video_overload",
             },
             PlatformEvent::Queue(e) => match e {
                 QueueEvent::CallerEnqueued { .. } => "queue.caller_enqueued",
@@ -1265,7 +1291,9 @@ impl PlatformEvent {
                 | ConferenceEvent::MeetingStarted { tenant_id, .. }
                 | ConferenceEvent::MeetingEnded { tenant_id, .. }
                 | ConferenceEvent::DialOutInvited { tenant_id, .. }
-                | ConferenceEvent::DialOutFailed { tenant_id, .. } => Some(tenant_id),
+                | ConferenceEvent::DialOutFailed { tenant_id, .. }
+                | ConferenceEvent::VideoStateChanged { tenant_id, .. }
+                | ConferenceEvent::VideoOverload { tenant_id, .. } => Some(tenant_id),
             },
             PlatformEvent::Queue(e) => match e {
                 QueueEvent::CallerEnqueued { tenant_id, .. }
@@ -1549,7 +1577,9 @@ impl ConferenceEvent {
             | ConferenceEvent::MeetingStarted { timestamp, .. }
             | ConferenceEvent::MeetingEnded { timestamp, .. }
             | ConferenceEvent::DialOutInvited { timestamp, .. }
-            | ConferenceEvent::DialOutFailed { timestamp, .. } => *timestamp,
+            | ConferenceEvent::DialOutFailed { timestamp, .. }
+            | ConferenceEvent::VideoStateChanged { timestamp, .. }
+            | ConferenceEvent::VideoOverload { timestamp, .. } => *timestamp,
         }
     }
 }

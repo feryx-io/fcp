@@ -1088,6 +1088,7 @@ async fn get_conference_handler(
                     "is_recording": room.is_recording(),
                     "node_id": state.conference_handler.node_id(),
                     "trunks": trunks,
+                    "video": crate::video_bridge::room_video_json(&room),
                 })),
             )
         }

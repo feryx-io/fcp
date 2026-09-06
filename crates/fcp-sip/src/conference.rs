@@ -43,7 +43,10 @@ pub trait ConferenceHandler: Send + Sync {
     /// Returns a SIP response (200 OK with SDP answer on success).
     /// Returns `Err` if the call_id is unknown (not a conference call),
     /// so the caller can fall through to normal B2BUA re-INVITE handling.
-    fn handle_reinvite(&self, request: &sip_core::Request) -> Result<sip_core::Response>;
+    ///
+    /// Async because a participant adding video mid-call needs a second
+    /// port pair and socket.
+    async fn handle_reinvite(&self, request: &sip_core::Request) -> Result<sip_core::Response>;
 
     /// Clean up when a BYE is received for a conference participant.
     ///
