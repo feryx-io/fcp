@@ -954,6 +954,88 @@ fn webhook(tenant_id: TenantId, secret: &str) -> fcp_core::storage::WebhookEndpo
 }
 
 #[tokio::test]
+async fn meetings_round_trip_video_settings() {
+    let db = require_db!();
+    let s = db.storage();
+    let a = tenant("a");
+    s.put_tenant(a.clone()).await.unwrap();
+
+    // Defaults: a meeting built without video fields reads back audio-only.
+    let m = meeting(a.id, "2000", "1111");
+    let plain_id = m.id;
+    s.put_meeting(m).await.unwrap();
+    let back = s.get_meeting(&plain_id).await.unwrap().unwrap();
+    assert!(!back.video_enabled);
+    assert_eq!(back.video_layout, "grid");
+    assert_eq!(back.video_max_participants, 16);
+    assert_eq!(back.video_max_resolution, "720p");
+    assert_eq!(back.video_fps, 15);
+    assert!(!back.video_exclude_self);
+    assert_eq!(
+        back.video_codecs,
+        vec![fcp_core::VideoCodec::H264, fcp_core::VideoCodec::Vp8]
+    );
+
+    // Non-default values survive the upsert and every read path.
+    let mut m = meeting(a.id, "2001", "2222");
+    m.video_enabled = true;
+    m.video_layout = "spotlight".to_string();
+    m.video_max_participants = 4;
+    m.video_max_resolution = "1080p".to_string();
+    m.video_fps = 30;
+    m.video_exclude_self = true;
+    m.video_codecs = vec![
+        fcp_core::VideoCodec::Av1,
+        fcp_core::VideoCodec::Vp9,
+        fcp_core::VideoCodec::H264,
+    ];
+    let video_id = m.id;
+    s.put_meeting(m.clone()).await.unwrap();
+    // Second put exercises the ON CONFLICT branch.
+    m.video_fps = 24;
+    s.put_meeting(m).await.unwrap();
+
+    let check = |back: &fcp_core::Meeting| {
+        assert!(back.video_enabled);
+        assert_eq!(back.video_layout, "spotlight");
+        assert_eq!(back.video_max_participants, 4);
+        assert_eq!(back.video_max_resolution, "1080p");
+        assert_eq!(back.video_fps, 24);
+        assert!(back.video_exclude_self);
+        assert_eq!(
+            back.video_codecs,
+            vec![
+                fcp_core::VideoCodec::Av1,
+                fcp_core::VideoCodec::Vp9,
+                fcp_core::VideoCodec::H264,
+            ]
+        );
+    };
+    check(&s.get_meeting(&video_id).await.unwrap().unwrap());
+    check(
+        &s.get_meeting_by_room_number(&a.id, "2001")
+            .await
+            .unwrap()
+            .unwrap(),
+    );
+    let listed = s.list_meetings(&a.id).await.unwrap();
+    assert_eq!(listed.len(), 2);
+    check(listed.iter().find(|m| m.id == video_id).unwrap());
+
+    // The column holds SDP names in preference order.
+    let raw = db
+        .raw(
+            "SELECT video_codecs FROM conference_meetings WHERE id = $1",
+            &video_id.to_string(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(raw, "AV1,VP9,H264");
+
+    db.finish().await;
+}
+
+#[tokio::test]
 async fn encryption_seals_secret_columns_and_reads_them_back() {
     let Some(db) = TestDb::with_encryption(master_key(1)).await else {
         return;

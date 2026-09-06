@@ -392,6 +392,25 @@ pub fn minimal_sdp() -> &'static str {
      m=audio 4000 RTP/AVP 0\r\n"
 }
 
+/// Audio plus a VP8/H.264 video section with feedback attributes, as a
+/// video-capable phone offers it.
+pub fn sdp_audio_video() -> &'static str {
+    "v=0\r\n\
+     o=- 0 0 IN IP4 127.0.0.1\r\n\
+     s=-\r\n\
+     c=IN IP4 127.0.0.1\r\n\
+     t=0 0\r\n\
+     m=audio 4000 RTP/AVP 0 101\r\n\
+     a=rtpmap:0 PCMU/8000\r\n\
+     a=rtpmap:101 telephone-event/8000\r\n\
+     m=video 4002 RTP/AVPF 96 97\r\n\
+     a=rtpmap:96 VP8/90000\r\n\
+     a=rtpmap:97 H264/90000\r\n\
+     a=fmtp:97 profile-level-id=42e01f;packetization-mode=1\r\n\
+     a=rtcp-fb:* nack pli\r\n\
+     a=rtcp-fb:* ccm fir\r\n"
+}
+
 /// SDP that is missing the audio m-line.
 pub fn sdp_no_audio() -> &'static str {
     "v=0\r\n\

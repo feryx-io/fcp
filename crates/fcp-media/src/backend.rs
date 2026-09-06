@@ -303,44 +303,13 @@ pub mod embedded {
         fcp_session: Arc<MediaSession>,
     }
 
-    /// Parse remote RTP endpoint from SDP
-    /// Extracts IP from c= line and port from m=audio line
+    /// Parse the remote audio RTP endpoint from SDP: the first active audio
+    /// section's port with its own `c=` line, or the session-level one.
     fn parse_remote_endpoint_from_sdp(
         sdp: &str,
     ) -> std::result::Result<std::net::SocketAddr, String> {
-        use std::net::IpAddr;
-
-        let mut ip: Option<IpAddr> = None;
-        let mut port: Option<u16> = None;
-
-        for line in sdp.lines() {
-            let line = line.trim();
-
-            // Parse c= line: c=IN IP4 192.168.1.80
-            if line.starts_with("c=") {
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() >= 3 && (parts[1] == "IP4" || parts[1] == "IP6") {
-                    if let Ok(parsed_ip) = parts[2].parse::<IpAddr>() {
-                        ip = Some(parsed_ip);
-                    }
-                }
-            }
-
-            // Parse m= line: m=audio 51163 RTP/AVP 0 8
-            if line.starts_with("m=audio ") {
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() >= 2 {
-                    if let Ok(parsed_port) = parts[1].parse::<u16>() {
-                        port = Some(parsed_port);
-                    }
-                }
-            }
-        }
-
-        match (ip, port) {
-            (Some(ip), Some(port)) => Ok(std::net::SocketAddr::new(ip, port)),
-            _ => Err("Failed to parse IP or port from SDP".to_string()),
-        }
+        crate::sdp::remote_audio_endpoint(sdp)
+            .ok_or_else(|| "Failed to parse IP or port from SDP".to_string())
     }
 
     impl EmbeddedBackend {
@@ -1555,20 +1524,37 @@ pub mod embedded {
                 .map_err(|e| Error::Sdp(e.to_string()))?;
         }
 
-        let sdp = sip_sdp::SessionDescription::builder()
-            .origin("-", &session_info.forge_call_id.0, advertise_ip)
-            .map_err(|e| Error::Sdp(e.to_string()))?
-            .session_name("FCP Media Session")
-            .map_err(|e| Error::Sdp(e.to_string()))?
-            .connection(advertise_ip)
-            .map_err(|e| Error::Sdp(e.to_string()))?
-            .time(0, 0)
-            .media(audio)
-            .map_err(|e| Error::Sdp(e.to_string()))?
-            .build();
+        // One answer section per offered section (RFC 3264 §6): our audio
+        // answer for the first active audio section, every video or other
+        // section rejected with port 0 — the backend relays no video yet.
+        let sdp = match sip_sdp::SessionDescription::parse(remote_sdp) {
+            Ok(offer) if !offer.media.is_empty() => {
+                let (sections, _video) =
+                    crate::sdp::answer_sections(&offer, remote_sdp, |_| Ok(audio.clone()), None)?;
+                crate::sdp::serialize_answer(
+                    advertise_ip,
+                    &session_info.forge_call_id.0,
+                    "FCP Media Session",
+                    sections,
+                )?
+            }
+            // Unparseable offer: answer audio alone, as before.
+            _ => sip_sdp::SessionDescription::builder()
+                .origin("-", &session_info.forge_call_id.0, advertise_ip)
+                .map_err(|e| Error::Sdp(e.to_string()))?
+                .session_name("FCP Media Session")
+                .map_err(|e| Error::Sdp(e.to_string()))?
+                .connection(advertise_ip)
+                .map_err(|e| Error::Sdp(e.to_string()))?
+                .time(0, 0)
+                .media(audio)
+                .map_err(|e| Error::Sdp(e.to_string()))?
+                .build()
+                .serialize(),
+        };
 
         Ok(SdpNegotiationResult {
-            sdp: sdp.serialize(),
+            sdp,
             primary_codec: primary,
             local_crypto: local_crypto.map(|(material, _)| material),
             remote_crypto,

@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
-import { MoreHorizontal, Plus, Pencil, Trash2, Phone, PhoneOutgoing } from 'lucide-react'
+import { MoreHorizontal, Plus, Pencil, Trash2, Phone, PhoneOutgoing, ArrowUp, X } from 'lucide-react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
@@ -45,6 +45,13 @@ const createSchema = z.object({
   pin_prompt_tts: z.string().optional(),
   invalid_pin_tts: z.string().optional(),
   welcome_tts: z.string().optional(),
+  video_enabled: z.boolean().optional(),
+  video_layout: z.string().optional(),
+  video_max_participants: z.coerce.number().int().min(1, 'Must be 1–16').max(16, 'Must be 1–16').optional(),
+  video_max_resolution: z.string().optional(),
+  video_fps: z.coerce.number().int().min(1, 'Must be 1–30').max(30, 'Must be 1–30').optional(),
+  video_exclude_self: z.boolean().optional(),
+  video_codecs: z.array(z.string()).optional(),
 })
 
 const editSchema = z.object({
@@ -68,10 +75,71 @@ const editSchema = z.object({
   pin_prompt_tts: z.string().optional(),
   invalid_pin_tts: z.string().optional(),
   welcome_tts: z.string().optional(),
+  video_enabled: z.boolean().optional(),
+  video_layout: z.string().optional(),
+  video_max_participants: z.coerce.number().int().min(1, 'Must be 1–16').max(16, 'Must be 1–16').optional(),
+  video_max_resolution: z.string().optional(),
+  video_fps: z.coerce.number().int().min(1, 'Must be 1–30').max(30, 'Must be 1–30').optional(),
+  video_exclude_self: z.boolean().optional(),
+  video_codecs: z.array(z.string()).optional(),
 })
 
 type CreateForm = z.infer<typeof createSchema>
 type EditForm = z.infer<typeof editSchema>
+
+// Mirrors fcp_core::meeting::{VIDEO_LAYOUTS, VIDEO_RESOLUTIONS} and VideoCodec::ALL.
+const VIDEO_LAYOUTS = [
+  { value: 'grid', label: 'Grid' },
+  { value: 'active_speaker', label: 'Active speaker' },
+  { value: 'spotlight', label: 'Spotlight' },
+  { value: 'pip', label: 'Picture-in-picture' },
+]
+const VIDEO_RESOLUTIONS = ['180p', '360p', '720p', '1080p']
+const VIDEO_CODECS = ['H264', 'H265', 'VP8', 'VP9', 'AV1']
+const DEFAULT_VIDEO_CODECS = ['H264', 'VP8']
+
+/** Ordered codec preference list: remove / move-up per entry, plus a dropdown to append. */
+function CodecOrderPicker({ value, onChange }: {
+  value: string[]
+  onChange: (codecs: string[]) => void
+}) {
+  const remaining = VIDEO_CODECS.filter(c => !value.includes(c))
+  const moveUp = (i: number) => {
+    if (i === 0) return
+    const next = [...value]
+    const above = next[i - 1]
+    next[i - 1] = next[i]
+    next[i] = above
+    onChange(next)
+  }
+  return (
+    <div>
+      <Label className="text-xs">Codecs (preference order)</Label>
+      <div className="flex flex-wrap items-center gap-1 mt-1">
+        {value.map((codec, i) => (
+          <Badge key={codec} variant="secondary" className="text-xs gap-1 pr-1">
+            <span className="text-muted-foreground">{i + 1}.</span> {codec}
+            <button type="button" className="ml-1 hover:text-foreground disabled:opacity-30" disabled={i === 0} onClick={() => moveUp(i)} aria-label={`Move ${codec} up`}>
+              <ArrowUp className="h-3 w-3" />
+            </button>
+            <button type="button" className="hover:text-destructive" onClick={() => onChange(value.filter(c => c !== codec))} aria-label={`Remove ${codec}`}>
+              <X className="h-3 w-3" />
+            </button>
+          </Badge>
+        ))}
+        {remaining.length > 0 && (
+          <Select value="" onValueChange={(v) => onChange([...value, v])}>
+            <SelectTrigger className="h-7 w-28 text-xs"><SelectValue placeholder="Add codec" /></SelectTrigger>
+            <SelectContent>
+              {remaining.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        )}
+      </div>
+      {value.length === 0 && <p className="text-xs text-destructive mt-1">At least one codec is required</p>}
+    </div>
+  )
+}
 
 /** Dropdown that lists audio prompts with audio files, plus a "Default (none)" option. */
 function AudioPromptSelect({ value, onChange, promptList, label }: {
@@ -195,6 +263,9 @@ export function ConferencesPage() {
             )}
             {m.wait_for_moderator && (
               <Badge variant="secondary" className="text-xs">Wait for Host</Badge>
+            )}
+            {m.video_enabled && (
+              <Badge variant="secondary" className="text-xs">Video</Badge>
             )}
             {m.auto_record && (
               <Badge variant="secondary" className="text-xs">Auto Record</Badge>
@@ -360,7 +431,10 @@ function CreateDialog({ open, onOpenChange, onSubmit, isPending, promptList, use
 }) {
   const { register, handleSubmit, formState: { errors }, reset, setValue, watch } = useForm<CreateForm>({
     resolver: zodResolver(createSchema),
-    defaultValues: { enabled: true, require_guest_pin: false, wait_for_moderator: false, auto_record: false, default_locked: false, permanent: false, max_participants: 0 },
+    defaultValues: {
+      enabled: true, require_guest_pin: false, wait_for_moderator: false, auto_record: false, default_locked: false, permanent: false, max_participants: 0,
+      video_enabled: false, video_layout: 'grid', video_max_participants: 16, video_max_resolution: '720p', video_fps: 15, video_exclude_self: false, video_codecs: DEFAULT_VIDEO_CODECS,
+    },
   })
 
   const onFormSubmit = (data: CreateForm) => {
@@ -387,6 +461,13 @@ function CreateDialog({ open, onOpenChange, onSubmit, isPending, promptList, use
       pin_prompt_tts: data.pin_prompt_tts || undefined,
       invalid_pin_tts: data.invalid_pin_tts || undefined,
       welcome_tts: data.welcome_tts || undefined,
+      video_enabled: data.video_enabled,
+      video_layout: data.video_layout,
+      video_max_participants: data.video_max_participants,
+      video_max_resolution: data.video_max_resolution,
+      video_fps: data.video_fps,
+      video_exclude_self: data.video_exclude_self,
+      video_codecs: data.video_codecs,
     })
     reset()
   }
@@ -502,6 +583,54 @@ function CreateDialog({ open, onOpenChange, onSubmit, isPending, promptList, use
             </div>
           </details>
 
+          <details className="border rounded-md p-3">
+            <summary className="text-sm font-medium cursor-pointer">Video</summary>
+            <p className="text-xs text-muted-foreground mt-1 mb-3">Composite video for participants that offer it. Audio-only participants are unaffected.</p>
+            <div className="space-y-3 mt-2">
+              <div className="flex items-center justify-between">
+                <Label className="text-xs">Video Enabled</Label>
+                <Switch checked={watch('video_enabled') === true} onCheckedChange={(v) => setValue('video_enabled', v)} />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <Label className="text-xs">Layout</Label>
+                  <Select value={watch('video_layout') || 'grid'} onValueChange={(v) => setValue('video_layout', v)}>
+                    <SelectTrigger className="text-sm"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {VIDEO_LAYOUTS.map(l => <SelectItem key={l.value} value={l.value}>{l.label}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label className="text-xs">Max Resolution</Label>
+                  <Select value={watch('video_max_resolution') || '720p'} onValueChange={(v) => setValue('video_max_resolution', v)}>
+                    <SelectTrigger className="text-sm"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {VIDEO_RESOLUTIONS.map(r => <SelectItem key={r} value={r}>{r}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <Label className="text-xs">Frame Rate (1–30)</Label>
+                  <Input {...register('video_fps')} type="number" min="1" max="30" className="text-sm" />
+                  {errors.video_fps && <p className="text-xs text-destructive mt-1">{errors.video_fps.message}</p>}
+                </div>
+                <div>
+                  <Label className="text-xs">Max Video Tiles (1–16)</Label>
+                  <Input {...register('video_max_participants')} type="number" min="1" max="16" className="text-sm" />
+                  {errors.video_max_participants && <p className="text-xs text-destructive mt-1">{errors.video_max_participants.message}</p>}
+                </div>
+              </div>
+              <div className="flex items-center justify-between">
+                <Label className="text-xs">Exclude Own Tile</Label>
+                <Switch checked={watch('video_exclude_self') === true} onCheckedChange={(v) => setValue('video_exclude_self', v)} />
+              </div>
+              <CodecOrderPicker value={watch('video_codecs') ?? DEFAULT_VIDEO_CODECS} onChange={(v) => setValue('video_codecs', v)} />
+            </div>
+          </details>
+
           <Button type="submit" className="w-full" disabled={isPending}>
             {isPending ? 'Creating...' : 'Create Bridge'}
           </Button>
@@ -519,7 +648,7 @@ function EditDialog({ item, onOpenChange, onSubmit, isPending, promptList, userL
   promptList: PromptResponse[]
   userList: User[]
 }) {
-  const { register, handleSubmit, reset, setValue, watch } = useForm<EditForm>({
+  const { register, handleSubmit, formState: { errors }, reset, setValue, watch } = useForm<EditForm>({
     resolver: zodResolver(editSchema),
   })
 
@@ -548,6 +677,13 @@ function EditDialog({ item, onOpenChange, onSubmit, isPending, promptList, userL
       pin_prompt_tts: item.pin_prompt_tts || '',
       invalid_pin_tts: item.invalid_pin_tts || '',
       welcome_tts: item.welcome_tts || '',
+      video_enabled: item.video_enabled ?? false,
+      video_layout: item.video_layout ?? 'grid',
+      video_max_participants: item.video_max_participants ?? 16,
+      video_max_resolution: item.video_max_resolution ?? '720p',
+      video_fps: item.video_fps ?? 15,
+      video_exclude_self: item.video_exclude_self ?? false,
+      video_codecs: item.video_codecs ?? DEFAULT_VIDEO_CODECS,
     })
   }
 
@@ -573,6 +709,13 @@ function EditDialog({ item, onOpenChange, onSubmit, isPending, promptList, userL
     if (data.pin_prompt_tts !== undefined) update.pin_prompt_tts = data.pin_prompt_tts || null
     if (data.invalid_pin_tts !== undefined) update.invalid_pin_tts = data.invalid_pin_tts || null
     if (data.welcome_tts !== undefined) update.welcome_tts = data.welcome_tts || null
+    if (data.video_enabled !== undefined) update.video_enabled = data.video_enabled
+    if (data.video_layout !== undefined) update.video_layout = data.video_layout
+    if (data.video_max_participants !== undefined) update.video_max_participants = data.video_max_participants
+    if (data.video_max_resolution !== undefined) update.video_max_resolution = data.video_max_resolution
+    if (data.video_fps !== undefined) update.video_fps = data.video_fps
+    if (data.video_exclude_self !== undefined) update.video_exclude_self = data.video_exclude_self
+    if (data.video_codecs !== undefined) update.video_codecs = data.video_codecs
     onSubmit(update)
   }
 
@@ -674,6 +817,54 @@ function EditDialog({ item, onOpenChange, onSubmit, isPending, promptList, userL
                 <Label className="text-xs">Welcome TTS Text</Label>
                 <Input {...register('welcome_tts')} placeholder="e.g. Welcome to the meeting. Use {count} for participant count." className="text-sm" />
               </div>
+            </div>
+          </details>
+
+          <details className="border rounded-md p-3">
+            <summary className="text-sm font-medium cursor-pointer">Video</summary>
+            <p className="text-xs text-muted-foreground mt-1 mb-3">Composite video for participants that offer it. Audio-only participants are unaffected.</p>
+            <div className="space-y-3 mt-2">
+              <div className="flex items-center justify-between">
+                <Label className="text-xs">Video Enabled</Label>
+                <Switch checked={watch('video_enabled') === true} onCheckedChange={(v) => setValue('video_enabled', v)} />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <Label className="text-xs">Layout</Label>
+                  <Select value={watch('video_layout') || 'grid'} onValueChange={(v) => setValue('video_layout', v)}>
+                    <SelectTrigger className="text-sm"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {VIDEO_LAYOUTS.map(l => <SelectItem key={l.value} value={l.value}>{l.label}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label className="text-xs">Max Resolution</Label>
+                  <Select value={watch('video_max_resolution') || '720p'} onValueChange={(v) => setValue('video_max_resolution', v)}>
+                    <SelectTrigger className="text-sm"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {VIDEO_RESOLUTIONS.map(r => <SelectItem key={r} value={r}>{r}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <Label className="text-xs">Frame Rate (1–30)</Label>
+                  <Input {...register('video_fps')} type="number" min="1" max="30" className="text-sm" />
+                  {errors.video_fps && <p className="text-xs text-destructive mt-1">{errors.video_fps.message}</p>}
+                </div>
+                <div>
+                  <Label className="text-xs">Max Video Tiles (1–16)</Label>
+                  <Input {...register('video_max_participants')} type="number" min="1" max="16" className="text-sm" />
+                  {errors.video_max_participants && <p className="text-xs text-destructive mt-1">{errors.video_max_participants.message}</p>}
+                </div>
+              </div>
+              <div className="flex items-center justify-between">
+                <Label className="text-xs">Exclude Own Tile</Label>
+                <Switch checked={watch('video_exclude_self') === true} onCheckedChange={(v) => setValue('video_exclude_self', v)} />
+              </div>
+              <CodecOrderPicker value={watch('video_codecs') ?? DEFAULT_VIDEO_CODECS} onChange={(v) => setValue('video_codecs', v)} />
             </div>
           </details>
 

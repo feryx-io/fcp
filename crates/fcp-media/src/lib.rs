@@ -67,10 +67,13 @@ pub use dtmf_collector::{CollectionResult, DtmfCollector};
 pub use error::{Error, Result};
 pub use manager::{MediaManager, MediaManagerStats};
 pub use sdp::{
-    construct_answer_for_a_leg, decode_sdes_key_params, extract_codecs_from_sdp,
+    construct_answer, construct_answer_for_a_leg, decode_sdes_key_params, extract_codecs_from_sdp,
     extract_telephone_event_pt, filter_sdp_codecs, generate_srtp_key_material, parse_sdes_crypto,
-    parse_sdp_codecs, rewrite_sdp_for_anchoring, sdes_suite_to_profile, SdesCryptoLine,
-    SdpCodecInfo, SrtpSdpContext,
+    parse_sdp_codecs, parse_video_offer, remote_audio_endpoint, remote_video_endpoint,
+    rewrite_for_anchoring, rewrite_sdp_for_anchoring, sdes_suite_to_profile,
+    video_codec_from_forge, video_codec_to_forge, AnchorPorts, Answer, AnswerOptions,
+    NegotiatedVideo, SdesCryptoLine, SdpCodecInfo, SrtpSdpContext, VideoAnswer, VideoOffer,
+    VideoOfferCodec,
 };
 pub use session::{
     DtmfMode, MediaSession, MediaSessionConfig, MediaSessionState, MediaSessionStats,

@@ -2461,15 +2461,15 @@ impl SipMessageHandler {
     }
 
     /// Rewrite the direction attribute (`a=sendrecv` / `a=sendonly` / `a=recvonly`
-    /// / `a=inactive`) on the first `m=audio` section of an SDP.
+    /// / `a=inactive`) on every audio and video section of an SDP.
     ///
-    /// - Only the first audio media section is touched; other media (e.g.
-    ///   `m=video`) keep their original direction.
-    /// - If the audio section has no explicit direction attribute, one is
-    ///   inserted immediately after the `m=audio` line.
+    /// - Hold and resume apply to the whole call, so every RTP section is
+    ///   rewritten; other media (`m=application`, …) keep their direction.
+    /// - A section with no explicit direction attribute gets one inserted
+    ///   immediately after its `m=` line.
     /// - Line endings are preserved: if the input uses CRLF we emit CRLF,
     ///   otherwise we emit LF.
-    /// - If no `m=audio` section exists the SDP is returned unchanged.
+    /// - If no audio or video section exists the SDP is returned unchanged.
     fn rewrite_sdp_direction(sdp: &str, direction: &str) -> String {
         // Detect the line ending used by the input. SIP mandates CRLF but we
         // tolerate LF-only bodies that some stacks produce.
@@ -2478,44 +2478,30 @@ impl SipMessageHandler {
 
         // Split preserving empty trailing element so we can rejoin faithfully.
         let lines: Vec<&str> = sdp.split(eol).collect();
-        let mut out: Vec<String> = Vec::with_capacity(lines.len() + 1);
+        let mut out: Vec<String> = Vec::with_capacity(lines.len() + 2);
 
-        // State machine walking the SDP line by line.
-        // `section`: None = session-level, Some("audio") = inside audio media,
-        //            Some(other) = inside a non-audio media section we leave alone.
-        let mut section: Option<String> = None;
-        let mut audio_seen = false;
-        let mut audio_direction_set = false;
-        let mut audio_m_line_index: Option<usize> = None;
+        // `open` is the index in `out` of the current eligible section's m=
+        // line while that section has not shown a direction attribute yet.
+        let mut open: Option<usize> = None;
+        let mut eligible = false;
 
         for line in lines.iter() {
             if let Some(rest) = line.strip_prefix("m=") {
-                // Entering a new media section. Flush the previous audio
-                // section by inserting a direction line if we never saw one.
-                if section.as_deref() == Some("audio") && !audio_direction_set {
-                    if let Some(idx) = audio_m_line_index {
-                        out.insert(idx + 1, target.clone());
-                        audio_direction_set = true;
-                    }
+                // Entering a new media section: give the previous one its
+                // direction if it never carried one.
+                if let Some(idx) = open.take() {
+                    out.insert(idx + 1, target.clone());
                 }
-                let media_type = rest.split_whitespace().next().unwrap_or("").to_string();
-                if media_type == "audio" && !audio_seen {
-                    // Only the first audio section is eligible for rewrite.
-                    section = Some("audio".to_string());
-                    audio_seen = true;
-                    audio_m_line_index = Some(out.len());
-                } else {
-                    // Any other media (including subsequent audio sections)
-                    // must be left untouched. Use a marker that will never
-                    // match the "audio" comparison below.
-                    section = Some(format!("_other:{}", media_type));
+                let media_type = rest.split_whitespace().next().unwrap_or("");
+                eligible = matches!(media_type, "audio" | "video");
+                if eligible {
+                    open = Some(out.len());
                 }
                 out.push((*line).to_string());
                 continue;
             }
 
-            // Only rewrite direction lines inside the first audio section.
-            if section.as_deref() == Some("audio") {
+            if eligible {
                 let trimmed = line.trim();
                 if trimmed == "a=sendrecv"
                     || trimmed == "a=sendonly"
@@ -2523,7 +2509,7 @@ impl SipMessageHandler {
                     || trimmed == "a=inactive"
                 {
                     out.push(target.clone());
-                    audio_direction_set = true;
+                    open = None;
                     continue;
                 }
             }
@@ -2531,12 +2517,9 @@ impl SipMessageHandler {
             out.push((*line).to_string());
         }
 
-        // If the SDP ended while still inside the audio section with no
-        // direction attribute, insert one right after the m=audio line.
-        if section.as_deref() == Some("audio") && !audio_direction_set {
-            if let Some(idx) = audio_m_line_index {
-                out.insert(idx + 1, target.clone());
-            }
+        // The SDP ended inside an eligible section with no direction line.
+        if let Some(idx) = open {
+            out.insert(idx + 1, target.clone());
         }
 
         out.join(eol)
@@ -12320,12 +12303,16 @@ fn validate_sdp_body_static(
         return Err(anyhow::anyhow!("SDP missing media descriptions"));
     }
 
-    let has_audio = sdp
-        .media
-        .iter()
-        .any(|m| matches!(m.media_type, sip_sdp::MediaType::Audio));
-    if !has_audio {
-        return Err(anyhow::anyhow!("SDP missing audio media"));
+    // Any RTP section FCP can carry makes the offer usable; a video-only
+    // offer (audio at port 0) is answered per section, not refused.
+    let has_media = sdp.media.iter().any(|m| {
+        matches!(
+            m.media_type,
+            sip_sdp::MediaType::Audio | sip_sdp::MediaType::Video
+        )
+    });
+    if !has_media {
+        return Err(anyhow::anyhow!("SDP missing audio or video media"));
     }
 
     Ok(Some(body_str))
@@ -12911,7 +12898,7 @@ mod tests {
     use crate::registrar::FcpRegistrar;
 
     #[test]
-    fn rewrite_sdp_direction_replaces_sendrecv_in_audio_only() {
+    fn rewrite_sdp_direction_replaces_sendrecv_in_every_rtp_section() {
         let sdp = "v=0\r\n\
                    o=- 1 1 IN IP4 127.0.0.1\r\n\
                    s=-\r\n\
@@ -12925,12 +12912,30 @@ mod tests {
                    a=sendrecv\r\n";
         let rewritten = SipMessageHandler::rewrite_sdp_direction(sdp, "recvonly");
         assert!(rewritten.contains("m=audio 10000 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\na=recvonly"));
-        // Video section is untouched.
+        // Hold applies to the video section too.
         assert!(
-            rewritten.contains("m=video 10002 RTP/AVP 96\r\na=rtpmap:96 VP8/90000\r\na=sendrecv")
+            rewritten.contains("m=video 10002 RTP/AVP 96\r\na=rtpmap:96 VP8/90000\r\na=recvonly")
         );
-        // Exactly one rewritten direction token on the audio side.
-        assert_eq!(rewritten.matches("a=recvonly").count(), 1);
+        assert_eq!(rewritten.matches("a=recvonly").count(), 2);
+        assert!(!rewritten.contains("a=sendrecv"));
+    }
+
+    #[test]
+    fn rewrite_sdp_direction_leaves_non_rtp_sections_alone() {
+        let sdp = "v=0\r\n\
+                   o=- 1 1 IN IP4 127.0.0.1\r\n\
+                   s=-\r\n\
+                   t=0 0\r\n\
+                   m=audio 10000 RTP/AVP 0\r\n\
+                   m=application 5000 UDP/BFCP *\r\n\
+                   a=sendrecv\r\n\
+                   m=video 10002 RTP/AVP 96\r\n";
+        let rewritten = SipMessageHandler::rewrite_sdp_direction(sdp, "sendonly");
+        // Audio and video each get an inserted direction; BFCP keeps its own.
+        assert!(rewritten.contains("m=audio 10000 RTP/AVP 0\r\na=sendonly\r\n"));
+        assert!(rewritten.contains("m=application 5000 UDP/BFCP *\r\na=sendrecv\r\n"));
+        assert!(rewritten.contains("m=video 10002 RTP/AVP 96\r\na=sendonly"));
+        assert_eq!(rewritten.matches("a=sendonly").count(), 2);
     }
 
     #[test]
@@ -12953,8 +12958,8 @@ mod tests {
     }
 
     #[test]
-    fn rewrite_sdp_direction_only_touches_first_audio_section() {
-        // Two audio sections (rare but legal) — only the first should change.
+    fn rewrite_sdp_direction_touches_every_audio_section() {
+        // Two audio sections (rare but legal) — hold applies to both.
         let sdp = "v=0\r\n\
                    o=- 1 1 IN IP4 127.0.0.1\r\n\
                    s=-\r\n\
@@ -12964,17 +12969,30 @@ mod tests {
                    m=audio 10002 RTP/AVP 0\r\n\
                    a=sendrecv\r\n";
         let rewritten = SipMessageHandler::rewrite_sdp_direction(sdp, "recvonly");
-        assert_eq!(rewritten.matches("a=recvonly").count(), 1);
-        assert_eq!(rewritten.matches("a=sendrecv").count(), 1);
+        assert_eq!(rewritten.matches("a=recvonly").count(), 2);
+        assert_eq!(rewritten.matches("a=sendrecv").count(), 0);
     }
 
     #[test]
-    fn rewrite_sdp_direction_no_audio_section_is_noop() {
+    fn rewrite_sdp_direction_video_only_is_rewritten() {
         let sdp = "v=0\r\n\
                    o=- 1 1 IN IP4 127.0.0.1\r\n\
                    s=-\r\n\
                    t=0 0\r\n\
                    m=video 10002 RTP/AVP 96\r\n\
+                   a=sendrecv\r\n";
+        let rewritten = SipMessageHandler::rewrite_sdp_direction(sdp, "recvonly");
+        assert!(rewritten.contains("m=video 10002 RTP/AVP 96\r\na=recvonly\r\n"));
+        assert!(!rewritten.contains("a=sendrecv"));
+    }
+
+    #[test]
+    fn rewrite_sdp_direction_no_rtp_section_is_noop() {
+        let sdp = "v=0\r\n\
+                   o=- 1 1 IN IP4 127.0.0.1\r\n\
+                   s=-\r\n\
+                   t=0 0\r\n\
+                   m=application 5000 UDP/BFCP *\r\n\
                    a=sendrecv\r\n";
         let rewritten = SipMessageHandler::rewrite_sdp_direction(sdp, "recvonly");
         assert_eq!(rewritten, sdp);

@@ -450,7 +450,16 @@ otherwise it is *rejected properly* (`m=video 0 …` with the offer's
 formats), which fixes the RFC 3264 violation the survey found. Anchoring
 and codec filtering operate per section. Adding video mid-call is a
 re-INVITE with a new video section; removing it is a re-INVITE with port
-0.
+0. *Shipped in 3a:* `fcp_media::construct_answer` answers one section
+per offered section (`AnswerOptions` / `VideoAnswer` carry the allowed
+codecs and video port; `Answer.video` reports what was agreed),
+`rewrite_for_anchoring` takes a port per section and disables the rest,
+`filter_sdp_codecs` touches only the audio section,
+`remote_audio_endpoint` / `remote_video_endpoint` read each section's
+own `c=`, and `parse_video_offer` summarises what a peer offered. The
+B2BUA relays a video section untouched when it passes media through and
+disables it (port 0) when it anchors; hold and resume apply to every RTP
+section; an offer with only a video section is no longer refused.
 
 **WebRTC** (forge-webrtc, gateway): BUNDLE with `audio` and `video` mids
 on one DTLS-SRTP transport, `rtcp-mux`, feedback attributes, simulcast
@@ -460,7 +469,14 @@ ingress accepted (highest layer used). The gateway gains a direct
 **Meeting model** (fcp-core, migration, API, admin UI): `video_enabled`,
 `video_layout`, `video_max_participants`, `video_max_resolution`
 (`180p`…`1080p`), `video_fps`, `video_exclude_self`, `video_codecs`
-(preference order).
+(preference order). As implemented, the defaults and ranges are:
+`video_enabled` false; `video_layout` `grid` (one of `grid`,
+`active_speaker`, `spotlight`, `pip`); `video_max_participants` 16
+(1–16 tiles in the composite); `video_max_resolution` `720p` (one of
+`180p`, `360p`, `720p`, `1080p`); `video_fps` 15 (1–30);
+`video_exclude_self` false; `video_codecs` `["H264","VP8"]` (SDP names,
+at least one, no repeats) — `Meeting::validate_video_settings` enforces
+these and every create/update API returns 400 with the message.
 
 **Conference API**: participant JSON gains `video: {codec, resolution,
 fps, bitrate_kbps, keyframes_sent, nacks, plis, state}`; room JSON gains
@@ -533,6 +549,53 @@ crate (`forge-rtp` 111, `forge-sdp` 90, `forge-core` 22).
 Each phase is one PR per repository (forge-media release tag, then the
 FCP bump), reviewed before the next starts. Sizes are for one person and
 will be corrected after phase 0.
+
+### 15.1 Phase 3 plan (2026-09-05)
+
+Phase 3 is the first FCP-side phase and, at three to four weeks, too
+large for one review. It is delivered as three PRs in order, each
+complete and shippable on its own; the FCP surveys that produced this
+plan found more wrong with today's SDP handling than §12 assumed, which
+is why signaling gets a block of its own.
+
+**What the surveys found.** `fcp-media` answers every offer with a
+single synthesised `m=audio` (no `m=video 0`, the RFC 3264 violation);
+its anchoring rewrite points a video section's `c=` at the server while
+leaving the video port alone; its codec filter strips video `rtpmap`s
+but keeps the video formats; `fcp-sip` rejects any offer without audio
+and applies hold/resume to the first audio section only; the conference
+server's codec picker and endpoint parser see only audio, and the
+endpoint parser takes the IP from the *last* `c=` line, which a video
+section would supply; `fcp-core`'s `VideoCodec` gives VP9 payload type
+101, the telephone-event type, and lacks AV1; and `sip-sdp` parses
+`RTP/AVPF` as `RTP/AVP` followed by a stray character, so a
+feedback-capable offer is mis-read today.
+
+| Block | Deliverable | Where |
+|---|---|---|
+| 3a | **Signaling foundations** — implemented 2026-09-05 (FCP v0.25.96; siphon-rs sip-sdp 0.3.2). `sip-sdp`: `RTP/AVPF`. `fcp-media`: one answer section per offered section, in order (`answer_video` / `reject_section` from forge-sdp), a `VideoPolicy` input (codecs allowed, or none), section-aware anchoring with a port per section, section-scoped codec filtering, per-section remote endpoints. `fcp-sip`: accept any offer with a usable section, hold/resume per section, the B2BUA relays a video section untouched when it is not anchoring media and rejects it properly (`m=video 0`) when it is. Conference server: answers per section (rejecting video until 3b) and reads the audio endpoint from the audio section. `fcp-core`: `VideoCodec` aligned with forge-core's five codecs, no fixed payload types (types come from the offer); `Meeting.video_*` settings (§12) with migration, API DTOs and validation, admin UI settings, `has_video` on `participant_joined`. Fixtures with `m=audio + m=video` beside `minimal_sdp()` | siphon-rs, fcp-media, fcp-sip, fcp-core, fcp-storage-postgres, fcp-api-core, fcp-admin-ui, fcp-conference-server |
+| 3b | **Conference video.** forge-conference `VideoRoom` beside the audio room: frame slots, the video clock task, compositor, flavor table and shared encoders on the codec thread pool (§9.2), keyframe coalescing and PLI/FIR/NACK handling with the phase 1 gate and cache, active-speaker hysteresis (§5.2) from the mixer's energy (added to `ParticipantMetadata`), decoder limits (§13). Conference server: a video leg per participant (second socket pair, SRTP as audio), the video bridge task (depacketize → assemble → decode → slot; subscriber: packetize → cache → SRTP → send; RTCP feedback both ways), meeting video settings into the room, re-INVITE add/remove video, `video_state_changed` / `video_overload` events, `video` in participant and room JSON, a loopback RTP test with the raw codec | forge-media (release), fcp-conference-server, fcp-events |
+| 3c | **Controls and capacity.** Layout / pin / spotlight / participant video on-off endpoints with the `/internal` mirror and admin UI live controls, `video_layout_changed`; the self-benchmark and `video_budget_left` in cluster membership, admission (503) and placement by budget (§9.3) | fcp-conference-server, fcp-cluster, fcp-call-manager, fcp-admin-ui |
+
+Decisions taken with this plan, each open to reversal:
+
+- **Three PRs, not one.** Reviewability over the letter of "one PR per
+  phase".
+- **`VideoRoom` lives in forge-conference**, not the server, so the
+  WebRTC gateway (phase 4) and the raw-codec tests reuse it; 3b therefore
+  starts with a forge-media release.
+- **`fcp-core::VideoCodec` is aligned with forge-core's model** rather
+  than replaced: fcp-core has no forge dependency by design, so it keeps
+  its own enum (five codecs, SDP names, conversion in fcp-media) and
+  loses the fixed payload types.
+- **Video through an anchored B2BUA is rejected, not relayed, in 3a.**
+  A video relay (forward coded RTP between two legs, no decode) is a
+  later block; until then a room's video is reachable when the B2BUA
+  passes media through, which is how conference calls are placed by
+  default.
+- **`video_enabled` defaults to off** per meeting until 3c's capacity
+  accounting exists.
+- **Trunk video stays in phase 5** (§10, §15), as designed.
 
 ## 16. Resolved questions
 

@@ -1676,6 +1676,7 @@ impl ConferenceCallHandler {
             room_number: room_number.to_string(),
             participant_id: participant_id.clone(),
             is_host: false,
+            has_video: false,
             tenant_id,
             timestamp: SystemTime::now(),
         });
@@ -3272,6 +3273,16 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             }
         };
 
+        // Video is answered with port 0 until conference video ships (phase
+        // 3b); say so once per join so a silent phone screen is explainable.
+        if let Some(video) = fcp_media::parse_video_offer(sdp_offer) {
+            debug!(
+                room = %room_number,
+                codecs = ?video.codecs.iter().map(|c| c.codec).collect::<Vec<_>>(),
+                "Offer carries video; rejected in the answer (conference video not yet enabled)"
+            );
+        }
+
         // Also look for telephone-event payload type and clock rate for DTMF
         let te_pt = find_telephone_event_pt(&offered_codecs, sdp_offer);
         let dtmf_clock_rate = find_telephone_event_clock_rate(&offered_codecs, sdp_offer);
@@ -4028,6 +4039,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                                     room_number: rn.clone(),
                                     participant_id: pid.clone(),
                                     is_host: false,
+                                    has_video: false,
                                     tenant_id,
                                     timestamp: SystemTime::now(),
                                 });
@@ -4182,6 +4194,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             room_number: room_number.clone(),
             participant_id: participant_id.clone(),
             is_host,
+            has_video: false,
             tenant_id,
             timestamp: SystemTime::now(),
         });
@@ -5237,33 +5250,11 @@ fn extract_caller_info(request: &sip_core::Request) -> (Option<String>, Option<S
     (None, None)
 }
 
-/// Parse remote RTP endpoint from an SDP offer.
-///
-/// Extracts the IP from the `c=IN IP4 <addr>` line and the port from
-/// the `m=audio <port>` line, combining them into a SocketAddr.
+/// Parse the remote audio RTP endpoint from an SDP offer: the first active
+/// audio section's port with its own `c=` line, or the session-level one.
+/// A video section's `c=` never leaks into the audio endpoint.
 fn parse_remote_rtp_addr(sdp: &str) -> Option<SocketAddr> {
-    let mut ip: Option<&str> = None;
-    let mut port: Option<u16> = None;
-
-    for line in sdp.lines() {
-        let line = line.trim();
-        if line.starts_with("c=IN IP4 ") || line.starts_with("c=IN ip4 ") {
-            // c=IN IP4 192.168.1.100
-            ip = line.split_whitespace().nth(2);
-        } else if line.starts_with("c=IN IP6 ") || line.starts_with("c=IN ip6 ") {
-            ip = line.split_whitespace().nth(2);
-        } else if line.starts_with("m=audio ") {
-            // m=audio 10000 RTP/AVP 0 8 9
-            if let Some(port_str) = line.split_whitespace().nth(1) {
-                port = port_str.parse().ok();
-            }
-        }
-    }
-
-    match (ip, port) {
-        (Some(ip_str), Some(p)) => format!("{}:{}", ip_str, p).parse().ok(),
-        _ => None,
-    }
+    fcp_media::remote_audio_endpoint(sdp)
 }
 
 /// Pick the first supported codec from an SDP offer.
@@ -5458,6 +5449,14 @@ mod tests {
     #[test]
     fn test_parse_remote_rtp_addr() {
         let sdp = "v=0\r\no=- 1234 1234 IN IP4 192.168.1.50\r\nc=IN IP4 192.168.1.50\r\nm=audio 10000 RTP/AVP 0 8\r\n";
+        let addr = parse_remote_rtp_addr(sdp).unwrap();
+        assert_eq!(addr, "192.168.1.50:10000".parse::<SocketAddr>().unwrap());
+    }
+
+    #[test]
+    fn test_parse_remote_rtp_addr_ignores_video_connection() {
+        let sdp = "v=0\r\no=- 1 1 IN IP4 192.168.1.50\r\nc=IN IP4 192.168.1.50\r\n\
+                   m=audio 10000 RTP/AVP 0 8\r\nm=video 10002 RTP/AVP 96\r\nc=IN IP4 10.9.9.9\r\n";
         let addr = parse_remote_rtp_addr(sdp).unwrap();
         assert_eq!(addr, "192.168.1.50:10000".parse::<SocketAddr>().unwrap());
     }

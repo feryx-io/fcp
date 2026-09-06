@@ -76,41 +76,72 @@ impl AudioCodec {
     }
 }
 
-/// Video codec definitions (placeholder for Phase 2+).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// Video codecs FCP negotiates (the five forge-media carries; see
+/// `docs/VIDEO_CONFERENCING.md` §6). Every one uses the 90 kHz RTP clock
+/// and a dynamic payload type that comes from the offer, so there is no
+/// fixed payload type here: the old fixed numbers put VP9 on 101, the
+/// telephone-event type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
 pub enum VideoCodec {
-    /// H.264/AVC
+    /// H.264 / AVC (RFC 6184)
     H264,
-
-    /// VP8
-    Vp8,
-
-    /// VP9
-    Vp9,
-
-    /// H.265/HEVC
+    /// H.265 / HEVC (RFC 7798)
     H265,
+    /// VP8 (RFC 7741)
+    Vp8,
+    /// VP9 (RFC 9628)
+    Vp9,
+    /// AV1 (AOM RTP payload specification)
+    Av1,
 }
 
 impl VideoCodec {
-    /// Get the RTP payload type for this codec.
-    pub fn payload_type(self) -> u8 {
-        match self {
-            VideoCodec::H264 => 99,
-            VideoCodec::Vp8 => 100,
-            VideoCodec::Vp9 => 101,
-            VideoCodec::H265 => 102,
-        }
-    }
+    /// Every codec, in the order the platform lists them.
+    pub const ALL: [VideoCodec; 5] = [
+        VideoCodec::H264,
+        VideoCodec::H265,
+        VideoCodec::Vp8,
+        VideoCodec::Vp9,
+        VideoCodec::Av1,
+    ];
 
-    /// Get the codec name as it appears in SDP.
+    /// RTP clock rate shared by every video codec.
+    pub const CLOCK_RATE: u32 = 90_000;
+
+    /// The codec name as it appears in SDP `a=rtpmap`.
     pub fn sdp_name(self) -> &'static str {
         match self {
             VideoCodec::H264 => "H264",
+            VideoCodec::H265 => "H265",
             VideoCodec::Vp8 => "VP8",
             VideoCodec::Vp9 => "VP9",
-            VideoCodec::H265 => "H265",
+            VideoCodec::Av1 => "AV1",
         }
+    }
+
+    /// Parse an SDP encoding name (case-insensitive; `HEVC` is accepted
+    /// for H.265).
+    pub fn from_sdp_name(name: &str) -> Option<Self> {
+        let n = name.trim();
+        VideoCodec::ALL
+            .iter()
+            .copied()
+            .find(|c| c.sdp_name().eq_ignore_ascii_case(n))
+            .or_else(|| n.eq_ignore_ascii_case("HEVC").then_some(VideoCodec::H265))
+    }
+}
+
+impl std::fmt::Display for VideoCodec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.sdp_name())
+    }
+}
+
+impl std::str::FromStr for VideoCodec {
+    type Err = String;
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        VideoCodec::from_sdp_name(s).ok_or_else(|| format!("unknown video codec: {s}"))
     }
 }
 
@@ -122,11 +153,12 @@ pub enum Codec {
 }
 
 impl Codec {
-    /// Get the RTP payload type.
-    pub fn payload_type(self) -> u8 {
+    /// The RTP payload type, when the codec has a fixed one. Video codecs
+    /// use dynamic types negotiated per offer, so they have none.
+    pub fn payload_type(self) -> Option<u8> {
         match self {
-            Codec::Audio(c) => c.payload_type(),
-            Codec::Video(c) => c.payload_type(),
+            Codec::Audio(c) => Some(c.payload_type()),
+            Codec::Video(_) => None,
         }
     }
 
@@ -186,8 +218,8 @@ impl Default for CodecPreferences {
                 AudioCodec::Pcmu,
                 AudioCodec::Pcma,
             ],
-            // Default video preference: VP8 > H.264
-            video: vec![VideoCodec::Vp8, VideoCodec::H264],
+            // Default video preference: H.264 (what SIP phones carry) > VP8
+            video: vec![VideoCodec::H264, VideoCodec::Vp8],
         }
     }
 }

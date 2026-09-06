@@ -513,6 +513,9 @@ pub enum ConferenceEvent {
         room_number: String,
         participant_id: String,
         is_host: bool,
+        /// Whether the participant joined with a negotiated video stream.
+        #[serde(default)]
+        has_video: bool,
         tenant_id: TenantId,
         #[serde(with = "system_time_serde")]
         timestamp: SystemTime,
