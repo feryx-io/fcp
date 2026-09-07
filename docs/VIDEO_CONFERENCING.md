@@ -572,7 +572,7 @@ crate (`forge-rtp` 111, `forge-sdp` 90, `forge-core` 22).
 | 2 | **Mixer core** — done 2026-09-05, forge-media `v2026.09.05.1` (forge-video 0.1.0, forge-video-codecs 0.1.0, forge-core 0.2.2): frames with device residency, host scaling and the `Scaler` trait, the four layouts, the `Compositor` trait and `HostCompositor`, bitmap font, `VideoClock`, flavors and the bitrate ladder, codec traits and registry, raw codec, PSNR; libvpx, OpenH264, dav1d and SVT-AV1 bindings behind features with round-trip, bitrate and speed tests, built in CI. Open: real camera clips for the benchmark; SIMD scaling if the numbers ask | forge-media | done |
 | 3 | **Conference video (SIP)**: fcp-media/fcp-sip SDP per section, meeting model + API + events, conference server ingress/egress, layouts and host controls, capacity accounting and placement | FCP | 3–4 weeks |
 | 4 | **WebRTC** — done 2026-09-07 (§15.3): forge-webrtc video (forge-media `v2026.09.07.1`), the gateway's media path and direct room join (v0.25.107), join tokens, join page and surface (v0.25.108) | forge-media, FCP | done |
-| 5 | **Recording and cascade**: WebM/MP4 muxing, trunk video, cross-node speaker state | both | 2–3 weeks |
+| 5 | **Recording and cascade**: WebM muxing and a recording registry, trunk video, cross-node speaker state — planned 2026-09-07 as three blocks (§15.4); MP4 deferred | both | 3–4 weeks |
 | 6 | **Passthrough fast path, bitrate ladder, polish**: single-source forwarding, ladder switching, overload handling, fuzzing | both | 2 weeks |
 | 7 | **GPU backend**: `hwaccel` feature (FFmpeg device contexts), device codecs, device scale/overlay composition, per-device budgets and self-benchmark, placement by capability, PSNR parity tests against the host path | forge-media, FCP | 3–4 weeks + a GPU box |
 
@@ -782,6 +782,101 @@ Decisions proposed with this plan, each open to reversal:
   4c touch disjoint code (4c needs the header the conference server checks,
   which 4b only sends), so 4b ships browser joins gated on a PIN-less
   meeting and 4c adds the tokens.
+
+### 15.4 Phase 5 plan (2026-09-07)
+
+Phase 5 makes a video room durable and distributed: a recording of what
+the room shows and hears, video on the trunks between the nodes hosting
+a room, and one active speaker the nodes agree on. The surveys found
+less under §10 and §11 than they assumed, so the phase is three blocks
+(each a forge-media release and an FCP PR) and three to four weeks
+rather than two to three.
+
+**What the surveys found.** Nothing in either repository writes a video
+container: forge-recorder is WAV (hound) and Ogg/Opus with a hand-written
+RFC 7845 header, and no WebM, Matroska, EBML or MP4 code or dependency
+exists. A room's recording is fed by the mixer's frame clock —
+`ConferenceRoom::mix` writes each mixed frame to an `AudioRecorder` — at
+the mixer's rate (8 kHz), and the file is a `.wav` on one node's disk with
+nothing else knowing of it: no table, no store trait, no tenant-scoped
+listing (the conference server's `GET /recordings` reads its directory and
+filters on `.wav`), no admin API route, no admin page, and the compliance
+sweep prunes the B2BUA's call-recordings directory, not the conference
+server's. Recording bypasses the tenant's consent mode, which only the
+call-recording API enforces; the size monitor recovers the room from the
+filename. `VideoRoom` lets nothing out but packetized RTP per subscriber,
+and a subscriber must be a participant — registering a recorder as one
+would draw its avatar tile, since the tile loop, unlike the level loop,
+does not skip `__` ids. Two Opus encoders exist behind off-by-default
+features; the resampler exists; VP8/VP9 encode needs `video-vpx`. Trunks
+are complete for audio — virtual participants, mutual-TLS identity,
+reconcile, the "a trunk carries local callers only" anti-echo mix — and
+audio-only: the INVITE is a one-section string, the answer uses the
+audio-only builder, `add_virtual_participant` never registers with the
+video room, and `TrunkLeg` and the trunk's session carry no video.
+`OutputKey.exclude` already builds a composite without one tile. The
+active speaker is computed per node with 800 ms / 2 s hysteresis and the
+conference server drops the event on the floor; the trunk's energy is the
+peer's whole mix, and the media plane has no side channel (RTCP APP parses
+to an error, header extensions are unused, INFO is DTMF-only). The
+cross-node channel that exists is the `/internal` HTTP control plane under
+`cluster.secret`, with `broadcast` and `locate`; `GET …/video` is one
+node's view.
+
+| Block | Deliverable | Where |
+|---|---|---|
+| 5a | **Recording.** forge-media (release): `forge-webm`, a dependency-free Matroska writer — EBML header, live Segment, Info (1 ms timecode scale), Tracks (`V_VP8`/`V_VP9`, `A_OPUS` with OpusHead), Clusters of SimpleBlocks with keyframe flags, Cues written on finalise with the Segment size patched — with a reader-side test that walks it back; `VideoRoom::record(RecordRequest {codec, resolution, fps, max_kbps}) -> RecordingSink` (coded frames with room pts, from a dedicated output whose scope is everyone and which draws no tile; `stop_recording`; charged like a subscriber); `ConferenceRoom::tap_mix() -> mpsc::Receiver<MixedFrame>` (the mixed frame per clock tick, with its sample offset) beside the existing recorder path; `VideoRoom::started_at()` so pts converts to wall time. FCP: `recording.rs` in the conference server — the recorder task resamples the mix to 48 kHz, Opus-encodes 20 ms frames, takes VP8 (VP9 optional) coded frames, and writes one WebM with both tracks on one timebase; `conference.recording_format` (`auto`: WebM when the meeting has video and the node encodes VP8/VP9, else WAV as today; `wav`; `webm`), `recording_video_codec`, `recording_resolution` (room cap by default); a `recordings` table and `RecordingStore` (id, tenant, meeting, room, node, path, format, started, ended, size, duration, trigger, consent) written at start and stop; `POST …/recording/start|stop` gain `/internal` twins, start routed `wherever_it_is` and stop `room_wide`, a `recordings` map replacing the size monitor's filename parsing; consent — the tenant's `RecordingConsentMode::Announce` plays the prompt to the room before recording starts and to each later joiner; events carry `recording_id`, `format`, `node_id` and, on stop, `duration_secs` and `size_bytes`; retention — the node's cleanup deletes file and row by the tenant policy's `recording_retention_days` (falling back to `conference.recording_retention_days`) and the compliance report counts them; admin API `/v1/recordings` (list, get, delete, download proxied to the holding node) and a `RecordingsPage` with a player; `docs/COMPLIANCE.md` and `DISTRIBUTED_CONFERENCING.md` updated | forge-recorder→`forge-webm`, forge-conference, fcp-conference-server, fcp-core, fcp-storage-postgres, fcp-events, fcp-api-core, fcp-admin-ui |
+| 5b | **Trunk video.** forge-media (release): a remote tile — `VideoRoom::add_remote(id, codec)` registers a source that is a tile without being a participant, drawn as one tile at the composite's aspect, and `OutputScope::LocalOnly` for a subscription that composes local participants only (the audio anti-echo rule's analogue: a composite sent to a peer must not carry any peer's tiles, or a three-node room shows a tile twice); `add_virtual_participant` gains the video registration. FCP: `dial_trunk` builds its offer with `construct_offer` and a `VideoOfferSection` when the meeting has video and the node has a codec the meeting allows, SRTP per section under `cluster.trunk_srtp` (a peer that drops the crypto on either section is hung up, as today for audio); `handle_trunk_invite` answers with `build_answer` and a `VideoAnswer` from the same meeting lookup; `TrunkLeg.video`, a trunk `VideoLeg` attached as remote source plus local-only subscription at the room's cap and fps, `ParticipantSession.video` set; capacity counts the trunk's encode and decode; the trunk's video is negotiated when the trunk is dialled (a meeting enabling video later gets it when its trunks are next re-established, which reconcile does on the hour or when a node drains); liveness stays on audio; `DISTRIBUTED_CONFERENCING.md` §trunks updated | forge-conference, fcp-conference-server, fcp-media (reuse) |
+| 5c | **Cross-node speaker state.** forge-media (release): `VideoRoom::set_remote_speaker(remote_id, Option<RemoteSpeaker {participant_id, display_name, energy, speaking}>)` so a remote tile's level is the peer's claimed speaker rather than its mix, and `VideoRoomEvent::ActiveSpeaker` carries `via: Option<String>` (the remote id) with the speaker's own id. FCP: the node whose local participant becomes the room's speaker broadcasts `POST /internal/conferences/{room}/speaker {node, participant_id, display_name, energy, at}` through `ClusterControl`; every node feeds it to its video room, so all run the same rule on the same inputs and converge within one take interval (ties by node id); `conference.active_speaker_changed {room, participant_id, node_id}` emitted once, by the speaker's node; `GET …/video` becomes a `room_wide` read that merges the nodes' views (union of participants, the agreed speaker and layout) for the admin proxy and the Live Video dialog | forge-conference, fcp-conference-server, fcp-events, fcp-api-core, fcp-admin-ui |
+
+Decisions proposed with this plan, each open to reversal:
+
+- **WebM written by hand, MP4 deferred.** Matroska is a few hundred lines
+  of EBML and this codebase already writes Ogg/Opus by hand; a crate would
+  add a dependency for less. MP4 (H.264 + Opus-in-MP4) is not scheduled:
+  every browser and VLC play WebM, and the design lists MP4 as an option
+  for players that need it — it becomes a block of its own when one does.
+- **VP8 + Opus by default.** VP8 is the codec every player and browser
+  decodes and the cheapest to encode; VP9 is a setting. Recording needs the
+  node built with `video-vpx`; without it, a video meeting records audio
+  only, as WAV, with a warning — never silently nothing.
+- **WAV stays for audio-only meetings** (`recording_format = auto`), so
+  the tooling that reads today's files keeps working; WebM audio-only is
+  available by setting `webm`.
+- **The recorder takes coded frames, not packets**, through a sink on the
+  video room rather than a subscription: packetising and depacketising the
+  same frame would be waste, and a sink that is not a participant draws no
+  tile and needs no `__` exception.
+- **The mix is tapped at the mixer's rate and resampled to 48 kHz for
+  Opus.** Encoding 8 kHz Opus is legal but unusual in WebM; resampling is
+  cheap and the resampler exists.
+- **One recording per room, on the lowest-id hosting node** (the trunk
+  dialling rule), routed there by `wherever_it_is`; until 5b lands, a
+  multi-node room's recording is that node's composite and mix — audio is
+  already complete through the trunks, video shows that node's callers.
+- **A recording is a row first.** The table is what makes recordings
+  tenant-scoped, listable, downloadable across nodes and retainable by
+  policy; the file follows the row. The node writes the row (it has
+  storage); the admin API reads it and proxies downloads to the holding
+  node's own `GET /recordings/{filename}`.
+- **Consent is announced, not asked.** The room hears the tenant's prompt
+  before recording starts and each later joiner hears it once; refusing
+  to be recorded means leaving, as on the call-recording path.
+- **A trunk composite is local participants only.** Exclude-self would
+  suffice for two nodes, but with three a tile forwarded through a peer
+  would appear twice; local-only matches the audio rule exactly.
+- **The remote tile is one tile.** Per-participant tiles across nodes
+  stay deferred, as §10 says.
+- **Speaker state crosses the `/internal` control plane**, not the media
+  plane: it changes at most every 800 ms, the channel exists with a secret
+  and fan-out, and it needs no new RTCP or extension parsing. Agreement is
+  by shared inputs and a deterministic tie-break, not by election.
+- **`active_speaker_changed` has one emitter** — the speaker's node —
+  unlike `video_layout_changed`, whose per-node emission stays (it is a
+  room-wide write acknowledged per node); the merged `GET …/video` covers
+  the read side.
+- **Three blocks, in order.** 5a stands alone; 5b makes 5a's multi-node
+  recordings complete; 5c depends on 5b's remote tile.
 
 ## 16. Resolved questions
 
