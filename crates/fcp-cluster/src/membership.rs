@@ -52,11 +52,63 @@ pub struct ClusterMember {
     /// `docs/MULTI_REGION.md`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub region: Option<String>,
+    /// Video capacity left per device, advertised by conference nodes
+    /// (`docs/VIDEO_CONFERENCING.md` §9.3). Placement prefers, for a video
+    /// room, the node with the most left on a device that has the room's
+    /// codecs. Empty on nodes without video and on records written by
+    /// older versions: such a node is neither preferred nor excluded.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub video_budget: Vec<VideoDeviceBudget>,
+}
+
+/// One device's video budget on a node, in work units: one unit is a
+/// thousandth of one execution unit's time per second (on the host, a
+/// millicore of one codec-pool thread). `left` is what a new room or
+/// participant may still cost here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VideoDeviceBudget {
+    /// `host`, or a GPU as `backend:address`.
+    pub device: String,
+    /// SDP names of the codecs the device runs (`H264`, `VP8`, …).
+    pub codecs: Vec<String>,
+    pub left: u32,
+    pub total: u32,
+}
+
+/// Writes the video budget a [`ClusterManager`] advertises.
+#[derive(Clone)]
+pub struct VideoBudgetHandle(Arc<std::sync::RwLock<Vec<VideoDeviceBudget>>>);
+
+impl VideoBudgetHandle {
+    pub fn set(&self, budget: Vec<VideoDeviceBudget>) {
+        if let Ok(mut b) = self.0.write() {
+            *b = budget;
+        }
+    }
+
+    pub fn get(&self) -> Vec<VideoDeviceBudget> {
+        self.0.read().map(|b| b.clone()).unwrap_or_default()
+    }
 }
 
 pub use fcp_core::region::resolve_region;
 
 impl ClusterMember {
+    /// The most video budget left on a device of this node that runs one of
+    /// `codecs` (any device when `codecs` is empty); `None` when the node
+    /// advertises no video budget at all — unknown, not zero.
+    pub fn video_budget_left(&self, codecs: &[String]) -> Option<u32> {
+        if self.video_budget.is_empty() {
+            return None;
+        }
+        self.video_budget
+            .iter()
+            .filter(|b| codecs.is_empty() || b.codecs.iter().any(|c| codecs.contains(c)))
+            .map(|b| b.left)
+            .max()
+            .or(Some(0))
+    }
+
     /// Whether this node is in `region`. A node without a region is in
     /// no region.
     pub fn in_region(&self, region: &str) -> bool {
@@ -77,12 +129,16 @@ pub struct ClusterManager {
     active_calls_counter: Arc<AtomicUsize>,
     /// Set by [`set_draining`](Self::set_draining); published with every heartbeat.
     draining: Arc<AtomicBool>,
+    /// Set by [`set_video_budget`](Self::set_video_budget); published with
+    /// every heartbeat.
+    video_budget: Arc<std::sync::RwLock<Vec<VideoDeviceBudget>>>,
 }
 
 impl ClusterManager {
     /// Create a new cluster manager.
     pub fn new(storage: RedisStorage, self_info: ClusterMember) -> Self {
         let (shutdown_tx, _) = watch::channel(false);
+        let self_info_budget = self_info.video_budget.clone();
         Self {
             storage,
             self_info,
@@ -93,6 +149,7 @@ impl ClusterManager {
             event_publisher: None,
             active_calls_counter: Arc::new(AtomicUsize::new(0)),
             draining: Arc::new(AtomicBool::new(false)),
+            video_budget: Arc::new(std::sync::RwLock::new(self_info_budget)),
         }
     }
 
@@ -120,6 +177,7 @@ impl ClusterManager {
         let event_publisher = self.event_publisher.clone();
         let active_calls_counter = Arc::clone(&self.active_calls_counter);
         let draining = Arc::clone(&self.draining);
+        let video_budget = Arc::clone(&self.video_budget);
 
         info!(
             node_id = %self_info.node_id,
@@ -144,6 +202,7 @@ impl ClusterManager {
                 // Read latest active call count from shared counter
                 self_info.active_calls = active_calls_counter.load(Ordering::Relaxed);
                 self_info.draining = draining.load(Ordering::Relaxed);
+                self_info.video_budget = video_budget.read().map(|b| b.clone()).unwrap_or_default();
 
                 // Publish heartbeat
                 if let Err(e) = publish_heartbeat(&storage, &self_info, ttl).await {
@@ -174,9 +233,25 @@ impl ClusterManager {
         let mut info = self.self_info.clone();
         info.active_calls = self.active_calls_counter.load(Ordering::Relaxed);
         info.draining = draining;
+        info.video_budget = self
+            .video_budget
+            .read()
+            .map(|b| b.clone())
+            .unwrap_or_default();
         publish_heartbeat(&self.storage, &info, self.heartbeat_ttl_secs).await?;
         info!(node_id = %info.node_id, draining, "Cluster draining flag published");
         Ok(())
+    }
+
+    /// Replace the video budget this node advertises; the heartbeat loop
+    /// publishes it with the next beat.
+    pub fn set_video_budget(&self, budget: Vec<VideoDeviceBudget>) {
+        self.video_budget_handle().set(budget);
+    }
+
+    /// A handle a background task can write the budget through.
+    pub fn video_budget_handle(&self) -> VideoBudgetHandle {
+        VideoBudgetHandle(Arc::clone(&self.video_budget))
     }
 
     /// Whether this node is draining.
@@ -438,7 +513,49 @@ mod tests {
             version: "test".to_string(),
             draining: false,
             region: region.map(str::to_owned),
+            video_budget: Vec::new(),
         }
+    }
+
+    #[test]
+    fn video_budget_is_optional_on_the_wire_and_read_per_codec() {
+        // A record written before video budgets existed still parses, and
+        // reads as "unknown".
+        let old = r#"{"node_id":"conf-1","node_type":"conference","http_address":"10.0.0.1:8090",
+            "sip_address":"10.0.0.1:5074","capabilities":[],"active_calls":0,"started_at":1,
+            "version":"0.25.0","region":"us-east"}"#;
+        let m: ClusterMember = serde_json::from_str(old).unwrap();
+        assert!(m.video_budget.is_empty());
+        assert_eq!(m.video_budget_left(&["H264".to_string()]), None);
+
+        // Without a budget the field is omitted.
+        let json = serde_json::to_string(&member("cm-1", None)).unwrap();
+        assert!(!json.contains("video_budget"));
+
+        let mut m = member("conf-2", None);
+        m.video_budget = vec![
+            VideoDeviceBudget {
+                device: "host".into(),
+                codecs: vec!["H264".into(), "VP8".into()],
+                left: 700,
+                total: 8000,
+            },
+            VideoDeviceBudget {
+                device: "vaapi:/dev/dri/renderD128".into(),
+                codecs: vec!["H264".into()],
+                left: 3000,
+                total: 20000,
+            },
+        ];
+        let back: ClusterMember =
+            serde_json::from_str(&serde_json::to_string(&m).unwrap()).unwrap();
+        assert_eq!(back.video_budget, m.video_budget);
+        // The best device that has the codec; a codec no device runs is 0,
+        // not unknown.
+        assert_eq!(back.video_budget_left(&["H264".to_string()]), Some(3000));
+        assert_eq!(back.video_budget_left(&["VP8".to_string()]), Some(700));
+        assert_eq!(back.video_budget_left(&["AV1".to_string()]), Some(0));
+        assert_eq!(back.video_budget_left(&[]), Some(3000));
     }
 
     #[test]

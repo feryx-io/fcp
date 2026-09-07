@@ -232,6 +232,7 @@ mod tests {
             version: String::new(),
             draining: false,
             region: None,
+            video_budget: Vec::new(),
         }
     }
 

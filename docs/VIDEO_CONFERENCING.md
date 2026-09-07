@@ -353,6 +353,28 @@ node does, and CPU nodes are the overflow. `conference_node_capacity`
 remains the participant count cap; the video budget is the second
 constraint. A room stays on the device it started on.
 
+*As built (3c-2):* a **work unit** is one thousandth of one execution
+unit's time per second — on the host, a millicore of one codec-pool
+thread — so a stream costs `⌈k × W × H × fps / 10⁶⌉` units and a node with
+a ten-thread pool advertises `10 000 × headroom` (`conference.
+video_budget_headroom`, default 0.8): a 720p15 H.264 encode of hard
+content is 61 units. `k` comes from the startup self-benchmark
+(`forge_video::bench`, bounded by `conference.video_benchmark_seconds`,
+default 10; 0 uses the §9.4 hard column) run before the first heartbeat,
+so the very first `video_budget` a node advertises is measured. A room is
+priced from what runs (`VideoRoomStatus`: a decode per source at what it
+sends, an encode per flavor, a composite per output with the
+`1 + 0.1 × tiles` term) every five seconds and at every heartbeat; a join
+is priced conservatively (its decode plus an encode at the dearest of the
+meeting's codecs, plus a composite when it starts the room's video or
+asks for a canvas without itself), reserved on admission and released by
+the next re-pricing. Hosting nodes keep a video room regardless of budget
+(inter-node trunks are audio-only until phase 5), so the budget ranks the
+choice of a *new* room's node, a known-empty node last and a node
+advertising no budget in between; the region rule still comes first. The
+budget, its constants and their source are in the conference server's
+`/status` and on the admin cluster page.
+
 The dev machine (12 cores, AVX2, **2 GB RAM**) is enough for the phase 0
 benchmarks at 720p; memory, not CPU, bounds how many 1080p encoders can
 be measured at once here.
@@ -633,7 +655,7 @@ forge-video-codecs with private synthetic sources.
 | PR | Deliverable | Where |
 |---|---|---|
 | 3c-1 | **Controls** — implemented 2026-09-06 (FCP v0.25.102). Conference server: `PUT /conferences/{room}/video/layout` (`{"layout": …}`, room-wide), `POST …/video/pin/{pid}` and `DELETE …/video/pin`, `POST …/video/spotlight/{pid}` and `DELETE …/video/spotlight`, `POST …/participants/{pid}/video/{on|off}` (single-target), `GET …/video` (the room's video and every participant's, located across nodes), each mirrored on `/internal`; the controls live in `video_bridge` as functions on the room (`set_layout`, `pin`, `spotlight`, `set_participant_video`) with a `VideoControlError` the HTTP layer maps to 404 (not here, ask the peers), 409 (room here, no video yet) or 400 (unknown layout). The event pump turns `LayoutChanged` into `conference.video_layout_changed {room_number, layout, pinned, spotlight}`. Admin API: `ApiState::conference_server_url` + token (`[conference]` in fcp-admin's config, the events-server precedent), routes under `/api/v1/conferences/live/{room}/…` resolving the room to a meeting in the caller's tenant and passing the upstream answer through, dial-out included; `/api/v1/me/conferences/{id}/dial-out` for owners. Admin UI: a "Live Video" dialog per meeting (status polled every 3 s, layout select, pin / spotlight / video on-off per participant) and the unauthenticated direct-to-8090 client removed. *As built:* clearing the spotlight keeps the spotlight layout, as forge-conference does; a host's video-off surfaces as `video_state_changed` `disabled` from the room's own state machine, so no second event; the loopback test spotlights Alice and checks she fills Bob's canvas while the event reaches the bus | fcp-conference-server, fcp-events, fcp-api-core, fcp-admin, fcp-admin-ui |
-| 3c-2 | **Capacity.** forge-video gains a public `bench` module (the synthetic sources and `measure_codec` / `measure_compose`, returning ns/px; forge-video-codecs' test reuses it) — forge-media release. Conference server: a `VideoCapacity` accounting object per device (host only until phase 7) with the constants from the startup self-benchmark or the §9.4 table; `room_cost` recomputed from `VideoRoomStatus` on every heartbeat; admission after `plan_video` refuses a join whose marginal cost (a decode, an encode, compose when it is the room's first video or `exclude_self`) exceeds what is left, with the participant-cap 503; `video_budget` in the heartbeat and `active_calls` finally updated on conference nodes. Cluster: `ClusterMember.video_budget: Vec<VideoDeviceBudget {device, codecs, left, total}>`, `ConferenceNodeSelector` widened with the meeting's video need, `choose_conference_node` preferring, for a video room, the node with the most budget left on a device that has one of the room's codecs (a node advertising no budget is neither preferred nor excluded, like an unlabeled region). Admin: `video_budget` on `ClusterNodeInfo` and a column on the cluster page. Docs: §9.3 gets the work-unit definition, DISTRIBUTED_CONFERENCING and MULTI_REGION get the amended placement rule | forge-media (release), fcp-conference-server, fcp-cluster, fcp-sip, fcp-call-manager, fcp-admin, fcp-admin-ui |
+| 3c-2 | **Capacity** — implemented 2026-09-06 (FCP v0.25.103; forge-media `v2026.09.07`: forge-video 0.2.0). forge-video's public `bench` module (the synthetic sources, `measure_codec` / `measure_all` / `measure_compose` in ns/px, `CodecCost`). Conference server: `video_capacity` — `CostTable` (self-benchmark or the §9.4 hard column, H.265 priced as AV1), `units()`, `VideoCapacity` (per device, host only until phase 7) with `room_cost` from `VideoRoomStatus`, a conservative `join_cost`, `try_reserve` admission refusing with the participant-cap 503 after `plan_video`, and `recompute` every five seconds and at every heartbeat; the self-benchmark runs before membership starts so the first heartbeat carries a measured `video_budget`; `active_calls` is finally updated on conference nodes and `video_mixing` joins the capabilities; `/status` shows the budget, constants and their source. Config: `conference.video_benchmark_seconds` (10), `conference.video_budget_headroom` (0.8). Cluster: `ClusterMember.video_budget: Vec<VideoDeviceBudget {device, codecs, left, total}>` (omitted when empty, unknown to readers), `video_budget_left(codecs)`, `VideoBudgetHandle`, `VideoNeed`, `choose_conference_node` ranking by budget for video rooms as §9.3 says; `fcp_sip::ConferenceVideoNeed::of(&meeting)` threads the meeting's codecs through `ConferenceNodeSelector` from both routing sites. Admin: `video_budget` on `ClusterNodeInfo` and a "Video Budget" column on the cluster page. Docs: §9.3 as-built, DISTRIBUTED_CONFERENCING and MULTI_REGION placement | forge-media (release), fcp-conference-server, fcp-cluster, fcp-sip, fcp-call-manager, fcp-admin-ui |
 
 Decisions proposed with this plan, each open to reversal:
 

@@ -220,6 +220,13 @@ impl ConferenceRegistry {
     }
 }
 
+/// What a room needs of a node's video capacity: the SDP names of the
+/// codecs the meeting allows. `None` for an audio-only meeting.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct VideoNeed {
+    pub codecs: Vec<String>,
+}
+
 /// Pick the node a new participant of `room` should be sent to.
 ///
 /// - `hosts`: nodes currently hosting the room (from the registry).
@@ -229,6 +236,14 @@ impl ConferenceRegistry {
 ///   to another node; `0` means never spread.
 /// - `local_region`: the region the participant is joining from (the
 ///   placing node's own region); `None` places without regard to region.
+/// - `video`: for a video meeting, the codecs it allows. Among otherwise
+///   equal candidates (steps 2 and 4) the node with the most video budget
+///   left on a device that runs one of them wins, a node with a known
+///   budget of zero comes last, and a node advertising no budget sits in
+///   between — unknown, neither preferred nor excluded. Hosting nodes
+///   (steps 1 and 3) keep their priority regardless of budget: inter-node
+///   trunks carry audio only, so spreading a video room would cost its
+///   participants each other's video (`docs/VIDEO_CONFERENCING.md` §9.3).
 ///
 /// In order:
 ///
@@ -251,6 +266,7 @@ pub fn choose_conference_node(
     members: &[ClusterMember],
     capacity: usize,
     local_region: Option<&str>,
+    video: Option<&VideoNeed>,
 ) -> Option<ClusterMember> {
     let live: Vec<&ClusterMember> = members
         .iter()
@@ -276,10 +292,28 @@ pub fn choose_conference_node(
             .then(a.0.node_id.cmp(&b.0.node_id))
     });
 
+    // Least loaded; for a video room, most video budget first. A node that
+    // advertises no budget ranks as 0 left but is not "exhausted", so it
+    // sits between nodes with budget and nodes known to have none.
     let least_loaded = |candidates: &[&ClusterMember]| -> Option<ClusterMember> {
         candidates
             .iter()
-            .min_by_key(|m| (m.active_calls, m.node_id.clone()))
+            .min_by_key(|m| {
+                let (exhausted, left) = match video {
+                    Some(need) => match m.video_budget_left(&need.codecs) {
+                        Some(0) => (true, 0),
+                        Some(left) => (false, left),
+                        None => (false, 0),
+                    },
+                    None => (false, 0),
+                };
+                (
+                    exhausted,
+                    std::cmp::Reverse(left),
+                    m.active_calls,
+                    m.node_id.clone(),
+                )
+            })
             .map(|m| (*m).clone())
     };
 
@@ -390,15 +424,15 @@ mod tests {
         draining.draining = true;
         let members = vec![draining, member("conf-b", "conference", 50)];
         // conf-a hosts the room and is under capacity, but is draining.
-        let pick = choose_conference_node(&[host("conf-a", 3)], &members, 100, None).unwrap();
+        let pick = choose_conference_node(&[host("conf-a", 3)], &members, 100, None, None).unwrap();
         assert_eq!(pick.node_id, "conf-b");
         // A brand-new room avoids it too, whatever its load.
-        let pick = choose_conference_node(&[], &members, 0, None).unwrap();
+        let pick = choose_conference_node(&[], &members, 0, None, None).unwrap();
         assert_eq!(pick.node_id, "conf-b");
         // With every conference node draining there is nothing to pick.
         let mut all = members.clone();
         all[1].draining = true;
-        assert!(choose_conference_node(&[], &all, 0, None).is_none());
+        assert!(choose_conference_node(&[], &all, 0, None, None).is_none());
     }
 
     fn member(id: &str, node_type: &str, calls: usize) -> ClusterMember {
@@ -414,6 +448,7 @@ mod tests {
             version: "test".to_string(),
             draining: false,
             region: None,
+            video_budget: Vec::new(),
         }
     }
 
@@ -436,7 +471,7 @@ mod tests {
             member("conf-b", "conference", 12),
             member("cm-1", "call_manager", 0),
         ];
-        let pick = choose_conference_node(&[], &members, 0, None).unwrap();
+        let pick = choose_conference_node(&[], &members, 0, None, None).unwrap();
         assert_eq!(pick.node_id, "conf-b");
     }
 
@@ -447,10 +482,11 @@ mod tests {
             member("conf-b", "conference", 1),
         ];
         // conf-a hosts the room with 30 participants; capacity 100 → stay.
-        let pick = choose_conference_node(&[host("conf-a", 30)], &members, 100, None).unwrap();
+        let pick =
+            choose_conference_node(&[host("conf-a", 30)], &members, 100, None, None).unwrap();
         assert_eq!(pick.node_id, "conf-a");
         // capacity 0 = never spread, even when a node is busy.
-        let pick = choose_conference_node(&[host("conf-a", 30)], &members, 0, None).unwrap();
+        let pick = choose_conference_node(&[host("conf-a", 30)], &members, 0, None, None).unwrap();
         assert_eq!(pick.node_id, "conf-a");
     }
 
@@ -461,13 +497,15 @@ mod tests {
             member("conf-b", "conference", 5),
             member("conf-c", "conference", 9),
         ];
-        let pick = choose_conference_node(&[host("conf-a", 100)], &members, 100, None).unwrap();
+        let pick =
+            choose_conference_node(&[host("conf-a", 100)], &members, 100, None, None).unwrap();
         assert_eq!(pick.node_id, "conf-b");
         // Once conf-b hosts too, it is preferred until it is full as well.
         let pick = choose_conference_node(
             &[host("conf-a", 100), host("conf-b", 3)],
             &members,
             100,
+            None,
             None,
         )
         .unwrap();
@@ -478,6 +516,7 @@ mod tests {
             &members,
             100,
             None,
+            None,
         )
         .unwrap();
         assert_eq!(pick.node_id, "conf-c");
@@ -487,12 +526,13 @@ mod tests {
     fn dead_hosts_are_ignored_and_no_conference_nodes_means_none() {
         let members = vec![member("conf-b", "conference", 5)];
         // conf-a is in the registry but not in membership: skip it.
-        let pick = choose_conference_node(&[host("conf-a", 3)], &members, 100, None).unwrap();
+        let pick = choose_conference_node(&[host("conf-a", 3)], &members, 100, None, None).unwrap();
         assert_eq!(pick.node_id, "conf-b");
         assert!(choose_conference_node(
             &[host("conf-a", 3)],
             &[member("cm-1", "call_manager", 0)],
             100,
+            None,
             None
         )
         .is_none());
@@ -506,13 +546,13 @@ mod tests {
         ];
         let hosts = [host("conf-eu", 50), host("conf-us", 2)];
         // From the US the US host wins although the EU host is fuller.
-        let pick = choose_conference_node(&hosts, &members, 100, Some("us-east")).unwrap();
+        let pick = choose_conference_node(&hosts, &members, 100, Some("us-east"), None).unwrap();
         assert_eq!(pick.node_id, "conf-us");
         // From the EU, the EU host.
-        let pick = choose_conference_node(&hosts, &members, 100, Some("eu-west")).unwrap();
+        let pick = choose_conference_node(&hosts, &members, 100, Some("eu-west"), None).unwrap();
         assert_eq!(pick.node_id, "conf-eu");
         // Region-blind placement keeps the old rule: the fullest host.
-        let pick = choose_conference_node(&hosts, &members, 100, None).unwrap();
+        let pick = choose_conference_node(&hosts, &members, 100, None, None).unwrap();
         assert_eq!(pick.node_id, "conf-eu");
     }
 
@@ -526,10 +566,11 @@ mod tests {
         // The EU hosts the room with plenty of capacity, but a US caller
         // is placed on the least-loaded US node, starting a cascade.
         let pick =
-            choose_conference_node(&[host("conf-eu", 3)], &members, 100, Some("us-east")).unwrap();
+            choose_conference_node(&[host("conf-eu", 3)], &members, 100, Some("us-east"), None)
+                .unwrap();
         assert_eq!(pick.node_id, "conf-us-b");
         // A brand-new room from the US also starts in the US.
-        let pick = choose_conference_node(&[], &members, 0, Some("us-east")).unwrap();
+        let pick = choose_conference_node(&[], &members, 0, Some("us-east"), None).unwrap();
         assert_eq!(pick.node_id, "conf-us-b");
         // Once a US node hosts it, that node is preferred over the emptier US node.
         let pick = choose_conference_node(
@@ -537,6 +578,7 @@ mod tests {
             &members,
             100,
             Some("us-east"),
+            None,
         )
         .unwrap();
         assert_eq!(pick.node_id, "conf-us-a");
@@ -553,13 +595,14 @@ mod tests {
         ];
         // Nothing usable in the US: a hosting node elsewhere wins first …
         let pick =
-            choose_conference_node(&[host("conf-eu", 10)], &members, 100, Some("us-east")).unwrap();
+            choose_conference_node(&[host("conf-eu", 10)], &members, 100, Some("us-east"), None)
+                .unwrap();
         assert_eq!(pick.node_id, "conf-eu");
         // … else the least-loaded node anywhere, unlabeled nodes included.
-        let pick = choose_conference_node(&[], &members, 0, Some("us-east")).unwrap();
+        let pick = choose_conference_node(&[], &members, 0, Some("us-east"), None).unwrap();
         assert_eq!(pick.node_id, "conf-anywhere");
         // A region nobody is in behaves the same.
-        let pick = choose_conference_node(&[], &members, 0, Some("ap-south")).unwrap();
+        let pick = choose_conference_node(&[], &members, 0, Some("ap-south"), None).unwrap();
         assert_eq!(pick.node_id, "conf-anywhere");
     }
 
@@ -570,10 +613,121 @@ mod tests {
             in_region(member("conf-us", "conference", 30), "us-east"),
         ];
         // A US caller stays in the US even though the unlabeled node is idle.
-        let pick = choose_conference_node(&[], &members, 0, Some("us-east")).unwrap();
+        let pick = choose_conference_node(&[], &members, 0, Some("us-east"), None).unwrap();
         assert_eq!(pick.node_id, "conf-us");
         // A caller with no region of their own takes the idle node.
-        let pick = choose_conference_node(&[], &members, 0, None).unwrap();
+        let pick = choose_conference_node(&[], &members, 0, None, None).unwrap();
         assert_eq!(pick.node_id, "conf-unlabeled");
+    }
+
+    fn with_budget(mut m: ClusterMember, codecs: &[&str], left: u32) -> ClusterMember {
+        m.video_budget = vec![crate::membership::VideoDeviceBudget {
+            device: "host".into(),
+            codecs: codecs.iter().map(|c| c.to_string()).collect(),
+            left,
+            total: 8000,
+        }];
+        m
+    }
+
+    fn need(codecs: &[&str]) -> VideoNeed {
+        VideoNeed {
+            codecs: codecs.iter().map(|c| c.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn video_rooms_prefer_the_node_with_the_most_budget_for_their_codecs() {
+        let members = vec![
+            with_budget(
+                member("conf-busy", "conference", 40),
+                &["H264", "VP8"],
+                5000,
+            ),
+            with_budget(member("conf-idle", "conference", 0), &["H264", "VP8"], 900),
+            with_budget(member("conf-vp8", "conference", 0), &["VP8"], 7000),
+        ];
+        // Audio: least loaded, as before (both idle nodes tie on calls; id order).
+        let pick = choose_conference_node(&[], &members, 0, None, None).unwrap();
+        assert_eq!(pick.node_id, "conf-idle");
+        // H.264 video: the busy node has the most H.264 budget left.
+        let pick = choose_conference_node(&[], &members, 0, None, Some(&need(&["H264"]))).unwrap();
+        assert_eq!(pick.node_id, "conf-busy");
+        // VP8 video: the VP8-only node has the most.
+        let pick = choose_conference_node(&[], &members, 0, None, Some(&need(&["VP8"]))).unwrap();
+        assert_eq!(pick.node_id, "conf-vp8");
+        // A meeting allowing either codec takes the best device for any of them.
+        let pick =
+            choose_conference_node(&[], &members, 0, None, Some(&need(&["H264", "VP8"]))).unwrap();
+        assert_eq!(pick.node_id, "conf-vp8");
+    }
+
+    #[test]
+    fn exhausted_budget_ranks_last_and_unknown_budget_in_between() {
+        let members = vec![
+            with_budget(member("conf-empty", "conference", 0), &["H264"], 0),
+            member("conf-unknown", "conference", 0),
+            with_budget(member("conf-some", "conference", 50), &["H264"], 100),
+        ];
+        let h264 = need(&["H264"]);
+        let pick = choose_conference_node(&[], &members, 0, None, Some(&h264)).unwrap();
+        assert_eq!(pick.node_id, "conf-some", "budget beats load");
+        let two = vec![members[0].clone(), members[1].clone()];
+        let pick = choose_conference_node(&[], &two, 0, None, Some(&h264)).unwrap();
+        assert_eq!(pick.node_id, "conf-unknown", "unknown beats known-empty");
+        let one = vec![members[0].clone()];
+        let pick = choose_conference_node(&[], &one, 0, None, Some(&h264)).unwrap();
+        assert_eq!(
+            pick.node_id, "conf-empty",
+            "an exhausted node is still a node"
+        );
+        // A codec nobody runs natively: every budget reads 0, load decides.
+        let pick = choose_conference_node(&[], &members, 0, None, Some(&need(&["AV1"]))).unwrap();
+        assert_eq!(pick.node_id, "conf-unknown");
+    }
+
+    #[test]
+    fn a_hosting_node_keeps_a_video_room_whatever_its_budget() {
+        let members = vec![
+            with_budget(member("conf-a", "conference", 40), &["H264"], 0),
+            with_budget(member("conf-b", "conference", 0), &["H264"], 8000),
+        ];
+        let pick = choose_conference_node(
+            &[host("conf-a", 3)],
+            &members,
+            100,
+            None,
+            Some(&need(&["H264"])),
+        )
+        .unwrap();
+        assert_eq!(pick.node_id, "conf-a");
+        // Once the host is at capacity the room spreads to the node with budget.
+        let pick = choose_conference_node(
+            &[host("conf-a", 100)],
+            &members,
+            100,
+            None,
+            Some(&need(&["H264"])),
+        )
+        .unwrap();
+        assert_eq!(pick.node_id, "conf-b");
+    }
+
+    #[test]
+    fn region_still_comes_before_budget() {
+        let members = vec![
+            in_region(
+                with_budget(member("conf-us", "conference", 10), &["H264"], 100),
+                "us-east",
+            ),
+            in_region(
+                with_budget(member("conf-eu", "conference", 0), &["H264"], 8000),
+                "eu-west",
+            ),
+        ];
+        let pick =
+            choose_conference_node(&[], &members, 0, Some("us-east"), Some(&need(&["H264"])))
+                .unwrap();
+        assert_eq!(pick.node_id, "conf-us");
     }
 }

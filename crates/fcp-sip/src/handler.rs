@@ -239,11 +239,34 @@ pub enum RouteResolution {
 /// to the configured `conference_server_uri`.
 #[async_trait::async_trait]
 pub trait ConferenceNodeSelector: Send + Sync {
+    /// `video` carries the meeting's video codecs when it allows video, so
+    /// the selector can prefer a node with video capacity for them.
     async fn select_conference_node(
         &self,
         tenant_id: &fcp_core::TenantId,
         room_number: &str,
+        video: Option<&ConferenceVideoNeed>,
     ) -> Option<String>;
+}
+
+/// What a video meeting asks of a conference node: the SDP names of the
+/// codecs it allows (`H264`, `VP8`, …). Built from a `Meeting` with
+/// [`ConferenceVideoNeed::of`]; `None` for an audio-only meeting.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConferenceVideoNeed {
+    pub codecs: Vec<String>,
+}
+
+impl ConferenceVideoNeed {
+    pub fn of(meeting: &fcp_core::Meeting) -> Option<Self> {
+        meeting.video_enabled.then(|| Self {
+            codecs: meeting
+                .video_codecs
+                .iter()
+                .map(|c| c.sdp_name().to_string())
+                .collect(),
+        })
+    }
 }
 
 #[async_trait::async_trait]
@@ -787,10 +810,11 @@ impl SipMessageHandler {
         &self,
         tenant_id: &fcp_core::TenantId,
         room_number: &str,
+        video: Option<&ConferenceVideoNeed>,
     ) -> Option<String> {
         if let Some(selector) = &self.conference_node_selector {
             if let Some(host) = selector
-                .select_conference_node(tenant_id, room_number)
+                .select_conference_node(tenant_id, room_number, video)
                 .await
             {
                 return Some(host);
@@ -3479,6 +3503,7 @@ impl SipMessageHandler {
                                                     .conference_target_host(
                                                         &meeting.tenant_id,
                                                         room_number,
+                                                        ConferenceVideoNeed::of(&meeting).as_ref(),
                                                     )
                                                     .await;
                                                 if let Some(host) = conf_host.as_deref() {
@@ -4435,6 +4460,7 @@ impl SipMessageHandler {
                                             .conference_target_host(
                                                 &meeting.tenant_id,
                                                 extension_number,
+                                                ConferenceVideoNeed::of(&meeting).as_ref(),
                                             )
                                             .await;
                                         if let Some(host) = conf_host.as_deref() {

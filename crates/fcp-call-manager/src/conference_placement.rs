@@ -5,12 +5,14 @@
 //! cluster membership: a new participant stays on a node already hosting
 //! the room while that node is under `conference_node_capacity`, otherwise
 //! goes to the least-loaded conference node, preferring this node's region
-//! at every step. See `docs/DISTRIBUTED_CONFERENCING.md` and
-//! `docs/MULTI_REGION.md`.
+//! at every step and, for a video meeting, the node with the most video
+//! budget left for its codecs. See `docs/DISTRIBUTED_CONFERENCING.md`,
+//! `docs/MULTI_REGION.md` and `docs/VIDEO_CONFERENCING.md` §9.3.
 
 use dashmap::DashMap;
-use fcp_cluster::{choose_conference_node, ClusterMember, ConferenceRegistry};
+use fcp_cluster::{choose_conference_node, ClusterMember, ConferenceRegistry, VideoNeed};
 use fcp_core::TenantId;
+use fcp_sip::ConferenceVideoNeed;
 use std::sync::Arc;
 use tracing::{debug, warn};
 
@@ -44,6 +46,7 @@ impl fcp_sip::ConferenceNodeSelector for ClusterConferenceSelector {
         &self,
         tenant_id: &TenantId,
         room_number: &str,
+        video: Option<&ConferenceVideoNeed>,
     ) -> Option<String> {
         let hosts = match self
             .registry
@@ -57,15 +60,21 @@ impl fcp_sip::ConferenceNodeSelector for ClusterConferenceSelector {
             }
         };
         let members: Vec<ClusterMember> = self.members.iter().map(|e| e.value().clone()).collect();
+        let need = video.map(|v| VideoNeed {
+            codecs: v.codecs.clone(),
+        });
         let pick = choose_conference_node(
             &hosts,
             &members,
             self.capacity,
             self.local_region.as_deref(),
+            need.as_ref(),
         )?;
         debug!(
             room = %room_number,
             node = %pick.node_id,
+            video = ?need.as_ref().map(|n| &n.codecs),
+            video_budget_left = ?need.as_ref().and_then(|n| pick.video_budget_left(&n.codecs)),
             node_region = pick.region.as_deref().unwrap_or("-"),
             local_region = self.local_region.as_deref().unwrap_or("-"),
             hosting = hosts.len(),
