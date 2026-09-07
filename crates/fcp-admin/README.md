@@ -102,6 +102,15 @@ format = "json"
 - `level`: Log level: "trace", "debug", "info", "warn", "error" (default: "info")
 - `format`: Log format: "json", "pretty", "compact" (default: "json")
 
+#### [conference]
+
+- `server_url`: A conference server's HTTP API (e.g. "http://fcp-conference-server:8090"),
+  used for live room controls in the admin UI — video layout, pin, spotlight,
+  participant video on/off, dial-out — proxied under `/api/v1/conferences/live/{room}/…`.
+  Any conference node will do: it forwards to the nodes hosting a room itself.
+  Without it those endpoints answer 503.
+- `auth_token`: Bearer token for that API when it has `http.auth_enabled`
+
 ## Usage
 
 ### Basic Usage

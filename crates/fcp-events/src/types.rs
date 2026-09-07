@@ -554,6 +554,23 @@ pub enum ConferenceEvent {
         timestamp: SystemTime,
     },
 
+    /// The room's video layout changed: a host or the API set the layout
+    /// (`grid`, `active_speaker`, `spotlight`, `pip`), pinned or
+    /// spotlighted a participant, or a pinned or spotlighted participant
+    /// left. In a room spread over several conference nodes each hosting
+    /// node emits its own copy.
+    VideoLayoutChanged {
+        room_number: String,
+        layout: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pinned: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        spotlight: Option<String>,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
     /// Conference room was locked
     RoomLocked {
         room_number: String,
@@ -1207,6 +1224,7 @@ impl PlatformEvent {
                 ConferenceEvent::DialOutFailed { .. } => "conference.dial_out_failed",
                 ConferenceEvent::VideoStateChanged { .. } => "conference.video_state_changed",
                 ConferenceEvent::VideoOverload { .. } => "conference.video_overload",
+                ConferenceEvent::VideoLayoutChanged { .. } => "conference.video_layout_changed",
             },
             PlatformEvent::Queue(e) => match e {
                 QueueEvent::CallerEnqueued { .. } => "queue.caller_enqueued",
@@ -1293,7 +1311,8 @@ impl PlatformEvent {
                 | ConferenceEvent::DialOutInvited { tenant_id, .. }
                 | ConferenceEvent::DialOutFailed { tenant_id, .. }
                 | ConferenceEvent::VideoStateChanged { tenant_id, .. }
-                | ConferenceEvent::VideoOverload { tenant_id, .. } => Some(tenant_id),
+                | ConferenceEvent::VideoOverload { tenant_id, .. }
+                | ConferenceEvent::VideoLayoutChanged { tenant_id, .. } => Some(tenant_id),
             },
             PlatformEvent::Queue(e) => match e {
                 QueueEvent::CallerEnqueued { tenant_id, .. }
@@ -1579,7 +1598,8 @@ impl ConferenceEvent {
             | ConferenceEvent::DialOutInvited { timestamp, .. }
             | ConferenceEvent::DialOutFailed { timestamp, .. }
             | ConferenceEvent::VideoStateChanged { timestamp, .. }
-            | ConferenceEvent::VideoOverload { timestamp, .. } => *timestamp,
+            | ConferenceEvent::VideoOverload { timestamp, .. }
+            | ConferenceEvent::VideoLayoutChanged { timestamp, .. } => *timestamp,
         }
     }
 }

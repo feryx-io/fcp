@@ -608,6 +608,9 @@ export const me = {
 
   // Conferences
   listConferences: () => apiClient.get<MeetingResponse[]>('/me/conferences'),
+  /** Dial out from a conference the user owns. */
+  dialOutConference: (id: string, destination: string, options?: { greeting_tts?: string; greeting_prompt?: string }) =>
+    apiClient.post<DialOutResponse>(`/me/conferences/${encodeURIComponent(id)}/dial-out`, { destination, ...options }),
   getConference: (id: string) => apiClient.get<MeetingResponse>(`/me/conferences/${encodeURIComponent(id)}`),
   updateConference: (id: string, data: UpdateMeetingRequest) =>
     apiClient.patch<MeetingResponse>(`/me/conferences/${encodeURIComponent(id)}`, data),
@@ -625,11 +628,10 @@ export const conferences = {
   disableMeeting: (id: string) => apiClient.post<MeetingResponse>(`/conferences/meetings/${encodeURIComponent(id)}/disable`),
 }
 
-// Conference server live API (direct connection for real-time operations)
-// The conference server HTTP API runs on a separate port from the admin API.
-// Auto-detect: same hostname, port 8090.
-const CONF_API_BASE = `${window.location.protocol}//${window.location.hostname}:8090`
-
+// Live conference controls, proxied by the admin API to the conference
+// server (`/conferences/live/...`). The API resolves the room to a meeting in
+// the caller's tenant; the conference server forwards to whichever node hosts
+// the room.
 export interface DialOutResponse {
   status: string
   participant_id: string
@@ -637,65 +639,109 @@ export interface DialOutResponse {
   room_number: string
 }
 
-export interface LiveParticipant {
+/** A participant's video as the conference server reports it. `state` is
+ *  `off` (no video negotiated), `on`, `lost`, `disabled` (a host turned it
+ *  off) or `failed`. */
+export interface LiveParticipantVideo {
+  state: 'off' | 'on' | 'lost' | 'disabled' | 'failed' | string
+  codec?: string
+  resolution?: string
+  fps?: number
+  bitrate_kbps?: number
+  flavor?: string
+  keyframes_sent?: number
+  frames_decoded?: number
+  frames_lost?: number
+  nacks?: number
+  plis?: number
+  speaking?: boolean
+  is_inactive?: boolean
+}
+
+export interface LiveVideoParticipant {
   participant_id: string
-  state: string
-  gain: number
-  is_host: boolean
-  is_dial_out?: boolean
   display_name?: string
   caller_id?: string
-  codec?: string
-  duration_secs?: number
+  is_host?: boolean
+  is_dial_out?: boolean
+  is_speaking: boolean
+  muted: boolean
+  video: LiveParticipantVideo
 }
 
-export interface LiveConference {
-  room_number: string
-  participant_count: number
-  is_locked: boolean
-  is_recording: boolean
-  participants: LiveParticipant[]
+export interface LiveVideoFlavor {
+  codec: string
+  profile: string
+  resolution: string
+  fps: number
+  max_kbps: number
+  target_kbps: number
+  subscribers: number
+  keyframes: number
+  encode_errors: number
 }
+
+export interface LiveRoomVideo {
+  layout: string
+  spotlight: string | null
+  pinned: string | null
+  active_speaker: string | null
+  fps: number
+  target_fps: number
+  resolution: string
+  sources: number
+  encoders: number
+  ticks: number
+  overruns: number
+  outputs: { exclude: string | null; resolution: string; flavors: LiveVideoFlavor[] }[]
+}
+
+/** `GET /conferences/live/{room}/video` */
+export interface LiveRoomVideoStatus {
+  room_number: string
+  /** The conference node that answered. */
+  node_id: string
+  participant_count: number
+  participants: LiveVideoParticipant[]
+  /** `null` until somebody in the room has video. */
+  video: LiveRoomVideo | null
+}
+
+/** A layout, pin or spotlight control's answer. */
+export interface LiveLayoutResponse {
+  status: string
+  layout: string
+  pinned: string | null
+  spotlight: string | null
+  participant?: string
+}
+
+export const VIDEO_LAYOUT_LABELS: Record<string, string> = {
+  grid: 'Grid',
+  active_speaker: 'Active speaker',
+  spotlight: 'Spotlight',
+  pip: 'Picture in picture',
+}
+
+const liveRoom = (room: string) => `/conferences/live/${encodeURIComponent(room)}`
 
 export const conferenceLive = {
-  /** List active conferences with participants */
-  list: async (): Promise<LiveConference[]> => {
-    const res = await fetch(`${CONF_API_BASE}/conferences`)
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    return res.json()
-  },
-  /** Get a single active conference */
-  get: async (roomNumber: string): Promise<LiveConference> => {
-    const res = await fetch(`${CONF_API_BASE}/conferences/${encodeURIComponent(roomNumber)}/stats`)
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    return res.json()
-  },
-  /** Dial out to invite a participant into the conference */
-  dialOut: async (roomNumber: string, destination: string, options?: { greeting_tts?: string; greeting_prompt?: string }): Promise<DialOutResponse> => {
-    const res = await fetch(`${CONF_API_BASE}/conferences/${encodeURIComponent(roomNumber)}/dial-out`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ destination, ...options }),
-    })
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }))
-      throw new Error(err.error || `HTTP ${res.status}`)
-    }
-    return res.json()
-  },
-  /** Kick a participant */
-  kick: async (roomNumber: string, participantId: string): Promise<void> => {
-    const res = await fetch(`${CONF_API_BASE}/conferences/${encodeURIComponent(roomNumber)}/kick/${encodeURIComponent(participantId)}`, { method: 'POST' })
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
-  },
-  /** Mute a participant */
-  mute: async (roomNumber: string, participantId: string): Promise<void> => {
-    const res = await fetch(`${CONF_API_BASE}/conferences/${encodeURIComponent(roomNumber)}/mute/${encodeURIComponent(participantId)}`, { method: 'POST' })
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
-  },
-  /** Unmute a participant */
-  unmute: async (roomNumber: string, participantId: string): Promise<void> => {
-    const res = await fetch(`${CONF_API_BASE}/conferences/${encodeURIComponent(roomNumber)}/unmute/${encodeURIComponent(participantId)}`, { method: 'POST' })
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
-  },
+  /** The room's video and every participant's, from the hosting node. */
+  video: (room: string) => apiClient.get<LiveRoomVideoStatus>(`${liveRoom(room)}/video`),
+  setLayout: (room: string, layout: string) =>
+    apiClient.put<LiveLayoutResponse>(`${liveRoom(room)}/video/layout`, { layout }),
+  pin: (room: string, participantId: string) =>
+    apiClient.post<LiveLayoutResponse>(`${liveRoom(room)}/video/pin/${encodeURIComponent(participantId)}`),
+  unpin: (room: string) => apiClient.delete<LiveLayoutResponse>(`${liveRoom(room)}/video/pin`),
+  spotlight: (room: string, participantId: string) =>
+    apiClient.post<LiveLayoutResponse>(`${liveRoom(room)}/video/spotlight/${encodeURIComponent(participantId)}`),
+  unspotlight: (room: string) => apiClient.delete<LiveLayoutResponse>(`${liveRoom(room)}/video/spotlight`),
+  /** Host control: hide (`false`) or show (`true`) one participant's video. */
+  setParticipantVideo: (room: string, participantId: string, on: boolean) =>
+    apiClient.post<{ status: string; participant: string }>(
+      `${liveRoom(room)}/participants/${encodeURIComponent(participantId)}/video/${on ? 'on' : 'off'}`,
+    ),
+  /** Dial out to invite a participant into the conference. */
+  dialOut: (room: string, destination: string, options?: { greeting_tts?: string; greeting_prompt?: string }) =>
+    apiClient.post<DialOutResponse>(`${liveRoom(room)}/dial-out`, { destination, ...options }),
 }

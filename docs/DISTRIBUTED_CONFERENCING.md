@@ -224,6 +224,11 @@ request travels exactly one hop.
 | Mute / unmute | `POST /conferences/{room}/mute/{pid}`, `/unmute/{pid}` | the node the participant is on |
 | Gain | `POST /conferences/{room}/participants/{pid}/gain` | the node the participant is on |
 | Announce | `POST /conferences/{room}/announce` | one hosting node (the trunks carry it) |
+| Video status | `GET /conferences/{room}/video` | the first hosting node that has the room |
+| Video layout | `PUT /conferences/{room}/video/layout` `{"layout": …}` | every hosting node |
+| Pin / unpin | `POST /conferences/{room}/video/pin/{pid}`, `DELETE …/video/pin` | the node the participant is on / every hosting node |
+| Spotlight / clear | `POST /conferences/{room}/video/spotlight/{pid}`, `DELETE …/video/spotlight` | the node the participant is on / every hosting node |
+| Participant video | `POST /conferences/{room}/participants/{pid}/video/{on\|off}` | the node the participant is on |
 
 **Room-wide operations** (lock, unlock, end) are applied locally and, at
 the same time, on every other node the registry shows hosting the room
@@ -250,6 +255,26 @@ when the participant is here. When it is not — this node answers 404 —
 the hosting peers are asked one at a time until one has the participant;
 its answer comes back with `node` set to that peer. A 404 from every node
 returns `peers` with each answer.
+
+**Video controls** (video conferencing phase 3c, `docs/VIDEO_CONFERENCING.md`
+§8 and §12) follow the same two shapes. Layout, unpin and clear-spotlight
+are room-wide: each node composes its own canvas, so each applies the
+change. Pin, spotlight and a participant's video on/off go to the node
+the participant is on. A node that has the room but no video yet answers
+409 and is not forwarded past; an unknown layout is a 400. Clearing the
+spotlight keeps the spotlight layout (the active speaker fills the
+canvas) — set the layout to go back to a grid. Every hosting node's
+`VideoRoom` emits its own `conference.video_layout_changed`, so a room
+spread over several nodes produces one event per node with identical
+content. `GET …/video` is one node's view: its participants and its
+canvas; the other hosting nodes' local participants appear only as the
+trunk carries them.
+
+The admin API proxies these under `/api/v1/conferences/live/{room}/…`
+(and dial-out, plus `/api/v1/me/conferences/{id}/dial-out` for a
+meeting's owner) to the conference server named in the admin's
+`[conference] server_url`; any conference node will do as the entry
+point, since it forwards as above.
 
 **Announcements** are played on one node only: the announcer is mixed
 like any caller, so its audio crosses the inter-node trunks and every

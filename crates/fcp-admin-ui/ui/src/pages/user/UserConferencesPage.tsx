@@ -9,12 +9,12 @@ import { Switch } from '@/components/ui/switch'
 import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 import { Pencil, Phone, PhoneOutgoing, Users } from 'lucide-react'
-import { me, conferenceLive } from '@/api/endpoints'
+import { me } from '@/api/endpoints'
 import type { MeetingResponse, UpdateMeetingRequest } from '@/types'
 
 export function UserConferencesPage() {
   const [editItem, setEditItem] = useState<MeetingResponse | null>(null)
-  const [dialOutRoom, setDialOutRoom] = useState<string | null>(null)
+  const [dialOutConf, setDialOutConf] = useState<MeetingResponse | null>(null)
   const [dialOutDest, setDialOutDest] = useState('')
   const [dialOutGreeting, setDialOutGreeting] = useState('')
   const [dialOutPending, setDialOutPending] = useState(false)
@@ -68,7 +68,7 @@ export function UserConferencesPage() {
                   <CardTitle className="text-lg">{conf.name}</CardTitle>
                 </div>
                 <div className="flex gap-1">
-                  <Button variant="ghost" size="icon" onClick={() => { setDialOutRoom(conf.room_number); setDialOutDest(''); setDialOutResult(null) }} title="Dial Out">
+                  <Button variant="ghost" size="icon" onClick={() => { setDialOutConf(conf); setDialOutDest(''); setDialOutResult(null) }} title="Dial Out">
                     <PhoneOutgoing className="h-4 w-4" />
                   </Button>
                   <Button variant="ghost" size="icon" onClick={() => setEditItem(conf)} title="Edit">
@@ -107,10 +107,10 @@ export function UserConferencesPage() {
       />
 
       {/* Dial-Out Dialog */}
-      <Dialog open={!!dialOutRoom} onOpenChange={(open) => { if (!open) setDialOutRoom(null) }}>
+      <Dialog open={!!dialOutConf} onOpenChange={(open) => { if (!open) setDialOutConf(null) }}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Invite Participant — Room {dialOutRoom}</DialogTitle>
+            <DialogTitle>Invite Participant — Room {dialOutConf?.room_number}</DialogTitle>
             <DialogDescription>
               Call someone and connect them to your conference.
             </DialogDescription>
@@ -141,7 +141,7 @@ export function UserConferencesPage() {
               </p>
             )}
             <div className="flex justify-end gap-2">
-              <Button variant="outline" onClick={() => setDialOutRoom(null)} disabled={dialOutPending}>Cancel</Button>
+              <Button variant="outline" onClick={() => setDialOutConf(null)} disabled={dialOutPending}>Cancel</Button>
               <Button
                 disabled={!dialOutDest.trim() || dialOutPending}
                 onClick={async () => {
@@ -150,9 +150,9 @@ export function UserConferencesPage() {
                   try {
                     const opts: { greeting_tts?: string } = {}
                     if (dialOutGreeting.trim()) opts.greeting_tts = dialOutGreeting.trim()
-                    const res = await conferenceLive.dialOut(dialOutRoom!, dialOutDest.trim(), opts)
+                    const res = await me.dialOutConference(dialOutConf!.id, dialOutDest.trim(), opts)
                     setDialOutResult(`Connected: ${res.participant_id}`)
-                    setTimeout(() => setDialOutRoom(null), 2000)
+                    setTimeout(() => setDialOutConf(null), 2000)
                   } catch (e) {
                     setDialOutResult(`Error: ${(e as Error).message}`)
                   } finally {

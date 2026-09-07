@@ -995,6 +995,62 @@ impl ConferenceCallHandler {
         Ok(json)
     }
 
+    /// The room's video and each participant's, for `GET
+    /// /conferences/{room}/video` (design §12): what the live view needs
+    /// and nothing of the audio. Trunk participants are left out; they
+    /// carry another node's mix. `Err` when the room is not active here.
+    pub fn get_room_video(&self, room_number: &str) -> Result<serde_json::Value> {
+        let room = self
+            .bridge
+            .get_room(room_number)
+            .map_err(|e| anyhow::anyhow!("Room not found: {}", e))?;
+        let participants: Vec<serde_json::Value> = room
+            .get_all_participant_metadata()
+            .iter()
+            .filter(|meta| !crate::trunks::is_trunk_participant(&meta.id))
+            .map(|meta| {
+                let session = self
+                    .sessions
+                    .iter()
+                    .find(|e| e.value().participant_id == meta.id);
+                let mut p = serde_json::json!({
+                    "participant_id": meta.id,
+                    "is_speaking": meta.is_speaking,
+                    "muted": matches!(meta.state, forge_mixer::ParticipantState::Muted),
+                });
+                match session {
+                    Some(entry) => {
+                        let session = entry.value();
+                        p["is_host"] = serde_json::json!(session.is_host);
+                        p["is_dial_out"] = serde_json::json!(session.is_dial_out);
+                        if let Some(ref dn) = session.display_name {
+                            p["display_name"] = serde_json::json!(dn);
+                        }
+                        if let Some(ref cid) = session.caller_id {
+                            p["caller_id"] = serde_json::json!(cid);
+                        }
+                        p["video"] = video_bridge::participant_video_json(
+                            &room,
+                            &meta.id,
+                            session.video.as_ref(),
+                        );
+                    }
+                    None => {
+                        p["video"] = video_bridge::participant_video_json(&room, &meta.id, None);
+                    }
+                }
+                p
+            })
+            .collect();
+        Ok(serde_json::json!({
+            "room_number": room_number,
+            "node_id": self.node_id(),
+            "participant_count": room.participant_count(),
+            "participants": participants,
+            "video": video_bridge::room_video_json(&room),
+        }))
+    }
+
     /// List participants waiting for moderator in a room.
     pub fn list_waiting(&self, room_number: &str) -> Result<Vec<String>> {
         let room = self
@@ -2090,7 +2146,8 @@ impl ConferenceCallHandler {
             | ConferenceEvent::DialOutInvited { room_number, .. }
             | ConferenceEvent::DialOutFailed { room_number, .. }
             | ConferenceEvent::VideoStateChanged { room_number, .. }
-            | ConferenceEvent::VideoOverload { room_number, .. } => Some(room_number.clone()),
+            | ConferenceEvent::VideoOverload { room_number, .. }
+            | ConferenceEvent::VideoLayoutChanged { room_number, .. } => Some(room_number.clone()),
         };
 
         // Notify RFC 4575 subscribers for this room

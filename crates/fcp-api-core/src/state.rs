@@ -81,6 +81,15 @@ pub struct ApiState {
     /// Optional bearer token for authenticating to fcp-events-server.
     pub events_server_auth_token: Option<String>,
 
+    /// URL of a conference server's HTTP API (e.g. "http://conf-a:8090")
+    /// for live room controls. Any conference node will do: it locates
+    /// or broadcasts to the nodes hosting a room through `/internal`.
+    pub conference_server_url: Option<String>,
+
+    /// Bearer token for the conference server's HTTP API, when it has
+    /// `http.auth_enabled`.
+    pub conference_server_auth_token: Option<String>,
+
     /// Config store for database-backed configuration management (optional)
     pub config_store: Option<Arc<dyn ConfigStore>>,
 
@@ -165,6 +174,8 @@ impl ApiState {
             start_time: std::time::Instant::now(),
             events_server_url: None,
             events_server_auth_token: None,
+            conference_server_url: None,
+            conference_server_auth_token: None,
             config_store: None,
             voicemail_greetings_dir: None,
             voicemail_recordings_dir: None,
@@ -192,6 +203,18 @@ impl ApiState {
     /// Set the events server bearer token for cluster-wide queries.
     pub fn with_events_server_auth_token(mut self, token: Option<String>) -> Self {
         self.events_server_auth_token = token;
+        self
+    }
+
+    /// Set the conference server URL for live room controls.
+    pub fn with_conference_server_url(mut self, url: Option<String>) -> Self {
+        self.conference_server_url = url.map(|u| u.trim_end_matches('/').to_string());
+        self
+    }
+
+    /// Set the conference server bearer token for live room controls.
+    pub fn with_conference_server_auth_token(mut self, token: Option<String>) -> Self {
+        self.conference_server_auth_token = token;
         self
     }
 

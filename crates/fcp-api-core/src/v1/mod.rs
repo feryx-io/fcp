@@ -6,6 +6,7 @@ pub mod billing;
 pub mod cdrs;
 pub mod compliance;
 pub mod conferences;
+pub mod conferences_live;
 pub mod config;
 pub mod config_templates;
 pub mod dashboard;
@@ -156,6 +157,10 @@ pub fn router() -> Router<ApiState> {
         .route(
             "/me/conferences/:id",
             get(self_service::get_my_conference).patch(self_service::update_my_conference),
+        )
+        .route(
+            "/me/conferences/:id/dial-out",
+            post(self_service::dial_out_my_conference),
         );
 
     // Admin-only routes — EndUser JWTs are rejected with 403 by require_admin.
@@ -583,6 +588,39 @@ pub fn router() -> Router<ApiState> {
         .route(
             "/conferences/meetings/:id/disable",
             post(conferences::disable_meeting),
+        )
+        // Live conference controls, proxied to the conference server
+        .route(
+            "/conferences/live/:room/video",
+            get(conferences_live::video_status),
+        )
+        .route(
+            "/conferences/live/:room/video/layout",
+            put(conferences_live::set_video_layout),
+        )
+        .route(
+            "/conferences/live/:room/video/pin/:pid",
+            post(conferences_live::pin),
+        )
+        .route(
+            "/conferences/live/:room/video/pin",
+            delete(conferences_live::unpin),
+        )
+        .route(
+            "/conferences/live/:room/video/spotlight/:pid",
+            post(conferences_live::spotlight),
+        )
+        .route(
+            "/conferences/live/:room/video/spotlight",
+            delete(conferences_live::unspotlight),
+        )
+        .route(
+            "/conferences/live/:room/participants/:pid/video/:state",
+            post(conferences_live::participant_video),
+        )
+        .route(
+            "/conferences/live/:room/dial-out",
+            post(conferences_live::dial_out),
         )
         .layer(middleware::from_fn(crate::auth::require_admin));
 

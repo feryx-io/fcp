@@ -70,6 +70,15 @@ level = "info"
 # Use "json" for production (easier to parse), "pretty" for development
 format = "json"
 
+# [conference]
+# A conference server's HTTP API, for live room controls in the admin UI
+# (video layout, pin, spotlight, participant video on/off, dial-out). Any
+# conference node will do: it forwards to the nodes hosting a room itself.
+# Without it the live endpoints answer 503.
+# server_url = "http://fcp-conference-server:8090"
+# Bearer token for that API when it has http.auth_enabled.
+# auth_token = "conference-server-api-token"
+
 # ============================================================
 # Example Configurations for Different Deployment Scenarios
 # ============================================================

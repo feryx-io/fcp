@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
-import { MoreHorizontal, Plus, Pencil, Trash2, Phone, PhoneOutgoing, ArrowUp, X } from 'lucide-react'
+import { MoreHorizontal, Plus, Pencil, Trash2, Phone, PhoneOutgoing, ArrowUp, X, Video } from 'lucide-react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
@@ -21,6 +21,7 @@ import {
 import { conferences, conferenceLive, prompts, users, type PromptResponse } from '@/api/endpoints'
 import type { MeetingResponse, CreateMeetingRequest, UpdateMeetingRequest, User } from '@/types'
 import { useTenantListFilter } from '@/components/TenantSelector'
+import { LiveVideoDialog } from '@/components/LiveVideoDialog'
 
 const createSchema = z.object({
   room_number: z.string().min(1, 'Room number is required').regex(/^\d+$/, 'Must be numeric'),
@@ -178,6 +179,7 @@ export function ConferencesPage() {
   const [dialOutGreeting, setDialOutGreeting] = useState('')
   const [dialOutPending, setDialOutPending] = useState(false)
   const [dialOutResult, setDialOutResult] = useState<string | null>(null)
+  const [liveVideoRoom, setLiveVideoRoom] = useState<string | null>(null)
   const queryClient = useQueryClient()
 
   const { data: rawItems = [], isLoading } = useQuery({
@@ -312,6 +314,9 @@ export function ConferencesPage() {
             <DropdownMenuItem onClick={() => { setDialOutRoom(row.original.room_number); setDialOutDest(''); setDialOutGreeting(''); setDialOutResult(null) }}>
               <PhoneOutgoing className="mr-2 h-4 w-4" /> Dial Out
             </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => setLiveVideoRoom(row.original.room_number)}>
+              <Video className="mr-2 h-4 w-4" /> Live Video
+            </DropdownMenuItem>
             <DropdownMenuItem
               onClick={() => toggleMutation.mutate({ id: row.original.id, enabled: !row.original.enabled })}
             >
@@ -355,6 +360,8 @@ export function ConferencesPage() {
 
       <CreateDialog open={createOpen} onOpenChange={setCreateOpen} onSubmit={(data) => createMutation.mutate(data)} isPending={createMutation.isPending} promptList={promptList} userList={userList} />
       <EditDialog item={editItem} onOpenChange={(open) => { if (!open) setEditItem(null) }} onSubmit={(data) => { if (editItem) updateMutation.mutate({ id: editItem.id, data }) }} isPending={updateMutation.isPending} promptList={promptList} userList={userList} />
+
+      <LiveVideoDialog room={liveVideoRoom} onOpenChange={(open) => { if (!open) setLiveVideoRoom(null) }} />
 
       {/* Dial-Out Dialog */}
       <Dialog open={!!dialOutRoom} onOpenChange={(open) => { if (!open) setDialOutRoom(null) }}>

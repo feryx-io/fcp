@@ -161,6 +161,142 @@ pub fn room_video_json(room: &ConferenceRoom) -> serde_json::Value {
     })
 }
 
+// ---- runtime controls (design §8, §12) ---------------------------------------
+
+/// Why a video control could not be applied on this node.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VideoControlError {
+    /// The participant is not in the room on this node; it may be on
+    /// another node hosting the room.
+    NoSuchParticipant(String),
+    /// The room is active here but nobody has video yet, so there is no
+    /// video room to control.
+    NoVideo,
+    /// Not one of `grid`, `active_speaker`, `spotlight`, `pip`.
+    UnknownLayout(String),
+}
+
+impl std::fmt::Display for VideoControlError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoSuchParticipant(id) => write!(f, "Participant '{id}' not in room"),
+            Self::NoVideo => f.write_str("Room has no video"),
+            Self::UnknownLayout(l) => write!(
+                f,
+                "Unknown layout '{l}' (one of grid, active_speaker, spotlight, pip)"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for VideoControlError {}
+
+fn video_of(room: &ConferenceRoom) -> Result<Arc<VideoRoom>, VideoControlError> {
+    room.video().ok_or(VideoControlError::NoVideo)
+}
+
+fn participant_in(room: &ConferenceRoom, participant_id: &str) -> Result<(), VideoControlError> {
+    if room.participants().iter().any(|p| p == participant_id) {
+        Ok(())
+    } else {
+        Err(VideoControlError::NoSuchParticipant(
+            participant_id.to_string(),
+        ))
+    }
+}
+
+/// `{layout, pinned, spotlight}` after a control, for the response.
+fn layout_json(status: &str, video: &VideoRoom) -> serde_json::Value {
+    let st = video.status();
+    serde_json::json!({
+        "status": status,
+        "layout": st.layout.name(),
+        "pinned": st.pinned,
+        "spotlight": st.spotlight,
+    })
+}
+
+/// Set the room's layout on this node.
+pub fn set_layout(
+    room: &ConferenceRoom,
+    layout: &str,
+) -> Result<serde_json::Value, VideoControlError> {
+    let parsed = Layout::parse(layout)
+        .ok_or_else(|| VideoControlError::UnknownLayout(layout.to_string()))?;
+    let video = video_of(room)?;
+    video.set_layout(parsed);
+    Ok(layout_json("layout_set", &video))
+}
+
+/// Keep a participant in the first tile, or clear the pin with `None`.
+/// Pinning needs the participant here; clearing only needs the room.
+pub fn pin(
+    room: &ConferenceRoom,
+    participant_id: Option<&str>,
+) -> Result<serde_json::Value, VideoControlError> {
+    if let Some(pid) = participant_id {
+        participant_in(room, pid)?;
+    }
+    let video = video_of(room)?;
+    video.pin(participant_id);
+    let mut json = layout_json(
+        if participant_id.is_some() {
+            "pinned"
+        } else {
+            "unpinned"
+        },
+        &video,
+    );
+    if let Some(pid) = participant_id {
+        json["participant"] = serde_json::json!(pid);
+    }
+    Ok(json)
+}
+
+/// Put one participant full-canvas (this switches the layout to
+/// `spotlight` unless it is already `spotlight` or `pip`), or clear the
+/// spotlight with `None`. Clearing keeps the layout: set it explicitly to
+/// go back to a grid.
+pub fn spotlight(
+    room: &ConferenceRoom,
+    participant_id: Option<&str>,
+) -> Result<serde_json::Value, VideoControlError> {
+    if let Some(pid) = participant_id {
+        participant_in(room, pid)?;
+    }
+    let video = video_of(room)?;
+    video.spotlight(participant_id);
+    let mut json = layout_json(
+        if participant_id.is_some() {
+            "spotlighted"
+        } else {
+            "unspotlighted"
+        },
+        &video,
+    );
+    if let Some(pid) = participant_id {
+        json["participant"] = serde_json::json!(pid);
+    }
+    Ok(json)
+}
+
+/// Host control: hide (`false`) or show (`true`) a participant's video.
+/// Hidden, the participant's tile draws an avatar and its state reads
+/// `disabled`; the room's state machine emits `video_state_changed`.
+pub fn set_participant_video(
+    room: &ConferenceRoom,
+    participant_id: &str,
+    enabled: bool,
+) -> Result<serde_json::Value, VideoControlError> {
+    participant_in(room, participant_id)?;
+    let video = video_of(room)?;
+    video.set_participant_video_enabled(participant_id, enabled);
+    Ok(serde_json::json!({
+        "status": if enabled { "video_enabled" } else { "video_disabled" },
+        "participant": participant_id,
+    }))
+}
+
 impl std::fmt::Debug for VideoLeg {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("VideoLeg")
@@ -354,8 +490,18 @@ fn spawn_event_pump(video: &Arc<VideoRoom>, sink: VideoEventSink) {
                     debug!(room = %sink.room_number, speaker = ?participant_id, "active speaker");
                     None
                 }
-                // Layout controls and their event arrive with phase 3c.
-                VideoRoomEvent::LayoutChanged { .. } => None,
+                VideoRoomEvent::LayoutChanged {
+                    layout,
+                    pinned,
+                    spotlight,
+                } => Some(ConferenceEvent::VideoLayoutChanged {
+                    room_number: sink.room_number.clone(),
+                    layout: layout.name().to_string(),
+                    pinned,
+                    spotlight,
+                    tenant_id: sink.tenant_id,
+                    timestamp: SystemTime::now(),
+                }),
             };
             if let Some(event) = event {
                 if let Err(e) = sink
@@ -628,7 +774,7 @@ impl VideoLegStats {
 mod tests {
     use super::*;
     use fcp_core::VideoCodec;
-    use fcp_events::InMemoryEventBus;
+    use fcp_events::{EventFilter, EventSubscriber, InMemoryEventBus};
     use forge_conference::AudioFormat;
     use forge_rtp::video::payload::packetize;
     use forge_rtp::{AssemblerEvent, FrameAssembler, RemoteEndpoint, RtpSocketConfig};
@@ -884,7 +1030,7 @@ mod tests {
             let alice_ph = Arc::clone(&alice_ph);
             tokio::spawn(async move {
                 let mut seq = 1u16;
-                for i in 0..90u32 {
+                for i in 0..240u32 {
                     let f = HostFrame::solid(160, 90, 180, 128, 128).with_pts(i * 6000);
                     for c in enc.encode(&VideoFrame::Host(f), false).unwrap() {
                         let payloads = packetize(forge_core::VideoCodec::VP8, &c, 1200).unwrap();
@@ -933,6 +1079,65 @@ mod tests {
         let composite = composite.expect("bob's phone received alice composited");
         assert_eq!(composite.resolution(), Resolution::new(320, 180));
         assert_ne!(composite.luma(240, 90), 180, "bob's own tile is an avatar");
+
+        // A host spotlights Alice (design §8, §12): the layout switches to
+        // spotlight, the event reaches the bus through the pump, and the
+        // next composites Bob receives are Alice full-canvas.
+        let mut events = bus.subscribe(EventFilter::default()).await.unwrap();
+        let answer = spotlight(&room, Some("alice")).unwrap();
+        assert_eq!(answer["status"], "spotlighted");
+        assert_eq!(answer["layout"], "spotlight");
+        assert_eq!(answer["spotlight"], "alice");
+        let ev = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                match events.next().await {
+                    Some(PlatformEvent::Conference(ConferenceEvent::VideoLayoutChanged {
+                        room_number,
+                        layout,
+                        pinned,
+                        spotlight,
+                        ..
+                    })) => return (room_number, layout, pinned, spotlight),
+                    Some(_) => continue,
+                    None => panic!("bus closed"),
+                }
+            }
+        })
+        .await
+        .expect("video_layout_changed reached the bus");
+        assert_eq!(
+            ev,
+            (
+                "1000".to_string(),
+                "spotlight".to_string(),
+                None,
+                Some("alice".to_string())
+            )
+        );
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(4);
+        let mut full_canvas = false;
+        while tokio::time::Instant::now() < deadline {
+            let (bytes, _) =
+                match tokio::time::timeout(Duration::from_secs(1), bob_ph.recv_rtp_raw()).await {
+                    Ok(Ok(r)) => r,
+                    _ => continue,
+                };
+            let pkt = RtpPacket::parse(bytes).unwrap();
+            for ev in asm.push(pkt) {
+                if let AssemblerEvent::Frame(f) = ev {
+                    if let Some(v) = dec.decode(&f).unwrap() {
+                        let h = v.into_host().unwrap();
+                        if h.luma(80, 90) == 180 && h.luma(240, 90) == 180 {
+                            full_canvas = true;
+                        }
+                    }
+                }
+            }
+            if full_canvas {
+                break;
+            }
+        }
+        assert!(full_canvas, "after the spotlight, alice fills bob's canvas");
         sender.abort();
 
         // The bridge sent RTCP feedback to Alice's phone (the start-up PLI),
@@ -967,5 +1172,176 @@ mod tests {
         room.disable_video();
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert!(pumps.is_empty(), "the pump ended with the room's video");
+    }
+
+    /// The next conference event on the bus that `pick` accepts.
+    async fn next_event<T>(
+        events: &mut fcp_events::EventStream,
+        pick: impl Fn(&ConferenceEvent) -> Option<T>,
+    ) -> T {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                match events.next().await {
+                    Some(PlatformEvent::Conference(e)) => {
+                        if let Some(t) = pick(&e) {
+                            return t;
+                        }
+                    }
+                    Some(_) => continue,
+                    None => panic!("bus closed"),
+                }
+            }
+        })
+        .await
+        .expect("event reached the bus")
+    }
+
+    fn layout_of(e: &ConferenceEvent) -> Option<(String, Option<String>, Option<String>)> {
+        match e {
+            ConferenceEvent::VideoLayoutChanged {
+                layout,
+                pinned,
+                spotlight,
+                ..
+            } => Some((layout.clone(), pinned.clone(), spotlight.clone())),
+            _ => None,
+        }
+    }
+
+    /// Layout, pin, spotlight and per-participant video controls apply to
+    /// the room, answer what the API returns, refuse what they should, and
+    /// their events reach the platform bus (design §8, §12).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn controls_apply_to_the_room_and_reach_the_bus() {
+        let room = Arc::new(
+            ConferenceRoom::new(
+                "2000",
+                AudioFormat::pcm_mono(),
+                160,
+                forge_mixer::MixerOptions::default(),
+            )
+            .unwrap(),
+        );
+        room.add_participant("alice", true).unwrap();
+        room.add_participant("bob", false).unwrap();
+
+        // Without video the room refuses layout controls but still tells a
+        // missing participant apart (that answer is what makes a peer node
+        // get asked).
+        assert_eq!(set_layout(&room, "grid"), Err(VideoControlError::NoVideo));
+        assert_eq!(
+            pin(&room, Some("carol")),
+            Err(VideoControlError::NoSuchParticipant("carol".into()))
+        );
+        assert_eq!(
+            set_layout(&room, "sideways"),
+            Err(VideoControlError::UnknownLayout("sideways".into()))
+        );
+
+        let backend = VideoBackend::raw();
+        let (settings, _) = plan_video(&meeting(true), &usable_codecs(&backend, false)).unwrap();
+        let video = room.enable_video(settings, &backend);
+        let bus = Arc::new(InMemoryEventBus::new());
+        let pumps = Arc::new(dashmap::DashMap::new());
+        pumps.insert("2000".to_string(), ());
+        spawn_event_pump(
+            &video,
+            VideoEventSink {
+                event_bus: bus.clone() as Arc<dyn EventPublisher>,
+                tenant_id: TenantId::new(),
+                room_number: "2000".into(),
+                pumps: Arc::clone(&pumps),
+            },
+        );
+        let mut events = bus.subscribe(EventFilter::default()).await.unwrap();
+
+        let answer = set_layout(&room, "active_speaker").unwrap();
+        assert_eq!(answer["status"], "layout_set");
+        assert_eq!(answer["layout"], "active_speaker");
+        assert_eq!(
+            next_event(&mut events, layout_of).await,
+            ("active_speaker".to_string(), None, None)
+        );
+
+        let answer = pin(&room, Some("alice")).unwrap();
+        assert_eq!(answer["status"], "pinned");
+        assert_eq!(answer["participant"], "alice");
+        assert_eq!(answer["pinned"], "alice");
+        assert_eq!(
+            next_event(&mut events, layout_of).await,
+            ("active_speaker".to_string(), Some("alice".into()), None)
+        );
+
+        // Spotlighting switches the layout; clearing the spotlight keeps it.
+        let answer = spotlight(&room, Some("bob")).unwrap();
+        assert_eq!(answer["status"], "spotlighted");
+        assert_eq!(answer["layout"], "spotlight");
+        assert_eq!(answer["spotlight"], "bob");
+        assert_eq!(
+            next_event(&mut events, layout_of).await,
+            (
+                "spotlight".to_string(),
+                Some("alice".into()),
+                Some("bob".into())
+            )
+        );
+        let answer = spotlight(&room, None).unwrap();
+        assert_eq!(answer["status"], "unspotlighted");
+        assert_eq!(answer["layout"], "spotlight");
+        assert!(answer["spotlight"].is_null());
+        assert_eq!(
+            next_event(&mut events, layout_of).await,
+            ("spotlight".to_string(), Some("alice".into()), None)
+        );
+
+        // A host hides Alice's video: her tile reads `disabled` on the next
+        // tick and the state change is published; showing it again lifts it.
+        video
+            .add_source("alice", forge_core::VideoCodec::VP8)
+            .unwrap();
+        let answer = set_participant_video(&room, "alice", false).unwrap();
+        assert_eq!(answer["status"], "video_disabled");
+        assert_eq!(answer["participant"], "alice");
+        let state = next_event(&mut events, |e| match e {
+            ConferenceEvent::VideoStateChanged {
+                participant_id,
+                state,
+                ..
+            } if participant_id == "alice" && state == "disabled" => Some(state.clone()),
+            _ => None,
+        })
+        .await;
+        assert_eq!(state, "disabled");
+        assert_eq!(
+            video.participant("alice").unwrap().state,
+            forge_conference::video::VideoState::Disabled
+        );
+        let answer = set_participant_video(&room, "alice", true).unwrap();
+        assert_eq!(answer["status"], "video_enabled");
+        next_event(&mut events, |e| match e {
+            ConferenceEvent::VideoStateChanged {
+                participant_id,
+                state,
+                ..
+            } if participant_id == "alice" && state != "disabled" => Some(()),
+            _ => None,
+        })
+        .await;
+        assert_eq!(
+            set_participant_video(&room, "carol", false),
+            Err(VideoControlError::NoSuchParticipant("carol".into()))
+        );
+
+        // The pinned participant leaves: the pin clears and says so.
+        room.remove_participant("alice").unwrap();
+        assert_eq!(
+            next_event(&mut events, layout_of).await,
+            ("spotlight".to_string(), None, None)
+        );
+        let answer = pin(&room, None).unwrap();
+        assert_eq!(answer["status"], "unpinned");
+
+        drop(video);
+        room.disable_video();
     }
 }

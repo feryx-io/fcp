@@ -34,6 +34,10 @@ pub struct AdminConfig {
     #[serde(default)]
     pub cluster: ClusterConfig,
 
+    /// Conference server used for live room controls
+    #[serde(default)]
+    pub conference: ConferenceConfig,
+
     /// Directory for voicemail greetings (used by greeting upload/download endpoints)
     #[serde(default)]
     pub voicemail_greetings_dir: Option<String>,
@@ -344,6 +348,25 @@ impl Default for ClusterConfig {
     }
 }
 
+/// Conference server configuration.
+///
+/// Live room controls (video layout, pin, spotlight, participant video,
+/// dial-out) are proxied to one conference server's HTTP API. Any
+/// conference node will do: it applies an operation when it hosts the
+/// room and otherwise forwards to the hosting nodes itself. When
+/// `server_url` is absent the live endpoints answer 503.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct ConferenceConfig {
+    /// Base URL of a conference server's HTTP API
+    /// Example: "http://fcp-conference-server:8090"
+    #[serde(default)]
+    pub server_url: Option<String>,
+
+    /// Bearer token for that API, when it has `http.auth_enabled`.
+    #[serde(default)]
+    pub auth_token: Option<String>,
+}
+
 /// Load configuration from file or use defaults.
 ///
 /// Configuration priority:
@@ -481,6 +504,21 @@ mod tests {
         assert!(!config.api.allow_public_signup);
         assert_eq!(config.storage.database_url, "postgresql://localhost/fcp");
         assert_eq!(config.logging.level, "info");
+    }
+
+    #[test]
+    fn conference_section_is_optional_and_parses() {
+        let config: AdminConfig = toml::from_str("").unwrap();
+        assert!(config.conference.server_url.is_none());
+        let config: AdminConfig = toml::from_str(
+            "[conference]\nserver_url = \"http://conf-a:8090\"\nauth_token = \"s3cret\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            config.conference.server_url.as_deref(),
+            Some("http://conf-a:8090")
+        );
+        assert_eq!(config.conference.auth_token.as_deref(), Some("s3cret"));
     }
 
     #[test]
