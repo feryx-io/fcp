@@ -571,7 +571,7 @@ crate (`forge-rtp` 111, `forge-sdp` 90, `forge-core` 22).
 | 1 | **Substrate** — done 2026-09-05, forge-media `v2026.09.05` (forge-rtp 0.4.0, forge-core 0.2.1, forge-sdp 0.2.1): RTCP feedback, payload formats for H.264, H.265, VP8, VP9, AV1, frame assembler, retransmission cache, keyframe gate, stream rewriter, SDP video negotiation (`answer_video`, `reject_section`). Open for phase 3: sip-sdp lacks an `RTP/AVPF` protocol variant | forge-rtp, forge-sdp, forge-core | done |
 | 2 | **Mixer core** — done 2026-09-05, forge-media `v2026.09.05.1` (forge-video 0.1.0, forge-video-codecs 0.1.0, forge-core 0.2.2): frames with device residency, host scaling and the `Scaler` trait, the four layouts, the `Compositor` trait and `HostCompositor`, bitmap font, `VideoClock`, flavors and the bitrate ladder, codec traits and registry, raw codec, PSNR; libvpx, OpenH264, dav1d and SVT-AV1 bindings behind features with round-trip, bitrate and speed tests, built in CI. Open: real camera clips for the benchmark; SIMD scaling if the numbers ask | forge-media | done |
 | 3 | **Conference video (SIP)**: fcp-media/fcp-sip SDP per section, meeting model + API + events, conference server ingress/egress, layouts and host controls, capacity accounting and placement | FCP | 3–4 weeks |
-| 4 | **WebRTC**: video section in forge-webrtc, gateway join-room, browser test | forge-media, FCP | 2 weeks |
+| 4 | **WebRTC**: video section in forge-webrtc, the gateway's media path and direct room join, join tokens, browser test — planned 2026-09-07 as three PRs (§15.3) | forge-media, FCP | 3–4 weeks |
 | 5 | **Recording and cascade**: WebM/MP4 muxing, trunk video, cross-node speaker state | both | 2–3 weeks |
 | 6 | **Passthrough fast path, bitrate ladder, polish**: single-source forwarding, ladder switching, overload handling, fuzzing | both | 2 weeks |
 | 7 | **GPU backend**: `hwaccel` feature (FFmpeg device contexts), device codecs, device scale/overlay composition, per-device budgets and self-benchmark, placement by capability, PSNR parity tests against the host path | forge-media, FCP | 3–4 weeks + a GPU box |
@@ -690,6 +690,98 @@ Decisions proposed with this plan, each open to reversal:
   with identical content. Participant migration and a single-emitter rule
   belong with the distributed-conferencing follow-ups.
 - **Unpin and unspotlight are `DELETE`s**, additive to §12's list.
+
+### 15.3 Phase 4 plan (2026-09-07)
+
+Phase 4 puts browsers in a video room. The design (§4.1, §12) gives it
+two parts — a video section in forge-webrtc and a direct "join room" path
+in the gateway — and the surveys that produced this plan found the second
+part has less under it than §4.1 assumed, so the phase is three PRs and
+three to four weeks rather than two.
+
+**What the surveys found.** forge-webrtc is a complete, self-contained
+audio endpoint: its own ICE (host, server-reflexive and TURN relay, one
+socket, BUNDLE and rtcp-mux assumed), its own DTLS-SRTP on OpenSSL, offer
+and answer in both roles, trickle, renegotiation. It has *no* RTCP
+transmit path at all — no SR, RR, NACK, PLI or REMB is ever sent, and
+inbound RTCP is handed up as undecoded bytes — no RTP header extensions
+(RFC 8285 is not parsed or written, so no transport-cc sequence, no `mid`
+extension), no RTX, no FEC, no `a=msid`, `a=extmap`, `a=rid` or
+`a=simulcast`, and exactly one `m=audio` (Opus, PCMU, PCMA). forge-sdp
+already answers a video section (`answer_video` mirrors `mid` and
+`rtcp-mux`, keeps the offer's protocol, allow-lists `nack`, `nack pli`,
+`ccm fir`, `goog-remb`); forge-rtp already parses and builds every
+feedback type but transport-cc; and `VideoRoom`'s contract is
+transport-free (`push_rtp` returns the feedback to send, `subscribe` hands
+back a channel of packetized frames, `handle_feedback` takes the
+receiver's RTCP), so the gap is inside forge-webrtc. On the FCP side the
+gateway is thinner than its documentation: it builds an audio-only offer
+through forge-api and lets the browser answer, and its `POST /v1/calls`
+sends a G.711 INVITE through fcp-sip — but nothing joins the peer
+connection to the SIP leg, so no audio has ever flowed through it (the
+Opus↔G.711 transcoding its module docs describe does not exist). Browsers
+reach a room only as a SIP caller through the B2BUA; the conference server
+admits participants by INVITE alone (dial-out and trunks are INVITEs too),
+and a meeting's PINs are collected by DTMF. The conference server mixes
+PCMU, PCMA and G.722, all three of which browsers ship, so audio can be
+relayed without a transcoder. `fcp_media::construct_answer` would turn a
+browser offer into an unusable answer (protocol downgraded, BUNDLE, ICE
+and fingerprint dropped) — but with the gateway offering, it never sees
+one. There is no join link, guest token or WebRTC type anywhere in
+fcp-core, fcp-events or the admin surface, and the gateway has no deploy
+configuration.
+
+| PR | Deliverable | Where |
+|---|---|---|
+| 4a | **forge-webrtc video** (forge-media release; forge-webrtc 0.6.0). `PeerConfig::video: Option<VideoConfig>` (codecs in preference order with offered payload types, direction, `max_kbps`) puts a second section in offers — `a=mid:1`, `a=group:BUNDLE 0 1`, `a=rtcp-fb` `nack` / `nack pli` / `ccm fir` / `goog-remb` per payload type, H.264 `packetization-mode=1` with `profile-level-id` from the config, `a=ssrc … cname` and `a=msid` on both sections — and answers a remote video section with `choose_video_codec` and `answer_video`, rejecting it with port 0 when unconfigured; re-offers add or drop the section. The transport demultiplexes inbound RTP by payload type into `TransportEvent::Rtp` (audio) and `TransportEvent::VideoRtp`, parses inbound SRTCP into `TransportEvent::Rtcp(Vec<RtcpPacket>)`, keeps per-SSRC reception statistics, and gains a transmit path: `send_rtcp` (compound, SRTCP-protected), a one-second scheduler sending SR for each sending SSRC and RR for each received one with the SDES cname, and `VideoSender::send_packet` for a room subscription's pre-built packets with the SSRC rewritten to the advertised one and the sequence number kept so the room's NACK cache still matches. G.722 (static type 9) joins the audio codec list so a browser can meet the mixer without transcoding. Tests: the Chrome fixture answered with video accepted and with it rejected; a two-peer loopback moving raw-codec video and Opus both ways with NACK, PLI and REMB crossing the same socket; SR/RR arriving on cadence | forge-webrtc, forge-rtp (reception statistics if missing) |
+| 4b | **Gateway media path and direct join** (FCP). fcp-webrtc-gateway gains the relay it was documented to have: for every peer connection it owns a SIP leg towards the conference server and moves audio RTP (same codec both sides, G.722 preferred then G.711, telephone-event forwarded), video RTP (coded packets relayed, SSRC preserved per direction) and RTCP feedback (NACK, PLI/FIR, REMB carried across; SR/RR regenerated per leg by forge-webrtc on one side and the SIP socket on the other) between them. `POST /v1/rooms/{room_number}/join` `{display_name, video, join_token}` creates the peer connection with an audio + video offer and, once DTLS completes, INVITEs the conference server directly — placed through `fcp_sip::ConferenceNodeSelector` as the call manager does, `ConferenceVideoNeed` included, with a static `[conference] server_uri` fallback — carrying an SDES-SRTP offer in the browser's negotiated codecs and the join token in an `X-FCP-Join` header; `GET/DELETE …/rooms/{id}` for status and leave. `POST /v1/calls` reuses the relay, so audio flows there too (G.711 only, as its offer says). Config: `[conference] server_uri`, `[webrtc] public_ip`, `turn_servers`, `[cluster]` placement. Events: none new — the conference server's `participant_joined` (`has_video`) already reports the browser | fcp-webrtc-gateway, fcp-sip (selector reuse), fcp-cluster |
+| 4c | **Join tokens, browser page, surface** (FCP). Join tokens: `POST /v1/conferences/{id}/join-tokens` `{display_name, role: guest|host, ttl_secs}` on the admin API (and `/me/conferences/{id}/join-tokens` for owners) mints an HMAC-SHA256 token over `{tenant, room_number, display_name, role, exp, nonce}` with `[conference] join_secret`; the conference server verifies `X-FCP-Join` with the same secret, resolves the tenant and room from it, admits the participant with the token's role and skips PIN collection — a wrong or expired token is a 403, an INVITE without one takes today's DTMF path unchanged. A join page (`crates/fcp-webrtc-gateway/browser/join.html`, served by the gateway under `/join` when `[http] serve_join_page`) takes a gateway URL, a join token, a display name and a camera choice, and drives the join, answer and trickle calls; forge-media's `tests/browser` page gains `video: true`. Admin UI: a "Join in browser" action per meeting that mints a token and opens the page. Docs: `docs/WEBRTC.md` (topology, ports, TURN, tokens), the gateway's deploy configuration and compose entry, STATUS, README | fcp-api-core, fcp-conference-server, fcp-webrtc-gateway, fcp-admin-ui, deploy |
+
+Decisions proposed with this plan, each open to reversal:
+
+- **The gateway relays; the conference server stays a SIP server.** §4.1
+  said the gateway joins rooms directly, and this keeps that: the
+  browser-facing attack surface (ICE, DTLS, TURN, public addresses) lives
+  in one edge binary, and the conference server admits browsers through
+  the INVITE path it already has. The alternative — embedding forge-webrtc
+  in the conference server for one hop less — would put ICE and public
+  reachability on every mixing node and duplicate the join logic across
+  two front doors; the passthrough fast path of phase 6 can revisit it
+  with numbers.
+- **Audio is relayed, not transcoded: G.722 first, then G.711.** The mixer
+  takes PCMU, PCMA and G.722 and browsers offer all three, so no Opus
+  transcoder is built now; Opus in the mixer is its own item.
+- **The gateway offers, the browser answers**, as forge-api does today. A
+  browser-offer path is not needed for a join page we write ourselves;
+  JSEP glue for third-party clients can come later.
+- **Feedback set for 4a: `nack`, `nack pli`, `ccm fir`, `goog-remb`**.
+  transport-cc, RTX, header extensions, FEC and simulcast ingress wait for
+  phase 6: without them browsers degrade to same-SSRC retransmission and
+  REMB-driven rate control, which the room already speaks, and each of the
+  deferred pieces needs RFC 8285 first.
+- **forge-webrtc grows an RTCP transmit path**, SR and RR on a one-second
+  cadence included. Browsers' loss-based rate control reads our RR and
+  lipsync reads our SR, so this is not optional once video is in the
+  section; the audio-only path never needed it.
+- **`TransportEvent::Rtcp` changes from bytes to parsed packets** (a
+  breaking change, hence forge-webrtc 0.6.0). forge-api, its only
+  consumer, ignores the event today.
+- **Join tokens replace DTMF PINs for browsers and are verified by the
+  conference server**, not the gateway: the gateway never learns a PIN,
+  the secret is shared between the admin API (mints) and the conference
+  server (verifies) in the `[conference]` section each already has, and
+  the gateway passes the token through in a header — the trunk headers are
+  the precedent. SIP callers keep the DTMF path.
+- **The gateway INVITEs the conference server directly**, bypassing the
+  B2BUA, with the same placement the call manager uses (`fcp-cluster`
+  selector with the meeting's video need, region preference); a static
+  `server_uri` serves single-node deployments.
+- **`POST /v1/calls` gets its audio path fixed in 4b** as part of the same
+  relay; no separate bug-fix release.
+- **Three PRs.** 4a is a forge-media release the other two build on; 4b and
+  4c touch disjoint code (4c needs the header the conference server checks,
+  which 4b only sends), so 4b ships browser joins gated on a PIN-less
+  meeting and 4c adds the tokens.
 
 ## 16. Resolved questions
 
