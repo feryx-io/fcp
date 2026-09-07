@@ -8,12 +8,14 @@ import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
-import { Pencil, Phone, PhoneOutgoing, Users } from 'lucide-react'
+import { Link as LinkIcon, Pencil, Phone, PhoneOutgoing, Users } from 'lucide-react'
 import { me } from '@/api/endpoints'
 import type { MeetingResponse, UpdateMeetingRequest } from '@/types'
+import { JoinLinkDialog } from '@/components/JoinLinkDialog'
 
 export function UserConferencesPage() {
   const [editItem, setEditItem] = useState<MeetingResponse | null>(null)
+  const [joinLinkConf, setJoinLinkConf] = useState<MeetingResponse | null>(null)
   const [dialOutConf, setDialOutConf] = useState<MeetingResponse | null>(null)
   const [dialOutDest, setDialOutDest] = useState('')
   const [dialOutGreeting, setDialOutGreeting] = useState('')
@@ -68,6 +70,9 @@ export function UserConferencesPage() {
                   <CardTitle className="text-lg">{conf.name}</CardTitle>
                 </div>
                 <div className="flex gap-1">
+                  <Button variant="ghost" size="icon" onClick={() => setJoinLinkConf(conf)} title="Join in browser">
+                    <LinkIcon className="h-4 w-4" />
+                  </Button>
                   <Button variant="ghost" size="icon" onClick={() => { setDialOutConf(conf); setDialOutDest(''); setDialOutResult(null) }} title="Dial Out">
                     <PhoneOutgoing className="h-4 w-4" />
                   </Button>
@@ -105,6 +110,8 @@ export function UserConferencesPage() {
         onSubmit={(data) => { if (editItem) updateMutation.mutate({ id: editItem.id, data }) }}
         isPending={updateMutation.isPending}
       />
+
+      <JoinLinkDialog meeting={joinLinkConf} onOpenChange={(open) => { if (!open) setJoinLinkConf(null) }} mint={me.mintJoinToken} />
 
       {/* Dial-Out Dialog */}
       <Dialog open={!!dialOutConf} onOpenChange={(open) => { if (!open) setDialOutConf(null) }}>

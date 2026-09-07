@@ -187,7 +187,11 @@ async fn main() -> Result<()> {
                             }
                         }
                         "conference" => {
-                            if let Ok(v) = serde_json::from_value(entry.value) {
+                            if let Ok(mut v) =
+                                serde_json::from_value::<config::ConferenceSection>(entry.value)
+                            {
+                                // The join secret is never stored; keep TOML's.
+                                v.join_secret = config.conference.join_secret.clone();
                                 config.conference = v;
                             }
                         }
@@ -617,6 +621,19 @@ async fn main() -> Result<()> {
         );
     } else {
         info!(path = %config.conference.announcements_dir, "Announcements directory ready");
+    }
+
+    match config.conference.join_secret.as_deref() {
+        Some(secret) if !secret.is_empty() => {
+            info!("Browser join tokens enabled (conference.join_secret set)");
+        }
+        _ => {
+            warn!(
+                "Browser join tokens disabled: set conference.join_secret (the same value as \
+                 the admin API's [conference] join_secret) so the WebRTC gateway's joins are \
+                 admitted without a PIN"
+            );
+        }
     }
 
     let mut conference_handler = ConferenceCallHandler::new(

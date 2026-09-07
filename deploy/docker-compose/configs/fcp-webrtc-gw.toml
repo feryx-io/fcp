@@ -1,0 +1,61 @@
+# fcp-webrtc-gw configuration — the WebRTC gateway: browsers join
+# conference rooms (and call SIP destinations) through it.
+
+[service]
+service_type = "webrtc-gateway"
+node_id = "webrtc-gw-01"
+
+[http]
+bind_address = "0.0.0.0:8095"
+# Browsers load the join page and call the API cross-origin from the
+# admin UI's origin; list every origin the join page is opened from.
+enable_cors = true
+allowed_origins = ["http://localhost:8080"]
+serve_join_page = true
+# Joins carry a signed join token the conference server verifies, so they
+# need no operator token here; the rate limit bounds abuse.
+public_join = true
+
+[sip]
+udp_bind = "0.0.0.0:5077"
+# local_ip = "10.0.0.1"  # Set to the LAN IP the conference server reaches
+
+[media]
+rtp_port_start = 34000
+rtp_port_end = 36000
+# public_ip = "203.0.113.10"  # Set for NAT traversal
+
+[webrtc]
+# The gateway's own ICE: STUN for a reflexive candidate when it has no
+# public interface, TURN as the fallback.
+stun_servers = ["stun:stun.l.google.com:19302"]
+# turn_servers = [{ uri = "turn:turn.example.com:3478", username = "fcp", password = "change-me" }]
+# What browsers are told to use.
+# browser_ice_servers = [{ urls = ["stun:stun.l.google.com:19302"] }]
+# ice_timeout_secs = 30
+# inactivity_timeout_secs = 30
+
+[conference]
+# Where room joins go when the cluster is off or finds no node.
+server_uri = "sip:conference@localhost:5060"
+# Participants a node takes before placement prefers another.
+node_capacity = 100
+# Offer SDES SRTP on the leg to the conference server.
+srtp = true
+# invite_timeout_secs = 30
+
+[auth]
+tokens = ["change-me-in-production"]
+
+[storage]
+redis_url = "redis://localhost:6379"
+
+[cluster]
+# With Redis and a cluster, room joins are placed on the node hosting the
+# room (or the least loaded one in the region with video budget).
+enabled = false
+# region = "us-east"
+
+[logging]
+level = "info"
+format = "json"

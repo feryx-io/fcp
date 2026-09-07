@@ -360,6 +360,8 @@ async fn main() -> Result<()> {
     .with_events_server_auth_token(config.events.auth_token.clone())
     .with_conference_server_url(config.conference.server_url.clone())
     .with_conference_server_auth_token(config.conference.auth_token.clone())
+    .with_conference_join_secret(config.conference.join_secret.clone())
+    .with_conference_gateway_url(config.conference.gateway_url.clone())
     .with_config_store(config_store)
     .with_trunk_health(trunk_health_map)
     .with_deployment_mode(config.api.deployment_mode);

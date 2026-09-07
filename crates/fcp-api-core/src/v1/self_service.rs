@@ -1319,6 +1319,44 @@ pub async fn dial_out_my_conference(
     super::conferences_live::dial_out_meeting(&state, &meeting, body).await
 }
 
+/// POST /me/conferences/:id/join-tokens -- Mint a browser join token for a
+/// conference owned by the current user.
+pub async fn mint_my_join_token(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    req: axum::extract::Request,
+) -> Result<impl IntoResponse, ApiError> {
+    let claims = extract_claims(&req, &state)?;
+    let storage = require_storage!(state);
+    let tenant_id = resolve_tenant_from_claims(&claims, &state);
+
+    let meeting_id = fcp_core::MeetingId::from_str(&id)
+        .map_err(|e| ApiError::BadRequest(format!("Invalid meeting ID: {}", e)))?;
+
+    let meeting = storage
+        .get_meeting(&meeting_id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or_else(|| ApiError::NotFound("Conference not found".to_string()))?;
+
+    if meeting.tenant_id != tenant_id || meeting.owner_id.as_deref() != Some(&claims.sub) {
+        return Err(ApiError::NotFound("Conference not found".to_string()));
+    }
+
+    let bytes = axum::body::to_bytes(req.into_body(), 64 * 1024)
+        .await
+        .map_err(|e| ApiError::BadRequest(format!("Invalid body: {}", e)))?;
+    let body: super::join_tokens::MintJoinTokenRequest = if bytes.is_empty() {
+        Default::default()
+    } else {
+        serde_json::from_slice(&bytes)
+            .map_err(|e| ApiError::BadRequest(format!("Invalid JSON body: {}", e)))?
+    };
+
+    let minted = super::join_tokens::mint_for_meeting(&state, &meeting, body)?;
+    Ok((axum::http::StatusCode::CREATED, Json(minted)))
+}
+
 /// PATCH /me/conferences/:id -- Update a conference owned by the current user
 pub async fn update_my_conference(
     State(state): State<ApiState>,

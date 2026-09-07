@@ -310,6 +310,16 @@ async fn main() -> Result<()> {
         invite_timeout: Duration::from_secs(config.conference.invite_timeout_secs),
         inactivity_timeout: Duration::from_secs(config.webrtc.inactivity_timeout_secs),
         srtp: config.conference.srtp,
+        browser_ice_servers: config
+            .webrtc
+            .browser_ice_servers
+            .iter()
+            .map(|s| fcp_webrtc_gateway::session::IceServer {
+                urls: s.urls.clone(),
+                username: s.username.clone(),
+                credential: s.credential.clone(),
+            })
+            .collect(),
     };
     let sessions = Arc::new(SessionManager::new(
         uac,
@@ -348,13 +358,25 @@ async fn main() -> Result<()> {
         .await
         .context("Failed to start the SIP listener")?;
 
-    // 11. Build combined router: forge-api routes + rooms and calls
-    let forge_router = routes::create_router().with_state(app_state);
+    // 11. Build combined router: forge-api's routes behind its operator
+    //     auth; the gateway's own routes behind theirs (operator or session
+    //     token, the join page open); rate limiting and tracing over both.
+    let auth_config = AuthConfig::new(config.auth.tokens.clone());
+    let forge_router = routes::create_router().with_state(app_state).layer(
+        ServiceBuilder::new()
+            .layer(Extension(auth_config))
+            .layer(axum_middleware::from_fn(middleware::auth::auth_middleware)),
+    );
+    let gateway_router = http_api::routes(http_api::ApiState {
+        sessions: Arc::clone(&sessions),
+        operator_tokens: Arc::new(config.auth.tokens.clone()),
+        public_join: config.http.public_join,
+        serve_join_page: config.http.serve_join_page,
+    });
     let combined_router = forge_router
-        .merge(http_api::routes(Arc::clone(&sessions)))
+        .merge(gateway_router)
         .layer(axum::extract::DefaultBodyLimit::max(10 * 1024 * 1024));
 
-    let auth_config = AuthConfig::new(config.auth.tokens.clone());
     let rate_limiter = RateLimiter::new(
         config.http.rate_limit_requests,
         Duration::from_secs(config.http.rate_limit_window_secs),
@@ -362,8 +384,6 @@ async fn main() -> Result<()> {
     );
     let middleware_stack = ServiceBuilder::new()
         .layer(Extension(rate_limiter))
-        .layer(Extension(auth_config))
-        .layer(axum_middleware::from_fn(middleware::auth::auth_middleware))
         .layer(axum_middleware::from_fn(
             middleware::rate_limit::rate_limit_middleware,
         ))
@@ -394,6 +414,9 @@ async fn main() -> Result<()> {
         "  Rooms API:  http://{}/v1/rooms/{{room}}/join",
         config.http.bind_address
     );
+    if config.http.serve_join_page {
+        info!("  Join page:  http://{}/join", config.http.bind_address);
+    }
     info!("  Calls API:  http://{}/v1/calls", config.http.bind_address);
     info!(
         "  WebRTC API: http://{}/v1/webrtc/connections/{{id}}/answer",

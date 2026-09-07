@@ -757,6 +757,14 @@ pub struct ConferenceSection {
     /// Path to exit tone WAV file
     #[serde(default)]
     pub exit_sound: Option<String>,
+
+    /// The secret join tokens are signed with — the same value as the
+    /// admin API's `[conference] join_secret`. An INVITE carrying an
+    /// `X-FCP-Join` header is admitted on the token's say-so (tenant,
+    /// room, name, role) with no PIN; without this set, such an INVITE is
+    /// refused. Kept out of the config store: it is read from TOML only.
+    #[serde(default, skip_serializing)]
+    pub join_secret: Option<String>,
 }
 
 fn default_announcements_dir() -> String {
@@ -890,6 +898,7 @@ impl Default for ConferenceSection {
             dial_out_timeout_secs: default_dial_out_timeout_secs(),
             join_sound: None,
             exit_sound: None,
+            join_secret: None,
         }
     }
 }

@@ -1,0 +1,44 @@
+[service]
+service_type = "webrtc-gateway"
+node_id = "webrtc-gw-local"
+
+[http]
+bind_address = "0.0.0.0:8095"
+enable_cors = true
+allowed_origins = ["http://localhost:5173", "http://192.168.1.225:8080"]
+# The built-in join page at /join, and joins without an operator token
+# (the join token in the request is what admits the caller).
+serve_join_page = true
+public_join = true
+
+[sip]
+udp_bind = "0.0.0.0:5077"
+local_ip = "192.168.1.225"
+
+[media]
+rtp_port_start = 34000
+rtp_port_end = 36000
+public_ip = "192.168.1.225"
+
+[webrtc]
+stun_servers = ["stun:stun.l.google.com:19302"]
+# turn_servers = [{ uri = "turn:turn.example.com:3478", username = "fcp", password = "secret" }]
+# browser_ice_servers = [{ urls = ["stun:stun.l.google.com:19302"] }]
+
+[conference]
+# The conference server room joins go to (the local one).
+server_uri = "sip:conference@192.168.1.225:5074"
+srtp = true
+
+[auth]
+tokens = ["svc-local-secret"]
+
+[storage]
+redis_url = "redis://localhost:6379"
+
+[cluster]
+enabled = false
+
+[logging]
+level = "info"
+format = "pretty"

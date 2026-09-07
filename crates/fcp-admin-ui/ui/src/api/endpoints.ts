@@ -608,6 +608,9 @@ export const me = {
 
   // Conferences
   listConferences: () => apiClient.get<MeetingResponse[]>('/me/conferences'),
+  /** `POST /me/conferences/{id}/join-tokens` — a browser join link for a conference the user owns. */
+  mintJoinToken: (id: string, body: MintJoinTokenRequest) =>
+    apiClient.post<JoinTokenResponse>(`/me/conferences/${encodeURIComponent(id)}/join-tokens`, body),
   /** Dial out from a conference the user owns. */
   dialOutConference: (id: string, destination: string, options?: { greeting_tts?: string; greeting_prompt?: string }) =>
     apiClient.post<DialOutResponse>(`/me/conferences/${encodeURIComponent(id)}/dial-out`, { destination, ...options }),
@@ -744,4 +747,27 @@ export const conferenceLive = {
   /** Dial out to invite a participant into the conference. */
   dialOut: (room: string, destination: string, options?: { greeting_tts?: string; greeting_prompt?: string }) =>
     apiClient.post<DialOutResponse>(`${liveRoom(room)}/dial-out`, { destination, ...options }),
+}
+
+/** `POST /conferences/meetings/{id}/join-tokens` body. */
+export interface MintJoinTokenRequest {
+  display_name?: string
+  role?: 'guest' | 'host'
+  ttl_secs?: number
+}
+
+/** A minted browser join token and, when the gateway URL is configured, its link. */
+export interface JoinTokenResponse {
+  token: string
+  room_number: string
+  display_name: string
+  role: 'guest' | 'host'
+  expires_at: number
+  join_url?: string
+}
+
+export const joinTokens = {
+  /** `POST /conferences/meetings/{id}/join-tokens` — a browser join link for a meeting (admins). */
+  mint: (id: string, body: MintJoinTokenRequest) =>
+    apiClient.post<JoinTokenResponse>(`/conferences/meetings/${encodeURIComponent(id)}/join-tokens`, body),
 }

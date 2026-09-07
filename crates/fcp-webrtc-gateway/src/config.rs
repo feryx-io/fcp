@@ -93,6 +93,17 @@ pub struct HttpSection {
 
     #[serde(default = "default_rate_limit_window_secs")]
     pub rate_limit_window_secs: u64,
+
+    /// Serve the built-in join page at `/join` (no credential needed to
+    /// load it; joining still needs `public_join` or an operator token).
+    #[serde(default)]
+    pub serve_join_page: bool,
+
+    /// Let `POST /v1/rooms/{room}/join` be called without an operator
+    /// token. The join token inside the request is what admits the caller
+    /// (the conference server verifies it); the rate limit bounds abuse.
+    #[serde(default)]
+    pub public_join: bool,
 }
 
 fn default_http_bind() -> SocketAddr {
@@ -115,6 +126,8 @@ impl Default for HttpSection {
             allowed_origins: Vec::new(),
             rate_limit_requests: default_rate_limit_requests(),
             rate_limit_window_secs: default_rate_limit_window_secs(),
+            serve_join_page: false,
+            public_join: false,
         }
     }
 }
@@ -192,6 +205,12 @@ pub struct WebRtcSection {
     #[serde(default)]
     pub turn_servers: Vec<TurnServerSection>,
 
+    /// ICE servers handed to browsers with the offer (`RTCPeerConnection`
+    /// `iceServers`): STUN for their reflexive address, TURN with a
+    /// credential for the ones no path reaches. Empty by default.
+    #[serde(default)]
+    pub browser_ice_servers: Vec<BrowserIceServerSection>,
+
     /// How long to wait for candidate gathering (the STUN round trip)
     /// before the offer is built, so server-reflexive candidates ride in
     /// the offer rather than being trickled — the browser never fetches
@@ -208,6 +227,17 @@ pub struct WebRtcSection {
     /// before its session is ended as gone.
     #[serde(default = "default_inactivity_timeout_secs")]
     pub inactivity_timeout_secs: u64,
+}
+
+/// One ICE server for browsers.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct BrowserIceServerSection {
+    /// `stun:host:port`, `turn:host:port?transport=udp`, `turns:…`.
+    pub urls: Vec<String>,
+    #[serde(default)]
+    pub username: Option<String>,
+    #[serde(default)]
+    pub credential: Option<String>,
 }
 
 /// One TURN server with its long-term credential.
@@ -240,6 +270,7 @@ impl Default for WebRtcSection {
         Self {
             stun_servers: default_stun_servers(),
             turn_servers: Vec::new(),
+            browser_ice_servers: Vec::new(),
             gather_timeout_ms: default_gather_timeout_ms(),
             ice_timeout_secs: default_ice_timeout_secs(),
             inactivity_timeout_secs: default_inactivity_timeout_secs(),

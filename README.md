@@ -495,7 +495,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines.
 - ✅ Presence server with BLF
 - ✅ Clustering with SWIM protocol
 - ✅ Redis for distributed state
-- ✅ WebRTC gateway
+- ✅ WebRTC gateway (browsers join conference rooms with audio and video; `docs/WEBRTC.md`)
 - ✅ Conference bridge server
 - ✅ Event streaming server
 

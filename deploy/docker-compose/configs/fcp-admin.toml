@@ -20,3 +20,12 @@ format = "pretty"
 
 [events]
 server_url = "http://fcp-events-server:8081/ingest"
+
+[conference]
+# Live room controls go through this conference server.
+# server_url = "http://localhost:8090"
+# auth_token = "change-me-in-production"
+# Browser join tokens: the same secret on every conference server
+# (conference.join_secret), and the WebRTC gateway the join links open.
+# join_secret = "change-me-in-production"
+# gateway_url = "https://meet.example.com"

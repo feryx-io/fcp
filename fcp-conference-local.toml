@@ -28,6 +28,8 @@ server_url = "http://localhost:8081/ingest"
 auth_token = "events-local-secret"
 
 [conference]
+# Browser join tokens (the admin API's [conference] join_secret).
+join_secret = "join-local-secret"
 sample_rate = 8000
 frame_size = 160
 enable_vad = true

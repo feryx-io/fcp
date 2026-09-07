@@ -26,6 +26,7 @@ SERVICES=(
   "presence:fcp-presence:--config fcp-presence-local.toml"
   "media:fcp-media:--config fcp-media-local.toml"
   "api-gateway:fcp-api-gateway:--config fcp-api-gateway-local.toml"
+  "webrtc-gw:fcp-webrtc-gw:--config fcp-webrtc-gw-local.toml"
 )
 
 # Health check endpoints
@@ -42,6 +43,7 @@ declare -A HEALTH_ENDPOINTS=(
   [presence]="8092:/health"
   [media]="8083:/health"
   [api-gateway]="8000:/health"
+  [webrtc-gw]="8095:/health"
 )
 
 pid_file() {

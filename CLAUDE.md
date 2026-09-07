@@ -646,6 +646,7 @@ cargo run -p siphond -- --mode registrar
 - **docs/DISTRIBUTED_CONFERENCING.md**: Conference registry, placement rule, inter-node trunks (mutual TLS, cascaded mixing) and the frame-clock mixer
 - **docs/VIDEO_CONFERENCING.md**: Video conferencing design (mixer core, codecs and licensing, layouts, capacity model, phases)
 - **docs/MULTI_REGION.md**: Read replicas, region-aware membership, cross-region event fan-out
+- **docs/WEBRTC.md**: Browsers through the WebRTC gateway — join flow, join tokens, gateway configuration, ports
 - **Phase1 plan.md**: Detailed MVP implementation plan with sprint breakdowns
 - **IMPLEMENTATION_DOCS.md**: Index of implementation documentation for completed features
   - **Dial Node B2BUA**: Complete 4-phase implementation (outbound calls, response handling, media bridging)

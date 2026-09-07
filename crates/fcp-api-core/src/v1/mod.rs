@@ -18,6 +18,7 @@ pub mod events;
 pub mod extensions;
 pub mod flow_traces;
 pub mod flows;
+pub mod join_tokens;
 pub mod line_bindings;
 pub mod locations;
 pub mod media;
@@ -161,6 +162,10 @@ pub fn router() -> Router<ApiState> {
         .route(
             "/me/conferences/:id/dial-out",
             post(self_service::dial_out_my_conference),
+        )
+        .route(
+            "/me/conferences/:id/join-tokens",
+            post(self_service::mint_my_join_token),
         );
 
     // Admin-only routes — EndUser JWTs are rejected with 403 by require_admin.
@@ -588,6 +593,10 @@ pub fn router() -> Router<ApiState> {
         .route(
             "/conferences/meetings/:id/disable",
             post(conferences::disable_meeting),
+        )
+        .route(
+            "/conferences/meetings/:id/join-tokens",
+            post(conferences::mint_join_token),
         )
         // Live conference controls, proxied to the conference server
         .route(

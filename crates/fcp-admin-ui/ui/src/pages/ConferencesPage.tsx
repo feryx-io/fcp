@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
-import { MoreHorizontal, Plus, Pencil, Trash2, Phone, PhoneOutgoing, ArrowUp, X, Video } from 'lucide-react'
+import { MoreHorizontal, Plus, Pencil, Trash2, Phone, PhoneOutgoing, ArrowUp, X, Video, Link as LinkIcon } from 'lucide-react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
@@ -18,10 +18,11 @@ import { Switch } from '@/components/ui/switch'
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
-import { conferences, conferenceLive, prompts, users, type PromptResponse } from '@/api/endpoints'
+import { conferences, conferenceLive, joinTokens, prompts, users, type PromptResponse } from '@/api/endpoints'
 import type { MeetingResponse, CreateMeetingRequest, UpdateMeetingRequest, User } from '@/types'
 import { useTenantListFilter } from '@/components/TenantSelector'
 import { LiveVideoDialog } from '@/components/LiveVideoDialog'
+import { JoinLinkDialog } from '@/components/JoinLinkDialog'
 
 const createSchema = z.object({
   room_number: z.string().min(1, 'Room number is required').regex(/^\d+$/, 'Must be numeric'),
@@ -180,6 +181,7 @@ export function ConferencesPage() {
   const [dialOutPending, setDialOutPending] = useState(false)
   const [dialOutResult, setDialOutResult] = useState<string | null>(null)
   const [liveVideoRoom, setLiveVideoRoom] = useState<string | null>(null)
+  const [joinLinkMeeting, setJoinLinkMeeting] = useState<MeetingResponse | null>(null)
   const queryClient = useQueryClient()
 
   const { data: rawItems = [], isLoading } = useQuery({
@@ -317,6 +319,9 @@ export function ConferencesPage() {
             <DropdownMenuItem onClick={() => setLiveVideoRoom(row.original.room_number)}>
               <Video className="mr-2 h-4 w-4" /> Live Video
             </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => setJoinLinkMeeting(row.original)}>
+              <LinkIcon className="mr-2 h-4 w-4" /> Join in browser
+            </DropdownMenuItem>
             <DropdownMenuItem
               onClick={() => toggleMutation.mutate({ id: row.original.id, enabled: !row.original.enabled })}
             >
@@ -362,6 +367,7 @@ export function ConferencesPage() {
       <EditDialog item={editItem} onOpenChange={(open) => { if (!open) setEditItem(null) }} onSubmit={(data) => { if (editItem) updateMutation.mutate({ id: editItem.id, data }) }} isPending={updateMutation.isPending} promptList={promptList} userList={userList} />
 
       <LiveVideoDialog room={liveVideoRoom} onOpenChange={(open) => { if (!open) setLiveVideoRoom(null) }} />
+      <JoinLinkDialog meeting={joinLinkMeeting} onOpenChange={(open) => { if (!open) setJoinLinkMeeting(null) }} mint={joinTokens.mint} />
 
       {/* Dial-Out Dialog */}
       <Dialog open={!!dialOutRoom} onOpenChange={(open) => { if (!open) setDialOutRoom(null) }}>
