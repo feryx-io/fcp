@@ -1,15 +1,18 @@
+use crate::video_bridge::{self, VideoEventSink, VideoLeg, VideoLegStats};
 use anyhow::{bail, Context, Result};
 use dashmap::DashMap;
 use fcp_core::storage::TenantStore;
 use fcp_core::{DynStorage, Meeting, TenantId};
 use fcp_events::{ConferenceEvent, EventPublisher, PlatformEvent};
 use fcp_media::{
-    construct_answer_for_a_leg, decode_sdes_key_params, generate_srtp_key_material,
-    parse_sdes_crypto, parse_sdp_codecs, SrtpSdpContext,
+    construct_answer, construct_answer_for_a_leg, decode_sdes_key_params,
+    generate_srtp_key_material, parse_sdes_crypto, parse_sdp_codecs, parse_video_sdes_crypto,
+    AnswerOptions, SrtpSdpContext, VideoAnswer,
 };
 use fcp_sip::prelude::SipUserAgentClient;
 use fcp_sip::PeerIdentity;
 use forge_codecs::{g711, g722, AudioCodec};
+use forge_conference::video::VideoBackend;
 use forge_conference::{
     ConferenceAIConfig, ConferenceAIManager, ConferenceBridge, ConferenceConfig,
     ConferenceDtmfConfig, ConferenceError, DtmfCommandHandler, PinAuthResult, RoomConfig,
@@ -121,6 +124,9 @@ pub struct ParticipantSession {
     pub srtp_context: Option<Arc<tokio::sync::RwLock<SrtpContext>>>,
     /// Last session refresh time (for RFC 4028 session timer reaping)
     pub last_refreshed: Instant,
+    /// The video leg (second socket pair, its own SRTP, the room's
+    /// source and subscription), when the caller negotiated video.
+    pub video: Option<VideoLeg>,
 }
 
 /// Sink for "this node now has N local participants in room R" updates,
@@ -194,6 +200,11 @@ pub struct ConferenceCallHandler {
     pub handler_latency: HandlerLatency,
     /// Optional TTS service for synthesizing prompts from text
     tts_service: Option<Arc<fcp_media::TtsService>>,
+    /// The codec registry, thread pool and device video rooms run on;
+    /// `None` leaves every meeting audio-only.
+    video_backend: Option<Arc<VideoBackend>>,
+    /// Rooms whose video events are being forwarded to the bus.
+    video_event_pumps: Arc<DashMap<String, ()>>,
     /// Calls that have been answered and are waiting for PIN input.
     pending_pin_auth: DashMap<String, PendingPinAuth>,
     /// Pre-loaded DTMF feedback audio: "Muted" / "Unmuted" PCM samples
@@ -610,6 +621,8 @@ impl ConferenceCallHandler {
             room_registry: std::sync::RwLock::new(None),
             handler_latency: HandlerLatency::new(),
             tts_service: None,
+            video_backend: None,
+            video_event_pumps: Arc::new(DashMap::new()),
             pending_pin_auth: DashMap::new(),
             dtmf_muted_samples: None,
             dtmf_unmuted_samples: None,
@@ -620,6 +633,11 @@ impl ConferenceCallHandler {
     }
 
     /// Set the TTS service for synthesizing prompts from meeting text fields.
+    /// Give rooms a video backend; without one every meeting is audio-only.
+    pub fn set_video_backend(&mut self, backend: VideoBackend) {
+        self.video_backend = Some(Arc::new(backend));
+    }
+
     pub fn set_tts_service(&mut self, tts: Arc<fcp_media::TtsService>) {
         self.tts_service = Some(tts);
     }
@@ -970,6 +988,8 @@ impl ConferenceCallHandler {
             }
             // VAD presence: inactive if >30s silence (1500 frames at 50fps)
             json["is_inactive"] = serde_json::json!(session.stats.is_inactive(1500));
+            json["video"] =
+                video_bridge::participant_video_json(&room, participant_id, session.video.as_ref());
         }
 
         Ok(json)
@@ -1077,6 +1097,11 @@ impl ConferenceCallHandler {
                     if let Some(mos) = s.estimated_mos() {
                         p["estimated_mos"] = serde_json::json!((mos * 100.0).round() / 100.0);
                     }
+                    p["video"] = video_bridge::participant_video_json(
+                        &room,
+                        &meta.id,
+                        session.video.as_ref(),
+                    );
                 }
 
                 p
@@ -1091,6 +1116,7 @@ impl ConferenceCallHandler {
             "is_recording": room.is_recording(),
             "host_count": room.host_count(),
             "participants": participants,
+            "video": video_bridge::room_video_json(&room),
         }))
     }
 
@@ -1660,6 +1686,7 @@ impl ConferenceCallHandler {
                 caller_id: Some(destination.to_string()),
                 srtp_context: None,
                 last_refreshed: Instant::now(),
+                video: None,
             },
         );
 
@@ -2061,7 +2088,9 @@ impl ConferenceCallHandler {
             | ConferenceEvent::MeetingUpdated { room_number, .. }
             | ConferenceEvent::MeetingDeleted { room_number, .. }
             | ConferenceEvent::DialOutInvited { room_number, .. }
-            | ConferenceEvent::DialOutFailed { room_number, .. } => Some(room_number.clone()),
+            | ConferenceEvent::DialOutFailed { room_number, .. }
+            | ConferenceEvent::VideoStateChanged { room_number, .. }
+            | ConferenceEvent::VideoOverload { room_number, .. } => Some(room_number.clone()),
         };
 
         // Notify RFC 4575 subscribers for this room
@@ -2136,7 +2165,7 @@ impl ConferenceCallHandler {
 
     /// Remove a participant by SIP call ID (called on BYE).
     fn remove_session(&self, call_id: &str) {
-        if let Some((_, session)) = self.sessions.remove(call_id) {
+        if let Some((_, mut session)) = self.sessions.remove(call_id) {
             // Update secondary room index
             if let Some(mut ids) = self.room_sessions.get_mut(&session.room_number) {
                 ids.retain(|id| id != call_id);
@@ -2187,6 +2216,15 @@ impl ConferenceCallHandler {
                 );
                 port_pool.deallocate(port_pair).await;
             });
+
+            // The video leg: its bridge (when it has its own task) and ports.
+            // The room drops the source and subscription with the participant.
+            if let Some(video) = session.video.take() {
+                if let Some(handle) = video.bridge_handle {
+                    handle.abort();
+                }
+                self.release_video_pair_later(video.port_pair);
+            }
 
             // Publish leave event (trunks are infrastructure, not participants)
             self.sync_room_registry(&session.room_number);
@@ -2355,6 +2393,210 @@ impl ConferenceCallHandler {
     /// Decodes the remote key material, generates a local key, and returns both
     /// the `SrtpContext` (for the audio bridge) and the `SrtpSdpContext` (for
     /// the SDP answer).
+    /// The SDP answer: one section per offered section, video answered
+    /// when `video` is given and a codec agrees, rejected (port 0)
+    /// otherwise. An offer that does not parse gets the legacy audio-only
+    /// answer.
+    fn build_answer(
+        &self,
+        offer: &str,
+        audio_rtp_port: u16,
+        audio_srtp: Option<&SrtpSdpContext>,
+        video: Option<VideoAnswer<'_>>,
+    ) -> fcp_media::Answer {
+        match construct_answer(
+            offer,
+            &AnswerOptions {
+                server_ip: &self.local_addr,
+                audio_rtp_port,
+                audio_srtp,
+                video,
+            },
+        ) {
+            Ok(answer) => answer,
+            Err(e) => {
+                debug!(error = %e, "SDP offer did not parse; answering audio only");
+                fcp_media::Answer {
+                    sdp: construct_answer_for_a_leg(
+                        offer,
+                        &self.local_addr,
+                        audio_rtp_port,
+                        audio_srtp,
+                    ),
+                    video: None,
+                }
+            }
+        }
+    }
+
+    /// Give a port pair back once whatever used it has had a moment to stop.
+    fn release_video_pair_later(&self, pair: PortPair) {
+        let pool = Arc::clone(&self.port_pool);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            pool.deallocate(pair).await;
+        });
+    }
+
+    /// Give back a video port pair that will not be used after all.
+    fn release_video_port(&self, pair: &mut Option<PortPair>) {
+        if let Some(p) = pair.take() {
+            let pool = Arc::clone(&self.port_pool);
+            tokio::spawn(async move { pool.deallocate(p).await });
+        }
+    }
+
+    /// Give back a participant's ports when the join fails after allocation.
+    fn release_ports(&self, audio: PortPair, video: Option<PortPair>) {
+        let pool = Arc::clone(&self.port_pool);
+        tokio::spawn(async move {
+            pool.deallocate(audio).await;
+            if let Some(v) = video {
+                pool.deallocate(v).await;
+            }
+        });
+    }
+
+    /// Attach a negotiated video leg to the room and spawn its bridge.
+    /// Returns the leg with its handle, or `None` (ports released) when
+    /// the room refused.
+    fn start_video_leg(
+        &self,
+        room: &Arc<forge_conference::ConferenceRoom>,
+        participant_id: &str,
+        display_name: Option<&str>,
+        tenant_id: TenantId,
+        room_number: &str,
+        mut leg: VideoLeg,
+    ) -> Option<VideoLeg> {
+        let Some(backend) = self.video_backend.as_ref() else {
+            self.release_video_pair_later(leg.port_pair);
+            return None;
+        };
+        let sink = VideoEventSink {
+            event_bus: Arc::clone(&self.event_bus),
+            tenant_id,
+            room_number: room_number.to_string(),
+            pumps: Arc::clone(&self.video_event_pumps),
+        };
+        match video_bridge::attach_video(room, backend, participant_id, display_name, &leg, sink) {
+            Some(fut) => {
+                leg.bridge_handle = Some(tokio::spawn(fut));
+                Some(leg)
+            }
+            None => {
+                self.release_video_pair_later(leg.port_pair);
+                None
+            }
+        }
+    }
+
+    /// Stop a participant's video leg: the bridge, the room's source and
+    /// subscription, the ports. The participant stays in the call.
+    fn tear_down_video_leg(&self, session: &mut ParticipantSession) {
+        if let Some(leg) = session.video.take() {
+            if let Some(handle) = leg.bridge_handle {
+                handle.abort();
+            }
+            if let Ok(room) = self.bridge.get_room(&session.room_number) {
+                video_bridge::detach_video(&room, &session.participant_id);
+            }
+            self.release_video_pair_later(leg.port_pair);
+        }
+    }
+
+    /// A video leg for a participant adding video mid-call: the meeting
+    /// must allow it, the codec must agree, SRTP rules as at join. Ports
+    /// and the socket are allocated here; the leg is not yet attached.
+    async fn prepare_video_leg(
+        &self,
+        tenant_id: &TenantId,
+        room_number: &str,
+        sdp_offer: &str,
+        conf: &ConferenceSection,
+    ) -> Option<VideoLeg> {
+        let backend = self.video_backend.as_ref()?;
+        let meeting = self
+            .lookup_meeting(tenant_id, room_number)
+            .await
+            .ok()
+            .flatten()?;
+        let usable = video_bridge::usable_codecs(backend, conf.video_native_codecs_only);
+        let (settings, codecs) = video_bridge::plan_video(&meeting, &usable)?;
+        let (srtp_context, srtp_sdp) = if conf.enable_srtp {
+            match parse_video_sdes_crypto(sdp_offer)
+                .first()
+                .map(Self::negotiate_srtp)
+            {
+                Some(Ok((ctx, sdp_ctx))) => {
+                    (Some(Arc::new(tokio::sync::RwLock::new(ctx))), Some(sdp_ctx))
+                }
+                Some(Err(e)) => {
+                    warn!(room = %room_number, error = %e, "re-INVITE: video SRTP negotiation failed; video rejected");
+                    return None;
+                }
+                None => {
+                    info!(room = %room_number, "re-INVITE: video offered without crypto while SRTP is on; rejected");
+                    return None;
+                }
+            }
+        } else {
+            (None, None)
+        };
+        let pair = match self.port_pool.allocate().await {
+            Ok(p) => p,
+            Err(e) => {
+                warn!(room = %room_number, error = %e, "re-INVITE: no port pair left for video");
+                return None;
+            }
+        };
+        // The answer builder decides codec and payload type; probe it now
+        // so the leg is complete before the session is touched.
+        let probe = self.build_answer(
+            sdp_offer,
+            pair.rtp_port,
+            None,
+            Some(VideoAnswer {
+                rtp_port: pair.rtp_port,
+                codecs: &codecs,
+                srtp: srtp_sdp.as_ref(),
+            }),
+        );
+        let Some(negotiated) = probe.video else {
+            self.release_video_port(&mut Some(pair));
+            return None;
+        };
+        let socket = match RtpSocketPair::new(pair, RtpSocketConfig::default()).await {
+            Ok(s) => Arc::new(s),
+            Err(e) => {
+                warn!(rtp_port = pair.rtp_port, error = %e, "re-INVITE: failed to create video socket pair");
+                self.release_video_port(&mut Some(pair));
+                return None;
+            }
+        };
+        if let Some(remote) = negotiated
+            .remote
+            .or_else(|| fcp_media::remote_video_endpoint(sdp_offer))
+        {
+            socket
+                .set_remote_endpoint(RemoteEndpoint {
+                    rtp_addr: remote,
+                    rtcp_addr: Some(SocketAddr::new(remote.ip(), remote.port().wrapping_add(1))),
+                })
+                .await;
+        }
+        Some(VideoLeg {
+            port_pair: pair,
+            socket,
+            srtp_context,
+            srtp_sdp,
+            negotiated,
+            settings,
+            stats: Arc::new(VideoLegStats::default()),
+            bridge_handle: None,
+        })
+    }
+
     fn negotiate_srtp(crypto: &fcp_media::SdesCryptoLine) -> Result<(SrtpContext, SrtpSdpContext)> {
         let (key, salt, profile) = decode_sdes_key_params(&crypto.key_params, &crypto.suite)?;
         let remote_key = SrtpKeyMaterial::new(key, salt, profile)
@@ -3098,6 +3340,7 @@ impl ConferenceCallHandler {
                 caller_id: None,
                 srtp_context,
                 last_refreshed: Instant::now(),
+                video: None,
             },
         );
         info!(
@@ -3273,15 +3516,23 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             }
         };
 
-        // Video is answered with port 0 until conference video ships (phase
-        // 3b); say so once per join so a silent phone screen is explainable.
-        if let Some(video) = fcp_media::parse_video_offer(sdp_offer) {
-            debug!(
-                room = %room_number,
-                codecs = ?video.codecs.iter().map(|c| c.codec).collect::<Vec<_>>(),
-                "Offer carries video; rejected in the answer (conference video not yet enabled)"
-            );
-        }
+        // Video: what the meeting allows, restricted to what this node can
+        // run. Decided now so the ports and the answer follow it; anything
+        // offered beyond that is rejected properly (port 0) in the answer.
+        let video_plan = self.video_backend.as_ref().and_then(|backend| {
+            let offered = fcp_media::parse_video_offer(sdp_offer)?;
+            let usable = video_bridge::usable_codecs(backend, conf.video_native_codecs_only);
+            let plan = video_bridge::plan_video(&meeting, &usable);
+            if plan.is_none() {
+                debug!(
+                    room = %room_number,
+                    codecs = ?offered.codecs.iter().map(|c| c.codec).collect::<Vec<_>>(),
+                    video_enabled = meeting.video_enabled,
+                    "Offer carries video; not enabled for this meeting or no usable codec, rejected in the answer"
+                );
+            }
+            plan
+        });
 
         // Also look for telephone-event payload type and clock rate for DTMF
         let te_pt = find_telephone_event_pt(&offered_codecs, sdp_offer);
@@ -3301,12 +3552,22 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         let ringing = uas.create_ringing(request);
         handle.send_provisional(ringing).await;
 
-        // 6. Allocate RTP port pair
+        // 6. Allocate RTP port pair (and a second one for video)
         let port_pair = self
             .port_pool
             .allocate()
             .await
             .context("Failed to allocate RTP port pair")?;
+        let mut video_pair = match video_plan {
+            Some(_) => match self.port_pool.allocate().await {
+                Ok(p) => Some(p),
+                Err(e) => {
+                    warn!(room = %room_number, error = %e, "No port pair left for video; joining audio-only");
+                    None
+                }
+            },
+            None => None,
+        };
 
         // 7. Negotiate SRTP (if enabled and offered by client)
         let (srtp_context, srtp_sdp) = if conf.enable_srtp {
@@ -3328,13 +3589,51 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             (None, None)
         };
 
-        // 7b. Construct SDP answer
-        let sdp_answer = construct_answer_for_a_leg(
+        // 7a. Video SRTP: the section has its own key. A room with SRTP on
+        // refuses plaintext video (design §13).
+        let (video_srtp_context, video_srtp_sdp) = if video_pair.is_some() && conf.enable_srtp {
+            match parse_video_sdes_crypto(sdp_offer)
+                .first()
+                .map(Self::negotiate_srtp)
+            {
+                Some(Ok((ctx, sdp_ctx))) => {
+                    (Some(Arc::new(tokio::sync::RwLock::new(ctx))), Some(sdp_ctx))
+                }
+                Some(Err(e)) => {
+                    warn!(error = %e, "Video SRTP negotiation failed; video rejected");
+                    self.release_video_port(&mut video_pair);
+                    (None, None)
+                }
+                None => {
+                    info!(room = %room_number, "Video offered without crypto while SRTP is on; video rejected");
+                    self.release_video_port(&mut video_pair);
+                    (None, None)
+                }
+            }
+        } else {
+            (None, None)
+        };
+
+        // 7b. Construct SDP answer (one section per offered section)
+        let video_codecs: Vec<forge_core::VideoCodec> = video_plan
+            .as_ref()
+            .map(|(_, c)| c.clone())
+            .unwrap_or_default();
+        let answer = self.build_answer(
             sdp_offer,
-            &self.local_addr,
             port_pair.rtp_port,
             srtp_sdp.as_ref(),
+            video_pair.map(|vp| VideoAnswer {
+                rtp_port: vp.rtp_port,
+                codecs: &video_codecs,
+                srtp: video_srtp_sdp.as_ref(),
+            }),
         );
+        let sdp_answer = answer.sdp;
+        let mut negotiated_video = answer.video;
+        if negotiated_video.is_none() {
+            self.release_video_port(&mut video_pair);
+        }
 
         // 7c. SDP answer-offer consistency check: verify answer codec was in the offer
         let answer_codecs = parse_sdp_codecs(&sdp_answer);
@@ -3399,8 +3698,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                     error = %e,
                     "Failed to create RTP socket pair, deallocating port"
                 );
-                let pool = Arc::clone(&self.port_pool);
-                tokio::spawn(async move { pool.deallocate(port_pair).await });
+                self.release_ports(port_pair, video_pair);
                 return Err(anyhow::anyhow!("Failed to create RTP socket pair: {}", e));
             }
         };
@@ -3422,6 +3720,62 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         } else {
             warn!("Could not parse remote RTP address from SDP offer");
         }
+
+        // 11b. The video socket pair, pointed at the video section's endpoint
+        let video_socket = match (video_pair, negotiated_video.as_ref()) {
+            (Some(vp), Some(nv)) => {
+                match RtpSocketPair::new(vp, RtpSocketConfig::default()).await {
+                    Ok(s) => {
+                        let s = Arc::new(s);
+                        if let Some(remote) = nv
+                            .remote
+                            .or_else(|| fcp_media::remote_video_endpoint(sdp_offer))
+                        {
+                            s.set_remote_endpoint(RemoteEndpoint {
+                                rtp_addr: remote,
+                                rtcp_addr: Some(SocketAddr::new(
+                                    remote.ip(),
+                                    remote.port().wrapping_add(1),
+                                )),
+                            })
+                            .await;
+                        }
+                        Some(s)
+                    }
+                    Err(e) => {
+                        warn!(rtp_port = vp.rtp_port, error = %e, "Failed to create video socket pair; joining audio-only");
+                        self.release_video_port(&mut video_pair);
+                        negotiated_video = None;
+                        None
+                    }
+                }
+            }
+            _ => None,
+        };
+        let mut pending_video = match (video_socket, negotiated_video, video_pair, &video_plan) {
+            (Some(socket), Some(negotiated), Some(vp), Some((settings, _))) => {
+                let srtp_sdp = video_srtp_sdp.clone();
+                info!(
+                    room = %room_number,
+                    codec = %negotiated.codec,
+                    payload_type = negotiated.payload_type,
+                    video_port = vp.rtp_port,
+                    srtp = video_srtp_context.is_some(),
+                    "Video negotiated"
+                );
+                Some(VideoLeg {
+                    port_pair: vp,
+                    socket,
+                    srtp_context: video_srtp_context,
+                    srtp_sdp,
+                    negotiated,
+                    settings: settings.clone(),
+                    stats: Arc::new(VideoLegStats::default()),
+                    bridge_handle: None,
+                })
+            }
+            _ => None,
+        };
 
         // 12. Generate participant ID and extract caller info
         let call_id = extract_call_id(request);
@@ -3668,8 +4022,10 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                                 if let Err(e) = self.uac.bye(&dialog).await {
                                     warn!(error = %e, "Failed to send BYE after PIN lockout");
                                 }
-                                let pool = Arc::clone(&self.port_pool);
-                                tokio::spawn(async move { pool.deallocate(port_pair).await });
+                                self.release_ports(
+                                    port_pair,
+                                    pending_video.as_ref().map(|v| v.port_pair),
+                                );
                                 return Ok(());
                             }
                             PinAuthResult::NoPinRequired => {
@@ -3699,8 +4055,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 if let Err(e) = self.uac.bye(&dialog).await {
                     warn!(error = %e, "Failed to send BYE after PIN failure");
                 }
-                let pool = Arc::clone(&self.port_pool);
-                tokio::spawn(async move { pool.deallocate(port_pair).await });
+                self.release_ports(port_pair, pending_video.as_ref().map(|v| v.port_pair));
                 return Ok(());
             }
 
@@ -3753,8 +4108,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                     if let Err(e) = self.uac.bye(&dialog).await {
                         warn!(error = %e, "Failed to send BYE after conference full");
                     }
-                    let pool = Arc::clone(&self.port_pool);
-                    tokio::spawn(async move { pool.deallocate(port_pair).await });
+                    self.release_ports(port_pair, pending_video.as_ref().map(|v| v.port_pair));
                     return Ok(());
                 }
                 Err(ConferenceError::ConferenceLocked) => {
@@ -3762,8 +4116,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                     if let Err(e) = self.uac.bye(&dialog).await {
                         warn!(error = %e, "Failed to send BYE after conference locked");
                     }
-                    let pool = Arc::clone(&self.port_pool);
-                    tokio::spawn(async move { pool.deallocate(port_pair).await });
+                    self.release_ports(port_pair, pending_video.as_ref().map(|v| v.port_pair));
                     return Ok(());
                 }
                 Err(e) => {
@@ -3771,8 +4124,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                     if let Err(bye_err) = self.uac.bye(&dialog).await {
                         warn!(error = %bye_err, "Failed to send BYE after add_participant error");
                     }
-                    let pool = Arc::clone(&self.port_pool);
-                    tokio::spawn(async move { pool.deallocate(port_pair).await });
+                    self.release_ports(port_pair, pending_video.as_ref().map(|v| v.port_pair));
                     return Ok(());
                 }
             }
@@ -3822,6 +4174,17 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             let announcement_interval_secs = conf.moh_announcement_interval_secs;
             let wait_uac = Arc::clone(&self.uac);
             let wait_dialog = dialog.clone();
+            // The video leg starts with the audio bridge once admitted; the
+            // session keeps its own handle-less copy for teardown and the API.
+            let wait_video = pending_video.as_ref().map(VideoLeg::shared);
+            let wait_backend = self.video_backend.clone();
+            let wait_display_name = display_name.clone();
+            let wait_sink = VideoEventSink {
+                event_bus: Arc::clone(&self.event_bus),
+                tenant_id,
+                room_number: room_number.clone(),
+                pumps: Arc::clone(&self.video_event_pumps),
+            };
 
             // Load announcement sound (short TTS message like "Please wait...")
             let mut announcement_samples: Option<Arc<Vec<i16>>> = None;
@@ -4039,7 +4402,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                                     room_number: rn.clone(),
                                     participant_id: pid.clone(),
                                     is_host: false,
-                                    has_video: false,
+                                    has_video: wait_video.is_some(),
                                     tenant_id,
                                     timestamp: SystemTime::now(),
                                 });
@@ -4091,10 +4454,21 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                                 }
                             }
 
-                            // Start audio bridge
-                            audio_bridge::run_audio_bridge(
-                                bridge_room,
-                                pid,
+                            // Start the audio bridge, and the video bridge
+                            // beside it when video was negotiated.
+                            let video = wait_video.as_ref().and_then(|leg| {
+                                video_bridge::attach_video(
+                                    &bridge_room,
+                                    wait_backend.as_deref()?,
+                                    &pid,
+                                    wait_display_name.as_deref(),
+                                    leg,
+                                    wait_sink.clone(),
+                                )
+                            });
+                            let audio = audio_bridge::run_audio_bridge(
+                                Arc::clone(&bridge_room),
+                                pid.clone(),
                                 bridge_socket,
                                 encoder,
                                 decoder,
@@ -4114,8 +4488,13 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                                 wait_unlocked_samples.clone(),
                                 wait_ending_samples.clone(),
                                 false,
-                            )
-                            .await;
+                            );
+                            match video {
+                                Some(video) => {
+                                    tokio::join!(audio, video);
+                                }
+                                None => audio.await,
+                            }
                         }
                         break;
                     }
@@ -4151,6 +4530,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                     caller_id: caller_id.clone(),
                     srtp_context: srtp_context.clone(),
                     last_refreshed: Instant::now(),
+                    video: pending_video.take(),
                 },
             );
 
@@ -4194,7 +4574,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             room_number: room_number.clone(),
             participant_id: participant_id.clone(),
             is_host,
-            has_video: false,
+            has_video: pending_video.is_some(),
             tenant_id,
             timestamp: SystemTime::now(),
         });
@@ -4369,6 +4749,18 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             false,
         ));
 
+        // 18b. Spawn the video bridge beside it
+        let video = pending_video.take().and_then(|leg| {
+            self.start_video_leg(
+                &room,
+                &participant_id,
+                display_name.as_deref(),
+                tenant_id,
+                &room_number,
+                leg,
+            )
+        });
+
         // 19. Store session (room_sessions already updated above for MeetingStarted dedup)
         let remote_addr = parse_remote_rtp_addr(sdp_offer).unwrap_or(UNKNOWN_REMOTE);
         self.sessions.insert(
@@ -4394,6 +4786,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 caller_id,
                 srtp_context,
                 last_refreshed: Instant::now(),
+                video,
             },
         );
 
@@ -4405,20 +4798,30 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         Ok(())
     }
 
-    fn handle_reinvite(&self, request: &sip_core::Request) -> Result<sip_core::Response> {
+    async fn handle_reinvite(&self, request: &sip_core::Request) -> Result<sip_core::Response> {
         let reinvite_start = Instant::now();
         let call_id = extract_call_id(request);
         let conf = self.conference_config.read().clone();
 
-        // Look up session — if not found, return Err so caller falls through to B2BUA
-        let mut session = self
-            .sessions
-            .get_mut(&call_id)
-            .ok_or_else(|| anyhow::anyhow!("No conference session for call_id: {}", call_id))?;
+        // Look up session — if not found, return Err so caller falls through
+        // to the B2BUA. A snapshot: the map is not held across the async
+        // work below (a video leg added mid-call needs ports and a socket).
+        let (remote_ip, room_number, tenant_id, has_video) = {
+            let session = self
+                .sessions
+                .get(&call_id)
+                .ok_or_else(|| anyhow::anyhow!("No conference session for call_id: {}", call_id))?;
+            (
+                session.remote_addr.ip(),
+                session.room_number.clone(),
+                session.tenant_id,
+                session.video.is_some(),
+            )
+        };
 
         // Rate-limit re-INVITEs using the participant's known remote IP
-        if !self.check_invite_rate(session.remote_addr.ip(), conf.max_invite_rate_per_ip) {
-            warn!(call_id = %call_id, peer = %session.remote_addr.ip(), "re-INVITE rate limit exceeded");
+        if !self.check_invite_rate(remote_ip, conf.max_invite_rate_per_ip) {
+            warn!(call_id = %call_id, peer = %remote_ip, "re-INVITE rate limit exceeded");
             return Ok(UserAgentServer::create_response(request, 486, "Busy Here"));
         }
 
@@ -4426,6 +4829,21 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         let body = request.body();
         let sdp_offer =
             std::str::from_utf8(&body[..]).context("re-INVITE SDP body is not valid UTF-8")?;
+
+        // Video added mid-call (a new active video section): prepared before
+        // the session is locked.
+        let offered_video = fcp_media::parse_video_offer(sdp_offer).filter(|v| v.port != 0);
+        let new_video = if !has_video && offered_video.is_some() {
+            self.prepare_video_leg(&tenant_id, &room_number, sdp_offer, &conf)
+                .await
+        } else {
+            None
+        };
+
+        let mut session = self
+            .sessions
+            .get_mut(&call_id)
+            .ok_or_else(|| anyhow::anyhow!("No conference session for call_id: {}", call_id))?;
 
         // Check for remote address change
         if let Some(new_remote) = parse_remote_rtp_addr(sdp_offer) {
@@ -4585,16 +5003,100 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             None
         };
 
+        // Video section: removed by the peer, kept (address change, key
+        // rollover), or added.
+        let mut video_codec: Vec<forge_core::VideoCodec> = Vec::new();
+        let mut video_srtp_sdp: Option<SrtpSdpContext> = None;
+        if session.video.is_some() && offered_video.is_none() {
+            info!(call_id = %call_id, "re-INVITE: video removed by the peer");
+            self.tear_down_video_leg(&mut session);
+        } else if let Some(leg) = session.video.as_ref() {
+            if let Some(new_remote) = offered_video
+                .as_ref()
+                .and_then(|v| v.remote)
+                .or_else(|| fcp_media::remote_video_endpoint(sdp_offer))
+            {
+                let socket = Arc::clone(&leg.socket);
+                tokio::spawn(async move {
+                    socket
+                        .set_remote_endpoint(RemoteEndpoint {
+                            rtp_addr: new_remote,
+                            rtcp_addr: Some(SocketAddr::new(
+                                new_remote.ip(),
+                                new_remote.port().wrapping_add(1),
+                            )),
+                        })
+                        .await;
+                });
+            }
+            if conf.enable_srtp {
+                if let Some(crypto) = parse_video_sdes_crypto(sdp_offer).first() {
+                    match (Self::negotiate_srtp(crypto), leg.srtp_context.as_ref()) {
+                        (Ok((new_ctx, sdp_ctx)), Some(lock)) => {
+                            info!(call_id = %call_id, "re-INVITE: video SRTP key rollover");
+                            let lock = Arc::clone(lock);
+                            tokio::spawn(async move {
+                                *lock.write().await = new_ctx;
+                            });
+                            video_srtp_sdp = Some(sdp_ctx);
+                        }
+                        (Ok(_), None) => {
+                            warn!(call_id = %call_id, "re-INVITE: video started plain and cannot switch to SRTP mid-call; staying plain");
+                        }
+                        (Err(e), _) => {
+                            warn!(error = %e, "video SRTP renegotiation failed, keeping existing keys");
+                        }
+                    }
+                }
+            }
+            video_codec = vec![leg.negotiated.codec];
+        } else if let Some(leg) = new_video {
+            let started = match self.bridge.get_room(&room_number) {
+                Ok(room) => self.start_video_leg(
+                    &room,
+                    &session.participant_id,
+                    session.display_name.as_deref(),
+                    tenant_id,
+                    &room_number,
+                    leg,
+                ),
+                Err(_) => {
+                    self.release_video_pair_later(leg.port_pair);
+                    None
+                }
+            };
+            if let Some(leg) = started {
+                info!(
+                    call_id = %call_id,
+                    codec = %leg.negotiated.codec,
+                    video_port = leg.port_pair.rtp_port,
+                    "re-INVITE: video added"
+                );
+                video_codec = vec![leg.negotiated.codec];
+                video_srtp_sdp = leg.srtp_sdp.clone();
+                session.video = Some(leg);
+            }
+        }
+
         // Refresh session timer (re-INVITE counts as a session refresh per RFC 4028)
         session.last_refreshed = Instant::now();
 
-        // Construct SDP answer with current local RTP port
-        let sdp_answer = construct_answer_for_a_leg(
+        // Construct SDP answer with current local RTP ports
+        let answer = self.build_answer(
             sdp_offer,
-            &self.local_addr,
             session.port_pair.rtp_port,
             srtp_sdp.as_ref(),
+            session.video.as_ref().map(|leg| VideoAnswer {
+                rtp_port: leg.port_pair.rtp_port,
+                codecs: &video_codec,
+                srtp: video_srtp_sdp.as_ref(),
+            }),
         );
+        if session.video.is_some() && answer.video.is_none() {
+            info!(call_id = %call_id, "re-INVITE: the video codec is no longer offered; video removed");
+            self.tear_down_video_leg(&mut session);
+        }
+        let sdp_answer = answer.sdp;
 
         // Build 200 OK response with SDP answer
         let local_sip_uri = self.parse_local_sip_uri();
@@ -4714,12 +5216,23 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
 
         let mut response = if !body.is_empty() {
             let sdp_offer = std::str::from_utf8(&body[..]).unwrap_or("");
-            let sdp_answer = construct_answer_for_a_leg(
-                sdp_offer,
-                &self.local_addr,
-                session.port_pair.rtp_port,
-                None,
-            );
+            let video_codec: Vec<forge_core::VideoCodec> = session
+                .video
+                .as_ref()
+                .map(|leg| vec![leg.negotiated.codec])
+                .unwrap_or_default();
+            let sdp_answer = self
+                .build_answer(
+                    sdp_offer,
+                    session.port_pair.rtp_port,
+                    None,
+                    session.video.as_ref().map(|leg| VideoAnswer {
+                        rtp_port: leg.port_pair.rtp_port,
+                        codecs: &video_codec,
+                        srtp: None,
+                    }),
+                )
+                .sdp;
             uas.create_ok(request, Some(&sdp_answer))
                 .map_err(|e| anyhow::anyhow!("Failed to create 200 OK for UPDATE: {}", e))?
         } else {

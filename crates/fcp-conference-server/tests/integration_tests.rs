@@ -484,6 +484,22 @@ sample_rate = 44100
 }
 
 #[test]
+fn test_video_settings_default_and_parse() {
+    let config = parse_config("");
+    assert_eq!(config.conference.video_codec_threads, None);
+    assert!(config.conference.video_native_codecs_only);
+    let config = parse_config(
+        r#"
+[conference]
+video_codec_threads = 3
+video_native_codecs_only = false
+"#,
+    );
+    assert_eq!(config.conference.video_codec_threads, Some(3));
+    assert!(!config.conference.video_native_codecs_only);
+}
+
+#[test]
 fn test_validate_unknown_codec() {
     let config = parse_config(
         r#"

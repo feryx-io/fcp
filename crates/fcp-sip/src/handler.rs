@@ -1097,7 +1097,7 @@ impl SipMessageHandler {
                     // Check conference handler first — conference participants
                     // don't have B2BUA call objects
                     if let Some(ref conf) = self.conference_handler {
-                        if let Ok(resp) = conf.handle_reinvite(request) {
+                        if let Ok(resp) = conf.handle_reinvite(request).await {
                             handle.send_final(resp).await;
                             return Ok(());
                         }
