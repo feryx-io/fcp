@@ -7,7 +7,7 @@ use axum::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse,
     },
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
     Json, Router,
 };
 use fcp_api_core::auth::{validate_bearer_token, AuthConfig, PLATFORM_TENANT_HEADER};
@@ -17,7 +17,7 @@ use fcp_core::{DynStorage, Meeting, MeetingId, TenantId};
 use fcp_events::{
     ConferenceEvent, EventFilter, EventPublisher, EventSubscriber, InMemoryEventBus, PlatformEvent,
 };
-use forge_conference::ConferenceBridge;
+use forge_conference::{ConferenceBridge, ConferenceRoom};
 use futures::stream::Stream;
 use serde::Deserialize;
 use std::convert::Infallible;
@@ -130,6 +130,32 @@ fn protected_router() -> Router<Arc<ConferenceState>> {
         )
         .route("/conferences/:room_number/stats", get(room_stats_handler))
         .route("/conferences/:room_number/announce", post(announce_handler))
+        // Video (design §12): status, layout, pin, spotlight, per-participant on/off
+        .route("/conferences/:room_number/video", get(video_status_handler))
+        .route(
+            "/conferences/:room_number/video/layout",
+            put(video_layout_handler),
+        )
+        .route(
+            "/conferences/:room_number/video/pin/:pid",
+            post(video_pin_handler),
+        )
+        .route(
+            "/conferences/:room_number/video/pin",
+            delete(video_unpin_handler),
+        )
+        .route(
+            "/conferences/:room_number/video/spotlight/:pid",
+            post(video_spotlight_handler),
+        )
+        .route(
+            "/conferences/:room_number/video/spotlight",
+            delete(video_unspotlight_handler),
+        )
+        .route(
+            "/conferences/:room_number/participants/:pid/video/:state",
+            post(participant_video_handler),
+        )
         // Admin: admit waiting participants
         .route(
             "/conferences/:room_number/admit/:pid",
@@ -194,6 +220,34 @@ fn internal_router(state: Arc<ConferenceState>) -> Router<Arc<ConferenceState>> 
         .route(
             "/internal/conferences/:room_number/announce",
             post(internal_announce_handler),
+        )
+        .route(
+            "/internal/conferences/:room_number/video",
+            get(internal_video_status_handler),
+        )
+        .route(
+            "/internal/conferences/:room_number/video/layout",
+            put(internal_video_layout_handler),
+        )
+        .route(
+            "/internal/conferences/:room_number/video/pin/:pid",
+            post(internal_video_pin_handler),
+        )
+        .route(
+            "/internal/conferences/:room_number/video/pin",
+            delete(internal_video_unpin_handler),
+        )
+        .route(
+            "/internal/conferences/:room_number/video/spotlight/:pid",
+            post(internal_video_spotlight_handler),
+        )
+        .route(
+            "/internal/conferences/:room_number/video/spotlight",
+            delete(internal_video_unspotlight_handler),
+        )
+        .route(
+            "/internal/conferences/:room_number/participants/:pid/video/:state",
+            post(internal_participant_video_handler),
         )
         .route_layer(middleware::from_fn_with_state(
             state,
@@ -1969,6 +2023,326 @@ async fn announce_handler(
     .await
 }
 
+// ----- video controls (design §8, §12) -----
+
+#[derive(Debug, Deserialize)]
+struct SetLayoutRequest {
+    layout: String,
+}
+
+/// The status of a video control on this node. `NOT_FOUND` when the room
+/// or the participant is not here (the peers are asked next); a room here
+/// with no video yet is a `CONFLICT`, an unknown layout a `BAD_REQUEST`,
+/// neither forwarded.
+fn video_control_status(err: &crate::video_bridge::VideoControlError) -> StatusCode {
+    use crate::video_bridge::VideoControlError::*;
+    match err {
+        NoSuchParticipant(_) => StatusCode::NOT_FOUND,
+        NoVideo => StatusCode::CONFLICT,
+        UnknownLayout(_) => StatusCode::BAD_REQUEST,
+    }
+}
+
+fn local_video_room(
+    state: &ConferenceState,
+    room_number: &str,
+) -> Result<Arc<ConferenceRoom>, (StatusCode, String)> {
+    state
+        .bridge
+        .get_room(room_number)
+        .map_err(|_| local_error(StatusCode::NOT_FOUND, "Conference room not active"))
+}
+
+fn local_video_control(
+    state: &ConferenceState,
+    room_number: &str,
+    control: impl FnOnce(
+        &ConferenceRoom,
+    ) -> Result<serde_json::Value, crate::video_bridge::VideoControlError>,
+) -> LocalResult {
+    let room = local_video_room(state, room_number)?;
+    let mut json = control(&room).map_err(|e| (video_control_status(&e), e.to_string()))?;
+    if let Some(map) = json.as_object_mut() {
+        map.insert("room".into(), room_number.into());
+    }
+    Ok(json)
+}
+
+fn local_video_status(state: &ConferenceState, room_number: &str) -> LocalResult {
+    state
+        .conference_handler
+        .get_room_video(room_number)
+        .map_err(|_| local_error(StatusCode::NOT_FOUND, "Conference room not active"))
+}
+
+fn local_video_layout(state: &ConferenceState, room_number: &str, layout: &str) -> LocalResult {
+    local_video_control(state, room_number, |room| {
+        crate::video_bridge::set_layout(room, layout)
+    })
+}
+
+fn local_video_pin(state: &ConferenceState, room_number: &str, pid: Option<&str>) -> LocalResult {
+    local_video_control(state, room_number, |room| {
+        crate::video_bridge::pin(room, pid)
+    })
+}
+
+fn local_video_spotlight(
+    state: &ConferenceState,
+    room_number: &str,
+    pid: Option<&str>,
+) -> LocalResult {
+    local_video_control(state, room_number, |room| {
+        crate::video_bridge::spotlight(room, pid)
+    })
+}
+
+fn local_participant_video(
+    state: &ConferenceState,
+    room_number: &str,
+    pid: &str,
+    enabled: bool,
+) -> LocalResult {
+    local_video_control(state, room_number, |room| {
+        crate::video_bridge::set_participant_video(room, pid, enabled)
+    })
+}
+
+/// `on` / `off` in the participant video route.
+fn parse_video_state(state: &str) -> Option<bool> {
+    match state {
+        "on" => Some(true),
+        "off" => Some(false),
+        _ => None,
+    }
+}
+
+fn invalid_video_state() -> (StatusCode, Json<serde_json::Value>) {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(serde_json::json!({ "error": "Video state must be 'on' or 'off'" })),
+    )
+}
+
+/// GET /conferences/{room}/video — the room's video and every
+/// participant's, from the node hosting the room. In a room spread over
+/// several nodes this is one node's view.
+async fn video_status_handler(
+    State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
+    Path(room_number): Path<String>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    if !is_valid_identifier(&room_number) {
+        return invalid_identifier();
+    }
+    let tenant_id = match control_tenant(&state, &headers, &room_number).await {
+        Ok(tenant_id) => tenant_id,
+        Err(err) => return err,
+    };
+    let local = local_video_status(&state, &room_number);
+    wherever_it_is(
+        &state,
+        &tenant_id,
+        &room_number,
+        local,
+        reqwest::Method::GET,
+        &format!("/conferences/{room_number}/video"),
+        None,
+    )
+    .await
+}
+
+/// PUT /conferences/{room}/video/layout `{"layout": "grid" | "active_speaker" | "spotlight" | "pip"}`
+/// — room-wide: every node hosting the room composes with it.
+async fn video_layout_handler(
+    State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
+    Path(room_number): Path<String>,
+    Json(payload): Json<SetLayoutRequest>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    if !is_valid_identifier(&room_number) {
+        return invalid_identifier();
+    }
+    if forge_video::layout::Layout::parse(&payload.layout).is_none() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": format!("Unknown layout '{}' (one of grid, active_speaker, spotlight, pip)", payload.layout)
+            })),
+        );
+    }
+    let tenant_id = match control_tenant(&state, &headers, &room_number).await {
+        Ok(tenant_id) => tenant_id,
+        Err(err) => return err,
+    };
+    let local = local_video_layout(&state, &room_number, &payload.layout);
+    let local_status = local.as_ref().err().map(|(s, _)| *s);
+    let (ok, body) = room_wide(
+        &state,
+        &tenant_id,
+        &room_number,
+        local,
+        reqwest::Method::PUT,
+        &format!("/conferences/{room_number}/video/layout"),
+        Some(serde_json::json!({ "layout": payload.layout })),
+    )
+    .await;
+    if !ok {
+        // Not applied anywhere: the room is not here (and no peer took
+        // it), or it is here without video.
+        let status = local_status.unwrap_or(StatusCode::NOT_FOUND);
+        return (status, Json(body));
+    }
+    info!(action = "video_layout", room = %room_number, layout = %payload.layout, node = ?body["node"].as_str(), "AUDIT: video layout set via API");
+    (StatusCode::OK, Json(body))
+}
+
+async fn video_pin_handler(
+    State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
+    Path((room_number, pid)): Path<(String, String)>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    if !is_valid_identifier(&room_number) || !is_valid_identifier(&pid) {
+        return invalid_identifier();
+    }
+    let tenant_id = match control_tenant(&state, &headers, &room_number).await {
+        Ok(tenant_id) => tenant_id,
+        Err(err) => return err,
+    };
+    let local = local_video_pin(&state, &room_number, Some(&pid));
+    let resp = wherever_it_is(
+        &state,
+        &tenant_id,
+        &room_number,
+        local,
+        reqwest::Method::POST,
+        &format!("/conferences/{room_number}/video/pin/{pid}"),
+        None,
+    )
+    .await;
+    if resp.0 == StatusCode::OK {
+        info!(action = "video_pin", room = %room_number, participant = %pid, node = ?resp.1["node"].as_str(), "AUDIT: participant pinned via API");
+    }
+    resp
+}
+
+/// DELETE /conferences/{room}/video/pin — room-wide, since the pin may be
+/// held on whichever node the pinned participant was on.
+async fn video_unpin_handler(
+    State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
+    Path(room_number): Path<String>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    clear_video_selection(&state, &headers, &room_number, "pin").await
+}
+
+async fn video_spotlight_handler(
+    State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
+    Path((room_number, pid)): Path<(String, String)>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    if !is_valid_identifier(&room_number) || !is_valid_identifier(&pid) {
+        return invalid_identifier();
+    }
+    let tenant_id = match control_tenant(&state, &headers, &room_number).await {
+        Ok(tenant_id) => tenant_id,
+        Err(err) => return err,
+    };
+    let local = local_video_spotlight(&state, &room_number, Some(&pid));
+    let resp = wherever_it_is(
+        &state,
+        &tenant_id,
+        &room_number,
+        local,
+        reqwest::Method::POST,
+        &format!("/conferences/{room_number}/video/spotlight/{pid}"),
+        None,
+    )
+    .await;
+    if resp.0 == StatusCode::OK {
+        info!(action = "video_spotlight", room = %room_number, participant = %pid, node = ?resp.1["node"].as_str(), "AUDIT: participant spotlighted via API");
+    }
+    resp
+}
+
+async fn video_unspotlight_handler(
+    State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
+    Path(room_number): Path<String>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    clear_video_selection(&state, &headers, &room_number, "spotlight").await
+}
+
+/// Clear the pin or the spotlight on every node hosting the room.
+async fn clear_video_selection(
+    state: &ConferenceState,
+    headers: &HeaderMap,
+    room_number: &str,
+    which: &str,
+) -> (StatusCode, Json<serde_json::Value>) {
+    if !is_valid_identifier(room_number) {
+        return invalid_identifier();
+    }
+    let tenant_id = match control_tenant(state, headers, room_number).await {
+        Ok(tenant_id) => tenant_id,
+        Err(err) => return err,
+    };
+    let local = match which {
+        "pin" => local_video_pin(state, room_number, None),
+        _ => local_video_spotlight(state, room_number, None),
+    };
+    let local_status = local.as_ref().err().map(|(s, _)| *s);
+    let (ok, body) = room_wide(
+        state,
+        &tenant_id,
+        room_number,
+        local,
+        reqwest::Method::DELETE,
+        &format!("/conferences/{room_number}/video/{which}"),
+        None,
+    )
+    .await;
+    if !ok {
+        return (local_status.unwrap_or(StatusCode::NOT_FOUND), Json(body));
+    }
+    info!(action = "video_clear", room = %room_number, which, node = ?body["node"].as_str(), "AUDIT: video {} cleared via API", which);
+    (StatusCode::OK, Json(body))
+}
+
+/// POST /conferences/{room}/participants/{pid}/video/{on|off} — a host
+/// hiding or showing one participant's video.
+async fn participant_video_handler(
+    State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
+    Path((room_number, pid, video_state)): Path<(String, String, String)>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    if !is_valid_identifier(&room_number) || !is_valid_identifier(&pid) {
+        return invalid_identifier();
+    }
+    let Some(enabled) = parse_video_state(&video_state) else {
+        return invalid_video_state();
+    };
+    let tenant_id = match control_tenant(&state, &headers, &room_number).await {
+        Ok(tenant_id) => tenant_id,
+        Err(err) => return err,
+    };
+    let local = local_participant_video(&state, &room_number, &pid, enabled);
+    let resp = wherever_it_is(
+        &state,
+        &tenant_id,
+        &room_number,
+        local,
+        reqwest::Method::POST,
+        &format!("/conferences/{room_number}/participants/{pid}/video/{video_state}"),
+        None,
+    )
+    .await;
+    if resp.0 == StatusCode::OK {
+        info!(action = "participant_video", room = %room_number, participant = %pid, enabled, node = ?resp.1["node"].as_str(), "AUDIT: participant video {} via API", if enabled { "enabled" } else { "disabled" });
+    }
+    resp
+}
+
 // ----- /internal twins: the local step only, on behalf of a peer node -----
 
 fn forwarded_from(headers: &HeaderMap) -> String {
@@ -2106,6 +2480,110 @@ async fn internal_announce_handler(
     let resp = local_response(local_announce(&state, &room_number, &payload.audio_path).await);
     if resp.0 == StatusCode::OK {
         info!(action = "announce", room = %room_number, from = %forwarded_from(&headers), "Announcement played on behalf of peer node");
+    }
+    resp
+}
+
+async fn internal_video_status_handler(
+    State(state): State<Arc<ConferenceState>>,
+    Path(room_number): Path<String>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    if !is_valid_identifier(&room_number) {
+        return invalid_identifier();
+    }
+    local_response(local_video_status(&state, &room_number))
+}
+
+async fn internal_video_layout_handler(
+    State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
+    Path(room_number): Path<String>,
+    Json(payload): Json<SetLayoutRequest>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    if !is_valid_identifier(&room_number) {
+        return invalid_identifier();
+    }
+    let resp = local_response(local_video_layout(&state, &room_number, &payload.layout));
+    if resp.0 == StatusCode::OK {
+        info!(action = "video_layout", room = %room_number, layout = %payload.layout, from = %forwarded_from(&headers), "AUDIT: video layout set on behalf of peer node");
+    }
+    resp
+}
+
+async fn internal_video_pin_handler(
+    State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
+    Path((room_number, pid)): Path<(String, String)>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    if !is_valid_identifier(&room_number) || !is_valid_identifier(&pid) {
+        return invalid_identifier();
+    }
+    let resp = local_response(local_video_pin(&state, &room_number, Some(&pid)));
+    if resp.0 == StatusCode::OK {
+        info!(action = "video_pin", room = %room_number, participant = %pid, from = %forwarded_from(&headers), "AUDIT: participant pinned on behalf of peer node");
+    }
+    resp
+}
+
+async fn internal_video_unpin_handler(
+    State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
+    Path(room_number): Path<String>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    if !is_valid_identifier(&room_number) {
+        return invalid_identifier();
+    }
+    let resp = local_response(local_video_pin(&state, &room_number, None));
+    if resp.0 == StatusCode::OK {
+        info!(action = "video_clear", room = %room_number, which = "pin", from = %forwarded_from(&headers), "AUDIT: video pin cleared on behalf of peer node");
+    }
+    resp
+}
+
+async fn internal_video_spotlight_handler(
+    State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
+    Path((room_number, pid)): Path<(String, String)>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    if !is_valid_identifier(&room_number) || !is_valid_identifier(&pid) {
+        return invalid_identifier();
+    }
+    let resp = local_response(local_video_spotlight(&state, &room_number, Some(&pid)));
+    if resp.0 == StatusCode::OK {
+        info!(action = "video_spotlight", room = %room_number, participant = %pid, from = %forwarded_from(&headers), "AUDIT: participant spotlighted on behalf of peer node");
+    }
+    resp
+}
+
+async fn internal_video_unspotlight_handler(
+    State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
+    Path(room_number): Path<String>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    if !is_valid_identifier(&room_number) {
+        return invalid_identifier();
+    }
+    let resp = local_response(local_video_spotlight(&state, &room_number, None));
+    if resp.0 == StatusCode::OK {
+        info!(action = "video_clear", room = %room_number, which = "spotlight", from = %forwarded_from(&headers), "AUDIT: video spotlight cleared on behalf of peer node");
+    }
+    resp
+}
+
+async fn internal_participant_video_handler(
+    State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
+    Path((room_number, pid, video_state)): Path<(String, String, String)>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    if !is_valid_identifier(&room_number) || !is_valid_identifier(&pid) {
+        return invalid_identifier();
+    }
+    let Some(enabled) = parse_video_state(&video_state) else {
+        return invalid_video_state();
+    };
+    let resp = local_response(local_participant_video(&state, &room_number, &pid, enabled));
+    if resp.0 == StatusCode::OK {
+        info!(action = "participant_video", room = %room_number, participant = %pid, enabled, from = %forwarded_from(&headers), "AUDIT: participant video set on behalf of peer node");
     }
     resp
 }
@@ -2635,4 +3113,36 @@ fn chrono_timestamp() -> String {
         .unwrap_or_default()
         .as_secs();
     format!("{}", secs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::video_bridge::VideoControlError;
+
+    /// "Not here" is the only answer that sends the request on to a peer;
+    /// a room without video or a bad layout is decided on this node.
+    #[test]
+    fn video_control_errors_map_to_forwardable_and_final_statuses() {
+        assert_eq!(
+            video_control_status(&VideoControlError::NoSuchParticipant("p".into())),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            video_control_status(&VideoControlError::NoVideo),
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            video_control_status(&VideoControlError::UnknownLayout("x".into())),
+            StatusCode::BAD_REQUEST
+        );
+    }
+
+    #[test]
+    fn participant_video_state_is_on_or_off() {
+        assert_eq!(parse_video_state("on"), Some(true));
+        assert_eq!(parse_video_state("off"), Some(false));
+        assert_eq!(parse_video_state("On"), None);
+        assert_eq!(parse_video_state("mute"), None);
+    }
 }

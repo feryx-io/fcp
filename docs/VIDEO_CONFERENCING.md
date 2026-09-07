@@ -483,11 +483,19 @@ fps, bitrate_kbps, keyframes_sent, nacks, plis, state}`; room JSON gains
 `video: {layout, spotlight, fps, outputs: [...]}`; new endpoints
 `PUT /conferences/{room}/video/layout`, `POST …/video/pin/{pid}`,
 `POST …/video/spotlight/{pid}`, `POST …/participants/{pid}/video/{on|off}`,
-mirrored on the internal cross-node router.
+mirrored on the internal cross-node router. *Shipped in 3c-1*, plus
+`DELETE …/video/pin` and `DELETE …/video/spotlight` to clear, and
+`GET /conferences/{room}/video` (the room's video and every participant's,
+located across nodes). The admin API proxies them as
+`/api/v1/conferences/live/{room}/…` to the conference server in its
+`[conference] server_url`; the admin UI's "Live Video" dialog per meeting
+uses that.
 
 **Events**: `conference.participant_joined` gains `has_video`;
-new `conference.video_layout_changed`, `conference.video_state_changed`
-(participant video on/off/lost), `conference.video_overload` (fps halved).
+new `conference.video_layout_changed` (`{layout, pinned, spotlight}`, from
+the API, a host, or a pinned participant leaving; one per hosting node),
+`conference.video_state_changed` (participant video on/off/lost/disabled/
+failed), `conference.video_overload` (fps halved).
 
 **Placement**: conference nodes advertise `video_budget_left`; the
 selector uses it (§9).
@@ -624,7 +632,7 @@ forge-video-codecs with private synthetic sources.
 
 | PR | Deliverable | Where |
 |---|---|---|
-| 3c-1 | **Controls.** `PUT /conferences/{room}/video/layout` (`{"layout": …}`, room-wide), `POST …/video/pin/{pid}` and `DELETE …/video/pin`, `POST …/video/spotlight/{pid}` and `DELETE …/video/spotlight`, `POST …/participants/{pid}/video/{on|off}` (single-target), `GET …/video` (status: room video JSON plus each participant's video JSON, located across nodes), each mirrored on `/internal`. The event pump turns `LayoutChanged` into `conference.video_layout_changed {room_number, layout, pinned, spotlight}`. Admin: the API gains a conference-server proxy (`ApiState::conference_server_url` + token, the events-server precedent) under `/api/v1/conferences/live/…`; the UI gains a live panel per meeting (status polled every 3 s, layout select, pin / spotlight / video on-off per participant) and the dead direct-to-8090 client is removed. Tests: the loopback harness asserts layout, pin, spotlight and on-off change the composite and that `video_layout_changed` reaches the bus; `local_*` functions unit-tested; proxy routes in the Postgres-gated API suite | fcp-conference-server, fcp-events, fcp-api-core, fcp-admin, fcp-admin-ui |
+| 3c-1 | **Controls** — implemented 2026-09-06 (FCP v0.25.102). Conference server: `PUT /conferences/{room}/video/layout` (`{"layout": …}`, room-wide), `POST …/video/pin/{pid}` and `DELETE …/video/pin`, `POST …/video/spotlight/{pid}` and `DELETE …/video/spotlight`, `POST …/participants/{pid}/video/{on|off}` (single-target), `GET …/video` (the room's video and every participant's, located across nodes), each mirrored on `/internal`; the controls live in `video_bridge` as functions on the room (`set_layout`, `pin`, `spotlight`, `set_participant_video`) with a `VideoControlError` the HTTP layer maps to 404 (not here, ask the peers), 409 (room here, no video yet) or 400 (unknown layout). The event pump turns `LayoutChanged` into `conference.video_layout_changed {room_number, layout, pinned, spotlight}`. Admin API: `ApiState::conference_server_url` + token (`[conference]` in fcp-admin's config, the events-server precedent), routes under `/api/v1/conferences/live/{room}/…` resolving the room to a meeting in the caller's tenant and passing the upstream answer through, dial-out included; `/api/v1/me/conferences/{id}/dial-out` for owners. Admin UI: a "Live Video" dialog per meeting (status polled every 3 s, layout select, pin / spotlight / video on-off per participant) and the unauthenticated direct-to-8090 client removed. *As built:* clearing the spotlight keeps the spotlight layout, as forge-conference does; a host's video-off surfaces as `video_state_changed` `disabled` from the room's own state machine, so no second event; the loopback test spotlights Alice and checks she fills Bob's canvas while the event reaches the bus | fcp-conference-server, fcp-events, fcp-api-core, fcp-admin, fcp-admin-ui |
 | 3c-2 | **Capacity.** forge-video gains a public `bench` module (the synthetic sources and `measure_codec` / `measure_compose`, returning ns/px; forge-video-codecs' test reuses it) — forge-media release. Conference server: a `VideoCapacity` accounting object per device (host only until phase 7) with the constants from the startup self-benchmark or the §9.4 table; `room_cost` recomputed from `VideoRoomStatus` on every heartbeat; admission after `plan_video` refuses a join whose marginal cost (a decode, an encode, compose when it is the room's first video or `exclude_self`) exceeds what is left, with the participant-cap 503; `video_budget` in the heartbeat and `active_calls` finally updated on conference nodes. Cluster: `ClusterMember.video_budget: Vec<VideoDeviceBudget {device, codecs, left, total}>`, `ConferenceNodeSelector` widened with the meeting's video need, `choose_conference_node` preferring, for a video room, the node with the most budget left on a device that has one of the room's codecs (a node advertising no budget is neither preferred nor excluded, like an unlabeled region). Admin: `video_budget` on `ClusterNodeInfo` and a column on the cluster page. Docs: §9.3 gets the work-unit definition, DISTRIBUTED_CONFERENCING and MULTI_REGION get the amended placement rule | forge-media (release), fcp-conference-server, fcp-cluster, fcp-sip, fcp-call-manager, fcp-admin, fcp-admin-ui |
 
 Decisions proposed with this plan, each open to reversal:

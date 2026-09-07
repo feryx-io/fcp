@@ -24,6 +24,9 @@ pub enum ApiError {
     Forbidden(String),
     Internal(String),
     Conflict(String),
+    /// A backing service this endpoint proxies to is not configured or
+    /// not reachable.
+    ServiceUnavailable(String),
 }
 
 impl IntoResponse for ApiError {
@@ -47,6 +50,11 @@ impl IntoResponse for ApiError {
                 Some(msg),
             ),
             ApiError::Conflict(msg) => (StatusCode::CONFLICT, "Conflict".to_string(), Some(msg)),
+            ApiError::ServiceUnavailable(msg) => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Service Unavailable".to_string(),
+                Some(msg),
+            ),
         };
 
         let body = Json(ErrorResponse {

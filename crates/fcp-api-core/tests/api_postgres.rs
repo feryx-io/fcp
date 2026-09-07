@@ -51,6 +51,7 @@ use tower::ServiceExt;
 use uuid::Uuid;
 
 const ADMIN_TOKEN: &str = "test-admin-token";
+const CONFERENCE_TOKEN: &str = "test-conference-server-token";
 const PROVISIONING_TOKEN: &str = "test-provisioning-shared-token";
 const REALM: &str = "pbx.example.com";
 
@@ -62,7 +63,7 @@ macro_rules! require_app {
         require_app!(DeploymentMode::default())
     };
     ($mode:expr) => {
-        match App::with_mode($mode).await {
+        match App::build($mode, None).await {
             Some(app) => app,
             None => {
                 eprintln!("FCP_TEST_DATABASE_URL not set; skipping PostgreSQL API handler test");
@@ -106,7 +107,12 @@ struct App {
 }
 
 impl App {
-    async fn with_mode(mode: DeploymentMode) -> Option<Self> {
+    /// An app whose live conference endpoints proxy to `conference_url`.
+    async fn with_conference_server(conference_url: &str) -> Option<Self> {
+        Self::build(DeploymentMode::default(), Some(conference_url.to_string())).await
+    }
+
+    async fn build(mode: DeploymentMode, conference_url: Option<String>) -> Option<Self> {
         let admin_url = std::env::var("FCP_TEST_DATABASE_URL").ok()?;
         let db_name = format!("fcp_test_{}", Uuid::new_v4().simple());
 
@@ -217,6 +223,8 @@ impl App {
             tenant_a,
         )
         .with_deployment_mode(mode)
+        .with_conference_server_url(conference_url)
+        .with_conference_server_auth_token(Some(CONFERENCE_TOKEN.to_string()))
         .with_profile_pictures_dir(dir.path().join("avatars"))
         .with_voicemail_greetings_dir(dir.path().join("greetings"))
         .with_prompts_dir(dir.path().join("prompts"));
@@ -4376,4 +4384,290 @@ async fn compliance_policy_audit_log_export_and_retention() {
     );
 
     app.finish().await;
+}
+
+// ─── Live conference controls (proxied to the conference server) ─────────
+
+/// One request the mock conference server received.
+#[derive(Debug, Clone)]
+struct Upstream {
+    method: String,
+    path: String,
+    tenant: Option<String>,
+    bearer: Option<String>,
+    body: Value,
+}
+
+/// A stand-in conference server on a loopback port: records every request
+/// and answers by path the way the real one does (room 9999 is "not
+/// active anywhere", everything else succeeds with an echo).
+async fn mock_conference_server() -> (String, Arc<std::sync::Mutex<Vec<Upstream>>>) {
+    use axum::extract::State;
+    use axum::routing::any;
+    let seen: Arc<std::sync::Mutex<Vec<Upstream>>> = Arc::default();
+    async fn record(
+        State(seen): State<Arc<std::sync::Mutex<Vec<Upstream>>>>,
+        method: Method,
+        uri: axum::http::Uri,
+        headers: HeaderMap,
+        bytes: Bytes,
+    ) -> (StatusCode, axum::Json<Value>) {
+        let method = method.to_string();
+        let path = uri.path().to_string();
+        let header = |name: &str| {
+            headers
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string)
+        };
+        let tenant = header("x-fcp-tenant-id");
+        let bearer = header(header::AUTHORIZATION.as_str())
+            .and_then(|v| v.strip_prefix("Bearer ").map(str::to_string));
+        let body = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        seen.lock().unwrap().push(Upstream {
+            method: method.clone(),
+            path: path.clone(),
+            tenant,
+            bearer,
+            body: body.clone(),
+        });
+        if path.starts_with("/conferences/9999/") {
+            return (
+                StatusCode::NOT_FOUND,
+                axum::Json(json!({ "error": "Conference room not active" })),
+            );
+        }
+        (
+            StatusCode::OK,
+            axum::Json(json!({ "status": "ok", "method": method, "path": path, "body": body })),
+        )
+    }
+    let router = Router::new()
+        .fallback(any(record))
+        .with_state(Arc::clone(&seen));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind loopback");
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, router).await;
+    });
+    (format!("http://127.0.0.1:{port}"), seen)
+}
+
+async fn create_meeting(app: &App, room: &str, owner: Option<&str>) {
+    let res = app
+        .admin(
+            Method::POST,
+            "/api/v1/conferences/meetings",
+            Some(json!({
+                "room_number": room,
+                "name": format!("Room {room}"),
+                "owner_id": owner,
+            })),
+        )
+        .await;
+    assert_eq!(
+        res.status,
+        StatusCode::CREATED,
+        "create meeting: {}",
+        res.text
+    );
+}
+
+#[tokio::test]
+async fn live_conference_controls_are_proxied_with_the_meetings_tenant() {
+    let (url, seen) = mock_conference_server().await;
+    let Some(app) = App::with_conference_server(&url).await else {
+        eprintln!("FCP_TEST_DATABASE_URL not set; skipping PostgreSQL API handler test");
+        return;
+    };
+    create_meeting(&app, "8000", None).await;
+    create_meeting(&app, "9999", None).await;
+
+    // Status: forwarded with the meeting's tenant and the server's token;
+    // the upstream body comes back as it is.
+    let res = app
+        .admin(Method::GET, "/api/v1/conferences/live/8000/video", None)
+        .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.text);
+    assert_eq!(res.json["path"], "/conferences/8000/video");
+    {
+        let seen = seen.lock().unwrap();
+        let up = seen.last().expect("upstream was called");
+        assert_eq!(up.method, "GET");
+        assert_eq!(
+            up.tenant.as_deref(),
+            Some(app.tenant_a.to_string().as_str())
+        );
+        assert_eq!(up.bearer.as_deref(), Some(CONFERENCE_TOKEN));
+    }
+
+    // Layout: the body travels; pin / spotlight / participant video take
+    // their verbs and paths through unchanged.
+    let res = app
+        .admin(
+            Method::PUT,
+            "/api/v1/conferences/live/8000/video/layout",
+            Some(json!({ "layout": "pip" })),
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.text);
+    assert_eq!(res.json["body"], json!({ "layout": "pip" }));
+    for (method, path) in [
+        (Method::POST, "/video/pin/p-1"),
+        (Method::DELETE, "/video/pin"),
+        (Method::POST, "/video/spotlight/p-1"),
+        (Method::DELETE, "/video/spotlight"),
+        (Method::POST, "/participants/p-1/video/off"),
+        (Method::POST, "/participants/p-1/video/on"),
+    ] {
+        let res = app
+            .admin(
+                method.clone(),
+                &format!("/api/v1/conferences/live/8000{path}"),
+                None,
+            )
+            .await;
+        assert_eq!(res.status, StatusCode::OK, "{method} {path}: {}", res.text);
+        let seen = seen.lock().unwrap();
+        let up = seen.last().unwrap();
+        assert_eq!(up.method, method.as_str());
+        assert_eq!(up.path, format!("/conferences/8000{path}"));
+    }
+    let res = app
+        .admin(
+            Method::POST,
+            "/api/v1/conferences/live/8000/dial-out",
+            Some(json!({ "destination": "1001", "greeting_tts": "hi" })),
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.text);
+    assert_eq!(res.json["body"]["destination"], "1001");
+
+    // Decided here, never forwarded: a bad participant video state, a
+    // room with no meeting, a meeting in another tenant.
+    let before = seen.lock().unwrap().len();
+    let res = app
+        .admin(
+            Method::POST,
+            "/api/v1/conferences/live/8000/participants/p-1/video/sideways",
+            None,
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::BAD_REQUEST, "{}", res.text);
+    let res = app
+        .admin(Method::GET, "/api/v1/conferences/live/8001/video", None)
+        .await;
+    assert_eq!(res.status, StatusCode::NOT_FOUND, "{}", res.text);
+    let res = app
+        .send(
+            Method::GET,
+            "/api/v1/conferences/live/8000/video",
+            &[
+                (AUTH_HEADER, BEARER),
+                ("x-fcp-tenant-id", &app.tenant_b.to_string()),
+            ],
+            None,
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::NOT_FOUND, "{}", res.text);
+    assert_eq!(
+        seen.lock().unwrap().len(),
+        before,
+        "nothing reached the upstream"
+    );
+
+    // The upstream's own 404 (room not active on any node) passes through.
+    let res = app
+        .admin(Method::GET, "/api/v1/conferences/live/9999/video", None)
+        .await;
+    assert_eq!(res.status, StatusCode::NOT_FOUND, "{}", res.text);
+    assert_eq!(res.json["error"], "Conference room not active");
+
+    // End users are kept out of the admin routes.
+    app.create_user_with_role("viewer", "end_user").await;
+    let jwt = app.login("viewer", PASSWORD).await.json["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let res = app
+        .send_as(
+            &jwt,
+            Method::GET,
+            "/api/v1/conferences/live/8000/video",
+            None,
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::FORBIDDEN, "{}", res.text);
+}
+
+#[tokio::test]
+async fn live_conference_controls_need_a_conference_server() {
+    let app = require_app!();
+    create_meeting(&app, "8000", None).await;
+    let res = app
+        .admin(Method::GET, "/api/v1/conferences/live/8000/video", None)
+        .await;
+    assert_eq!(res.status, StatusCode::SERVICE_UNAVAILABLE, "{}", res.text);
+}
+
+#[tokio::test]
+async fn owners_dial_out_of_their_own_conferences() {
+    let (url, seen) = mock_conference_server().await;
+    let Some(app) = App::with_conference_server(&url).await else {
+        eprintln!("FCP_TEST_DATABASE_URL not set; skipping PostgreSQL API handler test");
+        return;
+    };
+    app.create_user_with_role("host", "end_user").await;
+    app.create_user_with_role("guest", "end_user").await;
+    create_meeting(&app, "8000", Some("host")).await;
+    let meetings = app
+        .admin(Method::GET, "/api/v1/conferences/meetings", None)
+        .await;
+    let id = meetings.json.as_array().unwrap()[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let host = app.login("host", PASSWORD).await.json["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let res = app
+        .send_as(
+            &host,
+            Method::POST,
+            &format!("/api/v1/me/conferences/{id}/dial-out"),
+            Some(json!({ "destination": "+15550001111" })),
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.text);
+    {
+        let seen = seen.lock().unwrap();
+        let up = seen.last().expect("upstream was called");
+        assert_eq!(up.path, "/conferences/8000/dial-out");
+        assert_eq!(up.body["destination"], "+15550001111");
+        assert_eq!(
+            up.tenant.as_deref(),
+            Some(app.tenant_a.to_string().as_str())
+        );
+    }
+
+    // Somebody else's conference does not exist as far as this user knows.
+    let guest = app.login("guest", PASSWORD).await.json["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let before = seen.lock().unwrap().len();
+    let res = app
+        .send_as(
+            &guest,
+            Method::POST,
+            &format!("/api/v1/me/conferences/{id}/dial-out"),
+            Some(json!({ "destination": "+15550001111" })),
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::NOT_FOUND, "{}", res.text);
+    assert_eq!(seen.lock().unwrap().len(), before);
 }
