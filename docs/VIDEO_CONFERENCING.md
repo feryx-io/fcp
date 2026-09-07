@@ -597,6 +597,70 @@ Decisions taken with this plan, each open to reversal:
   accounting exists.
 - **Trunk video stays in phase 5** (§10, §15), as designed.
 
+### 15.2 Phase 3c plan (2026-09-06)
+
+3c closes phase 3: the runtime controls §8 and §12 promise, and the
+capacity model of §9.3. The two halves touch disjoint code, so they are
+delivered as two FCP PRs in order, each shippable alone, with one small
+forge-media release in front of the second.
+
+**What the code survey found.** `VideoRoom` already has every control
+(`set_layout`, `pin`, `spotlight`, `set_participant_video_enabled`) and
+emits `LayoutChanged`, which the server's event pump drops on the floor
+at the phase-3c stub; a host disabling a participant's video already
+surfaces as `video_state_changed` with state `disabled` through the
+per-tick state machine, so no new event is needed for it. The control
+endpoints have a settled pattern (`local_*` returning 404 for "not on
+this node", `room_wide` broadcast or `wherever_it_is` locate through the
+`/internal` mirror under the cluster secret). The admin UI has no live
+conference view: its only live client is dead code that calls the
+conference server on port 8090 directly with no bearer token. Cluster
+membership carries `region` as the precedent for an optional field
+(`serde(default)`, skipped when absent). `choose_conference_node` knows
+only participant counts and, on conference nodes, `active_calls` is
+never updated, so its load tiebreak is inert today. No self-benchmark
+exists: the only cost-measuring code is a `#[cfg(test)]` bench in
+forge-video-codecs with private synthetic sources.
+
+| PR | Deliverable | Where |
+|---|---|---|
+| 3c-1 | **Controls.** `PUT /conferences/{room}/video/layout` (`{"layout": …}`, room-wide), `POST …/video/pin/{pid}` and `DELETE …/video/pin`, `POST …/video/spotlight/{pid}` and `DELETE …/video/spotlight`, `POST …/participants/{pid}/video/{on|off}` (single-target), `GET …/video` (status: room video JSON plus each participant's video JSON, located across nodes), each mirrored on `/internal`. The event pump turns `LayoutChanged` into `conference.video_layout_changed {room_number, layout, pinned, spotlight}`. Admin: the API gains a conference-server proxy (`ApiState::conference_server_url` + token, the events-server precedent) under `/api/v1/conferences/live/…`; the UI gains a live panel per meeting (status polled every 3 s, layout select, pin / spotlight / video on-off per participant) and the dead direct-to-8090 client is removed. Tests: the loopback harness asserts layout, pin, spotlight and on-off change the composite and that `video_layout_changed` reaches the bus; `local_*` functions unit-tested; proxy routes in the Postgres-gated API suite | fcp-conference-server, fcp-events, fcp-api-core, fcp-admin, fcp-admin-ui |
+| 3c-2 | **Capacity.** forge-video gains a public `bench` module (the synthetic sources and `measure_codec` / `measure_compose`, returning ns/px; forge-video-codecs' test reuses it) — forge-media release. Conference server: a `VideoCapacity` accounting object per device (host only until phase 7) with the constants from the startup self-benchmark or the §9.4 table; `room_cost` recomputed from `VideoRoomStatus` on every heartbeat; admission after `plan_video` refuses a join whose marginal cost (a decode, an encode, compose when it is the room's first video or `exclude_self`) exceeds what is left, with the participant-cap 503; `video_budget` in the heartbeat and `active_calls` finally updated on conference nodes. Cluster: `ClusterMember.video_budget: Vec<VideoDeviceBudget {device, codecs, left, total}>`, `ConferenceNodeSelector` widened with the meeting's video need, `choose_conference_node` preferring, for a video room, the node with the most budget left on a device that has one of the room's codecs (a node advertising no budget is neither preferred nor excluded, like an unlabeled region). Admin: `video_budget` on `ClusterNodeInfo` and a column on the cluster page. Docs: §9.3 gets the work-unit definition, DISTRIBUTED_CONFERENCING and MULTI_REGION get the amended placement rule | forge-media (release), fcp-conference-server, fcp-cluster, fcp-sip, fcp-call-manager, fcp-admin, fcp-admin-ui |
+
+Decisions proposed with this plan, each open to reversal:
+
+- **Two PRs, not one.** Controls and capacity share no code; the second
+  waits on a forge-media release the first does not need.
+- **The admin UI reaches the conference server through the admin API**,
+  not directly. One configured conference node is the entry point; it
+  locates or broadcasts to the hosting node through `/internal`, so the
+  proxy needs no cluster knowledge. The direct client goes.
+- **A work unit is one thousandth of one device execution unit's time
+  per second** — on the host, a millicore of one codec-pool thread. A
+  node with a ten-thread pool advertises `total = 10 000 × headroom`
+  (headroom 0.8 by default); a 720p15 H.264 encode of hard content costs
+  `4.4 ns/px × 921 600 px × 15 fps ≈ 61` units. The same definition fits
+  a GPU media engine in phase 7.
+- **The self-benchmark runs at start, before the first heartbeat**, on
+  the codec pool with no rooms yet, one codec at a time at 640×360 on the
+  hard synthetic source, bounded by `conference.video_benchmark_seconds`
+  (default 10; 0 skips it). Constants it did not reach fall back to the
+  §9.4 table (hard column). Results are logged and shown in `/status`.
+- **An over-budget join is refused with 503, as §9.3 says**, not admitted
+  audio-only: budget-aware placement makes the refusal rare, and a loud
+  failure is a capacity signal an audio-only fallback would hide. The
+  alternative (admit audio-only, emit an event) is a one-line change if
+  operators want it later.
+- **`video_enabled` stays off by default.** Capacity accounting now
+  exists, but a meeting's video still needs native codecs compiled into
+  its conference nodes; opting in per meeting keeps that a deliberate act.
+- **Layout events in cascaded rooms are per hosting node**: a room-wide
+  layout change makes every node's `VideoRoom` emit once, so consumers of
+  `video_layout_changed` for a room spanning nodes see one event per node
+  with identical content. Participant migration and a single-emitter rule
+  belong with the distributed-conferencing follow-ups.
+- **Unpin and unspotlight are `DELETE`s**, additive to §12's list.
+
 ## 16. Resolved questions
 
 Raised with the first draft and decided 2026-09-04, each as recommended.
