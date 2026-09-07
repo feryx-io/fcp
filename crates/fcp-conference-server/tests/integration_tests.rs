@@ -488,11 +488,15 @@ fn test_video_settings_default_and_parse() {
     let config = parse_config("");
     assert_eq!(config.conference.video_codec_threads, None);
     assert!(config.conference.video_native_codecs_only);
+    assert_eq!(config.conference.video_benchmark_seconds, 10);
+    assert_eq!(config.conference.video_budget_headroom, 0.8);
     let config = parse_config(
         r#"
 [conference]
 video_codec_threads = 3
 video_native_codecs_only = false
+video_benchmark_seconds = 0
+video_budget_headroom = 0.5
 "#,
     );
     assert_eq!(config.conference.video_codec_threads, Some(3));

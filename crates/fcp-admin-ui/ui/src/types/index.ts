@@ -928,6 +928,15 @@ export interface ClusterNodeInfo {
   uptime_seconds: number
   draining: boolean
   region?: string
+  /** Video capacity per device, advertised by conference nodes (work units). */
+  video_budget?: VideoDeviceBudget[]
+}
+
+export interface VideoDeviceBudget {
+  device: string
+  codecs: string[]
+  left: number
+  total: number
 }
 
 export interface ClusterNodesResponse {

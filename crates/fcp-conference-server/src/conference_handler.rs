@@ -203,6 +203,8 @@ pub struct ConferenceCallHandler {
     /// The codec registry, thread pool and device video rooms run on;
     /// `None` leaves every meeting audio-only.
     video_backend: Option<Arc<VideoBackend>>,
+    /// The node's video budget, when accounting is on.
+    video_capacity: Option<Arc<crate::video_capacity::VideoCapacity>>,
     /// Rooms whose video events are being forwarded to the bus.
     video_event_pumps: Arc<DashMap<String, ()>>,
     /// Calls that have been answered and are waiting for PIN input.
@@ -622,6 +624,7 @@ impl ConferenceCallHandler {
             handler_latency: HandlerLatency::new(),
             tts_service: None,
             video_backend: None,
+            video_capacity: None,
             video_event_pumps: Arc::new(DashMap::new()),
             pending_pin_auth: DashMap::new(),
             dtmf_muted_samples: None,
@@ -632,12 +635,34 @@ impl ConferenceCallHandler {
         }
     }
 
-    /// Set the TTS service for synthesizing prompts from meeting text fields.
+    /// The node's video budget (design §9.3): joins that would not fit are
+    /// refused, and the budget is re-priced from the rooms periodically.
+    pub fn set_video_capacity(&mut self, capacity: Arc<crate::video_capacity::VideoCapacity>) {
+        self.video_capacity = Some(capacity);
+    }
+
+    pub fn video_capacity(&self) -> Option<&Arc<crate::video_capacity::VideoCapacity>> {
+        self.video_capacity.as_ref()
+    }
+
+    /// Re-price the video budget from every active room; `None` without a
+    /// budget. Returns the units committed.
+    pub fn recompute_video_capacity(&self) -> Option<u32> {
+        let capacity = self.video_capacity.as_ref()?;
+        let rooms: Vec<Arc<forge_conference::ConferenceRoom>> = self
+            .active_rooms()
+            .into_iter()
+            .filter_map(|(room, _)| self.bridge.get_room(&room).ok())
+            .collect();
+        Some(capacity.recompute(rooms))
+    }
+
     /// Give rooms a video backend; without one every meeting is audio-only.
     pub fn set_video_backend(&mut self, backend: VideoBackend) {
         self.video_backend = Some(Arc::new(backend));
     }
 
+    /// Set the TTS service for synthesizing prompts from meeting text fields.
     pub fn set_tts_service(&mut self, tts: Arc<fcp_media::TtsService>) {
         self.tts_service = Some(tts);
     }
@@ -3590,6 +3615,35 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             }
             plan
         });
+
+        // Video budget (design §9.3): a join whose video would not fit on
+        // this node is refused the way the participant cap is, before the
+        // 180. Placement should have sent it where the budget is; this is
+        // the guard for the race. The units are held until the next
+        // recompute sees the participant in its room.
+        if let (Some((settings, codecs)), Some(capacity)) =
+            (video_plan.as_ref(), self.video_capacity.as_ref())
+        {
+            let room_video = self
+                .bridge
+                .get_room(&room_number)
+                .ok()
+                .and_then(|room| room.video());
+            let cost = capacity.join_cost(settings, codecs, room_video.as_deref());
+            if !capacity.try_reserve(cost) {
+                warn!(
+                    room = %room_number,
+                    cost,
+                    left = capacity.left(),
+                    total = capacity.total(),
+                    "Video budget exhausted on this node, rejecting INVITE"
+                );
+                let reject = UserAgentServer::create_response(request, 503, "Service Unavailable");
+                handle.send_final(reject).await;
+                return Ok(());
+            }
+            debug!(room = %room_number, cost, left = capacity.left(), "Video join reserved");
+        }
 
         // Also look for telephone-event payload type and clock rate for DTMF
         let te_pt = find_telephone_event_pt(&offered_codecs, sdp_offer);

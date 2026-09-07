@@ -47,6 +47,9 @@ pub struct ClusterNodeInfo {
     /// Deployment region the node advertises, when it has one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub region: Option<String>,
+    /// Video budget per device, when the node advertises one.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub video_budget: Vec<crate::membership::VideoDeviceBudget>,
 }
 
 /// Aggregate statistics across all cluster nodes.
@@ -153,6 +156,7 @@ impl ClusterReader {
                     uptime_seconds,
                     draining: member.draining,
                     region: member.region,
+                    video_budget: member.video_budget,
                 });
             }
 
@@ -237,6 +241,7 @@ mod tests {
             uptime_seconds: 0,
             draining: false,
             region: region.map(str::to_owned),
+            video_budget: Vec::new(),
         }
     }
 

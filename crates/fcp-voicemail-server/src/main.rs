@@ -300,6 +300,7 @@ async fn main() -> Result<()> {
                 version: env!("CARGO_PKG_VERSION").to_string(),
                 draining: false,
                 region: fcp_cluster::resolve_region(config.cluster.region.as_deref()),
+                video_budget: Vec::new(),
             };
             let cm =
                 fcp_cluster::ClusterManager::new(redis.clone(), member)

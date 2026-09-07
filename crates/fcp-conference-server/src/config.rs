@@ -663,6 +663,19 @@ pub struct ConferenceSection {
     #[serde(default = "default_true")]
     pub video_native_codecs_only: bool,
 
+    /// Seconds the video self-benchmark may take at start, pricing each
+    /// usable codec on this node's codec pool before the first cluster
+    /// heartbeat (design §9.3). `0` skips it and uses the phase 0 table.
+    /// Default: 10.
+    #[serde(default = "default_video_benchmark_seconds")]
+    pub video_benchmark_seconds: u64,
+
+    /// Share of the codec pool's time the video budget may commit
+    /// (0.05–1.0); the rest absorbs content harder than the benchmark's
+    /// and the async side's work. Default: 0.8.
+    #[serde(default = "default_video_budget_headroom")]
+    pub video_budget_headroom: f64,
+
     /// Directory for pre-recorded announcement WAV files.
     #[serde(default = "default_announcements_dir")]
     pub announcements_dir: String,
@@ -762,6 +775,14 @@ fn default_true() -> bool {
     true
 }
 
+fn default_video_benchmark_seconds() -> u64 {
+    10
+}
+
+fn default_video_budget_headroom() -> f64 {
+    0.8
+}
+
 fn default_recordings_dir() -> String {
     "/var/fcp/conference/recordings".to_string()
 }
@@ -849,6 +870,8 @@ impl Default for ConferenceSection {
             enable_srtp: false,
             video_codec_threads: None,
             video_native_codecs_only: true,
+            video_benchmark_seconds: default_video_benchmark_seconds(),
+            video_budget_headroom: default_video_budget_headroom(),
             announcements_dir: default_announcements_dir(),
             max_wait_for_moderator_secs: default_max_wait_for_moderator_secs(),
             moh_announcement_interval_secs: default_moh_announcement_interval_secs(),

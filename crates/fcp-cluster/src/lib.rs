@@ -15,8 +15,11 @@ pub mod reader;
 
 pub use call_registry::CallRegistry;
 pub use conference_registry::{
-    choose_conference_node, ConferenceHost, ConferenceRegistry, RoomRecord, CONFERENCE_NODE_TYPE,
+    choose_conference_node, ConferenceHost, ConferenceRegistry, RoomRecord, VideoNeed,
+    CONFERENCE_NODE_TYPE,
 };
-pub use membership::{resolve_region, ClusterManager, ClusterMember};
+pub use membership::{
+    resolve_region, ClusterManager, ClusterMember, VideoBudgetHandle, VideoDeviceBudget,
+};
 pub use node_client::NodeClient;
 pub use reader::{ClusterNodeInfo, ClusterNodeStatus, ClusterReader, ClusterStats};

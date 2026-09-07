@@ -127,7 +127,10 @@ simpler) deployment; regions then never place across each other.
   second step is the point: a US caller into a room the EU already hosts
   lands on a US conference node, the two nodes trunk to each other once
   (`docs/DISTRIBUTED_CONFERENCING.md`), and the caller's media never
-  crosses the ocean. Draining nodes are skipped as before.
+  crosses the ocean. Draining nodes are skipped as before. For a video
+  meeting the "least-loaded" choice prefers the node with the most video
+  budget left for the meeting's codecs (`docs/VIDEO_CONFERENCING.md`
+  §9.3); region still comes first.
 - **Admin API**: `GET /api/v1/cluster/nodes` lists each node's `region`
   and `draining` flag and takes `?region=eu-west`; `GET
   /api/v1/cluster/stats` adds `nodes_by_region` and

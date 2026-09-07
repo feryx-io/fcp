@@ -61,6 +61,20 @@ cascade trunk between the two hosts carries the cross-region audio once.
 Nodes without a `[cluster] region` are never "local" and only take part in
 the cluster-wide pass.
 
+Since v0.25.103 the rule is also budget-aware for video meetings
+(`docs/VIDEO_CONFERENCING.md` §9.3): every conference node advertises
+`video_budget` — per device, the codecs it runs and the work units left
+and total — and when the meeting allows video the "fewest active calls"
+choice in step 2 becomes "most video budget left on a device with one of
+the meeting's codecs", a node known to have none coming last and a node
+advertising no budget in between (unknown, neither preferred nor
+excluded). Hosting nodes in step 1 keep their priority whatever their
+budget: inter-node trunks carry audio only, so spreading a video room
+would cost its participants each other's video. On the node itself a join
+whose video would not fit is refused with 503 like the participant cap;
+the budget is re-priced from the running rooms every heartbeat and
+published with it.
+
 `conference_node_capacity` lives in the call manager's `[b2bua]` section.
 `0` (the default) never spreads a room, which is the right setting until
 phase 2 lands: without trunks, participants on a second node would not hear

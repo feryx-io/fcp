@@ -93,6 +93,31 @@ const columns: ColumnDef<ClusterNodeInfo>[] = [
     ),
   },
   {
+    id: 'video_budget',
+    header: 'Video Budget',
+    cell: ({ row }) => {
+      const budget = row.original.video_budget
+      if (!budget || budget.length === 0) {
+        return <span className="text-xs text-muted-foreground">—</span>
+      }
+      return (
+        <div className="text-xs space-y-0.5">
+          {budget.map((b) => {
+            const pct = b.total > 0 ? Math.round((b.left / b.total) * 100) : 0
+            return (
+              <div key={b.device} title={`${b.codecs.join(', ')} · ${b.left} of ${b.total} work units left`}>
+                <span className="font-mono">{b.device}</span>{' '}
+                <span className={pct < 15 ? 'text-destructive' : pct < 40 ? 'text-yellow-600' : ''}>
+                  {b.left}/{b.total} ({pct}%)
+                </span>
+              </div>
+            )
+          })}
+        </div>
+      )
+    },
+  },
+  {
     accessorKey: 'uptime_seconds',
     header: ({ column }) => (
       <Button variant="ghost" onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}>

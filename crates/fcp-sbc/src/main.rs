@@ -731,6 +731,7 @@ async fn main() -> Result<()> {
                         region: fcp_cluster::resolve_region(
                             deploy_config.cluster.region.as_deref(),
                         ),
+                        video_budget: Vec::new(),
                     };
                     let cm = fcp_cluster::ClusterManager::new(redis, member).with_intervals(
                         deploy_config.cluster.heartbeat_interval_secs,

@@ -38,11 +38,23 @@ mod health;
 mod storage;
 mod trunks;
 mod video_bridge;
+mod video_capacity;
 
 use cli::Cli;
 use conference_handler::ConferenceCallHandler;
 use config::ConferenceServerConfig;
 use fcp_conference_server::config;
+
+/// The node's video budget as cluster membership carries it.
+#[cfg(feature = "storage-redis")]
+fn cluster_budget(b: &video_capacity::DeviceBudget) -> fcp_cluster::VideoDeviceBudget {
+    fcp_cluster::VideoDeviceBudget {
+        device: b.device.clone(),
+        codecs: b.codecs.clone(),
+        left: b.left,
+        total: b.total,
+    }
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -394,6 +406,63 @@ async fn main() -> Result<()> {
         None
     };
 
+    // Video: the codec registry (native bindings behind the `video-*`
+    // features, the raw test codec otherwise) and the codec thread pool
+    // every room shares. Decode, compose and encode run there, never on
+    // the async runtime.
+    let codec_threads = config
+        .conference
+        .video_codec_threads
+        .unwrap_or_else(forge_conference::video::CodecPool::default_size);
+    let video_backend = forge_conference::video::VideoBackend::new(
+        forge_video_codecs::default_registry(),
+        forge_conference::video::CodecPool::new(codec_threads),
+    );
+    info!(
+        threads = codec_threads,
+        native_backends = ?forge_video_codecs::enabled_backends(),
+        native_only = config.conference.video_native_codecs_only,
+        "Video codec pool ready"
+    );
+
+    // Video capacity (design §9.3): price this node's codecs on its own
+    // pool before the first heartbeat advertises the budget. Blocking work,
+    // off the runtime.
+    let video_capacity = {
+        let usable =
+            video_bridge::usable_codecs(&video_backend, config.conference.video_native_codecs_only);
+        let backend = video_backend.clone();
+        let seconds = config.conference.video_benchmark_seconds;
+        let codecs = usable.clone();
+        let table = tokio::task::spawn_blocking(move || {
+            video_capacity::self_benchmark(
+                &backend,
+                &codecs,
+                seconds,
+                video_capacity::CostTable::phase0(),
+            )
+        })
+        .await
+        .unwrap_or_else(|e| {
+            warn!(error = %e, "Video self-benchmark panicked; using the phase 0 cost table");
+            video_capacity::CostTable::phase0()
+        });
+        let capacity = Arc::new(video_capacity::VideoCapacity::new(
+            video_backend.device.clone(),
+            usable,
+            table,
+            codec_threads,
+            config.conference.video_budget_headroom,
+        ));
+        info!(
+            device = %capacity.device(),
+            total_units = capacity.total(),
+            codecs = ?capacity.budget().codecs,
+            "Video budget ready"
+        );
+        capacity
+    };
+
     // Start cluster membership (if configured)
     #[cfg(feature = "storage-redis")]
     let _cluster_manager = if config.cluster.enabled {
@@ -408,7 +477,11 @@ async fn main() -> Result<()> {
                     .parse()
                     .unwrap_or_else(|_| "0.0.0.0:5060".parse().unwrap()),
                 sip_tls_address: config.sip.advertised_tls_address(),
-                capabilities: vec!["conference".to_string(), "audio_mixing".to_string()],
+                capabilities: vec![
+                    "conference".to_string(),
+                    "audio_mixing".to_string(),
+                    "video_mixing".to_string(),
+                ],
                 active_calls: 0,
                 started_at: std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -417,6 +490,7 @@ async fn main() -> Result<()> {
                 version: env!("CARGO_PKG_VERSION").to_string(),
                 draining: false,
                 region: fcp_cluster::resolve_region(config.cluster.region.as_deref()),
+                video_budget: vec![cluster_budget(&video_capacity.budget())],
             };
             let cm =
                 fcp_cluster::ClusterManager::new(redis.clone(), member)
@@ -545,25 +619,6 @@ async fn main() -> Result<()> {
         info!(path = %config.conference.announcements_dir, "Announcements directory ready");
     }
 
-    // Video: the codec registry (native bindings behind the `video-*`
-    // features, the raw test codec otherwise) and the codec thread pool
-    // every room shares. Decode, compose and encode run there, never on
-    // the async runtime.
-    let codec_threads = config
-        .conference
-        .video_codec_threads
-        .unwrap_or_else(forge_conference::video::CodecPool::default_size);
-    let video_backend = forge_conference::video::VideoBackend::new(
-        forge_video_codecs::default_registry(),
-        forge_conference::video::CodecPool::new(codec_threads),
-    );
-    info!(
-        threads = codec_threads,
-        native_backends = ?forge_video_codecs::enabled_backends(),
-        native_only = config.conference.video_native_codecs_only,
-        "Video codec pool ready"
-    );
-
     let mut conference_handler = ConferenceCallHandler::new(
         Arc::clone(&bridge),
         Arc::clone(&dyn_storage),
@@ -578,6 +633,7 @@ async fn main() -> Result<()> {
         config.service.node_id.clone(),
     );
     conference_handler.set_video_backend(video_backend);
+    conference_handler.set_video_capacity(Arc::clone(&video_capacity));
 
     // Initialize TTS service if configured (supports local/Kokoro + cloud providers)
     let tts_service: Option<Arc<fcp_media::TtsService>> = if config.tts.enabled {
@@ -839,6 +895,21 @@ async fn main() -> Result<()> {
 
     let conference_handler = Arc::new(conference_handler);
 
+    // Re-price the video budget from the rooms every few seconds, so
+    // admission works from what runs rather than from stale reservations
+    // (in a cluster the registry refresh below does this too, and
+    // publishes the result).
+    {
+        let handler = Arc::clone(&conference_handler);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+            loop {
+                interval.tick().await;
+                handler.recompute_video_capacity();
+            }
+        });
+    }
+
     #[allow(unused_mut)]
     let mut cluster_control: Option<Arc<control::ClusterControl>> = None;
 
@@ -961,10 +1032,20 @@ async fn main() -> Result<()> {
         let refresh_handler = Arc::clone(&conference_handler);
         let refresh_registry = registry.clone();
         let refresh_secs = config.cluster.heartbeat_interval_secs.clamp(5, 30);
+        let refresh_calls = cm.active_calls_counter();
+        let refresh_budget = Arc::clone(&video_capacity);
+        let refresh_cm_budget = cm.video_budget_handle();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(refresh_secs));
             loop {
                 interval.tick().await;
+                // Load and video budget travel with the next heartbeat.
+                refresh_calls.store(
+                    refresh_handler.session_count(),
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+                refresh_handler.recompute_video_capacity();
+                refresh_cm_budget.set(vec![cluster_budget(&refresh_budget.budget())]);
                 for (room, _) in refresh_handler.active_rooms() {
                     let tenant = refresh_handler
                         .tenant_for_room(&room)

@@ -435,6 +435,11 @@ async fn status_handler(State(state): State<Arc<ConferenceState>>) -> Json<serde
         "total_calls": call_stats.total,
         "active_rooms": active_rooms.len(),
         "total_participants": total_participants,
+        "video_capacity": state
+            .conference_handler
+            .video_capacity()
+            .map(|c| c.json())
+            .unwrap_or(serde_json::Value::Null),
     }))
 }
 
