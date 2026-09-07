@@ -38,6 +38,9 @@ pub struct GatewayConfig {
 
     #[serde(default)]
     pub cluster: ClusterSection,
+
+    #[serde(default)]
+    pub conference: ConferenceSection,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -178,18 +181,126 @@ impl Default for SipSection {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct WebRtcSection {
+    /// STUN servers (`stun:host:port`) the gateway's own ICE agent asks
+    /// for a server-reflexive candidate — what a browser on the far side
+    /// of a NAT reaches when the gateway has no public interface.
     #[serde(default = "default_stun_servers")]
     pub stun_servers: Vec<String>,
+
+    /// TURN servers for relay candidates, the fallback when neither side
+    /// can be reached directly.
+    #[serde(default)]
+    pub turn_servers: Vec<TurnServerSection>,
+
+    /// How long to wait for candidate gathering (the STUN round trip)
+    /// before the offer is built, so server-reflexive candidates ride in
+    /// the offer rather than being trickled — the browser never fetches
+    /// the gateway's candidates after the offer.
+    #[serde(default = "default_gather_timeout_ms")]
+    pub gather_timeout_ms: u64,
+
+    /// How long a browser has to complete ICE and DTLS after the offer
+    /// before the session is failed.
+    #[serde(default = "default_ice_timeout_secs")]
+    pub ice_timeout_secs: u64,
+
+    /// How long a connected browser may send nothing (no RTP, no RTCP)
+    /// before its session is ended as gone.
+    #[serde(default = "default_inactivity_timeout_secs")]
+    pub inactivity_timeout_secs: u64,
+}
+
+/// One TURN server with its long-term credential.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct TurnServerSection {
+    /// `turn:host:port` (UDP).
+    pub uri: String,
+    pub username: String,
+    pub password: String,
 }
 
 fn default_stun_servers() -> Vec<String> {
     vec!["stun:stun.l.google.com:19302".to_string()]
 }
 
+fn default_gather_timeout_ms() -> u64 {
+    1500
+}
+
+fn default_ice_timeout_secs() -> u64 {
+    30
+}
+
+fn default_inactivity_timeout_secs() -> u64 {
+    30
+}
+
 impl Default for WebRtcSection {
     fn default() -> Self {
         Self {
             stun_servers: default_stun_servers(),
+            turn_servers: Vec::new(),
+            gather_timeout_ms: default_gather_timeout_ms(),
+            ice_timeout_secs: default_ice_timeout_secs(),
+            inactivity_timeout_secs: default_inactivity_timeout_secs(),
+        }
+    }
+}
+
+/// How room joins reach the conference server.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ConferenceSection {
+    /// The conference server a room join INVITEs when cluster placement
+    /// is off or finds no node: a host, `host:port`, or a `sip:` URI whose
+    /// host part is used. Without it, and without a cluster, room joins
+    /// fail with a clear error.
+    #[serde(default)]
+    pub server_uri: Option<String>,
+
+    /// Participants a conference node is assumed to take before placement
+    /// prefers another; the same figure the call manager uses.
+    #[serde(default = "default_node_capacity")]
+    pub node_capacity: usize,
+
+    /// The tenant whose rooms this gateway joins, as the conference
+    /// registry keys them. Lets placement send a join to the node already
+    /// hosting the room; without it placement goes by load and region
+    /// alone.
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+
+    /// Offer SDES SRTP (`a=crypto`) on the SIP leg. A conference server
+    /// with `enable_srtp` answers with its key; one without ignores the
+    /// offer and the leg runs plain RTP.
+    #[serde(default = "default_true")]
+    pub srtp: bool,
+
+    /// How long to wait for the conference server's final answer to the
+    /// INVITE before giving up.
+    #[serde(default = "default_invite_timeout_secs")]
+    pub invite_timeout_secs: u64,
+}
+
+fn default_node_capacity() -> usize {
+    100
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_invite_timeout_secs() -> u64 {
+    30
+}
+
+impl Default for ConferenceSection {
+    fn default() -> Self {
+        Self {
+            server_uri: None,
+            node_capacity: default_node_capacity(),
+            tenant_id: None,
+            srtp: default_true(),
+            invite_timeout_secs: default_invite_timeout_secs(),
         }
     }
 }
@@ -328,6 +439,31 @@ pub fn validate_config(config: &GatewayConfig) -> Result<()> {
 
     if config.tls.enabled && (config.tls.cert.is_none() || config.tls.key.is_none()) {
         anyhow::bail!("tls.enabled is true but tls.cert and/or tls.key are not configured");
+    }
+
+    if config.media.rtp_port_end - config.media.rtp_port_start < 400 {
+        anyhow::bail!(
+            "media.rtp_port_start..rtp_port_end must span at least 400 ports (the relay takes \
+             the lower half, forge-api media sessions the upper half)"
+        );
+    }
+
+    if config.conference.invite_timeout_secs == 0 {
+        anyhow::bail!("conference.invite_timeout_secs must be greater than 0");
+    }
+
+    if config.webrtc.ice_timeout_secs == 0 {
+        anyhow::bail!("webrtc.ice_timeout_secs must be greater than 0");
+    }
+
+    if config.webrtc.inactivity_timeout_secs == 0 {
+        anyhow::bail!("webrtc.inactivity_timeout_secs must be greater than 0");
+    }
+
+    for turn in &config.webrtc.turn_servers {
+        if turn.uri.is_empty() {
+            anyhow::bail!("webrtc.turn_servers entries need a uri");
+        }
     }
 
     if !config.auth.disable_auth && config.auth.tokens.is_empty() {

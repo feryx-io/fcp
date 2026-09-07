@@ -1,129 +1,159 @@
-//! HTTP API routes for SIP call control.
-//!
-//! These routes are merged with forge-api's existing WebRTC routes to provide
-//! a unified API: the browser-facing WebRTC endpoints live under `/v1/webrtc/`
-//! (from forge-api) while call control lives under `/v1/calls/` (this module).
+//! The gateway's own HTTP routes, merged with forge-api's: rooms and
+//! calls under `/v1/`, the browser-facing WebRTC routes staying forge-api's
+//! (`/v1/webrtc/connections/{id}/answer` and `/ice-candidate` complete
+//! what a room join or call starts).
 
-use crate::call_bridge::{CallBridgeManager, CallInfo};
+use crate::session::{CreatedSession, JoinRequest, SessionError, SessionInfo, SessionManager};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post};
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-/// Shared state for call routes.
+/// Shared state for the routes.
 #[derive(Clone)]
-pub struct CallState {
-    pub bridge_manager: Arc<CallBridgeManager>,
+pub struct ApiState {
+    pub sessions: Arc<SessionManager>,
 }
 
-/// Request to initiate a call.
+/// `POST /v1/calls` body.
 #[derive(Debug, Deserialize)]
 pub struct InitiateCallRequest {
-    /// WebRTC connection ID (from POST /v1/webrtc/connections)
-    pub connection_id: String,
-    /// SIP destination URI (e.g., "sip:alice@example.com")
+    /// An existing WebRTC connection (from `POST /v1/webrtc/connections`)
+    /// to use; without it the call creates its own and returns the offer.
+    #[serde(default)]
+    pub connection_id: Option<String>,
+    /// SIP destination (`sip:alice@example.com`, `1001@10.0.0.7`, `tel:…`).
     pub destination: String,
 }
 
-/// Call list response.
+/// A list of sessions.
 #[derive(Debug, Serialize)]
-pub struct CallListResponse {
-    pub calls: Vec<CallInfo>,
+pub struct SessionListResponse {
+    pub sessions: Vec<SessionInfo>,
     pub count: usize,
 }
 
-/// API error type.
+/// API error → status.
 #[derive(Debug)]
-pub enum ApiError {
-    NotFound(String),
-    BadRequest(String),
-    Internal(String),
+pub struct ApiError(SessionError);
+
+impl From<SessionError> for ApiError {
+    fn from(e: SessionError) -> Self {
+        ApiError(e)
+    }
 }
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let (status, message) = match self {
-            ApiError::NotFound(msg) => (StatusCode::NOT_FOUND, msg),
-            ApiError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg),
-            ApiError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
+        let status = match &self.0 {
+            SessionError::BadRequest(_) => StatusCode::BAD_REQUEST,
+            SessionError::NotFound(_) => StatusCode::NOT_FOUND,
+            SessionError::Conflict(_) => StatusCode::CONFLICT,
+            SessionError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
-
-        let body = serde_json::json!({
-            "error": message,
-        });
-
+        let body = serde_json::json!({ "error": self.0.to_string() });
         (status, Json(body)).into_response()
     }
 }
 
-/// POST /v1/calls — Initiate a WebRTC→SIP call.
-async fn initiate_call(
-    State(state): State<CallState>,
-    Json(request): Json<InitiateCallRequest>,
-) -> Result<Response, ApiError> {
-    if request.connection_id.is_empty() {
-        return Err(ApiError::BadRequest(
-            "connection_id is required".to_string(),
-        ));
-    }
-    if request.destination.is_empty() {
-        return Err(ApiError::BadRequest("destination is required".to_string()));
-    }
-
-    let info = state
-        .bridge_manager
-        .initiate_call(request.connection_id, request.destination)
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
-
-    Ok((StatusCode::CREATED, Json(info)).into_response())
+/// `POST /v1/rooms/{room}/join` — start a room join; returns the offer the
+/// browser answers through `/v1/webrtc/connections/{connection_id}/answer`.
+async fn join_room(
+    State(state): State<ApiState>,
+    Path(room): Path<String>,
+    body: Option<Json<JoinRequest>>,
+) -> Result<(StatusCode, Json<CreatedSession>), ApiError> {
+    let req = body.map(|Json(r)| r).unwrap_or_default();
+    let created = state.sessions.join_room(&room, req).await?;
+    Ok((StatusCode::CREATED, Json(created)))
 }
 
-/// GET /v1/calls — List all active calls.
-async fn list_calls(State(state): State<CallState>) -> Result<Json<CallListResponse>, ApiError> {
-    let calls = state.bridge_manager.list_calls().await;
-    let count = calls.len();
-    Ok(Json(CallListResponse { calls, count }))
+/// `GET /v1/rooms` — every room session.
+async fn list_rooms(State(state): State<ApiState>) -> Json<SessionListResponse> {
+    let sessions = state.sessions.list(true).await;
+    let count = sessions.len();
+    Json(SessionListResponse { sessions, count })
 }
 
-/// GET /v1/calls/:id — Get a single call.
-async fn get_call(
-    State(state): State<CallState>,
-    Path(call_id): Path<String>,
-) -> Result<Json<CallInfo>, ApiError> {
+/// `GET /v1/rooms/{id}` — one room session.
+async fn get_room(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+) -> Result<Json<SessionInfo>, ApiError> {
     state
-        .bridge_manager
-        .get_call(&call_id)
+        .sessions
+        .get(&id, true)
         .await
         .map(Json)
-        .ok_or_else(|| ApiError::NotFound(format!("Call '{}' not found", call_id)))
+        .ok_or_else(|| SessionError::NotFound(format!("room session '{id}' not found")).into())
 }
 
-/// DELETE /v1/calls/:id — Hang up a call.
-async fn hangup_call(
-    State(state): State<CallState>,
-    Path(call_id): Path<String>,
+/// `DELETE /v1/rooms/{id}` — leave the room.
+async fn leave_room(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    state
-        .bridge_manager
-        .hangup(&call_id)
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
-
+    if !state.sessions.exists(&id, true).await {
+        return Err(SessionError::NotFound(format!("room session '{id}' not found")).into());
+    }
+    state.sessions.hangup(&id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Build the call control router.
-pub fn call_routes(bridge_manager: Arc<CallBridgeManager>) -> Router {
-    let state = CallState { bridge_manager };
+/// `POST /v1/calls` — call a SIP destination.
+async fn initiate_call(
+    State(state): State<ApiState>,
+    Json(request): Json<InitiateCallRequest>,
+) -> Result<(StatusCode, Json<CreatedSession>), ApiError> {
+    let created = state
+        .sessions
+        .call(&request.destination, request.connection_id.as_deref())
+        .await?;
+    Ok((StatusCode::CREATED, Json(created)))
+}
 
+/// `GET /v1/calls` — every call session.
+async fn list_calls(State(state): State<ApiState>) -> Json<SessionListResponse> {
+    let sessions = state.sessions.list(false).await;
+    let count = sessions.len();
+    Json(SessionListResponse { sessions, count })
+}
+
+/// `GET /v1/calls/{id}` — one call.
+async fn get_call(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+) -> Result<Json<SessionInfo>, ApiError> {
+    state
+        .sessions
+        .get(&id, false)
+        .await
+        .map(Json)
+        .ok_or_else(|| SessionError::NotFound(format!("call '{id}' not found")).into())
+}
+
+/// `DELETE /v1/calls/{id}` — hang up.
+async fn hangup_call(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    if !state.sessions.exists(&id, false).await {
+        return Err(SessionError::NotFound(format!("call '{id}' not found")).into());
+    }
+    state.sessions.hangup(&id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// The router for rooms and calls.
+pub fn routes(sessions: Arc<SessionManager>) -> Router {
     Router::new()
-        .route("/v1/calls", post(initiate_call))
-        .route("/v1/calls", get(list_calls))
-        .route("/v1/calls/{id}", get(get_call))
-        .route("/v1/calls/{id}", delete(hangup_call))
-        .with_state(state)
+        .route("/v1/rooms", get(list_rooms))
+        .route("/v1/rooms/{room}/join", post(join_room))
+        .route("/v1/rooms/{id}", get(get_room).delete(leave_room))
+        .route("/v1/calls", post(initiate_call).get(list_calls))
+        .route("/v1/calls/{id}", get(get_call).delete(hangup_call))
+        .with_state(ApiState { sessions })
 }
