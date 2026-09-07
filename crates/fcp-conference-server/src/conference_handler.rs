@@ -2010,6 +2010,9 @@ impl ConferenceCallHandler {
         if old_conf.jitter_buffer_ms != conference.jitter_buffer_ms {
             changes.push("jitter_buffer_ms");
         }
+        if old_conf.join_secret.is_some() != conference.join_secret.is_some() {
+            changes.push("join_secret");
+        }
         if old_conf.max_announcement_size_mb != conference.max_announcement_size_mb {
             changes.push("max_announcement_size_mb");
         }
@@ -3556,12 +3559,54 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             return Ok(());
         }
 
-        // 1. Extract room number
-        let room_number = extract_room_number(request)
-            .context("Failed to extract room number from Request-URI")?;
+        // 0c. A join token (a browser through the WebRTC gateway): the
+        // token names the tenant, room, participant and role, and stands
+        // in for the PIN. Refused outright when it does not verify or no
+        // secret is configured; an INVITE without one takes the usual path.
+        let join = match sip_parse::header(request.headers(), fcp_core::JOIN_TOKEN_HEADER) {
+            Some(value) => {
+                let secret = self
+                    .conference_config
+                    .read()
+                    .join_secret
+                    .clone()
+                    .filter(|s| !s.is_empty());
+                let Some(secret) = secret else {
+                    warn!(%peer, "Join token received but conference.join_secret is not set");
+                    let reject = UserAgentServer::create_response(
+                        request,
+                        403,
+                        "Join Tokens Not Configured",
+                    );
+                    handle.send_final(reject).await;
+                    return Ok(());
+                };
+                match fcp_core::JoinToken::verify(value.as_str(), secret.as_bytes()) {
+                    Ok(token) => Some(token),
+                    Err(e) => {
+                        warn!(%peer, error = %e, "Join token refused");
+                        let reject =
+                            UserAgentServer::create_response(request, 403, "Invalid Join Token");
+                        handle.send_final(reject).await;
+                        return Ok(());
+                    }
+                }
+            }
+            None => None,
+        };
+
+        // 1. Extract room number (the token's, when there is one)
+        let room_number = match &join {
+            Some(token) => token.room_number.clone(),
+            None => extract_room_number(request)
+                .context("Failed to extract room number from Request-URI")?,
+        };
 
         // 2. Extract tenant and look up meeting
-        let tenant_id = self.resolve_tenant(request).await?;
+        let tenant_id = match &join {
+            Some(token) => token.tenant_id,
+            None => self.resolve_tenant(request).await?,
+        };
         let meeting = self
             .lookup_meeting(&tenant_id, &room_number)
             .await?
@@ -3890,7 +3935,10 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
 
         // 12. Generate participant ID and extract caller info
         let call_id = extract_call_id(request);
-        let (display_name, caller_id) = extract_caller_info(request);
+        let (mut display_name, caller_id) = extract_caller_info(request);
+        if let Some(token) = &join {
+            display_name = Some(token.display_name.clone());
+        }
         let short_uuid = uuid::Uuid::new_v4().to_string();
         let participant_id = format!("{}-{}", &call_id[..call_id.len().min(8)], &short_uuid[..8]);
 
@@ -3904,8 +3952,18 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             warn!(room = %room_number, error = %e, "Failed to configure room (may already be configured)");
         }
 
-        // 14. PIN authentication (if required)
-        let is_host = if Self::meeting_requires_pin(&meeting) {
+        // 14. PIN authentication (if required) — a join token settles the
+        // role instead, with no PIN collected.
+        let is_host = if let Some(token) = &join {
+            let host = token.role == fcp_core::JoinRole::Host;
+            info!(
+                room = %room_number,
+                participant = %participant_id,
+                host,
+                "Admitted by join token"
+            );
+            host
+        } else if Self::meeting_requires_pin(&meeting) {
             let max_attempts = conf.max_pin_attempts;
             let pin_timeout = Duration::from_secs(conf.pin_timeout_secs);
             let mixer_sample_rate = conf.sample_rate;

@@ -43,8 +43,8 @@ use tokio::sync::{mpsc, Mutex, Notify, RwLock};
 use tracing::{debug, info, warn};
 
 /// The header a room join carries its token in (verified by the conference
-/// server; see `docs/VIDEO_CONFERENCING.md` §15.3, 4c).
-pub const JOIN_TOKEN_HEADER: &str = "X-FCP-Join";
+/// server; see `docs/WEBRTC.md`).
+pub use fcp_core::JOIN_TOKEN_HEADER;
 
 /// Audio codecs offered to browsers, in preference order: what the
 /// conference mixer speaks, so nothing is transcoded. Every browser ships
@@ -84,6 +84,8 @@ pub struct SessionConfig {
     pub inactivity_timeout: Duration,
     /// Offer SDES SRTP on the SIP leg.
     pub srtp: bool,
+    /// ICE servers handed to browsers with the offer.
+    pub browser_ice_servers: Vec<IceServer>,
 }
 
 /// What a session is for.
@@ -171,13 +173,28 @@ pub struct SessionInfo {
     pub stats: RelayStatsSnapshot,
 }
 
-/// What creating a session returns: the offer the browser must answer.
+/// An ICE server a browser should use, as `RTCPeerConnection` takes it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IceServer {
+    pub urls: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential: Option<String>,
+}
+
+/// What creating a session returns: the offer the browser must answer,
+/// and the token that lets it finish this session's signalling
+/// (`/v1/rooms/{id}/answer`, `/ice-candidate`, status and leave) without
+/// an operator credential.
 #[derive(Debug, Clone, Serialize)]
 pub struct CreatedSession {
     #[serde(flatten)]
     pub info: SessionInfo,
     pub sdp_offer: String,
     pub dtls_fingerprint: String,
+    pub session_token: String,
+    pub ice_servers: Vec<IceServer>,
 }
 
 /// One session.
@@ -192,6 +209,8 @@ pub struct Session {
     pub srtp: bool,
     pub sip_target: Option<String>,
     pub sip_call_id: Option<String>,
+    /// Bearer the browser presents on this session's routes.
+    session_token: String,
     dialog: Option<sip_dialog::Dialog>,
     call_handle: Option<Arc<CallHandle>>,
     ports: Vec<PortPair>,
@@ -499,6 +518,11 @@ impl SessionManager {
             srtp: false,
             sip_target: None,
             sip_call_id: None,
+            session_token: format!(
+                "{}{}",
+                uuid::Uuid::new_v4().simple(),
+                uuid::Uuid::new_v4().simple()
+            ),
             dialog: None,
             call_handle: None,
             ports: conn.ice_ports.into_iter().collect(),
@@ -506,6 +530,7 @@ impl SessionManager {
             stats: Arc::new(RelayStats::default()),
         };
         let info = session.info();
+        let session_token = session.session_token.clone();
         let session = Arc::new(RwLock::new(session));
         self.sessions.insert(id.clone(), session.clone());
         info!(session = %id, kind = ?info.kind, connection = %info.connection_id, "session created");
@@ -517,6 +542,8 @@ impl SessionManager {
             info,
             sdp_offer: conn.offer,
             dtls_fingerprint: conn.fingerprint,
+            session_token,
+            ice_servers: self.cfg.browser_ice_servers.clone(),
         }
     }
 
@@ -1024,6 +1051,55 @@ impl SessionManager {
         });
     }
 
+    // ------------------------------------------------------------ signalling
+
+    /// The browser's answer to this session's offer.
+    pub async fn answer(&self, id: &str, sdp_answer: &str) -> Result<(), SessionError> {
+        let peer = self.peer_of(id).await?;
+        let mut guard = peer.lock().await;
+        guard
+            .set_remote_answer(sdp_answer)
+            .await
+            .map_err(|e| SessionError::BadRequest(format!("answer: {e}")))
+    }
+
+    /// A trickled candidate from the browser.
+    pub async fn add_ice_candidate(&self, id: &str, candidate: &str) -> Result<(), SessionError> {
+        let peer = self.peer_of(id).await?;
+        let mut guard = peer.lock().await;
+        guard
+            .add_ice_candidate_str(candidate)
+            .await
+            .map_err(|e| SessionError::BadRequest(format!("candidate: {e}")))
+    }
+
+    async fn peer_of(&self, id: &str) -> Result<Arc<Mutex<PeerConnection>>, SessionError> {
+        let session = self
+            .sessions
+            .get(id)
+            .map(|e| e.value().clone())
+            .ok_or_else(|| SessionError::NotFound(format!("session '{id}' not found")))?;
+        let connection_id = {
+            let s = session.read().await;
+            if s.is_over() {
+                return Err(SessionError::Conflict(format!("session '{id}' is over")));
+            }
+            s.connection_id.clone()
+        };
+        self.webrtc
+            .get_connection(&connection_id)
+            .ok_or_else(|| SessionError::Conflict(format!("session '{id}' has no peer connection")))
+    }
+
+    /// Whether `token` is the session token of `id`.
+    pub async fn session_token_matches(&self, id: &str, token: &str) -> bool {
+        let Some(session) = self.sessions.get(id).map(|e| e.value().clone()) else {
+            return false;
+        };
+        let s = session.read().await;
+        constant_time_eq(s.session_token.as_bytes(), token.as_bytes())
+    }
+
     // ------------------------------------------------------------ control
 
     /// End a session from the API: BYE (or CANCEL) to the far end, close the
@@ -1135,6 +1211,14 @@ impl SessionManager {
         }
         n
     }
+}
+
+/// Equal without leaking where they differ.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
 /// Point a socket pair at the far end and accept media only from there.

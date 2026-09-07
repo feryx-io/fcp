@@ -26,6 +26,8 @@ codecs = ["PCMU", "PCMA", "G722"]
 # public_ip = "203.0.113.10"  # Set for NAT traversal
 
 [conference]
+# Browser join tokens: the same value as the admin API's [conference] join_secret.
+# join_secret = "change-me-in-production"
 sample_rate = 8000
 frame_size = 160
 enable_vad = true

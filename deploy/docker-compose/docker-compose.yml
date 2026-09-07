@@ -145,6 +145,31 @@ services:
       start_period: 15s
     restart: unless-stopped
 
+  # fcp-webrtc-gw - WebRTC gateway (browsers into conference rooms)
+  fcp-webrtc-gw:
+    build:
+      context: ../..
+      dockerfile: deploy/docker-compose/Dockerfile.webrtc-gw
+    container_name: fcp-webrtc-gw
+    # Use host networking for ICE, SIP and RTP
+    network_mode: host
+    volumes:
+      - ./configs/fcp-webrtc-gw.toml:/app/fcp-webrtc-gw.toml:ro
+    environment:
+      - RUST_LOG=info
+      - FCP_WEBRTC_GW_LOG_FORMAT=pretty
+      - FCP_WEBRTC_GW_PUBLIC_IP=${HOST_IP:-}
+    depends_on:
+      fcp-conference:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8095/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
   # fcp-media - Standalone media processing server
   fcp-media:
     build:

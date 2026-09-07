@@ -21,6 +21,7 @@ pub mod flow_trace;
 pub mod forwarding;
 pub mod geographic;
 pub mod identifiers;
+pub mod join_token;
 pub mod line_binding;
 pub mod meeting;
 pub mod metrics;
@@ -77,6 +78,7 @@ pub use crate::geographic::{
     PhoneNumberLocation, Region, RegionDestination,
 };
 pub use crate::identifiers::*;
+pub use crate::join_token::{JoinRole, JoinToken, JoinTokenError, JOIN_TOKEN_HEADER};
 pub use crate::line_binding::{BindingType, DeviceBinding, LineBinding, RingStrategy};
 pub use crate::meeting::Meeting;
 pub use crate::permissions::{DeploymentMode, Permission, UserRole};

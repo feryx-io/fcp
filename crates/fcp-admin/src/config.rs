@@ -365,6 +365,18 @@ pub struct ConferenceConfig {
     /// Bearer token for that API, when it has `http.auth_enabled`.
     #[serde(default)]
     pub auth_token: Option<String>,
+
+    /// The secret browser join tokens are signed with; every conference
+    /// server must carry the same value as `conference.join_secret`.
+    /// Without it the join-token endpoints answer 503.
+    #[serde(default)]
+    pub join_secret: Option<String>,
+
+    /// The WebRTC gateway's public base URL (e.g. "https://meet.example.com").
+    /// With it, a minted token comes with the link to the gateway's join
+    /// page, and the admin UI's "Join in browser" opens it.
+    #[serde(default)]
+    pub gateway_url: Option<String>,
 }
 
 /// Load configuration from file or use defaults.

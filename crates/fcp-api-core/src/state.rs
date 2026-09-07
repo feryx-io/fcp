@@ -90,6 +90,14 @@ pub struct ApiState {
     /// `http.auth_enabled`.
     pub conference_server_auth_token: Option<String>,
 
+    /// The secret browser join tokens are signed with — the same value the
+    /// conference servers verify with (`conference.join_secret`).
+    pub conference_join_secret: Option<String>,
+
+    /// The WebRTC gateway's public base URL (e.g. "https://meet.example.com"),
+    /// so a minted token comes with a link to the gateway's join page.
+    pub conference_gateway_url: Option<String>,
+
     /// Config store for database-backed configuration management (optional)
     pub config_store: Option<Arc<dyn ConfigStore>>,
 
@@ -176,6 +184,8 @@ impl ApiState {
             events_server_auth_token: None,
             conference_server_url: None,
             conference_server_auth_token: None,
+            conference_join_secret: None,
+            conference_gateway_url: None,
             config_store: None,
             voicemail_greetings_dir: None,
             voicemail_recordings_dir: None,
@@ -215,6 +225,20 @@ impl ApiState {
     /// Set the conference server bearer token for live room controls.
     pub fn with_conference_server_auth_token(mut self, token: Option<String>) -> Self {
         self.conference_server_auth_token = token;
+        self
+    }
+
+    /// Set the secret browser join tokens are signed with.
+    pub fn with_conference_join_secret(mut self, secret: Option<String>) -> Self {
+        self.conference_join_secret = secret.filter(|s| !s.is_empty());
+        self
+    }
+
+    /// Set the WebRTC gateway's public base URL for join links.
+    pub fn with_conference_gateway_url(mut self, url: Option<String>) -> Self {
+        self.conference_gateway_url = url
+            .map(|u| u.trim_end_matches('/').to_string())
+            .filter(|u| !u.is_empty());
         self
     }
 

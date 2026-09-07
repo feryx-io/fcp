@@ -1,0 +1,43 @@
+# Multi-stage build for fcp-webrtc-gw (the WebRTC gateway)
+FROM rust:1.92 as builder
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    cmake \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy workspace files
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+COPY external ./external
+
+# Build fcp-webrtc-gw in release mode
+RUN cargo build --release -p fcp-webrtc-gateway
+
+# Runtime stage
+FROM debian:trixie-slim
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy binary from builder
+COPY --from=builder /app/target/release/fcp-webrtc-gw /app/fcp-webrtc-gw
+
+# Expose the HTTP API and join page, SIP, and the media range (ICE sockets
+# and SIP-side RTP come from the lower half, forge-api sessions the upper)
+EXPOSE 8095
+EXPOSE 5077/udp
+EXPOSE 34000-36000/udp
+
+# Run the binary
+CMD ["/app/fcp-webrtc-gw", "--config", "/app/fcp-webrtc-gw.toml"]

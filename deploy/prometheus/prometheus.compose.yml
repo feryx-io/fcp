@@ -39,6 +39,15 @@ scrape_configs:
         labels:
           service: 'conference'
 
+  - job_name: 'fcp-webrtc-gw'
+    metrics_path: '/metrics/prometheus'
+    scrape_interval: 10s
+    scrape_timeout: 5s
+    static_configs:
+      - targets: ['host.docker.internal:8095']
+        labels:
+          service: 'webrtc-gw'
+
   - job_name: 'prometheus'
     static_configs:
       - targets: ['prometheus:9090']

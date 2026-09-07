@@ -47,6 +47,16 @@ scrape_configs:
         labels:
           service: 'conference'
 
+  # fcp-webrtc-gw — WebRTC gateway (forge-api's Prometheus endpoint)
+  - job_name: 'fcp-webrtc-gw'
+    metrics_path: '/metrics/prometheus'
+    scrape_interval: 10s
+    scrape_timeout: 5s
+    static_configs:
+      - targets: ['localhost:8095']
+        labels:
+          service: 'webrtc-gw'
+
   # fcp-sbc — Session Border Controller health/metrics
   - job_name: 'fcp-sbc'
     metrics_path: '/metrics'

@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Join meeting</title>
+<style>
+  :root { color-scheme: light dark; --fg: #1a1a1a; --bg: #f6f6f6; --card: #fff; --muted: #666; --accent: #2563eb; --danger: #b91c1c; --ok: #15803d; }
+  @media (prefers-color-scheme: dark) { :root { --fg: #eee; --bg: #121212; --card: #1e1e1e; --muted: #aaa; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--fg); background: var(--bg); }
+  main { max-width: 960px; margin: 0 auto; padding: 24px 16px; }
+  h1 { font-size: 20px; margin: 0 0 16px; }
+  .card { background: var(--card); border-radius: 10px; padding: 16px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,.12); }
+  label { display: block; font-size: 13px; color: var(--muted); margin: 8px 0 4px; }
+  input[type=text], input[type=password] { width: 100%; padding: 8px 10px; border: 1px solid #8884; border-radius: 6px; background: transparent; color: inherit; font: inherit; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: end; }
+  .row > div { flex: 1 1 200px; }
+  button { padding: 9px 16px; border: 0; border-radius: 6px; background: var(--accent); color: #fff; font: inherit; cursor: pointer; }
+  button.secondary { background: #8884; color: inherit; }
+  button.danger { background: var(--danger); }
+  button:disabled { opacity: .5; cursor: default; }
+  .videos { display: grid; grid-template-columns: 1fr; gap: 12px; }
+  @media (min-width: 720px) { .videos { grid-template-columns: 3fr 1fr; } }
+  video { width: 100%; background: #000; border-radius: 8px; aspect-ratio: 16/9; }
+  #self { transform: scaleX(-1); }
+  .status { font-size: 13px; color: var(--muted); }
+  .status b { color: var(--fg); }
+  .state-connected { color: var(--ok); }
+  .state-failed { color: var(--danger); }
+  #log { font: 12px/1.5 ui-monospace, monospace; white-space: pre-wrap; max-height: 200px; overflow: auto; color: var(--muted); margin: 0; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Join meeting</h1>
+
+  <section class="card" id="setup">
+    <div class="row">
+      <div><label for="room">Room</label><input type="text" id="room" placeholder="8001" autocomplete="off"></div>
+      <div><label for="name">Your name</label><input type="text" id="name" placeholder="Ann" autocomplete="name"></div>
+    </div>
+    <div class="row">
+      <div><label for="token">Join token</label><input type="password" id="token" placeholder="from the meeting's Join in browser link" autocomplete="off"></div>
+      <div style="flex: 0 0 auto"><label><input type="checkbox" id="video" checked> Send my camera</label></div>
+    </div>
+    <div class="row" style="margin-top: 12px">
+      <div style="flex: 0 0 auto"><button id="join">Join</button></div>
+      <div class="status" id="setup-status"></div>
+    </div>
+  </section>
+
+  <section class="card hidden" id="call">
+    <div class="videos">
+      <video id="remote" autoplay playsinline></video>
+      <video id="self" autoplay playsinline muted></video>
+    </div>
+    <div class="row" style="margin-top: 12px">
+      <div style="flex: 0 0 auto"><button id="leave" class="danger">Leave</button></div>
+      <div style="flex: 0 0 auto"><button id="mute" class="secondary">Mute</button></div>
+      <div class="status" id="call-status"></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <pre id="log"></pre>
+  </section>
+</main>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const params = new URLSearchParams(location.search);
+  const api = params.get('gateway') || location.origin;
+  $('room').value = params.get('room') || '';
+  $('name').value = params.get('name') || '';
+  $('token').value = params.get('token') || '';
+  if (params.has('video')) $('video').checked = params.get('video') !== 'false';
+  // The token is not something to leave in the address bar.
+  if (params.has('token')) history.replaceState(null, '', location.pathname + (params.get('room') ? `?room=${encodeURIComponent(params.get('room'))}` : ''));
+
+  let session = null;      // { id, session_token }
+  let pc = null;
+  let local = null;
+  let poll = null;
+
+  const log = (line) => { $('log').textContent += `${new Date().toISOString().slice(11, 19)} ${line}\n`; $('log').scrollTop = $('log').scrollHeight; };
+  const setStatus = (el, html) => { $(el).innerHTML = html; };
+
+  async function call(method, path, body, sessionToken) {
+    const headers = { 'Content-Type': 'application/json' };
+    if (sessionToken) headers['Authorization'] = `Bearer ${sessionToken}`;
+    const res = await fetch(api + path, { method, headers, body: body ? JSON.stringify(body) : undefined });
+    const text = await res.text();
+    let json = null;
+    try { json = text ? JSON.parse(text) : null; } catch (_) {}
+    if (!res.ok) throw new Error((json && json.error) || `${res.status} ${res.statusText}`);
+    return json;
+  }
+
+  function stateClass(state) {
+    if (state === 'connected') return 'state-connected';
+    if (typeof state === 'object' || state === 'terminated') return 'state-failed';
+    return '';
+  }
+
+  function describe(info) {
+    const state = typeof info.state === 'string' ? info.state : `failed: ${info.state.failed}`;
+    const parts = [`<b class="${stateClass(info.state)}">${state}</b>`];
+    if (info.audio_codec) parts.push(`audio ${info.audio_codec}${info.srtp ? ' (SRTP)' : ''}`);
+    if (info.video) parts.push(`video ${info.video.codec}`); else if (info.state === 'connected') parts.push('audio only');
+    if (info.stats) parts.push(`↑${info.stats.audio_to_sip + info.stats.video_to_sip} ↓${info.stats.audio_to_browser + info.stats.video_to_browser} packets`);
+    return parts.join(' · ');
+  }
+
+  async function join() {
+    const room = $('room').value.trim();
+    const name = $('name').value.trim();
+    const token = $('token').value.trim();
+    const wantVideo = $('video').checked;
+    if (!room) { setStatus('setup-status', 'A room number is needed.'); return; }
+    $('join').disabled = true;
+    setStatus('setup-status', 'Asking the gateway…');
+    try {
+      local = await navigator.mediaDevices.getUserMedia({ audio: true, video: wantVideo });
+      $('self').srcObject = local;
+    } catch (e) {
+      log(`getUserMedia failed: ${e.message}`);
+      setStatus('setup-status', `Could not open the microphone or camera: ${e.message}`);
+      $('join').disabled = false;
+      return;
+    }
+    try {
+      const created = await call('POST', `/v1/rooms/${encodeURIComponent(room)}/join`, { display_name: name, video: wantVideo, join_token: token || null }, null);
+      session = { id: created.id, token: created.session_token };
+      log(`session ${created.id} created; answering the gateway's offer`);
+
+      pc = new RTCPeerConnection({ iceServers: created.ice_servers || [] });
+      pc.ontrack = (ev) => {
+        log(`remote ${ev.track.kind} track`);
+        if (!$('remote').srcObject) $('remote').srcObject = new MediaStream();
+        $('remote').srcObject.addTrack(ev.track);
+      };
+      pc.onicecandidate = async (ev) => {
+        if (!ev.candidate) return;
+        try { await call('POST', `/v1/rooms/${session.id}/ice-candidate`, { candidate: ev.candidate.candidate }, session.token); }
+        catch (e) { log(`candidate refused: ${e.message}`); }
+      };
+      pc.onconnectionstatechange = () => log(`peer connection ${pc.connectionState}`);
+      await pc.setRemoteDescription({ type: 'offer', sdp: created.sdp_offer });
+      for (const track of local.getTracks()) pc.addTrack(track, local);
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      await call('POST', `/v1/rooms/${session.id}/answer`, { sdp_answer: answer.sdp }, session.token);
+      log('answer sent; connecting');
+      $('setup').classList.add('hidden');
+      $('call').classList.remove('hidden');
+      poll = setInterval(refresh, 2000);
+      refresh();
+    } catch (e) {
+      log(`join failed: ${e.message}`);
+      setStatus('setup-status', `<span class="state-failed">${e.message}</span>`);
+      await cleanup(false);
+      $('join').disabled = false;
+    }
+  }
+
+  async function refresh() {
+    if (!session) return;
+    try {
+      const info = await call('GET', `/v1/rooms/${session.id}`, null, session.token);
+      setStatus('call-status', describe(info));
+      if (info.state === 'terminated' || typeof info.state === 'object') {
+        log(`session over: ${typeof info.state === 'object' ? info.state.failed : info.state}`);
+        await cleanup(false);
+      }
+    } catch (e) {
+      log(`status: ${e.message}`);
+    }
+  }
+
+  async function leave() {
+    log('leaving');
+    await cleanup(true);
+  }
+
+  async function cleanup(tellGateway) {
+    if (poll) { clearInterval(poll); poll = null; }
+    if (tellGateway && session) {
+      try { await call('DELETE', `/v1/rooms/${session.id}`, null, session.token); } catch (e) { log(`leave: ${e.message}`); }
+    }
+    if (pc) { pc.close(); pc = null; }
+    if (local) { local.getTracks().forEach((t) => t.stop()); local = null; }
+    $('self').srcObject = null;
+    $('remote').srcObject = null;
+    session = null;
+    $('call').classList.add('hidden');
+    $('setup').classList.remove('hidden');
+    $('join').disabled = false;
+  }
+
+  function toggleMute() {
+    if (!local) return;
+    const track = local.getAudioTracks()[0];
+    if (!track) return;
+    track.enabled = !track.enabled;
+    $('mute').textContent = track.enabled ? 'Mute' : 'Unmute';
+  }
+
+  $('join').addEventListener('click', join);
+  $('leave').addEventListener('click', leave);
+  $('mute').addEventListener('click', toggleMute);
+  window.addEventListener('beforeunload', () => { if (session) navigator.sendBeacon && fetch(api + `/v1/rooms/${session.id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${session.token}` }, keepalive: true }); });
+  if (params.get('autojoin') === 'true' && $('room').value && $('token').value) join();
+})();
+</script>
+</body>
+</html>

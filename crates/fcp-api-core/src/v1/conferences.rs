@@ -583,3 +583,24 @@ pub async fn disable_meeting(
 
     Ok(Json(MeetingResponse::from(meeting)))
 }
+
+/// POST /conferences/meetings/:id/join-tokens — Mint a browser join token
+/// for a meeting in the caller's tenant.
+pub async fn mint_join_token(
+    State(state): State<ApiState>,
+    tenant: TenantContext,
+    Path(id): Path<String>,
+    Json(req): Json<super::join_tokens::MintJoinTokenRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let storage = require_storage!(state);
+    let meeting_id = MeetingId::from_str(&id)
+        .map_err(|e| ApiError::BadRequest(format!("Invalid meeting ID: {}", e)))?;
+    let meeting = storage
+        .get_meeting(&meeting_id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or_else(|| ApiError::NotFound(format!("Meeting '{}' not found", id)))?;
+    let meeting = ensure_meeting_tenant(meeting, &tenant.0, &id)?;
+    let minted = super::join_tokens::mint_for_meeting(&state, &meeting, req)?;
+    Ok((StatusCode::CREATED, Json(minted)))
+}
