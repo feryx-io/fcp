@@ -1,13 +1,16 @@
 //! fcp-webrtc-gw — WebRTC-to-SIP gateway.
 //!
-//! Bridges browser-side WebRTC connections to SIP phones by combining:
-//! - forge-api's WebRTC/session management (existing REST endpoints)
-//! - A SIP UAC for outbound INVITE/BYE (siphon-rs IntegratedUAC)
-//! - forge-media for Opus ↔ G.711 transcoding
+//! Puts browsers in conference rooms and on SIP calls: each session owns a
+//! WebRTC peer connection (forge-webrtc) and a SIP leg (siphon-rs
+//! IntegratedUAC) and relays media between them — audio in the codec both
+//! sides negotiated (G.722 or G.711, no transcoding), video packets, and
+//! RTCP feedback.
 //!
 //! The gateway exposes a unified HTTP API:
-//! - `/v1/webrtc/*` — WebRTC connection management (from forge-api)
-//! - `/v1/calls/*` — SIP call control (this binary)
+//! - `/v1/rooms/{room}/join`, `/v1/rooms/*` — room joins (this binary)
+//! - `/v1/calls/*` — SIP calls (this binary)
+//! - `/v1/webrtc/connections/{id}/answer`, `/ice-candidate` — the browser's
+//!   half of a session's signalling (from forge-api)
 //! - `/health`, `/v1/sessions`, `/v1/metrics` — from forge-api
 
 use anyhow::{Context, Result};
@@ -15,26 +18,25 @@ use axum::middleware as axum_middleware;
 use axum::Extension;
 use axum_server::tls_rustls::RustlsConfig;
 use clap::Parser;
+use fcp_sip::listener::{InboundMessageHandler, ListenerConfig, TransportListener};
 use fcp_sip::prelude::*;
 use fcp_sip::transport::ConnectionPool;
+use fcp_webrtc_gateway::config::{self, GatewayConfig};
+use fcp_webrtc_gateway::inbound::GatewayInboundHandler;
+use fcp_webrtc_gateway::placement::ConferencePlacement;
+use fcp_webrtc_gateway::session::{SessionConfig, SessionManager};
+use fcp_webrtc_gateway::{http_api, sip_client};
 use forge_api::middleware::{self, auth::AuthConfig, RateLimiter};
 use forge_api::routes;
 use forge_api::routes::prometheus::MetricsHandle;
 use forge_api::routes::sessions::AppState;
-use forge_engine::{SessionManager, SessionManagerConfig};
-use forge_rtp::PortPoolConfig;
+use forge_engine::{SessionManager as ForgeSessionManager, SessionManagerConfig};
+use forge_rtp::{PortPool, PortPoolConfig};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Notify;
 use tower::ServiceBuilder;
 use tracing::info;
-
-mod call_bridge;
-mod config;
-mod http_api;
-mod sip_client;
-
-use config::GatewayConfig;
 
 /// FCP WebRTC Gateway - Browser-to-SIP Call Bridge
 #[derive(Parser, Debug)]
@@ -164,15 +166,18 @@ async fn main() -> Result<()> {
         "fcp-webrtc-gw starting"
     );
 
-    // 5. Build forge-api AppState directly (gives us access to WebRtcManager)
-    let port_pool_config =
-        PortPoolConfig::new(config.media.rtp_port_start, config.media.rtp_port_end)
-            .expect("Invalid port range configuration");
+    // 5. Build forge-api AppState directly (gives us access to WebRtcManager).
+    //    The media port range is split: the lower half feeds the relay (ICE
+    //    sockets and SIP-side RTP), the upper half forge-api's own media
+    //    sessions, so the two pools never bind the same port.
+    let (relay_ports, forge_ports) = split_port_range(&config)?;
+    let relay_range = format!("{}-{}", relay_ports.min_port, relay_ports.max_port);
+    let forge_range = format!("{}-{}", forge_ports.min_port, forge_ports.max_port);
     let session_manager_config = SessionManagerConfig {
-        port_pool_config,
+        port_pool_config: forge_ports,
         ..Default::default()
     };
-    let session_manager = SessionManager::new(session_manager_config, None);
+    let session_manager = ForgeSessionManager::new(session_manager_config, None);
     let metrics_handle = Arc::new(MetricsHandle::init());
     let conference_bridge = Arc::new(forge_conference::ConferenceBridge::default());
     let core_event_bus = Arc::new(forge_core::EventBus::new());
@@ -197,27 +202,18 @@ async fn main() -> Result<()> {
     let transaction_manager = TransactionManager::new_with_pool(dispatcher.clone(), tcp_pool);
     let transaction_manager_ref = Arc::new(transaction_manager);
 
-    let uac = sip_client::create_uac(&config, transaction_manager_ref, dispatcher).await?;
+    let uac = sip_client::create_uac(&config, transaction_manager_ref.clone(), dispatcher).await?;
 
-    // 7. Create media manager for call bridging
-    let media_mgr = call_bridge::create_media_manager(&config).await?;
-
-    // 8. Determine public IP for SDP
+    // 7. Determine public IP for SDP
     let public_ip = config
         .media
         .public_ip
         .clone()
         .unwrap_or_else(|| sip_client::derive_local_ip(&config.sip.udp_bind));
 
-    // 9. Create call bridge manager (uses the same WebRtcManager as forge-api routes)
-    let bridge_mgr = Arc::new(call_bridge::CallBridgeManager::new(
-        uac,
-        app_state.webrtc_manager.clone(),
-        media_mgr,
-        public_ip,
-    ));
-
-    // Initialize cluster membership (if configured)
+    // 8. Cluster membership and conference placement (if configured)
+    #[cfg(feature = "storage-redis")]
+    let mut cluster_placement = None;
     #[cfg(feature = "storage-redis")]
     let _cluster_manager = if config.cluster.enabled {
         if let Some(ref url) = config.storage.redis_url {
@@ -249,12 +245,23 @@ async fn main() -> Result<()> {
                         region: fcp_cluster::resolve_region(config.cluster.region.as_deref()),
                         video_budget: Vec::new(),
                     };
-                    let cm = fcp_cluster::ClusterManager::new(redis, member).with_intervals(
-                        config.cluster.heartbeat_interval_secs,
-                        config.cluster.heartbeat_ttl_secs,
-                    );
+                    let cm = fcp_cluster::ClusterManager::new(redis.clone(), member)
+                        .with_intervals(
+                            config.cluster.heartbeat_interval_secs,
+                            config.cluster.heartbeat_ttl_secs,
+                        );
                     let _handle = cm.start();
                     info!("Cluster membership started");
+                    cluster_placement = Some(fcp_webrtc_gateway::placement::ClusterPlacement {
+                        registry: fcp_cluster::ConferenceRegistry::new(
+                            redis,
+                            config.service.node_id.clone(),
+                        ),
+                        members: Arc::clone(cm.members_map()),
+                        capacity: config.conference.node_capacity,
+                        region: cm.region().map(str::to_owned),
+                        tenant_id: config.conference.tenant_id.clone(),
+                    });
                     Some(cm)
                 }
                 Err(e) => {
@@ -270,11 +277,81 @@ async fn main() -> Result<()> {
         None
     };
 
-    // 10. Build combined router: forge-api routes + call control routes
+    let placement = {
+        let server_uri = config.conference.server_uri.as_deref();
+        #[cfg(feature = "storage-redis")]
+        let placement = match cluster_placement.take() {
+            Some(cluster) => ConferencePlacement::with_cluster(server_uri, cluster),
+            None => ConferencePlacement::static_only(server_uri),
+        };
+        #[cfg(not(feature = "storage-redis"))]
+        let placement = ConferencePlacement::static_only(server_uri);
+        Arc::new(placement)
+    };
+    if !placement.is_configured() {
+        tracing::warn!(
+            "no conference server configured ([conference] server_uri or a cluster); room joins will fail"
+        );
+    }
+
+    // 9. Sessions: the peer connections, SIP legs and relays.
+    let session_cfg = SessionConfig {
+        public_ip: public_ip.clone(),
+        local_uri: sip_client::local_uri_string(&config),
+        stun_servers: config.webrtc.stun_servers.clone(),
+        turn_servers: config
+            .webrtc
+            .turn_servers
+            .iter()
+            .map(|t| forge_webrtc::TurnServer::new(&t.uri, &t.username, &t.password))
+            .collect(),
+        gather_timeout: Duration::from_millis(config.webrtc.gather_timeout_ms),
+        ice_timeout: Duration::from_secs(config.webrtc.ice_timeout_secs),
+        invite_timeout: Duration::from_secs(config.conference.invite_timeout_secs),
+        inactivity_timeout: Duration::from_secs(config.webrtc.inactivity_timeout_secs),
+        srtp: config.conference.srtp,
+    };
+    let sessions = Arc::new(SessionManager::new(
+        uac,
+        app_state.webrtc_manager.clone(),
+        PortPool::new(relay_ports),
+        placement,
+        session_cfg,
+    ));
+
+    // 10. Inbound SIP: responses to our INVITEs, BYE from the far end.
+    let sip_bind: std::net::SocketAddr = config
+        .sip
+        .udp_bind
+        .parse()
+        .context("Invalid SIP UDP bind address")?;
+    let inbound: Arc<dyn InboundMessageHandler> = Arc::new(GatewayInboundHandler::new(
+        transaction_manager_ref,
+        Arc::clone(&sessions),
+    ));
+    let mut sip_listener = TransportListener::new(
+        ListenerConfig {
+            udp_bind: Some(sip_bind),
+            tcp_bind: None,
+            tls_bind: None,
+            tls_cert: None,
+            tls_key: None,
+            tls_client_ca: None,
+            tls_client_auth: None,
+            ws_bind: None,
+            wss_bind: None,
+        },
+        inbound,
+    );
+    sip_listener
+        .start()
+        .await
+        .context("Failed to start the SIP listener")?;
+
+    // 11. Build combined router: forge-api routes + rooms and calls
     let forge_router = routes::create_router().with_state(app_state);
-    let call_router = http_api::call_routes(bridge_mgr);
     let combined_router = forge_router
-        .merge(call_router)
+        .merge(http_api::routes(Arc::clone(&sessions)))
         .layer(axum::extract::DefaultBodyLimit::max(10 * 1024 * 1024));
 
     let auth_config = AuthConfig::new(config.auth.tokens.clone());
@@ -306,17 +383,25 @@ async fn main() -> Result<()> {
     info!(
         http = %config.http.bind_address,
         sip = %config.sip.udp_bind,
-        rtp_ports = format!("{}-{}", config.media.rtp_port_start, config.media.rtp_port_end),
+        public_ip = %public_ip,
+        relay_ports = %relay_range,
+        forge_ports = %forge_range,
+        conference = ?config.conference.server_uri,
+        srtp = config.conference.srtp,
         "fcp-webrtc-gw ready"
     );
     info!(
-        "  WebRTC API: http://{}/v1/webrtc/connections",
+        "  Rooms API:  http://{}/v1/rooms/{{room}}/join",
         config.http.bind_address
     );
-    info!("  Call API:   http://{}/v1/calls", config.http.bind_address);
+    info!("  Calls API:  http://{}/v1/calls", config.http.bind_address);
+    info!(
+        "  WebRTC API: http://{}/v1/webrtc/connections/{{id}}/answer",
+        config.http.bind_address
+    );
     info!("  Health:     http://{}/health", config.http.bind_address);
 
-    // 11. Serve with graceful shutdown
+    // 12. Serve with graceful shutdown
     let shutdown_timeout = Duration::from_secs(config.service.shutdown_timeout_secs);
     let shutdown_notify = Arc::new(Notify::new());
     let shutdown_task = {
@@ -384,6 +469,8 @@ async fn main() -> Result<()> {
     shutdown_task.abort();
     server_result?;
 
+    sip_listener.stop().await.ok();
+
     // Shutdown cluster manager
     #[cfg(feature = "storage-redis")]
     if let Some(ref cm) = _cluster_manager {
@@ -392,6 +479,20 @@ async fn main() -> Result<()> {
 
     info!("Shutdown complete");
     Ok(())
+}
+
+/// The media port range in two halves: the relay's (ICE sockets and
+/// SIP-side RTP) and forge-api's media sessions'.
+fn split_port_range(config: &GatewayConfig) -> Result<(PortPoolConfig, PortPoolConfig)> {
+    let start = config.media.rtp_port_start;
+    let end = config.media.rtp_port_end;
+    let mid = start + (end - start) / 2;
+    let mid = mid & !1;
+    let relay = PortPoolConfig::new(start & !1, mid - 1)
+        .map_err(|e| anyhow::anyhow!("relay media port range: {e}"))?;
+    let forge = PortPoolConfig::new(mid, end)
+        .map_err(|e| anyhow::anyhow!("forge-api media port range: {e}"))?;
+    Ok((relay, forge))
 }
 
 async fn tls_config(config: &GatewayConfig) -> Result<RustlsConfig> {

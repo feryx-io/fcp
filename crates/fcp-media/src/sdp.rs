@@ -392,6 +392,185 @@ pub fn generate_srtp_key_material() -> Result<(forge_rtp::srtp::SrtpKeyMaterial,
     Ok((material, b64))
 }
 
+// ── Offers ──────────────────────────────────────────────────────────────
+
+/// The SRTP half of an outbound offer: the key we put in our `a=crypto`
+/// line and, once the answer carries the peer's, the context for the leg.
+/// The answerer-shaped path (peer's key first, ours generated in reply)
+/// lives with the conference server; this is the offerer's.
+#[derive(Debug, Clone)]
+pub struct SrtpOffer {
+    local: forge_rtp::srtp::SrtpKeyMaterial,
+    /// The `a=crypto` value for the section this key protects.
+    pub sdp: SrtpSdpContext,
+}
+
+impl SrtpOffer {
+    /// The suite every offer uses.
+    pub const SUITE: &'static str = "AES_CM_128_HMAC_SHA1_80";
+
+    /// Fresh key material for one media section.
+    pub fn generate() -> Result<Self> {
+        let (local, b64) = generate_srtp_key_material()?;
+        Ok(Self {
+            local,
+            sdp: SrtpSdpContext {
+                local_key_b64: format!("inline:{b64}"),
+                suite: Self::SUITE.to_string(),
+                tag: 1,
+            },
+        })
+    }
+
+    /// Install the peer's key from the answer's `a=crypto` line for this
+    /// section. The answer must keep our suite (RFC 4568 §5.1.2).
+    pub fn accept(self, answer: &SdesCryptoLine) -> Result<forge_rtp::srtp::SrtpContext> {
+        if !answer.suite.eq_ignore_ascii_case(&self.sdp.suite) {
+            return Err(Error::Sdp(format!(
+                "answer changed the SRTP suite from {} to {}",
+                self.sdp.suite, answer.suite
+            )));
+        }
+        let (key, salt, profile) = decode_sdes_key_params(&answer.key_params, &answer.suite)?;
+        let remote = forge_rtp::srtp::SrtpKeyMaterial::new(key, salt, profile)
+            .map_err(|e| Error::Sdp(format!("invalid SRTP key material in answer: {e}")))?;
+        let mut ctx = forge_rtp::srtp::SrtpContext::new();
+        ctx.set_local_key(self.local);
+        ctx.set_remote_key(remote);
+        Ok(ctx)
+    }
+}
+
+/// The audio section of an outbound offer.
+#[derive(Debug, Clone)]
+pub struct AudioOfferSection<'a> {
+    /// Our RTP port.
+    pub rtp_port: u16,
+    /// Codecs offered, in preference order.
+    pub codecs: &'a [SdpCodecInfo],
+    /// telephone-event `(payload type, clock rate)`, if offered.
+    pub telephone_event: Option<(u8, u32)>,
+    /// `a=crypto` for the section (`RTP/SAVP`); `None` offers plain RTP.
+    pub srtp: Option<&'a SrtpSdpContext>,
+    /// `a=ptime`, if stated.
+    pub ptime_ms: Option<u32>,
+}
+
+/// The video section of an outbound offer: one codec at one payload type.
+#[derive(Debug, Clone)]
+pub struct VideoOfferSection<'a> {
+    /// Our RTP port.
+    pub rtp_port: u16,
+    /// The payload type offered.
+    pub payload_type: u8,
+    /// The codec.
+    pub codec: VideoCodec,
+    /// `a=fmtp` parameters for it, if any (H.264 profile and mode).
+    pub fmtp: Option<&'a str>,
+    /// Offer `nack`, `nack pli`, `ccm fir` and `goog-remb` (and the AVPF
+    /// profile); without it the section is plain AVP.
+    pub feedback: bool,
+    /// `a=crypto` for the section; `None` offers plain RTP.
+    pub srtp: Option<&'a SrtpSdpContext>,
+}
+
+/// Everything an offer needs.
+#[derive(Debug, Clone)]
+pub struct OfferOptions<'a> {
+    /// The address on `o=` and `c=`.
+    pub server_ip: &'a str,
+    /// The `o=` session id.
+    pub origin_id: &'a str,
+    /// The `s=` line.
+    pub session_name: &'a str,
+    /// The audio section.
+    pub audio: AudioOfferSection<'a>,
+    /// The video section, if offered.
+    pub video: Option<VideoOfferSection<'a>>,
+}
+
+/// Construct an SDP offer with an audio section and, optionally, a video
+/// section, each with its own SDES key when asked. This is the offer an
+/// outbound leg sends — the gateway's leg to a conference server — and
+/// the answer it gets back is read with [`parse_sdp_codecs`],
+/// [`parse_video_offer`], [`parse_sdes_crypto`] and
+/// [`parse_video_sdes_crypto`] as any peer's SDP is.
+pub fn construct_offer(opts: &OfferOptions<'_>) -> Result<String> {
+    let a = &opts.audio;
+    let mut audio = MediaDescription::audio(a.rtp_port);
+    audio.protocol = if a.srtp.is_some() {
+        Protocol::RtpSavp
+    } else {
+        Protocol::RtpAvp
+    };
+    if let Some(ctx) = a.srtp {
+        audio = audio
+            .add_attribute("crypto", &ctx.crypto_value())
+            .map_err(sdp_err)?;
+    }
+    if a.codecs.is_empty() {
+        return Err(Error::Sdp("an offer needs at least one audio codec".into()));
+    }
+    for c in a.codecs {
+        audio = audio.add_format(c.payload_type).map_err(sdp_err)?;
+        audio = audio
+            .add_rtpmap(c.payload_type, &c.encoding_name, c.clock_rate, None)
+            .map_err(sdp_err)?;
+    }
+    if let Some((te, rate)) = a.telephone_event {
+        audio = audio.add_format(te).map_err(sdp_err)?;
+        audio = audio
+            .add_rtpmap(te, "telephone-event", rate, None)
+            .map_err(sdp_err)?;
+        audio = audio
+            .add_attribute("fmtp", &format!("{te} 0-16"))
+            .map_err(sdp_err)?;
+    }
+    if let Some(ptime) = a.ptime_ms {
+        audio = audio
+            .add_attribute("ptime", &ptime.to_string())
+            .map_err(sdp_err)?;
+    }
+    audio = audio.add_property("sendrecv").map_err(sdp_err)?;
+    let mut sections = vec![audio];
+
+    if let Some(v) = &opts.video {
+        let mut video = MediaDescription::video(v.rtp_port);
+        video.protocol = match (v.srtp.is_some(), v.feedback) {
+            (true, true) => Protocol::RtpSavpf,
+            (true, false) => Protocol::RtpSavp,
+            (false, true) => Protocol::RtpAvpf,
+            (false, false) => Protocol::RtpAvp,
+        };
+        if let Some(ctx) = v.srtp {
+            video = video
+                .add_attribute("crypto", &ctx.crypto_value())
+                .map_err(sdp_err)?;
+        }
+        let pt = v.payload_type;
+        video = video.add_format(pt).map_err(sdp_err)?;
+        video = video
+            .add_rtpmap(pt, v.codec.sdp_name(), VideoCodec::CLOCK_RATE, None)
+            .map_err(sdp_err)?;
+        if let Some(fmtp) = v.fmtp {
+            video = video
+                .add_attribute("fmtp", &format!("{pt} {fmtp}"))
+                .map_err(sdp_err)?;
+        }
+        if v.feedback {
+            for fb in ["nack", "nack pli", "ccm fir", "goog-remb"] {
+                video = video
+                    .add_attribute("rtcp-fb", &format!("{pt} {fb}"))
+                    .map_err(sdp_err)?;
+            }
+        }
+        video = video.add_property("sendrecv").map_err(sdp_err)?;
+        sections.push(video);
+    }
+
+    serialize_answer(opts.server_ip, opts.origin_id, opts.session_name, sections)
+}
+
 /// Convert SIP SDP to forge-media SDP format
 ///
 /// This is a placeholder - actual implementation will depend on
@@ -1133,6 +1312,138 @@ pub fn negotiate_codecs(offer: &[String], answer: &[String]) -> Result<Vec<Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn pcmu() -> SdpCodecInfo {
+        SdpCodecInfo {
+            payload_type: 0,
+            encoding_name: "PCMU".into(),
+            clock_rate: 8000,
+        }
+    }
+
+    #[test]
+    fn offer_with_audio_video_and_srtp_round_trips() {
+        let audio_key = SrtpOffer::generate().unwrap();
+        let video_key = SrtpOffer::generate().unwrap();
+        let codecs = [
+            SdpCodecInfo {
+                payload_type: 9,
+                encoding_name: "G722".into(),
+                clock_rate: 8000,
+            },
+            pcmu(),
+        ];
+        let offer = construct_offer(&OfferOptions {
+            server_ip: "10.0.0.5",
+            origin_id: "42",
+            session_name: "gateway",
+            audio: AudioOfferSection {
+                rtp_port: 20000,
+                codecs: &codecs,
+                telephone_event: Some((101, 8000)),
+                srtp: Some(&audio_key.sdp),
+                ptime_ms: Some(20),
+            },
+            video: Some(VideoOfferSection {
+                rtp_port: 20002,
+                payload_type: 96,
+                codec: VideoCodec::H264,
+                fmtp: Some(
+                    "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f",
+                ),
+                feedback: true,
+                srtp: Some(&video_key.sdp),
+            }),
+        })
+        .unwrap();
+        for needle in [
+            "o=fcp 42",
+            "c=IN IP4 10.0.0.5\r\n",
+            "m=audio 20000 RTP/SAVP 9 0 101\r\n",
+            "a=rtpmap:9 G722/8000\r\n",
+            "a=rtpmap:101 telephone-event/8000\r\n",
+            "a=fmtp:101 0-16\r\n",
+            "a=ptime:20\r\n",
+            "m=video 20002 RTP/SAVPF 96\r\n",
+            "a=rtpmap:96 H264/90000\r\n",
+            "a=fmtp:96 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f\r\n",
+            "a=rtcp-fb:96 nack pli\r\n",
+            "a=rtcp-fb:96 goog-remb\r\n",
+        ] {
+            assert!(offer.contains(needle), "missing {needle:?} in {offer}");
+        }
+        assert_eq!(offer.matches("a=sendrecv\r\n").count(), 2);
+        // Each section carries its own key, and the parsers read them back.
+        let audio_crypto = parse_sdes_crypto(&offer);
+        let video_crypto = parse_video_sdes_crypto(&offer);
+        assert_eq!(audio_crypto.len(), 1);
+        assert_eq!(video_crypto.len(), 1);
+        assert_ne!(audio_crypto[0].key_params, video_crypto[0].key_params);
+        assert_eq!(audio_crypto[0].suite, SrtpOffer::SUITE);
+        let parsed = parse_sdp_codecs(&offer);
+        assert_eq!(parsed[0].encoding_name, "G722");
+        let video = parse_video_offer(&offer).unwrap();
+        assert_eq!(video.port, 20002);
+        assert_eq!(video.codecs[0].payload_type, 96);
+        assert_eq!(video.codecs[0].codec, VideoCodec::H264);
+        assert!(video.feedback && video.crypto);
+        assert_eq!(remote_video_endpoint(&offer).unwrap().port(), 20002);
+    }
+
+    #[test]
+    fn offer_without_srtp_or_video_is_plain_avp() {
+        let codecs = [pcmu()];
+        let offer = construct_offer(&OfferOptions {
+            server_ip: "10.0.0.5",
+            origin_id: "1",
+            session_name: "call",
+            audio: AudioOfferSection {
+                rtp_port: 30000,
+                codecs: &codecs,
+                telephone_event: None,
+                srtp: None,
+                ptime_ms: None,
+            },
+            video: None,
+        })
+        .unwrap();
+        assert!(offer.contains("m=audio 30000 RTP/AVP 0\r\n"), "{offer}");
+        assert!(!offer.contains("m=video"), "{offer}");
+        assert!(!offer.contains("a=crypto"), "{offer}");
+        assert!(parse_video_offer(&offer).is_none());
+        assert!(construct_offer(&OfferOptions {
+            server_ip: "10.0.0.5",
+            origin_id: "1",
+            session_name: "call",
+            audio: AudioOfferSection {
+                rtp_port: 30000,
+                codecs: &[],
+                telephone_event: None,
+                srtp: None,
+                ptime_ms: None,
+            },
+            video: None,
+        })
+        .is_err());
+    }
+
+    #[test]
+    fn srtp_offer_accepts_the_peers_key_and_refuses_a_changed_suite() {
+        let ours = SrtpOffer::generate().unwrap();
+        let (_, their_b64) = generate_srtp_key_material().unwrap();
+        let answer = SdesCryptoLine {
+            tag: 1,
+            suite: SrtpOffer::SUITE.to_string(),
+            key_params: format!("inline:{their_b64}"),
+        };
+        let ctx = ours.clone().accept(&answer).unwrap();
+        assert!(ctx.is_enabled());
+        let changed = SdesCryptoLine {
+            suite: "AES_CM_128_HMAC_SHA1_32".to_string(),
+            ..answer
+        };
+        assert!(ours.accept(&changed).is_err());
+    }
 
     #[test]
     fn test_rewrite_sdp_for_anchoring() {

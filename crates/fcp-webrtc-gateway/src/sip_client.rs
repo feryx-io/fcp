@@ -133,6 +133,13 @@ fn create_local_uri(config: &GatewayConfig) -> Result<SipUri> {
         .ok_or_else(|| anyhow::anyhow!("Not a SIP URI"))
 }
 
+/// The gateway's own SIP URI as a string (for P-Asserted-Identity).
+pub fn local_uri_string(config: &GatewayConfig) -> String {
+    create_local_uri(config)
+        .map(|u| u.as_str().to_string())
+        .unwrap_or_else(|_| "sip:webrtc-gw@127.0.0.1".to_string())
+}
+
 /// Derive a usable local IP from the bind address.
 pub fn derive_local_ip(bind_addr: &str) -> String {
     if let Ok(addr) = bind_addr.parse::<std::net::SocketAddr>() {

@@ -11,6 +11,9 @@ description = "WebRTC-to-SIP gateway for the Ferrous Communications Platform"
 default = ["storage-redis"]
 storage-redis = ["dep:fcp-storage-redis", "dep:fcp-cluster"]
 
+[lib]
+path = "src/lib.rs"
+
 [[bin]]
 name = "fcp-webrtc-gw"
 path = "src/main.rs"
@@ -18,7 +21,7 @@ path = "src/main.rs"
 [dependencies]
 # FCP crates
 fcp-core = { path = "../fcp-core" }
-fcp-sip = { path = "../fcp-sip" }
+fcp-sip = { path = "../fcp-sip", features = ["tls", "ws"] }
 fcp-media = { path = "../fcp-media" }
 
 # Forge media crates
@@ -37,6 +40,7 @@ sip-dialog = { path = "../../external/siphon-rs/crates/sip-dialog" }
 sip-dns = { path = "../../external/siphon-rs/crates/sip-dns" }
 sip-uac = { path = "../../external/siphon-rs/crates/sip-uac" }
 sip-sdp = { path = "../../external/siphon-rs/crates/sip-sdp" }
+sip-parse = { path = "../../external/siphon-rs/crates/sip-parse" }
 
 # HTTP API
 axum = { version = "0.8", features = ["ws"] }
@@ -56,12 +60,15 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 # Error handling
 anyhow = { workspace = true }
+thiserror = { workspace = true }
 
 # Serialization
 serde = { workspace = true }
 serde_json = { workspace = true }
 
 # Utilities
+async-trait = "0.1"
+bytes = { workspace = true }
 dashmap = "6"
 socket2 = "0.5"
 uuid = { workspace = true }
@@ -72,3 +79,4 @@ fcp-cluster = { path = "../fcp-cluster", optional = true }
 
 [dev-dependencies]
 fcp-testkit = { path = "../fcp-testkit" }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
