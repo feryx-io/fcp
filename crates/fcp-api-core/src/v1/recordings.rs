@@ -208,7 +208,7 @@ pub async fn delete_recording(
         Ok((base, token)) => {
             let url = format!(
                 "{base}/recordings/{}?node={}",
-                recording.file_name(),
+                urlencoding::encode(recording.file_name()),
                 urlencoding::encode(&recording.node_id)
             );
             let client = reqwest::Client::builder()
@@ -267,7 +267,7 @@ pub async fn download_recording(
     let (base, token) = upstream(&state)?;
     let url = format!(
         "{base}/recordings/{}?node={}",
-        recording.file_name(),
+        urlencoding::encode(recording.file_name()),
         urlencoding::encode(&recording.node_id)
     );
     // Only the connect is bounded: a long recording takes as long as it

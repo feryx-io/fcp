@@ -2927,6 +2927,18 @@ enum PeerRoute {
     Unknown(String),
 }
 
+/// What may go into a peer's URL path: a bare file name, so nothing a
+/// caller sends can change which request the peer sees. The peer checks
+/// the name against its own directory again ([`safe_recording_path`]).
+fn forwardable_file_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 255
+        && !name.contains("..")
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+}
+
 fn peer_for(state: &ConferenceState, node: Option<&str>) -> PeerRoute {
     let Some(node) = node.filter(|n| !n.is_empty()) else {
         return PeerRoute::Local;
@@ -2953,6 +2965,12 @@ async fn stream_from_peer(
             serde_json::json!({ "error": "This node is not clustered" }),
         );
     };
+    if !forwardable_file_name(filename) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            serde_json::json!({ "error": "Invalid filename" }),
+        );
+    }
     let tenant = headers
         .get(PLATFORM_TENANT_HEADER)
         .and_then(|v| v.to_str().ok())
@@ -3051,6 +3069,12 @@ async fn delete_recording_handler(
                     Json(serde_json::json!({ "error": "This node is not clustered" })),
                 );
             };
+            if !forwardable_file_name(&filename) {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({ "error": "Invalid filename" })),
+                );
+            }
             let tenant = headers
                 .get(PLATFORM_TENANT_HEADER)
                 .and_then(|v| v.to_str().ok())
@@ -3375,6 +3399,29 @@ fn publish_event(event_bus: &Arc<dyn EventPublisher>, event: ConferenceEvent) {
 mod tests {
     use super::*;
     use crate::video_bridge::VideoControlError;
+
+    /// A name that goes into a peer's URL may be a file name and nothing
+    /// else, so nothing a caller sends can change the request the peer
+    /// sees.
+    #[test]
+    fn only_a_bare_file_name_is_forwarded_to_a_peer() {
+        assert!(forwardable_file_name("8001-1788800000-abc123.webm"));
+        assert!(forwardable_file_name("room.wav"));
+        for bad in [
+            "",
+            "../../etc/passwd",
+            "a/b.wav",
+            "a\\b.wav",
+            "x.wav?node=other",
+            "x.wav#frag",
+            "x.wav&a=b",
+            "space name.wav",
+            "%2e%2e.wav",
+        ] {
+            assert!(!forwardable_file_name(bad), "{bad}");
+        }
+        assert!(!forwardable_file_name(&"a".repeat(256)));
+    }
 
     /// "Not here" is the only answer that sends the request on to a peer;
     /// a room without video or a bad layout is decided on this node.
