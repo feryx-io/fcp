@@ -922,7 +922,8 @@ Three things the plan did not say:
   `RecordingSink`'s documentation promised it; nothing implemented it, so
   a recorder that went away without calling `stop_record` left the room
   encoding a composite nobody read. forge-media's tap reports the closed
-  channel and the compose tick reaps it (forge-media PR #145).
+  channel and the compose tick reaps it (forge-media PR #145, released as
+  `v2026.09.08`).
 - **The recorder's stop is a `notify_one`, not `notify_waiters`.** The
   task is only parked between frames; a wakeup sent while it was busy was
   dropped, and the recording never stopped — a hang, and a file never
