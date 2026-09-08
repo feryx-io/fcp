@@ -40,6 +40,7 @@ use fcp_storage_postgres::compliance::PostgresComplianceStore;
 use fcp_storage_postgres::emergency::PostgresEmergencyStore;
 use fcp_storage_postgres::flow_trace::PostgresFlowTraceStore;
 use fcp_storage_postgres::prompt::PostgresPromptStore;
+use fcp_storage_postgres::recording::PostgresRecordingStore;
 use fcp_storage_postgres::sip_trace::PostgresSipTraceStore;
 use fcp_storage_postgres::{PostgresConfig, PostgresStorage};
 use futures_util::{SinkExt, StreamExt};
@@ -153,7 +154,11 @@ impl App {
                     Arc::clone(&compliance) as Arc<dyn fcp_core::compliance::ComplianceStore>
                 )
                 .with_prompt_store(Arc::new(PostgresPromptStore::new(storage.pool().clone()))
-                    as Arc<dyn fcp_core::prompt::PromptStore>),
+                    as Arc<dyn fcp_core::prompt::PromptStore>)
+                .with_recording_store(
+                    Arc::new(PostgresRecordingStore::new(storage.pool().clone()))
+                        as Arc<dyn fcp_core::recording::RecordingStore>,
+                ),
         );
         let dir = tempfile::Builder::new()
             .prefix("fcp-api-test-")
@@ -4453,6 +4458,234 @@ async fn mock_conference_server() -> (String, Arc<std::sync::Mutex<Vec<Upstream>
         let _ = axum::serve(listener, router).await;
     });
     (format!("http://127.0.0.1:{port}"), seen)
+}
+
+// ─── Conference recordings ───────────────────────────────────────────────
+
+/// Put a recording in the registry directly, as a conference node does.
+async fn register_recording(
+    app: &App,
+    tenant: TenantId,
+    room: &str,
+    node: &str,
+    finished: bool,
+) -> fcp_core::Recording {
+    let store =
+        fcp_storage_postgres::recording::PostgresRecordingStore::new(app.storage.pool().clone());
+    let mut r = fcp_core::Recording::starting(
+        tenant,
+        room,
+        node,
+        format!("/var/fcp/recordings/{room}.webm"),
+        fcp_core::RecordingFormat::Webm,
+        fcp_core::RecordingTrigger::Api,
+    );
+    r.participants = 2;
+    fcp_core::recording::RecordingStore::create_recording(&store, &r)
+        .await
+        .unwrap();
+    if finished {
+        let ended = SystemTime::now();
+        fcp_core::recording::RecordingStore::finish_recording(&store, &r.id, ended, 12, 3_400)
+            .await
+            .unwrap();
+        r.ended_at = Some(ended);
+        r.duration_secs = Some(12);
+        r.size_bytes = Some(3_400);
+    }
+    r
+}
+
+#[tokio::test]
+async fn recordings_are_listed_scoped_and_deleted_through_their_node() {
+    let (url, seen) = mock_conference_server().await;
+    let Some(app) = App::with_conference_server(&url).await else {
+        eprintln!("FCP_TEST_DATABASE_URL not set; skipping PostgreSQL API handler test");
+        return;
+    };
+    let done = register_recording(&app, app.tenant_a, "8001", "conf-a", true).await;
+    let running = register_recording(&app, app.tenant_a, "8002", "conf-b", false).await;
+    let other = register_recording(&app, app.tenant_b, "9001", "conf-a", true).await;
+
+    // The tenant's own, newest first, with the row's detail.
+    let list = app.admin(Method::GET, "/api/v1/recordings", None).await;
+    assert_eq!(list.status, StatusCode::OK, "{}", list.text);
+    let rows = list.json["recordings"].as_array().unwrap();
+    assert_eq!(rows.len(), 2, "{}", list.text);
+    let ids: Vec<&str> = rows.iter().map(|r| r["id"].as_str().unwrap()).collect();
+    assert!(ids.contains(&done.id.to_string().as_str()));
+    assert!(
+        !ids.contains(&other.id.to_string().as_str()),
+        "other tenant"
+    );
+    let first = rows
+        .iter()
+        .find(|r| r["id"] == done.id.to_string())
+        .unwrap();
+    assert_eq!(first["room_number"], "8001");
+    assert_eq!(first["format"], "webm");
+    assert_eq!(first["node_id"], "conf-a");
+    assert_eq!(first["file_name"], "8001.webm");
+    assert_eq!(first["duration_secs"], 12);
+    assert_eq!(first["size_bytes"], 3400);
+    assert_eq!(first["running"], false);
+    assert_eq!(
+        first["download_url"],
+        format!("/v1/recordings/{}/download", done.id)
+    );
+
+    // Filters.
+    let only_running = app
+        .admin(Method::GET, "/api/v1/recordings?running=true", None)
+        .await;
+    let rows = only_running.json["recordings"].as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["id"], running.id.to_string());
+    let by_room = app
+        .admin(Method::GET, "/api/v1/recordings?room_number=8001", None)
+        .await;
+    assert_eq!(by_room.json["recordings"].as_array().unwrap().len(), 1);
+
+    // One recording, and another tenant's is simply not found.
+    let got = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/recordings/{}", done.id),
+            None,
+        )
+        .await;
+    assert_eq!(got.status, StatusCode::OK, "{}", got.text);
+    assert_eq!(got.json["room_number"], "8001");
+    let hidden = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/recordings/{}", other.id),
+            None,
+        )
+        .await;
+    assert_eq!(hidden.status, StatusCode::NOT_FOUND, "{}", hidden.text);
+
+    // A recording still being written cannot be deleted.
+    let busy = app
+        .admin(
+            Method::DELETE,
+            &format!("/api/v1/recordings/{}", running.id),
+            None,
+        )
+        .await;
+    assert_eq!(busy.status, StatusCode::CONFLICT, "{}", busy.text);
+
+    // Deleting takes the file through the node holding it, then the row.
+    let gone = app
+        .admin(
+            Method::DELETE,
+            &format!("/api/v1/recordings/{}", done.id),
+            None,
+        )
+        .await;
+    assert_eq!(gone.status, StatusCode::OK, "{}", gone.text);
+    assert_eq!(gone.json["file_deleted"], true, "{}", gone.text);
+    {
+        let seen = seen.lock().unwrap();
+        let up = seen.last().expect("the conference server was called");
+        assert_eq!(up.method, "DELETE");
+        assert_eq!(up.path, "/recordings/8001.webm");
+        assert_eq!(
+            up.tenant.as_deref(),
+            Some(app.tenant_a.to_string().as_str())
+        );
+        assert_eq!(up.bearer.as_deref(), Some(CONFERENCE_TOKEN));
+    }
+    let after = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/recordings/{}", done.id),
+            None,
+        )
+        .await;
+    assert_eq!(after.status, StatusCode::NOT_FOUND, "{}", after.text);
+
+    app.finish().await;
+}
+
+#[tokio::test]
+async fn the_retention_sweep_takes_only_conference_recordings_a_node_abandoned() {
+    let app = require_app!();
+    let days = |d: u64| Duration::from_secs(d * 86_400);
+    let store =
+        fcp_storage_postgres::recording::PostgresRecordingStore::new(app.storage.pool().clone());
+    let aged = |room: &str, age: Duration| {
+        let mut r = fcp_core::Recording::starting(
+            app.tenant_a,
+            room,
+            "conf-a",
+            format!("/var/fcp/recordings/{room}.webm"),
+            fcp_core::RecordingFormat::Webm,
+            fcp_core::RecordingTrigger::Auto,
+        );
+        r.started_at = SystemTime::now() - age;
+        r
+    };
+    // Both are past a 30-day window; only the first is past the week of
+    // grace the holding node gets to delete file and row itself.
+    let abandoned = aged("8001", days(400));
+    let recent = aged("8002", days(32));
+    let running = aged("8003", days(400));
+    for r in [&abandoned, &recent, &running] {
+        fcp_core::recording::RecordingStore::create_recording(&store, r)
+            .await
+            .unwrap();
+    }
+    for r in [&abandoned, &recent] {
+        fcp_core::recording::RecordingStore::finish_recording(
+            &store,
+            &r.id,
+            SystemTime::now() - days(1),
+            10,
+            100,
+        )
+        .await
+        .unwrap();
+    }
+
+    let set = app
+        .admin(
+            Method::PUT,
+            "/api/v1/compliance/policy",
+            Some(json!({ "recording_retention_days": 30 })),
+        )
+        .await;
+    assert_eq!(set.status, StatusCode::OK, "{}", set.text);
+
+    let run = app
+        .admin(Method::POST, "/api/v1/compliance/retention/run", None)
+        .await;
+    assert_eq!(run.status, StatusCode::OK, "{}", run.text);
+    assert_eq!(run.json["conference_recordings_deleted"], 1, "{}", run.text);
+
+    let left = app.admin(Method::GET, "/api/v1/recordings", None).await;
+    let rooms: Vec<&str> = left.json["recordings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["room_number"].as_str().unwrap())
+        .collect();
+    assert_eq!(rooms.len(), 2, "{}", left.text);
+    assert!(rooms.contains(&"8002"), "still inside the grace period");
+    assert!(rooms.contains(&"8003"), "a running recording never expires");
+
+    // The run is on the record with its own count.
+    let runs = app
+        .admin(Method::GET, "/api/v1/compliance/retention/runs", None)
+        .await;
+    assert_eq!(runs.status, StatusCode::OK, "{}", runs.text);
+    assert_eq!(
+        runs.json[0]["conference_recordings_deleted"], 1,
+        "{}",
+        runs.text
+    );
+
+    app.finish().await;
 }
 
 async fn create_meeting(app: &App, room: &str, owner: Option<&str>) {

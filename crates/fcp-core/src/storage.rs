@@ -2655,6 +2655,7 @@ pub struct DynStorage {
     encryption_store: Option<Arc<dyn crate::encryption::EncryptionStore>>,
     emergency_store: Option<Arc<dyn crate::e911::EmergencyStore>>,
     compliance_store: Option<Arc<dyn crate::compliance::ComplianceStore>>,
+    recording_store: Option<Arc<dyn crate::recording::RecordingStore>>,
 }
 
 impl DynStorage {
@@ -2715,6 +2716,7 @@ impl DynStorage {
             encryption_store: None,
             emergency_store: None,
             compliance_store: None,
+            recording_store: None,
         }
     }
 
@@ -2777,6 +2779,7 @@ impl DynStorage {
             encryption_store: None,
             emergency_store: None,
             compliance_store: None,
+            recording_store: None,
         }
     }
 
@@ -2927,6 +2930,21 @@ impl DynStorage {
     ) -> Self {
         self.compliance_store = Some(store);
         self
+    }
+
+    /// Attach the conference recording registry (`docs/VIDEO_CONFERENCING.md`
+    /// §11). Without it a node still records, but the file is all there is.
+    pub fn with_recording_store(
+        mut self,
+        store: Arc<dyn crate::recording::RecordingStore>,
+    ) -> Self {
+        self.recording_store = Some(store);
+        self
+    }
+
+    /// The conference recording registry, when one is attached.
+    pub fn recording_store(&self) -> Option<&Arc<dyn crate::recording::RecordingStore>> {
+        self.recording_store.as_ref()
     }
 
     pub fn compliance_store(&self) -> Option<&Arc<dyn crate::compliance::ComplianceStore>> {

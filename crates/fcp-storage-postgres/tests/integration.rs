@@ -16,6 +16,7 @@ use fcp_core::billing::{
     BalanceTransactionKind, BalanceTransactionRequest, Rate, RatePlan, TenantBalance,
 };
 use fcp_core::encryption::EncryptionStore;
+use fcp_core::recording::RecordingStore;
 use fcp_core::storage::{
     CallDetailRecord, CallDisposition, CdrQuery, CdrStore, CredentialStore, HangupCause,
     PhoneNumberStore, Registration, RegistrationStore, TenantStore, User,
@@ -1411,4 +1412,183 @@ async fn unreachable_replica_is_tolerated_and_reads_use_the_primary() {
 
     s.close().await;
     primary.finish().await;
+}
+
+// ─── Conference recordings (migration 053) ───────────────────────────────
+
+fn recording(
+    tenant_id: TenantId,
+    room: &str,
+    node: &str,
+    started_secs_ago: u64,
+) -> fcp_core::Recording {
+    let mut r = fcp_core::Recording::starting(
+        tenant_id,
+        room,
+        node,
+        format!("/var/fcp/recordings/{room}-{node}.webm"),
+        fcp_core::RecordingFormat::Webm,
+        fcp_core::RecordingTrigger::Api,
+    );
+    // Timestamps come back at whole-second resolution, as they do from
+    // every store here, so the fixture starts on one.
+    let secs = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        - started_secs_ago;
+    r.started_at = SystemTime::UNIX_EPOCH + Duration::from_secs(secs);
+    r.participants = 3;
+    r
+}
+
+#[tokio::test]
+async fn conference_recordings_round_trip_and_filter() {
+    let db = require_db!();
+    let store =
+        fcp_storage_postgres::recording::PostgresRecordingStore::new(db.storage.pool().clone());
+    let t = tenant("recordings");
+    db.storage.put_tenant(t.clone()).await.unwrap();
+    let other = tenant("recordings-other");
+    db.storage.put_tenant(other.clone()).await.unwrap();
+
+    let mut running = recording(t.id, "8001", "conf-a", 60);
+    running.consent = fcp_core::RecordingConsent::Announced;
+    let finished = recording(t.id, "8002", "conf-b", 7 * 86_400);
+    let elsewhere = recording(other.id, "9001", "conf-a", 60);
+    for r in [&running, &finished, &elsewhere] {
+        store.create_recording(r).await.unwrap();
+    }
+
+    // Read one back whole.
+    let got = store.get_recording(&running.id).await.unwrap().unwrap();
+    assert_eq!(got, running);
+    assert!(got.is_running());
+    assert_eq!(got.consent, fcp_core::RecordingConsent::Announced);
+    assert_eq!(got.participants, 3);
+
+    // Completing it fills in what only the end knows.
+    let ended = SystemTime::now();
+    store
+        .finish_recording(&finished.id, ended, 42, 1_234_567)
+        .await
+        .unwrap();
+    let done = store.get_recording(&finished.id).await.unwrap().unwrap();
+    assert!(!done.is_running());
+    assert_eq!(done.duration_secs, Some(42));
+    assert_eq!(done.size_bytes, Some(1_234_567));
+
+    // A tenant sees its own, newest first, and never the other tenant's.
+    let all = store
+        .list_recordings(&t.id, &fcp_core::RecordingFilter::recent(50))
+        .await
+        .unwrap();
+    assert_eq!(all.len(), 2);
+    assert_eq!(all[0].id, running.id, "newest first");
+
+    let by_room = store
+        .list_recordings(
+            &t.id,
+            &fcp_core::RecordingFilter {
+                room_number: Some("8002".to_string()),
+                ..fcp_core::RecordingFilter::recent(50)
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(by_room.len(), 1);
+    assert_eq!(by_room[0].room_number, "8002");
+
+    let still_running = store
+        .list_recordings(
+            &t.id,
+            &fcp_core::RecordingFilter {
+                running: Some(true),
+                ..fcp_core::RecordingFilter::recent(50)
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(still_running.len(), 1);
+    assert_eq!(still_running[0].id, running.id);
+
+    let since = store
+        .list_recordings(
+            &t.id,
+            &fcp_core::RecordingFilter {
+                since: Some(SystemTime::now() - Duration::from_secs(600)),
+                ..fcp_core::RecordingFilter::recent(50)
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(since.len(), 1, "the week-old one is outside the window");
+
+    db.finish().await;
+}
+
+#[tokio::test]
+async fn a_node_finds_what_it_holds_and_what_has_expired() {
+    let db = require_db!();
+    let store =
+        fcp_storage_postgres::recording::PostgresRecordingStore::new(db.storage.pool().clone());
+    let t = tenant("sweep");
+    db.storage.put_tenant(t.clone()).await.unwrap();
+    let other = tenant("sweep-other");
+    db.storage.put_tenant(other.clone()).await.unwrap();
+
+    let old = recording(t.id, "8001", "conf-a", 30 * 86_400);
+    let recent = recording(t.id, "8002", "conf-a", 60);
+    let elsewhere = recording(other.id, "9001", "conf-b", 30 * 86_400);
+    for r in [&old, &recent, &elsewhere] {
+        store.create_recording(r).await.unwrap();
+    }
+    // Only a finished recording can expire.
+    store
+        .finish_recording(&old.id, SystemTime::now(), 10, 100)
+        .await
+        .unwrap();
+
+    // The node's own view: which tenants, and which file is a row's.
+    let tenants = store.node_tenants("conf-a").await.unwrap();
+    assert_eq!(tenants, vec![t.id]);
+    assert_eq!(store.node_tenants("conf-b").await.unwrap(), vec![other.id]);
+    assert_eq!(
+        store
+            .recording_at("conf-a", &old.path)
+            .await
+            .unwrap()
+            .map(|r| r.id),
+        Some(old.id)
+    );
+    assert!(
+        store
+            .recording_at("conf-b", &old.path)
+            .await
+            .unwrap()
+            .is_none(),
+        "the path belongs to another node"
+    );
+    assert!(store
+        .recording_at("conf-a", "/var/fcp/recordings/nothing.wav")
+        .await
+        .unwrap()
+        .is_none());
+
+    // Expiry: finished, this tenant's, and older than the cutoff.
+    let cutoff = SystemTime::now() - Duration::from_secs(7 * 86_400);
+    let expired = store.expired_recordings(&t.id, cutoff).await.unwrap();
+    assert_eq!(expired.len(), 1);
+    assert_eq!(expired[0].id, old.id);
+
+    // A recording still being written is what a restart closes off.
+    let running = store.running_recordings("conf-a").await.unwrap();
+    assert_eq!(running.len(), 1);
+    assert_eq!(running[0].id, recent.id);
+
+    assert!(store.delete_recording(&old.id).await.unwrap());
+    assert!(!store.delete_recording(&old.id).await.unwrap());
+    assert!(store.get_recording(&old.id).await.unwrap().is_none());
+
+    db.finish().await;
 }

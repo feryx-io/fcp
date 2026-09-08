@@ -30,6 +30,7 @@ pub mod phone_number;
 pub mod porting;
 pub mod prompt;
 pub mod queue_config;
+pub mod recording;
 pub mod region;
 pub mod routing;
 pub mod routing_engine;
@@ -89,6 +90,9 @@ pub use crate::porting::{
 };
 pub use crate::prompt::{Prompt, PromptCategory, PromptService, PromptSourceType, PromptStore};
 pub use crate::queue_config::{QueueConfigId, QueueConfigRecord};
+pub use crate::recording::{
+    Recording, RecordingConsent, RecordingFilter, RecordingFormat, RecordingStore, RecordingTrigger,
+};
 pub use crate::routing::{
     RingGroup, RingPlan, RoutingDestination, RoutingEngine, RoutingError, RoutingResult,
     RoutingTarget,

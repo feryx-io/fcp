@@ -151,6 +151,10 @@ pub trait RoomRegistry: Send + Sync {
     }
 }
 
+/// What a room hears when the tenant asks for a recording announcement
+/// and names no prompt of its own.
+const RECORDING_CONSENT_TEXT: &str = "This conference is being recorded.";
+
 /// Handles SIP INVITEs for conference rooms.
 ///
 /// When a SIP INVITE arrives targeting a conference room number:
@@ -215,6 +219,33 @@ pub struct ConferenceCallHandler {
     pub dtmf_locked_samples: Option<Arc<Vec<i16>>>,
     pub dtmf_unlocked_samples: Option<Arc<Vec<i16>>>,
     pub dtmf_ending_samples: Option<Arc<Vec<i16>>>,
+    /// Recordings under way on this node, by room number (§11).
+    recordings: DashMap<String, ActiveRecording>,
+    /// The handler's own `Arc`, for the tasks it spawns that need the
+    /// whole handler rather than a few clones — the moderator-release
+    /// path, which may have to start a recording. Set once at startup by
+    /// [`ConferenceCallHandler::set_self_ref`].
+    self_ref: std::sync::RwLock<std::sync::Weak<Self>>,
+}
+
+/// A recording under way on this node: its registry row, the announcement
+/// anyone joining while it runs must hear, and whatever is writing it.
+pub struct ActiveRecording {
+    /// The row the admin API lists and downloads by.
+    pub record: fcp_core::Recording,
+    /// The consent announcement, when the tenant's policy asks for one.
+    consent_audio: Option<Arc<Vec<i16>>>,
+    writer: RecordingWriter,
+}
+
+/// What is writing a recording.
+enum RecordingWriter {
+    /// forge-conference's own recorder on the room: mixed audio to WAV,
+    /// as conference recordings have always been.
+    Wav,
+    /// This node's muxer: the composite and the mix to one WebM file.
+    #[cfg(feature = "recording-webm")]
+    Webm(crate::recording::WebmRecorder),
 }
 
 /// Tracks an active RFC 4575 conference event subscription.
@@ -632,6 +663,8 @@ impl ConferenceCallHandler {
             dtmf_locked_samples: None,
             dtmf_unlocked_samples: None,
             dtmf_ending_samples: None,
+            recordings: DashMap::new(),
+            self_ref: std::sync::RwLock::new(std::sync::Weak::new()),
         }
     }
 
@@ -1265,6 +1298,360 @@ impl ConferenceCallHandler {
     /// Play an audio announcement into a conference room.
     ///
     /// Validates file exists and does not exceed max_announcement_size_mb before playing.
+    /// Give the handler its own `Arc`, once, at startup.
+    pub fn set_self_ref(self: &Arc<Self>) {
+        if let Ok(mut slot) = self.self_ref.write() {
+            *slot = Arc::downgrade(self);
+        }
+    }
+
+    /// The handler itself, for a spawned task; `None` before
+    /// [`set_self_ref`](Self::set_self_ref) or once it is being dropped.
+    fn me(&self) -> Option<Arc<Self>> {
+        self.self_ref.read().ok().and_then(|w| w.upgrade())
+    }
+
+    // ---- recording (design §11) -----------------------------------------
+
+    /// Start recording a room. The container follows
+    /// `conference.recording_format`: a meeting with video records its
+    /// composite and mix to WebM, one without records the mix to WAV as
+    /// it always has. The registry row is written before the first
+    /// sample, so a recording is addressable from the moment it starts.
+    pub async fn start_room_recording(
+        &self,
+        room_number: &str,
+        trigger: fcp_core::RecordingTrigger,
+    ) -> Result<fcp_core::Recording> {
+        if self.recordings.contains_key(room_number) {
+            anyhow::bail!("room {room_number} is already being recorded");
+        }
+        let room = self
+            .bridge
+            .get_room(room_number)
+            .map_err(|_| anyhow::anyhow!("Conference room not active"))?;
+        let tenant_id = self
+            .tenant_for_room(room_number)
+            .unwrap_or(self.default_tenant_id);
+        let meeting = self
+            .lookup_meeting(&tenant_id, room_number)
+            .await
+            .ok()
+            .flatten();
+        let conf = self.conference_config.read().clone();
+
+        // What the composite could be recorded as, if the room has one.
+        let room_video = match (&meeting, room.video()) {
+            (Some(m), Some(_)) if m.video_enabled => {
+                let usable = self
+                    .video_backend
+                    .as_ref()
+                    .map(|b| crate::video_bridge::usable_codecs(b, conf.video_native_codecs_only))
+                    .unwrap_or_default();
+                let configured = forge_core::VideoCodec::from_sdp_name(&conf.recording_video_codec);
+                crate::recording::pick_video_codec(configured, &usable)
+            }
+            _ => None,
+        };
+        let choice =
+            crate::recording::FormatChoice::parse(&conf.recording_format).unwrap_or_default();
+        let (format, video_codec) = crate::recording::plan_format(choice, room_video);
+
+        let path = format!(
+            "{}/{}-{}-{}.{}",
+            conf.recordings_dir,
+            room_number,
+            SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+            uuid::Uuid::new_v4().as_simple(),
+            format.extension()
+        );
+
+        let mut record = fcp_core::Recording::starting(
+            tenant_id,
+            room_number,
+            &self.node_id,
+            &path,
+            format,
+            trigger,
+        );
+        record.meeting_id = meeting.as_ref().map(|m| m.id);
+        record.participants = room.participant_count() as u32;
+
+        // The room hears the tenant's announcement before the first
+        // sample, and so does everyone who joins while this runs.
+        let (consent, consent_audio) = self
+            .announce_recording_consent(room_number, &tenant_id, conf.sample_rate)
+            .await;
+        record.consent = consent;
+
+        let writer = match format {
+            fcp_core::RecordingFormat::Wav => {
+                room.start_recording(&path, None)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("starting the recorder: {e}"))?;
+                RecordingWriter::Wav
+            }
+            fcp_core::RecordingFormat::Webm => {
+                #[cfg(feature = "recording-webm")]
+                {
+                    let settings = crate::recording::WebmSettings {
+                        path: std::path::PathBuf::from(&path),
+                        video: video_codec.map(|codec| crate::recording::WebmVideoSettings {
+                            codec,
+                            resolution: conf
+                                .recording_resolution
+                                .as_deref()
+                                .and_then(forge_video::frame::Resolution::parse),
+                            max_kbps: None,
+                        }),
+                        audio_bitrate: conf.recording_audio_bitrate,
+                    };
+                    RecordingWriter::Webm(crate::recording::WebmRecorder::start(
+                        &record.id.to_string(),
+                        &room,
+                        settings,
+                    )?)
+                }
+                #[cfg(not(feature = "recording-webm"))]
+                {
+                    let _ = video_codec;
+                    anyhow::bail!("this build cannot write WebM (feature `recording-webm`)")
+                }
+            }
+        };
+
+        // The row before the event: a listener that reacts to the event
+        // can look the recording up straight away.
+        if let Some(store) = self.storage.recording_store() {
+            if let Err(e) = store.create_recording(&record).await {
+                warn!(
+                    room = %room_number,
+                    recording = %record.id,
+                    error = %e,
+                    "Recording started but could not be registered; it will not be listed"
+                );
+            }
+        }
+        self.recordings.insert(
+            room_number.to_string(),
+            ActiveRecording {
+                record: record.clone(),
+                consent_audio,
+                writer,
+            },
+        );
+        info!(
+            room = %room_number,
+            recording = %record.id,
+            format = record.format.as_str(),
+            path = %path,
+            "Recording started"
+        );
+        self.publish_event(ConferenceEvent::RecordingStarted {
+            room_number: room_number.to_string(),
+            recording_id: record.id.to_string(),
+            format: record.format.as_str().to_string(),
+            node_id: self.node_id.clone(),
+            tenant_id,
+            timestamp: SystemTime::now(),
+        });
+        Ok(record)
+    }
+
+    /// Stop a room's recording and complete its row.
+    pub async fn stop_room_recording(&self, room_number: &str) -> Result<fcp_core::Recording> {
+        let Some((_, active)) = self.recordings.remove(room_number) else {
+            // A room recording started before this node knew about the
+            // registry (or by forge-conference itself) still stops.
+            if let Ok(room) = self.bridge.get_room(room_number) {
+                if room.is_recording() {
+                    room.stop_recording()
+                        .map_err(|e| anyhow::anyhow!("stopping the recorder: {e}"))?;
+                    return Err(anyhow::anyhow!(
+                        "room {room_number} had an unregistered recording, now stopped"
+                    ));
+                }
+            }
+            anyhow::bail!("room {room_number} is not being recorded");
+        };
+        let mut record = active.record;
+        let (duration_secs, size_bytes) = match active.writer {
+            RecordingWriter::Wav => {
+                if let Ok(room) = self.bridge.get_room(room_number) {
+                    if let Err(e) = room.stop_recording() {
+                        warn!(room = %room_number, error = %e, "Failed to stop the WAV recorder");
+                    }
+                }
+                let size = std::fs::metadata(&record.path)
+                    .map(|m| m.len())
+                    .unwrap_or(0);
+                let secs = record
+                    .started_at
+                    .elapsed()
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                (secs, size)
+            }
+            #[cfg(feature = "recording-webm")]
+            RecordingWriter::Webm(recorder) => {
+                let outcome = recorder.stop().await;
+                (outcome.duration_secs, outcome.size_bytes)
+            }
+        };
+        let ended_at = SystemTime::now();
+        record.ended_at = Some(ended_at);
+        record.duration_secs = Some(duration_secs);
+        record.size_bytes = Some(size_bytes);
+
+        if let Some(store) = self.storage.recording_store() {
+            if let Err(e) = store
+                .finish_recording(&record.id, ended_at, duration_secs, size_bytes)
+                .await
+            {
+                warn!(recording = %record.id, error = %e, "Could not complete the recording's row");
+            }
+        }
+        info!(
+            room = %room_number,
+            recording = %record.id,
+            seconds = duration_secs,
+            bytes = size_bytes,
+            "Recording stopped"
+        );
+        self.publish_event(ConferenceEvent::RecordingStopped {
+            room_number: room_number.to_string(),
+            recording_id: record.id.to_string(),
+            format: record.format.as_str().to_string(),
+            node_id: self.node_id.clone(),
+            duration_secs,
+            size_bytes,
+            tenant_id: record.tenant_id,
+            timestamp: ended_at,
+        });
+        Ok(record)
+    }
+
+    /// Whether this node is recording the room.
+    pub fn is_room_recording(&self, room_number: &str) -> bool {
+        self.recordings.contains_key(room_number)
+    }
+
+    /// The room's recording, if this node is making one.
+    pub fn room_recording(&self, room_number: &str) -> Option<fcp_core::Recording> {
+        self.recordings.get(room_number).map(|r| r.record.clone())
+    }
+
+    /// Every recording under way on this node.
+    pub fn active_recordings(&self) -> Vec<fcp_core::Recording> {
+        self.recordings
+            .iter()
+            .map(|r| r.value().record.clone())
+            .collect()
+    }
+
+    /// The announcement anyone joining a recorded room must hear, when
+    /// the tenant's policy asks for one.
+    pub fn recording_consent_audio(&self, room_number: &str) -> Option<Arc<Vec<i16>>> {
+        self.recordings
+            .get(room_number)
+            .and_then(|r| r.consent_audio.clone())
+    }
+
+    /// Tell the room it is being recorded, if the tenant's policy says to
+    /// (`docs/COMPLIANCE.md`). Returns what happened, for the row, and the
+    /// audio to play to anyone who joins later.
+    async fn announce_recording_consent(
+        &self,
+        room_number: &str,
+        tenant_id: &TenantId,
+        sample_rate: u32,
+    ) -> (fcp_core::RecordingConsent, Option<Arc<Vec<i16>>>) {
+        use fcp_core::compliance::RecordingConsentMode;
+        use fcp_core::RecordingConsent;
+
+        let Some(store) = self.storage.compliance_store() else {
+            return (RecordingConsent::NotRequired, None);
+        };
+        let policy = match store.get_compliance_policy(tenant_id).await {
+            Ok(Some(policy)) => policy,
+            Ok(None) => return (RecordingConsent::NotRequired, None),
+            Err(e) => {
+                warn!(room = %room_number, error = %e, "Could not read the recording-consent policy");
+                return (RecordingConsent::Failed, None);
+            }
+        };
+        if policy.recording_consent != RecordingConsentMode::Announce {
+            return (RecordingConsent::NotRequired, None);
+        }
+
+        // The tenant's prompt when it names one, else synthesised speech.
+        let mut audio_path: Option<String> = None;
+        if let (Some(prompt_id), Some(prompts)) = (
+            policy.recording_consent_prompt_id.as_deref(),
+            self.storage.prompt_store(),
+        ) {
+            match prompt_id.parse::<fcp_core::PromptId>() {
+                Ok(id) => match prompts.get_prompt(&id).await {
+                    Ok(Some(prompt)) => {
+                        audio_path = prompt.audio_path.map(|p| p.to_string_lossy().into_owned())
+                    }
+                    Ok(None) => {
+                        warn!(room = %room_number, prompt = %prompt_id, "Recording-consent prompt not found")
+                    }
+                    Err(e) => {
+                        warn!(room = %room_number, error = %e, "Could not read the recording-consent prompt")
+                    }
+                },
+                Err(e) => {
+                    warn!(prompt = %prompt_id, error = %e, "Invalid recording-consent prompt id")
+                }
+            }
+        }
+        if audio_path.is_none() {
+            if let Some(tts) = &self.tts_service {
+                match tokio::time::timeout(
+                    Duration::from_secs(10),
+                    tts.synthesize(RECORDING_CONSENT_TEXT, None, None),
+                )
+                .await
+                {
+                    Ok(Ok(path)) => audio_path = Some(path.to_string_lossy().into_owned()),
+                    Ok(Err(e)) => {
+                        warn!(room = %room_number, error = %e, "Recording-consent TTS failed")
+                    }
+                    Err(_) => warn!(room = %room_number, "Recording-consent TTS timed out"),
+                }
+            }
+        }
+        let Some(audio_path) = audio_path else {
+            warn!(
+                room = %room_number,
+                "The tenant asks for a recording announcement but neither a prompt nor TTS is \
+                 available; recording without one"
+            );
+            return (RecordingConsent::Failed, None);
+        };
+
+        // Keep the samples so later joiners hear it too.
+        let player = forge_conference::AudioFeedbackPlayer::new(sample_rate);
+        let samples = player
+            .load_audio_file(&audio_path)
+            .map(|s| Arc::new(s.to_vec()));
+        match self.play_announcement(room_number, &audio_path).await {
+            Ok(()) => {
+                info!(room = %room_number, "Recording announcement played");
+                (RecordingConsent::Announced, samples)
+            }
+            Err(e) => {
+                warn!(room = %room_number, error = %e, "Recording announcement failed");
+                (RecordingConsent::Failed, samples)
+            }
+        }
+    }
+
     pub async fn play_announcement(&self, room_number: &str, audio_path: &str) -> Result<()> {
         // Validate announcement file exists and is within size limits
         let meta = std::fs::metadata(audio_path)
@@ -1881,7 +2268,9 @@ impl ConferenceCallHandler {
         }
 
         // Stop recording if active
-        if let Ok(room) = self.bridge.get_room(room_number) {
+        if self.is_room_recording(room_number) {
+            let _ = self.stop_room_recording(room_number).await;
+        } else if let Ok(room) = self.bridge.get_room(room_number) {
             if room.is_recording() {
                 let _ = room.stop_recording();
             }
@@ -1957,7 +2346,9 @@ impl ConferenceCallHandler {
 
         // Stop recordings and delete all active rooms
         for room_id in self.bridge.list_rooms() {
-            if let Ok(room) = self.bridge.get_room(&room_id) {
+            if self.is_room_recording(&room_id) {
+                let _ = self.stop_room_recording(&room_id).await;
+            } else if let Ok(room) = self.bridge.get_room(&room_id) {
                 if room.is_recording() {
                     let _ = room.stop_recording();
                 }
@@ -4330,7 +4721,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             let decoder = create_codec_instance(&codec_name)?;
             let jitter_buffer_ms = conf.jitter_buffer_ms;
             let mixer_sample_rate = conf.sample_rate;
-            let recordings_dir = conf.recordings_dir.clone();
+
             let dtmf_handler = if conf.dtmf_enabled {
                 Some(self.get_or_create_dtmf_handler(&room_number))
             } else {
@@ -4342,6 +4733,9 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             let max_wait_secs = conf.max_wait_for_moderator_secs;
             let announcement_interval_secs = conf.moh_announcement_interval_secs;
             let wait_uac = Arc::clone(&self.uac);
+            // The handler itself, for the auto-record check once a
+            // moderator lets the room in.
+            let wait_handler = self.me();
             let wait_dialog = dialog.clone();
             // The video leg starts with the audio bridge once admitted; the
             // session keeps its own handle-less copy for teardown and the API.
@@ -4584,40 +4978,26 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                                         && bridge_room.participant_count()
                                             >= cfg.min_recording_participants
                                     {
-                                        let ts = SystemTime::now()
-                                            .duration_since(std::time::UNIX_EPOCH)
-                                            .unwrap_or_default()
-                                            .as_secs();
-                                        let rec_path = format!(
-                                            "{}/{}-{}-{}.wav",
-                                            recordings_dir,
-                                            rn,
-                                            ts,
-                                            uuid::Uuid::new_v4().as_simple()
-                                        );
-                                        match bridge_room.start_recording(&rec_path, None).await {
-                                            Ok(()) => {
-                                                tracing::info!(
-                                                    room = %rn,
-                                                    path = %rec_path,
-                                                    "Auto-recording started (after moderator join)"
-                                                );
-                                                let rec_event = PlatformEvent::Conference(
-                                                    ConferenceEvent::RecordingStarted {
-                                                        room_number: rn.clone(),
-                                                        tenant_id,
-                                                        timestamp: SystemTime::now(),
-                                                    },
-                                                );
-                                                let _ = event_bus.publish(rec_event).await;
+                                        match &wait_handler {
+                                            Some(handler) => {
+                                                if let Err(e) = handler
+                                                    .start_room_recording(
+                                                        &rn,
+                                                        fcp_core::RecordingTrigger::Auto,
+                                                    )
+                                                    .await
+                                                {
+                                                    tracing::warn!(
+                                                        room = %rn,
+                                                        error = %e,
+                                                        "Auto-record failed (after moderator join)"
+                                                    );
+                                                }
                                             }
-                                            Err(e) => {
-                                                tracing::warn!(
-                                                    room = %rn,
-                                                    error = %e,
-                                                    "Auto-record failed (after moderator join)"
-                                                );
-                                            }
+                                            None => tracing::warn!(
+                                                room = %rn,
+                                                "Auto-record skipped: the handler is shutting down"
+                                            ),
                                         }
                                     }
                                 }
@@ -4754,29 +5134,11 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 if cfg.min_recording_participants > 0
                     && room.participant_count() >= cfg.min_recording_participants
                 {
-                    let timestamp = SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs();
-                    let path = format!(
-                        "{}/{}-{}-{}.wav",
-                        conf.recordings_dir,
-                        room_number,
-                        timestamp,
-                        uuid::Uuid::new_v4().as_simple()
-                    );
-                    match room.start_recording(&path, None).await {
-                        Ok(()) => {
-                            info!(room = %room_number, path = %path, "Auto-recording started");
-                            self.publish_event(ConferenceEvent::RecordingStarted {
-                                room_number: room_number.clone(),
-                                tenant_id,
-                                timestamp: SystemTime::now(),
-                            });
-                        }
-                        Err(e) => {
-                            warn!(room = %room_number, error = %e, "Auto-record failed");
-                        }
+                    if let Err(e) = self
+                        .start_room_recording(&room_number, fcp_core::RecordingTrigger::Auto)
+                        .await
+                    {
+                        warn!(room = %room_number, error = %e, "Auto-record failed");
                     }
                 }
             }
@@ -4792,6 +5154,24 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             let mut welcome_encoder = create_codec_instance(&codec_name)?;
             let player = forge_conference::AudioFeedbackPlayer::new(mixer_rate);
             let mut welcome_played = false;
+
+            // A room being recorded tells whoever joins, when the
+            // tenant's policy asks for an announcement (§11,
+            // docs/COMPLIANCE.md). Before the welcome, so nobody speaks
+            // first.
+            if let Some(consent) = self.recording_consent_audio(&room_number) {
+                play_prompt_to_rtp(
+                    &rtp_socket,
+                    &consent,
+                    welcome_encoder.as_mut(),
+                    payload_type,
+                    frame_size,
+                    &srtp_context,
+                    mixer_rate,
+                )
+                .await;
+                debug!(room = %room_number, participant = %participant_id, "Recording announcement played to the joiner");
+            }
 
             // Try TTS with 5s timeout — Kokoro cache hits are <100ms, first synthesis 1-3s
             if let Some(ref tts) = self.tts_service {

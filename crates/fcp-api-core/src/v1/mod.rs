@@ -30,6 +30,7 @@ pub mod provisioning;
 pub mod queue_config;
 pub mod queues;
 pub mod rate_plans;
+pub mod recordings;
 pub mod registrations;
 pub mod routing;
 pub mod self_service;
@@ -297,6 +298,16 @@ pub fn router() -> Router<ApiState> {
             get(compliance::list_retention_runs),
         )
         .route("/audit-log", get(compliance::list_audit_log))
+        // Conference recordings: the registry, and the file behind each row
+        .route("/recordings", get(recordings::list_recordings))
+        .route(
+            "/recordings/:id",
+            get(recordings::get_recording).delete(recordings::delete_recording),
+        )
+        .route(
+            "/recordings/:id/download",
+            get(recordings::download_recording),
+        )
         // CDR
         .route("/cdrs", get(cdrs::list_cdrs))
         .route("/cdrs/export", get(cdrs::export_cdrs))

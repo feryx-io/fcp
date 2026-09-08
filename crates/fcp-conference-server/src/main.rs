@@ -27,7 +27,7 @@ use forge_mixer::MixerOptions;
 use forge_rtp::{PortPool, PortPoolConfig};
 use sip_observe::{set_transport_metrics, TracingTransportMetrics};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use tracing::{info, warn};
 
 mod audio_bridge;
@@ -43,7 +43,7 @@ mod video_capacity;
 use cli::Cli;
 use conference_handler::ConferenceCallHandler;
 use config::ConferenceServerConfig;
-use fcp_conference_server::config;
+use fcp_conference_server::{config, recording};
 
 /// The node's video budget as cluster membership carries it.
 #[cfg(feature = "storage-redis")]
@@ -911,6 +911,9 @@ async fn main() -> Result<()> {
     }
 
     let conference_handler = Arc::new(conference_handler);
+    // The handler's own Arc, for the tasks it spawns (see
+    // `ConferenceCallHandler::set_self_ref`).
+    conference_handler.set_self_ref();
 
     // Re-price the video budget from the rooms every few seconds, so
     // admission works from what runs rather than from stale reservations
@@ -1248,17 +1251,36 @@ async fn main() -> Result<()> {
         }
     }));
 
-    // 22. Spawn recording cleanup task (if retention configured)
-    if let Some(days) = config.conference.recording_retention_days {
-        if days > 0 {
-            let recordings_dir = config.conference.recordings_dir.clone();
-            let retention_days = days;
-            let cleanup_interval_secs = config.conference.recording_cleanup_interval_secs;
-            tokio::spawn(supervise_task("recording-cleanup", async move {
-                run_recording_cleanup(recordings_dir, retention_days, cleanup_interval_secs).await;
-            }));
-            info!(retention_days = days, "Recording cleanup task started");
-        }
+    // 22. Spawn recording cleanup task. It runs whether or not this node
+    // sets a retention of its own: the tenants' policies are the first
+    // word on how long a recording is kept, and only the file sweep
+    // needs the node's own setting.
+    {
+        let recordings_dir = config.conference.recordings_dir.clone();
+        let default_retention_days = config
+            .conference
+            .recording_retention_days
+            .filter(|d| *d > 0);
+        let cleanup_interval_secs = config.conference.recording_cleanup_interval_secs;
+        let cleanup_storage = Arc::clone(&dyn_storage);
+        let cleanup_node = config.service.node_id.clone();
+        // Anything this node was recording when it last stopped is
+        // finished off before the sweep can call it expired.
+        close_off_orphaned_recordings(&dyn_storage, &config.service.node_id).await;
+        tokio::spawn(supervise_task("recording-cleanup", async move {
+            run_recording_cleanup(
+                recordings_dir,
+                default_retention_days,
+                cleanup_interval_secs,
+                cleanup_storage,
+                cleanup_node,
+            )
+            .await;
+        }));
+        info!(
+            retention_days = ?default_retention_days,
+            "Recording cleanup task started"
+        );
     }
 
     // 23. Spawn config hot-reload watcher
@@ -1365,74 +1387,38 @@ async fn main() -> Result<()> {
     // 24b. Spawn recording size monitor
     if config.conference.max_recording_size_mb > 0 {
         let monitor_handler = Arc::clone(&conference_handler);
-        let monitor_bridge = Arc::clone(&bridge);
         let max_bytes = config.conference.max_recording_size_mb * 1024 * 1024;
-        let recordings_dir = config.conference.recordings_dir.clone();
-        let monitor_event_bus = Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>;
         let size_check_interval =
             Duration::from_secs(config.conference.recording_size_check_interval_secs);
         tokio::spawn(supervise_task("recording-size-monitor", async move {
             loop {
                 tokio::time::sleep(size_check_interval).await;
-                // Check each actively-recording room by scanning for .wav files
-                // that are currently being written (modified in the last 60s)
-                let mut dir = match tokio::fs::read_dir(&recordings_dir).await {
-                    Ok(d) => d,
-                    Err(_) => continue,
-                };
-                while let Ok(Some(entry)) = dir.next_entry().await {
-                    let path = entry.path();
-                    if path.extension().and_then(|e| e.to_str()) != Some("wav") {
+                // Every recording this node is making, checked against
+                // the cap by its own path rather than by guessing the
+                // room from a filename.
+                for recording in monitor_handler.active_recordings() {
+                    let Ok(meta) = tokio::fs::metadata(&recording.path).await else {
+                        continue;
+                    };
+                    if meta.len() <= max_bytes {
                         continue;
                     }
-                    if let Ok(meta) = tokio::fs::metadata(&path).await {
-                        if meta.len() <= max_bytes {
-                            continue;
-                        }
-                        // File exceeds limit — find the room by filename prefix and stop recording
-                        let filename = match path.file_stem().and_then(|s| s.to_str()) {
-                            Some(f) => f,
-                            None => {
-                                warn!(path = %path.display(), "Skipping recording with invalid filename");
-                                continue;
-                            }
-                        };
-                        // Filename format: {room}-{timestamp}-{uuid_simple} — extract room by
-                        // stripping the last two segments (uuid is 32 hex chars, timestamp is digits).
-                        // Parse from right to handle dashed room names (e.g. "conf-room-1-1707000-abc123def").
-                        let room_id = filename
-                            .rfind('-')
-                            .and_then(|i| filename[..i].rfind('-'))
-                            .map(|i| &filename[..i])
-                            .unwrap_or(filename);
-                        if let Ok(room) = monitor_bridge.get_room(room_id) {
-                            if room.is_recording() {
-                                warn!(
-                                    room = %room_id,
-                                    size_mb = meta.len() / (1024 * 1024),
-                                    max_mb = max_bytes / (1024 * 1024),
-                                    "Recording size limit reached, stopping"
-                                );
-                                if let Err(e) = room.stop_recording() {
-                                    warn!(room = %room_id, error = %e, "Failed to stop recording on size limit");
-                                }
-                                if let Some(tenant_id) = monitor_handler.tenant_for_room(room_id) {
-                                    let event = fcp_events::PlatformEvent::Conference(
-                                        fcp_events::ConferenceEvent::RecordingStopped {
-                                            room_number: room_id.to_string(),
-                                            tenant_id,
-                                            timestamp: std::time::SystemTime::now(),
-                                        },
-                                    );
-                                    let _ = monitor_event_bus.publish(event).await;
-                                } else {
-                                    warn!(
-                                        room = %room_id,
-                                        "Skipped RecordingStopped event because tenant context could not be resolved"
-                                    );
-                                }
-                            }
-                        }
+                    warn!(
+                        room = %recording.room_number,
+                        recording = %recording.id,
+                        size_mb = meta.len() / (1024 * 1024),
+                        max_mb = max_bytes / (1024 * 1024),
+                        "Recording size limit reached, stopping"
+                    );
+                    if let Err(e) = monitor_handler
+                        .stop_room_recording(&recording.room_number)
+                        .await
+                    {
+                        warn!(
+                            room = %recording.room_number,
+                            error = %e,
+                            "Failed to stop recording on size limit"
+                        );
                     }
                 }
             }
@@ -1836,19 +1822,43 @@ fn init_tracing(config: &ConferenceServerConfig) {
     }
 }
 
-/// Periodically delete recordings older than the retention period.
+/// Periodically delete recordings that have outlived their retention.
+///
+/// Two sweeps, in that order. The **registry sweep** walks the tenants
+/// this node holds recordings for and deletes, file and row together,
+/// what is older than that tenant's `recording_retention_days` — falling
+/// back to `conference.recording_retention_days` when the tenant has set
+/// no policy of its own. The **file sweep** then prunes what is left by
+/// age: recordings made before the registry existed, or by a node with
+/// no storage behind it. It asks the registry before each delete, so a
+/// file that belongs to a row is left to the row's own retention.
+///
 /// Uses exponential backoff on directory read failure (1min → 2min → 4min → ... → 1hr cap).
 async fn run_recording_cleanup(
     recordings_dir: String,
-    retention_days: u32,
+    default_retention_days: Option<u32>,
     cleanup_interval_secs: u64,
+    storage: Arc<fcp_core::storage::DynStorage>,
+    node_id: String,
 ) {
-    let retention = Duration::from_secs(retention_days as u64 * 86400);
     let normal_interval = Duration::from_secs(cleanup_interval_secs);
     let mut backoff = Duration::from_secs(60);
     let max_backoff = Duration::from_secs(3600);
 
     loop {
+        let registry_deleted =
+            sweep_registered_recordings(&storage, &node_id, default_retention_days).await;
+        if registry_deleted > 0 {
+            info!(
+                deleted = registry_deleted,
+                "Recording retention: registered recordings removed"
+            );
+        }
+        let Some(retention_days) = default_retention_days else {
+            tokio::time::sleep(normal_interval).await;
+            continue;
+        };
+        let retention = Duration::from_secs(retention_days as u64 * 86400);
         let dir = match std::fs::read_dir(&recordings_dir) {
             Ok(d) => d,
             Err(e) => {
@@ -1865,7 +1875,11 @@ async fn run_recording_cleanup(
         let mut deleted = 0u32;
         for entry in dir.flatten() {
             let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("wav") {
+            // Both containers a room is recorded to (§11).
+            if !matches!(
+                path.extension().and_then(|e| e.to_str()),
+                Some("wav") | Some("webm")
+            ) {
                 continue;
             }
             if let Ok(meta) = entry.metadata() {
@@ -1880,6 +1894,18 @@ async fn run_recording_cleanup(
                     .and_then(|t| t.elapsed().ok())
                     .unwrap_or_default();
                 if age > retention {
+                    // A file the registry knows is the registry sweep's
+                    // to remove, under its tenant's policy.
+                    if let Some(store) = storage.recording_store() {
+                        match store.recording_at(&node_id, &path.to_string_lossy()).await {
+                            Ok(Some(_)) => continue,
+                            Ok(None) => {}
+                            Err(e) => {
+                                warn!(path = %path.display(), error = %e, "Recording retention: could not check the registry; leaving the file alone");
+                                continue;
+                            }
+                        }
+                    }
                     if let Err(e) = std::fs::remove_file(&path) {
                         warn!(path = %path.display(), error = %e, "Failed to delete old recording");
                     } else {
@@ -1898,6 +1924,118 @@ async fn run_recording_cleanup(
         }
 
         tokio::time::sleep(normal_interval).await;
+    }
+}
+
+/// Delete this node's registered recordings that have outlived their
+/// tenant's retention, file and row together. Returns how many went.
+async fn sweep_registered_recordings(
+    storage: &Arc<fcp_core::storage::DynStorage>,
+    node_id: &str,
+    default_retention_days: Option<u32>,
+) -> u32 {
+    let Some(store) = storage.recording_store() else {
+        return 0;
+    };
+    let tenants = match store.node_tenants(node_id).await {
+        Ok(t) => t,
+        Err(e) => {
+            warn!(error = %e, "Recording retention: could not list this node's tenants");
+            return 0;
+        }
+    };
+    let now = SystemTime::now();
+    let mut deleted = 0u32;
+    for tenant in tenants {
+        // The tenant's own policy first; the node's setting is only the
+        // fallback for a tenant that has set none.
+        let days = match storage.compliance_store() {
+            Some(compliance) => match compliance.get_compliance_policy(&tenant).await {
+                Ok(policy) => policy
+                    .and_then(|p| p.recording_retention_days)
+                    .or(default_retention_days),
+                Err(e) => {
+                    warn!(tenant = %tenant, error = %e, "Recording retention: could not read the policy");
+                    default_retention_days
+                }
+            },
+            None => default_retention_days,
+        };
+        let Some(days) = days.filter(|d| *d > 0) else {
+            continue;
+        };
+        let before = now - Duration::from_secs(days as u64 * 86_400);
+        let expired = match store.expired_recordings(&tenant, before).await {
+            Ok(r) => r,
+            Err(e) => {
+                warn!(tenant = %tenant, error = %e, "Recording retention: could not list expired recordings");
+                continue;
+            }
+        };
+        for recording in expired.iter().filter(|r| r.node_id == node_id) {
+            match std::fs::remove_file(&recording.path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    warn!(recording = %recording.id, path = %recording.path, error = %e, "Recording retention: could not delete the file; keeping the row");
+                    continue;
+                }
+            }
+            match store.delete_recording(&recording.id).await {
+                Ok(_) => deleted += 1,
+                Err(e) => {
+                    warn!(recording = %recording.id, error = %e, "Recording retention: file deleted but the row stayed")
+                }
+            }
+        }
+    }
+    deleted
+}
+
+/// Close off recordings this node was making when it stopped. The file
+/// is whatever was flushed before the process went; the row says so
+/// rather than claiming the recording is still running.
+async fn close_off_orphaned_recordings(
+    storage: &Arc<fcp_core::storage::DynStorage>,
+    node_id: &str,
+) {
+    let Some(store) = storage.recording_store() else {
+        return;
+    };
+    let running = match store.running_recordings(node_id).await {
+        Ok(r) => r,
+        Err(e) => {
+            warn!(error = %e, "Could not check for recordings left running by a previous run");
+            return;
+        }
+    };
+    for recording in running {
+        let meta = std::fs::metadata(&recording.path).ok();
+        let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+        // The file's last write is when the recording really ended.
+        let ended_at = meta
+            .as_ref()
+            .and_then(|m| m.modified().ok())
+            .unwrap_or_else(SystemTime::now);
+        let duration = ended_at
+            .duration_since(recording.started_at)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        match store
+            .finish_recording(&recording.id, ended_at, duration, size)
+            .await
+        {
+            Ok(()) => info!(
+                recording = %recording.id,
+                room = %recording.room_number,
+                seconds = duration,
+                bytes = size,
+                "Closed off a recording left running by a previous run"
+            ),
+            Err(e) => {
+                warn!(recording = %recording.id, error = %e, "Could not close off an orphaned recording")
+            }
+        }
     }
 }
 

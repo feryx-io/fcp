@@ -19,6 +19,12 @@ video-openh264 = ["forge-video-codecs/openh264"]
 video-dav1d = ["forge-video-codecs/dav1d"]
 video-svt-av1 = ["forge-video-codecs/svt-av1"]
 video-all = ["video-vpx", "video-openh264", "video-dav1d", "video-svt-av1"]
+# Record a room's composite video and mixed audio to one WebM file
+# (docs/VIDEO_CONFERENCING.md §11). Off by default, like the codec
+# features: Opus pulls in `audiopus`, which builds libopus from source.
+# Without it every recording is the audio-only WAV it always was, and
+# `conference.recording_format` says so at startup.
+recording-webm = ["dep:forge-webm", "forge-codecs/opus"]
 
 [[bin]]
 name = "fcp-conference"
@@ -50,6 +56,7 @@ forge-dtmf = { path = "../../external/forge-media/crates/forge-dtmf" }
 forge-resampler = { path = "../../external/forge-media/crates/forge-resampler" }
 forge-video = { path = "../../external/forge-media/crates/forge-video" }
 forge-video-codecs = { path = "../../external/forge-media/crates/forge-video-codecs" }
+forge-webm = { path = "../../external/forge-media/crates/forge-webm", optional = true }
 
 # SIP stack from siphon-rs
 sip-core = { path = "../../external/siphon-rs/crates/sip-core" }

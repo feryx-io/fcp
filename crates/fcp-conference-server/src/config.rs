@@ -758,6 +758,29 @@ pub struct ConferenceSection {
     #[serde(default)]
     pub exit_sound: Option<String>,
 
+    /// What to record a room to: `auto` (WebM when the meeting has video
+    /// and this node can encode VP8 or VP9 for it, WAV otherwise), `wav`
+    /// (mixed audio only, as recordings have always been) or `webm`.
+    /// A build without the `recording-webm` feature records WAV whatever
+    /// this says, and logs that at startup.
+    #[serde(default = "default_recording_format")]
+    pub recording_format: String,
+
+    /// The codec a WebM recording's video track uses: `vp8` (the default
+    /// and the one every player decodes) or `vp9`. Ignored when the node
+    /// cannot encode it.
+    #[serde(default = "default_recording_video_codec")]
+    pub recording_video_codec: String,
+
+    /// The size a WebM recording's video is written at, e.g. `720p` or
+    /// `640x360`. The room's own is the default and the cap.
+    #[serde(default)]
+    pub recording_resolution: Option<String>,
+
+    /// Opus bitrate for a WebM recording's audio, in bits per second.
+    #[serde(default = "default_recording_audio_bitrate")]
+    pub recording_audio_bitrate: u32,
+
     /// The secret join tokens are signed with — the same value as the
     /// admin API's `[conference] join_secret`. An INVITE carrying an
     /// `X-FCP-Join` header is admitted on the token's say-so (tenant,
@@ -765,6 +788,18 @@ pub struct ConferenceSection {
     /// refused. Kept out of the config store: it is read from TOML only.
     #[serde(default, skip_serializing)]
     pub join_secret: Option<String>,
+}
+
+fn default_recording_format() -> String {
+    "auto".to_string()
+}
+
+fn default_recording_video_codec() -> String {
+    "vp8".to_string()
+}
+
+fn default_recording_audio_bitrate() -> u32 {
+    64_000
 }
 
 fn default_announcements_dir() -> String {
@@ -898,6 +933,10 @@ impl Default for ConferenceSection {
             dial_out_timeout_secs: default_dial_out_timeout_secs(),
             join_sound: None,
             exit_sound: None,
+            recording_format: default_recording_format(),
+            recording_video_codec: default_recording_video_codec(),
+            recording_resolution: None,
+            recording_audio_bitrate: default_recording_audio_bitrate(),
             join_secret: None,
         }
     }
@@ -990,6 +1029,34 @@ impl Default for ClusterSection {
 /// Validate configuration for logical consistency.
 /// Called at startup to fail fast on misconfigured values.
 pub fn validate_config(config: &ConferenceServerConfig) -> Result<()> {
+    // What a room is recorded to.
+    if crate::recording::FormatChoice::parse(&config.conference.recording_format).is_none() {
+        anyhow::bail!(
+            "conference.recording_format '{}' is not one of auto, wav, webm",
+            config.conference.recording_format
+        );
+    }
+    match config.conference.recording_video_codec.to_ascii_uppercase().as_str() {
+        "VP8" | "VP9" => {}
+        other => anyhow::bail!(
+            "conference.recording_video_codec '{other}' is not one of vp8, vp9 (WebM carries no other)"
+        ),
+    }
+    if let Some(res) = &config.conference.recording_resolution {
+        if forge_video::frame::Resolution::parse(res).is_none() {
+            anyhow::bail!(
+                "conference.recording_resolution '{res}' is not a size like 720p or 1280x720"
+            );
+        }
+    }
+    if config.conference.recording_audio_bitrate < 6_000
+        || config.conference.recording_audio_bitrate > 510_000
+    {
+        anyhow::bail!(
+            "conference.recording_audio_bitrate must be between 6000 and 510000 bits per second"
+        );
+    }
+
     // RTP port range
     if config.media.rtp_port_start >= config.media.rtp_port_end {
         anyhow::bail!(

@@ -189,6 +189,63 @@ impl ClusterControl {
         Ok(futures::future::join_all(sends).await)
     }
 
+    /// The member record for one node, when cluster membership has it.
+    pub fn member(&self, node_id: &str) -> Option<ClusterMember> {
+        self.members.get(node_id).map(|m| m.clone())
+    }
+
+    /// Send one request to one named node's `/internal` route, rather
+    /// than to whoever hosts a room. `None` when membership does not
+    /// know the node.
+    pub async fn send_to_node(
+        &self,
+        node_id: &str,
+        tenant_id: &str,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<serde_json::Value>,
+    ) -> Option<PeerOutcome> {
+        let peer = self.member(node_id)?;
+        Some(
+            self.send(&peer, tenant_id, method, path, body.as_ref())
+                .await,
+        )
+    }
+
+    /// Open a streaming GET against one named node's `/internal` route —
+    /// a recording's bytes, which are too big for `PeerOutcome`'s JSON
+    /// and too slow for the control timeout. The response is handed back
+    /// unread.
+    pub async fn stream_from_node(
+        &self,
+        node_id: &str,
+        tenant_id: &str,
+        path: &str,
+    ) -> anyhow::Result<reqwest::Response> {
+        let peer = self
+            .member(node_id)
+            .ok_or_else(|| anyhow::anyhow!("node {node_id} is not in cluster membership"))?;
+        let url = format!(
+            "http://{}/internal{}",
+            peer.http_address,
+            path.trim_start_matches("/internal")
+        );
+        debug!(peer = %peer.node_id, %url, "Streaming a file from a peer");
+        // A file transfer is not a control request: only the connect is
+        // bounded, so a long download is not cut off mid-stream.
+        let client = reqwest::Client::builder()
+            .connect_timeout(PEER_TIMEOUT)
+            .build()?;
+        let resp = client
+            .get(&url)
+            .bearer_auth(&self.secret)
+            .header(NODE_HEADER, &self.node_id)
+            .header(PLATFORM_TENANT_HEADER, tenant_id)
+            .send()
+            .await?;
+        Ok(resp)
+    }
+
     /// Participant operation: try the hosting peers one at a time until
     /// one answers 2xx. Returns every outcome tried, the success last.
     pub async fn locate(

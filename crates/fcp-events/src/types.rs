@@ -590,6 +590,13 @@ pub enum ConferenceEvent {
     /// Conference recording started
     RecordingStarted {
         room_number: String,
+        /// The registry's id for it, which the admin API lists and
+        /// downloads by.
+        recording_id: String,
+        /// `wav` (mixed audio) or `webm` (composite video and audio).
+        format: String,
+        /// The node holding the file.
+        node_id: String,
         tenant_id: TenantId,
         #[serde(with = "system_time_serde")]
         timestamp: SystemTime,
@@ -598,6 +605,13 @@ pub enum ConferenceEvent {
     /// Conference recording stopped
     RecordingStopped {
         room_number: String,
+        recording_id: String,
+        format: String,
+        node_id: String,
+        /// How long it ran.
+        duration_secs: u64,
+        /// How big the file is.
+        size_bytes: u64,
         tenant_id: TenantId,
         #[serde(with = "system_time_serde")]
         timestamp: SystemTime,
