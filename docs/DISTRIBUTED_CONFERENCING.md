@@ -418,9 +418,12 @@ trunk_srtp = true
 ### Recording a distributed room
 
 A room is recorded **once**, by one node, to one file (design §11). The
-recording is started `wherever_it_is` — the first hosting node that has
-the room — and stopped room-wide, so the node making it stops whichever
-node the request lands on. That node's mix is the whole room's, because
+node is the **lowest-id host** — the rule the trunks are dialled by — so
+a room hosted on two nodes and started through each of them is still
+recorded once: a start that lands on a higher-id host is forwarded down,
+and only an unreachable peer leaves it where it landed. A room this node
+does not host at all goes on `wherever_it_is`. Stopping is room-wide, so
+whichever node is recording stops whichever node the request reaches. That node's mix is the whole room's, because
 the trunks already carry every other node's audio into it; its composite,
 until trunk video lands (phase 5b), shows the callers on that node.
 

@@ -1281,6 +1281,38 @@ async fn start_recording_handler(
         Ok(tenant_id) => tenant_id,
         Err(err) => return err,
     };
+    // One recording per room, on the lowest-id hosting node — the rule
+    // the trunks are dialled by. Without it a room hosted on two nodes,
+    // started through each of them, would be recorded twice.
+    if let Some(peer) = lower_hosting_node(&state, &tenant_id, &room_number).await {
+        if let Some(control) = &state.control {
+            if let Some(outcome) = control
+                .send_to_node(
+                    &peer,
+                    &tenant_id.to_string(),
+                    reqwest::Method::POST,
+                    &format!("/conferences/{room_number}/recording/start"),
+                    None,
+                )
+                .await
+            {
+                // A peer that answered — even to refuse — has the say.
+                // One that could not be reached does not stop the room
+                // being recorded here.
+                if let Some(status) = outcome.status {
+                    let mut body = outcome.body;
+                    if let Some(map) = body.as_object_mut() {
+                        map.insert("node".into(), outcome.node.into());
+                    }
+                    return (
+                        StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY),
+                        Json(body),
+                    );
+                }
+                warn!(room = %room_number, peer = %peer, "The lower-id host is unreachable; recording here instead");
+            }
+        }
+    }
     let local = local_recording_start(&state, &room_number).await;
     let local_status = local.as_ref().err().map(|(s, _)| *s);
     let (status, body) = wherever_it_is(
@@ -1299,6 +1331,32 @@ async fn start_recording_handler(
         Some(local_status) if local_status != StatusCode::NOT_FOUND => (local_status, body),
         _ => (status, body),
     }
+}
+
+/// The hosting node whose id sorts below this one's, when there is one:
+/// where a room's single recording belongs.
+async fn lower_hosting_node(
+    state: &ConferenceState,
+    tenant_id: &TenantId,
+    room_number: &str,
+) -> Option<String> {
+    let control = state.control.as_ref()?;
+    let peers = match control
+        .hosting_peers(&tenant_id.to_string(), room_number)
+        .await
+    {
+        Ok(peers) => peers,
+        Err(e) => {
+            warn!(room = %room_number, error = %e, "Could not read the registry; recording where the request landed");
+            return None;
+        }
+    };
+    // `hosting_peers` sorts by node id, so the first is the lowest.
+    peers
+        .into_iter()
+        .next()
+        .filter(|p| p.node_id.as_str() < state.conference_handler.node_id())
+        .map(|p| p.node_id)
 }
 
 /// POST /conferences/{room}/recording/stop — room-wide: whichever node is

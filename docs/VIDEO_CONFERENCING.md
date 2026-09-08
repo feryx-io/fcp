@@ -488,7 +488,8 @@ node, path, format, trigger, consent, start, end, duration, size and the
 participant count, written when the recording starts and completed when it
 stops. The row is what makes a recording listable per tenant, downloadable
 across nodes and deletable by policy; `POST …/recording/start|stop` have
-`/internal` twins (start routed to a hosting node, stop room-wide), the
+`/internal` twins (a start is forwarded to the lowest-id host so a room is
+recorded once, a stop is room-wide), the
 size monitor watches the rows rather than parsing filenames, and a node
 closes off rows it left running when it restarts.
 
