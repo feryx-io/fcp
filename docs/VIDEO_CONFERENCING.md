@@ -611,7 +611,7 @@ crate (`forge-rtp` 111, `forge-sdp` 90, `forge-core` 22).
 | 3 | **Conference video (SIP)**: fcp-media/fcp-sip SDP per section, meeting model + API + events, conference server ingress/egress, layouts and host controls, capacity accounting and placement | FCP | 3–4 weeks |
 | 4 | **WebRTC** — done 2026-09-07 (§15.3): forge-webrtc video (forge-media `v2026.09.07.1`), the gateway's media path and direct room join (v0.25.107), join tokens, join page and surface (v0.25.108) | forge-media, FCP | done |
 | 5 | **Recording and cascade**: WebM muxing and a recording registry, trunk video, cross-node speaker state — planned 2026-09-07 as three blocks (§15.4); MP4 deferred | both | 3–4 weeks |
-| 6 | **Passthrough fast path, bitrate ladder, polish**: single-source forwarding, ladder switching, overload handling, fuzzing | both | 2 weeks |
+| 6 | **Passthrough fast path, bitrate ladder, polish**: single-source forwarding, ladder switching, overload handling, fuzzing — planned 2026-09-08 as three blocks (§15.5) | both | 2 weeks |
 | 7 | **GPU backend**: `hwaccel` feature (FFmpeg device contexts), device codecs, device scale/overlay composition, per-device budgets and self-benchmark, placement by capability, PSNR parity tests against the host path | forge-media, FCP | 3–4 weeks + a GPU box |
 
 Each phase is one PR per repository (forge-media release tag, then the
@@ -971,6 +971,93 @@ Three things the plan did not say:
   delete the file is not raced to the row. `RecordingStore` gained
   `node_tenants` and `recording_at` for that, and `RetentionReport` a
   `conference_recordings_deleted` count (migration 054).
+
+### 15.5 Phase 6 plan (2026-09-08)
+
+Phase 6 is the one that makes the mixer cheaper rather than more
+capable: the **passthrough fast path** promised in §2 and §5.6, the
+**bitrate ladder** promised in §7, and the hardening the first five
+phases deferred. Three blocks, each a forge-media release and an FCP PR,
+and about two weeks.
+
+**What the surveys found.** Two of the three pieces are already built and
+have never been called. `forge_rtp::StreamRewriter` — one continuous
+SSRC, sequence and timestamp across a source change, switching only at a
+keyframe — is complete, tested, exported, and referenced nowhere outside
+its own module. `H264Fmtp::forwardable_to` is likewise complete and used
+only by its own tests. Phase 1 laid both down for this phase.
+
+The ladder is the opposite: the *table* in §7 exists as `default_kbps`,
+but nothing switches rungs. A subscriber's flavor is chosen once, in
+`VideoRoom::subscribe`, from the request and the room cap, and never
+revisited; REMB only moves the shared encoder's target, and
+`FlavorEncoder::set_target_kbps` takes the **minimum** across that
+flavor's subscribers. So one caller on a poor link drags every other
+subscriber of the same flavor down to their bitrate — the exact case §7
+says should move that caller to a lower rung instead.
+
+Overload handling is one lever: `VideoClock` halves the room's frame rate
+after three consecutive overruns and restores a step after a quiet
+stretch (`video_overload`). There is no shedding by output or resolution,
+so a room that is overrunning because one 1080p composite is expensive
+pays for it in everybody's frame rate.
+
+forge-media has **no fuzzing at all** — no `fuzz` directory, no
+`cargo-fuzz`, nothing in CI — while the video path now parses attacker-
+reachable bytes in five depacketizers, the frame assembler, and
+`forge-webm`'s reader. siphon-rs has had seven fuzz targets since before
+this work started.
+
+| Block | Deliverable | Where |
+|---|---|---|
+| 6a | **Passthrough fast path.** forge-media (release): a subscription may be served by forwarding rather than by an encoder. `VideoRoom` decides per subscriber per tick whether its output resolves to a *single* video source (spotlight on a participant with video; active-speaker or grid where exactly one tile has a frame) and whether that source is forwardable to it — same codec, `forwardable_to` profile, source resolution within the subscriber's cap — and if so feeds the source's coded frames through a `StreamRewriter` under the subscriber's own SSRC instead of the flavor's encoder. Switching sources, or switching between forwarding and composing, happens at a keyframe and asks for one with PLI; the subscriber's retransmission cache holds forwarded packets exactly as it holds encoded ones, and a PLI from the subscriber is forwarded to the source rather than re-keying an encoder that is not running. `VideoRoomSettings::passthrough` turns it off per room; `VideoSubscriberInfo::forwarding` reports what a subscriber is getting. FCP: `Meeting.video_passthrough` (with migration, API, admin UI), the room setting wired from it, `video_capacity` prices a forwarded subscriber at neither encode nor decode so the budget stops over-reserving, and `GET …/video` shows which subscribers are forwarded | forge-conference, forge-rtp (reuse), fcp-core, fcp-storage-postgres, fcp-api-core, fcp-admin-ui, fcp-conference-server |
+| 6b | **Bitrate ladder.** forge-media (release): rungs (§7: 1080p 2.5 Mb/s, 720p 1.2 Mb/s, 360p 500 kb/s, 180p 200 kb/s, capped by the room) as a `Ladder` in forge-video, and a `VideoRoom` that *moves* a subscriber between rungs instead of dragging its flavor's encoder down — down after a sustained stretch below its rung, up after a longer stretch comfortably above the next, both with hysteresis so a flapping link does not flap the picture. A move is internal: same SSRC, same payload type, a keyframe from the new flavor, nothing on the wire but a resolution change, so no re-INVITE and no SIP visibility. `FlavorEncoder::set_target_kbps` keeps taking the minimum, which after the move is a minimum over subscribers that belong together. Metrics per rung and per move. FCP: the rung and its reason in participant JSON and the Live Video dialog; `conference.video_ladder_changed` is **not** added (see the decisions) | forge-video, forge-conference, fcp-conference-server, fcp-admin-ui |
+| 6c | **Overload shedding and fuzzing.** forge-media (release): shedding in a stated order before the room's frame rate is touched — the largest output drops a rung, then the next, then the clock halves as it does today — so a room overrunning on one expensive composite degrades that composite rather than everyone's motion; `VideoRoomEvent::Shed { output, from, to }` beside `FpsChanged`. A `fuzz` directory with `cargo-fuzz` targets for the five depacketizers, the frame assembler, the RTCP parser and `forge_webm::read_summary`, seeded from the corpora the round-trip tests already generate, and a CI job that runs each for 60 seconds on a PR — a smoke run, not a campaign, because the Actions budget is tight (2,000 minutes a month, 1,808 used in the first week of September). FCP: `video_overload` gains the shed detail; `docs/VIDEO_CONFERENCING.md` §7 and §9 updated with what the ladder and shedding actually do | forge-video, forge-conference, forge-rtp, forge-webm, fcp-conference-server, fcp-events |
+
+Decisions proposed with this plan, each open to reversal:
+
+- **Passthrough gives up the tile's name banner and speaking border, and
+  that decides where it is on by default.** A forwarded frame is the
+  source's own picture: no label, no border, no avatar for a muted
+  participant, because nothing composites it. That is right for a
+  presenter at full canvas and wrong for a two-person grid where the
+  names are the only way to tell a stranger apart. So: **on by default
+  for the `spotlight` layout only**, off elsewhere, with a per-meeting
+  `video_passthrough` of `auto` (that rule), `on` (wherever a single
+  source allows it, labels be damned) or `off`. The alternative — drawing
+  the label into the forwarded stream — is not possible without decoding,
+  which is the cost being avoided.
+- **Forwarding is decided per subscriber, not per room.** Two subscribers
+  watching the same single source may differ in codec or profile; one can
+  be forwarded while the other is composed, and the composite is built
+  anyway if anybody needs it.
+- **A move between rungs is invisible to signaling.** Same SSRC, same
+  payload type, a keyframe, a new resolution — which every decoder
+  handles, and which SIP has no opinion about. The alternative, a
+  re-INVITE per rung change, would put a signaling round trip on a
+  congestion signal.
+- **REMB is still the only bandwidth signal.** transport-cc, RTX as a
+  separate stream, FEC and simulcast stay deferred: each is a phase of
+  its own, and the ladder's value does not depend on a better estimator.
+- **No `video_ladder_changed` event.** A rung change is an adaptation, not
+  a fact about the meeting; it can happen every few seconds per
+  subscriber on a bad link, and an event bus that carries it would be
+  mostly that. The rung is in the participant JSON and in metrics, where
+  a graph wants it.
+- **Shedding degrades the expensive output before the room's motion.**
+  Frame rate is what a viewer notices first; resolution on the largest
+  composite is what costs most. Today's clock does the opposite, because
+  it was the only lever there was.
+- **Fuzzing is a 60-second-per-target smoke run on PRs**, not a nightly
+  campaign, and the corpus is committed. It catches the panic a
+  malformed packet causes now; a real campaign belongs on hardware that
+  is not paid for by the minute.
+- **Three blocks, in order, but 6b and 6c are independent.** 6a is the
+  one that touches the egress path, so it goes first; 6b and 6c can be
+  reviewed in either order after it.
+- **Not in this phase:** screen share (§16 puts it after phase 6), the
+  GPU backend (phase 7, still waiting on a machine with a GPU), Opus in
+  the mixer, per-participant tiles across nodes, and MP4 recording.
 
 ## 16. Resolved questions
 
