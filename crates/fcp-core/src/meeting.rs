@@ -38,16 +38,31 @@ pub fn default_video_codecs() -> Vec<VideoCodec> {
     vec![VideoCodec::H264, VideoCodec::Vp8]
 }
 
+/// When the passthrough fast path applies (§5.6).
+pub const VIDEO_PASSTHROUGH_MODES: [&str; 3] = ["off", "auto", "on"];
+
+pub fn default_video_passthrough() -> String {
+    "auto".to_string()
+}
+
 /// Validate the per-meeting video settings against the allowed layouts,
 /// resolutions and ranges. Returns a human-readable message on failure,
 /// suitable for a 400 response body.
+#[allow(clippy::too_many_arguments)]
 pub fn validate_video_settings(
     layout: &str,
     max_participants: u32,
     max_resolution: &str,
     fps: u32,
     codecs: &[VideoCodec],
+    passthrough: &str,
 ) -> Result<(), String> {
+    if !VIDEO_PASSTHROUGH_MODES.contains(&passthrough) {
+        return Err(format!(
+            "video_passthrough must be one of {}",
+            VIDEO_PASSTHROUGH_MODES.join(", ")
+        ));
+    }
     if !VIDEO_LAYOUTS.contains(&layout) {
         return Err(format!(
             "video_layout must be one of {}",
@@ -206,6 +221,15 @@ pub struct Meeting {
     #[serde(default = "default_video_codecs")]
     pub video_codecs: Vec<VideoCodec>,
 
+    /// When a participant whose view is a single source they can already
+    /// decode is sent that source's own stream rather than a composite
+    /// (`docs/VIDEO_CONFERENCING.md` §5.6): `auto` (the default — only
+    /// while the room is showing one participant full canvas), `on` or
+    /// `off`. A forwarded picture carries no name banner or speaking
+    /// border, because nothing composited it.
+    #[serde(default = "default_video_passthrough")]
+    pub video_passthrough: String,
+
     /// Creation timestamp
     pub created_at: SystemTime,
 
@@ -222,6 +246,7 @@ impl Meeting {
             &self.video_max_resolution,
             self.video_fps,
             &self.video_codecs,
+            &self.video_passthrough,
         )
     }
 }
@@ -264,6 +289,7 @@ mod tests {
             video_max_resolution: "1080p".to_string(),
             video_fps: 30,
             video_exclude_self: true,
+            video_passthrough: default_video_passthrough(),
             video_codecs: vec![VideoCodec::Vp8, VideoCodec::H264, VideoCodec::Av1],
             created_at: UNIX_EPOCH + std::time::Duration::from_secs(1700000000),
             updated_at: UNIX_EPOCH + std::time::Duration::from_secs(1700000000),
@@ -327,7 +353,7 @@ mod tests {
     #[test]
     fn video_settings_validation_rejects_out_of_range_values() {
         let ok = |layout, tiles, res, fps, codecs: &[VideoCodec]| {
-            validate_video_settings(layout, tiles, res, fps, codecs)
+            validate_video_settings(layout, tiles, res, fps, codecs, "auto")
         };
         let codecs = default_video_codecs();
         assert!(ok("grid", 16, "720p", 15, &codecs).is_ok());

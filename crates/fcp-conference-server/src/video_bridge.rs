@@ -16,8 +16,8 @@ use fcp_core::{Meeting, TenantId};
 use fcp_events::{ConferenceEvent, EventPublisher, PlatformEvent};
 use fcp_media::{video_codec_to_forge, NegotiatedVideo, SrtpSdpContext};
 use forge_conference::video::{
-    OutputScope, SubscribeRequest, VideoBackend, VideoRoom, VideoRoomEvent, VideoRoomSettings,
-    VideoSubscription,
+    OutputScope, PassthroughMode, SubscribeRequest, VideoBackend, VideoRoom, VideoRoomEvent,
+    VideoRoomSettings, VideoSubscription,
 };
 use forge_conference::ConferenceRoom;
 use forge_rtp::rtcp::{PsFeedback, RtcpPacket};
@@ -119,6 +119,11 @@ pub fn participant_video_json(
             json["packets_retransmitted"] = serde_json::json!(sub.packets_retransmitted);
             json["packets_dropped"] = serde_json::json!(sub.packets_dropped);
             json["remb_kbps"] = serde_json::json!(sub.remb_kbps);
+            // On the fast path this participant is watching one sender's
+            // own stream rather than a composite (§5.6).
+            if let Some(source) = sub.forwarding {
+                json["forwarding"] = serde_json::json!(source);
+            }
         }
         json["speaking"] = serde_json::json!(info.speaking);
     }
@@ -375,6 +380,10 @@ pub fn plan_video(
         fps: meeting.video_fps.clamp(1, 30),
         exclude_self: meeting.video_exclude_self,
         codecs: codecs.clone(),
+        // A meeting that says nothing keeps `Auto`: forward only while
+        // the room is showing one participant full canvas, where the
+        // missing name banner is least missed (§5.6).
+        passthrough: PassthroughMode::parse(&meeting.video_passthrough).unwrap_or_default(),
         ..VideoRoomSettings::default()
     };
     Some((settings, codecs))
@@ -414,7 +423,10 @@ pub fn attach_video(
     if let Some(name) = display_name {
         video.set_display_name(participant_id, name);
     }
-    if let Err(e) = video.add_source(participant_id, leg.negotiated.codec) {
+    // The sender's own fmtp travels with the source: forwarding its
+    // stream to somebody else depends on it (§5.6).
+    let profile = leg.negotiated.fmtp.clone().unwrap_or_default();
+    if let Err(e) = video.add_source(participant_id, leg.negotiated.codec, &profile) {
         warn!(participant = %participant_id, error = %e, "could not add video source");
         return None;
     }
@@ -476,7 +488,8 @@ pub fn attach_trunk_video(
     }
     // The tile has to exist before it can be named: unlike a caller,
     // nothing put it in the room ahead of its video.
-    if let Err(e) = video.add_remote(participant_id, leg.negotiated.codec) {
+    let profile = leg.negotiated.fmtp.clone().unwrap_or_default();
+    if let Err(e) = video.add_remote(participant_id, leg.negotiated.codec, &profile) {
         warn!(trunk = %participant_id, error = %e, "could not add the peer's video tile");
         return None;
     }
@@ -928,6 +941,7 @@ mod tests {
             video_fps: 30,
             video_exclude_self: false,
             video_codecs: vec![VideoCodec::H264, VideoCodec::Vp8, VideoCodec::Av1],
+            video_passthrough: fcp_core::meeting::default_video_passthrough(),
             created_at: now,
             updated_at: now,
         }
@@ -1053,6 +1067,12 @@ mod tests {
                 m.video_layout = "grid".into();
                 m.video_max_resolution = "180p".into();
                 m.video_codecs = vec![VideoCodec::Vp8];
+                // This test is about composition, and it spotlights
+                // Alice half way through — which under the default
+                // `auto` would put Bob on the passthrough fast path and
+                // send him Alice's own frame instead of a canvas (§5.6).
+                // That interaction has its own test in forge-media.
+                m.video_passthrough = "off".into();
                 m
             },
             &usable_codecs(&backend, false),
@@ -1409,7 +1429,7 @@ mod tests {
         // A host hides Alice's video: her tile reads `disabled` on the next
         // tick and the state change is published; showing it again lifts it.
         video
-            .add_source("alice", forge_core::VideoCodec::VP8)
+            .add_source("alice", forge_core::VideoCodec::VP8, "")
             .unwrap();
         let answer = set_participant_video(&room, "alice", false).unwrap();
         assert_eq!(answer["status"], "video_disabled");
@@ -1606,7 +1626,7 @@ mod tests {
         let video = room.enable_video(settings, &backend);
         video.set_local_node("conf-a");
         video
-            .add_remote(&trunk_id, forge_core::VideoCodec::VP8)
+            .add_remote(&trunk_id, forge_core::VideoCodec::VP8, "")
             .unwrap();
 
         let bus = Arc::new(InMemoryEventBus::new());

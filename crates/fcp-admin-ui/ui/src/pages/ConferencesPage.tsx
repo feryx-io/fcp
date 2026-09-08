@@ -53,6 +53,7 @@ const createSchema = z.object({
   video_max_resolution: z.string().optional(),
   video_fps: z.coerce.number().int().min(1, 'Must be 1–30').max(30, 'Must be 1–30').optional(),
   video_exclude_self: z.boolean().optional(),
+  video_passthrough: z.enum(['off', 'auto', 'on']).optional(),
   video_codecs: z.array(z.string()).optional(),
 })
 
@@ -83,6 +84,7 @@ const editSchema = z.object({
   video_max_resolution: z.string().optional(),
   video_fps: z.coerce.number().int().min(1, 'Must be 1–30').max(30, 'Must be 1–30').optional(),
   video_exclude_self: z.boolean().optional(),
+  video_passthrough: z.enum(['off', 'auto', 'on']).optional(),
   video_codecs: z.array(z.string()).optional(),
 })
 
@@ -446,7 +448,7 @@ function CreateDialog({ open, onOpenChange, onSubmit, isPending, promptList, use
     resolver: zodResolver(createSchema),
     defaultValues: {
       enabled: true, require_guest_pin: false, wait_for_moderator: false, auto_record: false, default_locked: false, permanent: false, max_participants: 0,
-      video_enabled: false, video_layout: 'grid', video_max_participants: 16, video_max_resolution: '720p', video_fps: 15, video_exclude_self: false, video_codecs: DEFAULT_VIDEO_CODECS,
+      video_enabled: false, video_layout: 'grid', video_max_participants: 16, video_max_resolution: '720p', video_fps: 15, video_exclude_self: false, video_passthrough: 'auto', video_codecs: DEFAULT_VIDEO_CODECS,
     },
   })
 
@@ -480,6 +482,7 @@ function CreateDialog({ open, onOpenChange, onSubmit, isPending, promptList, use
       video_max_resolution: data.video_max_resolution,
       video_fps: data.video_fps,
       video_exclude_self: data.video_exclude_self,
+      video_passthrough: data.video_passthrough,
       video_codecs: data.video_codecs,
     })
     reset()
@@ -640,6 +643,24 @@ function CreateDialog({ open, onOpenChange, onSubmit, isPending, promptList, use
                 <Label className="text-xs">Exclude Own Tile</Label>
                 <Switch checked={watch('video_exclude_self') === true} onCheckedChange={(v) => setValue('video_exclude_self', v)} />
               </div>
+              <div>
+                <Label className="text-xs">Direct Forwarding</Label>
+                <Select
+                  value={watch('video_passthrough') ?? 'auto'}
+                  onValueChange={(v) => setValue('video_passthrough', v as 'off' | 'auto' | 'on')}
+                >
+                  <SelectTrigger className="text-sm"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="auto">Auto — when one person is spotlighted</SelectItem>
+                    <SelectItem value="on">On — whenever one person is on screen</SelectItem>
+                    <SelectItem value="off">Off — always compose</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Sends a viewer the speaker&apos;s own stream instead of a composed one:
+                  sharper and lower latency, but with no name banner or speaking border.
+                </p>
+              </div>
               <CodecOrderPicker value={watch('video_codecs') ?? DEFAULT_VIDEO_CODECS} onChange={(v) => setValue('video_codecs', v)} />
             </div>
           </details>
@@ -696,6 +717,7 @@ function EditDialog({ item, onOpenChange, onSubmit, isPending, promptList, userL
       video_max_resolution: item.video_max_resolution ?? '720p',
       video_fps: item.video_fps ?? 15,
       video_exclude_self: item.video_exclude_self ?? false,
+      video_passthrough: (item.video_passthrough as 'off' | 'auto' | 'on') ?? 'auto',
       video_codecs: item.video_codecs ?? DEFAULT_VIDEO_CODECS,
     })
   }
@@ -728,6 +750,7 @@ function EditDialog({ item, onOpenChange, onSubmit, isPending, promptList, userL
     if (data.video_max_resolution !== undefined) update.video_max_resolution = data.video_max_resolution
     if (data.video_fps !== undefined) update.video_fps = data.video_fps
     if (data.video_exclude_self !== undefined) update.video_exclude_self = data.video_exclude_self
+    if (data.video_passthrough !== undefined) update.video_passthrough = data.video_passthrough
     if (data.video_codecs !== undefined) update.video_codecs = data.video_codecs
     onSubmit(update)
   }
@@ -876,6 +899,24 @@ function EditDialog({ item, onOpenChange, onSubmit, isPending, promptList, userL
               <div className="flex items-center justify-between">
                 <Label className="text-xs">Exclude Own Tile</Label>
                 <Switch checked={watch('video_exclude_self') === true} onCheckedChange={(v) => setValue('video_exclude_self', v)} />
+              </div>
+              <div>
+                <Label className="text-xs">Direct Forwarding</Label>
+                <Select
+                  value={watch('video_passthrough') ?? 'auto'}
+                  onValueChange={(v) => setValue('video_passthrough', v as 'off' | 'auto' | 'on')}
+                >
+                  <SelectTrigger className="text-sm"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="auto">Auto — when one person is spotlighted</SelectItem>
+                    <SelectItem value="on">On — whenever one person is on screen</SelectItem>
+                    <SelectItem value="off">Off — always compose</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Sends a viewer the speaker&apos;s own stream instead of a composed one:
+                  sharper and lower latency, but with no name banner or speaking border.
+                </p>
               </div>
               <CodecOrderPicker value={watch('video_codecs') ?? DEFAULT_VIDEO_CODECS} onChange={(v) => setValue('video_codecs', v)} />
             </div>
