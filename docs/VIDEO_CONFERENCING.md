@@ -916,7 +916,7 @@ Decisions proposed with this plan, each open to reversal:
 - **Three blocks, in order.** 5a stands alone; 5b makes 5a's multi-node
   recordings complete; 5c depends on 5b's remote tile.
 
-**5c as built (2026-09-08).** As planned, with two additions the plan did
+**5c as built (2026-09-08, forge-media `v2026.09.08.2`).** As planned, with two additions the plan did
 not call for and one it did not settle:
 
 - **The claim is refreshed on a timer, not only on change.** A claim sent
@@ -935,7 +935,8 @@ not call for and one it did not settle:
   person is resolved on the way out — `active_speaker()` names them,
   `active_speaker_via()` the tile they are behind.
 
-**5b as built (2026-09-08).** As planned, with three notes:
+**5b as built (2026-09-08, forge-media `v2026.09.08.1`).** As planned, with
+three notes:
 
 - **`add_virtual_participant` did not gain the video registration.** A
   trunk's audio participant is made before the answer arrives, so the
