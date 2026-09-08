@@ -2028,9 +2028,18 @@ async fn voicemail_mailboxes_crud() {
     let id = mailbox.json["id"].as_str().unwrap().to_string();
     assert_eq!(mailbox.json["user_id"], owner);
     assert_eq!(mailbox.json["max_messages"], 25);
+    // The pin must not come back — as a field or as any value. Not a
+    // substring search over the whole body: four digits turn up inside a
+    // uuid or a timestamp often enough to fail a sound response (CI, PR
+    // #57: `"created_at":1788890554.5432115` contains "4321").
     assert!(
-        mailbox.json.get("pin").is_none() && !mailbox.text.contains("4321"),
+        mailbox.json.get("pin").is_none(),
         "pin must not be echoed: {}",
+        mailbox.text
+    );
+    assert!(
+        !json_has_value(&mailbox.json, "4321"),
+        "pin must not be echoed as any value: {}",
         mailbox.text
     );
 
@@ -4686,6 +4695,20 @@ async fn the_retention_sweep_takes_only_conference_recordings_a_node_abandoned()
     );
 
     app.finish().await;
+}
+
+/// Whether any string or number in the JSON equals `needle`. Used for
+/// "this secret is not in the response", where a substring search over
+/// the serialized body gives false positives against uuids and
+/// timestamps.
+fn json_has_value(v: &Value, needle: &str) -> bool {
+    match v {
+        Value::String(s) => s == needle,
+        Value::Number(n) => n.to_string() == needle,
+        Value::Array(a) => a.iter().any(|x| json_has_value(x, needle)),
+        Value::Object(o) => o.values().any(|x| json_has_value(x, needle)),
+        _ => false,
+    }
 }
 
 async fn create_meeting(app: &App, room: &str, owner: Option<&str>) {
