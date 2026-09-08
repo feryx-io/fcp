@@ -386,6 +386,8 @@ pub struct VideoEventSink {
     pub event_bus: Arc<dyn EventPublisher>,
     pub tenant_id: TenantId,
     pub room_number: String,
+    /// This node, named on the events it is the one to emit.
+    pub node_id: String,
     /// Rooms with a pump running, so two callers joining at once start
     /// one pump, not two.
     pub pumps: Arc<dashmap::DashMap<String, ()>>,
@@ -405,6 +407,7 @@ pub fn attach_video(
     sink: VideoEventSink,
 ) -> Option<impl Future<Output = ()> + Send + 'static> {
     let video = room.enable_video(leg.settings.clone(), backend);
+    video.set_local_node(&sink.node_id);
     if sink.pumps.insert(sink.room_number.clone(), ()).is_none() {
         spawn_event_pump(&video, sink);
     }
@@ -465,6 +468,9 @@ pub fn attach_trunk_video(
     sink: VideoEventSink,
 ) -> Option<impl Future<Output = ()> + Send + 'static> {
     let video = room.enable_video(leg.settings.clone(), backend);
+    // Named so an exact tie between this node's caller and a peer's
+    // claim is settled the same way here and there (§15.4, 5c).
+    video.set_local_node(&sink.node_id);
     if sink.pumps.insert(sink.room_number.clone(), ()).is_none() {
         spawn_event_pump(&video, sink);
     }
@@ -571,9 +577,28 @@ fn spawn_event_pump(video: &Arc<VideoRoom>, sink: VideoEventSink) {
                         None
                     }
                 }
-                VideoRoomEvent::ActiveSpeaker { participant_id } => {
-                    debug!(room = %sink.room_number, speaker = ?participant_id, "active speaker");
-                    None
+                // One emitter per change: the node the speaker is on.
+                // A speaker reached through a remote tile is a peer's
+                // caller, and that peer announces them, so a listener
+                // sees one change rather than one per hosting node
+                // (§15.4, 5c).
+                VideoRoomEvent::ActiveSpeaker {
+                    participant_id,
+                    via,
+                } => {
+                    debug!(room = %sink.room_number, speaker = ?participant_id, ?via, "active speaker");
+                    match (participant_id, via) {
+                        (Some(participant_id), None) => {
+                            Some(ConferenceEvent::ActiveSpeakerChanged {
+                                room_number: sink.room_number.clone(),
+                                participant_id,
+                                node_id: sink.node_id.clone(),
+                                tenant_id: sink.tenant_id,
+                                timestamp: SystemTime::now(),
+                            })
+                        }
+                        _ => None,
+                    }
                 }
                 VideoRoomEvent::LayoutChanged {
                     layout,
@@ -1039,6 +1064,7 @@ mod tests {
             event_bus: bus.clone() as Arc<dyn EventPublisher>,
             tenant_id: TenantId::new(),
             room_number: "1000".into(),
+            node_id: "conf-a".into(),
             pumps: Arc::clone(&pumps),
         };
 
@@ -1335,6 +1361,7 @@ mod tests {
                 event_bus: bus.clone() as Arc<dyn EventPublisher>,
                 tenant_id: TenantId::new(),
                 room_number: "2000".into(),
+                node_id: "conf-a".into(),
                 pumps: Arc::clone(&pumps),
             },
         );
@@ -1465,6 +1492,7 @@ mod tests {
             event_bus: bus.clone() as Arc<dyn EventPublisher>,
             tenant_id: TenantId::new(),
             room_number: "2000".into(),
+            node_id: "conf-a".into(),
             pumps: Arc::clone(&pumps),
         };
         let leg = |port: u16| VideoLeg {
@@ -1551,6 +1579,128 @@ mod tests {
             1,
             "the local-only composite went with the trunk"
         );
+        drop(video);
+        room.disable_video();
+    }
+    /// One emitter per change (§15.4, 5c): the node the speaker is on
+    /// announces them, and a node following a peer's claim stays quiet,
+    /// so a listener sees one `active_speaker_changed` per change rather
+    /// than one per hosting node.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn only_the_speaker_s_own_node_announces_the_change() {
+        let room = Arc::new(
+            ConferenceRoom::new(
+                "3000",
+                AudioFormat::pcm_mono(),
+                160,
+                forge_mixer::MixerOptions::default(),
+            )
+            .unwrap(),
+        );
+        room.add_participant("alice", true).unwrap();
+        let trunk_id = crate::trunks::trunk_participant_id("node-b");
+        room.add_virtual_participant(&trunk_id).unwrap();
+
+        let backend = VideoBackend::raw();
+        let (settings, _) = plan_video(&meeting(true), &usable_codecs(&backend, false)).unwrap();
+        let video = room.enable_video(settings, &backend);
+        video.set_local_node("conf-a");
+        video
+            .add_remote(&trunk_id, forge_core::VideoCodec::VP8)
+            .unwrap();
+
+        let bus = Arc::new(InMemoryEventBus::new());
+        let pumps = Arc::new(dashmap::DashMap::new());
+        pumps.insert("3000".to_string(), ());
+        spawn_event_pump(
+            &video,
+            VideoEventSink {
+                event_bus: bus.clone() as Arc<dyn EventPublisher>,
+                tenant_id: TenantId::new(),
+                room_number: "3000".into(),
+                node_id: "conf-a".into(),
+                pumps: Arc::clone(&pumps),
+            },
+        );
+        let mut events = bus.subscribe(EventFilter::default()).await.unwrap();
+
+        // A caller here takes the floor: this node announces them.
+        let speaking = tokio::spawn({
+            let room = Arc::clone(&room);
+            async move {
+                for _ in 0..200 {
+                    room.write_audio("alice", &[1_500i16; 160]).ok();
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            }
+        });
+        let announced = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Some(PlatformEvent::Conference(ConferenceEvent::ActiveSpeakerChanged {
+                    room_number,
+                    participant_id,
+                    node_id,
+                    ..
+                })) = events.next().await
+                {
+                    return (room_number, participant_id, node_id);
+                }
+            }
+        })
+        .await
+        .expect("the speaker's own node announced them");
+        assert_eq!(
+            announced,
+            (
+                "3000".to_string(),
+                "alice".to_string(),
+                "conf-a".to_string()
+            )
+        );
+
+        // Node B now says its caller is louder. This node follows —
+        // `active_speaker` becomes Bob — but says nothing, because Bob
+        // is node B's to announce.
+        video.set_remote_speaker(
+            &trunk_id,
+            Some(forge_conference::video::RemoteSpeaker {
+                node: "node-b".to_string(),
+                participant_id: "bob".to_string(),
+                display_name: "Bob".to_string(),
+                energy: 30_000.0,
+                speaking: true,
+            }),
+        );
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(6);
+        while video.active_speaker().as_deref() != Some("bob")
+            && tokio::time::Instant::now() < deadline
+        {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert_eq!(video.active_speaker().as_deref(), Some("bob"));
+        assert_eq!(
+            video.active_speaker_via().as_deref(),
+            Some(trunk_id.as_str())
+        );
+
+        let quiet = tokio::time::timeout(Duration::from_millis(500), async {
+            loop {
+                if let Some(PlatformEvent::Conference(ConferenceEvent::ActiveSpeakerChanged {
+                    participant_id,
+                    ..
+                })) = events.next().await
+                {
+                    return participant_id;
+                }
+            }
+        })
+        .await;
+        assert!(
+            quiet.is_err(),
+            "a node following a peer's claim announces nothing: {quiet:?}"
+        );
+
+        speaking.abort();
         drop(video);
         room.disable_video();
     }

@@ -73,6 +73,10 @@ level = "info"
 format = "pretty"
 
 [cluster]
+# How often a node tells the peers hosting a room who is speaking on it,
+# so every node runs the same active-speaker rule over the same inputs
+# (docs/DISTRIBUTED_CONFERENCING.md). 0 turns cross-node agreement off.
+# speaker_interval_ms = 400
 enabled = true
 heartbeat_interval_secs = 5
 heartbeat_ttl_secs = 15

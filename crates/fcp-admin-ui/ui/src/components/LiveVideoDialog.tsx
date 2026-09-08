@@ -154,9 +154,19 @@ export function LiveVideoDialog({ room, onOpenChange }: {
                   )}
                 </div>
                 <div className="col-span-2 text-xs text-muted-foreground md:col-span-4">
-                  Speaking now: {nameOf(video.active_speaker) ?? '—'} · Node {data.node_id}
+                  Speaking now: {nameOf(data.active_speaker ?? video.active_speaker) ?? '—'}
+                  {/* A room can be hosted on several nodes; they agree on
+                      one speaker within a take interval. */}
+                  {data.nodes && data.nodes.length > 1
+                    ? <> · {data.nodes.length} nodes{data.agreed === false && <> · agreeing…</>}</>
+                    : <> · Node {data.node_id}</>}
                   {video.overruns > 0 && <> · {video.overruns} compositor overrun{video.overruns === 1 ? '' : 's'}</>}
                 </div>
+                {data.trunks && data.trunks.length > 0 && (
+                  <div className="col-span-2 text-xs text-muted-foreground md:col-span-4">
+                    Trunks: {data.trunks.map((t) => `${t.peer}${t.video ? ` (video ${t.video_codec ?? ''})` : ' (audio only)'}`).join(', ')}
+                  </div>
+                )}
               </div>
             ) : (
               <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">
@@ -192,6 +202,9 @@ export function LiveVideoDialog({ room, onOpenChange }: {
                           {p.is_dial_out && <Badge variant="outline" className="text-xs">Dial-out</Badge>}
                         </div>
                         {p.display_name && <div className="font-mono text-xs text-muted-foreground">{p.participant_id}</div>}
+                        {p.node_id && (data.nodes?.length ?? 0) > 1 && (
+                          <div className="text-xs text-muted-foreground">on {p.node_id}</div>
+                        )}
                       </TableCell>
                       <TableCell>
                         <div className="flex items-center gap-1">

@@ -571,6 +571,20 @@ pub enum ConferenceEvent {
         timestamp: SystemTime,
     },
 
+    /// The room's active speaker changed. In a room spread over several
+    /// nodes this is emitted once, by the node the speaker is on, so a
+    /// listener sees one change rather than one per node.
+    ActiveSpeakerChanged {
+        room_number: String,
+        /// The participant now holding the floor.
+        participant_id: String,
+        /// The node they are on.
+        node_id: String,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
     /// Conference room was locked
     RoomLocked {
         room_number: String,
@@ -1239,6 +1253,7 @@ impl PlatformEvent {
                 ConferenceEvent::VideoStateChanged { .. } => "conference.video_state_changed",
                 ConferenceEvent::VideoOverload { .. } => "conference.video_overload",
                 ConferenceEvent::VideoLayoutChanged { .. } => "conference.video_layout_changed",
+                ConferenceEvent::ActiveSpeakerChanged { .. } => "conference.active_speaker_changed",
             },
             PlatformEvent::Queue(e) => match e {
                 QueueEvent::CallerEnqueued { .. } => "queue.caller_enqueued",
@@ -1326,7 +1341,8 @@ impl PlatformEvent {
                 | ConferenceEvent::DialOutFailed { tenant_id, .. }
                 | ConferenceEvent::VideoStateChanged { tenant_id, .. }
                 | ConferenceEvent::VideoOverload { tenant_id, .. }
-                | ConferenceEvent::VideoLayoutChanged { tenant_id, .. } => Some(tenant_id),
+                | ConferenceEvent::VideoLayoutChanged { tenant_id, .. }
+                | ConferenceEvent::ActiveSpeakerChanged { tenant_id, .. } => Some(tenant_id),
             },
             PlatformEvent::Queue(e) => match e {
                 QueueEvent::CallerEnqueued { tenant_id, .. }
@@ -1613,7 +1629,8 @@ impl ConferenceEvent {
             | ConferenceEvent::DialOutFailed { timestamp, .. }
             | ConferenceEvent::VideoStateChanged { timestamp, .. }
             | ConferenceEvent::VideoOverload { timestamp, .. }
-            | ConferenceEvent::VideoLayoutChanged { timestamp, .. } => *timestamp,
+            | ConferenceEvent::VideoLayoutChanged { timestamp, .. }
+            | ConferenceEvent::ActiveSpeakerChanged { timestamp, .. } => *timestamp,
         }
     }
 }

@@ -688,6 +688,8 @@ export interface LiveParticipantVideo {
 
 export interface LiveVideoParticipant {
   participant_id: string
+  /** Which node the participant is on, in a room spread over several. */
+  node_id?: string
   display_name?: string
   caller_id?: string
   is_host?: boolean
@@ -721,7 +723,22 @@ export interface LiveRoomVideo {
   encoders: number
   ticks: number
   overruns: number
-  outputs: { exclude: string | null; resolution: string; flavors: LiveVideoFlavor[] }[]
+  active_speaker_via: string | null
+  outputs: {
+    /** `all`, `excluding` (with `participant`), or `local_only` (a trunk's). */
+    scope: { kind: string; participant?: string }
+    resolution: string
+    flavors: LiveVideoFlavor[]
+  }[]
+}
+
+/** One hosting node's view, in the merged room-wide status. */
+export interface LiveVideoNode {
+  node_id: string
+  participant_count: number
+  active_speaker: string | null
+  active_speaker_via: string | null
+  layout: string | null
 }
 
 /** `GET /conferences/live/{room}/video` */
@@ -729,10 +746,23 @@ export interface LiveRoomVideoStatus {
   room_number: string
   /** The conference node that answered. */
   node_id: string
+  /** Whether that node hosts the room itself. */
+  hosted_here?: boolean
+  /** Across every hosting node. */
   participant_count: number
   participants: LiveVideoParticipant[]
   /** `null` until somebody in the room has video. */
   video: LiveRoomVideo | null
+  /** The room's speaker, agreed across the nodes hosting it. */
+  active_speaker?: string | null
+  /** The room's layout, which is set room-wide. */
+  layout?: string | null
+  /** False only while the nodes are still converging on a speaker. */
+  agreed?: boolean
+  /** Every hosting node's own view. */
+  nodes?: LiveVideoNode[]
+  /** The inter-node trunks carrying the room. */
+  trunks?: { peer: string; participant_id: string; video: boolean; video_codec: string | null }[]
 }
 
 /** A layout, pin or spotlight control's answer. */

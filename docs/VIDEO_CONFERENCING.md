@@ -916,6 +916,25 @@ Decisions proposed with this plan, each open to reversal:
 - **Three blocks, in order.** 5a stands alone; 5b makes 5a's multi-node
   recordings complete; 5c depends on 5b's remote tile.
 
+**5c as built (2026-09-08).** As planned, with two additions the plan did
+not call for and one it did not settle:
+
+- **The claim is refreshed on a timer, not only on change.** A claim sent
+  once would go stale: the sending node's own speaker keeps the floor
+  while quiet (an empty spotlight is worse than a quiet one), so no
+  further change fires, and its peers would hold "still speaking, loudly"
+  for good. `cluster.speaker_interval_ms` (400 ms) re-sends the current
+  level, and a claim not refreshed for five intervals is dropped, so a
+  node that partitions does not hold the whole room's floor.
+- **Ties are settled by node id, which needed a route in.** `Level` gained
+  a `node` and the candidate list is sorted before the election: two nodes
+  comparing the same candidates iterate their own maps in different orders
+  and would otherwise disagree on an exact tie.
+- **The claim stands under the remote tile's id**, not the speaker's. That
+  keeps every layout, ordering and tile rule working unchanged, and the
+  person is resolved on the way out — `active_speaker()` names them,
+  `active_speaker_via()` the tile they are behind.
+
 **5b as built (2026-09-08).** As planned, with three notes:
 
 - **`add_virtual_participant` did not gain the video registration.** A

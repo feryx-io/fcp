@@ -932,6 +932,9 @@ async fn main() -> Result<()> {
 
     #[allow(unused_mut)]
     let mut cluster_control: Option<Arc<control::ClusterControl>> = None;
+    // Filled once cross-node control exists, so the speaker announcer
+    // below can be started with it.
+    let speaker_interval_ms = config.cluster.speaker_interval_ms;
 
     // Conference registry: publish this node's per-room participant counts
     // so the call manager can place new participants (and, later, so peer
@@ -1221,6 +1224,42 @@ async fn main() -> Result<()> {
             }
         }
     });
+
+    // 20b. Tell the peers hosting a room who is speaking here, often
+    // enough that every node runs the active-speaker rule over the same
+    // candidates (docs/DISTRIBUTED_CONFERENCING.md). Only rooms that
+    // have video and a trunk are announced; there is nobody to tell
+    // otherwise.
+    if let (Some(control), true) = (cluster_control.clone(), speaker_interval_ms > 0) {
+        let handler = Arc::clone(&conference_handler);
+        let interval = Duration::from_millis(speaker_interval_ms);
+        tokio::spawn(supervise_task("speaker-announcer", async move {
+            let mut ticker = tokio::time::interval(interval);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            // A claim that has not been refreshed in a few intervals
+            // belongs to a node that has gone quiet.
+            let max_age = interval * 5;
+            loop {
+                ticker.tick().await;
+                handler.expire_speaker_claims(max_age);
+                for (room_number, tenant_id) in handler.rooms_with_trunked_video() {
+                    // A room whose speaker is a peer's caller is that
+                    // peer's to announce; `local_speaker_claim` says so
+                    // by returning nothing.
+                    let Some(claim) = handler.local_speaker_claim(&room_number) else {
+                        continue;
+                    };
+                    control
+                        .announce_speaker(&tenant_id.to_string(), &room_number, claim)
+                        .await;
+                }
+            }
+        }));
+        info!(
+            interval_ms = speaker_interval_ms,
+            "Cross-node active-speaker announcer started"
+        );
+    }
 
     // 21. Spawn HTTP server (conference API)
     let events_dropped = Arc::new(std::sync::atomic::AtomicU64::new(0));

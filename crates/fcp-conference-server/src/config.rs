@@ -986,6 +986,16 @@ pub struct ClusterSection {
     #[serde(default = "default_trunk_srtp")]
     pub trunk_srtp: bool,
 
+    /// How often a node tells the peers hosting a room who is speaking
+    /// on it, so every node runs the same active-speaker rule over the
+    /// same candidates (`docs/DISTRIBUTED_CONFERENCING.md`). It has to
+    /// be well inside the 800 ms a challenger needs to take the floor,
+    /// or the nodes would decide on stale levels. 0 turns cross-node
+    /// speaker agreement off: each node then picks from its own callers
+    /// and a peer's tile never wins.
+    #[serde(default = "default_speaker_interval")]
+    pub speaker_interval_ms: u64,
+
     /// Shared secret conference nodes present to one another for
     /// cross-node control (lock, kick, mute, gain, announce, end) over
     /// each other's `/internal` HTTP routes. The same value on every
@@ -993,6 +1003,10 @@ pub struct ClusterSection {
     /// node it was sent to.
     #[serde(default)]
     pub secret: Option<String>,
+}
+
+fn default_speaker_interval() -> u64 {
+    400
 }
 
 fn default_heartbeat_interval() -> u64 {
@@ -1021,6 +1035,7 @@ impl Default for ClusterSection {
             trunk_reconcile_interval_secs: default_trunk_reconcile_interval(),
             trunk_rtp_timeout_secs: default_trunk_rtp_timeout(),
             trunk_srtp: default_trunk_srtp(),
+            speaker_interval_ms: default_speaker_interval(),
             secret: None,
         }
     }

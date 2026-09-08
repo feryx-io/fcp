@@ -211,6 +211,10 @@ pub struct ConferenceCallHandler {
     video_capacity: Option<Arc<crate::video_capacity::VideoCapacity>>,
     /// Rooms whose video events are being forwarded to the bus.
     video_event_pumps: Arc<DashMap<String, ()>>,
+    /// When each peer's speaker claim last arrived, by `room|node`. A
+    /// claim that stops being refreshed is dropped rather than left
+    /// holding the floor for a node that has gone quiet (§15.4, 5c).
+    speaker_claims: DashMap<String, Instant>,
     /// Calls that have been answered and are waiting for PIN input.
     pending_pin_auth: DashMap<String, PendingPinAuth>,
     /// Pre-loaded DTMF feedback audio: "Muted" / "Unmuted" PCM samples
@@ -657,6 +661,7 @@ impl ConferenceCallHandler {
             video_backend: None,
             video_capacity: None,
             video_event_pumps: Arc::new(DashMap::new()),
+            speaker_claims: DashMap::new(),
             pending_pin_auth: DashMap::new(),
             dtmf_muted_samples: None,
             dtmf_unmuted_samples: None,
@@ -1110,6 +1115,125 @@ impl ConferenceCallHandler {
             "trunks": self.room_trunk_json(room_number),
             "video": video_bridge::room_video_json(&room),
         }))
+    }
+
+    /// Apply a peer's claim about who is speaking behind its remote tile
+    /// (§15.4, 5c). `Ok(false)` when the room is here but has no video
+    /// or no tile for that peer yet — a claim that arrives before the
+    /// trunk's video is nothing to worry about.
+    pub fn apply_speaker_claim(
+        &self,
+        room_number: &str,
+        node: &str,
+        participant_id: Option<&str>,
+        display_name: Option<&str>,
+        energy: f32,
+        speaking: bool,
+    ) -> Result<bool> {
+        let room = self
+            .bridge
+            .get_room(room_number)
+            .map_err(|_| anyhow::anyhow!("room {room_number} is not hosted on this node"))?;
+        let Some(video) = room.video() else {
+            return Ok(false);
+        };
+        let tile = trunks::trunk_participant_id(node);
+        if !video.is_remote(&tile) {
+            return Ok(false);
+        }
+        let claim = participant_id.map(|id| forge_conference::video::RemoteSpeaker {
+            node: node.to_string(),
+            participant_id: id.to_string(),
+            display_name: display_name.unwrap_or(id).to_string(),
+            energy,
+            speaking,
+        });
+        video.set_remote_speaker(&tile, claim);
+        self.speaker_claims
+            .insert(format!("{room_number}|{node}"), Instant::now());
+        Ok(true)
+    }
+
+    /// Drop the claims of peers that have stopped refreshing them. A
+    /// node whose last word was "my caller is speaking" must not hold
+    /// the floor of every other node for good if it goes quiet or its
+    /// trunk is slow to be noticed (§15.4, 5c).
+    pub fn expire_speaker_claims(&self, max_age: Duration) {
+        let stale: Vec<String> = self
+            .speaker_claims
+            .iter()
+            .filter(|e| e.value().elapsed() > max_age)
+            .map(|e| e.key().clone())
+            .collect();
+        for key in stale {
+            let Some((room_number, node)) = key.split_once('|') else {
+                self.speaker_claims.remove(&key);
+                continue;
+            };
+            if let Ok(room) = self.bridge.get_room(room_number) {
+                if let Some(video) = room.video() {
+                    video.set_remote_speaker(&trunks::trunk_participant_id(node), None);
+                }
+            }
+            debug!(room = %room_number, peer = %node, "Speaker claim expired");
+            self.speaker_claims.remove(&key);
+        }
+    }
+
+    /// This node's own speaker in a room, as a claim to send to the
+    /// peers hosting it: the participant the room is showing, with the
+    /// level the mixer has for them right now. `None` when the room's
+    /// speaker is a peer's caller (their node makes that claim) or there
+    /// is none.
+    pub fn local_speaker_claim(&self, room_number: &str) -> Option<serde_json::Value> {
+        let room = self.bridge.get_room(room_number).ok()?;
+        let video = room.video()?;
+        // A speaker reached through a remote tile is the peer's to claim.
+        if video.active_speaker_via().is_some() {
+            return None;
+        }
+        let participant_id = video.active_speaker()?;
+        let meta = room
+            .get_all_participant_metadata()
+            .into_iter()
+            .find(|m| m.id == participant_id);
+        let display_name = self
+            .sessions
+            .iter()
+            .find(|e| e.value().participant_id == participant_id)
+            .and_then(|e| e.value().display_name.clone())
+            .unwrap_or_else(|| participant_id.clone());
+        Some(serde_json::json!({
+            "node": self.node_id,
+            "participant_id": participant_id,
+            "display_name": display_name,
+            "energy": meta.as_ref().map(|m| m.energy).unwrap_or(0.0),
+            "speaking": meta.as_ref().map(|m| m.is_speaking).unwrap_or(false),
+        }))
+    }
+
+    /// Rooms this node hosts that both have video and are trunked to a
+    /// peer: the only ones whose speaker anybody else needs to hear about.
+    pub fn rooms_with_trunked_video(&self) -> Vec<(String, TenantId)> {
+        self.room_sessions
+            .iter()
+            .filter_map(|entry| {
+                let room_number = entry.key().clone();
+                let has_trunk = entry.value().iter().any(|call_id| {
+                    self.sessions
+                        .get(call_id)
+                        .map(|s| s.trunk_peer.is_some())
+                        .unwrap_or(false)
+                });
+                if !has_trunk {
+                    return None;
+                }
+                let room = self.bridge.get_room(&room_number).ok()?;
+                room.video()?;
+                let tenant_id = self.tenant_for_room(&room_number)?;
+                Some((room_number, tenant_id))
+            })
+            .collect()
     }
 
     /// The trunks of a room as the video API reports them: the peer, and
@@ -2595,7 +2719,10 @@ impl ConferenceCallHandler {
             | ConferenceEvent::DialOutFailed { room_number, .. }
             | ConferenceEvent::VideoStateChanged { room_number, .. }
             | ConferenceEvent::VideoOverload { room_number, .. }
-            | ConferenceEvent::VideoLayoutChanged { room_number, .. } => Some(room_number.clone()),
+            | ConferenceEvent::VideoLayoutChanged { room_number, .. }
+            | ConferenceEvent::ActiveSpeakerChanged { room_number, .. } => {
+                Some(room_number.clone())
+            }
         };
 
         // Notify RFC 4575 subscribers for this room
@@ -2982,6 +3109,7 @@ impl ConferenceCallHandler {
             event_bus: Arc::clone(&self.event_bus),
             tenant_id,
             room_number: room_number.to_string(),
+            node_id: self.node_id.clone(),
             pumps: Arc::clone(&self.video_event_pumps),
         };
         match video_bridge::attach_video(room, backend, participant_id, display_name, &leg, sink) {
@@ -4155,6 +4283,7 @@ impl ConferenceCallHandler {
             event_bus: Arc::clone(&self.event_bus),
             tenant_id,
             room_number: room_number.to_string(),
+            node_id: self.node_id.clone(),
             pumps: Arc::clone(&self.video_event_pumps),
         };
         match video_bridge::attach_trunk_video(room, backend, participant_id, peer_node, &leg, sink)
@@ -5106,6 +5235,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 event_bus: Arc::clone(&self.event_bus),
                 tenant_id,
                 room_number: room_number.clone(),
+                node_id: self.node_id.clone(),
                 pumps: Arc::clone(&self.video_event_pumps),
             };
 
