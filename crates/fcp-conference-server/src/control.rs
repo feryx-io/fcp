@@ -246,6 +246,34 @@ impl ClusterControl {
         Ok(resp)
     }
 
+    /// Tell every peer hosting the room who is speaking here (§15.4,
+    /// 5c). Fire and forget: a claim is refreshed on a timer, so one
+    /// that does not land is superseded rather than retried, and a peer
+    /// that cannot be reached must not hold up the room.
+    pub async fn announce_speaker(
+        &self,
+        tenant_id: &str,
+        room_number: &str,
+        claim: serde_json::Value,
+    ) {
+        let peers = match self.hosting_peers(tenant_id, room_number).await {
+            Ok(peers) => peers,
+            Err(e) => {
+                debug!(room = %room_number, error = %e, "Could not read the registry; speaker not announced");
+                return;
+            }
+        };
+        let path = format!("/conferences/{room_number}/speaker");
+        let sends = peers
+            .iter()
+            .map(|peer| self.send(peer, tenant_id, reqwest::Method::POST, &path, Some(&claim)));
+        for outcome in futures::future::join_all(sends).await {
+            if !outcome.ok {
+                debug!(peer = %outcome.node, room = %room_number, "Speaker claim not applied");
+            }
+        }
+    }
+
     /// Participant operation: try the hosting peers one at a time until
     /// one answers 2xx. Returns every outcome tried, the success last.
     pub async fn locate(

@@ -477,6 +477,43 @@ row under the tenant's `recording_retention_days`
 (`docs/COMPLIANCE.md`), and the hourly compliance sweep takes only rows
 still there a week past the window — a node that never came back.
 
+### One speaker the nodes agree on
+
+A room hosted on several nodes has to name one active speaker, or each
+node spotlights its own loudest caller and the layouts disagree. Since
+v0.25.115 they agree, without electing a leader:
+
+- **Each node announces its own speaker.** Every
+  `cluster.speaker_interval_ms` (400 ms by default, well inside the 800 ms
+  a challenger needs to take the floor) a node that hosts a trunked video
+  room posts `{node, participant_id, display_name, energy, speaking}` to
+  every hosting peer's `POST /internal/conferences/{room}/speaker`. A node
+  whose speaker is a peer's caller announces nothing — that peer is the one
+  who can see them.
+- **Every node runs the same rule over the same candidates:** its own
+  callers' levels, plus one claim per peer, applied to the peer's remote
+  tile. The energies are the mixer's own smoothed RMS, produced the same
+  way everywhere, and an exact tie falls to the lower node id — so the
+  answer does not depend on which order a node's map iterated in. They
+  converge within a take interval.
+- **A claim that stops being refreshed is dropped** after five intervals,
+  so a node that goes quiet or partitions does not hold the floor of the
+  whole room. A trunk that goes takes its tile and claim with it.
+- **`conference.active_speaker_changed {room, participant_id, node_id}` has
+  one emitter** — the node the speaker is on — so a listener sees one
+  change per change, not one per hosting node. (`video_layout_changed`
+  stays per-node: it is a room-wide *write*, acknowledged by each node
+  that applied it.)
+- **`GET …/video` is a room-wide read.** It asks every hosting node and
+  merges: participants are the union, each stamped with the node it is on;
+  the speaker and layout are the room's, with `agreed: false` while the
+  nodes are still converging; and `nodes` carries each node's own view.
+  The admin API's proxy and the Live Video dialog show that.
+
+Turning `speaker_interval_ms` to 0 switches cross-node agreement off: each
+node then picks from its own callers and a peer's tile never takes the
+floor.
+
 ### Not in this phase
 
 - Participant migration off a draining node (REFER back into the room, or

@@ -234,6 +234,10 @@ fn internal_router(state: Arc<ConferenceState>) -> Router<Arc<ConferenceState>> 
             get(internal_download_recording_handler).delete(internal_delete_recording_handler),
         )
         .route(
+            "/internal/conferences/:room_number/speaker",
+            post(internal_speaker_handler),
+        )
+        .route(
             "/internal/conferences/:room_number/video",
             get(internal_video_status_handler),
         )
@@ -1684,6 +1688,66 @@ async fn control_tenant(
 
 /// Turn a local-only result into a response (no cluster, or an
 /// `/internal` route).
+/// What a peer node says is speaking in a room it hosts with us
+/// (`POST /internal/conferences/{room}/speaker`, design §15.4, 5c).
+///
+/// A remote tile's own energy is a whole node's mix, so the node holding
+/// the caller is the only one that can say who is behind it. Every node
+/// feeds every claim to its own video room and runs the same rule over
+/// the same candidates, so they converge on one speaker without electing
+/// a leader.
+#[derive(Debug, Deserialize)]
+struct SpeakerClaim {
+    /// The node making the claim.
+    node: String,
+    /// The participant holding the floor there, or absent when the node
+    /// no longer has one.
+    #[serde(default)]
+    participant_id: Option<String>,
+    #[serde(default)]
+    display_name: Option<String>,
+    /// The mixer's smoothed RMS for them: the same scale on every node.
+    #[serde(default)]
+    energy: f32,
+    #[serde(default)]
+    speaking: bool,
+}
+
+async fn internal_speaker_handler(
+    State(state): State<Arc<ConferenceState>>,
+    Path(room_number): Path<String>,
+    Json(claim): Json<SpeakerClaim>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    if !is_valid_identifier(&room_number) {
+        return invalid_identifier();
+    }
+    if claim.node.is_empty() || claim.node == state.conference_handler.node_id() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "A speaker claim must name the peer node" })),
+        );
+    }
+    match state.conference_handler.apply_speaker_claim(
+        &room_number,
+        &claim.node,
+        claim.participant_id.as_deref(),
+        claim.display_name.as_deref(),
+        claim.energy,
+        claim.speaking,
+    ) {
+        Ok(applied) => (
+            StatusCode::OK,
+            Json(
+                serde_json::json!({ "status": "applied", "room": room_number, "applied": applied }),
+            ),
+        ),
+        Err(e) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        ),
+    }
+}
+
 /// What a recording looks like over the API.
 fn recording_json(recording: &fcp_core::Recording) -> serde_json::Value {
     serde_json::json!({
@@ -2267,16 +2331,130 @@ async fn video_status_handler(
         Err(err) => return err,
     };
     let local = local_video_status(&state, &room_number);
-    wherever_it_is(
-        &state,
-        &tenant_id,
-        &room_number,
-        local,
-        reqwest::Method::GET,
-        &format!("/conferences/{room_number}/video"),
-        None,
-    )
-    .await
+    merged_video_status(&state, &tenant_id, &room_number, local).await
+}
+
+/// The room's video as the whole cluster sees it (§15.4, 5c).
+///
+/// A room can be hosted on several nodes at once, and each composes for
+/// its own callers, so one node's view is a slice. This asks every
+/// hosting node and merges: the participants are the union, each stamped
+/// with the node it is on, and the speaker and layout are reported as
+/// agreed when the nodes agree — which they do, within a take interval,
+/// because they all run the same rule over the same claims.
+async fn merged_video_status(
+    state: &ConferenceState,
+    tenant_id: &TenantId,
+    room_number: &str,
+    local: LocalResult,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let Some(control) = &state.control else {
+        return local_response(local);
+    };
+    let peers = match control
+        .broadcast(
+            &tenant_id.to_string(),
+            room_number,
+            reqwest::Method::GET,
+            &format!("/conferences/{room_number}/video"),
+            None,
+        )
+        .await
+    {
+        Ok(peers) => peers,
+        Err(e) => {
+            warn!(room = %room_number, error = %e, "Could not reach the registry; video status is this node's only");
+            return local_response(local);
+        }
+    };
+
+    // Every node's view, this one first when it hosts the room.
+    let mut views: Vec<(String, serde_json::Value)> = Vec::new();
+    if let Ok(body) = &local {
+        views.push((state.conference_handler.node_id().to_string(), body.clone()));
+    }
+    for peer in peers.iter().filter(|p| p.ok) {
+        views.push((peer.node.clone(), peer.body.clone()));
+    }
+    if views.is_empty() {
+        return local_response(local);
+    }
+
+    let mut participants: Vec<serde_json::Value> = Vec::new();
+    let mut trunks: Vec<serde_json::Value> = Vec::new();
+    let mut speakers: Vec<String> = Vec::new();
+    let mut layouts: Vec<String> = Vec::new();
+    let mut count = 0u64;
+    for (node, view) in &views {
+        if let Some(list) = view["participants"].as_array() {
+            for p in list {
+                let mut p = p.clone();
+                if let Some(map) = p.as_object_mut() {
+                    // Which node a caller is on decides where a control
+                    // request for them has to go.
+                    map.insert("node_id".into(), node.clone().into());
+                }
+                participants.push(p);
+            }
+        }
+        if let Some(list) = view["trunks"].as_array() {
+            trunks.extend(list.iter().cloned());
+        }
+        count += view["participant_count"].as_u64().unwrap_or(0);
+        if let Some(s) = view["video"]["active_speaker"].as_str() {
+            speakers.push(s.to_string());
+        }
+        if let Some(l) = view["video"]["layout"].as_str() {
+            layouts.push(l.to_string());
+        }
+    }
+    let agreed = |values: &[String]| -> (Option<String>, bool) {
+        match values.first() {
+            Some(first) => (Some(first.clone()), values.iter().all(|v| v == first)),
+            None => (None, true),
+        }
+    };
+    let (speaker, speaker_agreed) = agreed(&speakers);
+    let (layout, layout_agreed) = agreed(&layouts);
+
+    let mut body = match &local {
+        Ok(body) => body.clone(),
+        // The room is not here: the first hosting node's view is the
+        // shape to build on.
+        Err(_) => views[0].1.clone(),
+    };
+    if let Some(map) = body.as_object_mut() {
+        map.insert("participants".into(), participants.into());
+        map.insert("participant_count".into(), count.into());
+        map.insert("trunks".into(), trunks.into());
+        map.insert(
+            "nodes".into(),
+            views
+                .iter()
+                .map(|(node, view)| {
+                    serde_json::json!({
+                        "node_id": node,
+                        "participant_count": view["participant_count"],
+                        "active_speaker": view["video"]["active_speaker"],
+                        "active_speaker_via": view["video"]["active_speaker_via"],
+                        "layout": view["video"]["layout"],
+                    })
+                })
+                .collect::<Vec<_>>()
+                .into(),
+        );
+        map.insert("hosted_here".into(), local.is_ok().into());
+        // The speaker and the layout are the room's, not a node's, so
+        // they are lifted out of the per-node video block.
+        map.insert("active_speaker".into(), speaker.into());
+        map.insert("layout".into(), layout.into());
+        // False only while the nodes are still converging.
+        map.insert(
+            "agreed".into(),
+            serde_json::json!(speaker_agreed && layout_agreed),
+        );
+    }
+    (StatusCode::OK, Json(body))
 }
 
 /// PUT /conferences/{room}/video/layout `{"layout": "grid" | "active_speaker" | "spotlight" | "pip"}`
