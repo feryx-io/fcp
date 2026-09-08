@@ -1,10 +1,23 @@
 name: CI
 
+# Pull requests only. A push to main is the squash of a PR that just passed
+# this same workflow, so re-running it there doubled the bill for no new
+# signal (43 of 106 runs in the first week of September 2026). The audit job
+# still covers main on a schedule below.
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
+  schedule:
+    # Weekly advisory sweep of main's Cargo.lock (Monday 09:00 UTC).
+    - cron: '0 9 * * 1'
+  workflow_dispatch:
+
+# A new push to a PR makes the run in progress obsolete; cancel it instead of
+# paying for both. Scheduled and manual runs share no ref with a PR, so they
+# are never cancelled by one.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -15,6 +28,7 @@ env:
 
 jobs:
   test:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     # Real PostgreSQL for the database-backed suites (fcp-storage-postgres,
     # fcp-api-core, and the per-binary smoke tests). They create and drop a
@@ -94,8 +108,12 @@ jobs:
       # cargo-audit reads the committed Cargo.lock, so this job does not need
       # the submodules.
       - uses: actions/checkout@v5
+      # A prebuilt binary: `cargo install` compiled cargo-audit from source on
+      # every run, 5.6 of the job's 5.7 minutes, to run a 5-second check.
       - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
       - name: Run security audit
         run: cargo audit
       - name: Run cargo-audit with JSON output
