@@ -464,6 +464,43 @@ is ever adopted) as an option for players that need it. The recorder is
 one more subscriber of a dedicated flavor, so recording never changes what
 participants see. Per-participant video recording is not planned.
 
+*Shipped in 5a (2026-09-08).* forge-media gained `forge-webm`, a
+dependency-free Matroska writer, and forge-conference gained
+`VideoRoom::record` — a sink of **coded** composite frames that is not a
+participant and so draws no tile — beside `ConferenceRoom::tap_mix`, the
+mixed frame per clock tick. The conference server's `recording.rs` puts
+the two together: it resamples the mix to 48 kHz, Opus-encodes 20 ms
+frames, takes VP8 (or VP9) frames from the room, and writes one WebM with
+both tracks on one timebase — time zero is whichever side produced a frame
+first, so lip sync holds without a shared clock. It is behind the
+`recording-webm` feature, since Opus builds libopus from source; without
+it every recording is the WAV it always was, and the node says so at
+startup rather than failing later.
+
+`conference.recording_format` decides the container: `auto` (WebM when the
+meeting has video and this node can encode for it, WAV otherwise), `wav`,
+or `webm`, with `recording_video_codec`, `recording_resolution` (the
+room's cap by default) and `recording_audio_bitrate` beside it.
+
+A recording is a **row first**: `conference_recordings` (migration 053)
+and `fcp_core::recording::RecordingStore` hold id, tenant, meeting, room,
+node, path, format, trigger, consent, start, end, duration, size and the
+participant count, written when the recording starts and completed when it
+stops. The row is what makes a recording listable per tenant, downloadable
+across nodes and deletable by policy; `POST …/recording/start|stop` have
+`/internal` twins (start routed to a hosting node, stop room-wide), the
+size monitor watches the rows rather than parsing filenames, and a node
+closes off rows it left running when it restarts.
+
+Around it: the tenant's `RecordingConsentMode::Announce` prompt plays to
+the room before recording begins and to each later joiner;
+`recording_started` / `recording_stopped` carry `recording_id`, `format`,
+`node_id` and, on stop, `duration_secs` and `size_bytes`; retention is the
+holding node's, under the tenant's `recording_retention_days`
+(`docs/COMPLIANCE.md`); and `/v1/recordings` lists, fetches, downloads
+(streamed from whichever node holds the file) and deletes, with a
+**Recordings** page and player in the admin UI.
+
 ## 12. Signaling and platform surface
 
 **SDP** (fcp-media, fcp-sip): handle media sections per type. A video
@@ -877,6 +914,25 @@ Decisions proposed with this plan, each open to reversal:
   the read side.
 - **Three blocks, in order.** 5a stands alone; 5b makes 5a's multi-node
   recordings complete; 5c depends on 5b's remote tile.
+
+**5a as built (2026-09-08).** As planned, with §11 carrying the detail.
+Three things the plan did not say:
+
+- **A dropped recording sink now really stops the recording.**
+  `RecordingSink`'s documentation promised it; nothing implemented it, so
+  a recorder that went away without calling `stop_record` left the room
+  encoding a composite nobody read. forge-media's tap reports the closed
+  channel and the compose tick reaps it (forge-media PR #145).
+- **The recorder's stop is a `notify_one`, not `notify_waiters`.** The
+  task is only parked between frames; a wakeup sent while it was busy was
+  dropped, and the recording never stopped — a hang, and a file never
+  finalised. Found by running the WebM test under load.
+- **Retention is split, not shared.** The holding node deletes file and
+  row together under the tenant's policy; the hourly compliance sweep
+  takes only rows still there a week past the window, so the node that can
+  delete the file is not raced to the row. `RecordingStore` gained
+  `node_tenants` and `recording_at` for that, and `RetentionReport` a
+  `conference_recordings_deleted` count (migration 054).
 
 ## 16. Resolved questions
 

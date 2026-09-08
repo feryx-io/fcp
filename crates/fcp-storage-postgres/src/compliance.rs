@@ -204,8 +204,9 @@ impl ComplianceStore for PostgresComplianceStore {
         sqlx::query(
             "INSERT INTO retention_runs
                 (tenant_id, ran_at, cdrs_deleted, sip_traces_deleted, flow_traces_deleted,
-                 recordings_deleted, audit_events_deleted, errors)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+                 recordings_deleted, conference_recordings_deleted, audit_events_deleted,
+                 errors)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
         )
         .bind(report.tenant_id.to_string())
         .bind(to_datetime(report.ran_at))
@@ -213,6 +214,7 @@ impl ComplianceStore for PostgresComplianceStore {
         .bind(report.sip_traces_deleted as i64)
         .bind(report.flow_traces_deleted as i64)
         .bind(report.recordings_deleted as i64)
+        .bind(report.conference_recordings_deleted as i64)
         .bind(report.audit_events_deleted as i64)
         .bind(&report.errors)
         .execute(&self.pool)
@@ -227,7 +229,8 @@ impl ComplianceStore for PostgresComplianceStore {
     ) -> anyhow::Result<Vec<RetentionReport>> {
         let rows = sqlx::query(
             "SELECT ran_at, cdrs_deleted, sip_traces_deleted, flow_traces_deleted,
-                    recordings_deleted, audit_events_deleted, errors
+                    recordings_deleted, conference_recordings_deleted, audit_events_deleted,
+                    errors
              FROM retention_runs WHERE tenant_id = $1
              ORDER BY ran_at DESC, id DESC LIMIT $2",
         )
@@ -249,6 +252,7 @@ impl ComplianceStore for PostgresComplianceStore {
                     sip_traces_deleted: n("sip_traces_deleted")?,
                     flow_traces_deleted: n("flow_traces_deleted")?,
                     recordings_deleted: n("recordings_deleted")?,
+                    conference_recordings_deleted: n("conference_recordings_deleted")?,
                     audit_events_deleted: n("audit_events_deleted")?,
                     errors: row.try_get("errors")?,
                 })

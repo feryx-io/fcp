@@ -222,6 +222,18 @@ fn internal_router(state: Arc<ConferenceState>) -> Router<Arc<ConferenceState>> 
             post(internal_announce_handler),
         )
         .route(
+            "/internal/conferences/:room_number/recording/start",
+            post(internal_recording_start_handler),
+        )
+        .route(
+            "/internal/conferences/:room_number/recording/stop",
+            post(internal_recording_stop_handler),
+        )
+        .route(
+            "/internal/recordings/:filename",
+            get(internal_download_recording_handler).delete(internal_delete_recording_handler),
+        )
+        .route(
             "/internal/conferences/:room_number/video",
             get(internal_video_status_handler),
         )
@@ -1145,6 +1157,13 @@ async fn get_conference_handler(
                     "participants": participants,
                     "is_locked": room.is_locked(),
                     "is_recording": room.is_recording(),
+                    // The registry's view of what is being recorded here,
+                    // so a caller can follow it to the file.
+                    "recording": state
+                        .conference_handler
+                        .room_recording(&room_number)
+                        .as_ref()
+                        .map(recording_json),
                     "node_id": state.conference_handler.node_id(),
                     "trunks": trunks,
                     "video": crate::video_bridge::room_video_json(&room),
@@ -1255,87 +1274,63 @@ async fn start_recording_handler(
     headers: HeaderMap,
     Path(room_number): Path<String>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    let tenant_id = match extract_tenant_id(&headers, &state).await {
+    if !is_valid_identifier(&room_number) {
+        return invalid_identifier();
+    }
+    let tenant_id = match control_tenant(&state, &headers, &room_number).await {
         Ok(tenant_id) => tenant_id,
         Err(err) => return err,
     };
-    match state.bridge.get_room(&room_number) {
-        Ok(room) => {
-            let recording_path = format!(
-                "{}/{}-{}-{}.wav",
-                state.conference_handler.recordings_dir(),
-                room_number,
-                chrono_timestamp(),
-                uuid::Uuid::new_v4().as_simple()
-            );
-            match room.start_recording(&recording_path, None).await {
-                Ok(()) => {
-                    info!(action = "start_recording", room = %room_number, path = %recording_path, "AUDIT: recording started via API");
-                    publish_event(
-                        &state.event_bus,
-                        ConferenceEvent::RecordingStarted {
-                            room_number: room_number.clone(),
-                            tenant_id,
-                            timestamp: SystemTime::now(),
-                        },
-                    );
-                    (
-                        StatusCode::OK,
-                        Json(serde_json::json!({
-                            "status": "recording_started",
-                            "path": recording_path,
-                        })),
-                    )
-                }
-                Err(e) => (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({ "error": format!("{}", e) })),
-                ),
-            }
-        }
-        Err(_) => (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({ "error": "Conference room not active" })),
-        ),
+    let local = local_recording_start(&state, &room_number).await;
+    let local_status = local.as_ref().err().map(|(s, _)| *s);
+    let (status, body) = wherever_it_is(
+        &state,
+        &tenant_id,
+        &room_number,
+        local,
+        reqwest::Method::POST,
+        &format!("/conferences/{room_number}/recording/start"),
+        None,
+    )
+    .await;
+    // A room that is already being recorded here is a conflict, not a
+    // miss: `wherever_it_is` only asks the peers on a 404.
+    match local_status {
+        Some(local_status) if local_status != StatusCode::NOT_FOUND => (local_status, body),
+        _ => (status, body),
     }
 }
 
+/// POST /conferences/{room}/recording/stop — room-wide: whichever node is
+/// recording stops.
 async fn stop_recording_handler(
     State(state): State<Arc<ConferenceState>>,
     headers: HeaderMap,
     Path(room_number): Path<String>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    let tenant_id = match extract_tenant_id(&headers, &state).await {
+    if !is_valid_identifier(&room_number) {
+        return invalid_identifier();
+    }
+    let tenant_id = match control_tenant(&state, &headers, &room_number).await {
         Ok(tenant_id) => tenant_id,
         Err(err) => return err,
     };
-    match state.bridge.get_room(&room_number) {
-        Ok(room) => match room.stop_recording() {
-            Ok(()) => {
-                info!(action = "stop_recording", room = %room_number, "AUDIT: recording stopped via API");
-                publish_event(
-                    &state.event_bus,
-                    ConferenceEvent::RecordingStopped {
-                        room_number: room_number.clone(),
-                        tenant_id,
-                        timestamp: SystemTime::now(),
-                    },
-                );
-                (
-                    StatusCode::OK,
-                    Json(serde_json::json!({ "status": "recording_stopped" })),
-                )
-            }
-            Err(e) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": format!("{}", e) })),
-            ),
-        },
-        Err(_) => (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({ "error": "Conference room not active" })),
-        ),
+    let local = local_recording_stop(&state, &room_number).await;
+    let local_status = local.as_ref().err().map(|(s, _)| *s);
+    let (ok, body) = room_wide(
+        &state,
+        &tenant_id,
+        &room_number,
+        local,
+        reqwest::Method::POST,
+        &format!("/conferences/{room_number}/recording/stop"),
+        None,
+    )
+    .await;
+    if !ok {
+        return (local_status.unwrap_or(StatusCode::NOT_FOUND), Json(body));
     }
+    (StatusCode::OK, Json(body))
 }
 
 // =========================================================================
@@ -1631,6 +1626,75 @@ async fn control_tenant(
 
 /// Turn a local-only result into a response (no cluster, or an
 /// `/internal` route).
+/// What a recording looks like over the API.
+fn recording_json(recording: &fcp_core::Recording) -> serde_json::Value {
+    serde_json::json!({
+        "recording_id": recording.id.to_string(),
+        "room": recording.room_number,
+        "format": recording.format.as_str(),
+        "trigger": recording.trigger.as_str(),
+        "consent": recording.consent.as_str(),
+        "node": recording.node_id,
+        "path": recording.path,
+        "file_name": recording.file_name(),
+        "duration_secs": recording.duration_secs,
+        "size_bytes": recording.size_bytes,
+        "participants": recording.participants,
+    })
+}
+
+/// Start recording the room on this node.
+async fn local_recording_start(state: &ConferenceState, room_number: &str) -> LocalResult {
+    if state.bridge.get_room(room_number).is_err() {
+        return Err(local_error(
+            StatusCode::NOT_FOUND,
+            "Conference room not active",
+        ));
+    }
+    if state.conference_handler.is_room_recording(room_number) {
+        return Err(local_error(
+            StatusCode::CONFLICT,
+            "The room is already being recorded",
+        ));
+    }
+    match state
+        .conference_handler
+        .start_room_recording(room_number, fcp_core::RecordingTrigger::Api)
+        .await
+    {
+        Ok(recording) => {
+            info!(action = "start_recording", room = %room_number, recording = %recording.id, path = %recording.path, "AUDIT: recording started via API");
+            let mut body = recording_json(&recording);
+            body["status"] = serde_json::json!("recording_started");
+            Ok(body)
+        }
+        Err(e) => Err(local_error(StatusCode::INTERNAL_SERVER_ERROR, e)),
+    }
+}
+
+/// Stop the recording this node is making of the room.
+async fn local_recording_stop(state: &ConferenceState, room_number: &str) -> LocalResult {
+    if !state.conference_handler.is_room_recording(room_number) {
+        return Err(local_error(
+            StatusCode::NOT_FOUND,
+            "The room is not being recorded here",
+        ));
+    }
+    match state
+        .conference_handler
+        .stop_room_recording(room_number)
+        .await
+    {
+        Ok(recording) => {
+            info!(action = "stop_recording", room = %room_number, recording = %recording.id, "AUDIT: recording stopped via API");
+            let mut body = recording_json(&recording);
+            body["status"] = serde_json::json!("recording_stopped");
+            Ok(body)
+        }
+        Err(e) => Err(local_error(StatusCode::INTERNAL_SERVER_ERROR, e)),
+    }
+}
+
 fn local_response(result: LocalResult) -> (StatusCode, Json<serde_json::Value>) {
     match result {
         Ok(body) => (StatusCode::OK, Json(body)),
@@ -2489,6 +2553,30 @@ async fn internal_announce_handler(
     resp
 }
 
+/// POST /internal/conferences/{room}/recording/start — record here, for
+/// a peer that has the request but not the room.
+async fn internal_recording_start_handler(
+    State(state): State<Arc<ConferenceState>>,
+    Path(room_number): Path<String>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    if !is_valid_identifier(&room_number) {
+        return invalid_identifier();
+    }
+    local_response(local_recording_start(&state, &room_number).await)
+}
+
+/// POST /internal/conferences/{room}/recording/stop — stop the recording
+/// this node is making, for a peer.
+async fn internal_recording_stop_handler(
+    State(state): State<Arc<ConferenceState>>,
+    Path(room_number): Path<String>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    if !is_valid_identifier(&room_number) {
+        return invalid_identifier();
+    }
+    local_response(local_recording_stop(&state, &room_number).await)
+}
+
 async fn internal_video_status_handler(
     State(state): State<Arc<ConferenceState>>,
     Path(room_number): Path<String>,
@@ -2719,7 +2807,12 @@ async fn list_recordings_handler(
     let mut all_recordings = Vec::new();
     while let Ok(Some(entry)) = read_dir.next_entry().await {
         let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) == Some("wav") {
+        // Both containers a room records to (§11): WAV for audio-only
+        // meetings, WebM when the room has video.
+        if matches!(
+            path.extension().and_then(|e| e.to_str()),
+            Some("wav") | Some("webm")
+        ) {
             let filename = path
                 .file_name()
                 .unwrap_or_default()
@@ -2786,62 +2879,228 @@ fn safe_recording_path(recordings_dir: &str, filename: &str) -> Option<std::path
     }
 }
 
+/// Which node holds the file. A recording is a row first, and the row
+/// says which node's disk the file is on, so the admin API can ask any
+/// node and name the one it wants.
+#[derive(Deserialize)]
+struct NodeParam {
+    node: Option<String>,
+}
+
+/// GET /recordings/{filename} — this node's file, or the named node's,
+/// streamed through.
 async fn download_recording_handler(
     State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
     Path(filename): Path<String>,
-) -> impl IntoResponse {
-    let recordings_dir = state.conference_handler.recordings_dir();
-    let path = match safe_recording_path(&recordings_dir, &filename) {
-        Some(p) => p,
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                [("content-type", "application/json")],
-                Body::from("{\"error\":\"Invalid filename\"}"),
+    Query(NodeParam { node }): Query<NodeParam>,
+) -> axum::response::Response {
+    match peer_for(&state, node.as_deref()) {
+        PeerRoute::Local => {}
+        PeerRoute::Unknown(node) => {
+            return json_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                serde_json::json!({ "error": format!("Node {node} is not in cluster membership") }),
             );
         }
+        PeerRoute::Peer(node) => return stream_from_peer(&state, &headers, &node, &filename).await,
+    }
+    local_download(&state, &filename).await
+}
+
+/// GET /internal/recordings/{filename} — what a peer asks this node for.
+async fn internal_download_recording_handler(
+    State(state): State<Arc<ConferenceState>>,
+    Path(filename): Path<String>,
+) -> axum::response::Response {
+    local_download(&state, &filename).await
+}
+
+fn json_response(status: StatusCode, body: serde_json::Value) -> axum::response::Response {
+    (status, Json(body)).into_response()
+}
+
+/// Where a `?node=` parameter points.
+enum PeerRoute {
+    Local,
+    Peer(String),
+    Unknown(String),
+}
+
+fn peer_for(state: &ConferenceState, node: Option<&str>) -> PeerRoute {
+    let Some(node) = node.filter(|n| !n.is_empty()) else {
+        return PeerRoute::Local;
+    };
+    if node == state.conference_handler.node_id() {
+        return PeerRoute::Local;
+    }
+    match &state.control {
+        Some(control) if control.member(node).is_some() => PeerRoute::Peer(node.to_string()),
+        _ => PeerRoute::Unknown(node.to_string()),
+    }
+}
+
+/// Stream a peer's copy of the file back to our caller.
+async fn stream_from_peer(
+    state: &ConferenceState,
+    headers: &HeaderMap,
+    node: &str,
+    filename: &str,
+) -> axum::response::Response {
+    let Some(control) = &state.control else {
+        return json_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            serde_json::json!({ "error": "This node is not clustered" }),
+        );
+    };
+    let tenant = headers
+        .get(PLATFORM_TENANT_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    let path = format!("/recordings/{filename}");
+    match control.stream_from_node(node, &tenant, &path).await {
+        Ok(resp) => {
+            let status =
+                StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+            let content_type = resp
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("application/octet-stream")
+                .to_string();
+            let stream = resp.bytes_stream();
+            (
+                status,
+                [("content-type", content_type)],
+                Body::from_stream(stream),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            warn!(node = %node, file = %filename, error = %e, "Could not fetch a recording from its node");
+            json_response(
+                StatusCode::BAD_GATEWAY,
+                serde_json::json!({ "error": format!("Node {node}: {e}") }),
+            )
+        }
+    }
+}
+
+async fn local_download(state: &ConferenceState, filename: &str) -> axum::response::Response {
+    let recordings_dir = state.conference_handler.recordings_dir();
+    let Some(path) = safe_recording_path(&recordings_dir, filename) else {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            serde_json::json!({ "error": "Invalid filename" }),
+        );
     };
 
     if !path.exists() {
-        return (
+        return json_response(
             StatusCode::NOT_FOUND,
-            [("content-type", "application/json")],
-            Body::from("{\"error\":\"Recording not found\"}"),
+            serde_json::json!({ "error": "Recording not found" }),
         );
     }
 
     let file = match tokio::fs::File::open(&path).await {
         Ok(f) => f,
         Err(e) => {
-            return (
+            return json_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                [("content-type", "application/json")],
-                Body::from(format!("{{\"error\":\"Failed to open file: {}\"}}", e)),
+                serde_json::json!({ "error": format!("Failed to open file: {e}") }),
             );
         }
     };
 
+    let content_type = match path.extension().and_then(|e| e.to_str()) {
+        Some("webm") => "video/webm",
+        _ => "audio/wav",
+    };
     let stream = tokio_util::io::ReaderStream::new(file);
     (
         StatusCode::OK,
-        [("content-type", "audio/wav")],
+        [("content-type", content_type)],
         Body::from_stream(stream),
     )
+        .into_response()
 }
 
+/// DELETE /recordings/{filename} — remove this node's file, or the
+/// named node's.
 async fn delete_recording_handler(
+    State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
+    Path(filename): Path<String>,
+    Query(NodeParam { node }): Query<NodeParam>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    match peer_for(&state, node.as_deref()) {
+        PeerRoute::Local => {}
+        PeerRoute::Unknown(node) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(
+                    serde_json::json!({ "error": format!("Node {node} is not in cluster membership") }),
+                ),
+            );
+        }
+        PeerRoute::Peer(node) => {
+            let Some(control) = &state.control else {
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(serde_json::json!({ "error": "This node is not clustered" })),
+                );
+            };
+            let tenant = headers
+                .get(PLATFORM_TENANT_HEADER)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_default()
+                .to_string();
+            return match control
+                .send_to_node(
+                    &node,
+                    &tenant,
+                    reqwest::Method::DELETE,
+                    &format!("/recordings/{filename}"),
+                    None,
+                )
+                .await
+            {
+                Some(outcome) => (
+                    StatusCode::from_u16(outcome.status.unwrap_or(502))
+                        .unwrap_or(StatusCode::BAD_GATEWAY),
+                    Json(outcome.body),
+                ),
+                None => (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(
+                        serde_json::json!({ "error": format!("Node {node} is not in cluster membership") }),
+                    ),
+                ),
+            };
+        }
+    }
+    local_delete(&state, &filename).await
+}
+
+/// DELETE /internal/recordings/{filename} — what a peer asks this node for.
+async fn internal_delete_recording_handler(
     State(state): State<Arc<ConferenceState>>,
     Path(filename): Path<String>,
 ) -> (StatusCode, Json<serde_json::Value>) {
+    local_delete(&state, &filename).await
+}
+
+async fn local_delete(
+    state: &ConferenceState,
+    filename: &str,
+) -> (StatusCode, Json<serde_json::Value>) {
     let recordings_dir = state.conference_handler.recordings_dir();
-    let path = match safe_recording_path(&recordings_dir, &filename) {
-        Some(p) => p,
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "error": "Invalid filename" })),
-            );
-        }
+    let Some(path) = safe_recording_path(&recordings_dir, filename) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "Invalid filename" })),
+        );
     };
 
     if !path.exists() {
@@ -3110,14 +3369,6 @@ fn publish_event(event_bus: &Arc<dyn EventPublisher>, event: ConferenceEvent) {
             warn!(error = %e, "Failed to publish conference event");
         }
     });
-}
-
-fn chrono_timestamp() -> String {
-    let secs = SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    format!("{}", secs)
 }
 
 #[cfg(test)]

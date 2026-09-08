@@ -32,6 +32,7 @@ const EventsPage = lazy(() => import('@/pages/EventsPage').then((m) => ({ defaul
 const ClusterPage = lazy(() => import('@/pages/ClusterPage').then((m) => ({ default: m.ClusterPage })))
 const PortingPage = lazy(() => import('@/pages/PortingPage').then((m) => ({ default: m.PortingPage })))
 const AuditLogPage = lazy(() => import('@/pages/AuditLogPage').then((m) => ({ default: m.AuditLogPage })))
+const RecordingsPage = lazy(() => import('@/pages/RecordingsPage').then((m) => ({ default: m.RecordingsPage })))
 const ApiTokensPage = lazy(() => import('@/pages/ApiTokensPage').then((m) => ({ default: m.ApiTokensPage })))
 const SettingsPage = lazy(() => import('@/pages/SettingsPage').then((m) => ({ default: m.SettingsPage })))
 const SystemSettingsPage = lazy(() => import('@/pages/SystemSettingsPage').then((m) => ({ default: m.SystemSettingsPage })))
@@ -130,6 +131,7 @@ export function App() {
               <Route path="cluster" element={<Suspense fallback={<PageLoader />}><ClusterPage /></Suspense>} />
               <Route path="porting" element={<Suspense fallback={<PageLoader />}><PortingPage /></Suspense>} />
               <Route path="audit" element={<Suspense fallback={<PageLoader />}><AuditLogPage /></Suspense>} />
+              <Route path="recordings" element={<Suspense fallback={<PageLoader />}><RecordingsPage /></Suspense>} />
               <Route path="tokens" element={<Suspense fallback={<PageLoader />}><ApiTokensPage /></Suspense>} />
               <Route path="settings" element={<Suspense fallback={<PageLoader />}><SettingsPage /></Suspense>} />
               <Route path="system-settings" element={<Suspense fallback={<PageLoader />}><SystemSettingsPage /></Suspense>} />

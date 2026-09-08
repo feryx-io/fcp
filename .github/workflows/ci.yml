@@ -84,8 +84,11 @@ jobs:
           cargo fmt $pkgs -- --check
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
+      # `recording-webm` is off by default (it builds libopus from source),
+      # so the conference server's WebM recording test only runs when it is
+      # asked for by name.
       - name: Tests
-        run: cargo test --all-targets
+        run: cargo test --all-targets --features fcp-conference-server/recording-webm
 
   security-audit:
     name: Security Audit

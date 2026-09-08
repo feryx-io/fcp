@@ -92,6 +92,11 @@ pub fn cutoff(now: SystemTime, retention_days: u32) -> SystemTime {
     now - Duration::from_secs(u64::from(retention_days) * 86_400)
 }
 
+/// How long past its retention a conference recording's row is left for
+/// the node holding the file to remove, file and row together, before
+/// this sweep takes the row on its own (`run_retention`).
+pub const CONFERENCE_RECORDING_GRACE: Duration = Duration::from_secs(7 * 86_400);
+
 /// One audited admin request.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AuditEvent {
@@ -137,6 +142,10 @@ pub struct RetentionReport {
     pub sip_traces_deleted: u64,
     pub flow_traces_deleted: u64,
     pub recordings_deleted: u64,
+    /// Conference recordings whose registry row this run removed. The
+    /// node holding the file normally gets there first, file and row
+    /// together; this counts what it left behind (see `run_retention`).
+    pub conference_recordings_deleted: u64,
     pub audit_events_deleted: u64,
     /// Non-fatal problems (a file that could not be removed, a store that
     /// is not configured). The run continues past each.
@@ -152,6 +161,7 @@ impl RetentionReport {
             sip_traces_deleted: 0,
             flow_traces_deleted: 0,
             recordings_deleted: 0,
+            conference_recordings_deleted: 0,
             audit_events_deleted: 0,
             errors: Vec::new(),
         }
@@ -162,6 +172,7 @@ impl RetentionReport {
             + self.sip_traces_deleted
             + self.flow_traces_deleted
             + self.recordings_deleted
+            + self.conference_recordings_deleted
             + self.audit_events_deleted
     }
 }
@@ -263,6 +274,34 @@ pub async fn run_retention(
                 Err(e) => report
                     .errors
                     .push(format!("recordings dir {}: {e}", dir.display())),
+            }
+        }
+
+        // Conference recordings are the holding node's to delete: it has
+        // the file, and it applies this same policy on its own sweep.
+        // What is left here well past the cutoff belonged to a node that
+        // is gone, so the row goes and the file — which nothing can now
+        // reach — is reported rather than silently forgotten.
+        if let Some(store) = storage.recording_store() {
+            let abandoned = before - CONFERENCE_RECORDING_GRACE;
+            match store.expired_recordings(&tenant, abandoned).await {
+                Ok(recordings) => {
+                    for recording in recordings {
+                        // On shared storage the file is reachable here;
+                        // usually it is not, and that is not an error.
+                        match tokio::fs::remove_file(&recording.path).await {
+                            Ok(()) | Err(_) => {}
+                        }
+                        match store.delete_recording(&recording.id).await {
+                            Ok(true) => report.conference_recordings_deleted += 1,
+                            Ok(false) => {}
+                            Err(e) => report
+                                .errors
+                                .push(format!("conference recording {}: {e}", recording.id)),
+                        }
+                    }
+                }
+                Err(e) => report.errors.push(format!("conference recordings: {e}")),
             }
         }
     }

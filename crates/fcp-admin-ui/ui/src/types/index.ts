@@ -1044,6 +1044,48 @@ export interface ListAuditResponse {
   offset: number
 }
 
+// Conference Recordings
+export interface ConferenceRecording {
+  id: string
+  tenant_id: string
+  meeting_id: string | null
+  room_number: string
+  node_id: string
+  file_name: string
+  /** `wav` (mixed audio) or `webm` (composite video and audio). */
+  format: string
+  /** `auto`, `api` or `dtmf`. */
+  trigger: string
+  /** `not_required`, `announced` or `failed`. */
+  consent: string
+  /** Unix seconds. */
+  started_at: number
+  ended_at: number | null
+  duration_secs: number | null
+  size_bytes: number | null
+  participants: number
+  running: boolean
+  download_url: string
+}
+
+export interface RecordingQueryParams {
+  room_number?: string
+  meeting_id?: string
+  /** Unix seconds. */
+  since?: number
+  until?: number
+  running?: boolean
+  limit?: number
+  offset?: number
+}
+
+export interface ListRecordingsResponse {
+  recordings: ConferenceRecording[]
+  total: number
+  limit: number
+  offset: number
+}
+
 // API Tokens
 export interface ApiToken {
   id: string

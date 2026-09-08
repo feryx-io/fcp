@@ -37,10 +37,24 @@ pub async fn initialize_storage(config: &StorageSection) -> Result<StorageResult
         fcp_storage_postgres::prompt::PostgresPromptStore::new(storage.pool().clone()),
     );
 
+    // The recording registry: a recording is a row first and a file
+    // second (docs/VIDEO_CONFERENCING.md §11).
+    let recording_store: Arc<dyn fcp_core::recording::RecordingStore> = Arc::new(
+        fcp_storage_postgres::recording::PostgresRecordingStore::new(storage.pool().clone()),
+    );
+
+    // The tenant's retention and recording-consent policy.
+    let compliance_store: Arc<dyn fcp_core::compliance::ComplianceStore> = Arc::new(
+        fcp_storage_postgres::compliance::PostgresComplianceStore::new(storage.pool().clone()),
+    );
+
     info!("PostgreSQL storage initialized successfully");
     Ok(StorageResult {
         dyn_storage: Arc::new(
-            DynStorage::from_all_in_one(storage.clone()).with_prompt_store(prompt_store),
+            DynStorage::from_all_in_one(storage.clone())
+                .with_prompt_store(prompt_store)
+                .with_recording_store(recording_store)
+                .with_compliance_store(compliance_store),
         ),
         config_store: storage,
     })

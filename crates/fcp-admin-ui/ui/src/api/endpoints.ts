@@ -23,6 +23,7 @@ import type {
   SystemStatus,
   PortRequest, CreatePortRequest,
   AuditEntry, AuditQueryParams, ListAuditResponse,
+  ConferenceRecording, RecordingQueryParams, ListRecordingsResponse,
   ApiToken, CreateApiTokenRequest, CreateApiTokenResponse,
   ClusterNodesResponse, ClusterStatsResponse,
   MeProfile, UpdateProfileRequest, ChangePasswordRequest,
@@ -453,6 +454,30 @@ export const porting = {
 }
 
 // Audit Log
+export const recordings = {
+  list: (params?: RecordingQueryParams) => {
+    const searchParams = new URLSearchParams()
+    if (params) {
+      Object.entries(params).forEach(([key, value]) => {
+        if (value !== undefined && value !== null && value !== '') {
+          searchParams.set(key, String(value))
+        }
+      })
+    }
+    const query = searchParams.toString()
+    return apiClient.get<ListRecordingsResponse>(`/recordings${query ? `?${query}` : ''}`)
+  },
+  get: (id: string) =>
+    apiClient.get<ConferenceRecording>(`/recordings/${encodeURIComponent(id)}`),
+  remove: (id: string) =>
+    apiClient.delete<{ status: string; id: string; file_deleted: boolean }>(
+      `/recordings/${encodeURIComponent(id)}`,
+    ),
+  /** The file itself, as an object URL for a player or a download link. */
+  fetchMedia: (id: string): Promise<string> =>
+    apiClient.fetchBlobUrl(`/recordings/${encodeURIComponent(id)}/download`),
+}
+
 export const auditLog = {
   list: (params?: AuditQueryParams) => {
     const searchParams = new URLSearchParams()

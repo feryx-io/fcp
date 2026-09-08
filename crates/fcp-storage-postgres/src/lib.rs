@@ -34,6 +34,7 @@ pub mod emergency;
 pub mod encryption;
 pub mod flow_trace;
 pub mod prompt;
+pub mod recording;
 pub mod sip_trace;
 
 use anyhow::{Context, Result};

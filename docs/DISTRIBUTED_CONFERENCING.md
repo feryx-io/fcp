@@ -243,6 +243,9 @@ request travels exactly one hop.
 | Pin / unpin | `POST /conferences/{room}/video/pin/{pid}`, `DELETE …/video/pin` | the node the participant is on / every hosting node |
 | Spotlight / clear | `POST /conferences/{room}/video/spotlight/{pid}`, `DELETE …/video/spotlight` | the node the participant is on / every hosting node |
 | Participant video | `POST /conferences/{room}/participants/{pid}/video/{on\|off}` | the node the participant is on |
+| Start recording | `POST /conferences/{room}/recording/start` | the first hosting node that has the room |
+| Stop recording | `POST /conferences/{room}/recording/stop` | every hosting node (whichever is recording stops) |
+| Recording file | `GET`/`DELETE /recordings/{file}?node={node}` | the named node, over `/internal/recordings/{file}` |
 
 **Room-wide operations** (lock, unlock, end) are applied locally and, at
 the same time, on every other node the registry shows hosting the room
@@ -411,6 +414,28 @@ why: set `cluster.trunk_srtp` to the same value on every conference node
 trunk_rtp_timeout_secs = 30    # 0 disables the liveness check
 trunk_srtp = true
 ```
+
+### Recording a distributed room
+
+A room is recorded **once**, by one node, to one file (design §11). The
+recording is started `wherever_it_is` — the first hosting node that has
+the room — and stopped room-wide, so the node making it stops whichever
+node the request lands on. That node's mix is the whole room's, because
+the trunks already carry every other node's audio into it; its composite,
+until trunk video lands (phase 5b), shows the callers on that node.
+
+The file stays on the node that wrote it, and the registry row says which
+node that is. A download or delete can therefore be sent to any node:
+given `?node=`, a node that is not the holder streams the file from that
+peer over `/internal/recordings/{file}`, authenticated with the same
+`cluster.secret` as every other cross-node call. The admin API's
+`/v1/recordings/{id}/download` uses exactly this, so one URL works
+whichever node recorded.
+
+Retention follows the file: the holding node deletes both the file and the
+row under the tenant's `recording_retention_days`
+(`docs/COMPLIANCE.md`), and the hourly compliance sweep takes only rows
+still there a week past the window — a node that never came back.
 
 ### Not in this phase
 

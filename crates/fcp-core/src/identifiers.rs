@@ -62,6 +62,7 @@ define_id!(SessionId, "sess");
 define_id!(DialogId, "dlg");
 define_id!(TransactionId, "txn");
 define_id!(RegistrationId, "reg");
+define_id!(RecordingId, "rec");
 define_id!(NodeId, "node");
 define_id!(TenantId, "tenant");
 define_id!(PhoneNumberId, "num");

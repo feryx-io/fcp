@@ -205,6 +205,8 @@ pub struct RetentionRunResponse {
     pub sip_traces_deleted: u64,
     pub flow_traces_deleted: u64,
     pub recordings_deleted: u64,
+    /// Conference recordings whose registry row the run removed.
+    pub conference_recordings_deleted: u64,
     pub audit_events_deleted: u64,
     pub total_deleted: u64,
     pub errors: Vec<String>,
@@ -220,6 +222,7 @@ impl From<RetentionReport> for RetentionRunResponse {
             sip_traces_deleted: r.sip_traces_deleted,
             flow_traces_deleted: r.flow_traces_deleted,
             recordings_deleted: r.recordings_deleted,
+            conference_recordings_deleted: r.conference_recordings_deleted,
             audit_events_deleted: r.audit_events_deleted,
             errors: r.errors,
         }

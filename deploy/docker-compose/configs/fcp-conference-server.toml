@@ -33,6 +33,20 @@ frame_size = 160
 enable_vad = true
 auto_destroy_empty_rooms = true
 recordings_dir = "/var/fcp/conference/recordings"
+# What a room is recorded to (docs/VIDEO_CONFERENCING.md §11):
+#   auto — WebM (composite video + Opus) when the meeting has video and
+#          this node can encode VP8/VP9 for it, WAV otherwise
+#   wav  — mixed audio only, as conference recordings have always been
+#   webm — always WebM
+# WebM needs the `recording-webm` build feature; without it every
+# recording is a WAV and the node says so at startup.
+recording_format = "auto"
+# recording_video_codec = "vp8"       # or "vp9"
+# recording_resolution = "720p"       # the room's own by default, and the cap
+# recording_audio_bitrate = 64000
+# How long this node keeps a recording when its tenant has set no
+# retention policy of its own (0 or unset: keep until asked).
+# recording_retention_days = 90
 announcements_dir = "/var/fcp/conference/announcements"
 jitter_buffer_ms = 40
 dtmf_enabled = true
