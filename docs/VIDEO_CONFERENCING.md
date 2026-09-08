@@ -916,6 +916,22 @@ Decisions proposed with this plan, each open to reversal:
 - **Three blocks, in order.** 5a stands alone; 5b makes 5a's multi-node
   recordings complete; 5c depends on 5b's remote tile.
 
+**5b as built (2026-09-08).** As planned, with three notes:
+
+- **`add_virtual_participant` did not gain the video registration.** A
+  trunk's audio participant is made before the answer arrives, so the
+  codec is not known yet; video is registered when it is agreed, by
+  `attach_trunk_video`. One call that did both would have to guess.
+- **Capacity needed no new code.** `room_cost` prices the room's own
+  sources and outputs, so the remote tile's decode and the local-only
+  composite's encode are already counted. Admission still does not price
+  a trunk in advance: a trunk is infrastructure and is never refused for
+  budget.
+- **The trunk's tile is left out of the participant-facing events** —
+  `video_state_changed` skips `__`-prefixed ids — as a trunk is left out
+  of join and leave. `GET …/video` grew a `trunks` array instead, saying
+  which peers carry video and in what codec.
+
 **5a as built (2026-09-08).** As planned, with §11 carrying the detail.
 Three things the plan did not say:
 

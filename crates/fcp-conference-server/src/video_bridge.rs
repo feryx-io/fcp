@@ -16,7 +16,8 @@ use fcp_core::{Meeting, TenantId};
 use fcp_events::{ConferenceEvent, EventPublisher, PlatformEvent};
 use fcp_media::{video_codec_to_forge, NegotiatedVideo, SrtpSdpContext};
 use forge_conference::video::{
-    SubscribeRequest, VideoBackend, VideoRoom, VideoRoomEvent, VideoRoomSettings, VideoSubscription,
+    OutputScope, SubscribeRequest, VideoBackend, VideoRoom, VideoRoomEvent, VideoRoomSettings,
+    VideoSubscription,
 };
 use forge_conference::ConferenceRoom;
 use forge_rtp::rtcp::{PsFeedback, RtcpPacket};
@@ -126,6 +127,15 @@ pub fn participant_video_json(
 
 /// A room's video for the API (design §12): `{layout, spotlight, fps,
 /// outputs: [...]}` and more; `null` when the room has no video.
+/// How an output's scope reads over the API.
+fn scope_json(scope: &OutputScope) -> serde_json::Value {
+    match scope {
+        OutputScope::All => serde_json::json!({ "kind": "all" }),
+        OutputScope::Excluding(id) => serde_json::json!({ "kind": "excluding", "participant": id }),
+        OutputScope::LocalOnly => serde_json::json!({ "kind": "local_only" }),
+    }
+}
+
 pub fn room_video_json(room: &ConferenceRoom) -> serde_json::Value {
     let Some(video) = room.video() else {
         return serde_json::Value::Null;
@@ -144,7 +154,10 @@ pub fn room_video_json(room: &ConferenceRoom) -> serde_json::Value {
         "ticks": st.ticks,
         "overruns": st.overruns,
         "outputs": st.outputs.iter().map(|o| serde_json::json!({
-            "exclude": o.exclude,
+            // Whose tiles the composite is drawn from: everyone, all but
+            // one (`exclude_self`), or this node's callers only (what a
+            // trunk carries).
+            "scope": scope_json(&o.scope),
             "resolution": o.resolution.to_string(),
             "flavors": o.flavors.iter().map(|f| serde_json::json!({
                 "codec": f.flavor.codec.sdp_name(),
@@ -411,6 +424,10 @@ pub fn attach_video(
             resolution: None,
             fps: None,
             max_kbps: None,
+            // A caller sees the whole room, this node's callers and the
+            // peers' tiles alike; the room's `exclude_self` decides
+            // whether their own tile is in it.
+            scope: None,
         },
     ) {
         Ok(s) => s,
@@ -431,12 +448,74 @@ pub fn attach_video(
     ))
 }
 
+/// Put an inter-node trunk on the room's video: the peer's composite
+/// becomes one remote tile here, and what goes back down the trunk is
+/// this node's callers only.
+///
+/// The two halves are the anti-echo rule of the audio mix, drawn: a
+/// composite sent to a peer must carry no tile that came from a peer, or
+/// a room on three nodes would show the same caller twice — once
+/// directly and once forwarded (`docs/DISTRIBUTED_CONFERENCING.md`).
+pub fn attach_trunk_video(
+    room: &Arc<ConferenceRoom>,
+    backend: &VideoBackend,
+    participant_id: &str,
+    peer_node: &str,
+    leg: &VideoLeg,
+    sink: VideoEventSink,
+) -> Option<impl Future<Output = ()> + Send + 'static> {
+    let video = room.enable_video(leg.settings.clone(), backend);
+    if sink.pumps.insert(sink.room_number.clone(), ()).is_none() {
+        spawn_event_pump(&video, sink);
+    }
+    // The tile has to exist before it can be named: unlike a caller,
+    // nothing put it in the room ahead of its video.
+    if let Err(e) = video.add_remote(participant_id, leg.negotiated.codec) {
+        warn!(trunk = %participant_id, error = %e, "could not add the peer's video tile");
+        return None;
+    }
+    video.set_display_name(participant_id, peer_node);
+    let sub = match video.subscribe(
+        participant_id,
+        SubscribeRequest {
+            codec: leg.negotiated.codec,
+            profile: leg.negotiated.fmtp.clone().unwrap_or_default(),
+            payload_type: leg.negotiated.payload_type,
+            resolution: None,
+            fps: None,
+            max_kbps: None,
+            scope: Some(OutputScope::LocalOnly),
+        },
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            warn!(trunk = %participant_id, error = %e, "could not compose for the trunk");
+            video.remove_remote(participant_id);
+            return None;
+        }
+    };
+    Some(run_video_bridge(
+        video,
+        participant_id.to_string(),
+        Arc::clone(&leg.socket),
+        leg.srtp_context.clone(),
+        sub,
+        leg.negotiated.clone(),
+        Arc::clone(&leg.stats),
+    ))
+}
+
 /// Take the participant off the room's video (a re-INVITE removed the
-/// section, or the leg is torn down before the participant leaves).
+/// section, or the leg is torn down before the participant leaves). A
+/// trunk's remote tile goes the same way, tile and all.
 pub fn detach_video(room: &ConferenceRoom, participant_id: &str) {
     if let Some(video) = room.video() {
-        video.remove_source(participant_id);
         video.unsubscribe(participant_id);
+        if video.is_remote(participant_id) {
+            video.remove_remote(participant_id);
+        } else {
+            video.remove_source(participant_id);
+        }
     }
 }
 
@@ -462,16 +541,22 @@ fn spawn_event_pump(video: &Arc<VideoRoom>, sink: VideoEventSink) {
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             };
             let event = match ev {
+                // A trunk's tile is infrastructure, not a participant:
+                // it is left out of the participant-facing events, as a
+                // trunk is left out of join and leave.
                 VideoRoomEvent::ParticipantState {
                     participant_id,
                     state,
-                } => Some(ConferenceEvent::VideoStateChanged {
-                    room_number: sink.room_number.clone(),
-                    participant_id,
-                    state: state.name().to_string(),
-                    tenant_id: sink.tenant_id,
-                    timestamp: SystemTime::now(),
-                }),
+                } if !participant_id.starts_with("__") => {
+                    Some(ConferenceEvent::VideoStateChanged {
+                        room_number: sink.room_number.clone(),
+                        participant_id,
+                        state: state.name().to_string(),
+                        tenant_id: sink.tenant_id,
+                        timestamp: SystemTime::now(),
+                    })
+                }
+                VideoRoomEvent::ParticipantState { .. } => None,
                 VideoRoomEvent::FpsChanged { from, to, overload } => {
                     if overload {
                         Some(ConferenceEvent::VideoOverload {
@@ -1341,6 +1426,131 @@ mod tests {
         let answer = pin(&room, None).unwrap();
         assert_eq!(answer["status"], "unpinned");
 
+        drop(video);
+        room.disable_video();
+    }
+    /// A trunk's video half (§15.4, 5b): the peer's composite becomes one
+    /// remote tile here, and what goes back down the trunk is this
+    /// node's callers only — the anti-echo rule of the audio mix, drawn.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_trunk_takes_a_remote_tile_and_sends_back_local_callers_only() {
+        let room = Arc::new(
+            ConferenceRoom::new(
+                "2000",
+                AudioFormat::pcm_mono(),
+                160,
+                forge_mixer::MixerOptions::default(),
+            )
+            .unwrap(),
+        );
+        room.add_participant("alice", true).unwrap();
+        // The trunk's audio side, exactly as `attach_trunk` makes it.
+        let trunk_id = crate::trunks::trunk_participant_id("node-b");
+        room.add_virtual_participant(&trunk_id).unwrap();
+
+        let backend = VideoBackend::raw();
+        let (settings, _) = plan_video(
+            &{
+                let mut m = meeting(true);
+                m.video_max_resolution = "180p".into();
+                m.video_codecs = vec![VideoCodec::Vp8];
+                m
+            },
+            &usable_codecs(&backend, false),
+        )
+        .unwrap();
+        let bus = Arc::new(InMemoryEventBus::new());
+        let pumps = Arc::new(dashmap::DashMap::new());
+        let sink = || VideoEventSink {
+            event_bus: bus.clone() as Arc<dyn EventPublisher>,
+            tenant_id: TenantId::new(),
+            room_number: "2000".into(),
+            pumps: Arc::clone(&pumps),
+        };
+        let leg = |port: u16| VideoLeg {
+            port_pair: PortPair::new(port).unwrap(),
+            socket: Arc::new(futures::executor::block_on(async {
+                RtpSocketPair::new(
+                    PortPair::new(port).unwrap(),
+                    RtpSocketConfig {
+                        bind_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                        ..RtpSocketConfig::default()
+                    },
+                )
+                .await
+                .unwrap()
+            })),
+            srtp_context: None,
+            srtp_sdp: None,
+            negotiated: NegotiatedVideo {
+                codec: forge_core::VideoCodec::VP8,
+                payload_type: 97,
+                fmtp: None,
+                remote: None,
+                pli: true,
+                fir: false,
+                nack: true,
+                remote_crypto: None,
+            },
+            settings: settings.clone(),
+            stats: Arc::new(VideoLegStats::default()),
+            bridge_handle: None,
+        };
+
+        // A caller with video, and the trunk.
+        let alice_leg = leg(free_pair());
+        let alice_task = tokio::spawn(
+            attach_video(&room, &backend, "alice", Some("Alice"), &alice_leg, sink()).unwrap(),
+        );
+        let trunk_leg = leg(free_pair());
+        let trunk_task = tokio::spawn(
+            attach_trunk_video(&room, &backend, &trunk_id, "node-b", &trunk_leg, sink()).unwrap(),
+        );
+
+        let video = room.video().expect("the room has video");
+        // The trunk is a tile, not a caller: it draws, and it is named
+        // for the node behind it.
+        assert!(video.is_remote(&trunk_id));
+        assert!(!video.is_remote("alice"));
+        let tile = video.participant(&trunk_id).expect("the peer's tile");
+        assert!(tile.remote);
+        assert_eq!(tile.display_name, "node-b");
+        assert!(tile.source.is_some(), "the peer's composite is decoded");
+
+        // Two composites: the room's, and the one going back to the peer
+        // with no remote tile in it.
+        let status = video.status();
+        let scopes: Vec<String> = status
+            .outputs
+            .iter()
+            .map(|o| format!("{:?}", o.scope))
+            .collect();
+        assert_eq!(status.outputs.len(), 2, "{scopes:?}");
+        assert!(
+            status
+                .outputs
+                .iter()
+                .any(|o| o.scope == OutputScope::LocalOnly),
+            "the trunk composes local callers only: {scopes:?}"
+        );
+        assert!(status.outputs.iter().any(|o| o.scope == OutputScope::All));
+
+        // The room's video events skip the trunk: it is infrastructure,
+        // like its join and leave.
+        let json = room_video_json(&room);
+        assert_eq!(json["outputs"].as_array().unwrap().len(), 2);
+
+        // The trunk goes: tile, decoder and its composite go with it.
+        alice_task.abort();
+        trunk_task.abort();
+        detach_video(&room, &trunk_id);
+        assert!(!video.is_remote(&trunk_id));
+        assert!(video.participant(&trunk_id).is_none());
+        assert_eq!(
+            video.status().outputs.len(),
+            1,
+            "the local-only composite went with the trunk"
+        );
         drop(video);
         room.disable_video();
     }
