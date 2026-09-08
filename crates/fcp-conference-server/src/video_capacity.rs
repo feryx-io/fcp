@@ -541,6 +541,7 @@ mod tests {
                     resolution: None,
                     fps: None,
                     max_kbps: None,
+                    scope: None,
                 },
             )
             .unwrap();

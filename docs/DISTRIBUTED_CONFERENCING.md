@@ -188,10 +188,47 @@ This also fixes a defect in single-node conferences: the previous mixer
 drained a participant's buffer on read, and with three or more callers each
 frame of speech reached only the listener whose tick came first.
 
-Trunk media is plain RTP with the codec negotiated from `G722`, `PCMU`,
-`PCMA` (wideband first, filtered by `conference.allowed_codecs`), no DTMF,
-no SRTP — the inter-node network is assumed private; trunk SRTP is a phase
-4 item.
+Trunk media is RTP with the codec negotiated from `G722`, `PCMU`, `PCMA`
+(wideband first, filtered by `conference.allowed_codecs`) and no DTMF;
+SRTP per section under `cluster.trunk_srtp` (phase 4).
+
+### Media: video on a trunk
+
+Video follows the same rule, drawn. Since v0.25.113 a trunk carries a
+second RTP section when the room's meeting has video and the dialling node
+can encode a codec the meeting allows. On it:
+
+- **The peer's composite is one tile.** `VideoRoom::add_remote` registers
+  it as a source that draws a tile without being a participant — it is not
+  in the audio room, draws no join or leave, and raises no
+  `video_state_changed`. It is named for the node behind it, and the API's
+  `GET …/video` marks it `remote`.
+- **What goes back is local callers only.** The trunk subscribes with
+  `OutputScope::LocalOnly`, the exact analogue of
+  `mix_frame_filtered(not a trunk)`: a composite sent to a peer carries no
+  tile that came from a peer. Exclude-self would do for two nodes, but with
+  three a tile forwarded through one peer would be drawn again via another,
+  and the same caller would appear twice.
+- **One tile per node, not per caller.** A three-node room shows each
+  peer's whole composite in one cell. Per-participant tiles across nodes
+  stay out of scope.
+- **Who is speaking behind a remote tile** is the peer's to say, and until
+  it does (phase 5c) a remote tile is never the room's active speaker: the
+  energy behind it is a node's mix, not a person's.
+
+The video section is negotiated **when the trunk is dialled**, so a meeting
+that turns video on later gets it when its trunks are next re-established —
+which reconcile does on the hour, or when a node drains. SRTP applies per
+section: a peer that answers video without the key on an otherwise
+encrypted trunk gets audio only, and one that drops the audio key is hung
+up, as before. Liveness stays on the audio section.
+
+Capacity needs no special case: the remote tile is a decode and the
+local-only composite an encode plus a compositor, and `room_cost` prices
+both from the room's own status, so a node's video budget already counts
+what its trunks cost. Admission does not price a trunk in advance — a
+trunk is infrastructure and is never refused for budget; the periodic
+re-pricing picks it up.
 
 ### Configuration
 
