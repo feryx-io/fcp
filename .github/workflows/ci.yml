@@ -1,18 +1,38 @@
 name: CI
 
-# Pull requests only, and only the ones that can produce a signal. A push to
-# main is the squash of a PR that just passed this same workflow, so re-running
-# it there doubled the bill for no new signal (43 of 106 runs in the first week
-# of September 2026); drafts and `docs:` PRs are skipped for the same reason
-# (see the test job's `if`). The audit job still covers main on a schedule.
+# Pull requests, plus a weekly run on main. A push to main is the squash of a
+# PR that just passed this same workflow, so re-running all of it there doubled
+# the bill for no new signal (43 of 106 runs in the first week of September
+# 2026); drafts and `docs:` PRs are skipped for the same reason (see the test
+# job's `if`).
 #
-# What is left was ~13 minutes a run, of which ~8.5 was compiling: a fresh
-# `actions/checkout` gives every source file a new mtime, and cargo fingerprints
-# path dependencies by mtime, so all 73 workspace + submodule crates rebuilt
-# every run even though the cached registry dependencies were reused correctly.
-# sccache fixes that by keying on the content of a compilation rather than on
-# timestamps -- see the `Start sccache` step, and `sccache stats` at the end of
-# the job for whether it is actually earning its place.
+# The weekly run is not there for its result; it is there to write a cache.
+# GitHub scopes an Actions cache to the ref that wrote it. A cache written by a
+# pull-request run is readable only by that same pull request, while one written
+# on the default branch is readable by every branch -- so main is the only ref
+# whose caches help the *next* pull request.
+#
+# Removing the push-on-main trigger therefore stopped anything from ever
+# refreshing that cache. Checked on 2026-09-09: main still held four ~620 MB
+# `rust-cache` entries, and every one of them was written on 2026-09-07, by the
+# last push-on-main runs before the trigger went. Pull requests have been living
+# off those frozen entries since. It works -- a stale restore is most of a warm
+# one, because the registry dependencies it carries rarely change -- but it
+# degrades as main moves away from them, and it ends the first time a quiet week
+# lets them pass the 7-day eviction window with nothing to recreate them. A cold
+# run is ~22 minutes against ~13 warm.
+#
+# The compiling is the cost either way: a fresh `actions/checkout` gives every
+# source file a new mtime, and cargo fingerprints path dependencies by mtime, so
+# all 73 workspace and submodule crates rebuild even when the registry
+# dependencies restore correctly. Thirteen minutes a week is the cheap way to
+# keep a current cache on main and never find out what a cold week costs.
+#
+# sccache was tried here first and reverted. It saved ~94 seconds of the test
+# step within a single pull request, but its entries are ref-scoped like any
+# other, so they helped no other branch -- and 466 of them filled the
+# repository's entire 10 GB cache budget in one run, evicting the caches that
+# were working.
 on:
   pull_request:
     branches: [main]
@@ -20,7 +40,9 @@ on:
     # `if` below); without it, marking a draft ready would never start CI.
     types: [opened, synchronize, reopened, ready_for_review]
   schedule:
-    # Weekly advisory sweep of main's Cargo.lock (Monday 09:00 UTC).
+    # Monday 09:00 UTC: a weekly advisory sweep of main's Cargo.lock, and the
+    # run that leaves a warm cache under `refs/heads/main` for the week's
+    # pull requests (see the note above).
     - cron: '0 9 * * 1'
   workflow_dispatch:
 
@@ -40,20 +62,20 @@ env:
 
 jobs:
   test:
-    # Two kinds of run cost ~13 minutes and tell us nothing:
+    # Two kinds of pull request cost ~13 minutes and tell us nothing:
     #
-    #   * a draft PR, which is still being pushed to; and
-    #   * a `docs:` PR, which by this repo's convention changes Markdown plus
+    #   * a draft, which is still being pushed to; and
+    #   * a `docs:` one, which by this repo's convention changes Markdown plus
     #     the version line every commit bumps in Cargo.toml and Cargo.lock.
     #     That version bump is why `paths-ignore` cannot express this — a
     #     docs-only PR always touches those two files.
     #
-    # `workflow_dispatch` overrides both, so a docs PR can still be built by
-    # hand from the Actions tab if one ever does carry code.
+    # Everything that is not a pull request runs: the weekly schedule, whose
+    # real job is to leave a warm cache on main, and `workflow_dispatch`, which
+    # is the way to build a draft or a `docs:` PR by hand from the Actions tab.
     if: >-
-      github.event_name == 'workflow_dispatch'
-      || (github.event_name == 'pull_request'
-          && !github.event.pull_request.draft
+      github.event_name != 'pull_request'
+      || (!github.event.pull_request.draft
           && !startsWith(github.event.pull_request.title, 'docs:'))
     runs-on: ubuntu-latest
     # Real PostgreSQL for the database-backed suites (fcp-storage-postgres,
@@ -86,15 +108,6 @@ jobs:
     env:
       FCP_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
       FCP_TEST_REDIS_URL: redis://localhost:6379
-      # Route every rustc call through sccache, which caches on the hash of the
-      # compilation (sources, flags, environment) instead of on file timestamps.
-      # Incremental compilation has to be off for it to cache anything at all;
-      # Swatinem/rust-cache sets that too, but this job should not depend on it.
-      # Job-scoped, not workflow-scoped: the audit job never installs sccache,
-      # so naming it as that job's rustc wrapper would only be a way to break it.
-      RUSTC_WRAPPER: sccache
-      SCCACHE_GHA_ENABLED: "true"
-      CARGO_INCREMENTAL: "0"
     steps:
       # The hosted runner leaves ~14GB free, which a 32-crate workspace's
       # debug + test artifacts overflow (the run dies with SIGBUS in ld /
@@ -121,17 +134,11 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      # Must come before the first cargo invocation: it installs the binary
-      # `RUSTC_WRAPPER` names and hands it the credentials for the Actions
-      # cache it stores objects in.
-      - name: Start sccache
-        uses: mozilla-actions/sccache-action@v0.0.11
-      # Kept as it was, target directory and all. Dropping it in favour of
-      # sccache alone was tempting -- the two do store the same objects twice,
-      # against a 10 GB repository budget -- but the clippy step below runs
-      # without the wrapper on purpose, and would then have to compile every
-      # registry dependency from scratch on every run. The duplication is
-      # cheaper than that. `sccache stats` will say if the budget starts to bite.
+      # On a pull request this restores; on the weekly run on main it is what
+      # writes the cache every branch then reads, since Actions caches are
+      # readable from the ref that wrote them and from the default branch.
+      # `save-if` is left at its default so both do save: within one pull
+      # request the second and later runs want the first one's work too.
       - name: Restore cargo cache
         uses: Swatinem/rust-cache@v2
       # `cargo fmt --all` also reformats the path dependencies under external/, which are
@@ -142,24 +149,13 @@ jobs:
           pkgs=$(cargo metadata --no-deps --format-version 1 \
             | jq -r '.packages[].name | "-p \(.)"' | tr '\n' ' ')
           cargo fmt $pkgs -- --check
-      # Deliberately not through sccache. `cargo clippy` wraps rustc with
-      # clippy-driver, and a cached object would satisfy the compilation
-      # without the lints ever running -- a green `-D warnings` that checked
-      # nothing. Correctness beats the couple of minutes it would save.
       - name: Clippy
-        env:
-          RUSTC_WRAPPER: ""
         run: cargo clippy --all-targets --all-features -- -D warnings
       # `recording-webm` is off by default (it builds libopus from source),
       # so the conference server's WebM recording test only runs when it is
       # asked for by name.
       - name: Tests
         run: cargo test --all-targets --features fcp-conference-server/recording-webm
-      # Hit rate and cache size, so a run that got slower instead of faster
-      # says why. `always()` because a failed build is exactly when it matters.
-      - name: sccache stats
-        if: always()
-        run: sccache --show-stats
 
   security-audit:
     name: Security Audit
