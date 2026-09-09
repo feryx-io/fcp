@@ -233,7 +233,7 @@ a keyframe, requesting one with PLI. This removes an encode and a decode
 and ~40 ms of latency in the common two-party and "presenter" cases. It
 is transparent to signaling and can be turned off per room.
 
-*Shipped in 6a (2026-09-08).* As designed, decided per subscriber per
+*Shipped in 6a (2026-09-08, forge-media `v2026.09.08.3`).* As designed, decided per subscriber per
 tick: an output that comes to exactly one tile with a picture, and a
 source whose stream that subscriber can already decode (same codec, an
 H.264 profile `forwardable_to` its own, a frame no larger than it asked
@@ -283,7 +283,7 @@ Colour: everything internal is I420 (4:2:0, limited range, BT.709 for
 | NACK from a receiver | in | Retransmit from the flavor's cache (RTX-less, same SSRC, per RFC 4585); ignore if older than the cache |
 | REMB / transport-cc from a receiver | in | Subscriber's allowed bitrate; the flavor's encoder targets the **minimum** over its subscribers, and a subscriber far below the others is moved to a lower-resolution flavor (a bitrate ladder per resolution: e.g. 1080p 2.5 Mb/s, 720p 1.2 Mb/s, 360p 500 kb/s, 180p 200 kb/s) |
 
-*The ladder shipped in 6b (2026-09-08).* `forge_video::ladder` holds the
+*The ladder shipped in 6b (2026-09-08, forge-media `v2026.09.08.4`).* `forge_video::ladder` holds the
 rungs at or below a room's own size and the rule: below 70% of the
 current rung go down, above 120% of the next one up climb, and a link
 that has collapsed goes straight to the rung it can carry rather than
