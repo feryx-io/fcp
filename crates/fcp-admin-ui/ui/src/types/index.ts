@@ -1264,6 +1264,8 @@ export interface MeetingResponse {
   video_max_resolution: string
   video_fps: number
   video_exclude_self: boolean
+  /** `auto`, `on` or `off`: when a viewer is sent one sender's own stream. */
+  video_passthrough: string
   video_codecs: string[]
   created_at: string
   updated_at: string
@@ -1298,6 +1300,7 @@ export interface CreateMeetingRequest {
   video_max_resolution?: string
   video_fps?: number
   video_exclude_self?: boolean
+  video_passthrough?: string
   video_codecs?: string[]
 }
 
@@ -1329,5 +1332,6 @@ export interface UpdateMeetingRequest {
   video_max_resolution?: string
   video_fps?: number
   video_exclude_self?: boolean
+  video_passthrough?: string
   video_codecs?: string[]
 }

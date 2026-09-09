@@ -233,6 +233,27 @@ a keyframe, requesting one with PLI. This removes an encode and a decode
 and ~40 ms of latency in the common two-party and "presenter" cases. It
 is transparent to signaling and can be turned off per room.
 
+*Shipped in 6a (2026-09-08).* As designed, decided per subscriber per
+tick: an output that comes to exactly one tile with a picture, and a
+source whose stream that subscriber can already decode (same codec, an
+H.264 profile `forwardable_to` its own, a frame no larger than it asked
+for), is forwarded through `StreamRewriter` under the subscriber's own
+SSRC. Forwarded packets go out **on ingress**, not on the compose clock —
+a tick of latency would undo the point — and an output every subscriber
+has been forwarded away from is not rendered or encoded at all, which is
+where the saving is. The retransmission cache holds forwarded packets as
+it holds encoded ones; a PLI from the receiver goes to the source.
+
+Two things the section did not say. First, a forwarded frame carries **no
+name banner, no speaking border and no avatar**, because nothing
+composited it — right for a presenter at full canvas, wrong for a grid —
+so `Meeting.video_passthrough` is `auto` (forward only while the layout
+is `spotlight`), `on` or `off`, and `auto` reads the layout as it changes.
+Second, the **decode still runs**: the tile state and the freeze timeout
+are read off decoded frames, so a source stops being decoded only when
+nothing draws it, which is a further step. Per §9.4 the encode is two to
+three times the decode, so the bulk of the saving is here.
+
 ## 6. Codecs and licensing
 
 | Codec | Library | License | Binding | Notes |
@@ -1052,6 +1073,14 @@ Decisions proposed with this plan, each open to reversal:
   campaign, and the corpus is committed. It catches the panic a
   malformed packet causes now; a real campaign belongs on hardware that
   is not paid for by the minute.
+**6a as built (2026-09-08).** As planned, with one deviation: the plan
+said a forwarded subscriber would be priced at "neither encode nor
+decode", and it is priced at neither encode nor composite — the decode
+still runs, for the reason above, and the capacity model charges what
+actually happens. The rest is as planned, including the `auto` default
+and the per-meeting override. The room setting is a `PassthroughMode`
+rather than a bool so `auto` can follow a layout that changes at runtime.
+
 - **Three blocks, in order, but 6b and 6c are independent.** 6a is the
   one that touches the egress path, so it goes first; 6b and 6c can be
   reviewed in either order after it.

@@ -616,6 +616,8 @@ struct CreateMeetingRequest {
     video_exclude_self: bool,
     #[serde(default = "fcp_core::meeting::default_video_codecs")]
     video_codecs: Vec<fcp_core::VideoCodec>,
+    #[serde(default = "fcp_core::meeting::default_video_passthrough")]
+    video_passthrough: String,
 }
 
 fn default_true() -> bool {
@@ -756,6 +758,7 @@ async fn create_meeting_handler(
         video_fps: payload.video_fps,
         video_exclude_self: payload.video_exclude_self,
         video_codecs: payload.video_codecs,
+        video_passthrough: payload.video_passthrough,
         created_at: now,
         updated_at: now,
     };

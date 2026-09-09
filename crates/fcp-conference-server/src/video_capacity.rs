@@ -230,15 +230,22 @@ impl VideoCapacity {
                 self.decode_units(s.codec, resolution, if s.fps > 0 { s.fps } else { fps })
             })
             .sum();
+        // A flavor every one of whose subscribers is on the passthrough
+        // fast path is not being encoded, and an output with no flavor
+        // left to encode is not being composed (§5.6). Charging for them
+        // would keep reserving a budget nothing spends.
+        let idle = idle_flavors(video, &st);
         let encode: u32 = st
             .outputs
             .iter()
             .flat_map(|o| o.flavors.iter())
+            .filter(|f| !idle.contains(&f.flavor))
             .map(|f| self.encode_units(f.flavor.codec, f.flavor.resolution, f.flavor.fps.max(1)))
             .sum();
         let compose: u32 = st
             .outputs
             .iter()
+            .filter(|o| o.flavors.iter().any(|f| !idle.contains(&f.flavor)))
             .map(|o| self.compose_units(st.sources, o.resolution, fps))
             .sum();
         decode.saturating_add(encode).saturating_add(compose)
@@ -431,6 +438,35 @@ pub fn self_benchmark(
     table
 }
 
+/// The flavors nothing is encoding right now: every subscriber of them
+/// is being forwarded a sender's own stream instead, and no recording
+/// wants the composite either (§5.6).
+fn idle_flavors(
+    video: &VideoRoom,
+    st: &forge_conference::video::VideoRoomStatus,
+) -> std::collections::HashSet<forge_video::flavor::Flavor> {
+    use std::collections::{HashMap, HashSet};
+    let mut total: HashMap<forge_video::flavor::Flavor, (usize, usize)> = HashMap::new();
+    for p in video.participants() {
+        if let Some(sub) = p.subscription {
+            let e = total.entry(sub.flavor).or_insert((0, 0));
+            e.0 += 1;
+            if sub.forwarding.is_some() {
+                e.1 += 1;
+            }
+        }
+    }
+    let recorded: HashSet<forge_video::flavor::Flavor> =
+        st.recordings.iter().map(|r| r.flavor.clone()).collect();
+    total
+        .into_iter()
+        .filter(|(flavor, (subs, forwarded))| {
+            *subs > 0 && subs == forwarded && !recorded.contains(flavor)
+        })
+        .map(|(flavor, _)| flavor)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -530,7 +566,7 @@ mod tests {
         );
         assert_eq!(cap.room_cost(&video), 0, "no sources, no outputs yet");
 
-        video.add_source("alice", VideoCodec::VP8).unwrap();
+        video.add_source("alice", VideoCodec::VP8, "").unwrap();
         let sub = video
             .subscribe(
                 "bob",
