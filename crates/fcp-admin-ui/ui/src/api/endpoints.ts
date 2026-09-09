@@ -677,6 +677,13 @@ export interface LiveParticipantVideo {
   fps?: number
   bitrate_kbps?: number
   flavor?: string
+  /** The bitrate-ladder rung they are being sent, e.g. `640x360` (§7). */
+  rung?: string
+  rung_kbps?: number
+  /** What their link says it can carry. */
+  remb_kbps?: number
+  /** The participant whose own stream they are being sent (§5.6). */
+  forwarding?: string
   keyframes_sent?: number
   frames_decoded?: number
   frames_lost?: number
