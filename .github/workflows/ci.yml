@@ -6,12 +6,13 @@ name: CI
 # of September 2026); drafts and `docs:` PRs are skipped for the same reason
 # (see the test job's `if`). The audit job still covers main on a schedule.
 #
-# What is left costs ~13 minutes a run, of which ~8.5 is compiling: a fresh
-# `actions/checkout` gives every source file a new mtime, so cargo rebuilds all
-# 73 workspace + submodule crates each time even though the cached registry
-# dependencies are reused. Fixing that needs a content-addressed compiler cache
-# (sccache) or `git-restore-mtime` with a full-history checkout; neither is here
-# yet, because the budget no longer forces it.
+# What is left was ~13 minutes a run, of which ~8.5 was compiling: a fresh
+# `actions/checkout` gives every source file a new mtime, and cargo fingerprints
+# path dependencies by mtime, so all 73 workspace + submodule crates rebuilt
+# every run even though the cached registry dependencies were reused correctly.
+# sccache fixes that by keying on the content of a compilation rather than on
+# timestamps -- see the `Start sccache` step, and `sccache stats` at the end of
+# the job for whether it is actually earning its place.
 on:
   pull_request:
     branches: [main]
@@ -85,6 +86,15 @@ jobs:
     env:
       FCP_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
       FCP_TEST_REDIS_URL: redis://localhost:6379
+      # Route every rustc call through sccache, which caches on the hash of the
+      # compilation (sources, flags, environment) instead of on file timestamps.
+      # Incremental compilation has to be off for it to cache anything at all;
+      # Swatinem/rust-cache sets that too, but this job should not depend on it.
+      # Job-scoped, not workflow-scoped: the audit job never installs sccache,
+      # so naming it as that job's rustc wrapper would only be a way to break it.
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
+      CARGO_INCREMENTAL: "0"
     steps:
       # The hosted runner leaves ~14GB free, which a 32-crate workspace's
       # debug + test artifacts overflow (the run dies with SIGBUS in ld /
@@ -111,6 +121,17 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      # Must come before the first cargo invocation: it installs the binary
+      # `RUSTC_WRAPPER` names and hands it the credentials for the Actions
+      # cache it stores objects in.
+      - name: Start sccache
+        uses: mozilla-actions/sccache-action@v0.0.11
+      # Kept as it was, target directory and all. Dropping it in favour of
+      # sccache alone was tempting -- the two do store the same objects twice,
+      # against a 10 GB repository budget -- but the clippy step below runs
+      # without the wrapper on purpose, and would then have to compile every
+      # registry dependency from scratch on every run. The duplication is
+      # cheaper than that. `sccache stats` will say if the budget starts to bite.
       - name: Restore cargo cache
         uses: Swatinem/rust-cache@v2
       # `cargo fmt --all` also reformats the path dependencies under external/, which are
@@ -121,13 +142,24 @@ jobs:
           pkgs=$(cargo metadata --no-deps --format-version 1 \
             | jq -r '.packages[].name | "-p \(.)"' | tr '\n' ' ')
           cargo fmt $pkgs -- --check
+      # Deliberately not through sccache. `cargo clippy` wraps rustc with
+      # clippy-driver, and a cached object would satisfy the compilation
+      # without the lints ever running -- a green `-D warnings` that checked
+      # nothing. Correctness beats the couple of minutes it would save.
       - name: Clippy
+        env:
+          RUSTC_WRAPPER: ""
         run: cargo clippy --all-targets --all-features -- -D warnings
       # `recording-webm` is off by default (it builds libopus from source),
       # so the conference server's WebM recording test only runs when it is
       # asked for by name.
       - name: Tests
         run: cargo test --all-targets --features fcp-conference-server/recording-webm
+      # Hit rate and cache size, so a run that got slower instead of faster
+      # says why. `always()` because a failed build is exactly when it matters.
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats
 
   security-audit:
     name: Security Audit
