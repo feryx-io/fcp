@@ -233,7 +233,7 @@ a keyframe, requesting one with PLI. This removes an encode and a decode
 and ~40 ms of latency in the common two-party and "presenter" cases. It
 is transparent to signaling and can be turned off per room.
 
-*Shipped in 6a (2026-09-08).* As designed, decided per subscriber per
+*Shipped in 6a (2026-09-08, forge-media `v2026.09.08.3`).* As designed, decided per subscriber per
 tick: an output that comes to exactly one tile with a picture, and a
 source whose stream that subscriber can already decode (same codec, an
 H.264 profile `forwardable_to` its own, a frame no larger than it asked
