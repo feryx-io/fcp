@@ -1,12 +1,23 @@
 name: CI
 
-# Pull requests only. A push to main is the squash of a PR that just passed
-# this same workflow, so re-running it there doubled the bill for no new
-# signal (43 of 106 runs in the first week of September 2026). The audit job
-# still covers main on a schedule below.
+# Pull requests only, and only the ones that can produce a signal. A push to
+# main is the squash of a PR that just passed this same workflow, so re-running
+# it there doubled the bill for no new signal (43 of 106 runs in the first week
+# of September 2026); drafts and `docs:` PRs are skipped for the same reason
+# (see the test job's `if`). The audit job still covers main on a schedule.
+#
+# What is left costs ~13 minutes a run, of which ~8.5 is compiling: a fresh
+# `actions/checkout` gives every source file a new mtime, so cargo rebuilds all
+# 73 workspace + submodule crates each time even though the cached registry
+# dependencies are reused. Fixing that needs a content-addressed compiler cache
+# (sccache) or `git-restore-mtime` with a full-history checkout; neither is here
+# yet, because the budget no longer forces it.
 on:
   pull_request:
     branches: [main]
+    # `ready_for_review` is here because the test job skips drafts (see its
+    # `if` below); without it, marking a draft ready would never start CI.
+    types: [opened, synchronize, reopened, ready_for_review]
   schedule:
     # Weekly advisory sweep of main's Cargo.lock (Monday 09:00 UTC).
     - cron: '0 9 * * 1'
@@ -28,7 +39,21 @@ env:
 
 jobs:
   test:
-    if: github.event_name != 'schedule'
+    # Two kinds of run cost ~13 minutes and tell us nothing:
+    #
+    #   * a draft PR, which is still being pushed to; and
+    #   * a `docs:` PR, which by this repo's convention changes Markdown plus
+    #     the version line every commit bumps in Cargo.toml and Cargo.lock.
+    #     That version bump is why `paths-ignore` cannot express this — a
+    #     docs-only PR always touches those two files.
+    #
+    # `workflow_dispatch` overrides both, so a docs PR can still be built by
+    # hand from the Actions tab if one ever does carry code.
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || (github.event_name == 'pull_request'
+          && !github.event.pull_request.draft
+          && !startsWith(github.event.pull_request.title, 'docs:'))
     runs-on: ubuntu-latest
     # Real PostgreSQL for the database-backed suites (fcp-storage-postgres,
     # fcp-api-core, and the per-binary smoke tests). They create and drop a
@@ -106,6 +131,11 @@ jobs:
 
   security-audit:
     name: Security Audit
+    # Cheap enough (~20s) to keep running on `docs:` PRs, which do change
+    # Cargo.lock; drafts are still skipped along with the test job.
+    if: >-
+      github.event_name != 'pull_request'
+      || !github.event.pull_request.draft
     runs-on: ubuntu-latest
     steps:
       # cargo-audit reads the committed Cargo.lock, so this job does not need
