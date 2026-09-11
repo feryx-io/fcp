@@ -1,14 +1,48 @@
 name: CI
 
-# Pull requests only. A push to main is the squash of a PR that just passed
-# this same workflow, so re-running it there doubled the bill for no new
-# signal (43 of 106 runs in the first week of September 2026). The audit job
-# still covers main on a schedule below.
+# Pull requests, plus a weekly run on main. A push to main is the squash of a
+# PR that just passed this same workflow, so re-running all of it there doubled
+# the bill for no new signal (43 of 106 runs in the first week of September
+# 2026); drafts and `docs:` PRs are skipped for the same reason (see the test
+# job's `if`).
+#
+# The weekly run is not there for its result; it is there to write a cache.
+# GitHub scopes an Actions cache to the ref that wrote it. A cache written by a
+# pull-request run is readable only by that same pull request, while one written
+# on the default branch is readable by every branch -- so main is the only ref
+# whose caches help the *next* pull request.
+#
+# Removing the push-on-main trigger therefore stopped anything from ever
+# refreshing that cache. Checked on 2026-09-09: main still held four ~620 MB
+# `rust-cache` entries, and every one of them was written on 2026-09-07, by the
+# last push-on-main runs before the trigger went. Pull requests have been living
+# off those frozen entries since. It works -- a stale restore is most of a warm
+# one, because the registry dependencies it carries rarely change -- but it
+# degrades as main moves away from them, and it ends the first time a quiet week
+# lets them pass the 7-day eviction window with nothing to recreate them. A cold
+# run is ~22 minutes against ~13 warm.
+#
+# The compiling is the cost either way: a fresh `actions/checkout` gives every
+# source file a new mtime, and cargo fingerprints path dependencies by mtime, so
+# all 73 workspace and submodule crates rebuild even when the registry
+# dependencies restore correctly. Thirteen minutes a week is the cheap way to
+# keep a current cache on main and never find out what a cold week costs.
+#
+# sccache was tried here first and reverted. It saved ~94 seconds of the test
+# step within a single pull request, but its entries are ref-scoped like any
+# other, so they helped no other branch -- and 466 of them filled the
+# repository's entire 10 GB cache budget in one run, evicting the caches that
+# were working.
 on:
   pull_request:
     branches: [main]
+    # `ready_for_review` is here because the test job skips drafts (see its
+    # `if` below); without it, marking a draft ready would never start CI.
+    types: [opened, synchronize, reopened, ready_for_review]
   schedule:
-    # Weekly advisory sweep of main's Cargo.lock (Monday 09:00 UTC).
+    # Monday 09:00 UTC: a weekly advisory sweep of main's Cargo.lock, and the
+    # run that leaves a warm cache under `refs/heads/main` for the week's
+    # pull requests (see the note above).
     - cron: '0 9 * * 1'
   workflow_dispatch:
 
@@ -28,7 +62,21 @@ env:
 
 jobs:
   test:
-    if: github.event_name != 'schedule'
+    # Two kinds of pull request cost ~13 minutes and tell us nothing:
+    #
+    #   * a draft, which is still being pushed to; and
+    #   * a `docs:` one, which by this repo's convention changes Markdown plus
+    #     the version line every commit bumps in Cargo.toml and Cargo.lock.
+    #     That version bump is why `paths-ignore` cannot express this — a
+    #     docs-only PR always touches those two files.
+    #
+    # Everything that is not a pull request runs: the weekly schedule, whose
+    # real job is to leave a warm cache on main, and `workflow_dispatch`, which
+    # is the way to build a draft or a `docs:` PR by hand from the Actions tab.
+    if: >-
+      github.event_name != 'pull_request'
+      || (!github.event.pull_request.draft
+          && !startsWith(github.event.pull_request.title, 'docs:'))
     runs-on: ubuntu-latest
     # Real PostgreSQL for the database-backed suites (fcp-storage-postgres,
     # fcp-api-core, and the per-binary smoke tests). They create and drop a
@@ -86,6 +134,11 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      # On a pull request this restores; on the weekly run on main it is what
+      # writes the cache every branch then reads, since Actions caches are
+      # readable from the ref that wrote them and from the default branch.
+      # `save-if` is left at its default so both do save: within one pull
+      # request the second and later runs want the first one's work too.
       - name: Restore cargo cache
         uses: Swatinem/rust-cache@v2
       # `cargo fmt --all` also reformats the path dependencies under external/, which are
@@ -106,6 +159,11 @@ jobs:
 
   security-audit:
     name: Security Audit
+    # Cheap enough (~20s) to keep running on `docs:` PRs, which do change
+    # Cargo.lock; drafts are still skipped along with the test job.
+    if: >-
+      github.event_name != 'pull_request'
+      || !github.event.pull_request.draft
     runs-on: ubuntu-latest
     steps:
       # cargo-audit reads the committed Cargo.lock, so this job does not need
