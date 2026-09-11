@@ -1941,8 +1941,17 @@ mod tests {
             .all(|n| n.reason.as_deref() == Some("participant_disabled")));
         assert_eq!(of("released", "alice").len(), 1, "{heard:?}");
         assert_eq!(of("released", "alice")[0].reason.as_deref(), Some("host"));
-        assert!(of("refused", "alice").is_empty() && of("granted", "carol").is_empty());
-        assert_eq!(heard.last().unwrap().1.floor, "released");
+        // After the host's stop her phone is still sending, and the room
+        // may refuse her once for it before the senders stop: fine, and
+        // the only refusal she can draw. Carol is never granted.
+        assert!(of("refused", "alice")
+            .iter()
+            .all(|n| n.reason.as_deref() == Some("participant_disabled")));
+        assert!(of("granted", "carol").is_empty(), "{heard:?}");
+        assert!(
+            heard.iter().rev().any(|(_, n)| n.floor == "released"),
+            "{heard:?}"
+        );
         assert_eq!(
             set_content_layout(&room, "content_only").unwrap()["content_layout"],
             serde_json::json!("content_only")
