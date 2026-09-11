@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use forge_conference::video::{VideoBackend, VideoRoom, VideoRoomSettings};
+use forge_conference::video::{ContentGate, VideoBackend, VideoRoom, VideoRoomSettings};
 use forge_conference::ConferenceRoom;
 use forge_core::VideoCodec;
 use forge_video::bench::{self, BenchSettings};
@@ -211,16 +211,37 @@ impl VideoCapacity {
         )
     }
 
-    /// What a room's video costs now: a decode per source at what it sends
-    /// (the room's canvas until frames arrive), an encode per flavor, a
-    /// composite per output at the room's target rate.
+    /// What a shared screen costs to admit (§15.6): one more decode, at
+    /// the content cap and the room's default rate, priced at the dearest
+    /// codec this node runs since the codec is the sender's choice. Asked
+    /// before the floor is granted, so a share the node cannot afford is
+    /// refused rather than the room slowed.
+    pub fn content_cost(&self, settings: &VideoRoomSettings) -> u32 {
+        self.codecs
+            .iter()
+            .map(|&c| self.decode_units(c, settings.content_max_resolution, settings.fps.max(1)))
+            .max()
+            .unwrap_or_else(|| {
+                units(
+                    CostTable::worst(&self.table.decode),
+                    settings.content_max_resolution,
+                    settings.fps.max(1),
+                )
+            })
+    }
+
+    /// What a room's video costs now: a decode per source — a camera or a
+    /// shared screen — at what it sends (the room's canvas until frames
+    /// arrive), an encode per flavor, a composite per output at the room's
+    /// target rate. A presentation composite has one more tile than the
+    /// room has cameras, which `sources` already counts.
     pub fn room_cost(&self, video: &VideoRoom) -> u32 {
         let st = video.status();
         let fps = st.target_fps.max(1);
         let decode: u32 = video
             .participants()
             .iter()
-            .filter_map(|p| p.source.as_ref())
+            .flat_map(|p| p.source.iter().chain(p.content.iter()))
             .map(|s| {
                 let resolution = if s.resolution.pixels() == 0 {
                     st.resolution
@@ -467,6 +488,26 @@ fn idle_flavors(
         .collect()
 }
 
+/// The room asks before it grants the floor (§15.6): a share is one more
+/// decode, reserved like a join and priced into `committed` once the next
+/// recompute sees the content source in the room.
+impl ContentGate for VideoCapacity {
+    fn admit(&self, room: &str, participant: &str) -> bool {
+        let cost = self.content_cost(&VideoRoomSettings::default());
+        let admitted = self.try_reserve(cost);
+        if !admitted {
+            warn!(
+                room,
+                participant,
+                cost,
+                left = self.left(),
+                "screen share refused: over the video budget"
+            );
+        }
+        admitted
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -578,6 +619,7 @@ mod tests {
                     fps: None,
                     max_kbps: None,
                     scope: None,
+                    view: None,
                 },
             )
             .unwrap();

@@ -1358,6 +1358,36 @@ Decisions proposed with this plan, each open to reversal:
   now); H.265 or 4K content; annotation, remote control, or any
   application-sharing protocol; the GPU backend (phase 8).
 
+**7a as built (2026-09-11, forge-media `v2026.09.11`; FCP v0.25.123).**
+As planned, with the mechanism settled where the plan left it open. The
+floor is a `ContentFloor` behind the room: the first content packet takes
+it (`push_rtp_kind`), `request_content` / `release_content` are the
+explicit forms BFCP will use, `stop_content` is the host's, and a host's
+stop also marks the presenter `content_enabled = false`, since a browser
+that keeps sending would otherwise have the floor straight back — the
+plan's rule that the floor is implicit needed that one exception. A
+refused sender is told once per floor, not per packet, through
+`VideoRoomEvent::Content { Refused(..) }`, which is what 7c's SIP INFO
+will carry. Idle is judged on packets, not frames, and a content source
+has no freeze timeout at all. The content channel's cap is a room setting
+(`content_max_resolution`, 1080p) rather than a constant, and a source
+over it is shrunk at decode with the same box filter the compositor uses
+for content tiles. The content channel is not on the resolution ladder; it
+moves in frame rate under the ladder's own thresholds and windows
+(`Subscriber::fps_move`, floor 2 fps), and shedding takes every other
+output to the bottom rung before it touches one. `Layout::Presentation`
+reuses the active-speaker geometry with the strip one slot shorter, and
+`content_only` is the spotlight geometry with a content tile. The
+compositor draws a content tile with no border, band or avatar and paints
+its bars in the background colour. A presenter's own content channel is
+sent nothing at all, decided per subscriber at the tick rather than
+through a scope, so content subscribers still share one encoder. FCP's
+share: `VideoCapacity` implements `ContentGate` — a grant reserves one
+decode at the content cap, at the dearest codec the node runs — installed
+on the room when its video is enabled, and `room_cost` prices content
+sources beside cameras; the events and JSON for the content section come
+with 7b.
+
 ## 16. Resolved questions
 
 Raised with the first draft and decided 2026-09-04, each as recommended.
