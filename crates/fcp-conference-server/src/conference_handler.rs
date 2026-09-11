@@ -3111,6 +3111,10 @@ impl ConferenceCallHandler {
             room_number: room_number.to_string(),
             node_id: self.node_id.clone(),
             pumps: Arc::clone(&self.video_event_pumps),
+            content_gate: self
+                .video_capacity
+                .clone()
+                .map(|c| c as Arc<dyn forge_conference::video::ContentGate>),
         };
         match video_bridge::attach_video(room, backend, participant_id, display_name, &leg, sink) {
             Some(fut) => {
@@ -4285,6 +4289,10 @@ impl ConferenceCallHandler {
             room_number: room_number.to_string(),
             node_id: self.node_id.clone(),
             pumps: Arc::clone(&self.video_event_pumps),
+            content_gate: self
+                .video_capacity
+                .clone()
+                .map(|c| c as Arc<dyn forge_conference::video::ContentGate>),
         };
         match video_bridge::attach_trunk_video(room, backend, participant_id, peer_node, &leg, sink)
         {
@@ -5237,6 +5245,10 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 room_number: room_number.clone(),
                 node_id: self.node_id.clone(),
                 pumps: Arc::clone(&self.video_event_pumps),
+                content_gate: self
+                    .video_capacity
+                    .clone()
+                    .map(|c| c as Arc<dyn forge_conference::video::ContentGate>),
             };
 
             // Load announcement sound (short TTS message like "Please wait...")

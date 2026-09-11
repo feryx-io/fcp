@@ -16,8 +16,8 @@ use fcp_core::{Meeting, TenantId};
 use fcp_events::{ConferenceEvent, EventPublisher, PlatformEvent};
 use fcp_media::{video_codec_to_forge, NegotiatedVideo, SrtpSdpContext};
 use forge_conference::video::{
-    OutputScope, PassthroughMode, SubscribeRequest, VideoBackend, VideoRoom, VideoRoomEvent,
-    VideoRoomSettings, VideoSubscription,
+    ContentGate, OutputScope, PassthroughMode, StreamKind, SubscribeRequest, VideoBackend,
+    VideoRoom, VideoRoomEvent, VideoRoomSettings, VideoSubscription,
 };
 use forge_conference::ConferenceRoom;
 use forge_rtp::rtcp::{PsFeedback, RtcpPacket};
@@ -127,7 +127,7 @@ pub fn participant_video_json(
             // On the fast path this participant is watching one sender's
             // own stream rather than a composite (§5.6).
             if let Some(source) = sub.forwarding {
-                json["forwarding"] = serde_json::json!(source);
+                json["forwarding"] = serde_json::json!(source.to_string());
             }
         }
         json["speaking"] = serde_json::json!(info.speaking);
@@ -405,6 +405,9 @@ pub struct VideoEventSink {
     /// Rooms with a pump running, so two callers joining at once start
     /// one pump, not two.
     pub pumps: Arc<dashmap::DashMap<String, ()>>,
+    /// Whether the node can afford a screen share (§15.6): the video
+    /// budget, asked before the room grants the floor. `None` admits all.
+    pub content_gate: Option<Arc<dyn ContentGate>>,
 }
 
 /// Put the participant on the room's video: enable the room's video if
@@ -422,6 +425,7 @@ pub fn attach_video(
 ) -> Option<impl Future<Output = ()> + Send + 'static> {
     let video = room.enable_video(leg.settings.clone(), backend);
     video.set_local_node(&sink.node_id);
+    video.set_content_gate(sink.content_gate.clone());
     if sink.pumps.insert(sink.room_number.clone(), ()).is_none() {
         spawn_event_pump(&video, sink);
     }
@@ -448,6 +452,10 @@ pub fn attach_video(
             // peers' tiles alike; the room's `exclude_self` decides
             // whether their own tile is in it.
             scope: None,
+            // The composite: the layout, and the presentation while a
+            // screen is shared (§15.6). A content section of the caller's
+            // own is 7b.
+            view: None,
         },
     ) {
         Ok(s) => s,
@@ -509,6 +517,7 @@ pub fn attach_trunk_video(
             fps: None,
             max_kbps: None,
             scope: Some(OutputScope::LocalOnly),
+            view: None,
         },
     ) {
         Ok(s) => s,
@@ -596,6 +605,7 @@ fn conference_event(
         // join and leave.
         VideoRoomEvent::ParticipantState {
             participant_id,
+            kind: StreamKind::Camera,
             state,
         } if !participant_id.starts_with("__") => Some(ConferenceEvent::VideoStateChanged {
             room_number: sink.room_number.clone(),
@@ -604,7 +614,16 @@ fn conference_event(
             tenant_id: sink.tenant_id,
             timestamp: SystemTime::now(),
         }),
+        // A shared screen's state, and the floor changing hands, reach
+        // the bus with the content section itself (§15.6, 7b).
         VideoRoomEvent::ParticipantState { .. } => None,
+        VideoRoomEvent::Content {
+            participant_id,
+            event,
+        } => {
+            debug!(room = %sink.room_number, participant = %participant_id, ?event, "screen share");
+            None
+        }
         // The last resort: shedding had nothing left to give (§9.2).
         VideoRoomEvent::FpsChanged {
             from,
@@ -668,6 +687,7 @@ fn conference_event(
             layout,
             pinned,
             spotlight,
+            content_layout: _,
         } => Some(ConferenceEvent::VideoLayoutChanged {
             room_number: sink.room_number.clone(),
             layout: layout.name().to_string(),
@@ -1026,6 +1046,7 @@ mod tests {
             room_number: "1000".into(),
             node_id: "conf-a".into(),
             pumps: Arc::new(dashmap::DashMap::new()),
+            content_gate: None,
         };
         let hd = Resolution::new(1280, 720);
         let sd = Resolution::new(640, 360);
@@ -1201,6 +1222,7 @@ mod tests {
             room_number: "1000".into(),
             node_id: "conf-a".into(),
             pumps: Arc::clone(&pumps),
+            content_gate: None,
         };
 
         // Server-side sockets for the two legs, and the "phones".
@@ -1268,6 +1290,7 @@ mod tests {
             bitrate_kbps: 300,
             keyframe_interval: 30,
             profile: String::new(),
+            content: Default::default(),
         };
         let mut enc: Box<dyn VideoEncoder> = raw_registry()
             .encoder(&enc_settings, &MediaDevice::Host)
@@ -1498,6 +1521,7 @@ mod tests {
                 room_number: "2000".into(),
                 node_id: "conf-a".into(),
                 pumps: Arc::clone(&pumps),
+                content_gate: None,
             },
         );
         let mut events = bus.subscribe(EventFilter::default()).await.unwrap();
@@ -1629,6 +1653,7 @@ mod tests {
             room_number: "2000".into(),
             node_id: "conf-a".into(),
             pumps: Arc::clone(&pumps),
+            content_gate: None,
         };
         let leg = |port: u16| VideoLeg {
             port_pair: PortPair::new(port).unwrap(),
@@ -1755,6 +1780,7 @@ mod tests {
                 room_number: "3000".into(),
                 node_id: "conf-a".into(),
                 pumps: Arc::clone(&pumps),
+                content_gate: None,
             },
         );
         let mut events = bus.subscribe(EventFilter::default()).await.unwrap();
