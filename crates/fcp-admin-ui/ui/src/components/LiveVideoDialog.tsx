@@ -219,6 +219,12 @@ export function LiveVideoDialog({ room, onOpenChange }: {
                             {v.codec}{v.resolution ? ` ${v.resolution}` : ''}{typeof v.fps === 'number' ? ` @ ${v.fps} fps` : ''}
                             {typeof v.bitrate_kbps === 'number' && <> · {v.bitrate_kbps} kb/s</>}
                             {typeof v.frames_lost === 'number' && v.frames_lost > 0 && <> · {v.frames_lost} lost</>}
+                            {/* The rung they are being sent, when the ladder
+                                has moved them off the room's own size. */}
+                            {v.rung && video?.resolution && v.rung !== video.resolution && (
+                              <> · <span title={`Their link is carrying ${v.remb_kbps ?? '?'} kb/s`}>sending {v.rung}</span></>
+                            )}
+                            {v.forwarding && <> · direct from {nameOf(v.forwarding) ?? v.forwarding}</>}
                           </>
                         ) : 'audio only'}
                       </TableCell>
