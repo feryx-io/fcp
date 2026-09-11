@@ -76,8 +76,9 @@ Goals, in delivery order (§15):
 
 Non-goals for now: simulcast/SVC *egress* (we send one layer per
 output; simulcast *ingress* from browsers is accepted and the best layer
-is used), screen-share as a distinct stream type (a second video section;
-after phase 4), H.265 encode on the CPU path (no permissively licensed
+is used), two simultaneous screen shares or a separate content track in
+recordings (screen share itself is phase 7, §15.6), H.265 encode on the
+CPU path (no permissively licensed
 encoder; decode is optional; hardware H.265 encode comes with the GPU
 backend), end-to-end encryption, per-participant private layouts beyond
 "exclude self".
@@ -668,7 +669,8 @@ crate (`forge-rtp` 111, `forge-sdp` 90, `forge-core` 22).
 | 4 | **WebRTC** — done 2026-09-07 (§15.3): forge-webrtc video (forge-media `v2026.09.07.1`), the gateway's media path and direct room join (v0.25.107), join tokens, join page and surface (v0.25.108) | forge-media, FCP | done |
 | 5 | **Recording and cascade** — done 2026-09-08 (§15.4): WebM muxing and a recording registry (v0.25.110–112), trunk video (v0.25.113/114), cross-node speaker state (v0.25.115); MP4 deferred | both | done |
 | 6 | **Passthrough fast path, bitrate ladder, polish** — done 2026-09-10 (§15.5): single-source forwarding (v0.25.117/118), ladder switching (v0.25.119), overload shedding and parser fuzzing (v0.25.121; forge-media `v2026.09.10`) | both | done |
-| 7 | **GPU backend**: `hwaccel` feature (FFmpeg device contexts), device codecs, device scale/overlay composition, per-device budgets and self-benchmark, placement by capability, PSNR parity tests against the host path | forge-media, FCP | 3–4 weeks + a GPU box |
+| 7 | **Screen share** — planned 2026-09-10 (§15.6): a content source kind with one floor per room, `Composite` / `Cameras` / `Content` views and a presentation arrangement, screen-content encoder modes (7a); the RFC 4796 content section on SIP, the floor, settings, API, events and UI (7b); RFC 8285 header extensions, a second video mid and the join page's share button (7c); content across trunks with a room-wide floor (7d); BFCP floor control for SIP room systems in a new `forge-bfcp` (7e) | both | ~5 weeks |
+| 8 | **GPU backend**: `hwaccel` feature (FFmpeg device contexts), device codecs, device scale/overlay composition, per-device budgets and self-benchmark, placement by capability, PSNR parity tests against the host path | forge-media, FCP | 3–4 weeks + a GPU box |
 
 Each phase is one PR per repository (forge-media release tag, then the
 FCP bump), reviewed before the next starts. Sizes are for one person and
@@ -1166,6 +1168,196 @@ applied to it. The eight targets were first compiled and run on
 2026-09-10, before the release was tagged: 30 seconds each, 2.5–10
 million inputs a target, no findings.
 
+### 15.6 Phase 7 plan — screen share (2026-09-10)
+
+Screen share is the phase §16 put after phase 6: a participant sends a
+**second video stream**, the content of a screen or a window, and the
+room shows it to everyone, records it, and carries it across nodes. On
+SIP it is a second `m=video` section marked `a=content:slides` (RFC
+4796); on WebRTC it is a second video track. The mixer treats it as a
+new *kind* of source, not as another camera: it is drawn large without a
+name banner, it is never a "tile" the speaker election or a pin can
+claim, and there is one of it per room at a time. The GPU backend, which
+§15 called phase 7 until now, becomes phase 8; it still waits on a
+machine with a GPU, and screen share does not.
+
+Five blocks, each a forge-media release and an FCP PR where both are
+touched, and about five weeks. Block 7c is the largest single piece of
+new work; block 7e is the one that decides whether SIP room systems can
+share at all.
+
+**What the surveys found.** Every video path, in both repositories,
+holds "the participant's video" as a single thing. In forge-conference
+the participant id is the source key, the tile id, the subscriber key
+and the speaker id, in three `DashMap<String, _>`s: `add_source` called
+twice for one id silently replaces the first source, `subscribe`
+unsubscribes before it inserts, `OutputKey` names a scope and a
+resolution and nothing else, and `RecordRequest` has no way to ask for
+a different output. `TileSource` has no field that could mark a tile as
+content, and `Layout` has no arrangement with a content region. Every
+encoder is camera-tuned with no knob for screen content: OpenH264 is
+built with `CameraVideoRealTime` hardcoded, libvpx never sets
+`VP9E_SET_TUNE_CONTENT`, SVT-AV1 never sets `screen_content_mode`, and
+`EncoderSettings` has no field to carry the hint. A decoded frame over
+the 1080p source cap is *dropped*, and a source that stops changing is
+*lost* after `freeze_timeout` (2 s) — both right for a camera and wrong
+for a static slide.
+
+In SDP, both repositories take the *first* active `m=video` and reject
+the rest: `forge_sdp::active_video`, `fcp_media::parse_video_offer`,
+`remote_video_endpoint`, `parse_video_sdes_crypto`, the `negotiated.is_none()`
+guard in `answer_sections`, and forge-webrtc's `parse_remote`. A phone
+offering a camera and a slides section today gets the slides section
+answered with port 0, correctly, and never a way to send them.
+`a=content` is read or written nowhere; sip-sdp round-trips it as a
+generic attribute, so parsing it is a helper, not a parser change.
+`rewrite_for_anchoring` has a latent bug the second section exposes: the
+audio arm is guarded by `!audio_seen`, the video arm is not, so two video
+sections would both be rewritten to one server port. The gateway relays
+one video SSRC per direction, sorts inbound browser packets by **payload
+type alone** (`transport.rs:898`), has no RFC 8285 header extensions and
+no `a=extmap`, and can neither send nor receive a re-INVITE (its inbound
+handler answers one with 405). The join page uses `getUserMedia` only,
+`addTrack` never `addTransceiver`, reads no mid, and renders every
+inbound track into one `<video>`. `handle_info` on the conference server
+recognises DTMF `Signal=` lines and answers 200 to anything else.
+
+Floor control does not exist in any form. The only BFCP in the tree is a
+test fixture proving that `m=application … UDP/BFCP` is rejected with
+port 0, and sip-sdp parses `UDP/BFCP` as `Protocol::Other`. This matters
+more than it looks: Cisco, Poly, Yealink and Lifesize room systems share
+content over SIP **only** when the answer carries a BFCP section and a
+floor server grants their request; without one they disable the feature.
+Browsers need no floor protocol, so the mixer, the SIP section handling
+and the browser path can be built and proven before BFCP, which is why
+it is the last block rather than the first.
+
+What is already right: the compositor letterboxes every tile
+(`scale::letterbox`), so 16:10 and 4:3 captures need no aspect work;
+`reject_section` and `answer_video` are per-section and mirror `a=mid`;
+hold and resume already rewrite every RTP section; the retransmission
+cache, keyframe gate and `StreamRewriter` are per subscription and carry
+over; and SRTP keeps state per SSRC, so a third socket pair on SIP and a
+second SSRC on WebRTC are both within what phase 4 built.
+
+**The model.** Three ideas carry the whole phase:
+
+1. A source has a **kind**: `StreamKind::Camera` or `StreamKind::Content`.
+   Sources, tiles and ingress are keyed by `(participant, kind)`. A
+   participant has at most one of each. The camera keeps every existing
+   behaviour; the content source has no freeze timeout (the last frame
+   is held), is scaled to the cap rather than dropped when it is larger,
+   and is priced as one decode.
+2. A room has at most **one content source live at a time** — the
+   *floor*. It is granted to the first participant whose content packets
+   arrive (implicit floor, for browsers and BFCP-less endpoints) or to
+   the participant whose BFCP `FloorRequest` is accepted (7e), refused
+   while someone else holds it or the meeting's policy says no, and
+   released when the holder stops (port 0 re-INVITE, track ended, BFCP
+   `FloorRelease`), leaves, goes idle for `content_idle_secs`, or is
+   stopped by a host. A refused sender's packets are dropped.
+3. An output has a **view**, the third field of `OutputKey` beside scope
+   and resolution: `View::Composite` (the meeting's layout, and the
+   *presentation* arrangement while content is live), `View::Cameras`
+   (the meeting's layout, never content) and `View::Content` (the
+   content alone, letterboxed, no chrome). A subscriber with one video
+   section, a recording, and a trunk's main section take `Composite`; an
+   endpoint with a content section takes `Cameras` on its main section
+   and `Content` on its content section, which is what room systems and
+   the join page expect: people in one picture, the slides in another.
+   `Content` is the view the passthrough fast path was made for — there
+   is no banner to lose — so a subscriber that can decode the presenter's
+   stream is forwarded it verbatim, text unblurred by a transcode.
+
+| Block | Deliverable | Where |
+|---|---|---|
+| 7a | **The content source, the floor and the views.** forge-media (release): `StreamKind` and `(participant, kind)` keys for sources, tiles and ingress in `VideoRoom` (`add_source` / `push_rtp` / `handle_feedback` / `remove_source` take the kind; the camera-only forms stay as they are); `ContentFloor` with `request_content(participant) -> Granted \| Refused(reason)`, `release_content`, `content_holder()`, an idle timeout on RTP not frames, and `VideoRoomEvent::Content { participant, node, state: Started \| Stopped(reason) }`; `View` on `OutputKey`, `SubscribeRequest.view` and `RecordRequest.view` (default `Composite`); `Layout::Presentation` — the content in `ActiveSpeaker`'s main region and up to five cameras in its strip, ordered by speech recency, the content region drawn without band, border or avatar — and `content_only`, a `Composite` that shows the content alone; `TileSource.kind`; a box-filter downscale for content tiles (bilinear stays for cameras and for upscaling); `EncoderSettings.content: ContentHint { Camera, Screen }` wired to OpenH264 `ScreenContentRealTime`, `VP8E_SET_SCREEN_CONTENT_MODE` / `VP9E_SET_TUNE_CONTENT`, and SVT-AV1 `screen_content_mode`, set for every `Content` view flavor; passthrough for the `Content` view under every `PassthroughMode` but `Off`; the content view kept off the resolution ladder (REMB lowers its bitrate, then its frame rate) and shed last; `add_remote` with a kind, so a trunk can bring a content source; capacity: a content source is a decode, a presentation composite is priced at `tiles + 1`. forge-sdp: `content_of(&MediaDescription) -> Option<Content>` and `set_content` for RFC 4796 (`slides`, `speaker`, `sl`, `main`, `alt`), `label` / `set_label` for RFC 4574, and `video_sections(&sdp) -> VideoSections { camera, content }` beside `active_video`. Tests: golden images for `Presentation` and `content_only`, a content source that stops sending and is not lost, floor grant / refuse / release / idle, a `Content` subscriber forwarded and a `Cameras` subscriber unchanged by a share, a recording that follows `Composite` into presentation and back | forge-conference, forge-video, forge-video-codecs, forge-sdp |
+| 7b | **The content section on SIP, and the surface.** fcp-media: `parse_video_offer` keeps its meaning and gains `parse_video_sections -> VideoSections { camera, content }`; `AnswerOptions.content: Option<VideoAnswer>` and `Answer.content`; the camera is the first active video section without `a=content:slides`, the content is the first with it, any further video section is rejected as today; `OfferOptions.content` and `construct_offer` emitting `a=content:slides` and `a=label`; `remote_content_endpoint`, `parse_content_sdes_crypto`; `AnchorPorts.content` and the `!video_seen` guard, so anchoring can never alias two sections onto one port (the B2BUA still disables video when it anchors; only the bug is fixed). Conference server: a third socket pair and SRTP context, `ParticipantSession.content: Option<VideoLeg>` (the leg type gains its kind), join / re-INVITE add and remove / UPDATE / BYE for the content leg, the content bridge task pushing to the room under `StreamKind::Content`, the floor per §15.6's rule with `[conference] content_idle_secs` (30) and `try_reserve` of one decode before a grant; `Meeting.video_content_share` (`off` \| `hosts` \| `anyone`, default `anyone`) and `Meeting.video_content_layout` (`presentation` \| `content_only`, default `presentation`), migration 056, `validate_video_settings`, create/update API and the admin UI's meeting forms; `GET …/video` gains room `content {participant_id, display_name, node_id, since, codec, resolution, layout}` and per-participant `video.content {state, codec, resolution, fps, …, channel}`; `POST …/video/content/stop` and `PUT …/video/content-layout`, their `/internal` twins and the admin API's `/conferences/live/…` proxies; the Live Video dialog shows the presenter, a Stop share button and the content layout; `conference.content_started {room_number, participant_id, node_id, codec}` and `conference.content_stopped {…, reason: ended \| idle \| host \| replaced \| left}`; `video_state_changed` gains `stream` (`camera` \| `content`, default `camera` for older nodes). Recording needs no code: the recorder's `Composite` view follows a share into presentation and back, one video track. Tests: `sdp_audio_video_content()` beside `sdp_audio_video()` in fcp-sip's fixtures; fcp-media answer, reject-the-third, anchoring and endpoint tests on two video sections; a conference-server loopback in which a raw-codec content source reaches a second participant's content socket forwarded and a third participant's main socket composited; the floor refused to a second sharer and to a guest under `hosts` | fcp-media, fcp-conference-server, fcp-core, fcp-events, fcp-api-core, fcp-admin-ui, fcp-sip (fixtures) |
+| 7c | **The browser: header extensions, a second video mid, the share button.** forge-media (release): forge-rtp parses RFC 8285 one-byte and two-byte header extensions (`RtpHeader::extensions()`); forge-webrtc offers `a=extmap` for `urn:ietf:params:rtp-hdrext:sdes:mid`, echoes what the answer accepts, and sorts inbound RTP by **mid**, learning SSRC → section from the first packet that carries one (the answer's `a=ssrc` lines as the fallback, payload type as the last resort); `LocalParams.video` becomes a list, `VideoConfig.content: bool` adds a second video section (`a=mid:2`, `a=content:slides`, BUNDLE `0 1 2`), `TransportEvent::VideoRtp` carries the section, `video_sender(StreamKind)` and a second video SSRC; `PeerConfig::video` and `video_sender()` keep their meaning for callers with one section. Gateway: both video sections offered to the browser and to the conference server from the start, so **no renegotiation on either leg**; `SipLeg` / `BrowserLeg` carry a content leg beside the camera and the relay maps each section's SSRC pair and feedback separately; `JoinRequest.content` (default true when `video` is); session JSON `content {sending, floor, presenter}`. The conference server tells a gateway session about its floor with a SIP `INFO` (`application/vnd.fcp.content+json`, `{floor: granted \| refused \| released, reason, presenter}`), sent only to participants that joined with `X-FCP-Join`; the gateway's inbound handler answers it and updates the session. Join page: a Share screen / Stop sharing button that calls `getDisplayMedia`, puts the track on the content transceiver with `replaceTrack` and clears it on stop or when the track ends; a second `<video>` for the room's content, shown large with the composite small while it flows; "N is sharing" from the session's `content`. `docs/WEBRTC.md` updated. Tests: forge-webrtc loopback with two video sections both ways, demuxed by mid and by SSRC with the extension stripped; `tests/relay.rs` with a content leg; header-extension parsing in forge-rtp's fuzz seeds | forge-rtp, forge-webrtc, fcp-webrtc-gateway |
+| 7d | **Content across nodes.** Trunk offers and answers carry a content section (`a=content:slides`, payload type 98, its own port pair and SRTP under `cluster.trunk_srtp`); `TrunkLeg.content`; the node holding the floor sends its presenter's content `LocalOnly`, the peer attaches it with `add_remote(…, Content)`, so every node's `Composite` and `Content` views show it; the floor is a room-wide fact agreed the way the speaker is (§15.4 5c): `POST /internal/conferences/{room}/content` carries `{node, participant_id, display_name, since}`, the earliest `since` wins with the node-then-id tie-break, a node whose local holder loses releases it (`replaced`) and tells the endpoint, claims expire when not refreshed; `GET …/video`'s merged read names the presenter and their node; `content_started` / `content_stopped` emitted once, from the holder's node; `room_trunk_json` reports `content`. Tests: two in-process rooms trunked, a share on one visible on the other's subscribers, a second share on the other node refused, the holder leaving freeing the floor room-wide | fcp-conference-server, fcp-cluster (claim shape) |
+| 7e | **BFCP for SIP room systems.** forge-media (release): a new `forge-bfcp` crate — RFC 8855 message codec (common header, the attributes a floor server needs: BENEFICIARY-ID, FLOOR-ID, FLOOR-REQUEST-ID, PRIORITY, REQUEST-STATUS, ERROR-CODE, PARTICIPANT-PROVIDED-INFO, the grouped FLOOR-REQUEST-INFORMATION / REQUESTED-BY / FLOOR-REQUEST-STATUS / OVERALL-REQUEST-STATUS), `Hello` / `HelloAck`, `FloorRequest` / `FloorRequestStatus`, `FloorRelease`, `FloorQuery` / `FloorStatus`, `Error`, the RFC 8856 UDP framing (the response flag, retransmission with the client's transaction id) and TCP framing; a transport-agnostic `FloorServer` state machine for one floor per conference (request → Pending → Granted or Denied, Released, Revoked) with the tests RFC 8855 §13 implies; a fuzz target beside the others. FCP: the conference server answers `m=application … UDP/BFCP *` (and `TCP/BFCP`) with `a=floorctrl:s-only`, `a=confid`, `a=userid`, `a=bfcpver:2` and `a=floorid:1 mstrm:<label of the content section>`, on one `[conference] bfcp_bind` socket demuxed by peer address and user id; a `FloorRequest` is the explicit floor claim into the same `ContentFloor` as 7b (a granted request opens the content leg's ingress; an implicit sender on a BFCP endpoint is refused), a host stop is `Revoked`, `FloorStatus` is pushed to every BFCP endpoint on each change; `bfcp` in participant JSON. The B2BUA and SBC keep rejecting BFCP sections when they anchor, so BFCP works for calls that reach the conference server directly or relayed. Tests: a scripted BFCP client in the conference-server tests (Hello, request, grant, release, revoke, query) over UDP and TCP; an SDP answer test against a Cisco-shaped and a Poly-shaped offer | forge-bfcp, fcp-conference-server, fcp-media |
+
+Decisions proposed with this plan, each open to reversal:
+
+- **Content is a source kind, not a participant.** The alternative —
+  a synthetic participant `"<id>#content"` — needs no new keys and is
+  what the trunk did for its remote tile, but it would draw a labelled
+  tile, enter the speaker election, be pin-able, count against
+  `max_tiles`, and confuse `exclude_self`. The kind costs a key change in
+  three maps and buys every rule above.
+- **One content source per room at a time.** Two people sharing at once
+  is a product question with no good answer on a one-picture endpoint,
+  and every MCU that matters makes the same call. A second sharer is
+  refused, not queued.
+- **The floor is implicit unless the endpoint speaks BFCP.** Whoever's
+  content packets arrive first holds it. Browsers and BFCP-less phones
+  need nothing more; a BFCP endpoint gets the explicit protocol it
+  requires in 7e, on the same floor. The alternative — driving the floor
+  through RFC 3264 directions with a re-INVITE per change — would put a
+  signaling round trip to every participant on each share, and the
+  gateway cannot receive a re-INVITE at all.
+- **The floor is granted before the picture is decoded.** A grant costs
+  `try_reserve` of one decode; over budget, the floor is refused rather
+  than the room slowed, which keeps 6c's shedding order honest.
+- **Endpoints with a content channel get people and slides as two
+  pictures; endpoints without one get the presentation composite.** That
+  is the view rule, and it is why the composite needs a `Presentation`
+  arrangement at all. `content_only` exists for the meeting that wants
+  the slides full-frame on every phone regardless.
+- **The content channel is capped at 1080p, not at the meeting's
+  `video_max_resolution`.** Text at 360p is useless, and a forwarded
+  stream costs no encode. A larger capture is scaled to 1080p at decode
+  rather than dropped as a camera would be; 4K content waits for the GPU
+  backend. Where the content is transcoded (the subscriber cannot decode
+  the presenter's codec, or the meeting is `content_only` under a
+  composite), its flavor is bounded by what the subscriber negotiated.
+- **The content view is off the resolution ladder and is shed last.**
+  Under REMB its bitrate falls, then its frame rate; resolution only
+  moves when every other output is at the bottom rung. A frame rate of
+  two on sharp slides is the right degradation; a blurred slide at
+  fifteen is not.
+- **Screen-content encoder modes are set per flavor, not per room.**
+  `EncoderSettings.content` is `Screen` for every `Content` view flavor
+  and `Camera` elsewhere; the presentation composite is camera-tuned,
+  since most of its pixels are still faces. The recording is a
+  `Composite` and follows the same rule.
+- **Sharing policy is one setting.** `video_content_share` is `off`,
+  `hosts` (the host PIN or a `host` join token) or `anyone`, default
+  `anyone` when video is on. No presenter role is added to join tokens;
+  `host` already is one.
+- **No renegotiation on the browser path.** Both video sections are
+  offered from the start on both legs and the browser swaps its content
+  track in with `replaceTrack`. Offering a section that may never carry
+  packets is cheap; adding re-INVITE to the gateway and a second
+  `createOffer` round to a live page is not, and every deferred WebRTC
+  item (simulcast, RTX) would want the same mid-based demux 7c builds.
+- **The conference server tells gateway sessions about the floor with
+  SIP INFO**, and only them. A phone with BFCP has its own channel for
+  this; a phone without one has no way to show it anyway; a browser
+  needs it to stop a capture the room refused. Gateway sessions are the
+  ones that arrived with `X-FCP-Join`, which is the mark the server
+  already reads.
+- **Recording keeps one video track.** The presentation composite is
+  the record of the meeting as its single-picture participants saw it.
+  A separate content track (WebM can carry two) is deferred with MP4,
+  and would also want per-track seeking in the admin player.
+- **BFCP lives in forge-media as `forge-bfcp`.** It is conference
+  control rather than SIP, it belongs beside forge-sdp and
+  forge-conference, and forge-media's nightly fuzzing is free where
+  FCP's minutes are not. The floor server is transport-agnostic; FCP
+  owns the sockets and the SDP.
+- **Five blocks, in order; 7d and 7e are independent of each other.**
+  7a first because everything keys on it; 7b proves the model on SIP
+  with a loopback before the browser path adds RFC 8285; 7c before 7d
+  so a share can be demonstrated end to end early; 7e last because it
+  needs 7b's floor and nothing needs it.
+- **Not in this phase:** two simultaneous shares; a separate content
+  track in recordings; content over the B2BUA when it anchors (video is
+  disabled there today, unchanged); RTP-level `a=label`-only content
+  from endpoints that omit `a=content` (rejected as a third section, as
+  now); H.265 or 4K content; annotation, remote control, or any
+  application-sharing protocol; the GPU backend (phase 8).
+
 ## 16. Resolved questions
 
 Raised with the first draft and decided 2026-09-04, each as recommended.
@@ -1176,8 +1368,8 @@ Raised with the first draft and decided 2026-09-04, each as recommended.
 | Self view | **Own tile included** by default so encoders are shared; `exclude_self` per meeting, charged in the capacity model |
 | H.264 library | **OpenH264 built from source**, feature-gated. Reproducible; the C++ toolchain is only needed with the feature on |
 | Recording container | **WebM** (VP8/VP9 + Opus) by default, every part permissively licensed; MP4 (H.264 + Opus) as an option |
-| Screen share | Section handling designed in phase 3 so a second video section (RFC 4796 `a=content:slides`) is additive; **implemented after phase 6** |
-| Hardware acceleration | Revised after review: **designed in now** (device-resident frames, pipeline per device, per-device budgets, placement by capability; §5.5, §9), **built as phase 7** on FFmpeg hardware contexts once the CPU path is the proven reference |
+| Screen share | Section handling designed in phase 3 so a second video section (RFC 4796 `a=content:slides`) is additive; **implemented after phase 6** — planned as phase 7 (§15.6) |
+| Hardware acceleration | Revised after review: **designed in now** (device-resident frames, pipeline per device, per-device budgets, placement by capability; §5.5, §9), **built as phase 8** (phase 7 until screen share took the number) on FFmpeg hardware contexts once the CPU path is the proven reference |
 | Maximum resolution | **720p** by default; 1080p per meeting |
 | Dev machine memory | Phase 0 measures **relative** constants here (12 cores, 2 GB, a Microsoft VM with no GPU device); absolute capacity is re-measured once on a production-shaped node before phase 3, GPU constants on a GPU box, and every node self-benchmarks at start |
 
@@ -1188,5 +1380,7 @@ TMMBR), RFC 6184 (H.264 RTP), RFC 7798 (H.265 RTP), RFC 7741 (VP8 RTP),
 RFC 9628 (VP9 RTP), AV1 RTP payload specification (AOM), REMB
 (draft-alvestrand-rmcat-remb), transport-cc
 (draft-holmer-rmcat-transport-wide-cc-extensions), RFC 3264 (offer/
-answer), RFC 4796 (content attribute), RFC 8829 (JSEP), RFC 8834 (WebRTC
+answer), RFC 4796 (content attribute), RFC 4574 (label attribute), RFC
+8285 (RTP header extensions), RFC 8843 (BUNDLE), RFC 8855 (BFCP), RFC
+8856 (BFCP in SDP, UDP transport), RFC 8829 (JSEP), RFC 8834 (WebRTC
 media transport).
