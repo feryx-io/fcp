@@ -1266,6 +1266,10 @@ export interface MeetingResponse {
   video_exclude_self: boolean
   /** `auto`, `on` or `off`: when a viewer is sent one sender's own stream. */
   video_passthrough: string
+  /** Who may share a screen: `off`, `hosts` or `anyone`. */
+  video_content_share: string
+  /** How the composite shows a shared screen: `presentation` or `content_only`. */
+  video_content_layout: string
   video_codecs: string[]
   created_at: string
   updated_at: string
@@ -1301,6 +1305,8 @@ export interface CreateMeetingRequest {
   video_fps?: number
   video_exclude_self?: boolean
   video_passthrough?: string
+  video_content_share?: string
+  video_content_layout?: string
   video_codecs?: string[]
 }
 
@@ -1333,5 +1339,7 @@ export interface UpdateMeetingRequest {
   video_fps?: number
   video_exclude_self?: boolean
   video_passthrough?: string
+  video_content_share?: string
+  video_content_layout?: string
   video_codecs?: string[]
 }

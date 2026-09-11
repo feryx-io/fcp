@@ -590,11 +590,20 @@ ingress accepted (highest layer used). The gateway gains a direct
 `180p`, `360p`, `720p`, `1080p`); `video_fps` 15 (1–30);
 `video_exclude_self` false; `video_codecs` `["H264","VP8"]` (SDP names,
 at least one, no repeats) — `Meeting::validate_video_settings` enforces
-these and every create/update API returns 400 with the message.
+these and every create/update API returns 400 with the message. *Added
+in 7b:* `video_content_share` (`off`, `hosts`, `anyone`; default
+`anyone`) and `video_content_layout` (`presentation`, `content_only`;
+default `presentation`), migration 056.
 
 **Conference API**: participant JSON gains `video: {codec, resolution,
-fps, bitrate_kbps, keyframes_sent, nacks, plis, state}`; room JSON gains
-`video: {layout, spotlight, fps, outputs: [...]}`; new endpoints
+fps, bitrate_kbps, keyframes_sent, nacks, plis, state}` — and, from 7b,
+`video.content {…, channel}` of the same shape for a shared screen's
+section and `video.presenting`; room JSON gains
+`video: {layout, spotlight, fps, outputs: [...]}` — and, from 7b,
+`video.content {participant_id, display_name, remote, held_for_secs,
+codec, resolution, fps, live}`, `video.content_layout` and a `view` per
+output; `POST …/video/content/stop` and `PUT …/video/content-layout`
+with their `/internal` twins and admin proxies; new endpoints
 `PUT /conferences/{room}/video/layout`, `POST …/video/pin/{pid}`,
 `POST …/video/spotlight/{pid}`, `POST …/participants/{pid}/video/{on|off}`,
 mirrored on the internal cross-node router. *Shipped in 3c-1*, plus
@@ -606,6 +615,10 @@ located across nodes). The admin API proxies them as
 uses that.
 
 **Events**: `conference.participant_joined` gains `has_video`;
+`conference.video_state_changed` gains `stream` (`camera` \| `content`,
+from 7b; absent from an older node and read as `camera`);
+`conference.content_started {room_number, participant_id, node_id,
+codec}` and `conference.content_stopped {…, reason}` (7b);
 new `conference.video_layout_changed` (`{layout, pinned, spotlight}`, from
 the API, a host, or a pinned participant leaving; one per hosting node),
 `conference.video_state_changed` (participant video on/off/lost/disabled/
@@ -1387,6 +1400,37 @@ decode at the content cap, at the dearest codec the node runs — installed
 on the room when its video is enabled, and `room_cost` prices content
 sources beside cameras; the events and JSON for the content section come
 with 7b.
+
+**7b as built (2026-09-11, FCP v0.25.124).** As planned. fcp-media sorts
+an offer's video sections into a camera and a content section
+(`parse_video_sections`; `parse_video_offer` keeps meaning the camera,
+so a content-only device's slides are never taken for one), answers each
+on its own port with its own key (`AnswerOptions::content`,
+`Answer::content`, `NegotiatedVideo::label`), rejects a third video
+section as before, offers a labelled `a=content:slides` section
+(`OfferOptions::content`, `CONTENT_LABEL`), and anchors each section to
+its own port — the `!video_seen` bug is fixed by classifying every
+section before the line-by-line rewrite, so two camera sections with one
+port disable the second rather than alias it. The conference server
+gives a participant a third leg: `ParticipantSession::content`, a
+`VideoLeg` with a `kind`, a third port pair and SRTP context at join,
+`prepare_leg(kind)` on a re-INVITE that adds either stream and
+`tear_down_leg(kind)` on one that removes it, `refresh_leg` for the
+address and key of a kept one, and the bridge task pushing under
+`StreamKind::Content`. The floor is the room's from 7a; FCP adds the
+policy: `video_content_share` `off` leaves the section unanswered,
+`hosts` answers a guest's section — a phone that offered one expects an
+answer — but marks them `content_enabled = false` so the room refuses
+their packets and tells them once, `anyone` answers all; the node's
+`[conference] content_idle_secs` (30) feeds the room's idle timeout. A
+caller whose offer carried a content section gets the cameras alone on
+their main section and the slides on the other, decided by attaching the
+content leg first so the camera's attach can see it; a caller with one
+section gets the composite, and one who adds a content section by
+re-INVITE mid-call keeps the composite on their main until they
+renegotiate. The recording needed no code. Not done here: a
+content-only device (slides, no camera) is answered but its content is
+priced like a camera's join; the gateway and the join page are 7c.
 
 ## 16. Resolved questions
 

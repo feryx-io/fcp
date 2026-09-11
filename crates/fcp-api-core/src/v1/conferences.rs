@@ -8,7 +8,8 @@ use axum::{
     Json,
 };
 use fcp_core::meeting::{
-    default_video_codecs, default_video_fps, default_video_layout, default_video_max_participants,
+    default_video_codecs, default_video_content_layout, default_video_content_share,
+    default_video_fps, default_video_layout, default_video_max_participants,
     default_video_max_resolution, default_video_passthrough,
 };
 use fcp_core::storage::ConferenceStore;
@@ -73,6 +74,11 @@ pub struct MeetingResponse {
     /// When a participant whose view is a single source they can decode
     /// is sent that source's own stream: `auto`, `on` or `off` (§5.6).
     pub video_passthrough: String,
+    /// Who may share a screen: `off`, `hosts` or `anyone` (§15.6).
+    pub video_content_share: String,
+    /// How the composite shows a shared screen: `presentation` or
+    /// `content_only`.
+    pub video_content_layout: String,
     pub created_at: SystemTime,
     pub updated_at: SystemTime,
 }
@@ -112,6 +118,8 @@ impl From<Meeting> for MeetingResponse {
             video_exclude_self: m.video_exclude_self,
             video_codecs: m.video_codecs,
             video_passthrough: m.video_passthrough,
+            video_content_share: m.video_content_share,
+            video_content_layout: m.video_content_layout,
             created_at: m.created_at,
             updated_at: m.updated_at,
         }
@@ -179,6 +187,10 @@ pub struct CreateMeetingRequest {
     pub video_codecs: Vec<VideoCodec>,
     #[serde(default = "default_video_passthrough")]
     pub video_passthrough: String,
+    #[serde(default = "default_video_content_share")]
+    pub video_content_share: String,
+    #[serde(default = "default_video_content_layout")]
+    pub video_content_layout: String,
 }
 
 fn default_true() -> bool {
@@ -241,6 +253,8 @@ pub struct UpdateMeetingRequest {
     pub video_exclude_self: Option<bool>,
     pub video_codecs: Option<Vec<VideoCodec>>,
     pub video_passthrough: Option<String>,
+    pub video_content_share: Option<String>,
+    pub video_content_layout: Option<String>,
 }
 
 /// GET /conferences/meetings — List all meetings for the default tenant.
@@ -317,6 +331,8 @@ pub async fn create_meeting(
         video_exclude_self: req.video_exclude_self,
         video_codecs: req.video_codecs,
         video_passthrough: req.video_passthrough,
+        video_content_share: req.video_content_share,
+        video_content_layout: req.video_content_layout,
         created_at: now,
         updated_at: now,
     };
@@ -468,6 +484,12 @@ pub async fn update_meeting(
     }
     if let Some(v) = req.video_passthrough {
         meeting.video_passthrough = v;
+    }
+    if let Some(v) = req.video_content_share {
+        meeting.video_content_share = v;
+    }
+    if let Some(v) = req.video_content_layout {
+        meeting.video_content_layout = v;
     }
     if let Some(v) = req.video_codecs {
         meeting.video_codecs = v;

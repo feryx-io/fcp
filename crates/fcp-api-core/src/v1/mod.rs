@@ -639,6 +639,14 @@ pub fn router() -> Router<ApiState> {
             post(conferences_live::participant_video),
         )
         .route(
+            "/conferences/live/:room/video/content/stop",
+            post(conferences_live::stop_content),
+        )
+        .route(
+            "/conferences/live/:room/video/content-layout",
+            put(conferences_live::set_content_layout),
+        )
+        .route(
             "/conferences/live/:room/dial-out",
             post(conferences_live::dial_out),
         )

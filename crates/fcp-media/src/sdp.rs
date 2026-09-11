@@ -97,6 +97,36 @@ fn first_section(sdp: &SessionDescription, media: MediaType) -> Option<&MediaDes
     sdp.media.iter().find(|m| m.media_type == media)
 }
 
+/// Which of a participant's video streams a section carries (RFC 4796):
+/// the camera, or a shared screen (`a=content:slides`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VideoStream {
+    Camera,
+    Content,
+}
+
+/// The first video section of the given stream, however its port is set:
+/// the first without `a=content:slides` is the camera, the first with it
+/// the content.
+fn first_video_section(sdp: &SessionDescription, stream: VideoStream) -> Option<&MediaDescription> {
+    sdp.media
+        .iter()
+        .filter(|m| m.media_type == MediaType::Video)
+        .find(|m| forge_sdp::is_slides(m) == (stream == VideoStream::Content))
+}
+
+/// The first *active* video section of the given stream.
+fn active_video_section(
+    sdp: &SessionDescription,
+    stream: VideoStream,
+) -> Option<&MediaDescription> {
+    let v = forge_sdp::video_sections(sdp);
+    match stream {
+        VideoStream::Camera => v.camera,
+        VideoStream::Content => v.content,
+    }
+}
+
 /// The codecs of one section, in format order: rtpmap entries other than
 /// telephone-event, plus well-known static types without an rtpmap.
 fn codecs_of_section(m: &MediaDescription) -> Vec<SdpCodecInfo> {
@@ -278,11 +308,21 @@ pub fn parse_sdes_crypto(sdp_body: &str) -> Vec<SdesCryptoLine> {
     parse_sdes_crypto_manual(sdp_body)
 }
 
-/// SDES crypto lines of the first video section (each section carries
-/// its own key; the audio section's never applies to video).
+/// SDES crypto lines of the camera's video section (each section carries
+/// its own key; the audio section's never applies to video, and the
+/// content section's is its own again).
 pub fn parse_video_sdes_crypto(sdp_body: &str) -> Vec<SdesCryptoLine> {
+    parse_stream_sdes_crypto(sdp_body, VideoStream::Camera)
+}
+
+/// SDES crypto lines of the shared screen's section (`a=content:slides`).
+pub fn parse_content_sdes_crypto(sdp_body: &str) -> Vec<SdesCryptoLine> {
+    parse_stream_sdes_crypto(sdp_body, VideoStream::Content)
+}
+
+fn parse_stream_sdes_crypto(sdp_body: &str, stream: VideoStream) -> Vec<SdesCryptoLine> {
     match SessionDescription::parse(sdp_body) {
-        Ok(sdp) => first_section(&sdp, MediaType::Video)
+        Ok(sdp) => first_video_section(&sdp, stream)
             .map(crypto_of_section)
             .unwrap_or_default(),
         Err(_) => Vec::new(),
@@ -474,6 +514,10 @@ pub struct VideoOfferSection<'a> {
     pub srtp: Option<&'a SrtpSdpContext>,
 }
 
+/// The `a=label` an offered content section carries (RFC 4574), by which
+/// BFCP's `a=floorid … mstrm:` names the stream a floor controls.
+pub const CONTENT_LABEL: &str = "2";
+
 /// Everything an offer needs.
 #[derive(Debug, Clone)]
 pub struct OfferOptions<'a> {
@@ -485,8 +529,11 @@ pub struct OfferOptions<'a> {
     pub session_name: &'a str,
     /// The audio section.
     pub audio: AudioOfferSection<'a>,
-    /// The video section, if offered.
+    /// The camera's video section, if offered.
     pub video: Option<VideoOfferSection<'a>>,
+    /// A shared screen's section (`a=content:slides`, `a=label`), if
+    /// offered. Only beside `video`.
+    pub content: Option<VideoOfferSection<'a>>,
 }
 
 /// Construct an SDP offer with an audio section and, optionally, a video
@@ -534,7 +581,12 @@ pub fn construct_offer(opts: &OfferOptions<'_>) -> Result<String> {
     audio = audio.add_property("sendrecv").map_err(sdp_err)?;
     let mut sections = vec![audio];
 
-    if let Some(v) = &opts.video {
+    for (v, stream) in opts
+        .video
+        .iter()
+        .map(|v| (v, VideoStream::Camera))
+        .chain(opts.content.iter().map(|c| (c, VideoStream::Content)))
+    {
         let mut video = MediaDescription::video(v.rtp_port);
         video.protocol = match (v.srtp.is_some(), v.feedback) {
             (true, true) => Protocol::RtpSavpf,
@@ -563,6 +615,10 @@ pub fn construct_offer(opts: &OfferOptions<'_>) -> Result<String> {
                     .add_attribute("rtcp-fb", &format!("{pt} {fb}"))
                     .map_err(sdp_err)?;
             }
+        }
+        if stream == VideoStream::Content {
+            forge_sdp::set_content(&mut video, &[forge_sdp::Content::Slides]);
+            forge_sdp::set_label(&mut video, CONTENT_LABEL);
         }
         video = video.add_property("sendrecv").map_err(sdp_err)?;
         sections.push(video);
@@ -636,9 +692,30 @@ pub fn remote_audio_endpoint(sdp_body: &str) -> Option<SocketAddr> {
     remote_endpoint(sdp_body, MediaType::Audio)
 }
 
-/// The remote video RTP endpoint (first active video section).
+/// The remote video RTP endpoint of the camera's section (the first
+/// active video section that is not `a=content:slides`).
 pub fn remote_video_endpoint(sdp_body: &str) -> Option<SocketAddr> {
+    if let Ok(sdp) = SessionDescription::parse(sdp_body) {
+        return active_video_section(&sdp, VideoStream::Camera)
+            .and_then(|m| section_endpoint(&sdp, m));
+    }
     remote_endpoint(sdp_body, MediaType::Video)
+}
+
+/// The remote RTP endpoint of the shared screen's section.
+pub fn remote_content_endpoint(sdp_body: &str) -> Option<SocketAddr> {
+    let sdp = SessionDescription::parse(sdp_body).ok()?;
+    active_video_section(&sdp, VideoStream::Content).and_then(|m| section_endpoint(&sdp, m))
+}
+
+/// A section's own `c=`, or the session's.
+fn section_endpoint(sdp: &SessionDescription, m: &MediaDescription) -> Option<SocketAddr> {
+    if m.port == 0 {
+        return None;
+    }
+    let conn = m.connection.as_ref().or(sdp.connection.as_ref())?;
+    let ip: IpAddr = conn.connection_address.as_str().parse().ok()?;
+    Some(SocketAddr::new(ip, m.port))
 }
 
 // ── Video offers ────────────────────────────────────────────────────────
@@ -652,7 +729,7 @@ pub struct VideoOfferCodec {
     pub fmtp: Option<String>,
 }
 
-/// What a peer offered for video: the first active video section.
+/// What a peer offered on one video section.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VideoOffer {
     pub port: u16,
@@ -664,13 +741,27 @@ pub struct VideoOffer {
     pub feedback: bool,
     /// Whether the section is encrypted (SDES `a=crypto` present).
     pub crypto: bool,
+    /// The section's `a=label` (RFC 4574), if any.
+    pub label: Option<String>,
+    /// Which stream the section carries.
+    pub stream: VideoStream,
 }
 
-/// Parse the first active video section of an offer, or `None` when the
-/// offer has no video (or only a disabled section).
-pub fn parse_video_offer(sdp_body: &str) -> Option<VideoOffer> {
-    let sdp = SessionDescription::parse(sdp_body).ok()?;
-    let m = forge_sdp::active_video(&sdp)?;
+/// The video sections of an offer a conference cares about (RFC 4796):
+/// the camera, and the shared screen when the endpoint can send one.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct VideoSections {
+    /// The first active video section without `a=content:slides`.
+    pub camera: Option<VideoOffer>,
+    /// The first active video section with it.
+    pub content: Option<VideoOffer>,
+}
+
+fn video_offer_of(
+    sdp: &SessionDescription,
+    m: &MediaDescription,
+    stream: VideoStream,
+) -> VideoOffer {
     let codecs = m
         .video_codecs()
         .into_iter()
@@ -680,14 +771,43 @@ pub fn parse_video_offer(sdp_body: &str) -> Option<VideoOffer> {
             fmtp: m.fmtp_for(ci.payload_type).map(|f| f.params.to_string()),
         })
         .collect();
-    Some(VideoOffer {
+    VideoOffer {
         port: m.port,
         protocol: m.protocol.to_string(),
         codecs,
-        remote: remote_endpoint(sdp_body, MediaType::Video),
+        remote: section_endpoint(sdp, m),
         feedback: !m.rtcp_fb_iter().is_empty(),
         crypto: !crypto_of_section(m).is_empty(),
-    })
+        label: forge_sdp::label(m).map(str::to_string),
+        stream,
+    }
+}
+
+/// Parse the camera's video section of an offer — the first active video
+/// section that is not a shared screen — or `None` when the offer has no
+/// such section (or only a disabled one). A device that shares a screen
+/// and has no camera offers only a `slides` section, which this does not
+/// return: see [`parse_video_sections`].
+pub fn parse_video_offer(sdp_body: &str) -> Option<VideoOffer> {
+    parse_video_sections(sdp_body).camera
+}
+
+/// Parse both video sections of an offer: the camera and, when the
+/// endpoint can share a screen, the content (`a=content:slides`). Any
+/// further video section is nobody's and is rejected by the answer.
+pub fn parse_video_sections(sdp_body: &str) -> VideoSections {
+    let Ok(sdp) = SessionDescription::parse(sdp_body) else {
+        return VideoSections::default();
+    };
+    let v = forge_sdp::video_sections(&sdp);
+    VideoSections {
+        camera: v
+            .camera
+            .map(|m| video_offer_of(&sdp, m, VideoStream::Camera)),
+        content: v
+            .content
+            .map(|m| video_offer_of(&sdp, m, VideoStream::Content)),
+    }
 }
 
 // ── Answers ─────────────────────────────────────────────────────────────
@@ -730,8 +850,11 @@ pub struct AnswerOptions<'a> {
     pub server_ip: &'a str,
     pub audio_rtp_port: u16,
     pub audio_srtp: Option<&'a SrtpSdpContext>,
-    /// `None` rejects every offered video section (port 0).
+    /// How to answer the camera's section; `None` rejects it (port 0).
     pub video: Option<VideoAnswer<'a>>,
+    /// How to answer a shared screen's section (`a=content:slides`), on
+    /// its own port with its own key; `None` rejects it.
+    pub content: Option<VideoAnswer<'a>>,
 }
 
 /// What the video section of an answer agreed on.
@@ -747,14 +870,18 @@ pub struct NegotiatedVideo {
     pub nack: bool,
     /// The peer's first crypto line for the video section, if it offered one.
     pub remote_crypto: Option<String>,
+    /// The section's `a=label`, repeated in the answer (RFC 4574).
+    pub label: Option<String>,
 }
 
 /// An answer and what it agreed.
 #[derive(Debug, Clone)]
 pub struct Answer {
     pub sdp: String,
-    /// `Some` when a video section was accepted.
+    /// `Some` when the camera's section was accepted.
     pub video: Option<NegotiatedVideo>,
+    /// `Some` when a shared screen's section was accepted.
+    pub content: Option<NegotiatedVideo>,
 }
 
 /// The protocol to answer with: secure when we have SRTP, feedback (`…F`)
@@ -873,38 +1000,62 @@ fn video_answer_section(
         remote_crypto: crypto_of_section(m)
             .first()
             .map(|c| format!("{} {} {}", c.tag, c.suite, c.key_params)),
+        label: forge_sdp::label(m).map(str::to_string),
     };
     (sec, Some(negotiated))
 }
 
+/// What the video sections of an answer agreed.
+#[derive(Debug, Clone, Default)]
+pub struct NegotiatedSections {
+    pub video: Option<NegotiatedVideo>,
+    pub content: Option<NegotiatedVideo>,
+}
+
 /// One answer section per offered section, in order (RFC 3264 §6): the
-/// first active audio section through `audio`, the first active video
-/// section through `video` (rejected when `None`), everything else
-/// rejected with port 0.
+/// first active audio section through `audio`, the camera's section (the
+/// first active video section that is not `a=content:slides`) through
+/// `video`, a shared screen's (the first that is) through `content`, each
+/// rejected when `None`, and everything else rejected with port 0.
 pub fn answer_sections(
     offer: &SessionDescription,
-    offer_body: &str,
     mut audio: impl FnMut(&MediaDescription) -> Result<MediaDescription>,
     video: Option<&VideoAnswer<'_>>,
-) -> Result<(Vec<MediaDescription>, Option<NegotiatedVideo>)> {
+    content: Option<&VideoAnswer<'_>>,
+) -> Result<(Vec<MediaDescription>, NegotiatedSections)> {
     let mut sections = Vec::with_capacity(offer.media.len());
     let mut audio_done = false;
-    let mut negotiated = None;
+    let mut camera_done = false;
+    let mut content_done = false;
+    let mut negotiated = NegotiatedSections::default();
     for m in &offer.media {
         let section = match m.media_type {
             MediaType::Audio if !audio_done && m.port != 0 => {
                 audio_done = true;
                 audio(m)?
             }
-            MediaType::Video if negotiated.is_none() && m.port != 0 => match video {
-                Some(v) => {
-                    let remote = remote_endpoint(offer_body, MediaType::Video);
-                    let (sec, neg) = video_answer_section(m, v, remote);
-                    negotiated = neg;
-                    sec
+            MediaType::Video if m.port != 0 && forge_sdp::is_slides(m) && !content_done => {
+                content_done = true;
+                match content {
+                    Some(c) => {
+                        let (sec, neg) = video_answer_section(m, c, section_endpoint(offer, m));
+                        negotiated.content = neg;
+                        sec
+                    }
+                    None => reject_section(m),
                 }
-                None => reject_section(m),
-            },
+            }
+            MediaType::Video if m.port != 0 && !forge_sdp::is_slides(m) && !camera_done => {
+                camera_done = true;
+                match video {
+                    Some(v) => {
+                        let (sec, neg) = video_answer_section(m, v, section_endpoint(offer, m));
+                        negotiated.video = neg;
+                        sec
+                    }
+                    None => reject_section(m),
+                }
+            }
             _ => reject_section(m),
         };
         sections.push(section);
@@ -943,14 +1094,18 @@ pub fn construct_answer(offer: &str, opts: &AnswerOptions<'_>) -> Result<Answer>
     if parsed.media.is_empty() {
         return Err(Error::Sdp("offer has no media sections".into()));
     }
-    let (sections, video) = answer_sections(
+    let (sections, negotiated) = answer_sections(
         &parsed,
-        offer,
         |m| audio_answer_section(m, opts),
         opts.video.as_ref(),
+        opts.content.as_ref(),
     )?;
     let sdp = serialize_answer(opts.server_ip, "0", "FCP Media Server", sections)?;
-    Ok(Answer { sdp, video })
+    Ok(Answer {
+        sdp,
+        video: negotiated.video,
+        content: negotiated.content,
+    })
 }
 
 /// Construct an SDP answer for A-leg using A-leg's preferred codec.
@@ -978,6 +1133,7 @@ pub fn construct_answer_for_a_leg(
         audio_rtp_port: rtp_port,
         audio_srtp: srtp,
         video: None,
+        content: None,
     };
     match construct_answer(a_leg_offer, &opts) {
         Ok(a) => a.sdp,
@@ -1046,9 +1202,50 @@ fn legacy_audio_answer(
 pub struct AnchorPorts {
     /// Our audio RTP port.
     pub audio: u16,
-    /// Our video RTP port; `None` disables the video section (port 0),
-    /// since nothing would relay it.
+    /// Our port for the camera's video section; `None` disables it (port
+    /// 0), since nothing would relay it.
     pub video: Option<u16>,
+    /// Our port for a shared screen's section (`a=content:slides`); `None`
+    /// disables it. A second video section of either kind is always
+    /// disabled: one port carries one stream.
+    pub content: Option<u16>,
+}
+
+/// What each `m=` line of an SDP is, for the anchoring rewriter, which
+/// works line by line and cannot see a section's `a=content` from its
+/// `m=` line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SectionKind {
+    Audio,
+    Camera,
+    Content,
+    Other,
+}
+
+/// Classify every section of an SDP in order; a body the parser rejects
+/// is classified by its `m=` lines alone (every video section a camera).
+fn classify_sections(sdp_body: &str) -> Vec<SectionKind> {
+    if let Ok(sdp) = SessionDescription::parse(sdp_body) {
+        return sdp
+            .media
+            .iter()
+            .map(|m| match m.media_type {
+                MediaType::Audio => SectionKind::Audio,
+                MediaType::Video if forge_sdp::is_slides(m) => SectionKind::Content,
+                MediaType::Video => SectionKind::Camera,
+                _ => SectionKind::Other,
+            })
+            .collect();
+    }
+    sdp_body
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("m="))
+        .map(|rest| match rest.split_whitespace().next() {
+            Some("audio") => SectionKind::Audio,
+            Some("video") => SectionKind::Camera,
+            _ => SectionKind::Other,
+        })
+        .collect()
 }
 
 /// Swap a plain RTP profile for its secure counterpart (`RTP/AVP` →
@@ -1064,8 +1261,10 @@ fn secure_protocol(protocol: &str) -> String {
 /// Rewrite an SDP so every section points at the server: every `c=` line
 /// becomes `server_ip`; the first audio section takes `ports.audio` (and
 /// `RTP/SAVP` plus our `a=crypto` when `srtp` is given, existing crypto
-/// lines stripped); a video section takes `ports.video` or is disabled
-/// with port 0; every other section is disabled. A disabled section keeps
+/// lines stripped); the camera's video section takes `ports.video` and a
+/// shared screen's `ports.content`, each disabled with port 0 when its
+/// port is `None`; a second section of any kind, and every other section,
+/// is disabled — one port carries one stream. A disabled section keeps
 /// its formats and attributes, as RFC 3264 requires.
 pub fn rewrite_for_anchoring(
     original_sdp: &str,
@@ -1073,8 +1272,12 @@ pub fn rewrite_for_anchoring(
     ports: AnchorPorts,
     srtp: Option<&SrtpSdpContext>,
 ) -> String {
+    let kinds = classify_sections(original_sdp);
     let mut result = String::new();
+    let mut section_index = 0usize;
     let mut audio_seen = false;
+    let mut camera_seen = false;
+    let mut content_seen = false;
     let mut in_anchored_audio = false;
     let mut crypto_injected = false;
 
@@ -1085,8 +1288,13 @@ pub fn rewrite_for_anchoring(
             let parts: Vec<&str> = rest.split_whitespace().collect();
             if parts.len() >= 3 {
                 let kind = parts[0];
-                let (port, protocol) = match kind {
-                    "audio" if !audio_seen => {
+                let section = kinds
+                    .get(section_index)
+                    .copied()
+                    .unwrap_or(SectionKind::Other);
+                section_index += 1;
+                let (port, protocol) = match section {
+                    SectionKind::Audio if !audio_seen => {
                         audio_seen = true;
                         in_anchored_audio = true;
                         let protocol = if srtp.is_some() {
@@ -1096,9 +1304,15 @@ pub fn rewrite_for_anchoring(
                         };
                         (ports.audio.to_string(), protocol)
                     }
-                    "video" if ports.video.is_some() => {
+                    SectionKind::Camera if !camera_seen && ports.video.is_some() => {
+                        camera_seen = true;
                         in_anchored_audio = false;
                         (ports.video.unwrap_or(0).to_string(), parts[2].to_string())
+                    }
+                    SectionKind::Content if !content_seen && ports.content.is_some() => {
+                        content_seen = true;
+                        in_anchored_audio = false;
+                        (ports.content.unwrap_or(0).to_string(), parts[2].to_string())
                     }
                     _ => {
                         in_anchored_audio = false;
@@ -1167,6 +1381,7 @@ pub fn rewrite_sdp_for_anchoring(
         AnchorPorts {
             audio: rtp_port,
             video: None,
+            content: None,
         },
         srtp,
     )
@@ -1354,6 +1569,7 @@ mod tests {
                 feedback: true,
                 srtp: Some(&video_key.sdp),
             }),
+            content: None,
         })
         .unwrap();
         for needle in [
@@ -1405,6 +1621,7 @@ mod tests {
                 ptime_ms: None,
             },
             video: None,
+            content: None,
         })
         .unwrap();
         assert!(offer.contains("m=audio 30000 RTP/AVP 0\r\n"), "{offer}");
@@ -1423,6 +1640,7 @@ mod tests {
                 ptime_ms: None,
             },
             video: None,
+            content: None,
         })
         .is_err());
     }
@@ -2093,6 +2311,7 @@ mod section_tests {
                 codecs: &codecs,
                 srtp: None,
             }),
+            content: None,
         };
         let answer = construct_answer(AV_OFFER, &opts).unwrap();
         let m = sections(&answer.sdp);
@@ -2132,6 +2351,7 @@ mod section_tests {
                 codecs: &codecs,
                 srtp: None,
             }),
+            content: None,
         };
         let answer = construct_answer(AV_OFFER, &opts).unwrap();
         assert_eq!(sections(&answer.sdp)[1], "m=video 0 RTP/AVPF 96 97");
@@ -2186,6 +2406,7 @@ a=crypto:2 AES_CM_128_HMAC_SHA1_32 inline:videokeyvideokeyvideokeyvideokeyvideo\
                 codecs: &codecs,
                 srtp: Some(&video_ctx),
             }),
+            content: None,
         };
         let answer = construct_answer(AV_OFFER, &opts).unwrap().sdp;
         let m = sections(&answer);
@@ -2251,6 +2472,7 @@ a=crypto:2 AES_CM_128_HMAC_SHA1_32 inline:videokeyvideokeyvideokeyvideokeyvideo\
             AnchorPorts {
                 audio: 20000,
                 video: Some(20002),
+                content: None,
             },
             None,
         );
