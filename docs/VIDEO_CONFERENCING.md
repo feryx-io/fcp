@@ -683,7 +683,7 @@ crate (`forge-rtp` 111, `forge-sdp` 90, `forge-core` 22).
 | 5 | **Recording and cascade** — done 2026-09-08 (§15.4): WebM muxing and a recording registry (v0.25.110–112), trunk video (v0.25.113/114), cross-node speaker state (v0.25.115); MP4 deferred | both | done |
 | 6 | **Passthrough fast path, bitrate ladder, polish** — done 2026-09-10 (§15.5): single-source forwarding (v0.25.117/118), ladder switching (v0.25.119), overload shedding and parser fuzzing (v0.25.121; forge-media `v2026.09.10`) | both | done |
 | 7 | **Screen share** — done 2026-09-11 (§15.6): the content source kind, the per-room floor and the `Composite` / `Cameras` / `Content` views (7a, forge-media `v2026.09.11`; v0.25.123), the RFC 4796 content section on SIP with its settings, API, events and UI (7b, v0.25.124), RFC 8285 header extensions and a second video mid on WebRTC with the join page's share button and the floor told by SIP `INFO` (7c, forge-media `v2026.09.11.1`; v0.25.125/126), content across trunks with a room-wide floor (7d, forge-media `v2026.09.11.2`; v0.25.127), BFCP floor control for SIP room systems in the new `forge-bfcp` (7e, forge-media `v2026.09.11.3`; v0.25.128) | both | done |
-| 8 | **GPU backend**: `hwaccel` feature (FFmpeg device contexts), device codecs, device scale/overlay composition, per-device budgets and self-benchmark, placement by capability, PSNR parity tests against the host path | forge-media, FCP | 3–4 weeks + a GPU box |
+| 8 | **GPU backend** — planned 2026-09-11 (§15.7): a `forge-video-hw` crate over FFmpeg device contexts with NVDEC decoders, NVENC encoders and the numbers §9.4 left open (8a); the pipeline on the device — a filter-graph compositor, per-stage host fallback, layout parity tests (8b); the node — `[conference] video_device`, saturation benchmark, per-device budget and placement, the NVIDIA container image (8c). NVIDIA built and measured, VAAPI designed for; the box is `deploy/gcp-gpu` | forge-media, FCP | 3–4 weeks |
 
 Each phase is one PR per repository (forge-media release tag, then the
 FCP bump), reviewed before the next starts. Sizes are for one person and
@@ -1585,10 +1585,145 @@ blocking:
 - Fuzzing covers the RTP extension walk and the BFCP parser; the SDP
   attribute parsing of the new sections relies on sip-sdp's.
 
-Phase 8, the GPU backend, waits on a machine with a GPU (§9.4): the box
-is `deploy/gcp-gpu` (`docs/GPU_BOX.md`), an L4 on GCP rented by the
-session; until the phase is planned the CPU pipeline, with its
-self-benchmark and budget, is what ships.
+Phase 8, the GPU backend, is planned as §15.7 (2026-09-11), with the box
+`deploy/gcp-gpu` (`docs/GPU_BOX.md`), an L4 on GCP rented by the session.
+
+### 15.7 Phase 8 plan — the GPU backend (2026-09-11)
+
+The GPU backend is the phase §16 designed in from the first draft and
+built last: the same pipeline — decode, frame slot, compose, scale,
+encode — placed on a GPU end to end, so that on a GPU node nothing but
+RTP crosses the bus, with the host path staying the reference and the
+fallback. §9.1 made the case in density and power, not feasibility, and
+§9.4 sharpened it: CPU mixing turned out three to seventeen times cheaper
+than the design assumed, so a 12-core node already mixes on the order of
+fifty to a hundred 720p H.264 outputs. A GPU node is for the rooms
+beyond that, for AV1 and HEVC at scale, and for the power budget of a
+rack, and placement is what sends such rooms to it.
+
+The machine that was missing is now `deploy/gcp-gpu` (`docs/GPU_BOX.md`):
+a Spot NVIDIA L4 on GCP, rented by the session, with driver 550, CUDA
+12.4 and an FFmpeg 7.1 built with NVENC, NVDEC and the CUDA filters, all
+proven on 2026-09-11. Three blocks, each a forge-media release or an FCP
+PR, and three to four weeks; 8a begins with the measurements §9.4 left
+open, and nothing in 8b or 8c is settled until they are in.
+
+**What the surveys found.** The design's seams are in place and empty.
+`MediaDevice::Gpu { backend, address }` parses `cuda:0` and prints it;
+`VideoFrame::Device(DeviceFrame)` carries an opaque `Arc<dyn Any>` handle
+and a `device` every stage checks; `VideoDecoder`, `VideoEncoder`,
+`Scaler` and `Compositor` each name their device and refuse a frame from
+another; `CodecRegistry` is keyed by `(codec, device)` and
+`codecs_on(device)` lists what a device runs; `VideoBackend` carries one
+`device` for the node's rooms, set to `Host` by the only constructor;
+`bench::measure_codec` takes a device; the cluster's `VideoDeviceBudget`
+names a device as `backend:address` and placement's `video_budget_left`
+takes the best budget among devices that have the room's codecs. Nothing
+constructs a `DeviceFrame`, nothing registers a non-host codec, no
+config names a device, and the conference server's benchmark and budget
+are built on `backend.device` being the host (`self_benchmark` prices
+composition only when it is). The `HostCompositor` draws everything —
+tiles, bands, labels from the bitmap font, avatars, speaking borders —
+into an I420 canvas with scalar code, so a device compositor has to
+reproduce all of it or share it. The recording sink (`VideoRoom::record`)
+is a `Composite` subscriber whose flavor is VP8 or VP9, codecs no NVIDIA
+encoder has. `EncoderSettings::content` (the `ContentHint` of 7a) is the
+one encoder knob every backend maps.
+
+On the box: `h264_nvenc`, `hevc_nvenc` and `av1_nvenc` each take 720p30
+at about 170 fps from a synthetic source, eight at once at about 84 fps
+each — the source generation on four vCPUs is the limit, not the
+engines — and a CUVID decode feeds `scale_cuda` on the device. The
+`nv-codec-headers` had to be pinned to the driver's NVENC SDK (12.2 for
+driver 550), FFmpeg's `nvcc` flags to the L4's `sm_89`, and Google's
+image had no CUDA toolkit: the setup script carries all three.
+
+**Decisions, each with a recommendation.**
+
+1. **The FFI.** `ffmpeg-sys-next`, raw bindings, pinned to the FFmpeg
+   major the node has (7.1 on the box; the crate's 7.1.x line), with a
+   thin safe layer of our own in a new crate rather than the `ffmpeg-next`
+   wrapper, whose hardware-frame and filter-graph surface is partial and
+   whose ownership model fights `Arc<dyn Any>` handles. `rsmpeg` is the
+   alternative if `ffmpeg-sys-next` falls behind FFmpeg 8. **Recommended:
+   `ffmpeg-sys-next`, a new crate `forge-video-hw`** that `forge-video-
+   codecs` pulls in under its `hwaccel` feature, so the FFI and the
+   FFmpeg headers are a build requirement only where the feature is on.
+2. **Composition on the device.** Two ways: an FFmpeg filter graph per
+   output — `scale_cuda` per tile into `overlay_cuda` chained onto a
+   background, rebuilt when the layout or the tile count changes — or
+   our own CUDA kernels (scale-blit, fill, overlay) loaded through the
+   driver API. The graph is FFmpeg's, tested, and portable to VAAPI
+   (`scale_vaapi`, `overlay_vaapi`) by swapping filter names; the kernels
+   are faster to launch and free of graph rebuilds but NVIDIA-only and
+   ours to test. **Recommended: the filter graph first**, with the chrome
+   (bands, labels, avatars, borders) rendered by the host compositor's
+   own code into small host planes, cached per tile and uploaded only
+   when they change, and overlaid like any tile. Kernels only if the
+   graph's per-tick cost shows up in 8a's numbers.
+3. **Which vendors.** NVIDIA is the hardware we have. The design's
+   VAAPI/oneVPL (Intel) and AMF (AMD) paths share the FFmpeg device and
+   frame contexts, so the crate is written against `AVHWDeviceType` with
+   the CUDA arm filled in and the others compiling but untested.
+   **Recommended: NVIDIA built and measured in phase 8; VAAPI designed
+   for, not claimed**, until an Intel box exists.
+4. **The FFmpeg build that ships.** The box's FFmpeg is built with
+   `--enable-nonfree` for `libnpp` and `--enable-cuda-nvcc`, which is fine
+   for a dev box and not for a product. **Recommended: the product build
+   is `--enable-cuda-llvm` (clang compiles the CUDA filters, no `nvcc`),
+   no `libnpp`, LGPL 2.1 dynamic**, with the `nv-codec-headers` (MIT)
+   the only NVIDIA-specific piece; the box script gains the same
+   configure so what is measured is what ships.
+5. **Codecs a GPU room cannot encode.** NVENC has no VP8 or VP9. A GPU
+   room with a VP8 subscriber (a browser that offered only VP8, a WebM
+   recording) needs that flavor's encoder on the host, fed by one
+   canvas download per tick — the "copy the design allows but the
+   scheduler avoids" of §5.5. **Recommended: allow it, price it** (the
+   download is a compose-sized cost on the host device), and have
+   placement prefer a GPU node only for meetings whose first codec the
+   device encodes, so a VP8-first meeting stays on the host; the
+   recording of a GPU room is VP8 on the host until an MP4/H.264 sink
+   exists (§16 kept MP4 as an option; it is not this phase).
+6. **Bitrate retargeting on NVENC.** FFmpeg's NVENC wrapper does not
+   change bitrate on a live encoder. **Recommended: reopen the encoder
+   on the next keyframe** when `set_bitrate` moves it by more than a
+   rung's worth, which the ladder already coalesces; a GPU encoder
+   opens in milliseconds.
+7. **The budget of a GPU.** A GPU is several engines — NVENC, NVDEC, the
+   CUDA cores — not one execution unit, and §9.3's single number per
+   device would mispriced a node that is out of NVENC with decode to
+   spare. **Recommended: keep one advertised budget per device, but
+   measure it by saturation** — the self-benchmark runs encodes (and
+   decodes, and composites) in parallel until throughput stops growing
+   and prices each stage at its saturated share — and carry the three
+   stages' constants in the cost table so a room is priced per engine
+   even though the cluster sees one number. Splitting the budget per
+   engine in membership is a follow-up if the one number misplaces.
+
+**Blocks.**
+
+| Block | What | Where |
+|---|---|---|
+| 8a | **Device contexts, codecs and the numbers.** forge-media (release): a new `forge-video-hw` crate over `ffmpeg-sys-next`: a `HwDevice` per `MediaDevice::Gpu` (an `AVHWDeviceContext` for `cuda`, with `vaapi` and `qsv` arms compiling), `HwFrames` pools, the `DeviceFrame` handle as an `AVFrame` with its `hw_frames_ctx` behind the `Arc<dyn Any>`, `upload` / `download` through `av_hwframe_transfer_data`; decoders through FFmpeg's hardware acceleration (`h264`, `hevc`, `vp8`, `vp9`, `av1` on NVDEC, output resident), encoders `h264_nvenc`, `hevc_nvenc`, `av1_nvenc` taking device frames, `ContentHint` mapped to the NVENC tuning (`ull`/`ll` plus `-tune` for screen content), keyframe on demand, bitrate retarget by reopen on the next keyframe (decision 6), `EncoderSettings` otherwise as the host codecs take them; `register_all` registering them on the device under `forge-video-codecs`' `hwaccel` feature; `bench` measuring them by saturation (decision 7) and a `GPU` column for §9.4 with the L4's numbers for every codec, decode and encode, single and saturated; `forge-video` gains `DeviceScaler` (`scale_cuda`) and the `Scaler` round-trip test per device. Tests, on the box: encode → decode round trips per codec with PSNR thresholds against the host codecs' output of the same frames, keyframe-on-demand, bitrate targeting within tolerance, upload/download identity, and the benchmark as a test that records. The box script rebuilt on the product configure (decision 4) | forge-video-hw (new), forge-video-codecs, forge-video, `deploy/gcp-gpu` |
+| 8b | **The pipeline on the device.** forge-media (release): `DeviceCompositor` on an FFmpeg filter graph (decision 2), one graph per output rebuilt on layout change, the chrome as cached host planes uploaded on change; `VideoRoom` placing a room's sources, slots, compositor and flavors on `backend.device`, with a per-stage host fallback that uploads or downloads once per tick — a decoder the device lacks, an encoder it lacks (VP8/VP9, decision 5), the recording sink — and the room's status naming each stage's device; passthrough (§15.5) unchanged, since it never decodes; the content view (§15.6) composited on the device like the rest; `CodecPool` threads bound to a device context each. Tests, on the box: layout parity — every golden image of the host compositor rendered on the device within a PSNR threshold, presentation layout included; a room mixed on the device reaching a host-decoded subscriber; a VP8 subscriber of a device room fed from the downloaded canvas; overload shedding on the device clock. In CI without hardware: the room's device placement and fallback decisions unit-tested against a registry that declares a fake device | forge-video, forge-conference |
+| 8c | **The node.** FCP: `[conference] video_device` (`host`, or `cuda:0`), the backend built on it and the codec registry's `hwaccel` feature behind a `video-hwaccel` cargo feature on the conference server; the self-benchmark run per device with saturation (decision 7) and the cost table carrying host and device constants; `video_budget` advertising the device beside `host` with the codecs it *encodes* (decision 5), placement by capability confirmed against it (`video_budget_left` already picks the best device with the codecs; the change is which codecs a device claims) and tested in `conference_placement`; a join priced on the device the room is on; `GET …/video` and `/status` naming the device per room and stage, the admin cluster page and Live Video dialog showing it; `conference.video_overload` unchanged; the Dockerfile and compose gaining an NVIDIA variant (`nvidia-container-toolkit`, the LGPL FFmpeg build) and `docs/GPU.md` (deployment: drivers, container runtime, the codec list per device, what falls back to the host). Tests: the conference server's loopback tests run on the box with `video_device = cuda:0` through the same `gpu-box` script (`gpu-box test`), a budget test that a saturated device refuses the next join with 503 while the host still admits one, the placement test with a GPU node and a VP8-first meeting | fcp-conference-server, fcp-cluster, fcp-call-manager, fcp-admin-ui, deploy |
+
+**Order and size.** 8a first and alone, and its numbers decide the rest:
+if the L4 encodes fewer than about forty 720p30 H.264 streams saturated
+(§9.1's expectation), or the filter graph's per-tick cost is more than a
+host composite's, decisions 2 and 7 are revisited before 8b. 8b needs
+8a's release; 8c needs 8b's. About one and a half weeks for 8a (the
+FFI layer is the bulk), one and a half for 8b, one for 8c. Every block's
+tests that need the hardware run through `gpu-box`; CI keeps building
+with the feature off, and the feature's build is checked on the box.
+
+**What this phase does not do.** VAAPI and AMF beyond compiling
+(decision 3); an MP4/H.264 recording sink (decision 5); a room that
+moves between devices (a room stays on the device it started on, §9.3);
+more than one GPU per node (`cuda:1` is a second device the config could
+name later, but a node's backend is one device); GPU-side RTP
+depacketization or SRTP (they stay on the host, as the design has it);
+and a GPU runner in CI.
 
 ## 16. Resolved questions
 
