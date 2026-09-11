@@ -1,5 +1,6 @@
 use crate::video_bridge::{
-    self, FloorNotice, FloorNotifier, VideoEventSink, VideoLeg, VideoLegStats, CONTENT_INFO_TYPE,
+    self, claim_beats, FloorNotice, FloorNotifier, VideoEventSink, VideoLeg, VideoLegStats,
+    CONTENT_INFO_TYPE,
 };
 use anyhow::{bail, Context, Result};
 use dashmap::DashMap;
@@ -225,6 +226,10 @@ pub struct ConferenceCallHandler {
     /// claim that stops being refreshed is dropped rather than left
     /// holding the floor for a node that has gone quiet (§15.4, 5c).
     speaker_claims: DashMap<String, Instant>,
+    /// Each peer's claim to the room's content floor and when it last
+    /// arrived, by `room|node` (§15.6, 7d). The presenter's name is what
+    /// this node's browsers are told; the claim's age is what expires it.
+    content_claims: DashMap<String, (ContentClaim, Instant)>,
     /// Calls that have been answered and are waiting for PIN input.
     pending_pin_auth: DashMap<String, PendingPinAuth>,
     /// Pre-loaded DTMF feedback audio: "Muted" / "Unmuted" PCM samples
@@ -672,6 +677,7 @@ impl ConferenceCallHandler {
             video_capacity: None,
             video_event_pumps: Arc::new(DashMap::new()),
             speaker_claims: DashMap::new(),
+            content_claims: DashMap::new(),
             pending_pin_auth: DashMap::new(),
             dtmf_muted_samples: None,
             dtmf_unmuted_samples: None,
@@ -1196,6 +1202,132 @@ impl ConferenceCallHandler {
         }
     }
 
+    /// A peer's claim to a room's content floor (§15.6, 7d): who is
+    /// sharing there and since when. Every node keeps the earliest claim
+    /// — the peer's or its own — and a node whose own presenter loses
+    /// takes the floor from them (`replaced`) so the peer's screen,
+    /// arriving as a remote content source, can have it. A claim with no
+    /// participant withdraws the peer's share; the floor it held here is
+    /// released. `Ok(false)` when the room is here but has no video or
+    /// no trunk to that peer yet.
+    pub fn apply_content_claim(
+        &self,
+        room_number: &str,
+        node: &str,
+        participant_id: Option<&str>,
+        display_name: Option<&str>,
+        since_ms: u64,
+    ) -> Result<bool> {
+        let room = self
+            .bridge
+            .get_room(room_number)
+            .map_err(|_| anyhow::anyhow!("room {room_number} is not hosted on this node"))?;
+        let Some(video) = room.video() else {
+            return Ok(false);
+        };
+        let tile = trunks::trunk_participant_id(node);
+        if !video.is_remote(&tile) {
+            return Ok(false);
+        }
+        let key = format!("{room_number}|{node}");
+        let Some(participant_id) = participant_id else {
+            self.content_claims.remove(&key);
+            if video.release_content_with(&tile, forge_conference::video::ContentStop::Ended) {
+                debug!(room = %room_number, peer = %node, "The peer's share ended; floor released");
+            }
+            return Ok(true);
+        };
+        let claim = ContentClaim {
+            participant_id: participant_id.to_string(),
+            display_name: display_name.unwrap_or(participant_id).to_string(),
+            since_ms,
+        };
+        let changed = self
+            .content_claims
+            .insert(key, (claim.clone(), Instant::now()))
+            .is_none_or(|(old, _)| old != claim);
+        match video.content() {
+            // Our own presenter against the peer's: the earlier share
+            // keeps the floor room-wide; the loser is told `replaced`.
+            Some(ours) if !ours.remote => {
+                let ours_since = unix_ms().saturating_sub(ours.held_for.as_millis() as u64);
+                if claim_beats(
+                    (since_ms, node, participant_id),
+                    (ours_since, &self.node_id, &ours.participant_id),
+                ) {
+                    info!(
+                        room = %room_number,
+                        ours = %ours.participant_id,
+                        theirs = %participant_id,
+                        peer = %node,
+                        "The peer's share is older; ours is replaced"
+                    );
+                    video.release_content_with(
+                        &ours.participant_id,
+                        forge_conference::video::ContentStop::Replaced,
+                    );
+                }
+            }
+            // The peer's screen holds the floor here already and its
+            // packets came before its claim: the browsers were told the
+            // tile's name, so they are told the presenter's now.
+            Some(theirs) if changed && theirs.participant_id == tile => {
+                self.floor_changed(
+                    room_number,
+                    FloorNotice {
+                        floor: "granted",
+                        participant_id: tile,
+                        presenter: Some(claim.display_name),
+                        reason: None,
+                    },
+                );
+            }
+            _ => {}
+        }
+        Ok(true)
+    }
+
+    /// Drop the content claims of peers that have stopped refreshing
+    /// them, releasing the floor a quiet peer's screen holds here
+    /// (§15.6, 7d) — it will not be arriving.
+    pub fn expire_content_claims(&self, max_age: Duration) {
+        let stale: Vec<String> = self
+            .content_claims
+            .iter()
+            .filter(|e| e.value().1.elapsed() > max_age)
+            .map(|e| e.key().clone())
+            .collect();
+        for key in stale {
+            self.content_claims.remove(&key);
+            let Some((room_number, node)) = key.split_once('|') else {
+                continue;
+            };
+            if let Ok(room) = self.bridge.get_room(room_number) {
+                if let Some(video) = room.video() {
+                    video.release_content_with(
+                        &trunks::trunk_participant_id(node),
+                        forge_conference::video::ContentStop::Ended,
+                    );
+                }
+            }
+            debug!(room = %room_number, peer = %node, "Content claim expired");
+        }
+    }
+
+    /// This node's own share in a room, as a claim to send to the peers
+    /// hosting it. `None` when the floor is free or a peer's (their
+    /// node makes that claim).
+    pub fn local_content_claim(&self, room_number: &str) -> Option<serde_json::Value> {
+        let room = self.bridge.get_room(room_number).ok()?;
+        let content = room.video()?.content().filter(|c| !c.remote)?;
+        Some(serde_json::json!({
+            "node": self.node_id,
+            "participant_id": content.participant_id,
+            "display_name": content.display_name,
+            "since_ms": unix_ms().saturating_sub(content.held_for.as_millis() as u64),
+        }))
+    }
+
     /// This node's own speaker in a room, as a claim to send to the
     /// peers hosting it: the participant the room is showing, with the
     /// level the mixer has for them right now. `None` when the room's
@@ -1271,6 +1403,8 @@ impl ConferenceCallHandler {
                         .video
                         .as_ref()
                         .map(|v| v.negotiated.codec.sdp_name()),
+                    // Whether a shared screen crosses this trunk (7d).
+                    "content": session.content.is_some(),
                 }))
             })
             .collect();
@@ -3791,6 +3925,39 @@ impl ConferenceCallHandler {
             }),
             _ => None,
         };
+        // A shared screen crosses the trunk on its own section when the
+        // meeting allows sharing (§15.6, 7d), beside the video one.
+        let wants_content =
+            planned.as_ref().is_some_and(|p| p.settings.content) && video_pair.is_some();
+        let content_srtp = match (wants_content, offer_srtp) {
+            (true, true) => Some(
+                fcp_media::SrtpOffer::generate()
+                    .map_err(|e| anyhow::anyhow!("SRTP key generation failed: {}", e))?,
+            ),
+            _ => None,
+        };
+        let content_pair = if wants_content {
+            match self.port_pool.allocate().await {
+                Ok(p) => Some(p),
+                Err(e) => {
+                    warn!(room = %room_number, peer = %peer_node, error = %e, "No port pair left for trunk content; the screen stays on this node");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let content_section = match (&planned, content_pair) {
+            (Some(plan), Some(pair)) => Some(fcp_media::VideoOfferSection {
+                rtp_port: pair.rtp_port,
+                payload_type: TRUNK_CONTENT_PAYLOAD_TYPE,
+                codec: plan.codec,
+                fmtp: None,
+                feedback: true,
+                srtp: content_srtp.as_ref().map(|o| &o.sdp),
+            }),
+            _ => None,
+        };
         let sdp_offer = match fcp_media::construct_offer(&fcp_media::OfferOptions {
             server_ip: ip,
             origin_id: "0",
@@ -3803,11 +3970,11 @@ impl ConferenceCallHandler {
                 ptime_ms: Some(20),
             },
             video: video_section,
-            content: None,
+            content: content_section,
         }) {
             Ok(sdp) => sdp,
             Err(e) => {
-                if let Some(pair) = video_pair {
+                for pair in [video_pair, content_pair].into_iter().flatten() {
                     self.release_video_pair_later(pair);
                 }
                 dealloc(Arc::clone(&self.port_pool), port_pair);
@@ -3825,9 +3992,9 @@ impl ConferenceCallHandler {
             .map_err(|e| anyhow::anyhow!("trunk header: {e}"))?;
 
         info!(room = %room_number, peer = %peer_node, target = %target_uri, "Sending conference trunk INVITE");
-        // Both port pairs go back if the trunk never comes up.
+        // Every video port pair goes back if the trunk never comes up.
         let release_video = |handler: &Self, pair: Option<PortPair>| {
-            if let Some(pair) = pair {
+            for pair in [pair, content_pair].into_iter().flatten() {
                 handler.release_video_pair_later(pair);
             }
         };
@@ -3934,10 +4101,42 @@ impl ConferenceCallHandler {
         // peer that answers video without the crypto we asked for is
         // hung up, as it is for audio: half an encrypted trunk is worse
         // than none.
-        let video = match (planned, video_pair) {
+        let video = match (&planned, video_pair) {
             (Some(plan), Some(pair)) => {
                 match self
-                    .trunk_video_from_answer(answer_sdp, &plan, pair, video_srtp)
+                    .trunk_video_from_answer(answer_sdp, plan, pair, video_srtp, StreamKind::Camera)
+                    .await
+                {
+                    Ok(Some(leg)) => Some(leg),
+                    Ok(None) => {
+                        self.release_video_pair_later(pair);
+                        None
+                    }
+                    Err(e) => {
+                        let _ = tokio::time::timeout(BYE_TIMEOUT, self.uac.bye(&dialog)).await;
+                        release_video(self, Some(pair));
+                        dealloc(Arc::clone(&self.port_pool), port_pair);
+                        bail!("trunk video from {}: {}", peer_node, e);
+                    }
+                }
+            }
+            (_, Some(pair)) => {
+                self.release_video_pair_later(pair);
+                None
+            }
+            _ => None,
+        };
+        // The screen's section rides only beside a video one.
+        let content = match (&planned, content_pair, video.is_some()) {
+            (Some(plan), Some(pair), true) => {
+                match self
+                    .trunk_video_from_answer(
+                        answer_sdp,
+                        plan,
+                        pair,
+                        content_srtp,
+                        StreamKind::Content,
+                    )
                     .await
                 {
                     Ok(Some(leg)) => Some(leg),
@@ -3948,12 +4147,15 @@ impl ConferenceCallHandler {
                     Err(e) => {
                         let _ = tokio::time::timeout(BYE_TIMEOUT, self.uac.bye(&dialog)).await;
                         self.release_video_pair_later(pair);
+                        if let Some(v) = video {
+                            self.release_video_pair_later(v.port_pair);
+                        }
                         dealloc(Arc::clone(&self.port_pool), port_pair);
-                        bail!("trunk video from {}: {}", peer_node, e);
+                        bail!("trunk content from {}: {}", peer_node, e);
                     }
                 }
             }
-            (_, Some(pair)) => {
+            (_, Some(pair), _) => {
                 self.release_video_pair_later(pair);
                 None
             }
@@ -3976,6 +4178,7 @@ impl ConferenceCallHandler {
                 frame_size,
                 srtp,
                 video,
+                content,
             },
             &conf,
         )
@@ -4009,17 +4212,25 @@ impl ConferenceCallHandler {
         Some(TrunkVideoPlan { settings, codec })
     }
 
-    /// Read the peer's answer to our video section. `Ok(None)` means the
-    /// peer declined video and the trunk carries audio only; `Err` means
-    /// it took video on terms we cannot use, which is a reason to hang up.
+    /// Read the peer's answer to one of our video sections — the camera's
+    /// or the shared screen's (§15.6, 7d). `Ok(None)` means the peer
+    /// declined the section and the trunk goes on without it; `Err` means
+    /// it took the section on terms we cannot use, which is a reason to
+    /// hang up.
     async fn trunk_video_from_answer(
         &self,
         answer_sdp: &str,
         plan: &TrunkVideoPlan,
         pair: PortPair,
         srtp_offer: Option<fcp_media::SrtpOffer>,
+        kind: StreamKind,
     ) -> Result<Option<VideoLeg>> {
-        let Some(section) = fcp_media::parse_video_offer(answer_sdp).filter(|s| s.port != 0) else {
+        let sections = fcp_media::parse_video_sections(answer_sdp);
+        let answered = match kind {
+            StreamKind::Camera => sections.camera,
+            StreamKind::Content => sections.content,
+        };
+        let Some(section) = answered.filter(|s| s.port != 0) else {
             return Ok(None);
         };
         let Some(agreed) = section.codecs.iter().find(|c| c.codec == plan.codec) else {
@@ -4028,8 +4239,15 @@ impl ConferenceCallHandler {
         let (srtp_context, srtp_sdp) = match srtp_offer {
             Some(offer) => {
                 let sdp = offer.sdp.clone();
-                let Some(crypto) = parse_video_sdes_crypto(answer_sdp).into_iter().next() else {
-                    bail!("the peer answered video without SRTP while the trunk is encrypted");
+                let crypto = match kind {
+                    StreamKind::Camera => parse_video_sdes_crypto(answer_sdp),
+                    StreamKind::Content => parse_content_sdes_crypto(answer_sdp),
+                };
+                let Some(crypto) = crypto.into_iter().next() else {
+                    bail!(
+                        "the peer answered {} without SRTP while the trunk is encrypted",
+                        kind.name()
+                    );
                 };
                 let ctx = offer
                     .accept(&crypto)
@@ -4052,13 +4270,13 @@ impl ConferenceCallHandler {
                 .await;
         }
         Ok(Some(VideoLeg {
-            kind: StreamKind::Camera,
+            kind,
             port_pair: pair,
             socket,
             srtp_context,
             srtp_sdp,
             negotiated: fcp_media::NegotiatedVideo {
-                label: None,
+                label: section.label.clone(),
                 codec: agreed.codec,
                 payload_type: agreed.payload_type,
                 fmtp: agreed.fmtp.clone(),
@@ -4210,17 +4428,60 @@ impl ConferenceCallHandler {
                 }
             }
         }
+        // The peer offered a shared screen's section too: answer it when
+        // the meeting allows sharing, on its own port and key (7d).
+        let mut content_pair = None;
+        let mut content_answer_srtp = None;
+        let content_offered = fcp_media::parse_video_sections(sdp_offer)
+            .content
+            .is_some_and(|c| c.port != 0);
+        if content_offered
+            && video_pair.is_some()
+            && plan.as_ref().is_some_and(|p| p.settings.content)
+        {
+            let mut take = true;
+            match parse_content_sdes_crypto(sdp_offer)
+                .first()
+                .map(Self::negotiate_srtp)
+            {
+                Some(Ok((ctx, sdp_ctx))) => {
+                    content_answer_srtp = Some((Arc::new(tokio::sync::RwLock::new(ctx)), sdp_ctx))
+                }
+                Some(Err(e)) => {
+                    warn!(room = %room_number, peer = %peer_node, error = %e, "Trunk content SRTP offer unusable; answering without the screen");
+                    take = false;
+                }
+                None if srtp.is_some() => {
+                    warn!(room = %room_number, peer = %peer_node, "Trunk content offered without crypto on an encrypted trunk; answering without the screen");
+                    take = false;
+                }
+                None => {}
+            }
+            if take {
+                match self.port_pool.allocate().await {
+                    Ok(p) => content_pair = Some(p),
+                    Err(e) => {
+                        warn!(room = %room_number, peer = %peer_node, error = %e, "No port pair left for trunk content; answering without the screen");
+                    }
+                }
+            }
+        }
+        let trunk_codecs: Vec<_> = plan.as_ref().map(|p| vec![p.codec]).unwrap_or_default();
         let answer = match (&plan, video_pair) {
-            (Some(plan), Some(pair)) => self.build_answer(
+            (Some(_), Some(pair)) => self.build_answer(
                 sdp_offer,
                 port_pair.rtp_port,
                 srtp_sdp.as_ref(),
                 Some(VideoAnswer {
                     rtp_port: pair.rtp_port,
-                    codecs: &[plan.codec],
+                    codecs: &trunk_codecs,
                     srtp: video_answer_srtp.as_ref().map(|(_, sdp)| sdp),
                 }),
-                None,
+                content_pair.map(|cp| VideoAnswer {
+                    rtp_port: cp.rtp_port,
+                    codecs: &trunk_codecs,
+                    srtp: content_answer_srtp.as_ref().map(|(_, sdp)| sdp),
+                }),
             ),
             _ => fcp_media::Answer {
                 sdp: construct_answer_for_a_leg(
@@ -4241,7 +4502,7 @@ impl ConferenceCallHandler {
             Err(e) => {
                 let pool = Arc::clone(&self.port_pool);
                 tokio::spawn(async move { pool.deallocate(port_pair).await });
-                if let Some(pair) = video_pair {
+                for pair in [video_pair, content_pair].into_iter().flatten() {
                     self.release_video_pair_later(pair);
                 }
                 return Err(anyhow::anyhow!("Failed to create 200 OK for trunk: {}", e));
@@ -4255,7 +4516,7 @@ impl ConferenceCallHandler {
                 let _ = self.uac.bye(&dialog).await;
                 let pool = Arc::clone(&self.port_pool);
                 tokio::spawn(async move { pool.deallocate(port_pair).await });
-                if let Some(pair) = video_pair {
+                for pair in [video_pair, content_pair].into_iter().flatten() {
                     self.release_video_pair_later(pair);
                 }
                 return Err(anyhow::anyhow!(
@@ -4265,50 +4526,39 @@ impl ConferenceCallHandler {
             }
         };
 
-        // The video half of the answer, when one was agreed.
-        let video = match (plan, video_pair, answer.video) {
+        // The video half of the answer, when one was agreed, and the
+        // screen's section beside it.
+        let video = match (&plan, video_pair, answer.video) {
             (Some(plan), Some(pair), Some(negotiated)) => {
-                match RtpSocketPair::new(pair, RtpSocketConfig::default()).await {
-                    Ok(socket) => {
-                        let socket = Arc::new(socket);
-                        if let Some(remote) = negotiated
-                            .remote
-                            .or_else(|| fcp_media::remote_video_endpoint(sdp_offer))
-                        {
-                            socket
-                                .set_remote_endpoint(RemoteEndpoint {
-                                    rtp_addr: remote,
-                                    rtcp_addr: Some(SocketAddr::new(
-                                        remote.ip(),
-                                        remote.port().wrapping_add(1),
-                                    )),
-                                })
-                                .await;
-                        }
-                        let (srtp_context, srtp_sdp) = match video_answer_srtp {
-                            Some((ctx, sdp)) => (Some(ctx), Some(sdp)),
-                            None => (None, None),
-                        };
-                        Some(VideoLeg {
-                            kind: StreamKind::Camera,
-                            port_pair: pair,
-                            socket,
-                            srtp_context,
-                            srtp_sdp,
-                            negotiated,
-                            settings: plan.settings,
-                            stats: Arc::new(VideoLegStats::default()),
-                            bridge_handle: None,
-                        })
-                    }
-                    Err(e) => {
-                        warn!(room = %room_number, peer = %peer_node, error = %e, "Failed to create the trunk's video socket; audio only");
-                        self.release_video_pair_later(pair);
-                        None
-                    }
-                }
+                self.trunk_leg_from_answer(
+                    StreamKind::Camera,
+                    pair,
+                    negotiated,
+                    fcp_media::remote_video_endpoint(sdp_offer),
+                    video_answer_srtp,
+                    plan.settings.clone(),
+                )
+                .await
             }
             (_, Some(pair), _) => {
+                self.release_video_pair_later(pair);
+                None
+            }
+            _ => None,
+        };
+        let content = match (&plan, content_pair, answer.content, video.is_some()) {
+            (Some(plan), Some(pair), Some(negotiated), true) => {
+                self.trunk_leg_from_answer(
+                    StreamKind::Content,
+                    pair,
+                    negotiated,
+                    fcp_media::remote_content_endpoint(sdp_offer),
+                    content_answer_srtp,
+                    plan.settings.clone(),
+                )
+                .await
+            }
+            (_, Some(pair), _, _) => {
                 self.release_video_pair_later(pair);
                 None
             }
@@ -4363,10 +4613,56 @@ impl ConferenceCallHandler {
                 frame_size,
                 srtp,
                 video,
+                content,
             },
             &conf,
         )
         .await
+    }
+
+    /// One answered video section of a trunk as a leg: its socket pointed
+    /// at the peer, its key. `None` (and the ports given back) when the
+    /// socket cannot be made; the trunk goes on without the section.
+    async fn trunk_leg_from_answer(
+        &self,
+        kind: StreamKind,
+        pair: PortPair,
+        negotiated: fcp_media::NegotiatedVideo,
+        offered_remote: Option<SocketAddr>,
+        srtp: Option<(Arc<tokio::sync::RwLock<SrtpContext>>, SrtpSdpContext)>,
+        settings: forge_conference::video::VideoRoomSettings,
+    ) -> Option<VideoLeg> {
+        let socket = match RtpSocketPair::new(pair, RtpSocketConfig::default()).await {
+            Ok(socket) => Arc::new(socket),
+            Err(e) => {
+                warn!(stream = kind.name(), error = %e, "Failed to create the trunk's socket; without the section");
+                self.release_video_pair_later(pair);
+                return None;
+            }
+        };
+        if let Some(remote) = negotiated.remote.or(offered_remote) {
+            socket
+                .set_remote_endpoint(RemoteEndpoint {
+                    rtp_addr: remote,
+                    rtcp_addr: Some(SocketAddr::new(remote.ip(), remote.port().wrapping_add(1))),
+                })
+                .await;
+        }
+        let (srtp_context, srtp_sdp) = match srtp {
+            Some((ctx, sdp)) => (Some(ctx), Some(sdp)),
+            None => (None, None),
+        };
+        Some(VideoLeg {
+            kind,
+            port_pair: pair,
+            socket,
+            srtp_context,
+            srtp_sdp,
+            negotiated,
+            settings,
+            stats: Arc::new(VideoLegStats::default()),
+            bridge_handle: None,
+        })
     }
 
     /// Join an established trunk leg to the room: a virtual participant,
@@ -4423,6 +4719,21 @@ impl ConferenceCallHandler {
                 v,
             )
         });
+        // The screen's section only beside a working video one.
+        let content = match (leg.content, video.is_some()) {
+            (Some(c), true) => self.start_trunk_content(
+                &leg.room,
+                &participant_id,
+                leg.tenant_id,
+                &leg.room_number,
+                c,
+            ),
+            (Some(c), false) => {
+                self.release_video_pair_later(c.port_pair);
+                None
+            }
+            (None, _) => None,
+        };
 
         self.room_sessions
             .entry(leg.room_number.clone())
@@ -4452,7 +4763,7 @@ impl ConferenceCallHandler {
                 srtp_context,
                 last_refreshed: Instant::now(),
                 video,
-                content: None,
+                content,
                 joined_by_token: false,
             },
         );
@@ -4464,6 +4775,35 @@ impl ConferenceCallHandler {
             "Conference trunk connected"
         );
         Ok(())
+    }
+
+    /// Put a trunk's content section on the room: the peer's shared
+    /// screen as a remote content source, and this node's presenter's
+    /// screen going back to it (§15.6, 7d).
+    fn start_trunk_content(
+        &self,
+        room: &Arc<forge_conference::ConferenceRoom>,
+        participant_id: &str,
+        tenant_id: TenantId,
+        room_number: &str,
+        mut leg: VideoLeg,
+    ) -> Option<VideoLeg> {
+        let Some(backend) = self.video_backend.as_ref() else {
+            self.release_video_pair_later(leg.port_pair);
+            return None;
+        };
+        let sink = self.video_event_sink(tenant_id, room_number);
+        match video_bridge::attach_trunk_content(room, backend, participant_id, &leg, sink) {
+            Some(fut) => {
+                leg.bridge_handle = Some(tokio::spawn(fut));
+                info!(room = %room_number, trunk = %participant_id, "Conference trunk carries a shared screen");
+                Some(leg)
+            }
+            None => {
+                self.release_video_pair_later(leg.port_pair);
+                None
+            }
+        }
     }
 
     /// Put a trunk's video on the room: the peer's composite as a remote
@@ -4509,6 +4849,24 @@ const BYE_TIMEOUT: Duration = Duration::from_secs(5);
 /// The payload type a trunk offers its video on. A trunk is FCP at both
 /// ends, so one number in the dynamic range is enough.
 const TRUNK_VIDEO_PAYLOAD_TYPE: u8 = 97;
+/// The payload type a trunk offers a shared screen on (§15.6, 7d).
+const TRUNK_CONTENT_PAYLOAD_TYPE: u8 = 98;
+
+/// A peer node's claim to a room's content floor (§15.6, 7d): who is
+/// sharing there and since when, in milliseconds since the Unix epoch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContentClaim {
+    pub participant_id: String,
+    pub display_name: String,
+    pub since_ms: u64,
+}
+
+fn unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
 /// BYEs in flight at once during shutdown.
 const SHUTDOWN_BYE_CONCURRENCY: usize = 32;
 
@@ -4530,6 +4888,9 @@ struct TrunkLeg {
     /// The peer's composite, when the trunk carries video: one tile
     /// here, and this node's callers going back (§15.4, 5b).
     video: Option<VideoLeg>,
+    /// The shared screen's section, when the meeting allows sharing and
+    /// the peer took it (§15.6, 7d).
+    content: Option<VideoLeg>,
 }
 
 /// What a trunk would carry as video, decided before the offer goes out.
@@ -7361,10 +7722,21 @@ pub fn create_codec_instance(codec_name: &str) -> Result<Box<dyn AudioCodec>> {
 }
 
 impl FloorNotifier for ConferenceCallHandler {
-    fn floor_changed(&self, room_number: &str, notice: FloorNotice) {
+    fn floor_changed(&self, room_number: &str, mut notice: FloorNotice) {
         let Some(me) = self.me() else {
             return;
         };
+        // A peer's screen holds the floor under its trunk's tile; the
+        // browsers here are told the presenter's name from the peer's
+        // claim, when it has arrived (§15.6, 7d).
+        if let (Some(node), Some(_)) = (
+            trunks::trunk_peer_node(&notice.participant_id),
+            notice.presenter.as_ref(),
+        ) {
+            if let Some(claim) = self.content_claims.get(&format!("{room_number}|{node}")) {
+                notice.presenter = Some(claim.value().0.display_name.clone());
+            }
+        }
         // A refusal is the refused participant's business alone; the
         // floor changing hands is everyone's.
         let only_theirs = notice.floor == "refused";

@@ -56,6 +56,11 @@ pub fn is_trunk_participant(id: &str) -> bool {
     id.starts_with(TRUNK_PARTICIPANT_PREFIX)
 }
 
+/// The peer node behind a trunk's participant id, if it is one.
+pub fn trunk_peer_node(id: &str) -> Option<&str> {
+    id.strip_prefix(TRUNK_PARTICIPANT_PREFIX)
+}
+
 /// Whether a verified peer certificate identifies `node_id`: as its
 /// Common Name, as a DNS SAN, or as the user or host part of a `sip:` /
 /// `sips:` URI SAN (RFC 5922 §7.1). Case-insensitive, no wildcards.
