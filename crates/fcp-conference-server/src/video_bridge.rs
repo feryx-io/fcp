@@ -16,8 +16,8 @@ use fcp_core::{Meeting, TenantId};
 use fcp_events::{ConferenceEvent, EventPublisher, PlatformEvent};
 use fcp_media::{video_codec_to_forge, NegotiatedVideo, SrtpSdpContext};
 use forge_conference::video::{
-    ContentEvent, ContentGate, ContentLayout, OutputScope, PassthroughMode, StreamKind,
-    SubscribeRequest, VideoBackend, VideoRoom, VideoRoomEvent, VideoRoomSettings,
+    ContentEvent, ContentGate, ContentInfo, ContentLayout, OutputScope, PassthroughMode,
+    StreamKind, SubscribeRequest, VideoBackend, VideoRoom, VideoRoomEvent, VideoRoomSettings,
     VideoSubscription,
 };
 use forge_conference::ConferenceRoom;
@@ -529,6 +529,72 @@ pub struct VideoEventSink {
     /// Whether the node can afford a screen share (§15.6): the video
     /// budget, asked before the room grants the floor. `None` admits all.
     pub content_gate: Option<Arc<dyn ContentGate>>,
+    /// Who tells the participants that can hear it about the floor
+    /// (§15.6, 7c): the conference server, which knows which of them
+    /// joined through a gateway. `None` tells nobody.
+    pub floor: Option<Arc<dyn FloorNotifier>>,
+}
+
+/// The media type of the SIP `INFO` that carries a [`FloorNotice`] to a
+/// browser's gateway session.
+pub const CONTENT_INFO_TYPE: &str = "application/vnd.fcp.content+json";
+
+/// What the room's content floor just did, for the participants that
+/// can hear it (§15.6, 7c). The conference server sends one to every
+/// participant that joined with a join token — a browser through the
+/// gateway — as a SIP `INFO` of [`CONTENT_INFO_TYPE`], adding `mine`
+/// for the recipient.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct FloorNotice {
+    /// `granted` (someone took the floor), `released` (they gave it up
+    /// or lost it) or `refused` (their share was turned down).
+    pub floor: &'static str,
+    /// The participant the notice is about.
+    pub participant_id: String,
+    /// The presenter's display name while someone holds the floor:
+    /// the new presenter on `granted`, the holder on a `refused` that
+    /// was refused because the floor is held.
+    pub presenter: Option<String>,
+    /// Why, on `released` (the [`ContentStop`](forge_conference::video::ContentStop)'s
+    /// name) and `refused` (the [`ContentRefusal`](forge_conference::video::ContentRefusal)'s).
+    pub reason: Option<String>,
+}
+
+/// Where floor notices go.
+pub trait FloorNotifier: Send + Sync {
+    /// The floor of `room_number` changed. A `refused` notice concerns
+    /// only the participant it names.
+    fn floor_changed(&self, room_number: &str, notice: FloorNotice);
+}
+
+/// The notice one of the room's content events is, if any. `content`
+/// is the room's floor as it stands after the event.
+pub fn floor_notice(
+    participant_id: &str,
+    event: &ContentEvent,
+    content: Option<&ContentInfo>,
+) -> FloorNotice {
+    let presenter = content.map(|c| c.display_name.clone());
+    match event {
+        ContentEvent::Started => FloorNotice {
+            floor: "granted",
+            participant_id: participant_id.to_string(),
+            presenter: presenter.or_else(|| Some(participant_id.to_string())),
+            reason: None,
+        },
+        ContentEvent::Stopped(why) => FloorNotice {
+            floor: "released",
+            participant_id: participant_id.to_string(),
+            presenter: None,
+            reason: Some(why.name().to_string()),
+        },
+        ContentEvent::Refused(why) => FloorNotice {
+            floor: "refused",
+            participant_id: participant_id.to_string(),
+            presenter,
+            reason: Some(why.name().to_string()),
+        },
+    }
 }
 
 /// Put the participant on the room's video: enable the room's video if
@@ -785,6 +851,19 @@ fn spawn_event_pump(video: &Arc<VideoRoom>, sink: VideoEventSink) {
             // the event says so.
             let fps = room.upgrade().map(|r| r.fps()).unwrap_or(0);
             let content = room.upgrade().and_then(|r| r.content());
+            if let (
+                Some(notifier),
+                VideoRoomEvent::Content {
+                    participant_id,
+                    event,
+                },
+            ) = (&sink.floor, &ev)
+            {
+                notifier.floor_changed(
+                    &sink.room_number,
+                    floor_notice(participant_id, event, content.as_ref()),
+                );
+            }
             if let Some(event) = conference_event(ev, &sink, fps, content.as_ref()) {
                 if let Err(e) = sink
                     .event_bus
@@ -1290,6 +1369,7 @@ mod tests {
             node_id: "conf-a".into(),
             pumps: Arc::new(dashmap::DashMap::new()),
             content_gate: None,
+            floor: None,
         };
         let hd = Resolution::new(1280, 720);
         let sd = Resolution::new(640, 360);
@@ -1536,6 +1616,18 @@ mod tests {
         assert!(may_share(&meeting.video_content_share, true));
         assert!(!may_share(&meeting.video_content_share, false));
         let bus = Arc::new(InMemoryEventBus::new());
+        // What the conference server would turn into floor INFOs (7c).
+        #[derive(Default)]
+        struct Notices(std::sync::Mutex<Vec<(String, FloorNotice)>>);
+        impl FloorNotifier for Notices {
+            fn floor_changed(&self, room_number: &str, notice: FloorNotice) {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push((room_number.to_string(), notice));
+            }
+        }
+        let notices = Arc::new(Notices::default());
         let sink = VideoEventSink {
             event_bus: bus.clone() as Arc<dyn EventPublisher>,
             tenant_id: TenantId::new(),
@@ -1543,6 +1635,7 @@ mod tests {
             node_id: "conf-a".into(),
             pumps: Arc::new(dashmap::DashMap::new()),
             content_gate: None,
+            floor: Some(notices.clone() as Arc<dyn FloorNotifier>),
         };
         let lo = |p: u16| SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), p);
 
@@ -1747,6 +1840,45 @@ mod tests {
         })
         .await;
         assert!(video.content().is_none());
+
+        // The floor's story, as gateway sessions would hear it: Alice
+        // granted, Carol refused (hers alone), Alice released by the host.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        let heard = loop {
+            let heard = notices.0.lock().unwrap().clone();
+            if heard.iter().any(|(_, n)| n.floor == "released") {
+                break heard;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "no released notice; heard {heard:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        assert!(heard.iter().all(|(room, _)| room == "1001"));
+        // Carol is refused for her packets and again for asking — each
+        // once per floor — and which of hers comes before Alice's grant
+        // is the scheduler's; what matters is who was told what.
+        let of = |floor: &str, who: &str| -> Vec<&FloorNotice> {
+            heard
+                .iter()
+                .filter(|(_, n)| n.floor == floor && n.participant_id == who)
+                .map(|(_, n)| n)
+                .collect()
+        };
+        assert_eq!(of("granted", "alice").len(), 1, "{heard:?}");
+        assert_eq!(
+            of("granted", "alice")[0].presenter.as_deref(),
+            Some("alice")
+        );
+        assert!(!of("refused", "carol").is_empty(), "{heard:?}");
+        assert!(of("refused", "carol")
+            .iter()
+            .all(|n| n.reason.as_deref() == Some("participant_disabled")));
+        assert_eq!(of("released", "alice").len(), 1, "{heard:?}");
+        assert_eq!(of("released", "alice")[0].reason.as_deref(), Some("host"));
+        assert!(of("refused", "alice").is_empty() && of("granted", "carol").is_empty());
+        assert_eq!(heard.last().unwrap().1.floor, "released");
         assert_eq!(
             set_content_layout(&room, "content_only").unwrap()["content_layout"],
             serde_json::json!("content_only")
@@ -1775,6 +1907,7 @@ mod tests {
             node_id: "conf-a".into(),
             pumps: Arc::new(dashmap::DashMap::new()),
             content_gate: None,
+            floor: None,
         };
         let info = ContentInfo {
             participant_id: "alice".into(),
@@ -1819,6 +1952,44 @@ mod tests {
             )),
         };
         assert!(conference_event(refused, &sink, 15, None).is_none());
+        // What a gateway session is told of each (7c): the presenter's
+        // name on a grant, the holder's on a refusal for being held, the
+        // reason on a stop.
+        let notice = floor_notice("alice", &ContentEvent::Started, Some(&info));
+        assert_eq!(
+            notice,
+            FloorNotice {
+                floor: "granted",
+                participant_id: "alice".into(),
+                presenter: Some("Alice".into()),
+                reason: None,
+            }
+        );
+        let notice = floor_notice("alice", &ContentEvent::Stopped(ContentStop::Idle), None);
+        assert_eq!(
+            (notice.floor, notice.reason.as_deref()),
+            ("released", Some("idle"))
+        );
+        assert!(notice.presenter.is_none());
+        let notice = floor_notice(
+            "bob",
+            &ContentEvent::Refused(forge_conference::video::ContentRefusal::Held(
+                "alice".into(),
+            )),
+            Some(&info),
+        );
+        assert_eq!(notice.floor, "refused");
+        assert_eq!(notice.reason.as_deref(), Some("held"));
+        assert_eq!(notice.presenter.as_deref(), Some("Alice"));
+        assert_eq!(
+            serde_json::to_value(&notice).unwrap(),
+            serde_json::json!({
+                "floor": "refused",
+                "participant_id": "bob",
+                "presenter": "Alice",
+                "reason": "held",
+            })
+        );
         // A trunk's remote content is infrastructure, like its tile.
         let trunk = VideoRoomEvent::Content {
             participant_id: "__trunk__node-b".into(),
@@ -1883,6 +2054,7 @@ mod tests {
             node_id: "conf-a".into(),
             pumps: Arc::clone(&pumps),
             content_gate: None,
+            floor: None,
         };
 
         // Server-side sockets for the two legs, and the "phones".
@@ -2189,6 +2361,7 @@ mod tests {
                 node_id: "conf-a".into(),
                 pumps: Arc::clone(&pumps),
                 content_gate: None,
+                floor: None,
             },
         );
         let mut events = bus.subscribe(EventFilter::default()).await.unwrap();
@@ -2322,6 +2495,7 @@ mod tests {
             node_id: "conf-a".into(),
             pumps: Arc::clone(&pumps),
             content_gate: None,
+            floor: None,
         };
         let leg = |port: u16| VideoLeg {
             kind: StreamKind::Camera,
@@ -2456,6 +2630,7 @@ mod tests {
                 node_id: "conf-a".into(),
                 pumps: Arc::clone(&pumps),
                 content_gate: None,
+                floor: None,
             },
         );
         let mut events = bus.subscribe(EventFilter::default()).await.unwrap();

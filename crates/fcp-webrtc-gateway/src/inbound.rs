@@ -1,10 +1,12 @@
 //! The SIP the gateway receives: responses to its own INVITEs and BYEs,
 //! which the transaction layer matches to the calls waiting on them, and
-//! in-dialog requests from the far end — a BYE ends the session; OPTIONS
-//! is answered; anything else is refused, since the gateway places calls
-//! and never takes them.
+//! in-dialog requests from the far end — a BYE ends the session; an INFO
+//! of `application/vnd.fcp.content+json` is the conference server's word
+//! on the shared screen's floor (§15.6, 7c); OPTIONS is answered;
+//! anything else is refused, since the gateway places calls and never
+//! takes them.
 
-use crate::session::SessionManager;
+use crate::session::{ContentNotice, SessionManager};
 use bytes::Bytes;
 use fcp_sip::listener::InboundMessageHandler;
 use sip_core::{Headers, Method, Request, Response, StatusLine};
@@ -32,6 +34,20 @@ impl GatewayInboundHandler {
     }
 }
 
+/// The media type of the conference server's floor notices.
+pub const CONTENT_NOTICE_TYPE: &str = "application/vnd.fcp.content+json";
+
+/// The floor notice an INFO carries, if it is one: the type must match
+/// (parameters aside) and the body parse.
+pub fn parse_content_notice(request: &Request) -> Option<ContentNotice> {
+    let content_type = request.headers().get("Content-Type")?;
+    let media_type = content_type.split(';').next()?.trim();
+    if !media_type.eq_ignore_ascii_case(CONTENT_NOTICE_TYPE) {
+        return None;
+    }
+    serde_json::from_slice(request.body()).ok()
+}
+
 /// A bodyless response to `request` with the headers RFC 3261 §8.2.6
 /// requires copied over, and a To tag when the request had none.
 pub fn simple_response(request: &Request, code: u16, reason: &str) -> Response {
@@ -51,7 +67,10 @@ pub fn simple_response(request: &Request, code: u16, reason: &str) -> Response {
     }
     let _ = headers.push("Content-Length", "0");
     if code == 405 {
-        let _ = headers.push("Allow", "BYE, OPTIONS");
+        let _ = headers.push("Allow", "BYE, INFO, OPTIONS");
+    }
+    if code == 415 {
+        let _ = headers.push("Accept", CONTENT_NOTICE_TYPE);
     }
     Response::new(
         StatusLine::new(code, reason).expect("valid status line"),
@@ -105,6 +124,30 @@ impl InboundMessageHandler for GatewayInboundHandler {
                             .await;
                     }
                 }
+                Method::Info => match parse_content_notice(&request) {
+                    Some(notice) => {
+                        if self.sessions.content_notice(&call_id, &notice).await {
+                            handle
+                                .send_final(simple_response(&request, 200, "OK"))
+                                .await;
+                        } else {
+                            debug!(%peer, call_id = %call_id, "floor notice for an unknown call");
+                            handle
+                                .send_final(simple_response(
+                                    &request,
+                                    481,
+                                    "Call/Transaction Does Not Exist",
+                                ))
+                                .await;
+                        }
+                    }
+                    None => {
+                        debug!(%peer, call_id = %call_id, "INFO of a type the gateway does not take");
+                        handle
+                            .send_final(simple_response(&request, 415, "Unsupported Media Type"))
+                            .await;
+                    }
+                },
                 Method::Options => {
                     handle
                         .send_final(simple_response(&request, 200, "OK"))
@@ -172,6 +215,41 @@ mod tests {
             Some("<sip:webrtc-gw@10.0.0.2>;tag=xyz")
         );
         let refused = simple_response(&tagged, 405, "Method Not Allowed");
-        assert_eq!(refused.headers().get("Allow"), Some("BYE, OPTIONS"));
+        assert_eq!(refused.headers().get("Allow"), Some("BYE, INFO, OPTIONS"));
+        let unsupported = simple_response(&tagged, 415, "Unsupported Media Type");
+        assert_eq!(
+            unsupported.headers().get("Accept"),
+            Some(CONTENT_NOTICE_TYPE)
+        );
+    }
+
+    fn info(content_type: &str, body: &str) -> Request {
+        let raw = format!(
+            "INFO sip:webrtc-gw@10.0.0.2 SIP/2.0\r\n\
+             Via: SIP/2.0/UDP 10.0.0.7:5060;branch=z9hG4bK777\r\n\
+             From: <sip:8001@10.0.0.7>;tag=abc\r\n\
+             To: <sip:webrtc-gw@10.0.0.2>;tag=xyz\r\n\
+             Call-ID: call-1@10.0.0.7\r\n\
+             CSeq: 3 INFO\r\n\
+             Content-Type: {content_type}\r\n\
+             Content-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        sip_parse::parse_request(&Bytes::from(raw)).expect("parses")
+    }
+
+    #[test]
+    fn a_floor_notice_is_read_off_an_info_of_its_type() {
+        let req = info(
+            "application/vnd.fcp.content+json; charset=utf-8",
+            r#"{"floor":"granted","mine":false,"presenter":"Ann","participant_id":"p1"}"#,
+        );
+        let notice = parse_content_notice(&req).expect("a notice");
+        assert_eq!(notice.floor, "granted");
+        assert!(!notice.mine);
+        assert_eq!(notice.presenter.as_deref(), Some("Ann"));
+        // DTMF by INFO, or anything else, is not one.
+        assert!(parse_content_notice(&info("application/dtmf-relay", "Signal=1")).is_none());
+        assert!(parse_content_notice(&info("application/vnd.fcp.content+json", "nope")).is_none());
     }
 }

@@ -6,10 +6,12 @@
 //! forwarded packet for packet: the coded payload, sequence number,
 //! timestamp and marker are untouched, the payload type is mapped, and the
 //! SSRC is the browser's towards the SIP side and the peer connection's
-//! own towards the browser (the transport stamps it). RTCP feedback about
-//! video — NACK, PLI, FIR, REMB — crosses in both directions with its
-//! SSRCs rewritten to what each side knows; reports (SR/RR) are each
-//! leg's own business and are not relayed.
+//! own towards the browser (the transport stamps it). A shared screen is
+//! a second video section on both legs (§15.6), relayed the same way on
+//! its own sockets and SSRC pair. RTCP feedback about video — NACK, PLI,
+//! FIR, REMB — crosses in both directions with its SSRCs rewritten to
+//! what each side knows, each section's to its own; reports (SR/RR) are
+//! each leg's own business and are not relayed.
 //!
 //! The SIP side is plain RTP or SDES-SRTP per section; the browser side's
 //! DTLS-SRTP is inside the peer connection.
@@ -48,6 +50,8 @@ pub struct SipVideoLeg {
 pub struct SipLeg {
     pub audio: SipAudioLeg,
     pub video: Option<SipVideoLeg>,
+    /// The shared screen's section, when negotiated.
+    pub content: Option<SipVideoLeg>,
 }
 
 /// The browser leg: the peer connection's event stream and senders.
@@ -60,6 +64,8 @@ pub struct BrowserLeg {
     pub telephone_event_pt: Option<u8>,
     /// The video sender and the browser side's video payload type.
     pub video: Option<(VideoSender, u8)>,
+    /// The shared screen's sender and payload type on the browser side.
+    pub content: Option<(VideoSender, u8)>,
     /// How long the browser may send nothing at all — no RTP, no RTCP —
     /// before it is taken as gone. A live browser reports every second or
     /// so even with its tracks muted; the peer connection itself does not
@@ -75,10 +81,15 @@ pub struct RelayStats {
     pub audio_to_browser: AtomicU64,
     pub video_to_sip: AtomicU64,
     pub video_to_browser: AtomicU64,
+    pub content_to_sip: AtomicU64,
+    pub content_to_browser: AtomicU64,
     pub feedback_to_sip: AtomicU64,
     pub feedback_to_browser: AtomicU64,
     pub dropped: AtomicU64,
     pub srtp_errors: AtomicU64,
+    /// When the browser last sent a screen packet, in milliseconds since
+    /// the Unix epoch; 0 before the first.
+    pub content_last_from_browser_ms: AtomicU64,
 }
 
 /// A point-in-time copy of [`RelayStats`].
@@ -88,6 +99,8 @@ pub struct RelayStatsSnapshot {
     pub audio_to_browser: u64,
     pub video_to_sip: u64,
     pub video_to_browser: u64,
+    pub content_to_sip: u64,
+    pub content_to_browser: u64,
     pub feedback_to_sip: u64,
     pub feedback_to_browser: u64,
     pub dropped: u64,
@@ -101,12 +114,27 @@ impl RelayStats {
             audio_to_browser: self.audio_to_browser.load(Ordering::Relaxed),
             video_to_sip: self.video_to_sip.load(Ordering::Relaxed),
             video_to_browser: self.video_to_browser.load(Ordering::Relaxed),
+            content_to_sip: self.content_to_sip.load(Ordering::Relaxed),
+            content_to_browser: self.content_to_browser.load(Ordering::Relaxed),
             feedback_to_sip: self.feedback_to_sip.load(Ordering::Relaxed),
             feedback_to_browser: self.feedback_to_browser.load(Ordering::Relaxed),
             dropped: self.dropped.load(Ordering::Relaxed),
             srtp_errors: self.srtp_errors.load(Ordering::Relaxed),
         }
     }
+
+    /// Whether the browser sent a screen packet within `window`.
+    pub fn content_sent_within(&self, window: Duration) -> bool {
+        let last = self.content_last_from_browser_ms.load(Ordering::Relaxed);
+        last != 0 && unix_ms().saturating_sub(last) <= window.as_millis() as u64
+    }
+}
+
+fn unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 /// Why a relay stopped.
@@ -262,11 +290,14 @@ pub async fn run_relay(
     stats: Arc<RelayStats>,
     stop: Arc<Notify>,
 ) -> RelayEnd {
-    // What each side sends video with, learned from the first packet each
-    // way, so feedback can be re-addressed.
+    // What each side sends each video section with, learned from the
+    // first packet each way, so feedback can be re-addressed.
     let mut browser_video_ssrc: Option<u32> = None;
     let mut sip_video_ssrc: Option<u32> = None;
     let our_video_ssrc = browser.video.as_ref().map(|(v, _)| v.ssrc());
+    let mut browser_content_ssrc: Option<u32> = None;
+    let mut sip_content_ssrc: Option<u32> = None;
+    let our_content_ssrc = browser.content.as_ref().map(|(v, _)| v.ssrc());
     let mut last_browser_activity = Instant::now();
     let mut liveness = tokio::time::interval(Duration::from_secs(1));
     liveness.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -315,41 +346,38 @@ pub async fn run_relay(
                             continue;
                         };
                         browser_video_ssrc = Some(pkt.header.ssrc);
-                        let plain = retag(&pkt.to_bytes(), video.payload_type);
-                        if let Some(out) = protect(&video.srtp, &plain, false, &stats).await {
-                            match video.socket.send_rtp_raw(&out).await {
-                                Ok(_) => { stats.video_to_sip.fetch_add(1, Ordering::Relaxed); }
-                                Err(e) => trace!(error = %e, "video send to SIP failed"),
-                            }
-                        }
+                        video_to_sip(video, &pkt, &stats, &stats.video_to_sip, "video").await;
                     }
-                    PeerEvent::ContentRtp(_) => {
-                        // A shared screen: the gateway does not offer the
-                        // section yet, so nothing should arrive on it.
-                        stats.dropped.fetch_add(1, Ordering::Relaxed);
-                    }
-                    PeerEvent::Rtcp(packets) => {
-                        let (Some(video), Some(media)) = (&sip.video, sip_video_ssrc) else {
+                    PeerEvent::ContentRtp(pkt) => {
+                        let Some(content) = &sip.content else {
+                            stats.dropped.fetch_add(1, Ordering::Relaxed);
                             continue;
                         };
-                        let sender = browser_video_ssrc.unwrap_or(0);
-                        let rewritten: Vec<RtcpPacket> = packets
-                            .iter()
-                            .filter(|p| our_video_ssrc.is_none() || p.feedback_media_ssrc() == our_video_ssrc || matches!(p, RtcpPacket::PayloadFeedback(PsFeedback { kind: PayloadFeedback::Remb { .. }, .. })))
-                            .filter_map(|p| rewrite_feedback(p, sender, media))
-                            .collect();
-                        if rewritten.is_empty() {
-                            continue;
+                        browser_content_ssrc = Some(pkt.header.ssrc);
+                        stats.content_last_from_browser_ms.store(unix_ms(), Ordering::Relaxed);
+                        video_to_sip(content, &pkt, &stats, &stats.content_to_sip, "content").await;
+                    }
+                    PeerEvent::Rtcp(packets) => {
+                        // Feedback about what we send the browser on each
+                        // section goes to that section's far end; a REMB,
+                        // which is about the whole transport, to the camera's.
+                        if let (Some(video), Some(media)) = (&sip.video, sip_video_ssrc) {
+                            let sender = browser_video_ssrc.unwrap_or(0);
+                            let rewritten: Vec<RtcpPacket> = packets
+                                .iter()
+                                .filter(|p| our_video_ssrc.is_none() || p.feedback_media_ssrc() == our_video_ssrc || is_remb(p))
+                                .filter_map(|p| rewrite_feedback(p, sender, media))
+                                .collect();
+                            feedback_to_sip(video, &rewritten, &stats).await;
                         }
-                        let mut plain = Vec::with_capacity(64);
-                        for p in &rewritten {
-                            plain.extend_from_slice(&p.to_bytes());
-                        }
-                        if let Some(out) = protect(&video.srtp, &plain, true, &stats).await {
-                            match video.socket.send_rtcp(&out).await {
-                                Ok(_) => { stats.feedback_to_sip.fetch_add(rewritten.len() as u64, Ordering::Relaxed); }
-                                Err(e) => trace!(error = %e, "feedback send to SIP failed"),
-                            }
+                        if let (Some(content), Some(media), Some(ours)) = (&sip.content, sip_content_ssrc, our_content_ssrc) {
+                            let sender = browser_content_ssrc.unwrap_or(0);
+                            let rewritten: Vec<RtcpPacket> = packets
+                                .iter()
+                                .filter(|p| p.feedback_media_ssrc() == Some(ours) && !is_remb(p))
+                                .filter_map(|p| rewrite_feedback(p, sender, media))
+                                .collect();
+                            feedback_to_sip(content, &rewritten, &stats).await;
                         }
                     }
                     PeerEvent::Failed(why) => return RelayEnd::BrowserFailed(why),
@@ -389,56 +417,173 @@ pub async fn run_relay(
                 }
             }
 
-            received = async {
-                match &sip.video {
-                    Some(v) => v.socket.recv_rtp_raw().await,
-                    None => std::future::pending().await,
-                }
-            } => {
-                let (raw, _) = match received {
+            received = recv_rtp_on(&sip.video) => {
+                let raw = match received {
                     Ok(r) => r,
                     Err(e) => return RelayEnd::SipSocketError(format!("video: {e}")),
                 };
                 let (Some(video), Some((sender, browser_pt))) = (&sip.video, &browser.video) else { continue };
-                let Some(plain) = unprotect(&video.srtp, &raw, false, &stats).await else { continue };
-                if plain.len() < 12 || (plain[1] & 0x7f) != video.payload_type {
-                    stats.dropped.fetch_add(1, Ordering::Relaxed);
-                    continue;
-                }
-                sip_video_ssrc = ssrc_of(&plain);
-                let out = retag(&plain, *browser_pt).freeze();
-                match sender.send_packet(out).await {
-                    Ok(()) => { stats.video_to_browser.fetch_add(1, Ordering::Relaxed); }
-                    Err(e) => trace!(error = %e, "video send to browser failed"),
+                if let Some(ssrc) = video_to_browser(video, sender, *browser_pt, raw, &stats, &stats.video_to_browser, "video").await {
+                    sip_video_ssrc = Some(ssrc);
                 }
             }
 
-            received = async {
-                match &sip.video {
-                    Some(v) => v.socket.recv_rtcp().await,
-                    None => std::future::pending().await,
-                }
-            } => {
-                let (raw, _) = match received {
+            received = recv_rtcp_on(&sip.video) => {
+                let raw = match received {
                     Ok(r) => r,
                     Err(e) => return RelayEnd::SipSocketError(format!("video rtcp: {e}")),
                 };
                 let (Some(video), Some((sender, _)), Some(media), Some(ours)) =
                     (&sip.video, &browser.video, browser_video_ssrc, our_video_ssrc) else { continue };
-                let Some(plain) = unprotect(&video.srtp, &raw, true, &stats).await else { continue };
-                let rewritten: Vec<RtcpPacket> = RtcpPacket::parse_compound(&plain)
-                    .iter()
-                    .filter_map(|p| rewrite_feedback(p, ours, media))
-                    .collect();
-                if rewritten.is_empty() {
-                    continue;
-                }
-                match sender.send_rtcp(&rewritten).await {
-                    Ok(()) => { stats.feedback_to_browser.fetch_add(rewritten.len() as u64, Ordering::Relaxed); }
-                    Err(e) => trace!(error = %e, "feedback send to browser failed"),
+                feedback_to_browser(video, sender, ours, media, raw, &stats).await;
+            }
+
+            received = recv_rtp_on(&sip.content) => {
+                let raw = match received {
+                    Ok(r) => r,
+                    Err(e) => return RelayEnd::SipSocketError(format!("content: {e}")),
+                };
+                let (Some(content), Some((sender, browser_pt))) = (&sip.content, &browser.content) else { continue };
+                if let Some(ssrc) = video_to_browser(content, sender, *browser_pt, raw, &stats, &stats.content_to_browser, "content").await {
+                    sip_content_ssrc = Some(ssrc);
                 }
             }
+
+            received = recv_rtcp_on(&sip.content) => {
+                let raw = match received {
+                    Ok(r) => r,
+                    Err(e) => return RelayEnd::SipSocketError(format!("content rtcp: {e}")),
+                };
+                let (Some(content), Some((sender, _)), Some(media), Some(ours)) =
+                    (&sip.content, &browser.content, browser_content_ssrc, our_content_ssrc) else { continue };
+                feedback_to_browser(content, sender, ours, media, raw, &stats).await;
+            }
         }
+    }
+}
+
+fn is_remb(p: &RtcpPacket) -> bool {
+    matches!(
+        p,
+        RtcpPacket::PayloadFeedback(PsFeedback {
+            kind: PayloadFeedback::Remb { .. },
+            ..
+        })
+    )
+}
+
+/// RTP on a video section's socket, or never when there is no section.
+async fn recv_rtp_on(leg: &Option<SipVideoLeg>) -> forge_core::Result<Bytes> {
+    match leg {
+        Some(v) => v.socket.recv_rtp_raw().await.map(|(raw, _)| raw),
+        None => std::future::pending().await,
+    }
+}
+
+/// RTCP on a video section's socket, or never when there is no section.
+async fn recv_rtcp_on(leg: &Option<SipVideoLeg>) -> forge_core::Result<Bytes> {
+    match leg {
+        Some(v) => v.socket.recv_rtcp().await.map(|(raw, _)| raw),
+        None => std::future::pending().await,
+    }
+}
+
+/// A browser's video packet onto a SIP section: re-tagged, protected.
+async fn video_to_sip(
+    leg: &SipVideoLeg,
+    pkt: &RtpPacket,
+    stats: &RelayStats,
+    counter: &AtomicU64,
+    what: &str,
+) {
+    let plain = retag(&pkt.to_bytes(), leg.payload_type);
+    if let Some(out) = protect(&leg.srtp, &plain, false, stats).await {
+        match leg.socket.send_rtp_raw(&out).await {
+            Ok(_) => {
+                counter.fetch_add(1, Ordering::Relaxed);
+            }
+            Err(e) => trace!(error = %e, "{what} send to SIP failed"),
+        }
+    }
+}
+
+/// A SIP section's packet to the browser: unprotected, re-tagged, sent
+/// under the peer connection's SSRC for the section. Returns the SIP
+/// side's SSRC when the packet was forwarded.
+async fn video_to_browser(
+    leg: &SipVideoLeg,
+    sender: &VideoSender,
+    browser_pt: u8,
+    raw: Bytes,
+    stats: &RelayStats,
+    counter: &AtomicU64,
+    what: &str,
+) -> Option<u32> {
+    let plain = unprotect(&leg.srtp, &raw, false, stats).await?;
+    if plain.len() < 12 || (plain[1] & 0x7f) != leg.payload_type {
+        stats.dropped.fetch_add(1, Ordering::Relaxed);
+        return None;
+    }
+    let ssrc = ssrc_of(&plain);
+    let out = retag(&plain, browser_pt).freeze();
+    match sender.send_packet(out).await {
+        Ok(()) => {
+            counter.fetch_add(1, Ordering::Relaxed);
+        }
+        Err(e) => trace!(error = %e, "{what} send to browser failed"),
+    }
+    ssrc
+}
+
+/// Re-addressed feedback onto a SIP section, as one compound packet.
+async fn feedback_to_sip(leg: &SipVideoLeg, rewritten: &[RtcpPacket], stats: &RelayStats) {
+    if rewritten.is_empty() {
+        return;
+    }
+    let mut plain = Vec::with_capacity(64);
+    for p in rewritten {
+        plain.extend_from_slice(&p.to_bytes());
+    }
+    if let Some(out) = protect(&leg.srtp, &plain, true, stats).await {
+        match leg.socket.send_rtcp(&out).await {
+            Ok(_) => {
+                stats
+                    .feedback_to_sip
+                    .fetch_add(rewritten.len() as u64, Ordering::Relaxed);
+            }
+            Err(e) => trace!(error = %e, "feedback send to SIP failed"),
+        }
+    }
+}
+
+/// A SIP section's feedback to the browser, re-addressed: from `ours`
+/// (the SSRC the browser knows the section by) about `media` (what the
+/// browser sends it with).
+async fn feedback_to_browser(
+    leg: &SipVideoLeg,
+    sender: &VideoSender,
+    ours: u32,
+    media: u32,
+    raw: Bytes,
+    stats: &RelayStats,
+) {
+    let Some(plain) = unprotect(&leg.srtp, &raw, true, stats).await else {
+        return;
+    };
+    let rewritten: Vec<RtcpPacket> = RtcpPacket::parse_compound(&plain)
+        .iter()
+        .filter_map(|p| rewrite_feedback(p, ours, media))
+        .collect();
+    if rewritten.is_empty() {
+        return;
+    }
+    match sender.send_rtcp(&rewritten).await {
+        Ok(()) => {
+            stats
+                .feedback_to_browser
+                .fetch_add(rewritten.len() as u64, Ordering::Relaxed);
+        }
+        Err(e) => trace!(error = %e, "feedback send to browser failed"),
     }
 }
 

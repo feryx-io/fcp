@@ -18,9 +18,10 @@ use crate::relay::{
 };
 use dashmap::DashMap;
 use fcp_media::{
-    construct_offer, extract_telephone_event_pt, parse_sdes_crypto, parse_sdp_codecs,
-    parse_video_offer, parse_video_sdes_crypto, remote_audio_endpoint, AudioOfferSection,
-    OfferOptions, SdpCodecInfo, SrtpOffer, VideoOfferSection,
+    construct_offer, extract_telephone_event_pt, parse_content_sdes_crypto, parse_sdes_crypto,
+    parse_sdp_codecs, parse_video_sdes_crypto, parse_video_sections, remote_audio_endpoint,
+    AudioOfferSection, OfferOptions, SdesCryptoLine, SdpCodecInfo, SrtpOffer, VideoOffer,
+    VideoOfferSection,
 };
 use fcp_sip::uac::SipUserAgentClient;
 use forge_api::routes::webrtc::WebRtcManager;
@@ -100,6 +101,9 @@ pub enum SessionKind {
         display_name: String,
         /// Whether the browser was offered video.
         video: bool,
+        /// Whether the browser was offered a second video section for a
+        /// shared screen (§15.6).
+        content: bool,
         #[serde(skip)]
         join_token: Option<String>,
     },
@@ -138,6 +142,84 @@ pub struct VideoSummary {
     pub srtp: bool,
 }
 
+/// The floor of the room's shared screen as this session knows it,
+/// from the conference server's `INFO` notices (§15.6, 7c).
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct FloorState {
+    /// `free` (nobody shares), `held` (someone else does), `granted`
+    /// (this browser does), `refused` (this browser's share was turned
+    /// down) or `released` (this browser's share ended).
+    pub state: String,
+    /// Who shares, while `held` or `granted`; on `refused`, who holds
+    /// the floor when that is why.
+    pub presenter: Option<String>,
+    /// Why, on `refused` and `released`.
+    pub reason: Option<String>,
+    /// How many notices have been taken in: a page that starts a share
+    /// acts only on a verdict newer than the one it saw before.
+    pub notices: u64,
+}
+
+impl Default for FloorState {
+    fn default() -> Self {
+        FloorState {
+            state: "free".into(),
+            presenter: None,
+            reason: None,
+            notices: 0,
+        }
+    }
+}
+
+impl FloorState {
+    /// Take in a notice from the conference server.
+    pub fn apply(&mut self, notice: &ContentNotice) {
+        let (state, presenter, reason) = match (notice.floor.as_str(), notice.mine) {
+            ("granted", true) => ("granted", notice.presenter.clone(), None),
+            ("granted", false) => ("held", notice.presenter.clone(), None),
+            ("released", true) => ("released", None, notice.reason.clone()),
+            ("released", false) => ("free", None, None),
+            ("refused", true) => ("refused", notice.presenter.clone(), notice.reason.clone()),
+            _ => return,
+        };
+        self.state = state.into();
+        self.presenter = presenter;
+        self.reason = reason;
+        self.notices += 1;
+    }
+}
+
+/// What the conference server tells a session about the floor: the body
+/// of an `INFO` of type `application/vnd.fcp.content+json`.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct ContentNotice {
+    /// `granted`, `released` or `refused`.
+    pub floor: String,
+    /// Whether the notice is about this session's participant.
+    #[serde(default)]
+    pub mine: bool,
+    #[serde(default)]
+    pub presenter: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+/// The shared screen's section on the SIP leg, and the share as it
+/// stands, for status.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ContentSummary {
+    #[serde(flatten)]
+    pub video: VideoSummary,
+    /// Whether the browser has sent screen packets in the last moments.
+    pub sending: bool,
+    #[serde(flatten)]
+    pub floor: FloorState,
+}
+
+/// How recently the browser must have sent a screen packet to count as
+/// sending.
+const SENDING_WINDOW: Duration = Duration::from_secs(3);
+
 /// A join request body.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct JoinRequest {
@@ -147,6 +229,10 @@ pub struct JoinRequest {
     /// Offer the browser video.
     #[serde(default)]
     pub video: bool,
+    /// Offer the browser a second video section to share a screen on;
+    /// `null` means yes whenever `video` is.
+    #[serde(default)]
+    pub content: Option<bool>,
     /// The join token the conference server verifies (4c); optional until
     /// then, in which case the meeting must need no PIN.
     #[serde(default)]
@@ -166,6 +252,9 @@ pub struct SessionInfo {
     pub audio_codec: Option<String>,
     /// The video negotiated on the SIP leg, if any.
     pub video: Option<VideoSummary>,
+    /// The shared screen's section on the SIP leg and the floor, if the
+    /// section was negotiated.
+    pub content: Option<ContentSummary>,
     /// Whether the SIP leg's audio is SRTP.
     pub srtp: bool,
     /// The conference host or SIP destination the INVITE went to.
@@ -206,6 +295,8 @@ pub struct Session {
     pub created_at: Instant,
     pub audio_codec: Option<String>,
     pub video: Option<VideoSummary>,
+    pub content: Option<VideoSummary>,
+    pub floor: FloorState,
     pub srtp: bool,
     pub sip_target: Option<String>,
     pub sip_call_id: Option<String>,
@@ -228,6 +319,11 @@ impl Session {
             duration_secs: self.created_at.elapsed().as_secs_f64(),
             audio_codec: self.audio_codec.clone(),
             video: self.video.clone(),
+            content: self.content.clone().map(|video| ContentSummary {
+                video,
+                sending: self.stats.content_sent_within(SENDING_WINDOW),
+                floor: self.floor.clone(),
+            }),
             srtp: self.srtp,
             sip_target: self.sip_target.clone(),
             stats: self.stats.snapshot(),
@@ -292,6 +388,15 @@ struct SipLegPlan {
     audio_codec: String,
     srtp: bool,
     video: Option<VideoSummary>,
+    content: Option<VideoSummary>,
+}
+
+/// One video section the gateway offered the SIP side: the browser's
+/// negotiation for it, our ports and key.
+struct OfferedVideo {
+    negotiated: NegotiatedVideo,
+    ports: PortPair,
+    srtp: Option<SrtpOffer>,
 }
 
 /// Owns every session.
@@ -352,13 +457,15 @@ impl SessionManager {
                 .take(64)
                 .collect()
         };
+        let content = req.video && req.content.unwrap_or(true);
         let kind = SessionKind::Room {
             room_number: room_number.to_string(),
             display_name,
             video: req.video,
+            content,
             join_token: req.join_token.filter(|t| !t.is_empty()),
         };
-        let conn = self.new_browser_connection(req.video).await?;
+        let conn = self.new_browser_connection(req.video, content).await?;
         Ok(self.start(kind, conn).await)
     }
 
@@ -403,15 +510,20 @@ impl SessionManager {
                     ice_ports: None,
                 }
             }
-            None => self.new_browser_connection(false).await?,
+            None => self.new_browser_connection(false, false).await?,
         };
         Ok(self.start(kind, conn).await)
     }
 
     /// A peer connection offering the mixer's audio codecs and, if asked,
-    /// video, registered with forge-api so the browser answers and
-    /// trickles through the existing routes.
-    async fn new_browser_connection(&self, video: bool) -> Result<BrowserConnection, SessionError> {
+    /// video — and a second video section for a shared screen, so that
+    /// sharing later needs no renegotiation — registered with forge-api
+    /// so the browser answers and trickles through the existing routes.
+    async fn new_browser_connection(
+        &self,
+        video: bool,
+        content: bool,
+    ) -> Result<BrowserConnection, SessionError> {
         // The ICE socket comes out of the media port range so a firewall
         // opened for RTP covers it.
         let ice_ports = self
@@ -426,6 +538,7 @@ impl SessionManager {
             dtmf: true,
             video: video.then(|| VideoConfig {
                 direction: Direction::SendRecv,
+                content,
                 ..VideoConfig::default()
             }),
             transport: TransportConfig {
@@ -515,6 +628,8 @@ impl SessionManager {
             created_at: Instant::now(),
             audio_codec: None,
             video: None,
+            content: None,
+            floor: FloorState::default(),
             srtp: false,
             sip_target: None,
             sip_call_id: None,
@@ -575,10 +690,23 @@ impl SessionManager {
         }
 
         // 2. What the browser negotiated.
-        let (audio_codec, audio_pt, video, audio_sender, video_sender, browser_te) = {
+        let (
+            audio_codec,
+            audio_pt,
+            video,
+            content,
+            audio_sender,
+            video_sender,
+            content_sender,
+            browser_te,
+        ) = {
             let guard = peer.lock().await;
             let (codec, pt) = guard.negotiated_codec();
             let video = guard.negotiated_video().cloned();
+            // A shared screen rides only beside a camera section.
+            let content = video
+                .as_ref()
+                .and_then(|_| guard.negotiated_content().cloned());
             let audio_sender = match guard.sender() {
                 Ok(s) => s,
                 Err(e) => {
@@ -589,8 +717,18 @@ impl SessionManager {
                 }
             };
             let video_sender = video.as_ref().and_then(|_| guard.video_sender().ok());
+            let content_sender = content.as_ref().and_then(|_| guard.content_sender().ok());
             let te = guard.remote_sdp().and_then(extract_telephone_event_pt);
-            (codec, pt, video, audio_sender, video_sender, te)
+            (
+                codec,
+                pt,
+                video,
+                content,
+                audio_sender,
+                video_sender,
+                content_sender,
+                te,
+            )
         };
         if !matches!(
             audio_codec,
@@ -618,26 +756,40 @@ impl SessionManager {
             }
         };
         session.write().await.ports.push(audio_ports);
-        let video_ports = if video.is_some() {
+        // A port pair and, under SRTP, a key per video section offered.
+        let mut offered_video = None;
+        let mut offered_content = None;
+        if let Some(v) = video.clone() {
             match self.ports.allocate().await {
-                Ok(p) => {
-                    session.write().await.ports.push(p);
-                    Some(p)
+                Ok(ports) => {
+                    session.write().await.ports.push(ports);
+                    offered_video = Some(OfferedVideo {
+                        negotiated: v,
+                        ports,
+                        srtp: self.cfg.srtp.then(|| SrtpOffer::generate().ok()).flatten(),
+                    });
                 }
                 Err(e) => {
-                    warn!(session = %id, error = %e, "no ports for video; joining audio-only");
-                    None
+                    warn!(session = %id, error = %e, "no ports for video; joining audio-only")
                 }
             }
-        } else {
-            None
-        };
+        }
+        if let (Some(_), Some(c)) = (&offered_video, content.clone()) {
+            match self.ports.allocate().await {
+                Ok(ports) => {
+                    session.write().await.ports.push(ports);
+                    offered_content = Some(OfferedVideo {
+                        negotiated: c,
+                        ports,
+                        srtp: self.cfg.srtp.then(|| SrtpOffer::generate().ok()).flatten(),
+                    });
+                }
+                Err(e) => {
+                    warn!(session = %id, error = %e, "no ports for a shared screen; joining without one")
+                }
+            }
+        }
         let audio_srtp = if self.cfg.srtp {
-            SrtpOffer::generate().ok()
-        } else {
-            None
-        };
-        let video_srtp = if self.cfg.srtp && video_ports.is_some() {
             SrtpOffer::generate().ok()
         } else {
             None
@@ -648,17 +800,18 @@ impl SessionManager {
             encoding_name: codec_name.to_string(),
             clock_rate: 8000,
         }];
-        let video_section = match (&video, video_ports) {
-            (Some(v), Some(ports)) => Some(VideoOfferSection {
-                rtp_port: ports.rtp_port,
-                payload_type: v.payload_type,
-                codec: v.codec,
-                fmtp: v.fmtp.as_deref(),
+        fn section_of(o: &OfferedVideo) -> VideoOfferSection<'_> {
+            VideoOfferSection {
+                rtp_port: o.ports.rtp_port,
+                payload_type: o.negotiated.payload_type,
+                codec: o.negotiated.codec,
+                fmtp: o.negotiated.fmtp.as_deref(),
                 feedback: true,
-                srtp: video_srtp.as_ref().map(|s| &s.sdp),
-            }),
-            _ => None,
-        };
+                srtp: o.srtp.as_ref().map(|s| &s.sdp),
+            }
+        }
+        let video_section = offered_video.as_ref().map(section_of);
+        let content_section = offered_content.as_ref().map(section_of);
         let offer = match construct_offer(&OfferOptions {
             server_ip: &self.cfg.public_ip,
             origin_id: &id[5..13.min(id.len())],
@@ -671,8 +824,7 @@ impl SessionManager {
                 ptime_ms: Some(20),
             },
             video: video_section,
-            // A shared screen's section is 7c's.
-            content: None,
+            content: content_section,
         }) {
             Ok(o) => o,
             Err(e) => {
@@ -695,7 +847,14 @@ impl SessionManager {
             s.state = SessionState::Inviting;
             s.sip_target = Some(target.clone());
         }
-        info!(session = %id, target = %target, codec = codec_name, video = video.is_some(), "sending INVITE");
+        info!(
+            session = %id,
+            target = %target,
+            codec = codec_name,
+            video = offered_video.is_some(),
+            content = offered_content.is_some(),
+            "sending INVITE"
+        );
         let handle = match self
             .uac
             .invite_with_headers(&target, Some(&offer), headers)
@@ -757,9 +916,8 @@ impl SessionManager {
                 codec_name,
                 audio_ports,
                 audio_srtp,
-                video.as_ref(),
-                video_ports,
-                video_srtp,
+                offered_video,
+                offered_content,
             )
             .await
         {
@@ -787,6 +945,7 @@ impl SessionManager {
             s.audio_codec = Some(plan.audio_codec.clone());
             s.srtp = plan.srtp;
             s.video = plan.video.clone();
+            s.content = plan.content.clone();
             s.stats.clone()
         };
         self.by_sip_call_id.insert(sip_call_id.clone(), id.clone());
@@ -795,6 +954,7 @@ impl SessionManager {
             codec = %plan.audio_codec,
             srtp = plan.srtp,
             video = ?plan.video.as_ref().map(|v| &v.codec),
+            content = plan.content.is_some(),
             "connected; relaying media"
         );
 
@@ -804,10 +964,12 @@ impl SessionManager {
             audio: audio_sender,
             audio_payload_type: audio_pt,
             telephone_event_pt: browser_te,
-            video: match (video_sender, &plan.video) {
-                (Some(sender), Some(_)) => {
-                    Some((sender, video.map(|v| v.payload_type).unwrap_or(0)))
-                }
+            video: match (video_sender, &plan.video, &video) {
+                (Some(sender), Some(_), Some(v)) => Some((sender, v.payload_type)),
+                _ => None,
+            },
+            content: match (content_sender, &plan.content, &content) {
+                (Some(sender), Some(_), Some(c)) => Some((sender, c.payload_type)),
                 _ => None,
             },
             inactivity_timeout: self.cfg.inactivity_timeout,
@@ -907,9 +1069,8 @@ impl SessionManager {
         codec_name: &str,
         audio_ports: PortPair,
         audio_srtp: Option<SrtpOffer>,
-        video: Option<&NegotiatedVideo>,
-        video_ports: Option<PortPair>,
-        video_srtp: Option<SrtpOffer>,
+        video: Option<OfferedVideo>,
+        content: Option<OfferedVideo>,
     ) -> Result<SipLegPlan, String> {
         let codecs = parse_sdp_codecs(answer);
         let audio_pt = codecs
@@ -939,60 +1100,26 @@ impl SessionManager {
             .map_err(|e| format!("audio socket: {e}"))?;
         point_at(&audio_socket, remote_audio).await;
 
-        let mut video_leg = None;
-        let mut video_summary = None;
-        if let (Some(v), Some(ports)) = (video, video_ports) {
-            match parse_video_offer(answer) {
-                Some(section) if section.port != 0 => {
-                    let pt = section
-                        .codecs
-                        .iter()
-                        .find(|c| c.codec == v.codec)
-                        .map(|c| c.payload_type);
-                    match (pt, section.remote) {
-                        (Some(pt), Some(remote)) => {
-                            let (ctx, srtp) = match (
-                                video_srtp,
-                                parse_video_sdes_crypto(answer).into_iter().next(),
-                            ) {
-                                (Some(ours), Some(theirs)) => match ours.accept(&theirs) {
-                                    Ok(ctx) => (Some(ctx), true),
-                                    Err(e) => {
-                                        warn!(error = %e, "video SRTP; leaving video out");
-                                        (None, false)
-                                    }
-                                },
-                                _ => (None, false),
-                            };
-                            let socket = RtpSocketPair::new(
-                                ports,
-                                RtpSocketConfig {
-                                    tos: 0xA0,
-                                    ..RtpSocketConfig::default()
-                                },
-                            )
-                            .await
-                            .map_err(|e| format!("video socket: {e}"))?;
-                            point_at(&socket, remote).await;
-                            video_leg = Some(SipVideoLeg {
-                                socket: Arc::new(socket),
-                                srtp: ctx.map(|c| Arc::new(Mutex::new(c))),
-                                payload_type: pt,
-                            });
-                            video_summary = Some(VideoSummary {
-                                codec: v.codec.sdp_name().to_string(),
-                                payload_type: pt,
-                                srtp,
-                            });
-                        }
-                        _ => debug!(
-                            "the answer's video section has no usable codec or address; audio-only"
-                        ),
-                    }
-                }
-                _ => debug!("the far end rejected video; audio-only"),
+        // Each video section on its own socket and key, as answered.
+        let sections = parse_video_sections(answer);
+        let (video_leg, video_summary) = match video {
+            Some(offered) => {
+                let crypto = parse_video_sdes_crypto(answer);
+                open_video_section("video", offered, sections.camera.as_ref(), crypto)
+                    .await?
+                    .map_or((None, None), |(leg, summary)| (Some(leg), Some(summary)))
             }
-        }
+            None => (None, None),
+        };
+        let (content_leg, content_summary) = match content {
+            Some(offered) if video_leg.is_some() => {
+                let crypto = parse_content_sdes_crypto(answer);
+                open_video_section("content", offered, sections.content.as_ref(), crypto)
+                    .await?
+                    .map_or((None, None), |(leg, summary)| (Some(leg), Some(summary)))
+            }
+            _ => (None, None),
+        };
 
         Ok(SipLegPlan {
             leg: SipLeg {
@@ -1003,10 +1130,12 @@ impl SessionManager {
                     telephone_event_pt: te_pt,
                 },
                 video: video_leg,
+                content: content_leg,
             },
             audio_codec: codec_name.to_string(),
             srtp,
             video: video_summary,
+            content: content_summary,
         })
     }
 
@@ -1172,6 +1301,25 @@ impl SessionManager {
         true
     }
 
+    /// The conference server sent a floor notice for `sip_call_id`.
+    /// Returns whether it was ours.
+    pub async fn content_notice(&self, sip_call_id: &str, notice: &ContentNotice) -> bool {
+        let Some(id) = self
+            .by_sip_call_id
+            .get(sip_call_id)
+            .map(|e| e.value().clone())
+        else {
+            return false;
+        };
+        let Some(session) = self.sessions.get(&id).map(|e| e.value().clone()) else {
+            return false;
+        };
+        let mut s = session.write().await;
+        s.floor.apply(notice);
+        info!(session = %id, floor = %s.floor.state, presenter = ?s.floor.presenter, reason = ?s.floor.reason, "floor notice");
+        true
+    }
+
     // ------------------------------------------------------------ queries
 
     /// Every session of one kind.
@@ -1213,6 +1361,62 @@ impl SessionManager {
         }
         n
     }
+}
+
+/// One video section of the SIP leg from what the far end answered for
+/// it: `None` when it rejected the section or answered it unusably (the
+/// codec dropped, no address), so the join goes on without it.
+async fn open_video_section(
+    what: &str,
+    offered: OfferedVideo,
+    answered: Option<&VideoOffer>,
+    crypto: Vec<SdesCryptoLine>,
+) -> Result<Option<(SipVideoLeg, VideoSummary)>, String> {
+    let Some(section) = answered.filter(|s| s.port != 0) else {
+        debug!("the far end rejected {what}; joining without it");
+        return Ok(None);
+    };
+    let pt = section
+        .codecs
+        .iter()
+        .find(|c| c.codec == offered.negotiated.codec)
+        .map(|c| c.payload_type);
+    let (Some(pt), Some(remote)) = (pt, section.remote) else {
+        debug!("the answer's {what} section has no usable codec or address; joining without it");
+        return Ok(None);
+    };
+    let (ctx, srtp) = match (offered.srtp, crypto.into_iter().next()) {
+        (Some(ours), Some(theirs)) => match ours.accept(&theirs) {
+            Ok(ctx) => (Some(ctx), true),
+            Err(e) => {
+                warn!(error = %e, "{what} SRTP; leaving it out");
+                return Ok(None);
+            }
+        },
+        _ => (None, false),
+    };
+    let socket = RtpSocketPair::new(
+        offered.ports,
+        RtpSocketConfig {
+            tos: 0xA0,
+            ..RtpSocketConfig::default()
+        },
+    )
+    .await
+    .map_err(|e| format!("{what} socket: {e}"))?;
+    point_at(&socket, remote).await;
+    Ok(Some((
+        SipVideoLeg {
+            socket: Arc::new(socket),
+            srtp: ctx.map(|c| Arc::new(Mutex::new(c))),
+            payload_type: pt,
+        },
+        VideoSummary {
+            codec: offered.negotiated.codec.sdp_name().to_string(),
+            payload_type: pt,
+            srtp,
+        },
+    )))
 }
 
 /// Equal without leaking where they differ.
@@ -1279,11 +1483,71 @@ mod tests {
             room_number: "8001".into(),
             display_name: "Ann".into(),
             video: true,
+            content: true,
             join_token: Some("secret".into()),
         };
         let json = serde_json::to_string(&kind).unwrap();
         assert!(json.contains("\"kind\":\"room\""));
         assert!(json.contains("\"room_number\":\"8001\""));
         assert!(!json.contains("secret"));
+    }
+
+    #[test]
+    fn a_join_with_video_offers_a_screen_unless_told_not_to() {
+        let req: JoinRequest = serde_json::from_str(r#"{"video": true}"#).unwrap();
+        assert_eq!(req.content, None);
+        assert!(req.video && req.content.unwrap_or(true));
+        let req: JoinRequest =
+            serde_json::from_str(r#"{"video": true, "content": false}"#).unwrap();
+        assert!(!(req.video && req.content.unwrap_or(true)));
+        let req: JoinRequest = serde_json::from_str(r#"{"content": true}"#).unwrap();
+        assert!(
+            !(req.video && req.content.unwrap_or(true)),
+            "no screen without a camera section"
+        );
+    }
+
+    #[test]
+    fn floor_notices_move_the_floor_state() {
+        let notice = |json: &str| serde_json::from_str::<ContentNotice>(json).unwrap();
+        let mut floor = FloorState::default();
+        assert_eq!(floor.state, "free");
+        floor.apply(&notice(
+            r#"{"floor":"granted","mine":false,"presenter":"Ann"}"#,
+        ));
+        assert_eq!(
+            (floor.state.as_str(), floor.presenter.as_deref()),
+            ("held", Some("Ann"))
+        );
+        floor.apply(&notice(
+            r#"{"floor":"refused","mine":true,"presenter":"Ann","reason":"held"}"#,
+        ));
+        assert_eq!(floor.state, "refused");
+        assert_eq!(floor.reason.as_deref(), Some("held"));
+        floor.apply(&notice(
+            r#"{"floor":"released","mine":false,"reason":"ended"}"#,
+        ));
+        assert_eq!(
+            floor,
+            FloorState {
+                notices: 3,
+                ..FloorState::default()
+            }
+        );
+        floor.apply(&notice(
+            r#"{"floor":"granted","mine":true,"presenter":"Bob"}"#,
+        ));
+        assert_eq!(floor.state, "granted");
+        floor.apply(&notice(
+            r#"{"floor":"released","mine":true,"reason":"host"}"#,
+        ));
+        assert_eq!(
+            (floor.state.as_str(), floor.reason.as_deref()),
+            ("released", Some("host"))
+        );
+        // Something newer than this gateway knows is ignored, not fatal.
+        floor.apply(&notice(r#"{"floor":"queued","mine":true}"#));
+        assert_eq!(floor.state, "released");
+        assert_eq!(floor.notices, 5);
     }
 }

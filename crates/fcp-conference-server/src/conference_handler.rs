@@ -1,4 +1,6 @@
-use crate::video_bridge::{self, VideoEventSink, VideoLeg, VideoLegStats};
+use crate::video_bridge::{
+    self, FloorNotice, FloorNotifier, VideoEventSink, VideoLeg, VideoLegStats, CONTENT_INFO_TYPE,
+};
 use anyhow::{bail, Context, Result};
 use dashmap::DashMap;
 use fcp_core::storage::TenantStore;
@@ -132,6 +134,9 @@ pub struct ParticipantSession {
     /// room's content source and content channel), when the caller's
     /// offer carried an `a=content:slides` section (§15.6).
     pub content: Option<VideoLeg>,
+    /// Admitted by a join token (`X-FCP-Join`): a browser through the
+    /// WebRTC gateway, which understands the floor `INFO` (§15.6, 7c).
+    pub joined_by_token: bool,
 }
 
 /// Sink for "this node now has N local participants in room R" updates,
@@ -1476,6 +1481,77 @@ impl ConferenceCallHandler {
         self.self_ref.read().ok().and_then(|w| w.upgrade())
     }
 
+    /// Where a room's video events go: the bus, the video budget as the
+    /// floor's gate, and this handler as the one that tells gateway
+    /// sessions about the floor.
+    fn video_event_sink(&self, tenant_id: TenantId, room_number: &str) -> VideoEventSink {
+        VideoEventSink {
+            event_bus: Arc::clone(&self.event_bus),
+            tenant_id,
+            room_number: room_number.to_string(),
+            node_id: self.node_id.clone(),
+            pumps: Arc::clone(&self.video_event_pumps),
+            content_gate: self
+                .video_capacity
+                .clone()
+                .map(|c| c as Arc<dyn forge_conference::video::ContentGate>),
+            floor: self.me().map(|me| me as Arc<dyn FloorNotifier>),
+        }
+    }
+
+    /// Tell one gateway session about the floor: a SIP `INFO` of
+    /// [`CONTENT_INFO_TYPE`] with the notice and `mine`. The dialog it
+    /// advances is written back so the next request continues its CSeq.
+    async fn send_floor_info(self: Arc<Self>, call_id: String, notice: FloorNotice, mine: bool) {
+        let Some(mut dialog) = self.sessions.get(&call_id).map(|s| s.dialog.clone()) else {
+            return;
+        };
+        let mut body = serde_json::to_value(&notice).unwrap_or_default();
+        body["mine"] = serde_json::json!(mine);
+        match self
+            .uac
+            .send_info(&mut dialog, CONTENT_INFO_TYPE, &body.to_string())
+            .await
+        {
+            Ok(resp) if (200..300).contains(&resp.start_line().code()) => {
+                if let Some(mut s) = self.sessions.get_mut(&call_id) {
+                    s.dialog = dialog;
+                }
+            }
+            Ok(resp) => debug!(
+                call_id = %call_id,
+                code = resp.start_line().code(),
+                floor = notice.floor,
+                "floor INFO refused"
+            ),
+            Err(e) => debug!(call_id = %call_id, error = %e, "floor INFO failed"),
+        }
+    }
+
+    /// A participant admitted while someone holds the floor is told so
+    /// (§15.6, 7c), as one there from the start would have been.
+    fn tell_floor_on_join(&self, call_id: &str, room_number: &str) {
+        let (Some(me), Ok(room)) = (self.me(), self.bridge.get_room(room_number)) else {
+            return;
+        };
+        let Some(content) = room.video().and_then(|v| v.content()) else {
+            return;
+        };
+        let notice = video_bridge::floor_notice(
+            &content.participant_id,
+            &forge_conference::video::ContentEvent::Started,
+            Some(&content),
+        );
+        let call_id = call_id.to_string();
+        tokio::spawn(async move {
+            // The session is stored right after this is called, and the
+            // gateway maps the dialog only once the INVITE completes: a
+            // moment's grace makes the INFO land instead of drawing 481.
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            me.send_floor_info(call_id, notice, false).await
+        });
+    }
+
     // ---- recording (design §11) -----------------------------------------
 
     /// Start recording a room. The container follows
@@ -2321,6 +2397,7 @@ impl ConferenceCallHandler {
                 last_refreshed: Instant::now(),
                 video: None,
                 content: None,
+                joined_by_token: false,
             },
         );
 
@@ -3133,17 +3210,7 @@ impl ConferenceCallHandler {
             self.release_video_pair_later(leg.port_pair);
             return None;
         };
-        let sink = VideoEventSink {
-            event_bus: Arc::clone(&self.event_bus),
-            tenant_id,
-            room_number: room_number.to_string(),
-            node_id: self.node_id.clone(),
-            pumps: Arc::clone(&self.video_event_pumps),
-            content_gate: self
-                .video_capacity
-                .clone()
-                .map(|c| c as Arc<dyn forge_conference::video::ContentGate>),
-        };
+        let sink = self.video_event_sink(tenant_id, room_number);
         let fut = match leg.kind {
             StreamKind::Camera => {
                 video_bridge::attach_video(room, backend, participant_id, display_name, &leg, sink)
@@ -4386,6 +4453,7 @@ impl ConferenceCallHandler {
                 last_refreshed: Instant::now(),
                 video,
                 content: None,
+                joined_by_token: false,
             },
         );
         info!(
@@ -4413,17 +4481,7 @@ impl ConferenceCallHandler {
             self.release_video_pair_later(leg.port_pair);
             return None;
         };
-        let sink = VideoEventSink {
-            event_bus: Arc::clone(&self.event_bus),
-            tenant_id,
-            room_number: room_number.to_string(),
-            node_id: self.node_id.clone(),
-            pumps: Arc::clone(&self.video_event_pumps),
-            content_gate: self
-                .video_capacity
-                .clone()
-                .map(|c| c as Arc<dyn forge_conference::video::ContentGate>),
-        };
+        let sink = self.video_event_sink(tenant_id, room_number);
         match video_bridge::attach_trunk_video(room, backend, participant_id, peer_node, &leg, sink)
         {
             Some(fut) => {
@@ -5485,6 +5543,8 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             // moderator lets the room in.
             let wait_handler = self.me();
             let wait_dialog = dialog.clone();
+            let wait_call_id = call_id.clone();
+            let wait_by_token = join.is_some();
             // The video leg starts with the audio bridge once admitted; the
             // session keeps its own handle-less copy for teardown and the API.
             let wait_video = pending_video.as_ref().map(VideoLeg::shared);
@@ -5493,17 +5553,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             let wait_may_share = video_bridge::may_share(&meeting.video_content_share, false);
             let wait_backend = self.video_backend.clone();
             let wait_display_name = display_name.clone();
-            let wait_sink = VideoEventSink {
-                event_bus: Arc::clone(&self.event_bus),
-                tenant_id,
-                room_number: room_number.clone(),
-                node_id: self.node_id.clone(),
-                pumps: Arc::clone(&self.video_event_pumps),
-                content_gate: self
-                    .video_capacity
-                    .clone()
-                    .map(|c| c as Arc<dyn forge_conference::video::ContentGate>),
-            };
+            let wait_sink = self.video_event_sink(tenant_id, &room_number);
 
             // Load announcement sound (short TTS message like "Please wait...")
             let mut announcement_samples: Option<Arc<Vec<i16>>> = None;
@@ -5759,6 +5809,14 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                                 }
                             }
 
+                            // Someone may be sharing already: a browser
+                            // admitted now is told, as at a direct join.
+                            if wait_by_token {
+                                if let Some(handler) = &wait_handler {
+                                    handler.tell_floor_on_join(&wait_call_id, &rn);
+                                }
+                            }
+
                             // Start the audio bridge, and the video bridge
                             // beside it when video was negotiated.
                             // The content leg first, as at a direct join.
@@ -5854,6 +5912,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                     last_refreshed: Instant::now(),
                     video: pending_video.take(),
                     content: pending_content.take(),
+                    joined_by_token: join.is_some(),
                 },
             );
 
@@ -6104,6 +6163,10 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
 
         // 19. Store session (room_sessions already updated above for MeetingStarted dedup)
         let remote_addr = parse_remote_rtp_addr(sdp_offer).unwrap_or(UNKNOWN_REMOTE);
+        if join.is_some() {
+            // Told after the insert below has made the session findable.
+            self.tell_floor_on_join(&call_id, &room_number);
+        }
         self.sessions.insert(
             call_id.clone(),
             ParticipantSession {
@@ -6129,6 +6192,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 last_refreshed: Instant::now(),
                 video,
                 content,
+                joined_by_token: join.is_some(),
             },
         );
 
@@ -7293,6 +7357,34 @@ pub fn create_codec_instance(codec_name: &str) -> Result<Box<dyn AudioCodec>> {
         "PCMA" => Ok(Box::new(g711::G711ALaw::new(8000))),
         "G722" => Ok(Box::new(g722::G722Codec::new(g722::G722BitRate::Rate64k))),
         other => anyhow::bail!("Unsupported codec: {}", other),
+    }
+}
+
+impl FloorNotifier for ConferenceCallHandler {
+    fn floor_changed(&self, room_number: &str, notice: FloorNotice) {
+        let Some(me) = self.me() else {
+            return;
+        };
+        // A refusal is the refused participant's business alone; the
+        // floor changing hands is everyone's.
+        let only_theirs = notice.floor == "refused";
+        let targets: Vec<(String, bool)> = self
+            .room_sessions
+            .get(room_number)
+            .map(|ids| {
+                ids.iter()
+                    .filter_map(|id| self.sessions.get(id))
+                    .filter(|s| s.joined_by_token)
+                    .map(|s| (s.call_id.clone(), s.participant_id == notice.participant_id))
+                    .filter(|(_, mine)| *mine || !only_theirs)
+                    .collect()
+            })
+            .unwrap_or_default();
+        for (call_id, mine) in targets {
+            let me = Arc::clone(&me);
+            let notice = notice.clone();
+            tokio::spawn(async move { me.send_floor_info(call_id, notice, mine).await });
+        }
     }
 }
 
