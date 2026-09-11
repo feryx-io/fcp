@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Eye, EyeOff, Pin, PinOff, Star, StarOff, Video, VideoOff, Mic, MicOff } from 'lucide-react'
+import { Eye, EyeOff, Pin, PinOff, ScreenShare, ScreenShareOff, Star, StarOff, Video, VideoOff, Mic, MicOff } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -7,7 +7,7 @@ import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { ApiRequestError } from '@/api/client'
-import { conferenceLive, VIDEO_LAYOUT_LABELS, type LiveVideoParticipant } from '@/api/endpoints'
+import { conferenceLive, CONTENT_LAYOUT_LABELS, VIDEO_LAYOUT_LABELS, type LiveVideoParticipant } from '@/api/endpoints'
 
 /** How often the live view refreshes while open. */
 const REFRESH_MS = 3000
@@ -72,8 +72,18 @@ export function LiveVideoDialog({ room, onOpenChange }: {
     mutationFn: ({ pid, on }: { pid: string; on: boolean }) => conferenceLive.setParticipantVideo(room!, pid, on),
     onSuccess: refresh,
   })
+  const stopContentMutation = useMutation({
+    mutationFn: () => conferenceLive.stopContent(room!),
+    onSuccess: refresh,
+  })
+  const contentLayoutMutation = useMutation({
+    mutationFn: (layout: string) => conferenceLive.setContentLayout(room!, layout),
+    onSuccess: refresh,
+  })
   const busy = layoutMutation.isPending || pinMutation.isPending || spotlightMutation.isPending || participantVideoMutation.isPending
+    || stopContentMutation.isPending || contentLayoutMutation.isPending
   const actionError = layoutMutation.error || pinMutation.error || spotlightMutation.error || participantVideoMutation.error
+    || stopContentMutation.error || contentLayoutMutation.error
 
   const video = data?.video ?? null
   const participants = data?.participants ?? []
@@ -153,6 +163,38 @@ export function LiveVideoDialog({ room, onOpenChange }: {
                     </Button>
                   )}
                 </div>
+                {/* The shared screen (§15.6): who holds the floor, how the
+                    composite shows it, and the host's way to end it. */}
+                <div className="col-span-2 flex items-center gap-2 text-sm">
+                  <ScreenShare className="h-4 w-4 text-muted-foreground" />
+                  <span className="text-muted-foreground">Sharing:</span>
+                  <span>
+                    {video.content
+                      ? <>{video.content.display_name || nameOf(video.content.participant_id) || video.content.participant_id}
+                          <span className="text-xs text-muted-foreground"> · {video.content.codec} {video.content.resolution}{video.content.live ? '' : ' · waiting for a frame'}</span></>
+                      : '—'}
+                  </span>
+                  {video.content && (
+                    <Button variant="ghost" size="sm" disabled={busy} onClick={() => stopContentMutation.mutate()} title="End the share (the presenter cannot resume it by just sending)">
+                      <ScreenShareOff className="h-4 w-4" />
+                    </Button>
+                  )}
+                </div>
+                <div className="col-span-2">
+                  <Label className="text-xs">Shared screen layout</Label>
+                  <Select
+                    value={video.content_layout}
+                    onValueChange={(v) => contentLayoutMutation.mutate(v)}
+                    disabled={busy}
+                  >
+                    <SelectTrigger className="text-sm"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {Object.entries(CONTENT_LAYOUT_LABELS).map(([value, label]) => (
+                        <SelectItem key={value} value={value}>{label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
                 <div className="col-span-2 text-xs text-muted-foreground md:col-span-4">
                   Speaking now: {nameOf(data.active_speaker ?? video.active_speaker) ?? '—'}
                   {/* A room can be hosted on several nodes; they agree on
@@ -209,6 +251,11 @@ export function LiveVideoDialog({ room, onOpenChange }: {
                       <TableCell>
                         <div className="flex items-center gap-1">
                           <Badge variant={stateVariant(v.state)} className="text-xs">{v.state}</Badge>
+                          {v.content && (
+                            <Badge variant={v.presenting ? 'success' : stateVariant(v.content.state)} className="text-xs" title={v.presenting ? 'Their screen is what the room shows' : `Shared screen section: ${v.content.state}`}>
+                              <ScreenShare className="mr-1 h-3 w-3" />{v.presenting ? 'presenting' : v.content.state}
+                            </Badge>
+                          )}
                           {pinned && <Badge variant="outline" className="text-xs"><Pin className="mr-1 h-3 w-3" />pinned</Badge>}
                           {spotlit && <Badge variant="outline" className="text-xs"><Star className="mr-1 h-3 w-3" />spotlight</Badge>}
                         </div>
@@ -224,9 +271,15 @@ export function LiveVideoDialog({ room, onOpenChange }: {
                             {v.rung && video?.resolution && v.rung !== video.resolution && (
                               <> · <span title={`Their link is carrying ${v.remb_kbps ?? '?'} kb/s`}>sending {v.rung}</span></>
                             )}
-                            {v.forwarding && <> · direct from {nameOf(v.forwarding) ?? v.forwarding}</>}
+                            {v.forwarding && <> · direct from {nameOf(v.forwarding.replace(/#content$/, '')) ?? v.forwarding}{v.forwarding.endsWith('#content') ? '\u2019s screen' : ''}</>}
                           </>
                         ) : 'audio only'}
+                        {v.content && v.content.state !== 'off' && (
+                          <div>
+                            screen: {v.content.codec}{v.content.resolution ? ` ${v.content.resolution}` : ''}{typeof v.content.fps === 'number' ? ` @ ${v.content.fps} fps` : ''}
+                            {v.content.channel && <> · receives the room&apos;s screen</>}
+                          </div>
+                        )}
                       </TableCell>
                       <TableCell className="text-right">
                         <div className="flex justify-end gap-1">

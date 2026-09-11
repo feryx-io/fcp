@@ -682,8 +682,10 @@ export interface LiveParticipantVideo {
   rung_kbps?: number
   /** What their link says it can carry. */
   remb_kbps?: number
-  /** The participant whose own stream they are being sent (§5.6). */
+  /** The stream they are being sent directly, e.g. `alice` or `alice#content` (§5.6). */
   forwarding?: string
+  /** What the channel shows: `composite`, `cameras` or `content`. */
+  view?: string
   keyframes_sent?: number
   frames_decoded?: number
   frames_lost?: number
@@ -691,6 +693,12 @@ export interface LiveParticipantVideo {
   plis?: number
   speaking?: boolean
   is_inactive?: boolean
+  /** Whether this participant's screen is the one the room shows (§15.6). */
+  presenting?: boolean
+  /** The shared screen's section, when their offer carried one: the same
+   *  shape as the camera's, plus `channel` — whether they receive the
+   *  room's content on it. */
+  content?: LiveParticipantVideo & { channel?: boolean }
 }
 
 export interface LiveVideoParticipant {
@@ -718,8 +726,25 @@ export interface LiveVideoFlavor {
   encode_errors: number
 }
 
+/** The share under way (§15.6). */
+export interface LiveRoomContent {
+  participant_id: string
+  display_name: string
+  remote: boolean
+  held_for_secs: number
+  codec: string
+  resolution: string
+  fps: number
+  /** Whether a frame has been decoded: the composite is showing it. */
+  live: boolean
+}
+
 export interface LiveRoomVideo {
   layout: string
+  /** `presentation` or `content_only`: how the composite shows a share. */
+  content_layout: string
+  /** `null` while nobody is sharing a screen. */
+  content: LiveRoomContent | null
   spotlight: string | null
   pinned: string | null
   active_speaker: string | null
@@ -734,6 +759,8 @@ export interface LiveRoomVideo {
   outputs: {
     /** `all`, `excluding` (with `participant`), or `local_only` (a trunk's). */
     scope: { kind: string; participant?: string }
+    /** `composite`, `cameras` or `content`. */
+    view?: string
     resolution: string
     flavors: LiveVideoFlavor[]
   }[]
@@ -776,6 +803,7 @@ export interface LiveRoomVideoStatus {
 export interface LiveLayoutResponse {
   status: string
   layout: string
+  content_layout?: string
   pinned: string | null
   spotlight: string | null
   participant?: string
@@ -786,6 +814,11 @@ export const VIDEO_LAYOUT_LABELS: Record<string, string> = {
   active_speaker: 'Active speaker',
   spotlight: 'Spotlight',
   pip: 'Picture in picture',
+}
+
+export const CONTENT_LAYOUT_LABELS: Record<string, string> = {
+  presentation: 'Presentation — screen large, cameras in a strip',
+  content_only: 'Screen only',
 }
 
 const liveRoom = (room: string) => `/conferences/live/${encodeURIComponent(room)}`
@@ -806,6 +839,12 @@ export const conferenceLive = {
     apiClient.post<{ status: string; participant: string }>(
       `${liveRoom(room)}/participants/${encodeURIComponent(participantId)}/video/${on ? 'on' : 'off'}`,
     ),
+  /** Host control: end the screen share under way (§15.6). */
+  stopContent: (room: string) =>
+    apiClient.post<{ status: string; participant: string }>(`${liveRoom(room)}/video/content/stop`),
+  /** How the composite shows a shared screen: `presentation` or `content_only`. */
+  setContentLayout: (room: string, layout: string) =>
+    apiClient.put<LiveLayoutResponse>(`${liveRoom(room)}/video/content-layout`, { layout }),
   /** Dial out to invite a participant into the conference. */
   dialOut: (room: string, destination: string, options?: { greeting_tts?: string; greeting_prompt?: string }) =>
     apiClient.post<DialOutResponse>(`${liveRoom(room)}/dial-out`, { destination, ...options }),

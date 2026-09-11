@@ -54,6 +54,8 @@ const createSchema = z.object({
   video_fps: z.coerce.number().int().min(1, 'Must be 1–30').max(30, 'Must be 1–30').optional(),
   video_exclude_self: z.boolean().optional(),
   video_passthrough: z.enum(['off', 'auto', 'on']).optional(),
+  video_content_share: z.enum(['off', 'hosts', 'anyone']).optional(),
+  video_content_layout: z.enum(['presentation', 'content_only']).optional(),
   video_codecs: z.array(z.string()).optional(),
 })
 
@@ -85,6 +87,8 @@ const editSchema = z.object({
   video_fps: z.coerce.number().int().min(1, 'Must be 1–30').max(30, 'Must be 1–30').optional(),
   video_exclude_self: z.boolean().optional(),
   video_passthrough: z.enum(['off', 'auto', 'on']).optional(),
+  video_content_share: z.enum(['off', 'hosts', 'anyone']).optional(),
+  video_content_layout: z.enum(['presentation', 'content_only']).optional(),
   video_codecs: z.array(z.string()).optional(),
 })
 
@@ -99,6 +103,16 @@ const VIDEO_LAYOUTS = [
   { value: 'pip', label: 'Picture-in-picture' },
 ]
 const VIDEO_RESOLUTIONS = ['180p', '360p', '720p', '1080p']
+// Mirrors fcp_core::meeting::{VIDEO_CONTENT_SHARE_MODES, VIDEO_CONTENT_LAYOUTS} (§15.6).
+const CONTENT_SHARE_MODES = [
+  { value: 'anyone', label: 'Anyone' },
+  { value: 'hosts', label: 'Hosts only' },
+  { value: 'off', label: 'Off' },
+]
+const CONTENT_LAYOUTS = [
+  { value: 'presentation', label: 'Presentation — screen large, cameras in a strip' },
+  { value: 'content_only', label: 'Screen only' },
+]
 const VIDEO_CODECS = ['H264', 'H265', 'VP8', 'VP9', 'AV1']
 const DEFAULT_VIDEO_CODECS = ['H264', 'VP8']
 
@@ -448,7 +462,7 @@ function CreateDialog({ open, onOpenChange, onSubmit, isPending, promptList, use
     resolver: zodResolver(createSchema),
     defaultValues: {
       enabled: true, require_guest_pin: false, wait_for_moderator: false, auto_record: false, default_locked: false, permanent: false, max_participants: 0,
-      video_enabled: false, video_layout: 'grid', video_max_participants: 16, video_max_resolution: '720p', video_fps: 15, video_exclude_self: false, video_passthrough: 'auto', video_codecs: DEFAULT_VIDEO_CODECS,
+      video_enabled: false, video_layout: 'grid', video_max_participants: 16, video_max_resolution: '720p', video_fps: 15, video_exclude_self: false, video_passthrough: 'auto', video_content_share: 'anyone', video_content_layout: 'presentation', video_codecs: DEFAULT_VIDEO_CODECS,
     },
   })
 
@@ -483,6 +497,8 @@ function CreateDialog({ open, onOpenChange, onSubmit, isPending, promptList, use
       video_fps: data.video_fps,
       video_exclude_self: data.video_exclude_self,
       video_passthrough: data.video_passthrough,
+      video_content_share: data.video_content_share,
+      video_content_layout: data.video_content_layout,
       video_codecs: data.video_codecs,
     })
     reset()
@@ -661,6 +677,36 @@ function CreateDialog({ open, onOpenChange, onSubmit, isPending, promptList, use
                   sharper and lower latency, but with no name banner or speaking border.
                 </p>
               </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <Label className="text-xs">Screen Sharing</Label>
+                  <Select
+                    value={watch('video_content_share') ?? 'anyone'}
+                    onValueChange={(v) => setValue('video_content_share', v as 'off' | 'hosts' | 'anyone')}
+                  >
+                    <SelectTrigger className="text-sm"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {CONTENT_SHARE_MODES.map(m => <SelectItem key={m.value} value={m.value}>{m.label}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label className="text-xs">Shared Screen Layout</Label>
+                  <Select
+                    value={watch('video_content_layout') ?? 'presentation'}
+                    onValueChange={(v) => setValue('video_content_layout', v as 'presentation' | 'content_only')}
+                  >
+                    <SelectTrigger className="text-sm"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {CONTENT_LAYOUTS.map(l => <SelectItem key={l.value} value={l.value}>{l.label}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                One screen at a time: the first to share holds it until they stop or a host ends it.
+                Under &quot;Hosts only&quot; a guest&apos;s screen is never shown.
+              </p>
               <CodecOrderPicker value={watch('video_codecs') ?? DEFAULT_VIDEO_CODECS} onChange={(v) => setValue('video_codecs', v)} />
             </div>
           </details>
@@ -718,6 +764,8 @@ function EditDialog({ item, onOpenChange, onSubmit, isPending, promptList, userL
       video_fps: item.video_fps ?? 15,
       video_exclude_self: item.video_exclude_self ?? false,
       video_passthrough: (item.video_passthrough as 'off' | 'auto' | 'on') ?? 'auto',
+      video_content_share: (item.video_content_share as 'off' | 'hosts' | 'anyone') ?? 'anyone',
+      video_content_layout: (item.video_content_layout as 'presentation' | 'content_only') ?? 'presentation',
       video_codecs: item.video_codecs ?? DEFAULT_VIDEO_CODECS,
     })
   }
@@ -751,6 +799,8 @@ function EditDialog({ item, onOpenChange, onSubmit, isPending, promptList, userL
     if (data.video_fps !== undefined) update.video_fps = data.video_fps
     if (data.video_exclude_self !== undefined) update.video_exclude_self = data.video_exclude_self
     if (data.video_passthrough !== undefined) update.video_passthrough = data.video_passthrough
+    if (data.video_content_share !== undefined) update.video_content_share = data.video_content_share
+    if (data.video_content_layout !== undefined) update.video_content_layout = data.video_content_layout
     if (data.video_codecs !== undefined) update.video_codecs = data.video_codecs
     onSubmit(update)
   }
@@ -918,6 +968,36 @@ function EditDialog({ item, onOpenChange, onSubmit, isPending, promptList, userL
                   sharper and lower latency, but with no name banner or speaking border.
                 </p>
               </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <Label className="text-xs">Screen Sharing</Label>
+                  <Select
+                    value={watch('video_content_share') ?? 'anyone'}
+                    onValueChange={(v) => setValue('video_content_share', v as 'off' | 'hosts' | 'anyone')}
+                  >
+                    <SelectTrigger className="text-sm"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {CONTENT_SHARE_MODES.map(m => <SelectItem key={m.value} value={m.value}>{m.label}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label className="text-xs">Shared Screen Layout</Label>
+                  <Select
+                    value={watch('video_content_layout') ?? 'presentation'}
+                    onValueChange={(v) => setValue('video_content_layout', v as 'presentation' | 'content_only')}
+                  >
+                    <SelectTrigger className="text-sm"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {CONTENT_LAYOUTS.map(l => <SelectItem key={l.value} value={l.value}>{l.label}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                One screen at a time: the first to share holds it until they stop or a host ends it.
+                Under &quot;Hosts only&quot; a guest&apos;s screen is never shown.
+              </p>
               <CodecOrderPicker value={watch('video_codecs') ?? DEFAULT_VIDEO_CODECS} onChange={(v) => setValue('video_codecs', v)} />
             </div>
           </details>

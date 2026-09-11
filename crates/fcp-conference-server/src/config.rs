@@ -676,6 +676,12 @@ pub struct ConferenceSection {
     #[serde(default = "default_video_budget_headroom")]
     pub video_budget_headroom: f64,
 
+    /// Seconds a presenter may send nothing before the shared screen's
+    /// floor is given up (design §15.6). Judged on packets, not frames:
+    /// a slide that has not changed is still being shared. Default: 30.
+    #[serde(default = "default_content_idle_secs")]
+    pub content_idle_secs: u64,
+
     /// Directory for pre-recorded announcement WAV files.
     #[serde(default = "default_announcements_dir")]
     pub announcements_dir: String,
@@ -822,6 +828,10 @@ fn default_video_benchmark_seconds() -> u64 {
     10
 }
 
+fn default_content_idle_secs() -> u64 {
+    30
+}
+
 fn default_video_budget_headroom() -> f64 {
     0.8
 }
@@ -915,6 +925,7 @@ impl Default for ConferenceSection {
             video_native_codecs_only: true,
             video_benchmark_seconds: default_video_benchmark_seconds(),
             video_budget_headroom: default_video_budget_headroom(),
+            content_idle_secs: default_content_idle_secs(),
             announcements_dir: default_announcements_dir(),
             max_wait_for_moderator_secs: default_max_wait_for_moderator_secs(),
             moh_announcement_interval_secs: default_moh_announcement_interval_secs(),

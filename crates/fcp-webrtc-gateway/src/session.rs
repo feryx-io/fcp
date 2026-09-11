@@ -671,6 +671,8 @@ impl SessionManager {
                 ptime_ms: Some(20),
             },
             video: video_section,
+            // A shared screen's section is 7c's.
+            content: None,
         }) {
             Ok(o) => o,
             Err(e) => {

@@ -510,6 +510,12 @@ fn video_overload_fps() -> String {
     "fps".to_string()
 }
 
+/// The stream a `video_state_changed` from a node that predates screen
+/// sharing was about: the camera, the only one there was.
+fn video_stream_camera() -> String {
+    "camera".to_string()
+}
+
 /// Conference-related events.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -539,11 +545,44 @@ pub enum ConferenceEvent {
     /// A participant's video changed state: `off` (no video negotiated),
     /// `on` (frames arriving), `lost` (negotiated but nothing decodable
     /// lately), `disabled` (a host turned it off) or `failed` (the decoder
-    /// gave up on it).
+    /// gave up on it). `stream` says which of the participant's streams:
+    /// `camera`, or `content` for a shared screen (§15.6); an event from
+    /// a node that predates screen sharing carries none and reads as
+    /// `camera`.
     VideoStateChanged {
         room_number: String,
         participant_id: String,
         state: String,
+        #[serde(default = "video_stream_camera")]
+        stream: String,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// A participant took the room's content floor: their shared screen
+    /// is what the room shows (§15.6). One per room at a time; emitted by
+    /// the node the presenter is on.
+    ContentStarted {
+        room_number: String,
+        participant_id: String,
+        node_id: String,
+        /// The codec the screen arrives in (SDP name).
+        codec: String,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// A share ended. `reason` is `ended` (the presenter stopped), `idle`
+    /// (no packets for the idle timeout), `host` (a host stopped it),
+    /// `replaced` (another node's presenter took the room-wide floor),
+    /// `left` (the presenter left) or `failed` (the decoder gave up).
+    ContentStopped {
+        room_number: String,
+        participant_id: String,
+        node_id: String,
+        reason: String,
         tenant_id: TenantId,
         #[serde(with = "system_time_serde")]
         timestamp: SystemTime,
@@ -1275,6 +1314,8 @@ impl PlatformEvent {
                 ConferenceEvent::DialOutInvited { .. } => "conference.dial_out_invited",
                 ConferenceEvent::DialOutFailed { .. } => "conference.dial_out_failed",
                 ConferenceEvent::VideoStateChanged { .. } => "conference.video_state_changed",
+                ConferenceEvent::ContentStarted { .. } => "conference.content_started",
+                ConferenceEvent::ContentStopped { .. } => "conference.content_stopped",
                 ConferenceEvent::VideoOverload { .. } => "conference.video_overload",
                 ConferenceEvent::VideoLayoutChanged { .. } => "conference.video_layout_changed",
                 ConferenceEvent::ActiveSpeakerChanged { .. } => "conference.active_speaker_changed",
@@ -1364,6 +1405,8 @@ impl PlatformEvent {
                 | ConferenceEvent::DialOutInvited { tenant_id, .. }
                 | ConferenceEvent::DialOutFailed { tenant_id, .. }
                 | ConferenceEvent::VideoStateChanged { tenant_id, .. }
+                | ConferenceEvent::ContentStarted { tenant_id, .. }
+                | ConferenceEvent::ContentStopped { tenant_id, .. }
                 | ConferenceEvent::VideoOverload { tenant_id, .. }
                 | ConferenceEvent::VideoLayoutChanged { tenant_id, .. }
                 | ConferenceEvent::ActiveSpeakerChanged { tenant_id, .. } => Some(tenant_id),
@@ -1652,6 +1695,8 @@ impl ConferenceEvent {
             | ConferenceEvent::DialOutInvited { timestamp, .. }
             | ConferenceEvent::DialOutFailed { timestamp, .. }
             | ConferenceEvent::VideoStateChanged { timestamp, .. }
+            | ConferenceEvent::ContentStarted { timestamp, .. }
+            | ConferenceEvent::ContentStopped { timestamp, .. }
             | ConferenceEvent::VideoOverload { timestamp, .. }
             | ConferenceEvent::VideoLayoutChanged { timestamp, .. }
             | ConferenceEvent::ActiveSpeakerChanged { timestamp, .. } => *timestamp,
@@ -1834,5 +1879,51 @@ impl BillingEvent {
             | BillingEvent::CallRejected { timestamp, .. }
             | BillingEvent::CallCutOff { timestamp, .. } => *timestamp,
         }
+    }
+}
+
+#[cfg(test)]
+mod content_event_tests {
+    use super::*;
+
+    #[test]
+    fn a_video_state_from_an_older_node_reads_as_the_camera() {
+        let tenant = TenantId::new();
+        let json = serde_json::json!({
+            "type": "video_state_changed",
+            "room_number": "1000",
+            "participant_id": "alice",
+            "state": "on",
+            "tenant_id": tenant,
+            "timestamp": 1_700_000_000u64,
+        });
+        let ev: ConferenceEvent = serde_json::from_value(json).unwrap();
+        match &ev {
+            ConferenceEvent::VideoStateChanged { stream, .. } => assert_eq!(stream, "camera"),
+            other => panic!("unexpected {other:?}"),
+        }
+        let started = PlatformEvent::Conference(ConferenceEvent::ContentStarted {
+            room_number: "1000".into(),
+            participant_id: "alice".into(),
+            node_id: "conf-a".into(),
+            codec: "VP8".into(),
+            tenant_id: tenant,
+            timestamp: SystemTime::now(),
+        });
+        assert_eq!(started.event_type_name(), "conference.content_started");
+        assert_eq!(started.tenant_id(), Some(&tenant));
+        let stopped = PlatformEvent::Conference(ConferenceEvent::ContentStopped {
+            room_number: "1000".into(),
+            participant_id: "alice".into(),
+            node_id: "conf-a".into(),
+            reason: "idle".into(),
+            tenant_id: tenant,
+            timestamp: SystemTime::now(),
+        });
+        assert_eq!(stopped.event_type_name(), "conference.content_stopped");
+        let text = serde_json::to_string(&stopped).unwrap();
+        assert!(text.contains("\"reason\":\"idle\""));
+        let back: PlatformEvent = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.event_type_name(), "conference.content_stopped");
     }
 }

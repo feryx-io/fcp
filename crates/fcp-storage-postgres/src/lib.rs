@@ -3355,6 +3355,7 @@ impl ConferenceStore for PostgresStorage {
                     play_entry_tone, play_exit_tone, join_sound, exit_sound,
                     video_enabled, video_layout, video_max_participants,
                     video_max_resolution, video_fps, video_exclude_self, video_codecs, video_passthrough,
+                    video_content_share, video_content_layout,
                     created_at, updated_at
              FROM conference_meetings WHERE id = $1",
         )
@@ -3382,6 +3383,7 @@ impl ConferenceStore for PostgresStorage {
                     play_entry_tone, play_exit_tone, join_sound, exit_sound,
                     video_enabled, video_layout, video_max_participants,
                     video_max_resolution, video_fps, video_exclude_self, video_codecs, video_passthrough,
+                    video_content_share, video_content_layout,
                     created_at, updated_at
              FROM conference_meetings WHERE tenant_id = $1 AND room_number = $2",
         )
@@ -3406,6 +3408,7 @@ impl ConferenceStore for PostgresStorage {
                     play_entry_tone, play_exit_tone, join_sound, exit_sound,
                     video_enabled, video_layout, video_max_participants,
                     video_max_resolution, video_fps, video_exclude_self, video_codecs, video_passthrough,
+                    video_content_share, video_content_layout,
                     created_at, updated_at
              FROM conference_meetings WHERE tenant_id = $1 ORDER BY room_number",
         )
@@ -3436,6 +3439,7 @@ impl ConferenceStore for PostgresStorage {
                     play_entry_tone, play_exit_tone, join_sound, exit_sound,
                     video_enabled, video_layout, video_max_participants,
                     video_max_resolution, video_fps, video_exclude_self, video_codecs, video_passthrough,
+                    video_content_share, video_content_layout,
                     created_at, updated_at
              FROM conference_meetings
              WHERE tenant_id = $1 AND owner_id = $2
@@ -3468,8 +3472,9 @@ impl ConferenceStore for PostgresStorage {
               play_entry_tone, play_exit_tone, join_sound, exit_sound,
               video_enabled, video_layout, video_max_participants,
               video_max_resolution, video_fps, video_exclude_self, video_codecs, video_passthrough,
+                    video_content_share, video_content_layout,
               created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36)
              ON CONFLICT (id) DO UPDATE SET
               tenant_id = EXCLUDED.tenant_id,
               room_number = EXCLUDED.room_number,
@@ -3502,6 +3507,8 @@ impl ConferenceStore for PostgresStorage {
               video_exclude_self = EXCLUDED.video_exclude_self,
               video_codecs = EXCLUDED.video_codecs,
               video_passthrough = EXCLUDED.video_passthrough,
+              video_content_share = EXCLUDED.video_content_share,
+              video_content_layout = EXCLUDED.video_content_layout,
               updated_at = EXCLUDED.updated_at",
         )
         .bind(meeting.id.to_string())
@@ -3536,6 +3543,8 @@ impl ConferenceStore for PostgresStorage {
         .bind(meeting.video_exclude_self)
         .bind(video_codecs_to_column(&meeting.video_codecs))
         .bind(&meeting.video_passthrough)
+        .bind(&meeting.video_content_share)
+        .bind(&meeting.video_content_layout)
         .bind(created_at)
         .bind(updated_at)
         .execute(self.writes())
@@ -3599,6 +3608,12 @@ fn map_meeting_row_pg(row: sqlx::postgres::PgRow) -> Result<fcp_core::Meeting> {
         video_passthrough: row
             .try_get::<String, _>("video_passthrough")
             .unwrap_or_else(|_| fcp_core::meeting::default_video_passthrough()),
+        video_content_share: row
+            .try_get::<String, _>("video_content_share")
+            .unwrap_or_else(|_| fcp_core::meeting::default_video_content_share()),
+        video_content_layout: row
+            .try_get::<String, _>("video_content_layout")
+            .unwrap_or_else(|_| fcp_core::meeting::default_video_content_layout()),
         created_at: datetime_to_system_time(created_at),
         updated_at: datetime_to_system_time(updated_at),
     })

@@ -45,6 +45,21 @@ pub fn default_video_passthrough() -> String {
     "auto".to_string()
 }
 
+/// Who may share a screen (`video_content_share`, §15.6): nobody, hosts
+/// only, or anyone.
+pub const VIDEO_CONTENT_SHARE_MODES: [&str; 3] = ["off", "hosts", "anyone"];
+
+/// How the composite shows a shared screen (`video_content_layout`).
+pub const VIDEO_CONTENT_LAYOUTS: [&str; 2] = ["presentation", "content_only"];
+
+pub fn default_video_content_share() -> String {
+    "anyone".to_string()
+}
+
+pub fn default_video_content_layout() -> String {
+    "presentation".to_string()
+}
+
 /// Validate the per-meeting video settings against the allowed layouts,
 /// resolutions and ranges. Returns a human-readable message on failure,
 /// suitable for a 400 response body.
@@ -56,7 +71,21 @@ pub fn validate_video_settings(
     fps: u32,
     codecs: &[VideoCodec],
     passthrough: &str,
+    content_share: &str,
+    content_layout: &str,
 ) -> Result<(), String> {
+    if !VIDEO_CONTENT_SHARE_MODES.contains(&content_share) {
+        return Err(format!(
+            "video_content_share must be one of {}",
+            VIDEO_CONTENT_SHARE_MODES.join(", ")
+        ));
+    }
+    if !VIDEO_CONTENT_LAYOUTS.contains(&content_layout) {
+        return Err(format!(
+            "video_content_layout must be one of {}",
+            VIDEO_CONTENT_LAYOUTS.join(", ")
+        ));
+    }
     if !VIDEO_PASSTHROUGH_MODES.contains(&passthrough) {
         return Err(format!(
             "video_passthrough must be one of {}",
@@ -230,6 +259,19 @@ pub struct Meeting {
     #[serde(default = "default_video_passthrough")]
     pub video_passthrough: String,
 
+    /// Who may share a screen (`docs/VIDEO_CONFERENCING.md` §15.6):
+    /// `off` (no content section is answered), `hosts` (a host's is; a
+    /// guest's is answered but never given the floor) or `anyone`, the
+    /// default.
+    #[serde(default = "default_video_content_share")]
+    pub video_content_share: String,
+
+    /// How the composite shows a shared screen: `presentation` (the
+    /// screen large with up to five cameras in a strip, the default) or
+    /// `content_only` (the screen alone).
+    #[serde(default = "default_video_content_layout")]
+    pub video_content_layout: String,
+
     /// Creation timestamp
     pub created_at: SystemTime,
 
@@ -247,6 +289,8 @@ impl Meeting {
             self.video_fps,
             &self.video_codecs,
             &self.video_passthrough,
+            &self.video_content_share,
+            &self.video_content_layout,
         )
     }
 }
@@ -290,6 +334,8 @@ mod tests {
             video_fps: 30,
             video_exclude_self: true,
             video_passthrough: default_video_passthrough(),
+            video_content_share: default_video_content_share(),
+            video_content_layout: default_video_content_layout(),
             video_codecs: vec![VideoCodec::Vp8, VideoCodec::H264, VideoCodec::Av1],
             created_at: UNIX_EPOCH + std::time::Duration::from_secs(1700000000),
             updated_at: UNIX_EPOCH + std::time::Duration::from_secs(1700000000),
@@ -353,7 +399,16 @@ mod tests {
     #[test]
     fn video_settings_validation_rejects_out_of_range_values() {
         let ok = |layout, tiles, res, fps, codecs: &[VideoCodec]| {
-            validate_video_settings(layout, tiles, res, fps, codecs, "auto")
+            validate_video_settings(
+                layout,
+                tiles,
+                res,
+                fps,
+                codecs,
+                "auto",
+                "anyone",
+                "presentation",
+            )
         };
         let codecs = default_video_codecs();
         assert!(ok("grid", 16, "720p", 15, &codecs).is_ok());
@@ -390,6 +445,35 @@ mod tests {
         )
         .unwrap_err()
         .contains("more than once"));
+    }
+
+    #[test]
+    fn content_settings_are_validated() {
+        let check = |share: &str, layout: &str| {
+            validate_video_settings(
+                "grid",
+                4,
+                "720p",
+                15,
+                &[VideoCodec::H264],
+                "auto",
+                share,
+                layout,
+            )
+        };
+        for share in VIDEO_CONTENT_SHARE_MODES {
+            for layout in VIDEO_CONTENT_LAYOUTS {
+                assert!(check(share, layout).is_ok(), "{share} / {layout}");
+            }
+        }
+        assert!(check("everyone", "presentation")
+            .unwrap_err()
+            .contains("video_content_share"));
+        assert!(check("anyone", "grid")
+            .unwrap_err()
+            .contains("video_content_layout"));
+        assert_eq!(default_video_content_share(), "anyone");
+        assert_eq!(default_video_content_layout(), "presentation");
     }
 
     #[test]

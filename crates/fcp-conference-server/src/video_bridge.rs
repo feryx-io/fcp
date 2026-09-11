@@ -16,8 +16,9 @@ use fcp_core::{Meeting, TenantId};
 use fcp_events::{ConferenceEvent, EventPublisher, PlatformEvent};
 use fcp_media::{video_codec_to_forge, NegotiatedVideo, SrtpSdpContext};
 use forge_conference::video::{
-    ContentGate, OutputScope, PassthroughMode, StreamKind, SubscribeRequest, VideoBackend,
-    VideoRoom, VideoRoomEvent, VideoRoomSettings, VideoSubscription,
+    ContentEvent, ContentGate, ContentLayout, OutputScope, PassthroughMode, StreamKind,
+    SubscribeRequest, VideoBackend, VideoRoom, VideoRoomEvent, VideoRoomSettings,
+    VideoSubscription,
 };
 use forge_conference::ConferenceRoom;
 use forge_rtp::rtcp::{PsFeedback, RtcpPacket};
@@ -39,8 +40,12 @@ pub struct VideoLegStats {
 }
 
 /// What a participant's video leg is made of, kept on the session for
-/// teardown, re-INVITEs and the API.
+/// teardown, re-INVITEs and the API. A participant has one for their
+/// camera and, when their offer carried an `a=content:slides` section,
+/// one for their shared screen (§15.6).
 pub struct VideoLeg {
+    /// Which of the participant's streams this leg carries.
+    pub kind: StreamKind,
     pub port_pair: PortPair,
     pub socket: Arc<RtpSocketPair>,
     pub srtp_context: Option<Arc<RwLock<SrtpContext>>>,
@@ -60,6 +65,7 @@ impl VideoLeg {
     /// bridge itself needs.
     pub fn shared(&self) -> VideoLeg {
         VideoLeg {
+            kind: self.kind,
             port_pair: self.port_pair,
             socket: Arc::clone(&self.socket),
             srtp_context: self.srtp_context.clone(),
@@ -72,20 +78,11 @@ impl VideoLeg {
     }
 }
 
-/// A participant's video for the API (design §12): `{codec, resolution,
-/// fps, bitrate_kbps, keyframes_sent, nacks, plis, state}` plus the leg's
-/// socket counters. `{"state": "off"}` when no video was negotiated.
-pub fn participant_video_json(
-    room: &ConferenceRoom,
-    participant_id: &str,
-    leg: Option<&VideoLeg>,
-) -> serde_json::Value {
-    let Some(leg) = leg else {
-        return serde_json::json!({ "state": "off" });
-    };
-    let info = room.video().and_then(|v| v.participant(participant_id));
-    let mut json = serde_json::json!({
-        "state": info.as_ref().map(|i| i.state.name()).unwrap_or("off"),
+/// The socket-level half of a leg's JSON: what was negotiated and what
+/// went over the wire.
+fn leg_json(leg: &VideoLeg, state: &str) -> serde_json::Value {
+    serde_json::json!({
+        "state": state,
         "codec": leg.negotiated.codec.sdp_name(),
         "payload_type": leg.negotiated.payload_type,
         "srtp": leg.srtp_context.is_some(),
@@ -96,41 +93,92 @@ pub fn participant_video_json(
         "rtcp_sent": leg.stats.rtcp_sent.load(Ordering::Relaxed),
         "srtp_errors": leg.stats.srtp_errors.load(Ordering::Relaxed),
         "is_inactive": leg.stats.last_rx_age().map(|a| a > VIDEO_INACTIVE_AFTER).unwrap_or(true),
-    });
-    if let Some(info) = info {
-        if let Some(src) = info.source {
-            json["resolution"] = serde_json::json!(src.resolution.to_string());
-            json["fps"] = serde_json::json!(src.fps);
-            json["bitrate_kbps"] = serde_json::json!(src.bitrate_kbps);
-            json["frames_decoded"] = serde_json::json!(src.frames_decoded);
-            json["frames_lost"] = serde_json::json!(src.frames_lost);
-            json["frames_dropped"] = serde_json::json!(src.frames_dropped);
-            json["decode_errors"] = serde_json::json!(src.decode_errors);
-            json["nacks_sent"] = serde_json::json!(src.nacks_sent);
-            json["plis_sent"] = serde_json::json!(src.plis_sent);
-        }
-        if let Some(sub) = info.subscription {
-            json["flavor"] = serde_json::json!(sub.flavor.to_string());
-            // The ladder rung this participant is on, and the rate it is
-            // encoded at, without a caller having to parse the flavor
-            // (§7). Below the room's own size means their link asked.
-            json["rung"] = serde_json::json!(sub.flavor.resolution.to_string());
-            json["rung_kbps"] = serde_json::json!(sub.flavor.max_kbps);
-            json["ssrc"] = serde_json::json!(sub.ssrc);
-            json["keyframes_sent"] = serde_json::json!(sub.keyframes_sent);
-            json["frames_sent"] = serde_json::json!(sub.frames_sent);
-            json["nacks"] = serde_json::json!(sub.nacks_received);
-            json["plis"] = serde_json::json!(sub.plis_received);
-            json["packets_retransmitted"] = serde_json::json!(sub.packets_retransmitted);
-            json["packets_dropped"] = serde_json::json!(sub.packets_dropped);
-            json["remb_kbps"] = serde_json::json!(sub.remb_kbps);
-            // On the fast path this participant is watching one sender's
-            // own stream rather than a composite (§5.6).
-            if let Some(source) = sub.forwarding {
-                json["forwarding"] = serde_json::json!(source.to_string());
+    })
+}
+
+/// The ingress side of a stream, as the room measures it.
+fn source_json(json: &mut serde_json::Value, src: &forge_conference::video::VideoSourceInfo) {
+    json["resolution"] = serde_json::json!(src.resolution.to_string());
+    json["fps"] = serde_json::json!(src.fps);
+    json["bitrate_kbps"] = serde_json::json!(src.bitrate_kbps);
+    json["frames_decoded"] = serde_json::json!(src.frames_decoded);
+    json["frames_lost"] = serde_json::json!(src.frames_lost);
+    json["frames_dropped"] = serde_json::json!(src.frames_dropped);
+    json["decode_errors"] = serde_json::json!(src.decode_errors);
+    json["nacks_sent"] = serde_json::json!(src.nacks_sent);
+    json["plis_sent"] = serde_json::json!(src.plis_sent);
+}
+
+/// The egress side of a channel: the flavor, the rung, the counters.
+fn subscription_json(
+    json: &mut serde_json::Value,
+    sub: &forge_conference::video::VideoSubscriberInfo,
+) {
+    json["flavor"] = serde_json::json!(sub.flavor.to_string());
+    json["view"] = serde_json::json!(sub.view.name());
+    // The ladder rung this participant is on, and the rate it is
+    // encoded at, without a caller having to parse the flavor
+    // (§7). Below the room's own size means their link asked.
+    json["rung"] = serde_json::json!(sub.flavor.resolution.to_string());
+    json["rung_kbps"] = serde_json::json!(sub.flavor.max_kbps);
+    json["ssrc"] = serde_json::json!(sub.ssrc);
+    json["keyframes_sent"] = serde_json::json!(sub.keyframes_sent);
+    json["frames_sent"] = serde_json::json!(sub.frames_sent);
+    json["nacks"] = serde_json::json!(sub.nacks_received);
+    json["plis"] = serde_json::json!(sub.plis_received);
+    json["packets_retransmitted"] = serde_json::json!(sub.packets_retransmitted);
+    json["packets_dropped"] = serde_json::json!(sub.packets_dropped);
+    json["remb_kbps"] = serde_json::json!(sub.remb_kbps);
+    // On the fast path this participant is watching one sender's
+    // own stream rather than a composite (§5.6).
+    if let Some(source) = &sub.forwarding {
+        json["forwarding"] = serde_json::json!(source.to_string());
+    }
+}
+
+/// A participant's video for the API (design §12): `{codec, resolution,
+/// fps, bitrate_kbps, keyframes_sent, nacks, plis, state}` plus the leg's
+/// socket counters, and — when the participant's offer carried a
+/// shared screen's section (§15.6) — a `content` object of the same
+/// shape for it, with `channel` saying whether they receive the room's
+/// content on that section, and `presenting` saying whether their screen
+/// is the one the room shows. `{"state": "off"}` when no video was
+/// negotiated.
+pub fn participant_video_json(
+    room: &ConferenceRoom,
+    participant_id: &str,
+    leg: Option<&VideoLeg>,
+    content_leg: Option<&VideoLeg>,
+) -> serde_json::Value {
+    let info = room.video().and_then(|v| v.participant(participant_id));
+    let mut json = match leg {
+        Some(leg) => leg_json(leg, info.as_ref().map(|i| i.state.name()).unwrap_or("off")),
+        None => serde_json::json!({ "state": "off" }),
+    };
+    if let Some(info) = &info {
+        if leg.is_some() {
+            if let Some(src) = &info.source {
+                source_json(&mut json, src);
+            }
+            if let Some(sub) = &info.subscription {
+                subscription_json(&mut json, sub);
             }
         }
         json["speaking"] = serde_json::json!(info.speaking);
+        if let Some(cleg) = content_leg {
+            let mut c = leg_json(cleg, info.content_state.name());
+            if let Some(src) = &info.content {
+                source_json(&mut c, src);
+            }
+            if let Some(sub) = &info.content_subscription {
+                subscription_json(&mut c, sub);
+            }
+            c["channel"] = serde_json::json!(info.content_subscription.is_some());
+            json["content"] = c;
+        }
+        json["presenting"] = serde_json::json!(info.presenting);
+    } else if let Some(cleg) = content_leg {
+        json["content"] = leg_json(cleg, "off");
     }
     json
 }
@@ -153,6 +201,19 @@ pub fn room_video_json(room: &ConferenceRoom) -> serde_json::Value {
     let st = video.status();
     serde_json::json!({
         "layout": st.layout.name(),
+        "content_layout": st.content_layout.name(),
+        // The share under way (§15.6): who holds the floor and what their
+        // screen arrives as. `null` while nobody is sharing.
+        "content": st.content.as_ref().map(|c| serde_json::json!({
+            "participant_id": c.participant_id,
+            "display_name": c.display_name,
+            "remote": c.remote,
+            "held_for_secs": c.held_for.as_secs(),
+            "codec": c.codec.sdp_name(),
+            "resolution": c.resolution.to_string(),
+            "fps": c.fps,
+            "live": c.live,
+        })),
         "spotlight": st.spotlight,
         "pinned": st.pinned,
         "active_speaker": st.active_speaker,
@@ -168,6 +229,8 @@ pub fn room_video_json(room: &ConferenceRoom) -> serde_json::Value {
             // one (`exclude_self`), or this node's callers only (what a
             // trunk carries).
             "scope": scope_json(&o.scope),
+            // The composite, the cameras alone, or the content alone (§15.6).
+            "view": o.view.name(),
             "resolution": o.resolution.to_string(),
             "flavors": o.flavors.iter().map(|f| serde_json::json!({
                 "codec": f.flavor.codec.sdp_name(),
@@ -197,6 +260,10 @@ pub enum VideoControlError {
     NoVideo,
     /// Not one of `grid`, `active_speaker`, `spotlight`, `pip`.
     UnknownLayout(String),
+    /// Nobody is sharing a screen here.
+    NoContent,
+    /// Not one of `presentation`, `content_only`.
+    UnknownContentLayout(String),
 }
 
 impl std::fmt::Display for VideoControlError {
@@ -207,6 +274,11 @@ impl std::fmt::Display for VideoControlError {
             Self::UnknownLayout(l) => write!(
                 f,
                 "Unknown layout '{l}' (one of grid, active_speaker, spotlight, pip)"
+            ),
+            Self::NoContent => f.write_str("Nobody is sharing a screen in this room"),
+            Self::UnknownContentLayout(l) => write!(
+                f,
+                "Unknown content layout '{l}' (one of presentation, content_only)"
             ),
         }
     }
@@ -234,9 +306,38 @@ fn layout_json(status: &str, video: &VideoRoom) -> serde_json::Value {
     serde_json::json!({
         "status": status,
         "layout": st.layout.name(),
+        "content_layout": st.content_layout.name(),
         "pinned": st.pinned,
         "spotlight": st.spotlight,
     })
+}
+
+/// A host ends the share under way (§15.6). The presenter cannot take
+/// the floor back by just sending; a fresh content section, or
+/// [`set_participant_video`] on their content, lets them. `NoContent`
+/// when nobody is sharing on this node.
+pub fn stop_content(room: &ConferenceRoom) -> Result<serde_json::Value, VideoControlError> {
+    let video = video_of(room)?;
+    match video.stop_content() {
+        Some(pid) => Ok(serde_json::json!({
+            "status": "content_stopped",
+            "participant": pid,
+        })),
+        None => Err(VideoControlError::NoContent),
+    }
+}
+
+/// How the composite shows a shared screen: `presentation` or
+/// `content_only`, changeable while one is on.
+pub fn set_content_layout(
+    room: &ConferenceRoom,
+    layout: &str,
+) -> Result<serde_json::Value, VideoControlError> {
+    let parsed = ContentLayout::parse(layout)
+        .ok_or_else(|| VideoControlError::UnknownContentLayout(layout.to_string()))?;
+    let video = video_of(room)?;
+    video.set_content_layout(parsed);
+    Ok(layout_json("content_layout_set", &video))
 }
 
 /// Set the room's layout on this node.
@@ -358,12 +459,25 @@ pub fn usable_codecs(backend: &VideoBackend, native_only: bool) -> Vec<forge_cor
         .collect()
 }
 
+/// Whether a participant may take the room's content floor under the
+/// meeting's `video_content_share` policy: nobody under `off`, hosts
+/// under `hosts`, everyone otherwise (§15.6).
+pub fn may_share(policy: &str, is_host: bool) -> bool {
+    match policy {
+        "off" => false,
+        "hosts" => is_host,
+        _ => true,
+    }
+}
+
 /// The meeting's video settings as a room would run them, and the codecs
 /// to offer, in the meeting's preference order restricted to what the
 /// node can run. `None` when the meeting has video off or nothing usable.
+/// `content_idle` is the node's `[conference] content_idle_secs`.
 pub fn plan_video(
     meeting: &Meeting,
     usable: &[forge_core::VideoCodec],
+    content_idle: Duration,
 ) -> Option<(VideoRoomSettings, Vec<forge_core::VideoCodec>)> {
     if !meeting.video_enabled {
         return None;
@@ -389,6 +503,13 @@ pub fn plan_video(
         // the room is showing one participant full canvas, where the
         // missing name banner is least missed (§5.6).
         passthrough: PassthroughMode::parse(&meeting.video_passthrough).unwrap_or_default(),
+        // A shared screen (§15.6): whether the room takes one at all, how
+        // the composite shows it, and how long a silent presenter keeps
+        // the floor. Who may take it is decided per participant when
+        // their content leg is attached.
+        content: meeting.video_content_share != "off",
+        content_layout: ContentLayout::parse(&meeting.video_content_layout).unwrap_or_default(),
+        content_idle,
         ..VideoRoomSettings::default()
     };
     Some((settings, codecs))
@@ -439,6 +560,13 @@ pub fn attach_video(
         warn!(participant = %participant_id, error = %e, "could not add video source");
         return None;
     }
+    // A caller with a content section of their own — attached first, so
+    // it is known here — gets people on this section and the slides on
+    // the other; a caller with one section gets the composite, which
+    // follows a share into the presentation (§15.6).
+    let view = video
+        .has_subscriber_kind(participant_id, StreamKind::Content)
+        .then_some(forge_conference::video::View::Cameras);
     let sub = match video.subscribe(
         participant_id,
         SubscribeRequest {
@@ -452,10 +580,7 @@ pub fn attach_video(
             // peers' tiles alike; the room's `exclude_self` decides
             // whether their own tile is in it.
             scope: None,
-            // The composite: the layout, and the presentation while a
-            // screen is shared (§15.6). A content section of the caller's
-            // own is 7b.
-            view: None,
+            view,
         },
     ) {
         Ok(s) => s,
@@ -468,6 +593,75 @@ pub fn attach_video(
     Some(run_video_bridge(
         video,
         participant_id.to_string(),
+        StreamKind::Camera,
+        Arc::clone(&leg.socket),
+        leg.srtp_context.clone(),
+        sub,
+        leg.negotiated.clone(),
+        Arc::clone(&leg.stats),
+    ))
+}
+
+/// Put a participant's shared screen on the room's video (§15.6): a
+/// content source, decoded but shown only once its packets take the
+/// floor, and a content channel back, on which the participant receives
+/// whoever's screen the room is showing (never their own). `may_share`
+/// is the meeting's policy for this participant: a guest under `hosts`
+/// still has the section answered — a phone that offered one expects an
+/// answer — but is never given the floor, and is told so once.
+pub fn attach_content(
+    room: &Arc<ConferenceRoom>,
+    backend: &VideoBackend,
+    participant_id: &str,
+    leg: &VideoLeg,
+    sink: VideoEventSink,
+    may_share: bool,
+) -> Option<impl Future<Output = ()> + Send + 'static> {
+    let video = room.enable_video(leg.settings.clone(), backend);
+    video.set_local_node(&sink.node_id);
+    video.set_content_gate(sink.content_gate.clone());
+    if sink.pumps.insert(sink.room_number.clone(), ()).is_none() {
+        spawn_event_pump(&video, sink);
+    }
+    let profile = leg.negotiated.fmtp.clone().unwrap_or_default();
+    if let Err(e) = video.add_source_kind(
+        participant_id,
+        StreamKind::Content,
+        leg.negotiated.codec,
+        &profile,
+    ) {
+        warn!(participant = %participant_id, error = %e, "could not add content source");
+        return None;
+    }
+    if !may_share {
+        video.set_participant_content_enabled(participant_id, false);
+    }
+    let sub = match video.subscribe_kind(
+        participant_id,
+        StreamKind::Content,
+        SubscribeRequest {
+            codec: leg.negotiated.codec,
+            profile,
+            payload_type: leg.negotiated.payload_type,
+            resolution: None,
+            fps: None,
+            max_kbps: None,
+            scope: None,
+            // The content alone, as a content section expects.
+            view: None,
+        },
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            warn!(participant = %participant_id, error = %e, "could not subscribe to room content");
+            video.remove_source_kind(participant_id, StreamKind::Content);
+            return None;
+        }
+    };
+    Some(run_video_bridge(
+        video,
+        participant_id.to_string(),
+        StreamKind::Content,
         Arc::clone(&leg.socket),
         leg.srtp_context.clone(),
         sub,
@@ -530,12 +724,23 @@ pub fn attach_trunk_video(
     Some(run_video_bridge(
         video,
         participant_id.to_string(),
+        StreamKind::Camera,
         Arc::clone(&leg.socket),
         leg.srtp_context.clone(),
         sub,
         leg.negotiated.clone(),
         Arc::clone(&leg.stats),
     ))
+}
+
+/// Take the participant's shared screen off the room's video (a
+/// re-INVITE removed the section, or the leg is torn down). Ends their
+/// share if it was on.
+pub fn detach_content(room: &ConferenceRoom, participant_id: &str) {
+    if let Some(video) = room.video() {
+        video.unsubscribe_kind(participant_id, StreamKind::Content);
+        video.remove_source_kind(participant_id, StreamKind::Content);
+    }
 }
 
 /// Take the participant off the room's video (a re-INVITE removed the
@@ -579,7 +784,8 @@ fn spawn_event_pump(video: &Arc<VideoRoom>, sink: VideoEventSink) {
             // The room's rate as it stands: a shed leaves it alone, and
             // the event says so.
             let fps = room.upgrade().map(|r| r.fps()).unwrap_or(0);
-            if let Some(event) = conference_event(ev, &sink, fps) {
+            let content = room.upgrade().and_then(|r| r.content());
+            if let Some(event) = conference_event(ev, &sink, fps, content.as_ref()) {
                 if let Err(e) = sink
                     .event_bus
                     .publish(PlatformEvent::Conference(event))
@@ -598,6 +804,7 @@ fn conference_event(
     ev: VideoRoomEvent,
     sink: &VideoEventSink,
     room_fps: u32,
+    content: Option<&forge_conference::video::ContentInfo>,
 ) -> Option<ConferenceEvent> {
     match ev {
         // A trunk's tile is infrastructure, not a participant: it is left
@@ -605,18 +812,44 @@ fn conference_event(
         // join and leave.
         VideoRoomEvent::ParticipantState {
             participant_id,
-            kind: StreamKind::Camera,
+            kind,
             state,
         } if !participant_id.starts_with("__") => Some(ConferenceEvent::VideoStateChanged {
             room_number: sink.room_number.clone(),
             participant_id,
             state: state.name().to_string(),
+            stream: kind.name().to_string(),
             tenant_id: sink.tenant_id,
             timestamp: SystemTime::now(),
         }),
-        // A shared screen's state, and the floor changing hands, reach
-        // the bus with the content section itself (§15.6, 7b).
         VideoRoomEvent::ParticipantState { .. } => None,
+        // The floor changing hands (§15.6). A refusal is the sender's
+        // business, not the room's: 7c tells a browser through its
+        // gateway session, and a phone with BFCP hears it there (7e).
+        VideoRoomEvent::Content {
+            participant_id,
+            event: ContentEvent::Started,
+        } if !participant_id.starts_with("__") => Some(ConferenceEvent::ContentStarted {
+            room_number: sink.room_number.clone(),
+            participant_id,
+            node_id: sink.node_id.clone(),
+            codec: content
+                .map(|c| c.codec.sdp_name().to_string())
+                .unwrap_or_default(),
+            tenant_id: sink.tenant_id,
+            timestamp: SystemTime::now(),
+        }),
+        VideoRoomEvent::Content {
+            participant_id,
+            event: ContentEvent::Stopped(reason),
+        } if !participant_id.starts_with("__") => Some(ConferenceEvent::ContentStopped {
+            room_number: sink.room_number.clone(),
+            participant_id,
+            node_id: sink.node_id.clone(),
+            reason: reason.name().to_string(),
+            tenant_id: sink.tenant_id,
+            timestamp: SystemTime::now(),
+        }),
         VideoRoomEvent::Content {
             participant_id,
             event,
@@ -713,6 +946,7 @@ fn unix_ms() -> u64 {
 pub async fn run_video_bridge(
     room: Arc<VideoRoom>,
     participant_id: String,
+    kind: StreamKind,
     socket: Arc<RtpSocketPair>,
     srtp_context: Option<Arc<RwLock<SrtpContext>>>,
     mut sub: VideoSubscription,
@@ -723,6 +957,7 @@ pub async fn run_video_bridge(
         "video_bridge",
         participant = %participant_id,
         room = %room.id(),
+        stream = %kind,
         codec = %negotiated.codec,
         srtp = srtp_context.is_some(),
     );
@@ -768,7 +1003,7 @@ pub async fn run_video_bridge(
                         trace!(pt = packet.header.payload_type(), "video packet with another payload type");
                         continue;
                     }
-                    for fb in room.push_rtp(&participant_id, packet) {
+                    for fb in room.push_rtp_kind(&participant_id, kind, packet) {
                         let fb = match adapt_feedback(fb, &negotiated, &mut fir_seq) {
                             Some(fb) => fb,
                             None => continue,
@@ -796,7 +1031,7 @@ pub async fn run_video_bridge(
                         }
                     };
                     for packet in RtcpPacket::parse_compound(&plain) {
-                        room.handle_feedback(&participant_id, &packet);
+                        room.handle_feedback_kind(&participant_id, kind, &packet);
                     }
                 }
 
@@ -1002,6 +1237,8 @@ mod tests {
             video_exclude_self: false,
             video_codecs: vec![VideoCodec::H264, VideoCodec::Vp8, VideoCodec::Av1],
             video_passthrough: fcp_core::meeting::default_video_passthrough(),
+            video_content_share: "anyone".to_string(),
+            video_content_layout: "presentation".to_string(),
             created_at: now,
             updated_at: now,
         }
@@ -1010,14 +1247,20 @@ mod tests {
     #[test]
     fn a_plan_follows_the_meeting_and_the_usable_codecs() {
         let usable = vec![forge_core::VideoCodec::VP8, forge_core::VideoCodec::VP9];
-        let (settings, codecs) = plan_video(&meeting(true), &usable).expect("video");
+        let (settings, codecs) =
+            plan_video(&meeting(true), &usable, Duration::from_secs(30)).expect("video");
         assert_eq!(codecs, vec![forge_core::VideoCodec::VP8]);
         assert_eq!(settings.layout, Layout::ActiveSpeaker);
         assert_eq!(settings.resolution, Resolution::new(640, 360));
         assert_eq!(settings.fps, 30);
-        assert!(plan_video(&meeting(false), &usable).is_none());
+        assert!(plan_video(&meeting(false), &usable, Duration::from_secs(30)).is_none());
         assert!(
-            plan_video(&meeting(true), &[forge_core::VideoCodec::H265]).is_none(),
+            plan_video(
+                &meeting(true),
+                &[forge_core::VideoCodec::H265],
+                Duration::from_secs(30)
+            )
+            .is_none(),
             "nothing the node can run"
         );
     }
@@ -1058,7 +1301,7 @@ mod tests {
             from: hd,
             to: sd,
         };
-        match conference_event(shed, &sink, 15) {
+        match conference_event(shed, &sink, 15, None) {
             Some(ConferenceEvent::VideoOverload {
                 action,
                 from_fps,
@@ -1084,7 +1327,7 @@ mod tests {
             from: sd,
             to: hd,
         };
-        assert!(conference_event(back, &sink, 15).is_none());
+        assert!(conference_event(back, &sink, 15, None).is_none());
 
         // Once shedding has nothing left, the rate halves: no composite named.
         let halved = VideoRoomEvent::FpsChanged {
@@ -1092,7 +1335,7 @@ mod tests {
             to: 7,
             overload: true,
         };
-        match conference_event(halved, &sink, 7) {
+        match conference_event(halved, &sink, 7, None) {
             Some(ConferenceEvent::VideoOverload {
                 action,
                 from_fps,
@@ -1111,12 +1354,13 @@ mod tests {
             to: 15,
             overload: false,
         };
-        assert!(conference_event(restored, &sink, 15).is_none());
+        assert!(conference_event(restored, &sink, 15, None).is_none());
     }
 
     #[test]
     fn feedback_is_adapted_to_what_the_peer_negotiated() {
         let mut n = NegotiatedVideo {
+            label: None,
             codec: forge_core::VideoCodec::VP8,
             payload_type: 97,
             fmtp: None,
@@ -1180,6 +1424,421 @@ mod tests {
         }
     }
 
+    /// A phone that sends solid raw frames of one size and shade forever.
+    fn send_frames(
+        phone: Arc<RtpSocketPair>,
+        width: u32,
+        height: u32,
+        luma: u8,
+        ssrc: u32,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let enc_settings = EncoderSettings {
+                codec: forge_core::VideoCodec::VP8,
+                resolution: Resolution::new(width, height),
+                fps: 15,
+                bitrate_kbps: 300,
+                keyframe_interval: 30,
+                profile: String::new(),
+                content: Default::default(),
+            };
+            let mut enc: Box<dyn VideoEncoder> = raw_registry()
+                .encoder(&enc_settings, &MediaDevice::Host)
+                .unwrap();
+            let mut seq = 1u16;
+            for i in 0u32.. {
+                let f = HostFrame::solid(width, height, luma, 128, 128).with_pts(i * 6000);
+                for c in enc.encode(&VideoFrame::Host(f), false).unwrap() {
+                    let payloads = packetize(forge_core::VideoCodec::VP8, &c, 1200).unwrap();
+                    let n = payloads.len();
+                    for (k, p) in payloads.into_iter().enumerate() {
+                        let pkt = RtpPacket::build(97, seq, c.timestamp, ssrc, p, k + 1 == n);
+                        seq = seq.wrapping_add(1);
+                        if phone.send_rtp(&pkt).await.is_err() {
+                            return;
+                        }
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(33)).await;
+            }
+        })
+    }
+
+    /// Decode what a phone receives until a frame passes `check`.
+    async fn frame_matching(
+        phone: &Arc<RtpSocketPair>,
+        what: &str,
+        check: impl Fn(&HostFrame) -> bool,
+    ) -> HostFrame {
+        let mut asm = FrameAssembler::new(forge_core::VideoCodec::VP8);
+        let mut dec: Box<dyn VideoDecoder> = raw_registry()
+            .decoder(forge_core::VideoCodec::VP8, &MediaDevice::Host)
+            .unwrap();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
+        while tokio::time::Instant::now() < deadline {
+            let (bytes, _) =
+                match tokio::time::timeout(Duration::from_secs(1), phone.recv_rtp_raw()).await {
+                    Ok(Ok(r)) => r,
+                    _ => continue,
+                };
+            let pkt = RtpPacket::parse(bytes).unwrap();
+            for ev in asm.push(pkt) {
+                if let AssemblerEvent::Frame(f) = ev {
+                    if let Some(v) = dec.decode(&f).unwrap() {
+                        let h = v.into_host().unwrap();
+                        if check(&h) {
+                            return h;
+                        }
+                    }
+                }
+            }
+        }
+        panic!("no frame {what} in time");
+    }
+
+    /// A shared screen through real sockets (§15.6): Alice's screen takes
+    /// the floor; Bob's one-section phone gets the presentation; Carol's
+    /// two-section phone gets people on one section and the slides —
+    /// Alice's own stream, forwarded — on the other, while her own content
+    /// section, a guest's under `hosts`, is answered but never given the
+    /// floor.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_shared_screen_reaches_every_kind_of_endpoint() {
+        let room = Arc::new(
+            ConferenceRoom::new(
+                "1001",
+                AudioFormat::pcm_mono(),
+                160,
+                forge_mixer::MixerOptions::default(),
+            )
+            .unwrap(),
+        );
+        room.add_participant("alice", true).unwrap();
+        room.add_participant("bob", false).unwrap();
+        room.add_participant("carol", false).unwrap();
+        let backend = VideoBackend::raw();
+        let meeting = {
+            let mut m = meeting(true);
+            m.video_layout = "grid".into();
+            m.video_max_resolution = "180p".into();
+            m.video_codecs = vec![VideoCodec::Vp8];
+            m.video_passthrough = "auto".into();
+            m.video_content_share = "hosts".into();
+            m
+        };
+        let (settings, _) = plan_video(
+            &meeting,
+            &usable_codecs(&backend, false),
+            Duration::from_secs(30),
+        )
+        .unwrap();
+        assert!(settings.content);
+        assert!(may_share(&meeting.video_content_share, true));
+        assert!(!may_share(&meeting.video_content_share, false));
+        let bus = Arc::new(InMemoryEventBus::new());
+        let sink = VideoEventSink {
+            event_bus: bus.clone() as Arc<dyn EventPublisher>,
+            tenant_id: TenantId::new(),
+            room_number: "1001".into(),
+            node_id: "conf-a".into(),
+            pumps: Arc::new(dashmap::DashMap::new()),
+            content_gate: None,
+        };
+        let lo = |p: u16| SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), p);
+
+        // Five legs: Alice's camera and screen, Bob's camera, Carol's
+        // camera and screen. Each has a server socket and a phone.
+        struct Wire {
+            pid: &'static str,
+            kind: StreamKind,
+            server: u16,
+            srv: Arc<RtpSocketPair>,
+            phone: Arc<RtpSocketPair>,
+        }
+        let mut wires = Vec::new();
+        for (pid, kind) in [
+            ("alice", StreamKind::Content),
+            ("carol", StreamKind::Content),
+            ("alice", StreamKind::Camera),
+            ("bob", StreamKind::Camera),
+            ("carol", StreamKind::Camera),
+        ] {
+            let server = free_pair();
+            let phone_port = free_pair();
+            let srv = socket_pair(server).await;
+            let phone = socket_pair(phone_port).await;
+            srv.set_remote_endpoint(RemoteEndpoint {
+                rtp_addr: lo(phone_port),
+                rtcp_addr: Some(lo(phone_port + 1)),
+            })
+            .await;
+            phone
+                .set_remote_endpoint(RemoteEndpoint {
+                    rtp_addr: lo(server),
+                    rtcp_addr: Some(lo(server + 1)),
+                })
+                .await;
+            wires.push(Wire {
+                pid,
+                kind,
+                server,
+                srv,
+                phone,
+            });
+        }
+        let negotiated = NegotiatedVideo {
+            label: None,
+            codec: forge_core::VideoCodec::VP8,
+            payload_type: 97,
+            fmtp: None,
+            remote: None,
+            pli: true,
+            fir: false,
+            nack: true,
+            remote_crypto: None,
+        };
+        // Content legs are attached before camera legs, as the handler
+        // does, so a two-section phone's main section is the cameras.
+        let mut bridges = Vec::new();
+        for w in &wires {
+            let leg = VideoLeg {
+                kind: w.kind,
+                port_pair: PortPair::new(w.server).unwrap(),
+                socket: Arc::clone(&w.srv),
+                srtp_context: None,
+                srtp_sdp: None,
+                negotiated: negotiated.clone(),
+                settings: settings.clone(),
+                stats: Arc::new(VideoLegStats::default()),
+                bridge_handle: None,
+            };
+            let fut: std::pin::Pin<Box<dyn Future<Output = ()> + Send>> = match w.kind {
+                StreamKind::Content => Box::pin(
+                    attach_content(
+                        &room,
+                        &backend,
+                        w.pid,
+                        &leg,
+                        sink.clone(),
+                        may_share(&meeting.video_content_share, w.pid == "alice"),
+                    )
+                    .unwrap(),
+                ),
+                StreamKind::Camera => Box::pin(
+                    attach_video(&room, &backend, w.pid, Some(w.pid), &leg, sink.clone()).unwrap(),
+                ),
+            };
+            bridges.push((tokio::spawn(fut), leg));
+        }
+        let video = room.video().expect("video room");
+        let phone_of = |pid: &str, kind: StreamKind| {
+            Arc::clone(
+                &wires
+                    .iter()
+                    .find(|w| w.pid == pid && w.kind == kind)
+                    .unwrap()
+                    .phone,
+            )
+        };
+        // Carol's main section shows the cameras; Bob's the composite.
+        assert_eq!(
+            video
+                .participant("carol")
+                .unwrap()
+                .subscription
+                .unwrap()
+                .view,
+            forge_conference::video::View::Cameras
+        );
+        assert_eq!(
+            video.participant("bob").unwrap().subscription.unwrap().view,
+            forge_conference::video::View::Composite
+        );
+
+        let senders = [
+            send_frames(phone_of("alice", StreamKind::Camera), 128, 72, 200, 0xA11CE),
+            send_frames(phone_of("alice", StreamKind::Content), 160, 90, 90, 0x5C4EE),
+            send_frames(phone_of("carol", StreamKind::Content), 160, 90, 30, 0xCA401),
+        ];
+
+        // Bob's one section: the presentation, Alice's screen in the main
+        // region and no screen in the strip.
+        let bob_phone = phone_of("bob", StreamKind::Camera);
+        let frame = frame_matching(&bob_phone, "with the screen", |h| {
+            h.resolution() == Resolution::new(320, 180) && h.luma(118, 90) == 90
+        })
+        .await;
+        assert_ne!(
+            frame.luma(280, 90),
+            90,
+            "the strip holds cameras, not the screen"
+        );
+        assert_eq!(video.content_holder().as_deref(), Some("alice"));
+        assert!(video.participant("alice").unwrap().presenting);
+
+        // Carol's content section: Alice's own stream, at its own size.
+        let carol_content = phone_of("carol", StreamKind::Content);
+        let frame = frame_matching(&carol_content, "on carol's content section", |h| {
+            h.luma(80, 45) == 90
+        })
+        .await;
+        assert_eq!(
+            frame.resolution(),
+            Resolution::new(160, 90),
+            "forwarded, not composed"
+        );
+        // Carol's main section: the cameras in a grid, never the screen.
+        let carol_main = phone_of("carol", StreamKind::Camera);
+        let frame = frame_matching(&carol_main, "with alice's camera", |h| {
+            h.resolution() == Resolution::new(320, 180) && h.luma(79, 44) == 200
+        })
+        .await;
+        assert_ne!(frame.luma(118, 90), 90);
+
+        // Carol's own screen never took the floor: a guest under `hosts`.
+        assert_eq!(
+            video.request_content("carol"),
+            Err(forge_conference::video::ContentRefusal::ParticipantDisabled)
+        );
+        assert_eq!(
+            video.participant("carol").unwrap().content_state,
+            forge_conference::video::VideoState::Disabled
+        );
+
+        // The API's view of it.
+        let alice_json =
+            participant_video_json(&room, "alice", Some(&bridges[2].1), Some(&bridges[0].1));
+        assert_eq!(alice_json["presenting"], serde_json::json!(true));
+        assert_eq!(alice_json["content"]["state"], serde_json::json!("on"));
+        assert_eq!(alice_json["content"]["codec"], serde_json::json!("VP8"));
+        assert_eq!(alice_json["content"]["channel"], serde_json::json!(true));
+        let carol_json =
+            participant_video_json(&room, "carol", Some(&bridges[4].1), Some(&bridges[1].1));
+        assert_eq!(carol_json["presenting"], serde_json::json!(false));
+        assert_eq!(carol_json["view"], serde_json::json!("cameras"));
+        assert_eq!(
+            carol_json["content"]["state"],
+            serde_json::json!("disabled")
+        );
+        assert_eq!(
+            carol_json["content"]["forwarding"],
+            serde_json::json!("alice#content")
+        );
+        let bob_json = participant_video_json(&room, "bob", Some(&bridges[3].1), None);
+        assert!(bob_json.get("content").is_none());
+        assert_eq!(bob_json["view"], serde_json::json!("composite"));
+        let room_json = room_video_json(&room);
+        assert_eq!(
+            room_json["content"]["participant_id"],
+            serde_json::json!("alice")
+        );
+        assert_eq!(room_json["content"]["live"], serde_json::json!(true));
+        assert_eq!(
+            room_json["content_layout"],
+            serde_json::json!("presentation")
+        );
+
+        // A host ends it: the floor is free and the composite is a grid again.
+        let stopped = stop_content(&room).unwrap();
+        assert_eq!(stopped["participant"], serde_json::json!("alice"));
+        assert_eq!(stop_content(&room), Err(VideoControlError::NoContent));
+        frame_matching(&bob_phone, "without the screen", |h| {
+            h.resolution() == Resolution::new(320, 180) && h.luma(118, 90) != 90
+        })
+        .await;
+        assert!(video.content().is_none());
+        assert_eq!(
+            set_content_layout(&room, "content_only").unwrap()["content_layout"],
+            serde_json::json!("content_only")
+        );
+        assert!(matches!(
+            set_content_layout(&room, "mosaic"),
+            Err(VideoControlError::UnknownContentLayout(_))
+        ));
+
+        for s in senders {
+            s.abort();
+        }
+        for (b, _) in bridges {
+            b.abort();
+        }
+    }
+
+    #[test]
+    fn share_events_reach_the_bus_with_the_presenter_and_reason() {
+        use forge_conference::video::{ContentInfo, ContentStop, VideoState};
+        let bus = Arc::new(InMemoryEventBus::new());
+        let sink = VideoEventSink {
+            event_bus: bus as Arc<dyn EventPublisher>,
+            tenant_id: TenantId::new(),
+            room_number: "1000".into(),
+            node_id: "conf-a".into(),
+            pumps: Arc::new(dashmap::DashMap::new()),
+            content_gate: None,
+        };
+        let info = ContentInfo {
+            participant_id: "alice".into(),
+            display_name: "Alice".into(),
+            remote: false,
+            held_for: Duration::from_secs(1),
+            codec: forge_core::VideoCodec::VP8,
+            resolution: Resolution::new(1280, 720),
+            fps: 5,
+            live: true,
+        };
+        let started = VideoRoomEvent::Content {
+            participant_id: "alice".into(),
+            event: ContentEvent::Started,
+        };
+        match conference_event(started, &sink, 15, Some(&info)) {
+            Some(ConferenceEvent::ContentStarted {
+                participant_id,
+                node_id,
+                codec,
+                ..
+            }) => {
+                assert_eq!(participant_id, "alice");
+                assert_eq!(node_id, "conf-a");
+                assert_eq!(codec, "VP8");
+            }
+            other => panic!("expected content_started, got {other:?}"),
+        }
+        let stopped = VideoRoomEvent::Content {
+            participant_id: "alice".into(),
+            event: ContentEvent::Stopped(ContentStop::Host),
+        };
+        match conference_event(stopped, &sink, 15, None) {
+            Some(ConferenceEvent::ContentStopped { reason, .. }) => assert_eq!(reason, "host"),
+            other => panic!("expected content_stopped, got {other:?}"),
+        }
+        // A refusal is the sender's business, not the bus's.
+        let refused = VideoRoomEvent::Content {
+            participant_id: "bob".into(),
+            event: ContentEvent::Refused(forge_conference::video::ContentRefusal::Held(
+                "alice".into(),
+            )),
+        };
+        assert!(conference_event(refused, &sink, 15, None).is_none());
+        // A trunk's remote content is infrastructure, like its tile.
+        let trunk = VideoRoomEvent::Content {
+            participant_id: "__trunk__node-b".into(),
+            event: ContentEvent::Started,
+        };
+        assert!(conference_event(trunk, &sink, 15, Some(&info)).is_none());
+        // A shared screen's state names its stream.
+        let state = VideoRoomEvent::ParticipantState {
+            participant_id: "alice".into(),
+            kind: StreamKind::Content,
+            state: VideoState::On,
+        };
+        match conference_event(state, &sink, 15, None) {
+            Some(ConferenceEvent::VideoStateChanged { stream, state, .. }) => {
+                assert_eq!((stream.as_str(), state.as_str()), ("content", "on"));
+            }
+            other => panic!("expected video_state_changed, got {other:?}"),
+        }
+    }
+
     /// The loopback test of design §14: a raw-codec participant's frames go
     /// through a real socket pair into the room, and the composite reaches
     /// a second participant's socket, where it is reassembled and decoded.
@@ -1212,6 +1871,7 @@ mod tests {
                 m
             },
             &usable_codecs(&backend, false),
+            Duration::from_secs(30),
         )
         .unwrap();
         let bus = Arc::new(InMemoryEventBus::new());
@@ -1252,6 +1912,7 @@ mod tests {
         }
 
         let negotiated = NegotiatedVideo {
+            label: None,
             codec: forge_core::VideoCodec::VP8,
             payload_type: 97,
             fmtp: None,
@@ -1267,6 +1928,7 @@ mod tests {
             ("bob", &bob_srv, bob_server),
         ] {
             let leg = VideoLeg {
+                kind: StreamKind::Camera,
                 port_pair: PortPair::new(pair).unwrap(),
                 socket: Arc::clone(srv),
                 srtp_context: None,
@@ -1508,7 +2170,12 @@ mod tests {
         );
 
         let backend = VideoBackend::raw();
-        let (settings, _) = plan_video(&meeting(true), &usable_codecs(&backend, false)).unwrap();
+        let (settings, _) = plan_video(
+            &meeting(true),
+            &usable_codecs(&backend, false),
+            Duration::from_secs(30),
+        )
+        .unwrap();
         let video = room.enable_video(settings, &backend);
         let bus = Arc::new(InMemoryEventBus::new());
         let pumps = Arc::new(dashmap::DashMap::new());
@@ -1643,6 +2310,7 @@ mod tests {
                 m
             },
             &usable_codecs(&backend, false),
+            Duration::from_secs(30),
         )
         .unwrap();
         let bus = Arc::new(InMemoryEventBus::new());
@@ -1656,6 +2324,7 @@ mod tests {
             content_gate: None,
         };
         let leg = |port: u16| VideoLeg {
+            kind: StreamKind::Camera,
             port_pair: PortPair::new(port).unwrap(),
             socket: Arc::new(futures::executor::block_on(async {
                 RtpSocketPair::new(
@@ -1671,6 +2340,7 @@ mod tests {
             srtp_context: None,
             srtp_sdp: None,
             negotiated: NegotiatedVideo {
+                label: None,
                 codec: forge_core::VideoCodec::VP8,
                 payload_type: 97,
                 fmtp: None,
@@ -1762,7 +2432,12 @@ mod tests {
         room.add_virtual_participant(&trunk_id).unwrap();
 
         let backend = VideoBackend::raw();
-        let (settings, _) = plan_video(&meeting(true), &usable_codecs(&backend, false)).unwrap();
+        let (settings, _) = plan_video(
+            &meeting(true),
+            &usable_codecs(&backend, false),
+            Duration::from_secs(30),
+        )
+        .unwrap();
         let video = room.enable_video(settings, &backend);
         video.set_local_node("conf-a");
         video

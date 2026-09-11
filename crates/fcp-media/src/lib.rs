@@ -69,12 +69,13 @@ pub use manager::{MediaManager, MediaManagerStats};
 pub use sdp::{
     construct_answer, construct_answer_for_a_leg, construct_offer, decode_sdes_key_params,
     extract_codecs_from_sdp, extract_telephone_event_pt, filter_sdp_codecs,
-    generate_srtp_key_material, parse_sdes_crypto, parse_sdp_codecs, parse_video_offer,
-    parse_video_sdes_crypto, remote_audio_endpoint, remote_video_endpoint, rewrite_for_anchoring,
+    generate_srtp_key_material, parse_content_sdes_crypto, parse_sdes_crypto, parse_sdp_codecs,
+    parse_video_offer, parse_video_sdes_crypto, parse_video_sections, remote_audio_endpoint,
+    remote_content_endpoint, remote_video_endpoint, rewrite_for_anchoring,
     rewrite_sdp_for_anchoring, sdes_suite_to_profile, video_codec_from_forge, video_codec_to_forge,
-    AnchorPorts, Answer, AnswerOptions, AudioOfferSection, NegotiatedVideo, OfferOptions,
-    SdesCryptoLine, SdpCodecInfo, SrtpOffer, SrtpSdpContext, VideoAnswer, VideoOffer,
-    VideoOfferCodec, VideoOfferSection,
+    AnchorPorts, Answer, AnswerOptions, AudioOfferSection, NegotiatedSections, NegotiatedVideo,
+    OfferOptions, SdesCryptoLine, SdpCodecInfo, SrtpOffer, SrtpSdpContext, VideoAnswer, VideoOffer,
+    VideoOfferCodec, VideoOfferSection, VideoSections, VideoStream, CONTENT_LABEL,
 };
 pub use session::{
     DtmfMode, MediaSession, MediaSessionConfig, MediaSessionState, MediaSessionStats,

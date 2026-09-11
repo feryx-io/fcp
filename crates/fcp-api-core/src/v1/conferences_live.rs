@@ -38,7 +38,7 @@ macro_rules! require_storage {
     };
 }
 
-/// Body of `PUT …/video/layout`.
+/// Body of `PUT …/video/layout`, and of `PUT …/video/content-layout`.
 #[derive(Debug, Deserialize)]
 pub struct SetLayoutRequest {
     pub layout: String,
@@ -247,6 +247,50 @@ pub async fn participant_video(
         None,
     )
     .await
+}
+
+/// POST /conferences/live/:room/video/content/stop — a host ends the
+/// share under way (§15.6).
+pub async fn stop_content(
+    State(state): State<ApiState>,
+    tenant: TenantContext,
+    Path(room): Path<String>,
+) -> Result<Proxied, ApiError> {
+    let meeting = scoped_meeting(&state, &tenant.0, &room).await?;
+    let out = forward(
+        &state,
+        &meeting,
+        reqwest::Method::POST,
+        &format!("/conferences/{room}/video/content/stop"),
+        None,
+    )
+    .await?;
+    if out.0.is_success() {
+        info!(room = %room, "Screen share stopped");
+    }
+    Ok(out)
+}
+
+/// PUT /conferences/live/:room/video/content-layout
+pub async fn set_content_layout(
+    State(state): State<ApiState>,
+    tenant: TenantContext,
+    Path(room): Path<String>,
+    Json(req): Json<SetLayoutRequest>,
+) -> Result<Proxied, ApiError> {
+    let meeting = scoped_meeting(&state, &tenant.0, &room).await?;
+    let out = forward(
+        &state,
+        &meeting,
+        reqwest::Method::PUT,
+        &format!("/conferences/{room}/video/content-layout"),
+        Some(serde_json::json!({ "layout": req.layout })),
+    )
+    .await?;
+    if out.0.is_success() {
+        info!(room = %room, layout = %req.layout, "Content layout set");
+    }
+    Ok(out)
 }
 
 /// POST /conferences/live/:room/dial-out — body passed through

@@ -156,6 +156,16 @@ fn protected_router() -> Router<Arc<ConferenceState>> {
             "/conferences/:room_number/participants/:pid/video/:state",
             post(participant_video_handler),
         )
+        // A shared screen (§15.6): a host ends the share, and how the
+        // composite shows one.
+        .route(
+            "/conferences/:room_number/video/content/stop",
+            post(content_stop_handler),
+        )
+        .route(
+            "/conferences/:room_number/video/content-layout",
+            put(content_layout_handler),
+        )
         // Admin: admit waiting participants
         .route(
             "/conferences/:room_number/admit/:pid",
@@ -264,6 +274,14 @@ fn internal_router(state: Arc<ConferenceState>) -> Router<Arc<ConferenceState>> 
         .route(
             "/internal/conferences/:room_number/participants/:pid/video/:state",
             post(internal_participant_video_handler),
+        )
+        .route(
+            "/internal/conferences/:room_number/video/content/stop",
+            post(internal_content_stop_handler),
+        )
+        .route(
+            "/internal/conferences/:room_number/video/content-layout",
+            put(internal_content_layout_handler),
         )
         .route_layer(middleware::from_fn_with_state(
             state,
@@ -618,6 +636,10 @@ struct CreateMeetingRequest {
     video_codecs: Vec<fcp_core::VideoCodec>,
     #[serde(default = "fcp_core::meeting::default_video_passthrough")]
     video_passthrough: String,
+    #[serde(default = "fcp_core::meeting::default_video_content_share")]
+    video_content_share: String,
+    #[serde(default = "fcp_core::meeting::default_video_content_layout")]
+    video_content_layout: String,
 }
 
 fn default_true() -> bool {
@@ -759,6 +781,8 @@ async fn create_meeting_handler(
         video_exclude_self: payload.video_exclude_self,
         video_codecs: payload.video_codecs,
         video_passthrough: payload.video_passthrough,
+        video_content_share: payload.video_content_share,
+        video_content_layout: payload.video_content_layout,
         created_at: now,
         updated_at: now,
     };
@@ -861,6 +885,8 @@ struct UpdateMeetingRequest {
     video_fps: Option<u32>,
     video_exclude_self: Option<bool>,
     video_codecs: Option<Vec<fcp_core::VideoCodec>>,
+    video_content_share: Option<String>,
+    video_content_layout: Option<String>,
 }
 
 async fn update_meeting_handler(
@@ -1016,6 +1042,14 @@ async fn update_meeting_handler(
     if let Some(v) = payload.video_codecs {
         meeting.video_codecs = v;
         changed_fields.push("video_codecs".to_string());
+    }
+    if let Some(v) = payload.video_content_share {
+        meeting.video_content_share = v;
+        changed_fields.push("video_content_share".to_string());
+    }
+    if let Some(v) = payload.video_content_layout {
+        meeting.video_content_layout = v;
+        changed_fields.push("video_content_layout".to_string());
     }
     if let Err(msg) = meeting.validate_video_settings() {
         return (
@@ -2224,6 +2258,12 @@ struct SetLayoutRequest {
     layout: String,
 }
 
+/// Body of `PUT …/video/content-layout`: `presentation` or `content_only`.
+#[derive(Debug, Deserialize)]
+struct SetContentLayoutRequest {
+    layout: String,
+}
+
 /// The status of a video control on this node. `NOT_FOUND` when the room
 /// or the participant is not here (the peers are asked next); a room here
 /// with no video yet is a `CONFLICT`, an unknown layout a `BAD_REQUEST`,
@@ -2234,6 +2274,8 @@ fn video_control_status(err: &crate::video_bridge::VideoControlError) -> StatusC
         NoSuchParticipant(_) => StatusCode::NOT_FOUND,
         NoVideo => StatusCode::CONFLICT,
         UnknownLayout(_) => StatusCode::BAD_REQUEST,
+        NoContent => StatusCode::CONFLICT,
+        UnknownContentLayout(_) => StatusCode::BAD_REQUEST,
     }
 }
 
@@ -2299,6 +2341,18 @@ fn local_participant_video(
 ) -> LocalResult {
     local_video_control(state, room_number, |room| {
         crate::video_bridge::set_participant_video(room, pid, enabled)
+    })
+}
+
+fn local_content_stop(state: &ConferenceState, room_number: &str) -> LocalResult {
+    local_video_control(state, room_number, |room| {
+        crate::video_bridge::stop_content(room)
+    })
+}
+
+fn local_content_layout(state: &ConferenceState, room_number: &str, layout: &str) -> LocalResult {
+    local_video_control(state, room_number, |room| {
+        crate::video_bridge::set_content_layout(room, layout)
     })
 }
 
@@ -2651,6 +2705,84 @@ async fn participant_video_handler(
     resp
 }
 
+/// POST /conferences/{room}/video/content/stop — a host ends the share
+/// under way (§15.6). Room-wide: whichever hosting node has the
+/// presenter applies it, the others answer that nobody is sharing there.
+async fn content_stop_handler(
+    State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
+    Path(room_number): Path<String>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    if !is_valid_identifier(&room_number) {
+        return invalid_identifier();
+    }
+    let tenant_id = match control_tenant(&state, &headers, &room_number).await {
+        Ok(tenant_id) => tenant_id,
+        Err(err) => return err,
+    };
+    let local = local_content_stop(&state, &room_number);
+    let local_status = local.as_ref().err().map(|(s, _)| *s);
+    let (ok, body) = room_wide(
+        &state,
+        &tenant_id,
+        &room_number,
+        local,
+        reqwest::Method::POST,
+        &format!("/conferences/{room_number}/video/content/stop"),
+        None,
+    )
+    .await;
+    if !ok {
+        let status = local_status.unwrap_or(StatusCode::NOT_FOUND);
+        return (status, Json(body));
+    }
+    info!(action = "content_stop", room = %room_number, participant = ?body["participant"].as_str(), node = ?body["node"].as_str(), "AUDIT: screen share stopped via API");
+    (StatusCode::OK, Json(body))
+}
+
+/// PUT /conferences/{room}/video/content-layout `{"layout": "presentation" | "content_only"}`
+/// — room-wide, like the layout.
+async fn content_layout_handler(
+    State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
+    Path(room_number): Path<String>,
+    Json(payload): Json<SetContentLayoutRequest>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    if !is_valid_identifier(&room_number) {
+        return invalid_identifier();
+    }
+    if forge_conference::video::ContentLayout::parse(&payload.layout).is_none() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": format!("Unknown content layout '{}' (one of presentation, content_only)", payload.layout)
+            })),
+        );
+    }
+    let tenant_id = match control_tenant(&state, &headers, &room_number).await {
+        Ok(tenant_id) => tenant_id,
+        Err(err) => return err,
+    };
+    let local = local_content_layout(&state, &room_number, &payload.layout);
+    let local_status = local.as_ref().err().map(|(s, _)| *s);
+    let (ok, body) = room_wide(
+        &state,
+        &tenant_id,
+        &room_number,
+        local,
+        reqwest::Method::PUT,
+        &format!("/conferences/{room_number}/video/content-layout"),
+        Some(serde_json::json!({ "layout": payload.layout })),
+    )
+    .await;
+    if !ok {
+        let status = local_status.unwrap_or(StatusCode::NOT_FOUND);
+        return (status, Json(body));
+    }
+    info!(action = "content_layout", room = %room_number, layout = %payload.layout, node = ?body["node"].as_str(), "AUDIT: content layout set via API");
+    (StatusCode::OK, Json(body))
+}
+
 // ----- /internal twins: the local step only, on behalf of a peer node -----
 
 fn forwarded_from(headers: &HeaderMap) -> String {
@@ -2898,6 +3030,37 @@ async fn internal_video_unspotlight_handler(
     let resp = local_response(local_video_spotlight(&state, &room_number, None));
     if resp.0 == StatusCode::OK {
         info!(action = "video_clear", room = %room_number, which = "spotlight", from = %forwarded_from(&headers), "AUDIT: video spotlight cleared on behalf of peer node");
+    }
+    resp
+}
+
+async fn internal_content_stop_handler(
+    State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
+    Path(room_number): Path<String>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    if !is_valid_identifier(&room_number) {
+        return invalid_identifier();
+    }
+    let resp = local_response(local_content_stop(&state, &room_number));
+    if resp.0 == StatusCode::OK {
+        info!(action = "content_stop", room = %room_number, from = %forwarded_from(&headers), "AUDIT: screen share stopped on behalf of peer node");
+    }
+    resp
+}
+
+async fn internal_content_layout_handler(
+    State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
+    Path(room_number): Path<String>,
+    Json(payload): Json<SetContentLayoutRequest>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    if !is_valid_identifier(&room_number) {
+        return invalid_identifier();
+    }
+    let resp = local_response(local_content_layout(&state, &room_number, &payload.layout));
+    if resp.0 == StatusCode::OK {
+        info!(action = "content_layout", room = %room_number, layout = %payload.layout, from = %forwarded_from(&headers), "AUDIT: content layout set on behalf of peer node");
     }
     resp
 }
