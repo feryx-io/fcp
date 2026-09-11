@@ -1432,6 +1432,27 @@ renegotiate. The recording needed no code. Not done here: a
 content-only device (slides, no camera) is answered but its content is
 priced like a camera's join; the gateway and the join page are 7c.
 
+**7c, the forge-media half, as built (2026-09-11, forge-media
+`v2026.09.11.1`: forge-rtp 0.7.0, forge-webrtc 0.7.0; FCP repointed at
+v0.25.125).** As planned, with the shape settled by the code rather than
+the table above: the extension walk lives on `RtpExtension`
+(`elements`, `element(id)`, `one_byte`, `two_byte`) and `to_bytes` now
+sets the X bit to match, which it never did; there is no list of video
+sections in `LocalParams` — `LocalVideo::content` and
+`Negotiated::content` are a second `Option` beside the camera, so a
+caller with one section reads exactly as before — and the content
+section's packets surface as their own `TransportEvent::ContentRtp`
+rather than a tag on `VideoRtp`, with `content_sender()` beside
+`video_sender()` and a third SSRC. Sorting is by the `sdes:mid`
+extension (offered as id 1 on every section, the answer mirroring the
+offer's id) with the SSRC remembered from the first packet that carries
+one, else the SSRC each side signalled, else the camera; `DemuxConfig`
+and `Transport::set_demux` replace `set_payload_map`. A peer without
+`content` rejects the section with a zero port. The gateway, the SIP
+`INFO`, the join page and `docs/WEBRTC.md` are the FCP half, still to
+come; until then the gateway drops a content packet it cannot yet
+receive.
+
 ## 16. Resolved questions
 
 Raised with the first draft and decided 2026-09-04, each as recommended.

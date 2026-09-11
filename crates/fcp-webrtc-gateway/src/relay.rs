@@ -286,7 +286,7 @@ pub async fn run_relay(
 
             event = browser.events.recv() => {
                 let Some(event) = event else { return RelayEnd::BrowserClosed };
-                if matches!(event, PeerEvent::Rtp(_) | PeerEvent::VideoRtp(_) | PeerEvent::Rtcp(_)) {
+                if matches!(event, PeerEvent::Rtp(_) | PeerEvent::VideoRtp(_) | PeerEvent::ContentRtp(_) | PeerEvent::Rtcp(_)) {
                     last_browser_activity = Instant::now();
                 }
                 match event {
@@ -322,6 +322,11 @@ pub async fn run_relay(
                                 Err(e) => trace!(error = %e, "video send to SIP failed"),
                             }
                         }
+                    }
+                    PeerEvent::ContentRtp(_) => {
+                        // A shared screen: the gateway does not offer the
+                        // section yet, so nothing should arrive on it.
+                        stats.dropped.fetch_add(1, Ordering::Relaxed);
                     }
                     PeerEvent::Rtcp(packets) => {
                         let (Some(video), Some(media)) = (&sip.video, sip_video_ssrc) else {
