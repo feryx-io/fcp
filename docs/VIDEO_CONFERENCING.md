@@ -282,6 +282,20 @@ Colour: everything internal is I420 (4:2:0, limited range, BT.709 for
 | PLI / FIR from a receiver | in | Keyframe from that subscriber's encoder (rate-limited); on the passthrough path, forwarded to the source |
 | NACK from a receiver | in | Retransmit from the flavor's cache (RTX-less, same SSRC, per RFC 4585); ignore if older than the cache |
 | REMB / transport-cc from a receiver | in | Subscriber's allowed bitrate; the flavor's encoder targets the **minimum** over its subscribers, and a subscriber far below the others is moved to a lower-resolution flavor (a bitrate ladder per resolution: e.g. 1080p 2.5 Mb/s, 720p 1.2 Mb/s, 360p 500 kb/s, 180p 200 kb/s) |
+
+*The ladder shipped in 6b (2026-09-08, forge-media `v2026.09.08.4`).* `forge_video::ladder` holds the
+rungs at or below a room's own size and the rule: below 70% of the
+current rung go down, above 120% of the next one up climb, and a link
+that has collapsed goes straight to the rung it can carry rather than
+walking down a step at a time. `VideoRoom` moves whoever has been asking
+long enough — five seconds down, fifteen up, since a picture nobody can
+decode is worse than a small one and climbing only to fall back is the
+worst of both. The move keeps the subscriber's SSRC, payload type and
+sequence, so it is a resolution change and a keyframe on the wire and
+nothing at all in signaling; the rung it left is released when it was the
+last one there. A subscriber on the passthrough fast path (§5.6) is
+skipped, having no encoder to move between. transport-cc is still not
+implemented: REMB is the only estimate.
 | Gap at our depacketizer | out | NACK to the source, then PLI if the frame is lost |
 | Our decoder errors | out | PLI to the source |
 | RR/SR | both | As today; jitter and loss feed the participant stats |
@@ -1073,6 +1087,16 @@ Decisions proposed with this plan, each open to reversal:
   campaign, and the corpus is committed. It catches the panic a
   malformed packet causes now; a real campaign belongs on hardware that
   is not paid for by the minute.
+**6b as built (2026-09-08).** As planned. Two things the plan left open,
+settled here: the thresholds are 70% down and 120% up with five- and
+fifteen-second windows (a `LadderPolicy` and two `Duration`s on the room,
+so they can be changed without a release), and a link that has collapsed
+skips straight to the rung it can carry rather than descending one rung
+per window. As decided, there is no `video_ladder_changed` event: the
+rung is in the participant JSON (`rung`, `rung_kbps`, beside the
+`remb_kbps` that explains it) and in
+`forge_conference_video_ladder_moves_total`.
+
 **6a as built (2026-09-08).** As planned, with one deviation: the plan
 said a forwarded subscriber would be priced at "neither encode nor
 decode", and it is priced at neither encode nor composite — the decode

@@ -111,6 +111,11 @@ pub fn participant_video_json(
         }
         if let Some(sub) = info.subscription {
             json["flavor"] = serde_json::json!(sub.flavor.to_string());
+            // The ladder rung this participant is on, and the rate it is
+            // encoded at, without a caller having to parse the flavor
+            // (§7). Below the room's own size means their link asked.
+            json["rung"] = serde_json::json!(sub.flavor.resolution.to_string());
+            json["rung_kbps"] = serde_json::json!(sub.flavor.max_kbps);
             json["ssrc"] = serde_json::json!(sub.ssrc);
             json["keyframes_sent"] = serde_json::json!(sub.keyframes_sent);
             json["frames_sent"] = serde_json::json!(sub.frames_sent);
