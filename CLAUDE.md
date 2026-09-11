@@ -647,6 +647,7 @@ cargo run -p siphond -- --mode registrar
 - **docs/VIDEO_CONFERENCING.md**: Video conferencing design (mixer core, codecs and licensing, layouts, capacity model, phases)
 - **docs/MULTI_REGION.md**: Read replicas, region-aware membership, cross-region event fan-out
 - **docs/WEBRTC.md**: Browsers through the WebRTC gateway — join flow, join tokens, gateway configuration, ports
+- **docs/GPU_BOX.md**: The GPU development box for video phase 8 — a Spot L4 on GCP under `deploy/gcp-gpu`, up and down per session
 - **Phase1 plan.md**: Detailed MVP implementation plan with sprint breakdowns
 - **IMPLEMENTATION_DOCS.md**: Index of implementation documentation for completed features
   - **Dial Node B2BUA**: Complete 4-phase implementation (outbound calls, response handling, media bridging)

@@ -1585,9 +1585,10 @@ blocking:
 - Fuzzing covers the RTP extension walk and the BFCP parser; the SDP
   attribute parsing of the new sections relies on sip-sdp's.
 
-Phase 8, the GPU backend, waits on a machine with a GPU (§9.4); until
-one is available the CPU pipeline, with its self-benchmark and budget,
-is what ships.
+Phase 8, the GPU backend, waits on a machine with a GPU (§9.4): the box
+is `deploy/gcp-gpu` (`docs/GPU_BOX.md`), an L4 on GCP rented by the
+session; until the phase is planned the CPU pipeline, with its
+self-benchmark and budget, is what ships.
 
 ## 16. Resolved questions
 

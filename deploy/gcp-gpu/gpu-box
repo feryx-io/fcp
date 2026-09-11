@@ -1,0 +1,67 @@
+#!/bin/bash
+# The GPU box, in one word each: up, down, status, ssh, sync, log.
+#
+#   deploy/gcp-gpu/gpu-box up       # create the VM (the disk stays as it was)
+#   deploy/gcp-gpu/gpu-box down     # destroy the VM, keep the disk
+#   deploy/gcp-gpu/gpu-box status   # is it running, what does it cost
+#   deploy/gcp-gpu/gpu-box ssh      # a shell on it, through IAP
+#   deploy/gcp-gpu/gpu-box sync     # rsync this checkout to ~/fcp on the box
+#   deploy/gcp-gpu/gpu-box log      # the setup log (driver, FFmpeg build)
+#
+# Needs: gcloud logged in, `gcloud auth application-default login` done
+# once for Terraform, and terraform on PATH.
+set -euo pipefail
+here="$(cd "$(dirname "$0")" && pwd)"
+repo="$(cd "$here/../.." && pwd)"
+cd "$here"
+name="$(terraform output -raw disk 2>/dev/null || echo fcp-gpu)"
+project="${GPU_BOX_PROJECT:-brayz-dev}"
+# Terraform's google provider wants application default credentials; a
+# plain `gcloud auth login` is enough when its token is handed over.
+if [ -z "${GOOGLE_APPLICATION_CREDENTIALS:-}" ] && [ ! -f "$HOME/.config/gcloud/application_default_credentials.json" ]; then
+  GOOGLE_OAUTH_ACCESS_TOKEN="$(gcloud auth print-access-token)"
+  export GOOGLE_OAUTH_ACCESS_TOKEN
+fi
+zone="$(terraform output -raw zone 2>/dev/null || echo us-central1-a)"
+
+case "${1:-}" in
+  up)
+    terraform init -input=false >/dev/null
+    terraform apply -input=false -auto-approve -var up=true
+    echo "waiting for the box to answer ssh"
+    for _ in $(seq 1 30); do
+      if gcloud compute ssh "$name" --project "$project" --zone "$zone" --tunnel-through-iap --quiet --command true >/dev/null 2>&1; then
+        break
+      fi
+      sleep 10
+    done
+    echo "up; setup continues on the box (gpu-box log to watch it)"
+    ;;
+  down)
+    terraform apply -input=false -auto-approve -var up=false
+    ;;
+  status)
+    gcloud compute instances describe "$name" --project "$project" --zone "$zone" \
+      --format="value(status,machineType.basename(),scheduling.provisioningModel,creationTimestamp)" 2>/dev/null \
+      || echo "down (disk kept: $name)"
+    ;;
+  ssh)
+    shift
+    gcloud compute ssh "$name" --project "$project" --zone "$zone" --tunnel-through-iap "$@"
+    ;;
+  sync)
+    # The working tree, submodules included, without build output.
+    rsync -az --delete \
+      --exclude target --exclude '.git/modules/*/objects' \
+      -e "gcloud compute ssh $name --project $project --zone $zone --tunnel-through-iap --quiet --" \
+      "$repo/" ":fcp/"
+    ;;
+  log)
+    gcloud compute ssh "$name" --project "$project" --zone "$zone" --tunnel-through-iap --quiet \
+      --command "sudo tail -n ${2:-40} -f /var/log/gpu-box-setup.log"
+    ;;
+  *)
+    sed -n '2,15p' "$0"
+    exit 1
+    ;;
+esac
