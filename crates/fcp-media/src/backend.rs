@@ -1530,7 +1530,7 @@ pub mod embedded {
         let sdp = match sip_sdp::SessionDescription::parse(remote_sdp) {
             Ok(offer) if !offer.media.is_empty() => {
                 let (sections, _video) =
-                    crate::sdp::answer_sections(&offer, |_| Ok(audio.clone()), None, None)?;
+                    crate::sdp::answer_sections(&offer, |_| Ok(audio.clone()), None, None, None)?;
                 crate::sdp::serialize_answer(
                     advertise_ip,
                     &session_info.forge_call_id.0,

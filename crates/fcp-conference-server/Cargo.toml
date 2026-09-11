@@ -47,6 +47,7 @@ fcp-cluster = { path = "../fcp-cluster", optional = true }
 
 # forge-media crates (conference engine)
 forge-conference = { path = "../../external/forge-media/crates/forge-conference" }
+forge-bfcp = { path = "../../external/forge-media/crates/forge-bfcp" }
 forge-engine = { path = "../../external/forge-media/crates/forge-engine" }
 forge-mixer = { path = "../../external/forge-media/crates/forge-mixer" }
 forge-core = { path = "../../external/forge-media/crates/forge-core" }
