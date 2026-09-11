@@ -504,6 +504,12 @@ pub enum RegistrationEvent {
     },
 }
 
+/// What a `video_overload` from a node that predates shedding did: the
+/// frame rate was the only thing it could give up.
+fn video_overload_fps() -> String {
+    "fps".to_string()
+}
+
 /// Conference-related events.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -543,12 +549,30 @@ pub enum ConferenceEvent {
         timestamp: SystemTime,
     },
 
-    /// The room's video compositor overran its budget three ticks in a
-    /// row and the frame rate was halved.
+    /// The room's video overran its frame budget three ticks in a row and
+    /// gave something up to keep up. `action` says what:
+    ///
+    /// - `shed`: one composite (`output`: `all`, `excluding:<id>` or
+    ///   `local-only`) dropped a rung of the bitrate ladder, from
+    ///   `from_resolution` to `to_resolution`, and everyone's frame rate
+    ///   was left alone — `from_fps` and `to_fps` are both the room's rate;
+    /// - `fps`: shedding had nothing left to give, every composite being at
+    ///   the bottom rung, and the room's frame rate was halved.
+    ///
+    /// An event from a node that predates shedding carries no `action` and
+    /// reads as `fps`, the only thing such a node could do.
     VideoOverload {
         room_number: String,
+        #[serde(default = "video_overload_fps")]
+        action: String,
         from_fps: u32,
         to_fps: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        output: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from_resolution: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        to_resolution: Option<String>,
         tenant_id: TenantId,
         #[serde(with = "system_time_serde")]
         timestamp: SystemTime,
