@@ -22,6 +22,20 @@ if ! command -v nvidia-smi >/dev/null 2>&1; then
 fi
 nvidia-smi --query-gpu=name,driver_version --format=csv,noheader || true
 
+# 1b. The CUDA toolkit, which Google's installer leaves out: nvcc and
+#     libnpp for FFmpeg's CUDA filters. The toolkit alone, never the
+#     `cuda` meta-package, which would pull a driver over Google's. 12.4
+#     is the newest the 550 driver runs.
+if [ ! -x /usr/local/cuda/bin/nvcc ]; then
+  echo "-- installing the CUDA toolkit"
+  curl -fsSL -o /tmp/cuda-keyring.deb \
+    https://developer.download.nvidia.com/compute/cuda/repos/debian12/x86_64/cuda-keyring_1.1-1_all.deb
+  dpkg -i /tmp/cuda-keyring.deb
+  apt-get update -q
+  apt-get install -y -q --no-install-recommends cuda-toolkit-12-4
+fi
+/usr/local/cuda/bin/nvcc --version | tail -1 || true
+
 # 2. What FCP and forge-media build with, plus what FFmpeg with NVENC
 #    needs. Idempotent: apt skips what is there.
 if [ ! -f /opt/gpu-box/.deps ]; then
@@ -41,12 +55,18 @@ if [ ! -x /opt/ffmpeg-nv/bin/ffmpeg ]; then
   echo "-- building FFmpeg with NVENC/NVDEC"
   export PATH=/usr/local/cuda/bin:$PATH
   rm -rf /opt/src && mkdir -p /opt/src && cd /opt/src
-  git clone --depth 1 https://git.videolan.org/git/ffmpeg/nv-codec-headers.git
+  # The headers' SDK must be one the driver speaks: the 550 driver has
+  # NVENC API 12.2, and the headers' main branch is already past it.
+  git clone --depth 1 --branch n12.2.72.0 \
+    https://git.videolan.org/git/ffmpeg/nv-codec-headers.git
   make -C nv-codec-headers install PREFIX=/usr/local
   git clone --depth 1 --branch n7.1 https://git.ffmpeg.org/ffmpeg.git
   cd ffmpeg
+  # The L4 is sm_89; FFmpeg's default nvcc flags target an arch CUDA
+  # 12 no longer builds for.
   ./configure --prefix=/opt/ffmpeg-nv --enable-shared --enable-gpl \
     --enable-nonfree --enable-cuda-nvcc --enable-libnpp \
+    --nvccflags="-gencode arch=compute_89,code=sm_89 -O2" \
     --enable-nvenc --enable-nvdec --enable-cuvid \
     --extra-cflags=-I/usr/local/cuda/include \
     --extra-ldflags=-L/usr/local/cuda/lib64 \

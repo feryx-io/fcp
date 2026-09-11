@@ -33,10 +33,16 @@ deploy/gcp-gpu/gpu-box down                      # destroy the VM, keep the disk
 deploy/gcp-gpu/gpu-box status
 ```
 
-The first boot of a fresh disk installs the NVIDIA driver and CUDA
-(Google's installer; it reboots once), the build dependencies, and
-FFmpeg 7.1 from source with `nvenc`, `nvdec`, `cuvid` and `libnpp` under
-`/opt/ffmpeg-nv` (the `nv-codec-headers` are MIT). `/etc/profile.d/
+The first boot of a fresh disk installs the NVIDIA driver (Google's
+installer; it reboots once), the CUDA 12.4 toolkit from NVIDIA's apt
+repository (the toolkit only, never the `cuda` meta-package, which would
+replace the driver), the build dependencies, and FFmpeg 7.1 from source
+with `nvenc`, `nvdec`, `cuvid`, `scale_cuda` and `libnpp` under
+`/opt/ffmpeg-nv`. The `nv-codec-headers` (MIT) are pinned to the NVENC
+SDK the 550 driver speaks, 12.2; a newer driver could take newer
+headers. Proven 2026-09-11: `h264_nvenc`, `hevc_nvenc` and `av1_nvenc`
+each encode 720p30 at about 170 fps on synthetic input, and a CUVID
+decode feeds `scale_cuda` without leaving the device. `/etc/profile.d/
 gpu-box.sh` puts it on `PATH`, `PKG_CONFIG_PATH` and
 `LD_LIBRARY_PATH`. Rust is per user: `curl https://sh.rustup.rs -sSf | sh`
 on the box, once, on the disk. Every later boot skips what is there.
