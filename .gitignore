@@ -37,3 +37,9 @@ target-review-final/
 .codex
 sngrep.txt
 __pycache__/
+
+# Terraform (deploy/gcp-gpu): state and providers stay local
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
