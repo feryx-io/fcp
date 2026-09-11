@@ -855,6 +855,9 @@ pub struct AnswerOptions<'a> {
     /// How to answer a shared screen's section (`a=content:slides`), on
     /// its own port with its own key; `None` rejects it.
     pub content: Option<VideoAnswer<'a>>,
+    /// How to answer a BFCP section (RFC 8856), as the floor control
+    /// server; `None` rejects it.
+    pub bfcp: Option<BfcpAnswer<'a>>,
 }
 
 /// What the video section of an answer agreed on.
@@ -882,6 +885,8 @@ pub struct Answer {
     pub video: Option<NegotiatedVideo>,
     /// `Some` when a shared screen's section was accepted.
     pub content: Option<NegotiatedVideo>,
+    /// `Some` when a BFCP section was answered (RFC 8856).
+    pub bfcp: Option<NegotiatedBfcp>,
 }
 
 /// The protocol to answer with: secure when we have SRTP, feedback (`…F`)
@@ -1010,6 +1015,169 @@ fn video_answer_section(
 pub struct NegotiatedSections {
     pub video: Option<NegotiatedVideo>,
     pub content: Option<NegotiatedVideo>,
+    pub bfcp: Option<NegotiatedBfcp>,
+}
+
+// ── BFCP (RFC 8856) ──────────────────────────────────────────────────────
+
+/// What a BFCP section rides on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BfcpTransport {
+    /// `UDP/BFCP`: one message per datagram, version 2.
+    Udp,
+    /// `TCP/BFCP`: the client connects to the server, version 1.
+    Tcp,
+}
+
+impl BfcpTransport {
+    pub fn proto(self) -> &'static str {
+        match self {
+            BfcpTransport::Udp => "UDP/BFCP",
+            BfcpTransport::Tcp => "TCP/BFCP",
+        }
+    }
+
+    /// The `a=bfcpver` the transport implies (RFC 8856 §5.5).
+    pub fn version(self) -> u8 {
+        match self {
+            BfcpTransport::Udp => 2,
+            BfcpTransport::Tcp => 1,
+        }
+    }
+
+    fn of(protocol: &Protocol) -> Option<BfcpTransport> {
+        match protocol {
+            Protocol::Other(p) if p.eq_ignore_ascii_case("UDP/BFCP") => Some(BfcpTransport::Udp),
+            Protocol::Other(p) if p.eq_ignore_ascii_case("TCP/BFCP") => Some(BfcpTransport::Tcp),
+            _ => None,
+        }
+    }
+}
+
+/// A BFCP section an endpoint offered (RFC 8856): the first active
+/// `m=application … UDP/BFCP` or `TCP/BFCP`. TLS and DTLS variants are
+/// not taken (they are rejected with port 0 like any other section).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BfcpOffer {
+    pub transport: BfcpTransport,
+    pub port: u16,
+    pub remote: Option<SocketAddr>,
+    /// The roles the offerer is willing to take (`a=floorctrl`), as
+    /// offered; empty means the RFC's default, client only.
+    pub floorctrl: Vec<String>,
+    /// `a=setup` on a TCP section; the offerer's default is `active`.
+    pub setup: Option<String>,
+    /// The versions offered (`a=bfcpver`).
+    pub versions: Vec<u8>,
+}
+
+impl BfcpOffer {
+    /// Whether this server can answer it: the offerer is willing to be
+    /// the client (it offered `c-only` or `c-s`, or nothing), and over
+    /// TCP it will connect to us (`active` or `actpass`).
+    pub fn answerable(&self) -> bool {
+        let client_ok =
+            self.floorctrl.is_empty() || self.floorctrl.iter().any(|f| f == "c-only" || f == "c-s");
+        let setup_ok = match self.transport {
+            BfcpTransport::Udp => true,
+            BfcpTransport::Tcp => matches!(
+                self.setup.as_deref().unwrap_or("active"),
+                "active" | "actpass"
+            ),
+        };
+        let version_ok =
+            self.versions.is_empty() || self.versions.contains(&self.transport.version());
+        client_ok && setup_ok && version_ok
+    }
+}
+
+fn attr_value<'a>(m: &'a MediaDescription, name: &str) -> Option<&'a str> {
+    m.attributes.iter().find_map(|a| match a {
+        Attribute::Value { name: n, value } if n == name => Some(value.as_str()),
+        _ => None,
+    })
+}
+
+fn bfcp_offer_of(sdp: &SessionDescription, m: &MediaDescription) -> Option<BfcpOffer> {
+    if m.media_type != MediaType::Application || m.port == 0 {
+        return None;
+    }
+    let transport = BfcpTransport::of(&m.protocol)?;
+    Some(BfcpOffer {
+        transport,
+        port: m.port,
+        remote: section_endpoint(sdp, m),
+        floorctrl: attr_value(m, "floorctrl")
+            .map(|v| v.split_whitespace().map(str::to_string).collect())
+            .unwrap_or_default(),
+        setup: attr_value(m, "setup").map(str::to_string),
+        versions: attr_value(m, "bfcpver")
+            .map(|v| {
+                v.split_whitespace()
+                    .filter_map(|t| t.parse().ok())
+                    .collect()
+            })
+            .unwrap_or_default(),
+    })
+}
+
+/// The BFCP section of an offer, if it has one this server could take.
+pub fn parse_bfcp_offer(sdp_body: &str) -> Option<BfcpOffer> {
+    let sdp = SessionDescription::parse(sdp_body).ok()?;
+    sdp.media.iter().find_map(|m| bfcp_offer_of(&sdp, m))
+}
+
+/// How to answer a BFCP section: this server is the floor control server
+/// (`a=floorctrl:s-only`) and assigns the ids the client will use.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BfcpAnswer<'a> {
+    /// Our port, for either transport (the same socket serves both).
+    pub port: u16,
+    pub conference_id: u32,
+    pub user_id: u16,
+    pub floor_id: u16,
+    /// The `a=label` of the content section the floor controls
+    /// (`a=floorid:<floor> mstrm:<label>`).
+    pub label: &'a str,
+}
+
+/// What a BFCP section of an answer agreed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NegotiatedBfcp {
+    pub transport: BfcpTransport,
+    pub conference_id: u32,
+    pub user_id: u16,
+    pub floor_id: u16,
+    /// Where the client's messages come from over UDP, as offered.
+    pub remote: Option<SocketAddr>,
+}
+
+fn bfcp_answer_section(
+    m: &MediaDescription,
+    offer: &BfcpOffer,
+    b: &BfcpAnswer<'_>,
+) -> MediaDescription {
+    let mut sec = reject_section(m);
+    sec.port = b.port;
+    let mut attrs = vec![
+        ("floorctrl", "s-only".to_string()),
+        ("confid", b.conference_id.to_string()),
+        ("userid", b.user_id.to_string()),
+        ("floorid", format!("{} mstrm:{}", b.floor_id, b.label)),
+        ("bfcpver", offer.transport.version().to_string()),
+    ];
+    if offer.transport == BfcpTransport::Tcp {
+        // The client connects to us (RFC 4145).
+        attrs.push(("setup", "passive".to_string()));
+        attrs.push(("connection", "new".to_string()));
+    }
+    for (name, value) in attrs {
+        sec.attributes.push(Attribute::Value {
+            name: name.into(),
+            value: value.into(),
+        });
+    }
+    sec
 }
 
 /// One answer section per offered section, in order (RFC 3264 §6): the
@@ -1022,14 +1190,35 @@ pub fn answer_sections(
     mut audio: impl FnMut(&MediaDescription) -> Result<MediaDescription>,
     video: Option<&VideoAnswer<'_>>,
     content: Option<&VideoAnswer<'_>>,
+    bfcp: Option<&BfcpAnswer<'_>>,
 ) -> Result<(Vec<MediaDescription>, NegotiatedSections)> {
     let mut sections = Vec::with_capacity(offer.media.len());
     let mut audio_done = false;
     let mut camera_done = false;
     let mut content_done = false;
+    let mut bfcp_done = false;
     let mut negotiated = NegotiatedSections::default();
     for m in &offer.media {
         let section = match m.media_type {
+            // The floor control section (RFC 8856), answered as the
+            // server when asked to and the offer lets us be one.
+            MediaType::Application if !bfcp_done && bfcp_offer_of(offer, m).is_some() => {
+                bfcp_done = true;
+                let offered = bfcp_offer_of(offer, m).expect("checked");
+                match bfcp {
+                    Some(b) if offered.answerable() => {
+                        negotiated.bfcp = Some(NegotiatedBfcp {
+                            transport: offered.transport,
+                            conference_id: b.conference_id,
+                            user_id: b.user_id,
+                            floor_id: b.floor_id,
+                            remote: offered.remote,
+                        });
+                        bfcp_answer_section(m, &offered, b)
+                    }
+                    _ => reject_section(m),
+                }
+            }
             MediaType::Audio if !audio_done && m.port != 0 => {
                 audio_done = true;
                 audio(m)?
@@ -1099,12 +1288,14 @@ pub fn construct_answer(offer: &str, opts: &AnswerOptions<'_>) -> Result<Answer>
         |m| audio_answer_section(m, opts),
         opts.video.as_ref(),
         opts.content.as_ref(),
+        opts.bfcp.as_ref(),
     )?;
     let sdp = serialize_answer(opts.server_ip, "0", "FCP Media Server", sections)?;
     Ok(Answer {
         sdp,
         video: negotiated.video,
         content: negotiated.content,
+        bfcp: negotiated.bfcp,
     })
 }
 
@@ -1134,6 +1325,7 @@ pub fn construct_answer_for_a_leg(
         audio_srtp: srtp,
         video: None,
         content: None,
+        bfcp: None,
     };
     match construct_answer(a_leg_offer, &opts) {
         Ok(a) => a.sdp,
@@ -2312,6 +2504,7 @@ mod section_tests {
                 srtp: None,
             }),
             content: None,
+            bfcp: None,
         };
         let answer = construct_answer(AV_OFFER, &opts).unwrap();
         let m = sections(&answer.sdp);
@@ -2352,6 +2545,7 @@ mod section_tests {
                 srtp: None,
             }),
             content: None,
+            bfcp: None,
         };
         let answer = construct_answer(AV_OFFER, &opts).unwrap();
         assert_eq!(sections(&answer.sdp)[1], "m=video 0 RTP/AVPF 96 97");
@@ -2407,6 +2601,7 @@ a=crypto:2 AES_CM_128_HMAC_SHA1_32 inline:videokeyvideokeyvideokeyvideokeyvideo\
                 srtp: Some(&video_ctx),
             }),
             content: None,
+            bfcp: None,
         };
         let answer = construct_answer(AV_OFFER, &opts).unwrap().sdp;
         let m = sections(&answer);
@@ -2425,6 +2620,185 @@ a=crypto:2 AES_CM_128_HMAC_SHA1_32 inline:videokeyvideokeyvideokeyvideokeyvideo\
         let audio_part = &answer[answer.find("m=audio").unwrap()..answer.find("m=video").unwrap()];
         assert!(audio_part.contains("a=recvonly"), "{answer}");
         assert!(!audio_part.contains("a=sendrecv"));
+    }
+
+    /// A Cisco-shaped room system: UDP/BFCP, `c-only`, the content
+    /// section labelled, and a Poly-shaped one over TCP with `actpass`.
+    fn room_system_offer(bfcp_line: &str, extra: &str) -> String {
+        format!(
+            "v=0\r\no=- 1 1 IN IP4 10.1.1.1\r\ns=-\r\nc=IN IP4 10.1.1.1\r\nt=0 0\r\n\
+             m=audio 4000 RTP/AVP 0\r\n\
+             m=video 4002 RTP/AVP 96\r\na=rtpmap:96 VP8/90000\r\na=label:11\r\n\
+             m=video 4004 RTP/AVP 96\r\na=rtpmap:96 VP8/90000\r\na=content:slides\r\na=label:12\r\n\
+             {bfcp_line}\r\na=floorctrl:c-only\r\n{extra}"
+        )
+    }
+
+    #[test]
+    fn a_bfcp_section_is_answered_as_the_floor_control_server() {
+        let offer = room_system_offer("m=application 5070 UDP/BFCP *", "a=bfcpver:2\r\n");
+        let parsed = parse_bfcp_offer(&offer).expect("a BFCP section");
+        assert_eq!(parsed.transport, BfcpTransport::Udp);
+        assert_eq!(parsed.port, 5070);
+        assert_eq!(parsed.remote, "10.1.1.1:5070".parse().ok());
+        assert_eq!(parsed.floorctrl, vec!["c-only"]);
+        assert_eq!(parsed.versions, vec![2]);
+        assert!(parsed.answerable());
+        let codecs = [VideoCodec::VP8];
+        let answer = construct_answer(
+            &offer,
+            &AnswerOptions {
+                server_ip: "10.0.0.5",
+                audio_rtp_port: 20000,
+                audio_srtp: None,
+                video: Some(VideoAnswer {
+                    rtp_port: 20002,
+                    codecs: &codecs,
+                    srtp: None,
+                }),
+                content: Some(VideoAnswer {
+                    rtp_port: 20004,
+                    codecs: &codecs,
+                    srtp: None,
+                }),
+                bfcp: Some(BfcpAnswer {
+                    port: 5060,
+                    conference_id: 4321,
+                    user_id: 7,
+                    floor_id: 1,
+                    label: "12",
+                }),
+            },
+        )
+        .unwrap();
+        let m = sections(&answer.sdp);
+        assert_eq!(m[3], "m=application 5060 UDP/BFCP *");
+        let bfcp = &answer.sdp[answer.sdp.find("m=application").unwrap()..];
+        for line in [
+            "a=floorctrl:s-only",
+            "a=confid:4321",
+            "a=userid:7",
+            "a=floorid:1 mstrm:12",
+            "a=bfcpver:2",
+        ] {
+            assert!(bfcp.contains(&format!("{line}\r\n")), "{line} in {bfcp}");
+        }
+        assert!(!bfcp.contains("a=setup"), "UDP has no setup");
+        let negotiated = answer.bfcp.expect("negotiated");
+        assert_eq!(negotiated.transport, BfcpTransport::Udp);
+        assert_eq!(
+            (
+                negotiated.conference_id,
+                negotiated.user_id,
+                negotiated.floor_id
+            ),
+            (4321, 7, 1)
+        );
+        assert_eq!(negotiated.remote, "10.1.1.1:5070".parse().ok());
+        // The content section went through beside it.
+        assert_eq!(
+            answer
+                .content
+                .as_ref()
+                .and_then(|c| c.label.clone())
+                .as_deref(),
+            Some("12")
+        );
+
+        // Poly-shaped: TCP, actpass. We are passive and the client connects.
+        let offer = room_system_offer(
+            "m=application 5070 TCP/BFCP *",
+            "a=setup:actpass\r\na=connection:new\r\na=bfcpver:1\r\n",
+        );
+        let parsed = parse_bfcp_offer(&offer).unwrap();
+        assert_eq!(parsed.transport, BfcpTransport::Tcp);
+        assert_eq!(parsed.setup.as_deref(), Some("actpass"));
+        assert!(parsed.answerable());
+        let answer = construct_answer(
+            &offer,
+            &AnswerOptions {
+                server_ip: "10.0.0.5",
+                audio_rtp_port: 20000,
+                audio_srtp: None,
+                video: Some(VideoAnswer {
+                    rtp_port: 20002,
+                    codecs: &codecs,
+                    srtp: None,
+                }),
+                content: Some(VideoAnswer {
+                    rtp_port: 20004,
+                    codecs: &codecs,
+                    srtp: None,
+                }),
+                bfcp: Some(BfcpAnswer {
+                    port: 5060,
+                    conference_id: 1,
+                    user_id: 2,
+                    floor_id: 1,
+                    label: "12",
+                }),
+            },
+        )
+        .unwrap();
+        let bfcp = &answer.sdp[answer.sdp.find("m=application").unwrap()..];
+        assert!(bfcp.starts_with("m=application 5060 TCP/BFCP *\r\n"));
+        assert!(bfcp.contains("a=setup:passive\r\n"));
+        assert!(bfcp.contains("a=connection:new\r\n"));
+        assert!(bfcp.contains("a=bfcpver:1\r\n"));
+        assert_eq!(answer.bfcp.unwrap().transport, BfcpTransport::Tcp);
+    }
+
+    #[test]
+    fn a_bfcp_section_is_rejected_when_it_cannot_be_served() {
+        let codecs = [VideoCodec::VP8];
+        let opts = |bfcp| AnswerOptions {
+            server_ip: "10.0.0.5",
+            audio_rtp_port: 20000,
+            audio_srtp: None,
+            video: Some(VideoAnswer {
+                rtp_port: 20002,
+                codecs: &codecs,
+                srtp: None,
+            }),
+            content: Some(VideoAnswer {
+                rtp_port: 20004,
+                codecs: &codecs,
+                srtp: None,
+            }),
+            bfcp,
+        };
+        let serve = BfcpAnswer {
+            port: 5060,
+            conference_id: 1,
+            user_id: 2,
+            floor_id: 1,
+            label: "12",
+        };
+        // Nobody listening: port 0.
+        let offer = room_system_offer("m=application 5070 UDP/BFCP *", "");
+        let answer = construct_answer(&offer, &opts(None)).unwrap();
+        assert_eq!(sections(&answer.sdp)[3], "m=application 0 UDP/BFCP *");
+        assert!(answer.bfcp.is_none());
+        // The offerer will only be the server: nothing for us to be.
+        let offer =
+            room_system_offer("m=application 5070 UDP/BFCP *", "").replace("c-only", "s-only");
+        assert!(!parse_bfcp_offer(&offer).unwrap().answerable());
+        let answer = construct_answer(&offer, &opts(Some(serve.clone()))).unwrap();
+        assert_eq!(sections(&answer.sdp)[3], "m=application 0 UDP/BFCP *");
+        // TCP where the offerer expects us to connect.
+        let offer = room_system_offer("m=application 5070 TCP/BFCP *", "a=setup:passive\r\n");
+        assert!(!parse_bfcp_offer(&offer).unwrap().answerable());
+        // TLS: not spoken here.
+        let offer = room_system_offer("m=application 5070 UDP/TLS/BFCP *", "");
+        assert!(parse_bfcp_offer(&offer).is_none());
+        let answer = construct_answer(&offer, &opts(Some(serve.clone()))).unwrap();
+        assert_eq!(sections(&answer.sdp)[3], "m=application 0 UDP/TLS/BFCP *");
+        // A version we do not speak on that transport.
+        let offer = room_system_offer("m=application 5070 UDP/BFCP *", "a=bfcpver:1\r\n");
+        assert!(!parse_bfcp_offer(&offer).unwrap().answerable());
+        // `c-s` offered: the offerer will be the client if we are the server.
+        let offer = room_system_offer("m=application 5070 UDP/BFCP *", "").replace("c-only", "c-s");
+        assert!(parse_bfcp_offer(&offer).unwrap().answerable());
     }
 
     #[test]

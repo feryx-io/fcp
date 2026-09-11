@@ -682,6 +682,14 @@ pub struct ConferenceSection {
     #[serde(default = "default_content_idle_secs")]
     pub content_idle_secs: u64,
 
+    /// Where BFCP (RFC 8855) floor control for SIP room systems listens,
+    /// UDP and TCP on the same address (design §15.6, 7e): a caller whose
+    /// offer carries `m=application … UDP/BFCP` or `TCP/BFCP` beside an
+    /// `a=content:slides` section is answered as its floor control server
+    /// here. Unset, such sections are rejected and the floor is implicit.
+    #[serde(default)]
+    pub bfcp_bind: Option<std::net::SocketAddr>,
+
     /// Directory for pre-recorded announcement WAV files.
     #[serde(default = "default_announcements_dir")]
     pub announcements_dir: String,
@@ -926,6 +934,7 @@ impl Default for ConferenceSection {
             video_benchmark_seconds: default_video_benchmark_seconds(),
             video_budget_headroom: default_video_budget_headroom(),
             content_idle_secs: default_content_idle_secs(),
+            bfcp_bind: None,
             announcements_dir: default_announcements_dir(),
             max_wait_for_moderator_secs: default_max_wait_for_moderator_secs(),
             moh_announcement_interval_secs: default_moh_announcement_interval_secs(),

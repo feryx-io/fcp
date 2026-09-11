@@ -44,6 +44,7 @@ use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
 use crate::audio_bridge::{self, AudioStats};
+use crate::bfcp::{BfcpAssignment, Floors};
 use crate::config::{AiSection, ConferenceSection};
 use crate::trunks::{self, TRUNK_NODE_HEADER, TRUNK_TENANT_HEADER};
 use futures::StreamExt;
@@ -138,6 +139,9 @@ pub struct ParticipantSession {
     /// Admitted by a join token (`X-FCP-Join`): a browser through the
     /// WebRTC gateway, which understands the floor `INFO` (§15.6, 7c).
     pub joined_by_token: bool,
+    /// The BFCP ids the answer gave a room system that offered floor
+    /// control (§15.6, 7e).
+    pub bfcp: Option<BfcpAssignment>,
 }
 
 /// Sink for "this node now has N local participants in room R" updates,
@@ -222,6 +226,8 @@ pub struct ConferenceCallHandler {
     video_capacity: Option<Arc<crate::video_capacity::VideoCapacity>>,
     /// Rooms whose video events are being forwarded to the bus.
     video_event_pumps: Arc<DashMap<String, ()>>,
+    /// BFCP floor control for the room systems that speak it (§15.6, 7e).
+    bfcp: Arc<Floors>,
     /// When each peer's speaker claim last arrived, by `room|node`. A
     /// claim that stops being refreshed is dropped rather than left
     /// holding the floor for a node that has gone quiet (§15.4, 5c).
@@ -676,6 +682,7 @@ impl ConferenceCallHandler {
             video_backend: None,
             video_capacity: None,
             video_event_pumps: Arc::new(DashMap::new()),
+            bfcp: Arc::new(Floors::new()),
             speaker_claims: DashMap::new(),
             content_claims: DashMap::new(),
             pending_pin_auth: DashMap::new(),
@@ -693,6 +700,12 @@ impl ConferenceCallHandler {
     /// refused, and the budget is re-priced from the rooms periodically.
     pub fn set_video_capacity(&mut self, capacity: Arc<crate::video_capacity::VideoCapacity>) {
         self.video_capacity = Some(capacity);
+    }
+
+    /// The floor control every room's BFCP endpoints share, for the
+    /// sockets `main` serves it on.
+    pub fn bfcp(&self) -> Arc<Floors> {
+        Arc::clone(&self.bfcp)
     }
 
     pub fn video_capacity(&self) -> Option<&Arc<crate::video_capacity::VideoCapacity>> {
@@ -1118,6 +1131,12 @@ impl ConferenceCallHandler {
                             session.video.as_ref(),
                             session.content.as_ref(),
                         );
+                        if let Some(a) = &session.bfcp {
+                            p["bfcp"] = self
+                                .bfcp
+                                .participant_json(room_number, a.user_id)
+                                .unwrap_or(serde_json::Value::Null);
+                        }
                     }
                     None => {
                         p["video"] =
@@ -2532,6 +2551,7 @@ impl ConferenceCallHandler {
                 video: None,
                 content: None,
                 joined_by_token: false,
+                bfcp: None,
             },
         );
 
@@ -3039,6 +3059,11 @@ impl ConferenceCallHandler {
                 "Participant left conference"
             );
 
+            // A BFCP endpoint's ids, and the floor it held, go with it (7e).
+            if let Some(a) = &session.bfcp {
+                self.bfcp.leave(&session.room_number, a.user_id);
+            }
+
             // Abort the audio bridge task and validate it actually stops
             session.audio_bridge_handle.abort();
             let abort_handle = session.audio_bridge_handle;
@@ -3268,6 +3293,7 @@ impl ConferenceCallHandler {
         audio_srtp: Option<&SrtpSdpContext>,
         video: Option<VideoAnswer<'_>>,
         content: Option<VideoAnswer<'_>>,
+        bfcp: Option<fcp_media::BfcpAnswer<'_>>,
     ) -> fcp_media::Answer {
         match construct_answer(
             offer,
@@ -3277,6 +3303,7 @@ impl ConferenceCallHandler {
                 audio_srtp,
                 video,
                 content,
+                bfcp,
             },
         ) {
             Ok(answer) => answer,
@@ -3291,9 +3318,29 @@ impl ConferenceCallHandler {
                     ),
                     video: None,
                     content: None,
+                    bfcp: None,
                 }
             }
         }
+    }
+
+    /// The BFCP answer that repeats a session's assignment on a re-INVITE
+    /// or UPDATE, when the offer still carries a labelled content section
+    /// and this node still listens.
+    fn bfcp_answer_for<'a>(
+        &self,
+        session: &ParticipantSession,
+        label: Option<&'a str>,
+    ) -> Option<fcp_media::BfcpAnswer<'a>> {
+        let a = session.bfcp.as_ref()?;
+        let bind = self.conference_config.read().bfcp_bind?;
+        Some(fcp_media::BfcpAnswer {
+            port: bind.port(),
+            conference_id: a.conference_id,
+            user_id: a.user_id,
+            floor_id: a.floor_id,
+            label: label?,
+        })
     }
 
     /// Give a port pair back once whatever used it has had a moment to stop.
@@ -3345,6 +3392,12 @@ impl ConferenceCallHandler {
             return None;
         };
         let sink = self.video_event_sink(tenant_id, room_number);
+        // A BFCP endpoint's floor is explicit (7e): its policy is noted,
+        // and its implicit sending switched off, whichever way it goes.
+        if leg.kind == StreamKind::Content {
+            self.bfcp
+                .set_may_share(room_number, participant_id, may_share);
+        }
         let fut = match leg.kind {
             StreamKind::Camera => {
                 video_bridge::attach_video(room, backend, participant_id, display_name, &leg, sink)
@@ -3459,10 +3512,10 @@ impl ConferenceCallHandler {
         };
         let probe = match kind {
             StreamKind::Camera => {
-                self.build_answer(sdp_offer, pair.rtp_port, None, Some(answer), None)
+                self.build_answer(sdp_offer, pair.rtp_port, None, Some(answer), None, None)
             }
             StreamKind::Content => {
-                self.build_answer(sdp_offer, pair.rtp_port, None, None, Some(answer))
+                self.build_answer(sdp_offer, pair.rtp_port, None, None, Some(answer), None)
             }
         };
         let negotiated = match kind {
@@ -4482,6 +4535,7 @@ impl ConferenceCallHandler {
                     codecs: &trunk_codecs,
                     srtp: content_answer_srtp.as_ref().map(|(_, sdp)| sdp),
                 }),
+                None,
             ),
             _ => fcp_media::Answer {
                 sdp: construct_answer_for_a_leg(
@@ -4492,6 +4546,7 @@ impl ConferenceCallHandler {
                 ),
                 video: None,
                 content: None,
+                bfcp: None,
             },
         };
         let sdp_answer = answer.sdp;
@@ -4765,6 +4820,7 @@ impl ConferenceCallHandler {
                 video,
                 content,
                 joined_by_token: false,
+                bfcp: None,
             },
         );
         info!(
@@ -5263,6 +5319,35 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             .as_ref()
             .map(|(_, c)| c.clone())
             .unwrap_or_default();
+        // BFCP (§15.6, 7e): a room system's floor control section is
+        // answered beside its content section — the floor names the
+        // section by its label — when this node listens for it. The ids
+        // are reserved now and bound to the participant once admitted.
+        let content_label = offered_sections
+            .content
+            .as_ref()
+            .and_then(|c| c.label.clone());
+        let bfcp_offer = conf.bfcp_bind.and_then(|bind| {
+            fcp_media::parse_bfcp_offer(sdp_offer)
+                .filter(|o| o.answerable())
+                .map(|o| (bind, o))
+        });
+        let mut bfcp_assignment = match (&bfcp_offer, content_pair.is_some(), &content_label) {
+            (Some((_, offer)), true, Some(_)) => {
+                Some(self.bfcp.reserve(&room_number, offer.transport))
+            }
+            _ => None,
+        };
+        let bfcp_answer = match (&bfcp_assignment, &bfcp_offer, &content_label) {
+            (Some(a), Some((bind, _)), Some(label)) => Some(fcp_media::BfcpAnswer {
+                port: bind.port(),
+                conference_id: a.conference_id,
+                user_id: a.user_id,
+                floor_id: a.floor_id,
+                label,
+            }),
+            _ => None,
+        };
         let answer = self.build_answer(
             sdp_offer,
             port_pair.rtp_port,
@@ -5277,8 +5362,14 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 codecs: &video_codecs,
                 srtp: content_srtp_sdp.as_ref(),
             }),
+            bfcp_answer,
         );
         let sdp_answer = answer.sdp;
+        if answer.bfcp.is_none() {
+            if let Some(a) = bfcp_assignment.take() {
+                self.bfcp.leave(&room_number, a.user_id);
+            }
+        }
         let mut negotiated_video = answer.video;
         if negotiated_video.is_none() {
             self.release_video_port(&mut video_pair);
@@ -6248,6 +6339,10 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 .entry(room_number.clone())
                 .or_default()
                 .push(call_id.clone());
+            if let Some(a) = &bfcp_assignment {
+                self.bfcp
+                    .bind(&room_number, a.user_id, &room, &participant_id);
+            }
             self.sessions.insert(
                 call_id.clone(),
                 ParticipantSession {
@@ -6274,6 +6369,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                     video: pending_video.take(),
                     content: pending_content.take(),
                     joined_by_token: join.is_some(),
+                    bfcp: bfcp_assignment.clone(),
                 },
             );
 
@@ -6528,6 +6624,10 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             // Told after the insert below has made the session findable.
             self.tell_floor_on_join(&call_id, &room_number);
         }
+        if let Some(a) = &bfcp_assignment {
+            self.bfcp
+                .bind(&room_number, a.user_id, &room, &participant_id);
+        }
         self.sessions.insert(
             call_id.clone(),
             ParticipantSession {
@@ -6554,6 +6654,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 video,
                 content,
                 joined_by_token: join.is_some(),
+                bfcp: bfcp_assignment.clone(),
             },
         );
 
@@ -6890,7 +6991,12 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         // Refresh session timer (re-INVITE counts as a session refresh per RFC 4028)
         session.last_refreshed = Instant::now();
 
-        // Construct SDP answer with current local RTP ports
+        // Construct SDP answer with current local RTP ports; a BFCP
+        // endpoint keeps the ids it was given (7e).
+        let bfcp_label = fcp_media::parse_video_sections(sdp_offer)
+            .content
+            .and_then(|c| c.label);
+        let bfcp_answer = self.bfcp_answer_for(&session, bfcp_label.as_deref());
         let answer = self.build_answer(
             sdp_offer,
             session.port_pair.rtp_port,
@@ -6905,6 +7011,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 codecs: &content_codec,
                 srtp: content_srtp_sdp.as_ref(),
             }),
+            bfcp_answer,
         );
         if session.video.is_some() && answer.video.is_none() {
             info!(call_id = %call_id, "re-INVITE: the video codec is no longer offered; video removed");
@@ -7044,6 +7151,10 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 .as_ref()
                 .map(|leg| vec![leg.negotiated.codec])
                 .unwrap_or_default();
+            let bfcp_label = fcp_media::parse_video_sections(sdp_offer)
+                .content
+                .and_then(|c| c.label);
+            let bfcp_answer = self.bfcp_answer_for(&session, bfcp_label.as_deref());
             let sdp_answer = self
                 .build_answer(
                     sdp_offer,
@@ -7059,6 +7170,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                         codecs: &content_codec,
                         srtp: None,
                     }),
+                    bfcp_answer,
                 )
                 .sdp;
             uas.create_ok(request, Some(&sdp_answer))
@@ -7723,6 +7835,15 @@ pub fn create_codec_instance(codec_name: &str) -> Result<Box<dyn AudioCodec>> {
 
 impl FloorNotifier for ConferenceCallHandler {
     fn floor_changed(&self, room_number: &str, mut notice: FloorNotice) {
+        // A BFCP endpoint hears the room taking the floor from it as a
+        // `Revoked` (§15.6, 7e); the rest is the gateway sessions'.
+        if notice.floor == "released" {
+            self.bfcp.floor_released(
+                room_number,
+                &notice.participant_id,
+                notice.reason.as_deref().unwrap_or("ended"),
+            );
+        }
         let Some(me) = self.me() else {
             return;
         };

@@ -31,6 +31,7 @@ use std::time::{Duration, Instant, SystemTime};
 use tracing::{info, warn};
 
 mod audio_bridge;
+mod bfcp;
 mod cli;
 mod conference_handler;
 mod control;
@@ -914,6 +915,28 @@ async fn main() -> Result<()> {
     // The handler's own Arc, for the tasks it spawns (see
     // `ConferenceCallHandler::set_self_ref`).
     conference_handler.set_self_ref();
+
+    // BFCP floor control for SIP room systems (design §15.6, 7e): one
+    // address, UDP and TCP, serving every room's floor.
+    if let Some(bind) = config.conference.bfcp_bind {
+        let floors = conference_handler.bfcp();
+        let udp = tokio::net::UdpSocket::bind(bind)
+            .await
+            .with_context(|| format!("Failed to bind the BFCP UDP socket on {bind}"))?;
+        let tcp = tokio::net::TcpListener::bind(bind)
+            .await
+            .with_context(|| format!("Failed to bind the BFCP TCP listener on {bind}"))?;
+        tokio::spawn(supervise_task(
+            "bfcp-udp",
+            Arc::clone(&floors).serve_udp(Arc::new(udp)),
+        ));
+        tokio::spawn(supervise_task(
+            "bfcp-tcp",
+            Arc::clone(&floors).serve_tcp(tcp),
+        ));
+        tokio::spawn(supervise_task("bfcp-timers", floors.serve_ticks()));
+        info!(%bind, "BFCP floor control listening (UDP and TCP)");
+    }
 
     // Re-price the video budget from the rooms every few seconds, so
     // admission works from what runs rather than from stale reservations
