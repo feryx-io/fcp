@@ -18,7 +18,7 @@ use fcp_media::{video_codec_to_forge, NegotiatedVideo, SrtpSdpContext};
 use forge_conference::video::{
     ContentEvent, ContentGate, ContentInfo, ContentLayout, OutputScope, PassthroughMode,
     StreamKind, SubscribeRequest, VideoBackend, VideoRoom, VideoRoomEvent, VideoRoomSettings,
-    VideoSubscription,
+    VideoSubscription, View,
 };
 use forge_conference::ConferenceRoom;
 use forge_rtp::rtcp::{PsFeedback, RtcpPacket};
@@ -797,6 +797,70 @@ pub fn attach_trunk_video(
         leg.negotiated.clone(),
         Arc::clone(&leg.stats),
     ))
+}
+
+/// Put a trunk's content section on the room's video (§15.6, 7d): the
+/// peer's shared screen becomes a remote content source under the
+/// trunk's tile id — taking the floor here as a caller's would — and
+/// what goes back down the trunk is this node's own presenter's screen,
+/// `LocalOnly`, so a screen that came from a peer is never sent back.
+pub fn attach_trunk_content(
+    room: &Arc<ConferenceRoom>,
+    backend: &VideoBackend,
+    participant_id: &str,
+    leg: &VideoLeg,
+    sink: VideoEventSink,
+) -> Option<impl Future<Output = ()> + Send + 'static> {
+    let video = room.enable_video(leg.settings.clone(), backend);
+    video.set_local_node(&sink.node_id);
+    video.set_content_gate(sink.content_gate.clone());
+    if sink.pumps.insert(sink.room_number.clone(), ()).is_none() {
+        spawn_event_pump(&video, sink);
+    }
+    let profile = leg.negotiated.fmtp.clone().unwrap_or_default();
+    if let Err(e) = video.add_remote_content(participant_id, leg.negotiated.codec, &profile) {
+        warn!(trunk = %participant_id, error = %e, "could not add the peer's content source");
+        return None;
+    }
+    let sub = match video.subscribe_kind(
+        participant_id,
+        StreamKind::Content,
+        SubscribeRequest {
+            codec: leg.negotiated.codec,
+            profile,
+            payload_type: leg.negotiated.payload_type,
+            resolution: None,
+            fps: None,
+            max_kbps: None,
+            scope: Some(OutputScope::LocalOnly),
+            view: Some(View::Content),
+        },
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            warn!(trunk = %participant_id, error = %e, "could not send content down the trunk");
+            video.remove_remote_content(participant_id);
+            return None;
+        }
+    };
+    Some(run_video_bridge(
+        video,
+        participant_id.to_string(),
+        StreamKind::Content,
+        Arc::clone(&leg.socket),
+        leg.srtp_context.clone(),
+        sub,
+        leg.negotiated.clone(),
+        Arc::clone(&leg.stats),
+    ))
+}
+
+/// One share a room hosted on several nodes agrees on (§15.6, 7d): of
+/// two claims to the floor, the earlier wins, and an exact tie falls to
+/// the lower node id, then the lower participant id — the same answer on
+/// every node, whichever order the claims arrived in.
+pub fn claim_beats(challenger: (u64, &str, &str), holder: (u64, &str, &str)) -> bool {
+    challenger < holder
 }
 
 /// Take the participant's shared screen off the room's video (a
@@ -2586,6 +2650,208 @@ mod tests {
         drop(video);
         room.disable_video();
     }
+    #[test]
+    fn the_earlier_claim_wins_and_ties_fall_to_the_lower_node_then_id() {
+        assert!(claim_beats(
+            (100, "conf-b", "bob"),
+            (200, "conf-a", "alice")
+        ));
+        assert!(!claim_beats(
+            (300, "conf-a", "alice"),
+            (200, "conf-b", "bob")
+        ));
+        assert!(claim_beats(
+            (200, "conf-a", "zed"),
+            (200, "conf-b", "alice")
+        ));
+        assert!(claim_beats(
+            (200, "conf-a", "alice"),
+            (200, "conf-a", "bob")
+        ));
+        assert!(!claim_beats((200, "conf-a", "bob"), (200, "conf-a", "bob")));
+    }
+
+    /// A shared screen across a trunk (§15.6, 7d): two rooms on two nodes,
+    /// each with a caller; Alice's screen on node A takes the floor there,
+    /// goes down the trunk local-only, takes the floor on node B as a
+    /// remote content source, and reaches Bob's content channel; Bob's own
+    /// screen is refused while it does; the node releasing the remote
+    /// holder — what a withdrawn or expired claim does — frees the floor
+    /// for Bob, whose screen then crosses the other way.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_shared_screen_crosses_a_trunk_and_the_floor_is_one_room_wide() {
+        let backend = VideoBackend::raw();
+        let meeting = {
+            let mut m = meeting(true);
+            m.video_max_resolution = "180p".into();
+            m.video_codecs = vec![VideoCodec::Vp8];
+            m.video_content_share = "anyone".into();
+            m
+        };
+        let (settings, _) = plan_video(
+            &meeting,
+            &usable_codecs(&backend, false),
+            Duration::from_secs(30),
+        )
+        .unwrap();
+        assert!(settings.content);
+        let lo = |p: u16| SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), p);
+        let bus = Arc::new(InMemoryEventBus::new());
+        let negotiated = NegotiatedVideo {
+            label: None,
+            codec: forge_core::VideoCodec::VP8,
+            payload_type: 97,
+            fmtp: None,
+            remote: None,
+            pli: true,
+            fir: false,
+            nack: true,
+            remote_crypto: None,
+        };
+        let leg = |socket: &Arc<RtpSocketPair>, port: u16| VideoLeg {
+            kind: StreamKind::Content,
+            port_pair: PortPair::new(port).unwrap(),
+            socket: Arc::clone(socket),
+            srtp_context: None,
+            srtp_sdp: None,
+            negotiated: negotiated.clone(),
+            settings: settings.clone(),
+            stats: Arc::new(VideoLegStats::default()),
+            bridge_handle: None,
+        };
+        // A socket pair pointed at another.
+        let wired = |port: u16, peer: u16| async move {
+            let s = socket_pair(port).await;
+            s.set_remote_endpoint(RemoteEndpoint {
+                rtp_addr: lo(peer),
+                rtcp_addr: Some(lo(peer + 1)),
+            })
+            .await;
+            s
+        };
+
+        // Two nodes, each hosting the room with one caller who has a
+        // content leg (a screen to send and a channel to receive on).
+        let node = |name: &'static str, caller: &'static str| {
+            let room = Arc::new(
+                ConferenceRoom::new(
+                    "4000",
+                    AudioFormat::pcm_mono(),
+                    160,
+                    forge_mixer::MixerOptions::default(),
+                )
+                .unwrap(),
+            );
+            room.add_participant(caller, false).unwrap();
+            let sink = VideoEventSink {
+                event_bus: bus.clone() as Arc<dyn EventPublisher>,
+                tenant_id: TenantId::new(),
+                room_number: "4000".into(),
+                node_id: name.into(),
+                pumps: Arc::new(dashmap::DashMap::new()),
+                content_gate: None,
+                floor: None,
+            };
+            (room, sink)
+        };
+        let (room_a, sink_a) = node("conf-a", "alice");
+        let (room_b, sink_b) = node("conf-b", "bob");
+        let trunk_a = crate::trunks::trunk_participant_id("conf-b"); // B, seen from A
+        let trunk_b = crate::trunks::trunk_participant_id("conf-a"); // A, seen from B
+        room_a.add_virtual_participant(&trunk_a).unwrap();
+        room_b.add_virtual_participant(&trunk_b).unwrap();
+
+        // Alice's and Bob's content legs, each with a phone behind it.
+        let (a_srv, a_phone_port) = (free_pair(), free_pair());
+        let (b_srv, b_phone_port) = (free_pair(), free_pair());
+        let alice_srv = wired(a_srv, a_phone_port).await;
+        let alice_phone = wired(a_phone_port, a_srv).await;
+        let bob_srv = wired(b_srv, b_phone_port).await;
+        let bob_phone = wired(b_phone_port, b_srv).await;
+        // The trunk's content section: A's socket and B's, pointed at each other.
+        let (ta, tb) = (free_pair(), free_pair());
+        let trunk_a_sock = wired(ta, tb).await;
+        let trunk_b_sock = wired(tb, ta).await;
+
+        let alice_leg = leg(&alice_srv, a_srv);
+        let bob_leg = leg(&bob_srv, b_srv);
+        let ta_leg = leg(&trunk_a_sock, ta);
+        let tb_leg = leg(&trunk_b_sock, tb);
+        let tasks = [
+            tokio::spawn(
+                attach_content(&room_a, &backend, "alice", &alice_leg, sink_a.clone(), true)
+                    .unwrap(),
+            ),
+            tokio::spawn(
+                attach_content(&room_b, &backend, "bob", &bob_leg, sink_b.clone(), true).unwrap(),
+            ),
+            tokio::spawn(
+                attach_trunk_content(&room_a, &backend, &trunk_a, &ta_leg, sink_a.clone()).unwrap(),
+            ),
+            tokio::spawn(
+                attach_trunk_content(&room_b, &backend, &trunk_b, &tb_leg, sink_b.clone()).unwrap(),
+            ),
+        ];
+        let video_a = room_a.video().unwrap();
+        let video_b = room_b.video().unwrap();
+        assert!(video_a.is_remote(&trunk_a));
+        assert!(video_b.is_remote(&trunk_b));
+        // Each trunk sends the content view local-only: a peer's screen
+        // never goes back down a trunk.
+        for video in [&video_a, &video_b] {
+            assert!(video.status().outputs.iter().any(|o| {
+                o.scope == OutputScope::LocalOnly
+                    && o.view == forge_conference::video::View::Content
+            }));
+        }
+
+        // Alice shares: the floor on A is hers, on B it is the trunk's,
+        // and Bob's channel carries her screen.
+        let alice_screen = send_frames(Arc::clone(&alice_phone), 160, 90, 90, 0xA5C4);
+        frame_matching(&bob_phone, "with alice's screen on node B", |h| {
+            h.resolution() == Resolution::new(160, 90) && h.luma(80, 45) == 90
+        })
+        .await;
+        assert_eq!(video_a.content_holder().as_deref(), Some("alice"));
+        assert_eq!(video_b.content_holder().as_deref(), Some(trunk_b.as_str()));
+        assert!(video_b.content().unwrap().remote);
+        assert!(!video_a.content().unwrap().remote);
+
+        // Bob tries to share while she does: refused, the floor is held.
+        let bob_screen = send_frames(Arc::clone(&bob_phone), 160, 90, 30, 0xB0B5);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(
+            video_b.request_content("bob"),
+            Err(forge_conference::video::ContentRefusal::Held(
+                trunk_b.clone()
+            ))
+        );
+        assert_eq!(video_b.content_holder().as_deref(), Some(trunk_b.as_str()));
+
+        // Alice stops (her track ended; the section stays); node B hears
+        // it (a withdrawn claim, or an expired one) and releases the
+        // remote holder: the floor is Bob's on the next packet, and his
+        // screen crosses to Alice's channel.
+        alice_screen.abort();
+        assert!(video_a.release_content("alice"));
+        assert!(video_a.content_holder().is_none());
+        assert!(video_b.release_content_with(&trunk_b, forge_conference::video::ContentStop::Ended));
+        frame_matching(&alice_phone, "with bob's screen on node A", |h| {
+            h.resolution() == Resolution::new(160, 90) && h.luma(80, 45) == 30
+        })
+        .await;
+        assert_eq!(video_b.content_holder().as_deref(), Some("bob"));
+        assert_eq!(video_a.content_holder().as_deref(), Some(trunk_a.as_str()));
+
+        bob_screen.abort();
+        for t in tasks {
+            t.abort();
+        }
+        drop((video_a, video_b));
+        room_a.disable_video();
+        room_b.disable_video();
+    }
+
     /// One emitter per change (§15.4, 5c): the node the speaker is on
     /// announces them, and a node following a peer's claim stays quiet,
     /// so a listener sees one `active_speaker_changed` per change rather

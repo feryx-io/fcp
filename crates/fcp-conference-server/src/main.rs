@@ -1242,22 +1242,28 @@ async fn main() -> Result<()> {
             loop {
                 ticker.tick().await;
                 handler.expire_speaker_claims(max_age);
+                handler.expire_content_claims(max_age);
                 for (room_number, tenant_id) in handler.rooms_with_trunked_video() {
                     // A room whose speaker is a peer's caller is that
                     // peer's to announce; `local_speaker_claim` says so
-                    // by returning nothing.
-                    let Some(claim) = handler.local_speaker_claim(&room_number) else {
-                        continue;
-                    };
-                    control
-                        .announce_speaker(&tenant_id.to_string(), &room_number, claim)
-                        .await;
+                    // by returning nothing. The same for a shared screen
+                    // (§15.6, 7d): the presenter's own node claims it.
+                    if let Some(claim) = handler.local_speaker_claim(&room_number) {
+                        control
+                            .announce_speaker(&tenant_id.to_string(), &room_number, claim)
+                            .await;
+                    }
+                    if let Some(claim) = handler.local_content_claim(&room_number) {
+                        control
+                            .announce_content(&tenant_id.to_string(), &room_number, claim)
+                            .await;
+                    }
                 }
             }
         }));
         info!(
             interval_ms = speaker_interval_ms,
-            "Cross-node active-speaker announcer started"
+            "Cross-node active-speaker and shared-screen announcer started"
         );
     }
 

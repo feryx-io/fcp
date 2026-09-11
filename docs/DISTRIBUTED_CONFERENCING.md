@@ -514,6 +514,43 @@ Turning `speaker_interval_ms` to 0 switches cross-node agreement off: each
 node then picks from its own callers and a peer's tile never takes the
 floor.
 
+### One shared screen the nodes agree on
+
+A shared screen (`VIDEO_CONFERENCING.md` §15.6) crosses a trunk the way a
+composite does, and the room's content floor is one fact across its
+nodes. Since v0.25.127:
+
+- **The trunk carries a content section.** Beside its video section the
+  trunk offers a third `m=video` with `a=content:slides` (payload type 98,
+  its own port pair and, under `cluster.trunk_srtp`, its own key) when the
+  meeting allows sharing; the answering node takes it under the same
+  rule. What goes down it is this node's own presenter's screen, local
+  only — a screen that came from a peer is never sent back — and what
+  comes up it is the peer's presenter's screen, a remote content source
+  under the trunk's tile that takes the floor here as a caller's would.
+  Every node's composite and content views show it.
+- **Each node announces its own share.** On the speaker timer, a node
+  whose own caller holds the floor posts `{node, participant_id,
+  display_name, since_ms}` to every hosting peer's
+  `POST /internal/conferences/{room}/content`. A node whose floor is a
+  peer's screen announces nothing.
+- **The earliest share wins.** A node that hears a claim older than its
+  own presenter's share takes the floor from them with reason `replaced`
+  — the presenter is told so (a browser through its gateway's `INFO`), and
+  may share again later — so the peer's screen can have it. An exact tie
+  falls to the lower node id, then the lower participant id: the same
+  answer everywhere. A claim that stops being refreshed for five intervals
+  releases the floor the peer's screen holds here; so does a trunk that
+  goes.
+- **The presenter's name.** A peer's screen holds the floor under its
+  trunk's tile; the browsers on this node are told the presenter's name
+  from the peer's claim, and told again if the packets beat the claim.
+- **`conference.content_started` / `content_stopped` have one emitter**,
+  the presenter's own node, as the speaker change does. **`GET …/video`**
+  names the presenter and their node in `video.content` (`node_id`), each
+  node's `nodes[]` entry says whose screen it shows, and `trunks[]` says
+  whether a trunk carries `content`.
+
 ### Not in this phase
 
 - Participant migration off a draining node (REFER back into the room, or

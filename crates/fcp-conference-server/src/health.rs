@@ -248,6 +248,10 @@ fn internal_router(state: Arc<ConferenceState>) -> Router<Arc<ConferenceState>> 
             post(internal_speaker_handler),
         )
         .route(
+            "/internal/conferences/:room_number/content",
+            post(internal_content_handler),
+        )
+        .route(
             "/internal/conferences/:room_number/video",
             get(internal_video_status_handler),
         )
@@ -1785,6 +1789,57 @@ async fn internal_speaker_handler(
     }
 }
 
+/// What a peer node says is being shared in a room it hosts with us
+/// (`POST /internal/conferences/{room}/content`, design §15.6, 7d): the
+/// presenter there and since when. Every node keeps the earliest share
+/// room-wide, so they converge on one presenter without electing a
+/// leader; a claim without a participant withdraws the peer's share.
+#[derive(Debug, Deserialize)]
+struct ContentClaim {
+    node: String,
+    #[serde(default)]
+    participant_id: Option<String>,
+    #[serde(default)]
+    display_name: Option<String>,
+    /// When the share began, in milliseconds since the Unix epoch.
+    #[serde(default)]
+    since_ms: u64,
+}
+
+async fn internal_content_handler(
+    State(state): State<Arc<ConferenceState>>,
+    Path(room_number): Path<String>,
+    Json(claim): Json<ContentClaim>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    if !is_valid_identifier(&room_number) {
+        return invalid_identifier();
+    }
+    if claim.node.is_empty() || claim.node == state.conference_handler.node_id() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "A content claim must name the peer node" })),
+        );
+    }
+    match state.conference_handler.apply_content_claim(
+        &room_number,
+        &claim.node,
+        claim.participant_id.as_deref(),
+        claim.display_name.as_deref(),
+        claim.since_ms,
+    ) {
+        Ok(applied) => (
+            StatusCode::OK,
+            Json(
+                serde_json::json!({ "status": "applied", "room": room_number, "applied": applied }),
+            ),
+        ),
+        Err(e) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        ),
+    }
+}
+
 /// What a recording looks like over the API.
 fn recording_json(recording: &fcp_core::Recording) -> serde_json::Value {
     serde_json::json!({
@@ -2442,6 +2497,10 @@ async fn merged_video_status(
     let mut speakers: Vec<String> = Vec::new();
     let mut layouts: Vec<String> = Vec::new();
     let mut count = 0u64;
+    // The share is the room's too (§15.6, 7d): the node whose own caller
+    // holds the floor names the presenter; every other node sees them
+    // through a trunk.
+    let mut content: Option<serde_json::Value> = None;
     for (node, view) in &views {
         if let Some(list) = view["participants"].as_array() {
             for p in list {
@@ -2463,6 +2522,13 @@ async fn merged_video_status(
         }
         if let Some(l) = view["video"]["layout"].as_str() {
             layouts.push(l.to_string());
+        }
+        if content.is_none() && view["video"]["content"]["remote"] == serde_json::json!(false) {
+            let mut c = view["video"]["content"].clone();
+            if let Some(map) = c.as_object_mut() {
+                map.insert("node_id".into(), node.clone().into());
+            }
+            content = Some(c);
         }
     }
     let agreed = |values: &[String]| -> (Option<String>, bool) {
@@ -2495,6 +2561,7 @@ async fn merged_video_status(
                         "active_speaker": view["video"]["active_speaker"],
                         "active_speaker_via": view["video"]["active_speaker_via"],
                         "layout": view["video"]["layout"],
+                        "content": view["video"]["content"]["participant_id"],
                     })
                 })
                 .collect::<Vec<_>>()
@@ -2502,9 +2569,14 @@ async fn merged_video_status(
         );
         map.insert("hosted_here".into(), local.is_ok().into());
         // The speaker and the layout are the room's, not a node's, so
-        // they are lifted out of the per-node video block.
+        // they are lifted out of the per-node video block; the share,
+        // named by the presenter's own node, replaces this node's view
+        // of it (a trunk's tile) in the video block.
         map.insert("active_speaker".into(), speaker.into());
         map.insert("layout".into(), layout.into());
+        if let Some(video) = map.get_mut("video").and_then(|v| v.as_object_mut()) {
+            video.insert("content".into(), content.unwrap_or(serde_json::Value::Null));
+        }
         // False only while the nodes are still converging.
         map.insert(
             "agreed".into(),

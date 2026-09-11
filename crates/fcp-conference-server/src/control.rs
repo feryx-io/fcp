@@ -256,20 +256,43 @@ impl ClusterControl {
         room_number: &str,
         claim: serde_json::Value,
     ) {
+        self.announce(tenant_id, room_number, "speaker", claim)
+            .await
+    }
+
+    /// Tell every peer hosting the room who is sharing a screen here and
+    /// since when (§15.6, 7d), the same way.
+    pub async fn announce_content(
+        &self,
+        tenant_id: &str,
+        room_number: &str,
+        claim: serde_json::Value,
+    ) {
+        self.announce(tenant_id, room_number, "content", claim)
+            .await
+    }
+
+    async fn announce(
+        &self,
+        tenant_id: &str,
+        room_number: &str,
+        what: &str,
+        claim: serde_json::Value,
+    ) {
         let peers = match self.hosting_peers(tenant_id, room_number).await {
             Ok(peers) => peers,
             Err(e) => {
-                debug!(room = %room_number, error = %e, "Could not read the registry; speaker not announced");
+                debug!(room = %room_number, what, error = %e, "Could not read the registry; claim not announced");
                 return;
             }
         };
-        let path = format!("/conferences/{room_number}/speaker");
+        let path = format!("/conferences/{room_number}/{what}");
         let sends = peers
             .iter()
             .map(|peer| self.send(peer, tenant_id, reqwest::Method::POST, &path, Some(&claim)));
         for outcome in futures::future::join_all(sends).await {
             if !outcome.ok {
-                debug!(peer = %outcome.node, room = %room_number, "Speaker claim not applied");
+                debug!(peer = %outcome.node, room = %room_number, what, "Claim not applied");
             }
         }
     }
