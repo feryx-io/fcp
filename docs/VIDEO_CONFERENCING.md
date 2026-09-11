@@ -682,7 +682,7 @@ crate (`forge-rtp` 111, `forge-sdp` 90, `forge-core` 22).
 | 4 | **WebRTC** — done 2026-09-07 (§15.3): forge-webrtc video (forge-media `v2026.09.07.1`), the gateway's media path and direct room join (v0.25.107), join tokens, join page and surface (v0.25.108) | forge-media, FCP | done |
 | 5 | **Recording and cascade** — done 2026-09-08 (§15.4): WebM muxing and a recording registry (v0.25.110–112), trunk video (v0.25.113/114), cross-node speaker state (v0.25.115); MP4 deferred | both | done |
 | 6 | **Passthrough fast path, bitrate ladder, polish** — done 2026-09-10 (§15.5): single-source forwarding (v0.25.117/118), ladder switching (v0.25.119), overload shedding and parser fuzzing (v0.25.121; forge-media `v2026.09.10`) | both | done |
-| 7 | **Screen share** — planned 2026-09-10 (§15.6): a content source kind with one floor per room, `Composite` / `Cameras` / `Content` views and a presentation arrangement, screen-content encoder modes (7a); the RFC 4796 content section on SIP, the floor, settings, API, events and UI (7b); RFC 8285 header extensions, a second video mid and the join page's share button (7c); content across trunks with a room-wide floor (7d); BFCP floor control for SIP room systems in a new `forge-bfcp` (7e) | both | ~5 weeks |
+| 7 | **Screen share** — done 2026-09-11 (§15.6): the content source kind, the per-room floor and the `Composite` / `Cameras` / `Content` views (7a, forge-media `v2026.09.11`; v0.25.123), the RFC 4796 content section on SIP with its settings, API, events and UI (7b, v0.25.124), RFC 8285 header extensions and a second video mid on WebRTC with the join page's share button and the floor told by SIP `INFO` (7c, forge-media `v2026.09.11.1`; v0.25.125/126), content across trunks with a room-wide floor (7d, forge-media `v2026.09.11.2`; v0.25.127), BFCP floor control for SIP room systems in the new `forge-bfcp` (7e, forge-media `v2026.09.11.3`; v0.25.128) | both | done |
 | 8 | **GPU backend**: `hwaccel` feature (FFmpeg device contexts), device codecs, device scale/overlay composition, per-device budgets and self-benchmark, placement by capability, PSNR parity tests against the host path | forge-media, FCP | 3–4 weeks + a GPU box |
 
 Each phase is one PR per repository (forge-media release tag, then the
@@ -1554,6 +1554,40 @@ participant's video JSON (`transport`, ids, `connected`, `floor`,
 `host_stopped`). The B2BUA and SBC still reject BFCP sections when they
 anchor, unchanged. Not done here: TLS/DTLS BFCP, chairs, a BFCP
 endpoint on a trunked room hearing a peer's presenter by name.
+
+**Phase 7 close-out (2026-09-11).** Five blocks, five forge-media
+releases (`v2026.09.11` to `v2026.09.11.3`) and six FCP versions
+(v0.25.123–128), all merged in one day against a plan of about five
+weeks; the plan's shape held, with the deviations each block's note
+records. What a screen share is now: one floor per room that a browser,
+a BFCP-less phone or a trunked peer takes by sending and a BFCP room
+system takes by asking; a content section on SIP and a second video mid
+on WebRTC, each on its own port, key and SSRC; every output a view, the
+composite becoming a presentation while a screen is shared; the floor
+told to browsers by `INFO`, to room systems by BFCP, to the bus by
+`content_started` / `content_stopped`, and agreed across nodes the way
+the speaker is. Left open, gathered from the blocks' notes, none of them
+blocking:
+
+- A content-only device (slides, no camera) is answered but its content
+  is priced like a camera's join (7b); a screen from a browser with no
+  camera is not offered, since the section rides only beside a camera's
+  (7c).
+- A content section added by re-INVITE keeps the composite on the
+  caller's main section until they renegotiate (7b).
+- The presenter's node does not learn that a peer refused their screen
+  for budget; the peer simply does not show it (7d). A BFCP endpoint on
+  a trunked room hears a peer's presenter by tile, not by name (7e).
+- BFCP over TLS/DTLS, floor chairs and BFCP-level fragmentation are not
+  spoken (7e); the B2BUA and SBC still reject BFCP sections when they
+  anchor, so BFCP works for calls that reach the conference server
+  directly or relayed.
+- Fuzzing covers the RTP extension walk and the BFCP parser; the SDP
+  attribute parsing of the new sections relies on sip-sdp's.
+
+Phase 8, the GPU backend, waits on a machine with a GPU (§9.4); until
+one is available the CPU pipeline, with its self-benchmark and budget,
+is what ships.
 
 ## 16. Resolved questions
 
