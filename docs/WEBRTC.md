@@ -7,8 +7,10 @@ a SIP destination, and relays media between the two legs without
 decoding it. Audio is carried in a codec both sides speak (G.722, then
 G.711), so nothing is transcoded; video is carried packet for packet with
 the payload type mapped and the SSRC set to what each side expects; RTCP
-feedback (NACK, PLI, FIR, REMB) crosses in both directions. This is
-phase 4 of `VIDEO_CONFERENCING.md` (§15.3), shipped 2026-09-07.
+feedback (NACK, PLI, FIR, REMB) crosses in both directions. A shared
+screen is a second video section on both legs, relayed the same way. This
+is phase 4 of `VIDEO_CONFERENCING.md` (§15.3), shipped 2026-09-07, with
+screen share from phase 7 (§15.6, 7c).
 
 ```
 browser ──WebRTC (DTLS-SRTP, BUNDLE)──► fcp-webrtc-gw ──SIP + RTP (SDES SRTP)──► fcp-conference
@@ -30,8 +32,9 @@ browser ──WebRTC (DTLS-SRTP, BUNDLE)──► fcp-webrtc-gw ──SIP + RTP 
    asks for the microphone (and camera), and calls
    `POST /v1/rooms/{room}/join` with `{display_name, video, join_token}`.
 3. The gateway creates a peer connection offering G.722, PCMU and PCMA
-   and, when asked, video (H.264, VP8, VP9, AV1), and returns the offer
-   with a **session token**. The page answers through
+   and, when asked, video (H.264, VP8, VP9, AV1) — with a second video
+   section for a shared screen (`content`, on by default with `video`) —
+   and returns the offer with a **session token**. The page answers through
    `POST /v1/rooms/{id}/answer` and trickles candidates through
    `POST /v1/rooms/{id}/ice-candidate`, both under the session token.
 4. Once DTLS completes, the gateway INVITEs the conference server —
@@ -52,6 +55,66 @@ browser ──WebRTC (DTLS-SRTP, BUNDLE)──► fcp-webrtc-gw ──SIP + RTP 
 A meeting whose conference node rejects video (no native codec compiled
 in, no budget) joins audio-only: the browser's video section stays
 negotiated but idle, and the session reports `video: null`.
+
+## Sharing a screen
+
+Both legs carry the screen as a second video section from the start, so
+sharing needs no renegotiation on either side:
+
+- **Browser leg.** The offer has three sections bundled on one
+  transport — audio (`mid 0`), the camera (`mid 1`) and the screen
+  (`mid 2`, `a=content:slides`) — each offering the `sdes:mid` RTP
+  header extension, by which the gateway tells a browser's camera
+  packets from its screen packets (the SSRC each side signalled is the
+  fallback). The join page answers the screen section `sendrecv` with no
+  track and puts a `getDisplayMedia` track on its sender with
+  `replaceTrack` when the person clicks **Share screen**; **Stop
+  sharing**, or the browser's own stop bar, takes the track off again.
+- **SIP leg.** The INVITE offers a third `m=video` with
+  `a=content:slides` and `a=label:2` on its own port pair and, under
+  `[conference] srtp`, its own SDES key — the same section a SIP room
+  system offers (RFC 4796), answered by the conference server as in
+  phase 7b. A conference server that rejects it (the meeting's
+  `video_content_share` is `off`, or no port) leaves the session without
+  a screen; the browser's section stays negotiated but idle.
+- **The relay** forwards the screen's packets packet for packet on the
+  content sockets under their own SSRC pair, and re-addresses feedback
+  about the screen (NACK, PLI, FIR) to the screen's far end; a REMB,
+  which is about the whole transport, goes to the camera's.
+- **The floor.** The room's content floor is the conference server's
+  (§15.6): the first screen packet takes it, or is refused when someone
+  else holds it, when a guest may not share under `hosts`, or when the
+  node's video budget is spent. The conference server tells every
+  participant that joined with `X-FCP-Join` — a browser through the
+  gateway — with a SIP `INFO` of type `application/vnd.fcp.content+json`:
+
+  ```json
+  {"floor": "granted", "mine": false, "participant_id": "p-7", "presenter": "Ann", "reason": null}
+  ```
+
+  `floor` is `granted`, `released` (with the stop's `reason`: `ended`,
+  `idle`, `host`, `replaced`, `left`, `failed`) or `refused` (with the
+  refusal's: `held`, `disabled`, `participant_disabled`, `no_source`,
+  `budget`), and `mine` says whether the notice is about the recipient;
+  a refusal goes only to the participant refused. A participant admitted
+  while someone shares is told a moment after joining. The gateway
+  answers the INFO, keeps the floor on the session, and the join page
+  shows "N is sharing", "You are sharing your screen" or why a share was
+  refused, and stops sending when the room ended the share.
+
+`GET /v1/rooms/{id}` reports it under `content`:
+
+```json
+"content": {"codec": "VP8", "payload_type": 96, "srtp": true,
+            "sending": true, "state": "granted", "presenter": "Ann", "reason": null, "notices": 2}
+```
+
+`state` is `free`, `held` (someone else shares), `granted`, `refused` or
+`released`; `sending` says whether the browser has sent screen packets in
+the last few seconds; `notices` counts the floor notices taken in, so a
+page can tell a verdict on its new share from an old one; `content` is
+`null` when the SIP leg has no screen section. The stats gain
+`content_to_sip` and `content_to_browser`.
 
 ## Tokens
 
@@ -145,7 +208,10 @@ browser must have picked G.722 or G.711.
 
 - Recording, cascaded video and the WebRTC gateway's video on trunks:
   phase 5.
-- transport-cc, RTX, header extensions, FEC, simulcast: phase 6.
+- transport-cc, RTX, FEC, simulcast (header extensions arrived with
+  screen share: only `sdes:mid` is read).
+- A screen shared from a browser with no camera: the screen section is
+  offered only beside a camera section.
 - Re-offering the browser to drop an idle video section when the
   conference node declined video.
 - A join token bound to one use; consent freshness in forge-webrtc.

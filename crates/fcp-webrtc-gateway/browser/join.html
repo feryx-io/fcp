@@ -24,6 +24,13 @@
   @media (min-width: 720px) { .videos { grid-template-columns: 3fr 1fr; } }
   video { width: 100%; background: #000; border-radius: 8px; aspect-ratio: 16/9; }
   #self { transform: scaleX(-1); }
+  /* While a screen is shared it takes the large slot; the composite and
+     the camera go down the side. */
+  .videos.sharing { grid-template-columns: 1fr; }
+  @media (min-width: 720px) { .videos.sharing { grid-template-columns: 3fr 1fr; } }
+  .videos.sharing #content { grid-row: 1 / span 2; }
+  .videos:not(.sharing) #content { display: none; }
+  .share { font-size: 13px; color: var(--muted); }
   .status { font-size: 13px; color: var(--muted); }
   .status b { color: var(--fg); }
   .state-connected { color: var(--ok); }
@@ -52,15 +59,18 @@
   </section>
 
   <section class="card hidden" id="call">
-    <div class="videos">
+    <div class="videos" id="videos">
+      <video id="content" autoplay playsinline></video>
       <video id="remote" autoplay playsinline></video>
       <video id="self" autoplay playsinline muted></video>
     </div>
     <div class="row" style="margin-top: 12px">
       <div style="flex: 0 0 auto"><button id="leave" class="danger">Leave</button></div>
       <div style="flex: 0 0 auto"><button id="mute" class="secondary">Mute</button></div>
+      <div style="flex: 0 0 auto"><button id="share" class="secondary hidden">Share screen</button></div>
       <div class="status" id="call-status"></div>
     </div>
+    <div class="share" id="share-status"></div>
   </section>
 
   <section class="card">
@@ -84,6 +94,10 @@
   let pc = null;
   let local = null;
   let poll = null;
+  let screen = null;       // the shared screen's MediaStream while sharing
+  let contentSender = null;  // the content section's RTCRtpSender
+  let noticesSeen = 0;     // the floor notices the session had taken in, last seen
+  let noticesAtShare = 0;  // ... when this share started
 
   const log = (line) => { $('log').textContent += `${new Date().toISOString().slice(11, 19)} ${line}\n`; $('log').scrollTop = $('log').scrollHeight; };
   const setStatus = (el, html) => { $(el).innerHTML = html; };
@@ -110,8 +124,27 @@
     const parts = [`<b class="${stateClass(info.state)}">${state}</b>`];
     if (info.audio_codec) parts.push(`audio ${info.audio_codec}${info.srtp ? ' (SRTP)' : ''}`);
     if (info.video) parts.push(`video ${info.video.codec}`); else if (info.state === 'connected') parts.push('audio only');
-    if (info.stats) parts.push(`↑${info.stats.audio_to_sip + info.stats.video_to_sip} ↓${info.stats.audio_to_browser + info.stats.video_to_browser} packets`);
+    if (info.stats) {
+      const s = info.stats;
+      parts.push(`↑${s.audio_to_sip + s.video_to_sip + (s.content_to_sip || 0)} ↓${s.audio_to_browser + s.video_to_browser + (s.content_to_browser || 0)} packets`);
+    }
     return parts.join(' · ');
+  }
+
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+  // The floor as the gateway heard it from the conference server: who is
+  // sharing, and whether this browser's share was refused or ended.
+  function describeShare(content) {
+    if (!content) return '';
+    const who = content.presenter ? esc(content.presenter) : 'Someone';
+    switch (content.state) {
+      case 'granted': return 'You are sharing your screen.';
+      case 'held': return `${who} is sharing.`;
+      case 'refused': return `Sharing was refused${content.reason === 'held' ? ` (${who} is sharing)` : content.reason ? ` (${content.reason})` : ''}.`;
+      case 'released': return content.reason === 'host' ? 'A host stopped your share.' : '';
+      default: return '';
+    }
   }
 
   async function join() {
@@ -138,6 +171,15 @@
 
       pc = new RTCPeerConnection({ iceServers: created.ice_servers || [] });
       pc.ontrack = (ev) => {
+        // The second video section (mid 2) is the room's shared screen.
+        if (ev.transceiver && ev.transceiver.mid === '2') {
+          log('content track');
+          $('content').srcObject = new MediaStream([ev.track]);
+          // The track goes quiet between shares: show it only while it flows.
+          ev.track.onunmute = () => $('videos').classList.add('sharing');
+          ev.track.onmute = () => $('videos').classList.remove('sharing');
+          return;
+        }
         log(`remote ${ev.track.kind} track`);
         if (!$('remote').srcObject) $('remote').srcObject = new MediaStream();
         $('remote').srcObject.addTrack(ev.track);
@@ -150,6 +192,16 @@
       pc.onconnectionstatechange = () => log(`peer connection ${pc.connectionState}`);
       await pc.setRemoteDescription({ type: 'offer', sdp: created.sdp_offer });
       for (const track of local.getTracks()) pc.addTrack(track, local);
+      // The offer's third section is for a screen. Answering it sendrecv
+      // with no track yet means sharing later is a replaceTrack, not a
+      // renegotiation; a browser without getDisplayMedia leaves it recvonly.
+      contentSender = null;
+      const contentTransceiver = pc.getTransceivers().find((t) => t.mid === '2');
+      if (contentTransceiver && navigator.mediaDevices.getDisplayMedia) {
+        contentTransceiver.direction = 'sendrecv';
+        contentSender = contentTransceiver.sender;
+        $('share').classList.remove('hidden');
+      }
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
       await call('POST', `/v1/rooms/${session.id}/answer`, { sdp_answer: answer.sdp }, session.token);
@@ -171,6 +223,11 @@
     try {
       const info = await call('GET', `/v1/rooms/${session.id}`, null, session.token);
       setStatus('call-status', describe(info));
+      setStatus('share-status', describeShare(info.content));
+      if (info.content) noticesSeen = info.content.notices || 0;
+      // A host stopped the share, or the room refused it: stop sending.
+      // Only a verdict newer than this share counts; an earlier one is history.
+      if (screen && info.content && noticesSeen > noticesAtShare && (info.content.state === 'refused' || info.content.state === 'released')) stopSharing('the room ended it');
       if (info.state === 'terminated' || typeof info.state === 'object') {
         log(`session over: ${typeof info.state === 'object' ? info.state.failed : info.state}`);
         await cleanup(false);
@@ -190,10 +247,17 @@
     if (tellGateway && session) {
       try { await call('DELETE', `/v1/rooms/${session.id}`, null, session.token); } catch (e) { log(`leave: ${e.message}`); }
     }
+    if (screen) { screen.getTracks().forEach((t) => t.stop()); screen = null; }
+    contentSender = null;
     if (pc) { pc.close(); pc = null; }
     if (local) { local.getTracks().forEach((t) => t.stop()); local = null; }
     $('self').srcObject = null;
     $('remote').srcObject = null;
+    $('content').srcObject = null;
+    $('videos').classList.remove('sharing');
+    $('share').classList.add('hidden');
+    $('share').textContent = 'Share screen';
+    setStatus('share-status', '');
     session = null;
     $('call').classList.add('hidden');
     $('setup').classList.remove('hidden');
@@ -208,9 +272,46 @@
     $('mute').textContent = track.enabled ? 'Mute' : 'Unmute';
   }
 
+  // Share a screen: the display track goes on the content section's
+  // sender; the conference server takes the floor from the first packet
+  // (or refuses, which the status shows). Stopping puts the track down.
+  async function startSharing() {
+    if (!pc || !contentSender || screen) return;
+    try {
+      screen = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 5 }, audio: false });
+    } catch (e) {
+      log(`getDisplayMedia: ${e.message}`);
+      return;
+    }
+    const track = screen.getVideoTracks()[0];
+    if ('contentHint' in track) track.contentHint = 'detail';
+    // The browser's own "Stop sharing" bar ends the track.
+    track.onended = () => stopSharing('stopped in the browser');
+    try {
+      noticesAtShare = noticesSeen;
+      await contentSender.replaceTrack(track);
+      $('share').textContent = 'Stop sharing';
+      log('sharing the screen');
+    } catch (e) {
+      log(`sharing failed: ${e.message}`);
+      screen.getTracks().forEach((t) => t.stop());
+      screen = null;
+    }
+  }
+
+  async function stopSharing(why) {
+    if (!screen) return;
+    log(`sharing stopped: ${why}`);
+    screen.getTracks().forEach((t) => t.stop());
+    screen = null;
+    $('share').textContent = 'Share screen';
+    if (contentSender) { try { await contentSender.replaceTrack(null); } catch (_) {} }
+  }
+
   $('join').addEventListener('click', join);
   $('leave').addEventListener('click', leave);
   $('mute').addEventListener('click', toggleMute);
+  $('share').addEventListener('click', () => (screen ? stopSharing('by you') : startSharing()));
   window.addEventListener('beforeunload', () => { if (session) navigator.sendBeacon && fetch(api + `/v1/rooms/${session.id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${session.token}` }, keepalive: true }); });
   if (params.get('autojoin') === 'true' && $('room').value && $('token').value) join();
 })();

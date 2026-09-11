@@ -1,8 +1,8 @@
 //! The relay in process: a real browser-side peer connection (a second
 //! forge-webrtc peer standing in for the browser), the relay's SIP-side
 //! sockets, and a far end's sockets standing in for the conference server.
-//! Audio, video and feedback cross both ways, with the payload types and
-//! SSRCs each side expects.
+//! Audio, video, a shared screen and feedback cross both ways, with the
+//! payload types and SSRCs each side expects.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -40,6 +40,7 @@ fn peer_cfg() -> PeerConfig {
         video: Some(VideoConfig {
             codecs: vec![(VideoCodec::VP8, 96)],
             direction: Direction::SendRecv,
+            content: true,
             ..VideoConfig::default()
         }),
         ..PeerConfig::default()
@@ -207,23 +208,29 @@ async fn relay_case(srtp: bool, base_port: u16) {
         .cloned()
         .expect("video negotiated");
     assert_eq!(video.payload_type, 96);
+    let content = gateway
+        .negotiated_content()
+        .cloned()
+        .expect("a shared screen's section negotiated");
+    assert_eq!(content.payload_type, 96);
 
-    // The SIP side: the relay's sockets and the far end's, plain or SRTP.
+    // The SIP side: the relay's sockets and the far end's, plain or SRTP,
+    // one pair per section.
     let (relay_audio, far_audio) = socket_pair(base_port, base_port + 2, 0xB8).await;
     let (relay_video, far_video) = socket_pair(base_port + 4, base_port + 6, 0xA0).await;
-    let (audio_srtp, far_audio_srtp) = if srtp {
-        let (a, b) = srtp_pair();
-        (Some(a), Some(b))
-    } else {
-        (None, None)
+    let (relay_content, far_content) = socket_pair(base_port + 8, base_port + 10, 0xA0).await;
+    let pair = || {
+        if srtp {
+            let (a, b) = srtp_pair();
+            (Some(a), Some(b))
+        } else {
+            (None, None)
+        }
     };
-    let (video_srtp, far_video_srtp) = if srtp {
-        let (a, b) = srtp_pair();
-        (Some(a), Some(b))
-    } else {
-        (None, None)
-    };
-    // The far end answered with different payload types for both.
+    let (audio_srtp, far_audio_srtp) = pair();
+    let (video_srtp, far_video_srtp) = pair();
+    let (content_srtp, far_content_srtp) = pair();
+    // The far end answered with different payload types for each.
     let sip = SipLeg {
         audio: SipAudioLeg {
             socket: relay_audio,
@@ -236,15 +243,24 @@ async fn relay_case(srtp: bool, base_port: u16) {
             srtp: video_srtp,
             payload_type: 121,
         }),
+        content: Some(SipVideoLeg {
+            socket: relay_content,
+            srtp: content_srtp,
+            payload_type: 122,
+        }),
     };
     let video_sender = gateway.video_sender().unwrap();
     let our_video_ssrc = video_sender.ssrc();
+    let content_sender = gateway.content_sender().unwrap();
+    let our_content_ssrc = content_sender.ssrc();
+    assert_ne!(our_video_ssrc, our_content_ssrc);
     let browser_leg = BrowserLeg {
         events: gw_events,
         audio: gateway.sender().unwrap(),
         audio_payload_type: browser_audio_pt,
         telephone_event_pt: browser_te,
         video: Some((video_sender, 96)),
+        content: Some((content_sender, 96)),
         inactivity_timeout: Duration::from_secs(30),
     };
     let stats = Arc::new(RelayStats::default());
@@ -295,6 +311,35 @@ async fn relay_case(srtp: bool, base_port: u16) {
             "browser SSRC preserved towards SIP"
         );
         assert_eq!(got.header.marker(), seq == 2);
+    }
+
+    // The browser's screen, on the second section: its own SSRC, the
+    // content section's payload type on the SIP side.
+    let br_screen = browser.content_sender().unwrap();
+    for seq in 0..2u16 {
+        let pkt = RtpPacket::build(
+            96,
+            700 + seq,
+            12_000,
+            0x5C5C,
+            Bytes::from(vec![0x50 + seq as u8; 240]),
+            seq == 1,
+        );
+        br_screen
+            .send_packet(pkt.to_bytes().freeze())
+            .await
+            .unwrap();
+    }
+    for seq in 0..2u16 {
+        let got = recv_rtp(&far_content, &far_content_srtp).await;
+        assert_eq!(
+            got.header.payload_type(),
+            122,
+            "screen re-tagged for the SIP side"
+        );
+        assert_eq!({ got.header.sequence_number }, 700 + seq);
+        assert_eq!({ got.header.ssrc }, browser.content_ssrc());
+        assert_eq!(got.payload.len(), 240);
     }
 
     // Far end → browser: audio (re-tagged for the browser), video (SSRC
@@ -358,6 +403,27 @@ async fn relay_case(srtp: bool, base_port: u16) {
     assert_eq!({ p.header.ssrc }, our_video_ssrc);
     assert_eq!(p.payload.len(), 300);
 
+    // The room's shared screen, on the second section, under the
+    // gateway's content SSRC, sorted onto the content event by that SSRC.
+    let far_content_ssrc = 0xC0FF_EE00u32;
+    let cpkt = RtpPacket::build(
+        122,
+        4_242,
+        99_000,
+        far_content_ssrc,
+        Bytes::from(vec![9u8; 500]),
+        true,
+    );
+    send_rtp(&far_content, &far_content_srtp, &cpkt).await;
+    let ev = next_event(&mut br_events, |e| matches!(e, PeerEvent::ContentRtp(_))).await;
+    let PeerEvent::ContentRtp(p) = ev else {
+        unreachable!()
+    };
+    assert_eq!(p.header.payload_type(), 96);
+    assert_eq!({ p.header.sequence_number }, 4_242);
+    assert_eq!({ p.header.ssrc }, our_content_ssrc);
+    assert_eq!(p.payload.len(), 500);
+
     // Feedback both ways, re-addressed. The browser asks for a keyframe
     // of what it receives (our SSRC): the far end hears it about its own.
     browser
@@ -417,14 +483,73 @@ async fn relay_case(srtp: bool, base_port: u16) {
     assert_eq!(fb.sender_ssrc, our_video_ssrc);
     assert!(matches!(&fb.kind, TransportFeedback::Nack(e) if e[0].lost() == vec![501]));
 
+    // Feedback about the screen goes to the screen's far end, not the
+    // camera's, and back again about the browser's screen SSRC.
+    browser
+        .send_rtcp(&[RtcpPacket::PayloadFeedback(PsFeedback::pli(
+            browser.content_ssrc(),
+            our_content_ssrc,
+        ))])
+        .await
+        .unwrap();
+    let (raw, _) = tokio::time::timeout(Duration::from_secs(5), far_content.recv_rtcp())
+        .await
+        .expect("timed out waiting for screen feedback on the far end")
+        .unwrap();
+    let plain = match &far_content_srtp {
+        Some(ctx) => ctx.lock().await.unprotect_rtcp(&raw).unwrap(),
+        None => raw.to_vec(),
+    };
+    let pli = RtcpPacket::parse_compound(&plain)
+        .into_iter()
+        .find_map(|p| match p {
+            RtcpPacket::PayloadFeedback(fb) if matches!(fb.kind, PayloadFeedback::Pli) => Some(fb),
+            _ => None,
+        })
+        .expect("PLI reached the screen's far end");
+    assert_eq!(pli.media_ssrc, far_content_ssrc);
+    assert_eq!(pli.sender_ssrc, browser.content_ssrc());
+    let nack = RtcpPacket::TransportFeedback(RtpFeedback::nack(
+        far_content_ssrc,
+        browser.content_ssrc(),
+        &[701],
+    ));
+    let bytes = nack.to_bytes();
+    let out = match &far_content_srtp {
+        Some(ctx) => ctx.lock().await.protect_rtcp(&bytes).unwrap(),
+        None => bytes,
+    };
+    far_content.send_rtcp(&out).await.unwrap();
+    let ev = next_event(&mut br_events, |e| {
+        matches!(e, PeerEvent::Rtcp(ps) if ps.iter().any(|p| matches!(p, RtcpPacket::TransportFeedback(fb) if fb.media_ssrc == browser.content_ssrc())))
+    })
+    .await;
+    let PeerEvent::Rtcp(ps) = ev else {
+        unreachable!()
+    };
+    let fb = ps
+        .iter()
+        .find_map(|p| match p {
+            RtcpPacket::TransportFeedback(fb) if fb.media_ssrc == browser.content_ssrc() => {
+                Some(fb)
+            }
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(fb.sender_ssrc, our_content_ssrc);
+    assert!(matches!(&fb.kind, TransportFeedback::Nack(e) if e[0].lost() == vec![701]));
+
     let snap = stats.snapshot();
     assert_eq!(snap.audio_to_sip, 2);
     assert_eq!(snap.video_to_sip, 3);
+    assert_eq!(snap.content_to_sip, 2);
     assert_eq!(snap.audio_to_browser, 2);
     assert_eq!(snap.video_to_browser, 1);
-    assert_eq!(snap.feedback_to_sip, 1);
-    assert_eq!(snap.feedback_to_browser, 1);
+    assert_eq!(snap.content_to_browser, 1);
+    assert_eq!(snap.feedback_to_sip, 2);
+    assert_eq!(snap.feedback_to_browser, 2);
     assert_eq!(snap.srtp_errors, 0);
+    assert!(stats.content_sent_within(Duration::from_secs(5)));
 
     stop.notify_one();
     assert_eq!(relay.await.unwrap(), RelayEnd::Stopped);
@@ -453,6 +578,7 @@ async fn relay_ends_when_the_browser_closes() {
             telephone_event_pt: None,
         },
         video: None,
+        content: None,
     };
     let browser_leg = BrowserLeg {
         events: gw_events,
@@ -460,6 +586,7 @@ async fn relay_ends_when_the_browser_closes() {
         audio_payload_type: 9,
         telephone_event_pt: None,
         video: None,
+        content: None,
         inactivity_timeout: Duration::from_secs(2),
     };
     let stop = Arc::new(Notify::new());
