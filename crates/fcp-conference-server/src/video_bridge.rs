@@ -547,6 +547,9 @@ pub fn detach_video(room: &ConferenceRoom, participant_id: &str) {
 /// video stops.
 fn spawn_event_pump(video: &Arc<VideoRoom>, sink: VideoEventSink) {
     let mut events = video.events();
+    // Weak, so the pump never keeps the room alive: it ends when the
+    // room's event channel closes, which is when the room goes.
+    let room = Arc::downgrade(video);
     tokio::spawn(async move {
         struct Done(Arc<dashmap::DashMap<String, ()>>, String);
         impl Drop for Done {
@@ -564,74 +567,10 @@ fn spawn_event_pump(video: &Arc<VideoRoom>, sink: VideoEventSink) {
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             };
-            let event = match ev {
-                // A trunk's tile is infrastructure, not a participant:
-                // it is left out of the participant-facing events, as a
-                // trunk is left out of join and leave.
-                VideoRoomEvent::ParticipantState {
-                    participant_id,
-                    state,
-                } if !participant_id.starts_with("__") => {
-                    Some(ConferenceEvent::VideoStateChanged {
-                        room_number: sink.room_number.clone(),
-                        participant_id,
-                        state: state.name().to_string(),
-                        tenant_id: sink.tenant_id,
-                        timestamp: SystemTime::now(),
-                    })
-                }
-                VideoRoomEvent::ParticipantState { .. } => None,
-                VideoRoomEvent::FpsChanged { from, to, overload } => {
-                    if overload {
-                        Some(ConferenceEvent::VideoOverload {
-                            room_number: sink.room_number.clone(),
-                            from_fps: from,
-                            to_fps: to,
-                            tenant_id: sink.tenant_id,
-                            timestamp: SystemTime::now(),
-                        })
-                    } else {
-                        info!(room = %sink.room_number, from, to, "video frame rate restored");
-                        None
-                    }
-                }
-                // One emitter per change: the node the speaker is on.
-                // A speaker reached through a remote tile is a peer's
-                // caller, and that peer announces them, so a listener
-                // sees one change rather than one per hosting node
-                // (§15.4, 5c).
-                VideoRoomEvent::ActiveSpeaker {
-                    participant_id,
-                    via,
-                } => {
-                    debug!(room = %sink.room_number, speaker = ?participant_id, ?via, "active speaker");
-                    match (participant_id, via) {
-                        (Some(participant_id), None) => {
-                            Some(ConferenceEvent::ActiveSpeakerChanged {
-                                room_number: sink.room_number.clone(),
-                                participant_id,
-                                node_id: sink.node_id.clone(),
-                                tenant_id: sink.tenant_id,
-                                timestamp: SystemTime::now(),
-                            })
-                        }
-                        _ => None,
-                    }
-                }
-                VideoRoomEvent::LayoutChanged {
-                    layout,
-                    pinned,
-                    spotlight,
-                } => Some(ConferenceEvent::VideoLayoutChanged {
-                    room_number: sink.room_number.clone(),
-                    layout: layout.name().to_string(),
-                    pinned,
-                    spotlight,
-                    tenant_id: sink.tenant_id,
-                    timestamp: SystemTime::now(),
-                }),
-            };
-            if let Some(event) = event {
+            // The room's rate as it stands: a shed leaves it alone, and
+            // the event says so.
+            let fps = room.upgrade().map(|r| r.fps()).unwrap_or(0);
+            if let Some(event) = conference_event(ev, &sink, fps) {
                 if let Err(e) = sink
                     .event_bus
                     .publish(PlatformEvent::Conference(event))
@@ -642,6 +581,102 @@ fn spawn_event_pump(video: &Arc<VideoRoom>, sink: VideoEventSink) {
             }
         }
     });
+}
+
+/// What one of the room's video events is on the platform bus, if
+/// anything. `room_fps` is the room's frame rate as it stands.
+fn conference_event(
+    ev: VideoRoomEvent,
+    sink: &VideoEventSink,
+    room_fps: u32,
+) -> Option<ConferenceEvent> {
+    match ev {
+        // A trunk's tile is infrastructure, not a participant: it is left
+        // out of the participant-facing events, as a trunk is left out of
+        // join and leave.
+        VideoRoomEvent::ParticipantState {
+            participant_id,
+            state,
+        } if !participant_id.starts_with("__") => Some(ConferenceEvent::VideoStateChanged {
+            room_number: sink.room_number.clone(),
+            participant_id,
+            state: state.name().to_string(),
+            tenant_id: sink.tenant_id,
+            timestamp: SystemTime::now(),
+        }),
+        VideoRoomEvent::ParticipantState { .. } => None,
+        // The last resort: shedding had nothing left to give (§9.2).
+        VideoRoomEvent::FpsChanged {
+            from,
+            to,
+            overload: true,
+        } => Some(ConferenceEvent::VideoOverload {
+            room_number: sink.room_number.clone(),
+            action: "fps".to_string(),
+            from_fps: from,
+            to_fps: to,
+            output: None,
+            from_resolution: None,
+            to_resolution: None,
+            tenant_id: sink.tenant_id,
+            timestamp: SystemTime::now(),
+        }),
+        VideoRoomEvent::FpsChanged { from, to, .. } => {
+            info!(room = %sink.room_number, from, to, "video frame rate restored");
+            None
+        }
+        // A rung given back once the room keeps up again: a recovery,
+        // logged as a restored frame rate is rather than published.
+        VideoRoomEvent::Shed { output, from, to } if to.height >= from.height => {
+            info!(room = %sink.room_number, %output, %from, %to, "video output given a rung back");
+            None
+        }
+        // What the room gives up first (§9.2): one composite drops a rung
+        // of the ladder and everyone's motion is left alone.
+        VideoRoomEvent::Shed { output, from, to } => Some(ConferenceEvent::VideoOverload {
+            room_number: sink.room_number.clone(),
+            action: "shed".to_string(),
+            from_fps: room_fps,
+            to_fps: room_fps,
+            output: Some(output),
+            from_resolution: Some(from.to_string()),
+            to_resolution: Some(to.to_string()),
+            tenant_id: sink.tenant_id,
+            timestamp: SystemTime::now(),
+        }),
+        // One emitter per change: the node the speaker is on. A speaker
+        // reached through a remote tile is a peer's caller, and that peer
+        // announces them, so a listener sees one change rather than one
+        // per hosting node (§15.4, 5c).
+        VideoRoomEvent::ActiveSpeaker {
+            participant_id,
+            via,
+        } => {
+            debug!(room = %sink.room_number, speaker = ?participant_id, ?via, "active speaker");
+            match (participant_id, via) {
+                (Some(participant_id), None) => Some(ConferenceEvent::ActiveSpeakerChanged {
+                    room_number: sink.room_number.clone(),
+                    participant_id,
+                    node_id: sink.node_id.clone(),
+                    tenant_id: sink.tenant_id,
+                    timestamp: SystemTime::now(),
+                }),
+                _ => None,
+            }
+        }
+        VideoRoomEvent::LayoutChanged {
+            layout,
+            pinned,
+            spotlight,
+        } => Some(ConferenceEvent::VideoLayoutChanged {
+            room_number: sink.room_number.clone(),
+            layout: layout.name().to_string(),
+            pinned,
+            spotlight,
+            tenant_id: sink.tenant_id,
+            timestamp: SystemTime::now(),
+        }),
+    }
 }
 
 fn unix_ms() -> u64 {
@@ -981,6 +1016,81 @@ mod tests {
         if forge_video_codecs::enabled_backends().is_empty() {
             assert!(native.is_empty());
         }
+    }
+
+    #[test]
+    fn a_shed_is_an_overload_and_a_rung_given_back_is_not() {
+        let sink = VideoEventSink {
+            event_bus: Arc::new(InMemoryEventBus::new()) as Arc<dyn EventPublisher>,
+            tenant_id: TenantId::new(),
+            room_number: "1000".into(),
+            node_id: "conf-a".into(),
+            pumps: Arc::new(dashmap::DashMap::new()),
+        };
+        let hd = Resolution::new(1280, 720);
+        let sd = Resolution::new(640, 360);
+
+        // What the room gives up first: one composite a rung smaller, and
+        // the room's frame rate left where it was.
+        let shed = VideoRoomEvent::Shed {
+            output: "all".into(),
+            from: hd,
+            to: sd,
+        };
+        match conference_event(shed, &sink, 15) {
+            Some(ConferenceEvent::VideoOverload {
+                action,
+                from_fps,
+                to_fps,
+                output,
+                from_resolution,
+                to_resolution,
+                ..
+            }) => {
+                assert_eq!(action, "shed");
+                assert_eq!((from_fps, to_fps), (15, 15));
+                assert_eq!(output.as_deref(), Some("all"));
+                assert_eq!(from_resolution.as_deref(), Some("1280x720"));
+                assert_eq!(to_resolution.as_deref(), Some("640x360"));
+            }
+            other => panic!("a shed is a video_overload, got {other:?}"),
+        }
+
+        // The same event on the way back up is a recovery, and recoveries
+        // are logged rather than published.
+        let back = VideoRoomEvent::Shed {
+            output: "all".into(),
+            from: sd,
+            to: hd,
+        };
+        assert!(conference_event(back, &sink, 15).is_none());
+
+        // Once shedding has nothing left, the rate halves: no composite named.
+        let halved = VideoRoomEvent::FpsChanged {
+            from: 15,
+            to: 7,
+            overload: true,
+        };
+        match conference_event(halved, &sink, 7) {
+            Some(ConferenceEvent::VideoOverload {
+                action,
+                from_fps,
+                to_fps,
+                output,
+                ..
+            }) => {
+                assert_eq!(action, "fps");
+                assert_eq!((from_fps, to_fps), (15, 7));
+                assert!(output.is_none());
+            }
+            other => panic!("a halved rate is a video_overload, got {other:?}"),
+        }
+        let restored = VideoRoomEvent::FpsChanged {
+            from: 7,
+            to: 15,
+            overload: false,
+        };
+        assert!(conference_event(restored, &sink, 15).is_none());
     }
 
     #[test]

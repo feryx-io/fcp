@@ -282,6 +282,9 @@ Colour: everything internal is I420 (4:2:0, limited range, BT.709 for
 | PLI / FIR from a receiver | in | Keyframe from that subscriber's encoder (rate-limited); on the passthrough path, forwarded to the source |
 | NACK from a receiver | in | Retransmit from the flavor's cache (RTX-less, same SSRC, per RFC 4585); ignore if older than the cache |
 | REMB / transport-cc from a receiver | in | Subscriber's allowed bitrate; the flavor's encoder targets the **minimum** over its subscribers, and a subscriber far below the others is moved to a lower-resolution flavor (a bitrate ladder per resolution: e.g. 1080p 2.5 Mb/s, 720p 1.2 Mb/s, 360p 500 kb/s, 180p 200 kb/s) |
+| Gap at our depacketizer | out | NACK to the source, then PLI if the frame is lost |
+| Our decoder errors | out | PLI to the source |
+| RR/SR | both | As today; jitter and loss feed the participant stats |
 
 *The ladder shipped in 6b (2026-09-08, forge-media `v2026.09.08.4`).* `forge_video::ladder` holds the
 rungs at or below a room's own size and the rule: below 70% of the
@@ -296,9 +299,14 @@ nothing at all in signaling; the rung it left is released when it was the
 last one there. A subscriber on the passthrough fast path (§5.6) is
 skipped, having no encoder to move between. transport-cc is still not
 implemented: REMB is the only estimate.
-| Gap at our depacketizer | out | NACK to the source, then PLI if the frame is lost |
-| Our decoder errors | out | PLI to the source |
-| RR/SR | both | As today; jitter and loss feed the participant stats |
+
+*Shedding puts a ceiling on the ladder (6c, forge-media `v2026.09.10`).*
+When the node's CPU cannot keep up, an output is held a rung down (§9.2),
+and the ladder does not climb a subscriber through that ceiling however
+good its link is: the limit is the node, not the link, and climbing would
+undo the shed on the very next tick. Going *down* is never held back — a
+link that cannot carry the ceiling gets the smaller picture the ladder
+would have given it anyway.
 
 Every feedback type is negotiated in SDP (`a=rtcp-fb`). A peer that offers
 none gets keyframes on the fixed interval only and no retransmission;
@@ -360,9 +368,19 @@ decides.
   frames over through bounded channels and drops rather than queues when
   behind (video is real time: a late frame is worthless).
 - One compositor task per room, on the pool, ticked by the video clock.
-- Frame budgets: the compositor must finish within one tick; if it
-  overruns three ticks in a row the room's fps is halved and an event is
-  emitted.
+- Frame budgets: the compositor must finish within one tick. When it
+  overruns three ticks in a row the room first **sheds**: its largest
+  output drops a rung of the bitrate ladder (§7), each later streak takes
+  whichever output is then largest down another, and only once every
+  output is at the bottom rung is the room's fps halved (never below a
+  quarter of its target). A shed is a ceiling on that output's scope
+  rather than a one-off move, so the ladder cannot climb straight back
+  through it. Ten calm seconds undo one step, in the opposite order: the
+  frame rate first, then the most degraded output a rung. Every downward
+  step is a `conference.video_overload` whose `action` is `shed` or `fps`
+  (§12). *(6c, forge-media `v2026.09.10`. Until then halving the fps was
+  the only lever, so one expensive composite cost everybody their
+  motion.)*
 
 ### 9.3 Capacity model
 
@@ -590,7 +608,10 @@ uses that.
 new `conference.video_layout_changed` (`{layout, pinned, spotlight}`, from
 the API, a host, or a pinned participant leaving; one per hosting node),
 `conference.video_state_changed` (participant video on/off/lost/disabled/
-failed), `conference.video_overload` (fps halved).
+failed), `conference.video_overload` (the room could not keep up: `action`
+`shed` when an output dropped a rung, with `output`, `from_resolution` and
+`to_resolution`, or `fps` when there was nothing left to shed and the frame
+rate halved; §9.2).
 
 **Placement**: conference nodes advertise `video_budget_left`; the
 selector uses it (§9).
@@ -645,8 +666,8 @@ crate (`forge-rtp` 111, `forge-sdp` 90, `forge-core` 22).
 | 2 | **Mixer core** — done 2026-09-05, forge-media `v2026.09.05.1` (forge-video 0.1.0, forge-video-codecs 0.1.0, forge-core 0.2.2): frames with device residency, host scaling and the `Scaler` trait, the four layouts, the `Compositor` trait and `HostCompositor`, bitmap font, `VideoClock`, flavors and the bitrate ladder, codec traits and registry, raw codec, PSNR; libvpx, OpenH264, dav1d and SVT-AV1 bindings behind features with round-trip, bitrate and speed tests, built in CI. Open: real camera clips for the benchmark; SIMD scaling if the numbers ask | forge-media | done |
 | 3 | **Conference video (SIP)**: fcp-media/fcp-sip SDP per section, meeting model + API + events, conference server ingress/egress, layouts and host controls, capacity accounting and placement | FCP | 3–4 weeks |
 | 4 | **WebRTC** — done 2026-09-07 (§15.3): forge-webrtc video (forge-media `v2026.09.07.1`), the gateway's media path and direct room join (v0.25.107), join tokens, join page and surface (v0.25.108) | forge-media, FCP | done |
-| 5 | **Recording and cascade**: WebM muxing and a recording registry, trunk video, cross-node speaker state — planned 2026-09-07 as three blocks (§15.4); MP4 deferred | both | 3–4 weeks |
-| 6 | **Passthrough fast path, bitrate ladder, polish**: single-source forwarding, ladder switching, overload handling, fuzzing — planned 2026-09-08 as three blocks (§15.5) | both | 2 weeks |
+| 5 | **Recording and cascade** — done 2026-09-08 (§15.4): WebM muxing and a recording registry (v0.25.110–112), trunk video (v0.25.113/114), cross-node speaker state (v0.25.115); MP4 deferred | both | done |
+| 6 | **Passthrough fast path, bitrate ladder, polish** — done 2026-09-10 (§15.5): single-source forwarding (v0.25.117/118), ladder switching (v0.25.119), overload shedding and parser fuzzing (v0.25.121; forge-media `v2026.09.10`) | both | done |
 | 7 | **GPU backend**: `hwaccel` feature (FFmpeg device contexts), device codecs, device scale/overlay composition, per-device budgets and self-benchmark, placement by capability, PSNR parity tests against the host path | forge-media, FCP | 3–4 weeks + a GPU box |
 
 Each phase is one PR per repository (forge-media release tag, then the
@@ -1087,6 +1108,22 @@ Decisions proposed with this plan, each open to reversal:
   campaign, and the corpus is committed. It catches the panic a
   malformed packet causes now; a real campaign belongs on hardware that
   is not paid for by the minute.
+- **Three blocks, in order, but 6b and 6c are independent.** 6a is the
+  one that touches the egress path, so it goes first; 6b and 6c can be
+  reviewed in either order after it.
+- **Not in this phase:** screen share (§16 puts it after phase 6), the
+  GPU backend (phase 7, still waiting on a machine with a GPU), Opus in
+  the mixer, per-participant tiles across nodes, and MP4 recording.
+
+**6a as built (2026-09-08).** As planned, with one deviation: the plan
+said a forwarded subscriber would be priced at "neither encode nor
+decode", and it is priced at neither encode nor composite — the decode
+still runs, since a tile's state is read off its decoded frames, and the
+capacity model charges what actually happens. The rest is as planned,
+including the `auto` default and the per-meeting override. The room
+setting is a `PassthroughMode` rather than a bool so `auto` can follow a
+layout that changes at runtime.
+
 **6b as built (2026-09-08).** As planned. Two things the plan left open,
 settled here: the thresholds are 70% down and 120% up with five- and
 fifteen-second windows (a `LadderPolicy` and two `Duration`s on the room,
@@ -1097,20 +1134,37 @@ rung is in the participant JSON (`rung`, `rung_kbps`, beside the
 `remb_kbps` that explains it) and in
 `forge_conference_video_ladder_moves_total`.
 
-**6a as built (2026-09-08).** As planned, with one deviation: the plan
-said a forwarded subscriber would be priced at "neither encode nor
-decode", and it is priced at neither encode nor composite — the decode
-still runs, for the reason above, and the capacity model charges what
-actually happens. The rest is as planned, including the `auto` default
-and the per-meeting override. The room setting is a `PassthroughMode`
-rather than a bool so `auto` can follow a layout that changes at runtime.
+**6c as built (2026-09-10).** Two forge-media PRs rather than one, since
+the halves share no code — #151 (fuzzing) and #152 (shedding), released
+together as `v2026.09.10` (forge-video 0.4.0, forge-conference 0.11.0) —
+and FCP v0.25.121. Shedding is as planned, with "then the next" read as
+*the next largest*: `VideoClock::done_with` asks a `LoadShedder` before it
+halves, and the room answers by taking the output held at the highest
+rung down one, again on each overrun streak, until every output is at the
+bottom; only then does the rate halve. A shed is a ceiling on the
+output's `OutputScope` rather than a one-off move, since the ladder would
+otherwise climb straight back on the next tick, and it is keyed by scope
+because a rung change changes the output's key. Recovery is ten calm
+seconds a step in reverse: the frame rate first, then the most degraded
+output a rung. `VideoRoomEvent::Shed { output, from, to }` reports both
+directions (a restore has `to` above `from`); FCP publishes the downward
+steps as `conference.video_overload` with `action: "shed"` and logs the
+upward ones, as it always has a restored frame rate. The halving is
+`action: "fps"`, and a relayed event from an older node, which carries no
+`action`, reads as that.
 
-- **Three blocks, in order, but 6b and 6c are independent.** 6a is the
-  one that touches the egress path, so it goes first; 6b and 6c can be
-  reviewed in either order after it.
-- **Not in this phase:** screen share (§16 puts it after phase 6), the
-  GPU backend (phase 7, still waiting on a machine with a GPU), Opus in
-  the mixer, per-participant tiles across nodes, and MP4 recording.
+Two deviations on fuzzing. The corpora are *derived*, not committed:
+`fuzz_seeds` tests in forge-rtp and forge-webm write them from the same
+packetizer and WebM-writer round-trips the unit tests assert, so a format
+change moves the seeds with it and a seed that stops round-tripping fails
+a test. And the run is scheduled rather than a smoke run on each PR:
+#151 made it weekly at ten minutes a target, on the grounds that a
+fuzzer's value is in how long it runs, and forge-media PR #153 makes it
+nightly — forge-media is a public repository, whose standard runners cost
+nothing, so the Actions budget that argued for a short run, FCP's, never
+applied to it. The eight targets were first compiled and run on
+2026-09-10, before the release was tagged: 30 seconds each, 2.5–10
+million inputs a target, no findings.
 
 ## 16. Resolved questions
 
