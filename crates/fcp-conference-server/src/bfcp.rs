@@ -1183,6 +1183,6 @@ mod tests {
             "the room keeps its conference id"
         );
         floors.leave("6000", b.user_id);
-        assert!(floors.lock().rooms.get("6000").is_none());
+        assert!(!floors.lock().rooms.contains_key("6000"));
     }
 }
