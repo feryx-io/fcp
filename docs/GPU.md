@@ -102,7 +102,9 @@ saturated throughput. On an L4, sixty real-time 720p30 H.264 encodes
 saturate NVENC, so one 720p15 H.264 encode costs nine units of the
 encode engine's 800. The composite is priced the same way, by
 saturation: several graphs run at once until the summed tick rate stops
-growing. A join is admitted only when every engine it touches has room,
+growing — on an L4 one graph already renders nine 720p tiles 1,737
+times a second, so a 720p15 composite costs ten units of the compose
+engine's 800. A join is admitted only when every engine it touches has room,
 and a share, which is a decode alone, is admitted while the compose
 engine is out.
 
@@ -110,8 +112,8 @@ Each step of the saturation run lasts at least a second after a
 one-second warm-up whatever `video_benchmark_seconds` says (short steps
 overshoot: a six-second run without the warm-up read 109 real-time
 H.264 encodes where long steps measure 62), so a GPU node's benchmark
-takes about a minute and a half for three encoders, five decoders and
-the composite, and the log says what it took.
+takes about eighty seconds for three encoders, five decoders and the
+composite, and the log says what it took.
 
 On the wire, a GPU's budget line carries `left` and `total` of its
 tightest engine — what a node from before engines were advertised
@@ -162,12 +164,14 @@ saturation benchmark prices it, and the budgets come out as described.
 | AV1 encode | ~79 |
 | HEVC encode | ~57 |
 | Decode (H.264 / AV1 / HEVC) | ~234 / 243 / 285 |
-| Composite, 720p, 1 / 4 / 9 / 16 tiles | 0.5 / 1.5 / 3.3 / 5.7 ms a tick (host: 3.9) |
+| Composite, nine 720p tiles, steady state | 0.58 ms a tick, 1,737 ticks/s on one graph (host: 3.9 ms) |
+| A 720p15 H.264 join, in GPU work units of 800 per engine | 9 encode, 2 decode, 10 compose |
 | Device against host compositor, luma PSNR over the golden scenes | 39.5 dB or better |
 
-The composite's cost is per filter stage rather than per pixel, so the
-device is cheaper than the host below about nine tiles and dearer
-above; it fits a 30 fps tick either way.
+The composite's steady-state cost is far below its first render's (the
+graph build and the chrome planes' uploads), which is why the saturation
+run warms up before it counts; the compose engine holds about
+fifty-eight rooms' 30 fps composites of nine tiles.
 
 ## What is not done
 
