@@ -650,6 +650,7 @@ mod tests {
             codecs: codecs.iter().map(|c| c.to_string()).collect(),
             left,
             total: 8000,
+            engines: None,
         });
         m
     }

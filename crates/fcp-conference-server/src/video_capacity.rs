@@ -121,55 +121,106 @@ pub struct DeviceBudget {
     /// The codecs the device *encodes* (design §15.7, decision 5): what
     /// placement matches a meeting's first codec against.
     pub codecs: Vec<String>,
+    /// The tightest engine's, on a device with engines.
     pub left: u32,
     pub total: u32,
+    /// Per engine `(engine, left, total)`, on a GPU (§15.8).
+    pub engines: Option<[(Engine, u32, u32); 3]>,
 }
 
-/// A cost in work units, per device: what a join, a share or a room
-/// takes of each device it touches. A room on a GPU spends the device's
-/// units on its decodes, its composite and the encodes the device has,
-/// and the host's on the encodes it lacks.
+/// The stages of the pipeline as engines that saturate separately on a
+/// GPU (design §15.8, decision 1): NVENC, NVDEC and the compute cores.
+/// The host has one pool for all three, its codec threads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Engine {
+    Encode,
+    Decode,
+    Compose,
+}
+
+impl Engine {
+    pub const ALL: [Engine; 3] = [Engine::Encode, Engine::Decode, Engine::Compose];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Engine::Encode => "encode",
+            Engine::Decode => "decode",
+            Engine::Compose => "compose",
+        }
+    }
+}
+
+/// A cost in work units, per device and engine: what a join, a share or
+/// a room takes of each it touches. A room on a GPU spends the device's
+/// decode engine on its sources, its compose engine on its outputs and
+/// its encode engine on the flavors the device has, and the host on the
+/// encodes it lacks.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct Cost(Vec<(MediaDevice, u32)>);
+pub struct Cost(Vec<(MediaDevice, Engine, u32)>);
 
 impl Cost {
     pub fn zero() -> Self {
         Self::default()
     }
 
-    fn add(&mut self, device: &MediaDevice, units: u32) {
+    fn add(&mut self, device: &MediaDevice, engine: Engine, units: u32) {
         if units == 0 {
             return;
         }
-        match self.0.iter_mut().find(|(d, _)| d == device) {
-            Some((_, u)) => *u = u.saturating_add(units),
-            None => self.0.push((device.clone(), units)),
+        match self
+            .0
+            .iter_mut()
+            .find(|(d, e, _)| d == device && *e == engine)
+        {
+            Some((_, _, u)) => *u = u.saturating_add(units),
+            None => self.0.push((device.clone(), engine, units)),
         }
     }
 
     fn extend(&mut self, other: &Cost) {
-        for (d, u) in &other.0 {
-            self.add(d, *u);
+        for (d, e, u) in &other.0 {
+            self.add(d, *e, *u);
         }
     }
 
-    /// Units on `device`.
+    /// Units on `device`, every engine together.
     pub fn on(&self, device: &MediaDevice) -> u32 {
         self.0
             .iter()
-            .find(|(d, _)| d == device)
-            .map(|(_, u)| *u)
+            .filter(|(d, _, _)| d == device)
+            .fold(0u32, |a, (_, _, u)| a.saturating_add(*u))
+    }
+
+    /// Units on one engine of `device`.
+    pub fn on_engine(&self, device: &MediaDevice, engine: Engine) -> u32 {
+        self.0
+            .iter()
+            .find(|(d, e, _)| d == device && *e == engine)
+            .map(|(_, _, u)| *u)
             .unwrap_or(0)
     }
 
-    /// Units over every device.
+    /// Units over every device and engine.
     pub fn total(&self) -> u32 {
-        self.0.iter().fold(0u32, |a, (_, u)| a.saturating_add(*u))
+        self.0
+            .iter()
+            .fold(0u32, |a, (_, _, u)| a.saturating_add(*u))
     }
 
-    #[allow(dead_code)]
+    #[allow(dead_code)] // the budget's API: tests, the box test, and callers to come
     pub fn is_zero(&self) -> bool {
         self.total() == 0
+    }
+
+    /// The devices this cost touches, in order of first mention.
+    fn devices(&self) -> Vec<MediaDevice> {
+        let mut out: Vec<MediaDevice> = Vec::new();
+        for (d, _, _) in &self.0 {
+            if !out.contains(d) {
+                out.push(d.clone());
+            }
+        }
+        out
     }
 }
 
@@ -178,24 +229,30 @@ impl std::fmt::Display for Cost {
         if self.0.is_empty() {
             return write!(f, "0");
         }
-        for (i, (d, u)) in self.0.iter().enumerate() {
+        for (i, d) in self.devices().iter().enumerate() {
             if i > 0 {
                 write!(f, " + ")?;
             }
-            write!(f, "{u} on {d}")?;
+            write!(f, "{} on {d} (", self.on(d))?;
+            let mut first = true;
+            for e in Engine::ALL {
+                let u = self.on_engine(d, e);
+                if u > 0 {
+                    if !first {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{u} {}", e.name())?;
+                    first = false;
+                }
+            }
+            write!(f, ")")?;
         }
         Ok(())
     }
 }
 
-/// One device's budget: what it runs, what that costs, what is committed
-/// and what a join may still take.
-pub struct DeviceCapacity {
-    device: MediaDevice,
-    /// Codecs it encodes: what its budget advertises.
-    encodes: Vec<VideoCodec>,
-    decodes: Vec<VideoCodec>,
-    table: CostTable,
+/// One engine's (or the host's one) budget counters.
+struct Pool {
     total: u32,
     /// Priced from the rooms at the last recompute.
     committed: AtomicU32,
@@ -205,20 +262,9 @@ pub struct DeviceCapacity {
     refused: AtomicU64,
 }
 
-impl DeviceCapacity {
-    /// A device with `total` work units.
-    pub fn new(
-        device: MediaDevice,
-        encodes: Vec<VideoCodec>,
-        decodes: Vec<VideoCodec>,
-        table: CostTable,
-        total: u32,
-    ) -> Self {
+impl Pool {
+    fn new(total: u32) -> Self {
         Self {
-            device,
-            encodes,
-            decodes,
-            table,
             total,
             committed: AtomicU32::new(0),
             reserved: AtomicU32::new(0),
@@ -226,79 +272,18 @@ impl DeviceCapacity {
         }
     }
 
-    /// The host's total: `execution_units` codec-pool threads at
-    /// `headroom` of their time (0.8 keeps a fifth for the async side and
-    /// for content harder than the benchmark's).
-    pub fn host_total(execution_units: usize, headroom: f64) -> u32 {
-        (execution_units.max(1) as f64 * UNITS_PER_EXECUTION_UNIT * clamp_headroom(headroom))
-            .round() as u32
-    }
-
-    /// A GPU's total: one execution unit — the device, whose engines the
-    /// saturation benchmark priced as a whole (design §15.7, decision 7)
-    /// — at `headroom`.
-    pub fn device_total(headroom: f64) -> u32 {
-        (UNITS_PER_EXECUTION_UNIT * clamp_headroom(headroom)).round() as u32
-    }
-
-    #[allow(dead_code)]
-    pub fn device(&self) -> &MediaDevice {
-        &self.device
-    }
-
-    #[allow(dead_code)]
-    pub fn encodes(&self) -> &[VideoCodec] {
-        &self.encodes
-    }
-
-    #[allow(dead_code)]
-    pub fn decodes(&self) -> &[VideoCodec] {
-        &self.decodes
-    }
-
-    #[allow(dead_code)]
-    pub fn table(&self) -> &CostTable {
-        &self.table
-    }
-
-    pub fn total(&self) -> u32 {
-        self.total
-    }
-
-    #[allow(dead_code)]
-    pub fn committed(&self) -> u32 {
+    fn committed(&self) -> u32 {
         self.committed.load(Ordering::Relaxed)
     }
 
-    pub fn reserved(&self) -> u32 {
+    fn reserved(&self) -> u32 {
         self.reserved.load(Ordering::Relaxed)
     }
 
-    /// Units a new room or participant may still cost here.
-    pub fn left(&self) -> u32 {
+    fn left(&self) -> u32 {
         self.total
             .saturating_sub(self.committed())
             .saturating_sub(self.reserved())
-    }
-
-    pub fn refused(&self) -> u64 {
-        self.refused.load(Ordering::Relaxed)
-    }
-
-    fn decode_units(&self, codec: VideoCodec, resolution: Resolution, fps: u32) -> u32 {
-        units(self.table.decode_ns_per_px(codec), resolution, fps)
-    }
-
-    fn encode_units(&self, codec: VideoCodec, resolution: Resolution, fps: u32) -> u32 {
-        units(self.table.encode_ns_per_px(codec), resolution, fps)
-    }
-
-    fn compose_units(&self, tiles: usize, resolution: Resolution, fps: u32) -> u32 {
-        units(
-            self.table.compose * (1.0 + 0.1 * tiles as f64),
-            resolution,
-            fps,
-        )
     }
 
     /// Take `units` if they fit; `false` refuses.
@@ -338,7 +323,163 @@ impl DeviceCapacity {
         }
     }
 
-    /// The budget line for cluster membership.
+    fn json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "total": self.total,
+            "committed": self.committed(),
+            "reserved": self.reserved(),
+            "left": self.left(),
+            "refused": self.refused.load(Ordering::Relaxed),
+        })
+    }
+}
+
+/// One device's budget: what it runs, what that costs, what is committed
+/// and what a join may still take. A GPU has a pool per [`Engine`]; the
+/// host one pool for all three (design §15.8, decision 1).
+pub struct DeviceCapacity {
+    device: MediaDevice,
+    /// Codecs it encodes: what its budget advertises.
+    encodes: Vec<VideoCodec>,
+    decodes: Vec<VideoCodec>,
+    table: CostTable,
+    /// One pool (the host), or one per engine in [`Engine::ALL`]'s order.
+    pools: Vec<Pool>,
+}
+
+impl DeviceCapacity {
+    /// A device with `total` work units — per engine on a GPU, in all on
+    /// the host.
+    pub fn new(
+        device: MediaDevice,
+        encodes: Vec<VideoCodec>,
+        decodes: Vec<VideoCodec>,
+        table: CostTable,
+        total: u32,
+    ) -> Self {
+        let pools = if device.is_host() {
+            vec![Pool::new(total)]
+        } else {
+            Engine::ALL.iter().map(|_| Pool::new(total)).collect()
+        };
+        Self {
+            device,
+            encodes,
+            decodes,
+            table,
+            pools,
+        }
+    }
+
+    fn pool(&self, engine: Engine) -> &Pool {
+        if self.pools.len() == 1 {
+            &self.pools[0]
+        } else {
+            &self.pools[engine as usize]
+        }
+    }
+
+    /// Whether the device has a pool per engine.
+    pub fn has_engines(&self) -> bool {
+        self.pools.len() > 1
+    }
+
+    /// The pool with the least left: what `left` and `total` mean for a
+    /// device with engines.
+    fn tightest(&self) -> &Pool {
+        self.pools
+            .iter()
+            .min_by_key(|p| p.left())
+            .expect("a device has a pool")
+    }
+
+    /// The host's total: `execution_units` codec-pool threads at
+    /// `headroom` of their time (0.8 keeps a fifth for the async side and
+    /// for content harder than the benchmark's).
+    pub fn host_total(execution_units: usize, headroom: f64) -> u32 {
+        (execution_units.max(1) as f64 * UNITS_PER_EXECUTION_UNIT * clamp_headroom(headroom))
+            .round() as u32
+    }
+
+    /// A GPU's total: one execution unit — the device, whose engines the
+    /// saturation benchmark priced as a whole (design §15.7, decision 7)
+    /// — at `headroom`.
+    pub fn device_total(headroom: f64) -> u32 {
+        (UNITS_PER_EXECUTION_UNIT * clamp_headroom(headroom)).round() as u32
+    }
+
+    #[allow(dead_code)] // the budget's API: tests, the box test, and callers to come
+    pub fn device(&self) -> &MediaDevice {
+        &self.device
+    }
+
+    #[allow(dead_code)] // the budget's API: tests, the box test, and callers to come
+    pub fn encodes(&self) -> &[VideoCodec] {
+        &self.encodes
+    }
+
+    #[allow(dead_code)] // the budget's API: tests, the box test, and callers to come
+    pub fn decodes(&self) -> &[VideoCodec] {
+        &self.decodes
+    }
+
+    #[allow(dead_code)] // the budget's API: tests, the box test, and callers to come
+    pub fn table(&self) -> &CostTable {
+        &self.table
+    }
+
+    /// The tightest pool's total (the device's, on the host).
+    pub fn total(&self) -> u32 {
+        self.tightest().total
+    }
+
+    #[allow(dead_code)] // the budget's API: tests, the box test, and callers to come
+    pub fn committed(&self) -> u32 {
+        self.tightest().committed()
+    }
+
+    pub fn reserved(&self) -> u32 {
+        self.tightest().reserved()
+    }
+
+    /// Units a new room or participant may still cost here: the tightest
+    /// engine's.
+    pub fn left(&self) -> u32 {
+        self.tightest().left()
+    }
+
+    /// Refusals over every pool, since start.
+    pub fn refused(&self) -> u64 {
+        self.pools
+            .iter()
+            .map(|p| p.refused.load(Ordering::Relaxed))
+            .sum()
+    }
+
+    /// One engine's units left (the device's, on the host).
+    #[allow(dead_code)] // the budget's API: tests, the box test, and callers to come
+    pub fn engine_left(&self, engine: Engine) -> u32 {
+        self.pool(engine).left()
+    }
+
+    fn decode_units(&self, codec: VideoCodec, resolution: Resolution, fps: u32) -> u32 {
+        units(self.table.decode_ns_per_px(codec), resolution, fps)
+    }
+
+    fn encode_units(&self, codec: VideoCodec, resolution: Resolution, fps: u32) -> u32 {
+        units(self.table.encode_ns_per_px(codec), resolution, fps)
+    }
+
+    fn compose_units(&self, tiles: usize, resolution: Resolution, fps: u32) -> u32 {
+        units(
+            self.table.compose * (1.0 + 0.1 * tiles as f64),
+            resolution,
+            fps,
+        )
+    }
+
+    /// The budget line for cluster membership: the tightest engine's
+    /// `left` and `total`, and the engines when the device has them.
     pub fn budget(&self) -> DeviceBudget {
         DeviceBudget {
             device: self.device.to_string(),
@@ -348,7 +489,13 @@ impl DeviceCapacity {
                 .map(|c| c.sdp_name().to_string())
                 .collect(),
             left: self.left(),
-            total: self.total,
+            total: self.total(),
+            engines: self.has_engines().then(|| {
+                Engine::ALL.map(|e| {
+                    let p = self.pool(e);
+                    (e, p.left(), p.total)
+                })
+            }),
         }
     }
 
@@ -389,18 +536,27 @@ impl DeviceCapacity {
                 (c.sdp_name().to_string(), serde_json::Value::Object(row))
             })
             .collect();
+        let engines: Option<serde_json::Value> = self.has_engines().then(|| {
+            let mut m = serde_json::Map::new();
+            for e in Engine::ALL {
+                m.insert(e.name().to_string(), self.pool(e).json());
+            }
+            serde_json::Value::Object(m)
+        });
         serde_json::json!({
             "device": self.device.to_string(),
             "unit": if self.device.is_host() {
                 "one thousandth of one codec-pool thread's time per second"
             } else {
-                "one thousandth of the device's saturated throughput"
+                "one thousandth of an engine's saturated throughput"
             },
-            "total": self.total,
+            // The tightest engine's, on a device with engines.
+            "total": self.total(),
             "committed": self.committed(),
             "reserved": self.reserved(),
             "left": self.left(),
             "refused": self.refused(),
+            "engines": engines,
             "codecs": self.encodes.iter().map(|c| c.sdp_name()).collect::<Vec<_>>(),
             "decodes": self.decodes.iter().map(|c| c.sdp_name()).collect::<Vec<_>>(),
             "compose_ns_per_px": round2(self.table.compose),
@@ -451,7 +607,7 @@ impl VideoCapacity {
 
     /// The host alone: `execution_units` codec-pool threads at
     /// `headroom`, running `codecs` both ways.
-    #[allow(dead_code)]
+    #[allow(dead_code)] // the budget's API: tests, the box test, and callers to come
     pub fn host(
         codecs: Vec<VideoCodec>,
         table: CostTable,
@@ -475,7 +631,7 @@ impl VideoCapacity {
         &self.room_device
     }
 
-    #[allow(dead_code)]
+    #[allow(dead_code)] // the budget's API: tests, the box test, and callers to come
     pub fn devices(&self) -> &[DeviceCapacity] {
         &self.devices
     }
@@ -528,12 +684,12 @@ impl VideoCapacity {
         self.room().total()
     }
 
-    #[allow(dead_code)]
+    #[allow(dead_code)] // the budget's API: tests, the box test, and callers to come
     pub fn committed(&self) -> u32 {
         self.room().committed()
     }
 
-    #[allow(dead_code)]
+    #[allow(dead_code)] // the budget's API: tests, the box test, and callers to come
     pub fn reserved(&self) -> u32 {
         self.room().reserved()
     }
@@ -545,7 +701,7 @@ impl VideoCapacity {
     }
 
     /// Joins refused for want of budget on any device, since start.
-    #[allow(dead_code)]
+    #[allow(dead_code)] // the budget's API: tests, the box test, and callers to come
     pub fn refused(&self) -> u64 {
         self.devices.iter().map(|d| d.refused()).sum()
     }
@@ -569,11 +725,12 @@ impl VideoCapacity {
         }
         let mut cost = Cost::zero();
         match best {
-            Some((d, u)) => cost.add(&d.device, u),
+            Some((d, u)) => cost.add(&d.device, Engine::Decode, u),
             None => {
                 let room = self.room();
                 cost.add(
                     &room.device,
+                    Engine::Decode,
                     units(CostTable::worst(&room.table.decode), res, fps),
                 );
             }
@@ -601,6 +758,7 @@ impl VideoCapacity {
                 let d = self.on(&s.device);
                 cost.add(
                     &d.device,
+                    Engine::Decode,
                     d.decode_units(s.codec, resolution, if s.fps > 0 { s.fps } else { fps }),
                 );
             }
@@ -617,12 +775,17 @@ impl VideoCapacity {
                 let d = self.on(&f.device);
                 cost.add(
                     &d.device,
+                    Engine::Encode,
                     d.encode_units(f.flavor.codec, f.flavor.resolution, f.flavor.fps.max(1)),
                 );
             }
             if live {
                 let d = self.on(&o.device);
-                cost.add(&d.device, d.compose_units(st.sources, o.resolution, fps));
+                cost.add(
+                    &d.device,
+                    Engine::Compose,
+                    d.compose_units(st.sources, o.resolution, fps),
+                );
             }
         }
         cost
@@ -644,9 +807,17 @@ impl VideoCapacity {
         for &c in codecs {
             let mut cost = Cost::zero();
             let dec = self.decoder_of(c);
-            cost.add(&dec.device, dec.decode_units(c, settings.resolution, fps));
+            cost.add(
+                &dec.device,
+                Engine::Decode,
+                dec.decode_units(c, settings.resolution, fps),
+            );
             let enc = self.encoder_of(c);
-            cost.add(&enc.device, enc.encode_units(c, settings.resolution, fps));
+            cost.add(
+                &enc.device,
+                Engine::Encode,
+                enc.encode_units(c, settings.resolution, fps),
+            );
             if dearest
                 .as_ref()
                 .map(|d| cost.total() > d.total())
@@ -664,7 +835,7 @@ impl VideoCapacity {
             }
             Some(_) => 0,
         };
-        cost.add(&room.device, compose);
+        cost.add(&room.device, Engine::Compose, compose);
         cost
     }
 
@@ -672,14 +843,14 @@ impl VideoCapacity {
     /// touches, holding the units until the next recompute sees the
     /// participant in a room. `false` refuses, and holds nothing.
     pub fn try_reserve(&self, cost: &Cost) -> bool {
-        let mut taken: Vec<(&DeviceCapacity, u32)> = Vec::new();
-        for (device, units) in &cost.0 {
-            let d = self.on(device);
-            if d.reserve(*units) {
-                taken.push((d, *units));
+        let mut taken: Vec<(&Pool, u32)> = Vec::new();
+        for (device, engine, units) in &cost.0 {
+            let pool = self.on(device).pool(*engine);
+            if pool.reserve(*units) {
+                taken.push((pool, *units));
             } else {
-                for (d, u) in taken {
-                    d.release(u);
+                for (p, u) in taken {
+                    p.release(u);
                 }
                 return false;
             }
@@ -697,9 +868,19 @@ impl VideoCapacity {
             }
         }
         for d in &self.devices {
-            d.committed
-                .store(committed.on(&d.device), Ordering::Relaxed);
-            d.reserved.store(0, Ordering::Relaxed);
+            if d.has_engines() {
+                for e in Engine::ALL {
+                    let p = d.pool(e);
+                    p.committed
+                        .store(committed.on_engine(&d.device, e), Ordering::Relaxed);
+                    p.reserved.store(0, Ordering::Relaxed);
+                }
+            } else {
+                let p = d.pool(Engine::Encode);
+                p.committed
+                    .store(committed.on(&d.device), Ordering::Relaxed);
+                p.reserved.store(0, Ordering::Relaxed);
+            }
         }
         *self.last_recompute.lock() = Some(Instant::now());
         committed
@@ -711,7 +892,7 @@ impl VideoCapacity {
     }
 
     /// The room device's budget line.
-    #[allow(dead_code)]
+    #[allow(dead_code)] // the budget's API: tests, the box test, and callers to come
     pub fn budget(&self) -> DeviceBudget {
         self.room().budget()
     }
@@ -793,12 +974,12 @@ pub fn self_benchmark(
 
 /// The stream the device benchmark saturates with: 720p30, the design's
 /// unit of GPU capacity (§9.1).
-#[allow(dead_code)]
+#[allow(dead_code)] // the device benchmark's, behind `video-hwaccel`
 pub const DEVICE_BENCH_RESOLUTION: Resolution = Resolution {
     width: 1280,
     height: 720,
 };
-#[allow(dead_code)]
+#[allow(dead_code)] // the device benchmark's, behind `video-hwaccel`
 pub const DEVICE_BENCH_FPS: u32 = 30;
 
 /// The per-pixel constant that makes `streams` real-time streams of
@@ -834,9 +1015,11 @@ pub fn self_benchmark_device(
     }
     let started = Instant::now();
     let mut table = fallback;
-    // Each stage steps 1, 2, 4, 8 streams; the composite takes one share.
-    let runs = (encodes.len() + decodes.len()) as f64 * 4.0 + 1.0;
-    let per_step = Duration::from_secs_f64((seconds as f64 / runs).max(0.2));
+    // Each stage steps 1, 2, 4, 8 streams, the composite too; a step is
+    // at least a second whatever the budget says (§15.8, decision 2:
+    // short steps overshoot), plus the bench's own warm-up.
+    let runs = (encodes.len() + decodes.len() + 1) as f64 * 4.0;
+    let per_step = Duration::from_secs_f64((seconds as f64 / runs).max(1.0));
     let mut measured = Vec::new();
     let run = |codec: VideoCodec, stage: Stage| -> Option<f64> {
         match saturate(
@@ -886,16 +1069,22 @@ pub fn self_benchmark_device(
             }
         }
     }
-    match bench::measure_compose_on(&*backend.hw, DEVICE_BENCH_RESOLUTION, 9, 30) {
-        Ok(ns) => {
-            table.compose = ns;
-            info!(device = %backend.device, compose_ns_per_px = format!("{:.2}", ns),
+    match bench::measure_compose_saturated(&*backend.hw, DEVICE_BENCH_RESOLUTION, 9, per_step, 8) {
+        Ok(sat) => {
+            table.compose = sat.ns_per_px();
+            info!(device = %backend.device, graphs = sat.graphs,
+                  ticks_per_second = format!("{:.0}", sat.ticks_per_second),
+                  saturated = sat.saturated,
+                  compose_ns_per_px = format!("{:.3}", table.compose),
                   "Video device benchmark: composition");
         }
         Err(e) => {
             warn!(device = %backend.device, error = %e, "Video device benchmark: composition failed; keeping the table's constant");
         }
     }
+    info!(device = %backend.device, seconds = format!("{:.1}", started.elapsed().as_secs_f64()),
+          per_step_secs = format!("{:.1}", per_step.as_secs_f64()),
+          "Video device benchmark done");
     table.source = CostSource::Benchmark {
         seconds: started.elapsed().as_secs_f64(),
         measured,
@@ -936,8 +1125,8 @@ fn idle_flavors(
 /// decode, reserved like a join and priced into `committed` once the next
 /// recompute sees the content source in the room.
 impl ContentGate for VideoCapacity {
-    fn admit(&self, room: &str, participant: &str) -> bool {
-        let cost = self.content_cost(&VideoRoomSettings::default());
+    fn admit(&self, room: &str, participant: &str, settings: &VideoRoomSettings) -> bool {
+        let cost = self.content_cost(settings);
         let admitted = self.try_reserve(&cost);
         if !admitted {
             warn!(
@@ -1044,7 +1233,20 @@ mod tests {
             first.total(),
             "all on the host"
         );
-        assert_eq!(first.to_string(), format!("{} on host", first.total()));
+        assert!(
+            first
+                .to_string()
+                .starts_with(&format!("{} on host (", first.total())),
+            "{first}"
+        );
+        assert_eq!(
+            first.on_engine(&MediaDevice::Host, Engine::Encode),
+            h264 - units(1.4, Resolution::new(1280, 720), 15)
+        );
+        assert_eq!(
+            first.on_engine(&MediaDevice::Host, Engine::Compose),
+            compose1
+        );
         // The dearest allowed codec sets the price.
         let either = cap.join_cost(&settings(false), &[VideoCodec::H264, VideoCodec::VP8], None);
         assert!(either.total() > first.total());
@@ -1128,7 +1330,7 @@ mod tests {
 
         // The recompute over this room commits exactly its cost.
         let mut five = Cost::zero();
-        five.add(&MediaDevice::Host, 5);
+        five.add(&MediaDevice::Host, Engine::Encode, 5);
         cap.try_reserve(&five);
         assert_eq!(cap.recompute(vec![Arc::clone(&room)]).total(), expected);
         assert_eq!(cap.reserved(), 0);
@@ -1185,6 +1387,63 @@ mod tests {
         assert_eq!(budgets[1].codecs, vec!["H264", "VP8"]);
         assert_eq!(cap.json()["devices"].as_array().unwrap().len(), 2);
         assert_eq!(cap.json()["device"], "cuda:0");
+        // The GPU has an engine per stage on the wire; the host has none.
+        let engines = budgets[0].engines.expect("a GPU has engines");
+        assert_eq!(engines[0], (Engine::Encode, 1000, 1000));
+        assert!(budgets[1].engines.is_none());
+        assert!(cap.json()["devices"][0]["engines"]["compose"]["total"] == 1000);
+        assert!(cap.json()["devices"][1]["engines"].is_null());
+        // A VP8 join is charged to the engines it uses: the host's encode,
+        // the device's decode and compose.
+        assert_eq!(vp8.on_engine(&gpu, Engine::Encode), 0);
+        assert!(vp8.on_engine(&gpu, Engine::Decode) > 0);
+        assert!(vp8.on_engine(&gpu, Engine::Compose) > 0);
+        assert!(vp8.on_engine(&MediaDevice::Host, Engine::Encode) > 0);
+    }
+
+    #[test]
+    fn an_engine_out_of_budget_refuses_what_needs_it_and_admits_what_does_not() {
+        // A device whose engines each hold 120 units: about two H.264
+        // joins' composites, many more encodes and decodes.
+        let (gpu, cap) = gpu_capacity(120);
+        let h264 = cap.join_cost(&settings(false), &[VideoCodec::H264], None);
+        let compose = h264.on_engine(&gpu, Engine::Compose);
+        assert!(compose > h264.on_engine(&gpu, Engine::Encode));
+        let mut joins = 0;
+        while cap.try_reserve(&h264) {
+            joins += 1;
+        }
+        assert_eq!(joins, 120 / compose, "the compose engine is what ran out");
+        let dev = &cap.devices()[0];
+        assert!(dev.engine_left(Engine::Compose) < compose);
+        assert!(
+            dev.engine_left(Engine::Encode) > compose,
+            "encode has plenty"
+        );
+        assert_eq!(
+            dev.left(),
+            dev.engine_left(Engine::Compose),
+            "left is the tightest engine's"
+        );
+        // A share is a decode alone: admitted while the compose engine is
+        // out, because it does not touch it.
+        let share = cap.content_cost(&settings(false));
+        assert_eq!(share.on_engine(&gpu, Engine::Compose), 0);
+        assert!(share.on_engine(&gpu, Engine::Decode) > 0);
+        assert!(cap.try_reserve(&share));
+        // The gate prices the share at the room's own cap, not defaults:
+        // a room capping content lower pays less.
+        let mut small = settings(false);
+        small.content_max_resolution = Resolution::new(640, 360);
+        assert!(cap.content_cost(&small).total() < share.total());
+        // The wire carries the engines: placement reads the encoder's.
+        let b = cap.budgets().into_iter().next().unwrap();
+        let engines = b.engines.unwrap();
+        assert_eq!(engines[0].0, Engine::Encode);
+        assert!(
+            engines[0].1 > b.left,
+            "the encoder has more left than the tightest engine"
+        );
     }
 
     #[test]

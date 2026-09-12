@@ -104,12 +104,26 @@ const columns: ColumnDef<ClusterNodeInfo>[] = [
         <div className="text-xs space-y-0.5">
           {budget.map((b) => {
             const pct = b.total > 0 ? Math.round((b.left / b.total) * 100) : 0
+            const tone = (p: number) => (p < 15 ? 'text-destructive' : p < 40 ? 'text-yellow-600' : '')
             return (
-              <div key={b.device} title={`${b.codecs.join(', ')} · ${b.left} of ${b.total} work units left`}>
+              <div key={b.device} title={`encodes ${b.codecs.join(', ')} · ${b.left} of ${b.total} work units left${b.engines ? ' (the tightest engine)' : ''}`}>
                 <span className="font-mono">{b.device}</span>{' '}
-                <span className={pct < 15 ? 'text-destructive' : pct < 40 ? 'text-yellow-600' : ''}>
+                <span className={tone(pct)}>
                   {b.left}/{b.total} ({pct}%)
                 </span>
+                {b.engines && (
+                  <div className="pl-3 text-muted-foreground">
+                    {(['encode', 'decode', 'compose'] as const).map((e) => {
+                      const eng = b.engines![e]
+                      const ep = eng.total > 0 ? Math.round((eng.left / eng.total) * 100) : 0
+                      return (
+                        <span key={e} className="mr-2" title={`${e}: ${eng.left} of ${eng.total} units left`}>
+                          {e} <span className={tone(ep)}>{ep}%</span>
+                        </span>
+                      )
+                    })}
+                  </div>
+                )}
               </div>
             )
           })}
