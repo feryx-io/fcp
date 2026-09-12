@@ -98,6 +98,9 @@ fn leg_json(leg: &VideoLeg, state: &str) -> serde_json::Value {
 
 /// The ingress side of a stream, as the room measures it.
 fn source_json(json: &mut serde_json::Value, src: &forge_conference::video::VideoSourceInfo) {
+    // Where the stream is decoded: the room's device, or the host when
+    // the device has no decoder for the codec (§15.7).
+    json["device"] = serde_json::json!(src.device.to_string());
     json["resolution"] = serde_json::json!(src.resolution.to_string());
     json["fps"] = serde_json::json!(src.fps);
     json["bitrate_kbps"] = serde_json::json!(src.bitrate_kbps);
@@ -220,6 +223,9 @@ pub fn room_video_json(room: &ConferenceRoom) -> serde_json::Value {
         "fps": st.fps,
         "target_fps": st.target_fps,
         "resolution": st.resolution.to_string(),
+        // The device the room is placed on; each output, flavor and
+        // source says where it actually runs (§15.7).
+        "device": st.device.to_string(),
         "sources": st.sources,
         "encoders": st.encoders,
         "ticks": st.ticks,
@@ -232,7 +238,9 @@ pub fn room_video_json(room: &ConferenceRoom) -> serde_json::Value {
             // The composite, the cameras alone, or the content alone (§15.6).
             "view": o.view.name(),
             "resolution": o.resolution.to_string(),
+            "device": o.device.to_string(),
             "flavors": o.flavors.iter().map(|f| serde_json::json!({
+                "device": f.device.to_string(),
                 "codec": f.flavor.codec.sdp_name(),
                 "profile": f.flavor.profile,
                 "resolution": f.flavor.resolution.to_string(),
