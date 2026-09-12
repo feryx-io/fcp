@@ -978,6 +978,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "bindgen"
+version = "0.70.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f49d8fed880d473ea71efb9bf597651e77201bdd4893efe54c9e5d65ae04ce6f"
+dependencies = [
+ "bitflags 2.11.1",
+ "cexpr",
+ "clang-sys",
+ "itertools 0.13.0",
+ "proc-macro2",
+ "quote",
+ "regex",
+ "rustc-hash 1.1.0",
+ "shlex",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "bit-set"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1287,7 +1305,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "117725a109d387c937a1533ce01b450cbde6b88abceea8473c4d7a85853cda3c"
 dependencies = [
  "lazy_static",
- "windows-sys 0.48.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1296,7 +1314,7 @@ version = "3.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "faf9468729b8cbcea668e36183cb69d317348c2e08e994829fb56ebfdfbaac34"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2041,7 +2059,7 @@ version = "5.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "26ecdc636a02003406cc821aa9d703c888a966a3fd9bbdae9f7cf27d71720147"
 dependencies = [
- "bindgen",
+ "bindgen 0.68.1",
  "pkg-config",
 ]
 
@@ -2179,7 +2197,7 @@ checksum = "9f1f227452a390804cdb637b74a86990f2a7d7ba4b7d5693aac9b4dd6defd8d6"
 
 [[package]]
 name = "fcp-admin"
-version = "0.25.134"
+version = "0.25.135"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2216,7 +2234,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-admin-ui"
-version = "0.25.134"
+version = "0.25.135"
 dependencies = [
  "axum 0.7.9",
  "include_dir",
@@ -2225,7 +2243,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-api-core"
-version = "0.25.134"
+version = "0.25.135"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2265,7 +2283,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-api-gateway"
-version = "0.25.134"
+version = "0.25.135"
 dependencies = [
  "anyhow",
  "axum 0.7.9",
@@ -2295,7 +2313,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-b2bua-core"
-version = "0.25.134"
+version = "0.25.135"
 dependencies = [
  "anyhow",
  "bytes",
@@ -2318,7 +2336,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-billing"
-version = "0.25.134"
+version = "0.25.135"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2332,7 +2350,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-call-manager"
-version = "0.25.134"
+version = "0.25.135"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2390,7 +2408,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-cli"
-version = "0.25.134"
+version = "0.25.135"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2423,7 +2441,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-cluster"
-version = "0.25.134"
+version = "0.25.135"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2442,7 +2460,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-conference-server"
-version = "0.25.134"
+version = "0.25.135"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -2473,6 +2491,7 @@ dependencies = [
  "forge-rtp",
  "forge-video",
  "forge-video-codecs",
+ "forge-video-hw",
  "forge-webm",
  "futures",
  "hound",
@@ -2528,7 +2547,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-crypto"
-version = "0.25.134"
+version = "0.25.135"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -2546,7 +2565,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-events"
-version = "0.25.134"
+version = "0.25.135"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2563,7 +2582,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-events-server"
-version = "0.25.134"
+version = "0.25.135"
 dependencies = [
  "anyhow",
  "axum 0.7.9",
@@ -2620,7 +2639,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-ivr"
-version = "0.25.134"
+version = "0.25.135"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2661,7 +2680,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-jobs"
-version = "0.25.134"
+version = "0.25.135"
 dependencies = [
  "anyhow",
  "axum 0.7.9",
@@ -2721,7 +2740,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-media-server"
-version = "0.25.134"
+version = "0.25.135"
 dependencies = [
  "anyhow",
  "clap",
@@ -2744,7 +2763,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-pbx"
-version = "0.25.134"
+version = "0.25.135"
 dependencies = [
  "dashmap 6.1.0",
  "fcp-b2bua-core",
@@ -2783,7 +2802,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-presence"
-version = "0.25.134"
+version = "0.25.135"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -2810,7 +2829,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-presence-server"
-version = "0.25.134"
+version = "0.25.135"
 dependencies = [
  "anyhow",
  "axum 0.7.9",
@@ -2841,7 +2860,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-queue"
-version = "0.25.134"
+version = "0.25.135"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2863,7 +2882,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-registrar"
-version = "0.25.134"
+version = "0.25.135"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2909,7 +2928,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-sbc"
-version = "0.25.134"
+version = "0.25.135"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2960,7 +2979,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-sbc-core"
-version = "0.25.134"
+version = "0.25.135"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -3038,7 +3057,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-storage-postgres"
-version = "0.25.134"
+version = "0.25.135"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3059,7 +3078,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-storage-redis"
-version = "0.25.134"
+version = "0.25.135"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3079,7 +3098,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-testkit"
-version = "0.25.134"
+version = "0.25.135"
 dependencies = [
  "anyhow",
  "libc",
@@ -3091,7 +3110,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-tts-server"
-version = "0.25.134"
+version = "0.25.135"
 dependencies = [
  "anyhow",
  "axum 0.7.9",
@@ -3129,7 +3148,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-voicemail-server"
-version = "0.25.134"
+version = "0.25.135"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3173,7 +3192,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-webhooks"
-version = "0.25.134"
+version = "0.25.135"
 dependencies = [
  "fcp-core",
  "fcp-events",
@@ -3191,7 +3210,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-webrtc-gateway"
-version = "0.25.134"
+version = "0.25.135"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3241,6 +3260,20 @@ checksum = "c0b50bfb653653f9ca9095b427bed08ab8d75a137839d9ad64eb11810d5b6393"
 dependencies = [
  "rand_core 0.6.4",
  "subtle",
+]
+
+[[package]]
+name = "ffmpeg-sys-next"
+version = "7.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f9e9c75ebd4463de9d8998fb134ba26347fe5faee62fabf0a4b4d41bd500b4ad"
+dependencies = [
+ "bindgen 0.70.1",
+ "cc",
+ "libc",
+ "num_cpus",
+ "pkg-config",
+ "vcpkg",
 ]
 
 [[package]]
@@ -3667,15 +3700,29 @@ dependencies = [
 name = "forge-video-codecs"
 version = "0.1.3"
 dependencies = [
- "bindgen",
+ "bindgen 0.68.1",
  "bytes",
  "dav1d",
  "env-libvpx-sys",
  "forge-core",
  "forge-rtp",
  "forge-video",
+ "forge-video-hw",
  "openh264",
  "pkg-config",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "forge-video-hw"
+version = "0.2.0"
+dependencies = [
+ "bytes",
+ "ffmpeg-sys-next",
+ "forge-core",
+ "forge-rtp",
+ "forge-video",
  "thiserror 2.0.18",
  "tracing",
 ]
@@ -4347,7 +4394,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.5.10",
+ "socket2 0.6.3",
  "system-configuration",
  "tokio",
  "tower-layer",
@@ -5995,7 +6042,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash 2.1.2",
  "rustls",
- "socket2 0.5.10",
+ "socket2 0.6.3",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -6034,7 +6081,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.5.10",
+ "socket2 0.6.3",
  "tracing",
  "windows-sys 0.60.2",
 ]
@@ -9125,7 +9172,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

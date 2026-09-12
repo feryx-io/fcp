@@ -126,8 +126,9 @@ jobs:
           submodules: recursive
       # `--all-features` turns on fcp-conference-server's `video-*` features,
       # which link the native video codecs (libvpx, dav1d, OpenH264 built from
-      # source, SVT-AV1). forge-media's composite action installs them the way
-      # its own CI does.
+      # source, SVT-AV1), and `video-hwaccel`, whose FFmpeg bindings need the
+      # libav* development headers. forge-media's composite action installs
+      # them all the way its own CI does.
       - name: Install native video codec libraries
         uses: ./external/forge-media/.github/actions/video-codecs
       - name: Install toolchain

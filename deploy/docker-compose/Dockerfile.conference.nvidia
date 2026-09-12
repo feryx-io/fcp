@@ -1,0 +1,71 @@
+# fcp-conference-server for a node with an NVIDIA GPU (docs/GPU.md).
+#
+# The same binary as Dockerfile.conference, built with the `video-hwaccel`
+# feature against an FFmpeg the image builds itself: LGPL, NVENC, NVDEC
+# and the CUDA filters compiled by clang (`cuda-llvm`), no nvcc, no
+# libnpp — design §15.7, decision 4 — plus the host's native codec
+# bindings. The driver comes from the host through the NVIDIA container
+# toolkit at run time (`runtime: nvidia`, or `--gpus all`), which injects
+# libcuda, libnvcuvid and libnvidia-encode for the capabilities asked in
+# NVIDIA_DRIVER_CAPABILITIES.
+FROM rust:1.92-bookworm AS builder
+
+ARG FFMPEG_TAG=n7.1
+ARG NV_CODEC_HEADERS_TAG=n12.2.72.0
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    pkg-config clang libclang-dev cmake nasm yasm git curl ca-certificates \
+    libssl-dev libopus-dev libvpx-dev libdav1d-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# nv-codec-headers (MIT) pinned to the NVENC SDK the driver speaks (12.2
+# for the 550 series); FFmpeg built with the device paths on and nothing
+# that would change its licence.
+RUN git clone --depth 1 --branch ${NV_CODEC_HEADERS_TAG} https://git.videolan.org/git/ffmpeg/nv-codec-headers.git /opt/src/nv-codec-headers \
+    && make -C /opt/src/nv-codec-headers install PREFIX=/usr/local \
+    && git clone --depth 1 --branch ${FFMPEG_TAG} https://git.ffmpeg.org/ffmpeg.git /opt/src/ffmpeg \
+    && cd /opt/src/ffmpeg \
+    && ./configure --prefix=/opt/ffmpeg-nv --enable-shared \
+         --enable-ffnvcodec --enable-cuda-llvm --nvccflags="--cuda-gpu-arch=sm_86 -O2" \
+         --enable-nvenc --enable-nvdec --enable-cuvid \
+         --enable-libvpx --enable-libopus --enable-libdav1d \
+         --disable-doc --disable-programs \
+    && make -j"$(nproc)" && make install \
+    && rm -rf /opt/src
+
+ENV PKG_CONFIG_PATH=/opt/ffmpeg-nv/lib/pkgconfig
+ENV LD_LIBRARY_PATH=/opt/ffmpeg-nv/lib
+
+WORKDIR /app
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+COPY external ./external
+
+RUN cargo build --release -p fcp-conference-server \
+    --features video-hwaccel,video-vpx,video-openh264,video-dav1d
+
+# Runtime: the same Debian as the builder so the FFmpeg libraries match.
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl libopus0 libvpx7 libdav1d6 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /opt/ffmpeg-nv/lib /opt/ffmpeg-nv/lib
+RUN echo /opt/ffmpeg-nv/lib > /etc/ld.so.conf.d/ffmpeg-nv.conf && ldconfig
+
+WORKDIR /app
+COPY --from=builder /app/target/release/fcp-conference /app/fcp-conference
+RUN mkdir -p /app/data /var/fcp/conference/recordings /var/fcp/conference/announcements
+
+# What the container toolkit must inject: the CUDA driver library, and the
+# video engines' (NVENC, NVDEC).
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
+
+EXPOSE 5060/udp
+EXPOSE 5060/tcp
+EXPOSE 8090
+EXPOSE 20000-30000/udp
+
+CMD ["/app/fcp-conference", "--config", "/app/fcp-conference-server.toml"]

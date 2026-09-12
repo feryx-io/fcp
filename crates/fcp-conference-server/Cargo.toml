@@ -19,6 +19,12 @@ video-openh264 = ["forge-video-codecs/openh264"]
 video-dav1d = ["forge-video-codecs/dav1d"]
 video-svt-av1 = ["forge-video-codecs/svt-av1"]
 video-all = ["video-vpx", "video-openh264", "video-dav1d", "video-svt-av1"]
+# A GPU (docs/GPU.md, design §15.7): FFmpeg's device contexts through
+# forge-video-hw — NVDEC decoders, NVENC encoders, a compositor on the
+# device — for the node named by `conference.video_device`. Needs the
+# FFmpeg development headers at build time and the driver at run time;
+# not in `video-all`, which is the host's native bindings.
+video-hwaccel = ["forge-video-codecs/hwaccel", "dep:forge-video-hw"]
 # Record a room's composite video and mixed audio to one WebM file
 # (docs/VIDEO_CONFERENCING.md §11). Off by default, like the codec
 # features: Opus pulls in `audiopus`, which builds libopus from source.
@@ -57,6 +63,7 @@ forge-dtmf = { path = "../../external/forge-media/crates/forge-dtmf" }
 forge-resampler = { path = "../../external/forge-media/crates/forge-resampler" }
 forge-video = { path = "../../external/forge-media/crates/forge-video" }
 forge-video-codecs = { path = "../../external/forge-media/crates/forge-video-codecs" }
+forge-video-hw = { path = "../../external/forge-media/crates/forge-video-hw", optional = true }
 forge-webm = { path = "../../external/forge-media/crates/forge-webm", optional = true }
 
 # SIP stack from siphon-rs

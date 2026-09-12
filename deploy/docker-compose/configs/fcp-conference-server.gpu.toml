@@ -1,0 +1,76 @@
+# fcp-conference-server configuration
+
+[service]
+service_type = "conference"
+node_id = "conference-01"
+
+[sip]
+udp_bind = "0.0.0.0:5060"
+tcp_bind = "0.0.0.0:5060"
+# local_ip = "10.0.0.1"  # Set to your server's LAN IP
+# local_uri = "sip:conference@10.0.0.1:5060"
+
+[storage]
+database_url = "postgresql://postgres:password@postgres:5432/fcp"
+
+[http]
+bind_address = "0.0.0.0:8090"
+# auth_enabled = true
+# auth_token = "change-me-in-production"
+# rate_limit_rps = 100
+
+[media]
+rtp_port_start = 20000
+rtp_port_end = 30000
+codecs = ["PCMU", "PCMA", "G722"]
+# public_ip = "203.0.113.10"  # Set for NAT traversal
+
+[conference]
+# The node's rooms run on the first NVIDIA GPU (docs/GPU.md): decoded on
+# NVDEC, composed on the device, encoded on NVENC — VP8 and VP9 on the
+# host, since NVENC has neither. Needs the image built with
+# `video-hwaccel` (Dockerfile.conference.nvidia) and the container
+# toolkit; a device that does not open leaves the node on the host.
+video_device = "cuda:0"
+# Browser join tokens: the same value as the admin API's [conference] join_secret.
+# join_secret = "change-me-in-production"
+sample_rate = 8000
+frame_size = 160
+enable_vad = true
+auto_destroy_empty_rooms = true
+recordings_dir = "/var/fcp/conference/recordings"
+# What a room is recorded to (docs/VIDEO_CONFERENCING.md §11):
+#   auto — WebM (composite video + Opus) when the meeting has video and
+#          this node can encode VP8/VP9 for it, WAV otherwise
+#   wav  — mixed audio only, as conference recordings have always been
+#   webm — always WebM
+# WebM needs the `recording-webm` build feature; without it every
+# recording is a WAV and the node says so at startup.
+recording_format = "auto"
+# recording_video_codec = "vp8"       # or "vp9"
+# recording_resolution = "720p"       # the room's own by default, and the cap
+# recording_audio_bitrate = 64000
+# How long this node keeps a recording when its tenant has set no
+# retention policy of its own (0 or unset: keep until asked).
+# recording_retention_days = 90
+announcements_dir = "/var/fcp/conference/announcements"
+jitter_buffer_ms = 40
+dtmf_enabled = true
+max_pin_attempts = 3
+pin_timeout_secs = 10
+cache_ttl_secs = 60
+# enable_srtp = true
+# allowed_codecs = ["PCMU", "PCMA"]
+
+[ai]
+enabled = false
+# api_key = "sk-..."
+# model = "gpt-4o-realtime-preview"
+# voice = "alloy"
+
+[events]
+# server_url = "http://fcp-events-server:8081/events"
+
+[logging]
+level = "info"
+format = "pretty"

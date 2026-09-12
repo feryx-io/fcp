@@ -438,33 +438,103 @@ impl std::fmt::Debug for VideoLeg {
     }
 }
 
-/// The video codecs the node can actually run: every codec the backend's
-/// registry serves, and — when `native_only` — only those with a native
-/// binding compiled in. Without a binding the registry still answers
-/// with the raw test codec, which is what CI uses and what a real phone
-/// must never be offered.
-pub fn usable_codecs(backend: &VideoBackend, native_only: bool) -> Vec<forge_core::VideoCodec> {
-    let on_device = backend.registry.codecs_on(&backend.device);
-    if !native_only {
-        return on_device;
+/// The video codecs the node can actually run, and where.
+///
+/// A codec is usable when the node decodes it somewhere and encodes it
+/// somewhere: on the room's device, or on the host — a room on a GPU
+/// decodes VP8 on NVDEC and encodes it on the host (design §15.7,
+/// decision 5). Under `native_only`, the host counts only codecs with a
+/// native binding compiled in; the device's own codecs always count.
+/// Without a binding the registry still answers with the raw test codec,
+/// which is what CI uses and what a real phone must never be offered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeCodecs {
+    /// What the node offers callers: decodable and encodable somewhere.
+    pub usable: Vec<forge_core::VideoCodec>,
+    /// Per device, the room's device first and the host after it when
+    /// they differ: what it encodes and decodes of `usable`.
+    pub devices: Vec<DeviceCodecs>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceCodecs {
+    pub device: forge_video::frame::MediaDevice,
+    /// Codecs this device encodes: what its budget advertises.
+    pub encodes: Vec<forge_core::VideoCodec>,
+    pub decodes: Vec<forge_core::VideoCodec>,
+}
+
+impl NodeCodecs {
+    #[allow(dead_code)]
+    pub fn on(&self, device: &forge_video::frame::MediaDevice) -> Option<&DeviceCodecs> {
+        self.devices.iter().find(|d| &d.device == device)
     }
-    let native: Vec<forge_core::VideoCodec> = forge_video_codecs::enabled_backends()
-        .into_iter()
-        .flat_map(|b| match b {
+}
+
+/// The host's codecs with a native binding compiled in.
+fn native_host_codecs() -> Vec<forge_core::VideoCodec> {
+    let backends = forge_video_codecs::enabled_backends();
+    let mut native: Vec<forge_core::VideoCodec> = backends
+        .iter()
+        .flat_map(|b| match *b {
             "vpx" => vec![forge_core::VideoCodec::VP8, forge_core::VideoCodec::VP9],
             "openh264" => vec![forge_core::VideoCodec::H264],
-            // AV1 needs both the decoder and the encoder binding.
             _ => Vec::new(),
         })
         .collect();
-    let av1 = {
-        let b = forge_video_codecs::enabled_backends();
-        b.contains(&"dav1d") && b.contains(&"svt-av1")
+    // AV1 needs both the decoder and the encoder binding.
+    if backends.contains(&"dav1d") && backends.contains(&"svt-av1") {
+        native.push(forge_core::VideoCodec::AV1);
+    }
+    native
+}
+
+/// What the node runs, per device.
+pub fn node_codecs(backend: &VideoBackend, native_only: bool) -> NodeCodecs {
+    use forge_video::frame::MediaDevice;
+    let reg = &backend.registry;
+    let native = native_host_codecs();
+    let host_allowed = |c: &forge_core::VideoCodec| !native_only || native.contains(c);
+    let host = DeviceCodecs {
+        device: MediaDevice::Host,
+        encodes: reg
+            .encodable_on(&MediaDevice::Host)
+            .into_iter()
+            .filter(host_allowed)
+            .collect(),
+        decodes: reg
+            .decodable_on(&MediaDevice::Host)
+            .into_iter()
+            .filter(host_allowed)
+            .collect(),
     };
-    on_device
-        .into_iter()
-        .filter(|c| native.contains(c) || (av1 && *c == forge_core::VideoCodec::AV1))
-        .collect()
+    let mut devices = Vec::new();
+    if !backend.device.is_host() {
+        devices.push(DeviceCodecs {
+            device: backend.device.clone(),
+            encodes: reg.encodable_on(&backend.device),
+            decodes: reg.decodable_on(&backend.device),
+        });
+    }
+    devices.push(host);
+    let usable: Vec<forge_core::VideoCodec> = forge_core::VideoCodec::ALL
+        .iter()
+        .copied()
+        .filter(|c| {
+            devices.iter().any(|d| d.decodes.contains(c))
+                && devices.iter().any(|d| d.encodes.contains(c))
+        })
+        .collect();
+    for d in &mut devices {
+        d.encodes.retain(|c| usable.contains(c));
+        d.decodes.retain(|c| usable.contains(c));
+    }
+    NodeCodecs { usable, devices }
+}
+
+/// The video codecs the node offers callers: see [`node_codecs`].
+pub fn usable_codecs(backend: &VideoBackend, native_only: bool) -> Vec<forge_core::VideoCodec> {
+    node_codecs(backend, native_only).usable
 }
 
 /// Whether a participant may take the room's content floor under the
@@ -1429,6 +1499,54 @@ mod tests {
         }
         if forge_video_codecs::enabled_backends().is_empty() {
             assert!(native.is_empty());
+        }
+    }
+
+    #[test]
+    fn a_device_s_codecs_count_where_it_runs_them_and_the_host_fills_in() {
+        use forge_video::device::DeviceBackend;
+        use forge_video::testing::{fake_registry, FakeBackend};
+        // A device that decodes three codecs and encodes one, like an
+        // NVIDIA GPU (NVDEC has VP8 and VP9, NVENC has neither).
+        let hw = Arc::new(FakeBackend::new("0"));
+        let device = hw.device();
+        let registry = fake_registry(
+            &device,
+            &[
+                forge_core::VideoCodec::H264,
+                forge_core::VideoCodec::VP8,
+                forge_core::VideoCodec::VP9,
+            ],
+            &[forge_core::VideoCodec::H264],
+        );
+        let backend = VideoBackend::on_device(
+            registry,
+            forge_conference::video::CodecPool::new(1),
+            hw as Arc<dyn forge_video::device::DeviceBackend>,
+        );
+        let codecs = node_codecs(&backend, false);
+        assert_eq!(
+            codecs.usable.len(),
+            5,
+            "the host's raw codec fills in for the rest"
+        );
+        assert_eq!(codecs.devices.len(), 2);
+        let dev = codecs.on(&device).unwrap();
+        assert_eq!(dev.encodes, vec![forge_core::VideoCodec::H264]);
+        assert_eq!(dev.decodes.len(), 3);
+        let host = codecs.on(&MediaDevice::Host).unwrap();
+        assert_eq!(host.encodes.len(), 5);
+        // Native only: the host's raw codec is out; what is left is the
+        // device's own codecs where it both decodes and encodes them —
+        // and, in this test build without native bindings, nothing else.
+        let native = node_codecs(&backend, true);
+        if forge_video_codecs::enabled_backends().is_empty() {
+            assert_eq!(native.usable, vec![forge_core::VideoCodec::H264]);
+            assert!(native.on(&MediaDevice::Host).unwrap().encodes.is_empty());
+            assert_eq!(
+                native.on(&device).unwrap().decodes,
+                vec![forge_core::VideoCodec::H264]
+            );
         }
     }
 

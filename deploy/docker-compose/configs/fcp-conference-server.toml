@@ -26,6 +26,9 @@ codecs = ["PCMU", "PCMA", "G722"]
 # public_ip = "203.0.113.10"  # Set for NAT traversal
 
 [conference]
+# Where video rooms run: "host" (default), or a GPU as "cuda:0" — a build
+# with the `video-hwaccel` feature and the NVIDIA driver (docs/GPU.md).
+# video_device = "host"
 # Browser join tokens: the same value as the admin API's [conference] join_secret.
 # join_secret = "change-me-in-production"
 sample_rate = 8000

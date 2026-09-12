@@ -109,6 +109,30 @@ impl ClusterMember {
             .or(Some(0))
     }
 
+    /// [`video_budget_left`](Self::video_budget_left) for a
+    /// [`VideoNeed`](crate::VideoNeed): when some device of this node
+    /// encodes the meeting's first codec, the most left among those
+    /// devices; otherwise any device with any of the codecs, as before.
+    /// A GPU whose encoder lacks the first codec does not count, so the
+    /// meeting is not sent to it for a budget it would spend on its host.
+    pub fn video_budget_left_for(&self, need: &crate::VideoNeed) -> Option<u32> {
+        if self.video_budget.is_empty() {
+            return None;
+        }
+        if let Some(first) = &need.first {
+            let with_first: Vec<u32> = self
+                .video_budget
+                .iter()
+                .filter(|b| b.codecs.contains(first))
+                .map(|b| b.left)
+                .collect();
+            if !with_first.is_empty() {
+                return with_first.into_iter().max();
+            }
+        }
+        self.video_budget_left(&need.codecs)
+    }
+
     /// Whether this node is in `region`. A node without a region is in
     /// no region.
     pub fn in_region(&self, region: &str) -> bool {

@@ -713,8 +713,8 @@ impl ConferenceCallHandler {
     }
 
     /// Re-price the video budget from every active room; `None` without a
-    /// budget. Returns the units committed.
-    pub fn recompute_video_capacity(&self) -> Option<u32> {
+    /// budget. Returns the units committed, per device.
+    pub fn recompute_video_capacity(&self) -> Option<crate::video_capacity::Cost> {
         let capacity = self.video_capacity.as_ref()?;
         let rooms: Vec<Arc<forge_conference::ConferenceRoom>> = self
             .active_rooms()
@@ -5182,10 +5182,11 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 .ok()
                 .and_then(|room| room.video());
             let cost = capacity.join_cost(settings, codecs, room_video.as_deref());
-            if !capacity.try_reserve(cost) {
+            if !capacity.try_reserve(&cost) {
                 warn!(
                     room = %room_number,
-                    cost,
+                    %cost,
+                    device = %capacity.device(),
                     left = capacity.left(),
                     total = capacity.total(),
                     "Video budget exhausted on this node, rejecting INVITE"
@@ -5194,7 +5195,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 handle.send_final(reject).await;
                 return Ok(());
             }
-            debug!(room = %room_number, cost, left = capacity.left(), "Video join reserved");
+            debug!(room = %room_number, %cost, left = capacity.left(), "Video join reserved");
         }
 
         // Also look for telephone-event payload type and clock rate for DTMF

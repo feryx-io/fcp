@@ -650,6 +650,16 @@ pub struct ConferenceSection {
     #[serde(default)]
     pub enable_srtp: bool,
 
+    /// Where this node's video rooms run (design §15.7): `host`, or a
+    /// GPU as `backend:address` — `cuda:0` for the first NVIDIA device.
+    /// A GPU needs the `video-hwaccel` build feature and the FFmpeg it
+    /// was built against; a device that does not open at start leaves
+    /// the node on the host with a warning. A room on a device decodes,
+    /// composes and encodes there, and runs on the host any stage the
+    /// device lacks (VP8 and VP9 encoding on NVIDIA). Default: `host`.
+    #[serde(default = "default_video_device")]
+    pub video_device: String,
+
     /// Threads in the video codec pool (decode, compose, encode never run
     /// on the async runtime). Default: two fewer than the machine's cores,
     /// at least one.
@@ -836,6 +846,10 @@ fn default_video_benchmark_seconds() -> u64 {
     10
 }
 
+fn default_video_device() -> String {
+    "host".to_string()
+}
+
 fn default_content_idle_secs() -> u64 {
     30
 }
@@ -929,6 +943,7 @@ impl Default for ConferenceSection {
             recording_retention_days: None,
             allowed_codecs: None,
             enable_srtp: false,
+            video_device: default_video_device(),
             video_codec_threads: None,
             video_native_codecs_only: true,
             video_benchmark_seconds: default_video_benchmark_seconds(),
@@ -1064,6 +1079,16 @@ impl Default for ClusterSection {
 /// Validate configuration for logical consistency.
 /// Called at startup to fail fast on misconfigured values.
 pub fn validate_config(config: &ConferenceServerConfig) -> Result<()> {
+    // Where video runs.
+    match forge_video::frame::MediaDevice::parse(&config.conference.video_device) {
+        Some(forge_video::frame::MediaDevice::Host) => {}
+        Some(forge_video::frame::MediaDevice::Gpu { backend, .. })
+            if ["cuda", "vaapi", "qsv"].contains(&backend.as_str()) => {}
+        _ => anyhow::bail!(
+            "conference.video_device '{}' is not `host` or a device like `cuda:0`",
+            config.conference.video_device
+        ),
+    }
     // What a room is recorded to.
     if crate::recording::FormatChoice::parse(&config.conference.recording_format).is_none() {
         anyhow::bail!(
