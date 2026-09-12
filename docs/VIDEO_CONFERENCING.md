@@ -1949,6 +1949,36 @@ room settings rather than the room's own.
 **Size.** About a week; one forge-media release, one FCP PR after its
 repoint. The 8d numbers replace the two notes 8c carried.
 
+**8d as built (2026-09-12; forge-media `v2026.09.12.2`: forge-video
+0.6.1, forge-video-hw 0.2.1, forge-conference 0.14.0; FCP v0.25.137–138).**
+As planned. A GPU's `DeviceCapacity` is three pools — encode, decode,
+compose — each `1000 × headroom` units; the host keeps one. A `Cost` is
+units per device *and engine*: a join is reserved only when every
+engine it touches has room and holds nothing when refused; rooms are
+re-priced per engine from the device each stage reports; a share, a
+decode alone, is admitted while the compose engine is out.
+`forge_video::bench::measure_compose_saturated` runs 1, 2, 4, …
+compositors at once (each warmed up uncounted) until the summed render
+rate stops growing, and `ComposeSaturation::ns_per_px` is the constant
+that makes that many composites fill an engine — what the device
+benchmark now prices `compose` with; `forge_video_hw::bench::saturate`
+warms each step up for a second before counting, and the device
+benchmark runs each step for at least a second whatever
+`video_benchmark_seconds` says, logging what it took. On the wire,
+`VideoDeviceBudget.engines` is optional (`skip_serializing_if`), so a
+node from before reads exactly as today, with `left` / `total` the
+tightest engine's; placement weighs the encode engine's `left`
+(`placement_left`); `/status` lists the engines per device and the
+cluster page shows the three under a GPU's line. `ContentGate::admit`
+takes the room's settings. Tests: the compose engine running out while
+encode has plenty (an H.264 join refused, a share admitted, `left` the
+tightest engine's), a smaller content cap priced lower, `engines` on
+the wire both ways, placement reading the encoder's budget. The box
+run of the two hardware tests (the composite's saturation, the node's
+benchmark with the floor) is the one thing this block still owes; the
+notes 8c carried about the benchmark's coarseness and the composite's
+pricing are answered by the code either way.
+
 ## 16. Resolved questions
 
 Raised with the first draft and decided 2026-09-04, each as recommended.
