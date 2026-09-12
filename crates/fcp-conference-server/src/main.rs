@@ -57,6 +57,36 @@ fn cluster_budget(b: &video_capacity::DeviceBudget) -> fcp_cluster::VideoDeviceB
     }
 }
 
+/// Price a GPU by saturation when this build can, the phase 0 table
+/// otherwise (a device only opens with `video-hwaccel`, so the second
+/// arm is for a build that has none).
+#[cfg(feature = "video-hwaccel")]
+fn device_benchmark(
+    backend: &forge_conference::video::VideoBackend,
+    encodes: &[forge_core::VideoCodec],
+    decodes: &[forge_core::VideoCodec],
+    seconds: u64,
+) -> video_capacity::CostTable {
+    video_capacity::self_benchmark_device(
+        backend,
+        encodes,
+        decodes,
+        seconds,
+        video_capacity::CostTable::phase0(),
+    )
+}
+
+#[cfg(not(feature = "video-hwaccel"))]
+fn device_benchmark(
+    backend: &forge_conference::video::VideoBackend,
+    _encodes: &[forge_core::VideoCodec],
+    _decodes: &[forge_core::VideoCodec],
+    _seconds: u64,
+) -> video_capacity::CostTable {
+    warn!(device = %backend.device, "no device benchmark in this build; using the phase 0 cost table");
+    video_capacity::CostTable::phase0()
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // 1. Parse CLI arguments
@@ -419,52 +449,118 @@ async fn main() -> Result<()> {
         .conference
         .video_codec_threads
         .unwrap_or_else(forge_conference::video::CodecPool::default_size);
-    let video_backend = forge_conference::video::VideoBackend::new(
-        forge_video_codecs::default_registry(),
-        forge_conference::video::CodecPool::new(codec_threads),
-    );
+    let pool = forge_conference::video::CodecPool::new(codec_threads);
+    // Where the rooms run (design §15.7): the host, or a GPU named by
+    // `conference.video_device` that this build can open. A device that
+    // does not open leaves the node on the host, loudly.
+    let video_device = forge_video::frame::MediaDevice::parse(&config.conference.video_device)
+        .unwrap_or(forge_video::frame::MediaDevice::Host);
+    let video_backend = if video_device.is_host() {
+        forge_conference::video::VideoBackend::new(forge_video_codecs::default_registry(), pool)
+    } else {
+        let mut registry = forge_video_codecs::default_registry();
+        match forge_video_codecs::open_device(&mut registry, &video_device) {
+            Some(hw) => forge_conference::video::VideoBackend::on_device(registry, pool, hw),
+            None => {
+                warn!(
+                    device = %video_device,
+                    hwaccel = cfg!(feature = "video-hwaccel"),
+                    "conference.video_device did not open; video runs on the host"
+                );
+                forge_conference::video::VideoBackend::new(registry, pool)
+            }
+        }
+    };
+    let node_codecs =
+        video_bridge::node_codecs(&video_backend, config.conference.video_native_codecs_only);
     info!(
+        device = %video_backend.device,
         threads = codec_threads,
         native_backends = ?forge_video_codecs::enabled_backends(),
         native_only = config.conference.video_native_codecs_only,
+        usable = ?node_codecs.usable.iter().map(|c| c.sdp_name()).collect::<Vec<_>>(),
         "Video codec pool ready"
     );
 
-    // Video capacity (design §9.3): price this node's codecs on its own
-    // pool before the first heartbeat advertises the budget. Blocking work,
-    // off the runtime.
+    // Video capacity (design §9.3, §15.7): price this node's codecs on
+    // each device before the first heartbeat advertises the budgets —
+    // the host by running each codec on its pool, a GPU by saturating
+    // its engines. Blocking work, off the runtime.
     let video_capacity = {
-        let usable =
-            video_bridge::usable_codecs(&video_backend, config.conference.video_native_codecs_only);
-        let backend = video_backend.clone();
         let seconds = config.conference.video_benchmark_seconds;
-        let codecs = usable.clone();
-        let table = tokio::task::spawn_blocking(move || {
-            video_capacity::self_benchmark(
-                &backend,
-                &codecs,
-                seconds,
-                video_capacity::CostTable::phase0(),
-            )
+        let headroom = config.conference.video_budget_headroom;
+        let backend = video_backend.clone();
+        let codecs = node_codecs.clone();
+        let devices = tokio::task::spawn_blocking(move || {
+            let mut devices = Vec::new();
+            for d in &codecs.devices {
+                let table = if d.device.is_host() {
+                    let both: Vec<_> = d.encodes.iter().chain(d.decodes.iter()).copied().fold(
+                        Vec::new(),
+                        |mut v, c| {
+                            if !v.contains(&c) {
+                                v.push(c);
+                            }
+                            v
+                        },
+                    );
+                    video_capacity::self_benchmark(
+                        &backend,
+                        &both,
+                        seconds,
+                        video_capacity::CostTable::phase0(),
+                    )
+                } else {
+                    device_benchmark(&backend, &d.encodes, &d.decodes, seconds)
+                };
+                let total = if d.device.is_host() {
+                    video_capacity::DeviceCapacity::host_total(codec_threads, headroom)
+                } else {
+                    video_capacity::DeviceCapacity::device_total(headroom)
+                };
+                devices.push(video_capacity::DeviceCapacity::new(
+                    d.device.clone(),
+                    d.encodes.clone(),
+                    d.decodes.clone(),
+                    table,
+                    total,
+                ));
+            }
+            devices
         })
         .await
         .unwrap_or_else(|e| {
             warn!(error = %e, "Video self-benchmark panicked; using the phase 0 cost table");
-            video_capacity::CostTable::phase0()
+            node_codecs
+                .devices
+                .iter()
+                .map(|d| {
+                    video_capacity::DeviceCapacity::new(
+                        d.device.clone(),
+                        d.encodes.clone(),
+                        d.decodes.clone(),
+                        video_capacity::CostTable::phase0(),
+                        if d.device.is_host() {
+                            video_capacity::DeviceCapacity::host_total(codec_threads, headroom)
+                        } else {
+                            video_capacity::DeviceCapacity::device_total(headroom)
+                        },
+                    )
+                })
+                .collect()
         });
         let capacity = Arc::new(video_capacity::VideoCapacity::new(
             video_backend.device.clone(),
-            usable,
-            table,
-            codec_threads,
-            config.conference.video_budget_headroom,
+            devices,
         ));
-        info!(
-            device = %capacity.device(),
-            total_units = capacity.total(),
-            codecs = ?capacity.budget().codecs,
-            "Video budget ready"
-        );
+        for b in capacity.budgets() {
+            info!(
+                device = %b.device,
+                total_units = b.total,
+                encodes = ?b.codecs,
+                "Video budget ready"
+            );
+        }
         capacity
     };
 
@@ -495,7 +591,11 @@ async fn main() -> Result<()> {
                 version: env!("CARGO_PKG_VERSION").to_string(),
                 draining: false,
                 region: fcp_cluster::resolve_region(config.cluster.region.as_deref()),
-                video_budget: vec![cluster_budget(&video_capacity.budget())],
+                video_budget: video_capacity
+                    .budgets()
+                    .iter()
+                    .map(cluster_budget)
+                    .collect(),
             };
             let cm =
                 fcp_cluster::ClusterManager::new(redis.clone(), member)
@@ -1091,7 +1191,13 @@ async fn main() -> Result<()> {
                     std::sync::atomic::Ordering::Relaxed,
                 );
                 refresh_handler.recompute_video_capacity();
-                refresh_cm_budget.set(vec![cluster_budget(&refresh_budget.budget())]);
+                refresh_cm_budget.set(
+                    refresh_budget
+                        .budgets()
+                        .iter()
+                        .map(cluster_budget)
+                        .collect(),
+                );
                 for (room, _) in refresh_handler.active_rooms() {
                     let tenant = refresh_handler
                         .tenant_for_room(&room)

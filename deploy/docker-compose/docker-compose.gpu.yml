@@ -1,0 +1,23 @@
+# The conference server on a node with an NVIDIA GPU (docs/GPU.md):
+#
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+#
+# Builds the NVIDIA image, hands the container the GPU through the NVIDIA
+# container toolkit, and runs the GPU configuration, which names the
+# device in `[conference] video_device`. Everything else is the base file's.
+services:
+  fcp-conference:
+    build:
+      context: ../..
+      dockerfile: deploy/docker-compose/Dockerfile.conference.nvidia
+    volumes:
+      - ./configs/fcp-conference-server.gpu.toml:/app/fcp-conference-server.toml:ro
+      - fcp-recordings:/var/fcp/conference/recordings
+      - ./configs/announcements:/var/fcp/conference/announcements:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu, video, compute, utility]

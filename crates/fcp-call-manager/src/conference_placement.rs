@@ -60,9 +60,7 @@ impl fcp_sip::ConferenceNodeSelector for ClusterConferenceSelector {
             }
         };
         let members: Vec<ClusterMember> = self.members.iter().map(|e| e.value().clone()).collect();
-        let need = video.map(|v| VideoNeed {
-            codecs: v.codecs.clone(),
-        });
+        let need = video.map(|v| VideoNeed::of(v.codecs.clone()));
         let pick = choose_conference_node(
             &hosts,
             &members,
@@ -74,7 +72,7 @@ impl fcp_sip::ConferenceNodeSelector for ClusterConferenceSelector {
             room = %room_number,
             node = %pick.node_id,
             video = ?need.as_ref().map(|n| &n.codecs),
-            video_budget_left = ?need.as_ref().and_then(|n| pick.video_budget_left(&n.codecs)),
+            video_budget_left = ?need.as_ref().and_then(|n| pick.video_budget_left_for(n)),
             node_region = pick.region.as_deref().unwrap_or("-"),
             local_region = self.local_region.as_deref().unwrap_or("-"),
             hosting = hosts.len(),

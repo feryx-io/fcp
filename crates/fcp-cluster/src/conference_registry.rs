@@ -221,10 +221,25 @@ impl ConferenceRegistry {
 }
 
 /// What a room needs of a node's video capacity: the SDP names of the
-/// codecs the meeting allows. `None` for an audio-only meeting.
+/// codecs the meeting allows, and the one it prefers. `None` for an
+/// audio-only meeting.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct VideoNeed {
     pub codecs: Vec<String>,
+    /// The meeting's first choice of codec, when it has one. A device is
+    /// preferred only when it encodes this one (design §15.7, decision
+    /// 5): a VP8-first meeting is not sent to a GPU whose encoder has no
+    /// VP8, even though the GPU node could run it with the encode on its
+    /// host.
+    pub first: Option<String>,
+}
+
+impl VideoNeed {
+    /// A need for `codecs` in order of preference.
+    pub fn of(codecs: Vec<String>) -> Self {
+        let first = codecs.first().cloned();
+        Self { codecs, first }
+    }
 }
 
 /// Pick the node a new participant of `room` should be sent to.
@@ -300,7 +315,7 @@ pub fn choose_conference_node(
             .iter()
             .min_by_key(|m| {
                 let (exhausted, left) = match video {
-                    Some(need) => match m.video_budget_left(&need.codecs) {
+                    Some(need) => match m.video_budget_left_for(need) {
                         Some(0) => (true, 0),
                         Some(left) => (false, left),
                         None => (false, 0),
@@ -620,20 +635,68 @@ mod tests {
         assert_eq!(pick.node_id, "conf-unlabeled");
     }
 
-    fn with_budget(mut m: ClusterMember, codecs: &[&str], left: u32) -> ClusterMember {
-        m.video_budget = vec![crate::membership::VideoDeviceBudget {
-            device: "host".into(),
+    fn with_budget(m: ClusterMember, codecs: &[&str], left: u32) -> ClusterMember {
+        with_device(m, "host", codecs, left)
+    }
+
+    fn with_device(
+        mut m: ClusterMember,
+        device: &str,
+        codecs: &[&str],
+        left: u32,
+    ) -> ClusterMember {
+        m.video_budget.push(crate::membership::VideoDeviceBudget {
+            device: device.into(),
             codecs: codecs.iter().map(|c| c.to_string()).collect(),
             left,
             total: 8000,
-        }];
+        });
         m
     }
 
     fn need(codecs: &[&str]) -> VideoNeed {
-        VideoNeed {
-            codecs: codecs.iter().map(|c| c.to_string()).collect(),
-        }
+        VideoNeed::of(codecs.iter().map(|c| c.to_string()).collect())
+    }
+
+    #[test]
+    fn a_gpu_node_is_preferred_only_for_meetings_whose_first_codec_it_encodes() {
+        // The GPU node advertises its host beside its device; the device
+        // encodes H.264 but not VP8 (§15.7, decision 5).
+        let gpu = with_device(
+            with_budget(member("conf-gpu", "conference", 0), &["H264", "VP8"], 2000),
+            "cuda:0",
+            &["H264", "H265", "AV1"],
+            30000,
+        );
+        let cpu = with_budget(member("conf-cpu", "conference", 0), &["H264", "VP8"], 5000);
+        let members = vec![gpu.clone(), cpu];
+        // H.264 first: the GPU's device has by far the most left.
+        let pick =
+            choose_conference_node(&[], &members, 0, None, Some(&need(&["H264", "VP8"]))).unwrap();
+        assert_eq!(pick.node_id, "conf-gpu");
+        // VP8 first: the device does not count; the hosts compete, and
+        // the CPU node's has more left.
+        let pick =
+            choose_conference_node(&[], &members, 0, None, Some(&need(&["VP8", "H264"]))).unwrap();
+        assert_eq!(pick.node_id, "conf-cpu");
+        assert_eq!(
+            gpu.video_budget_left_for(&need(&["VP8", "H264"])),
+            Some(2000)
+        );
+        assert_eq!(gpu.video_budget_left_for(&need(&["H264"])), Some(30000));
+        // A first codec nobody's device encodes: any device with any of
+        // the codecs, as before.
+        assert_eq!(
+            gpu.video_budget_left_for(&need(&["VP9", "H264"])),
+            Some(30000)
+        );
+        // AV1 first: only the device has it.
+        assert_eq!(gpu.video_budget_left_for(&need(&["AV1"])), Some(30000));
+        let vp9 = VideoNeed {
+            codecs: vec!["VP9".into()],
+            first: Some("VP9".into()),
+        };
+        assert_eq!(gpu.video_budget_left_for(&vp9), Some(0), "nothing runs it");
     }
 
     #[test]

@@ -118,16 +118,83 @@ pub fn units(ns_per_px: f64, resolution: Resolution, fps: u32) -> u32 {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceBudget {
     pub device: String,
+    /// The codecs the device *encodes* (design §15.7, decision 5): what
+    /// placement matches a meeting's first codec against.
     pub codecs: Vec<String>,
     pub left: u32,
     pub total: u32,
 }
 
-/// A node's video budget on one device: what it can run, what it costs,
-/// what is committed, and what a join may still take.
-pub struct VideoCapacity {
+/// A cost in work units, per device: what a join, a share or a room
+/// takes of each device it touches. A room on a GPU spends the device's
+/// units on its decodes, its composite and the encodes the device has,
+/// and the host's on the encodes it lacks.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Cost(Vec<(MediaDevice, u32)>);
+
+impl Cost {
+    pub fn zero() -> Self {
+        Self::default()
+    }
+
+    fn add(&mut self, device: &MediaDevice, units: u32) {
+        if units == 0 {
+            return;
+        }
+        match self.0.iter_mut().find(|(d, _)| d == device) {
+            Some((_, u)) => *u = u.saturating_add(units),
+            None => self.0.push((device.clone(), units)),
+        }
+    }
+
+    fn extend(&mut self, other: &Cost) {
+        for (d, u) in &other.0 {
+            self.add(d, *u);
+        }
+    }
+
+    /// Units on `device`.
+    pub fn on(&self, device: &MediaDevice) -> u32 {
+        self.0
+            .iter()
+            .find(|(d, _)| d == device)
+            .map(|(_, u)| *u)
+            .unwrap_or(0)
+    }
+
+    /// Units over every device.
+    pub fn total(&self) -> u32 {
+        self.0.iter().fold(0u32, |a, (_, u)| a.saturating_add(*u))
+    }
+
+    #[allow(dead_code)]
+    pub fn is_zero(&self) -> bool {
+        self.total() == 0
+    }
+}
+
+impl std::fmt::Display for Cost {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.0.is_empty() {
+            return write!(f, "0");
+        }
+        for (i, (d, u)) in self.0.iter().enumerate() {
+            if i > 0 {
+                write!(f, " + ")?;
+            }
+            write!(f, "{u} on {d}")?;
+        }
+        Ok(())
+    }
+}
+
+/// One device's budget: what it runs, what that costs, what is committed
+/// and what a join may still take.
+pub struct DeviceCapacity {
     device: MediaDevice,
-    codecs: Vec<VideoCodec>,
+    /// Codecs it encodes: what its budget advertises.
+    encodes: Vec<VideoCodec>,
+    decodes: Vec<VideoCodec>,
     table: CostTable,
     total: u32,
     /// Priced from the rooms at the last recompute.
@@ -136,46 +203,69 @@ pub struct VideoCapacity {
     reserved: AtomicU32,
     /// Joins refused for want of budget, since start.
     refused: AtomicU64,
-    last_recompute: parking_lot::Mutex<Option<Instant>>,
 }
 
-impl VideoCapacity {
-    /// `execution_units` codec-pool threads (or media engines) at
-    /// `headroom` of their time (0.8 keeps a fifth for the async side and
-    /// for content harder than the benchmark's).
+impl DeviceCapacity {
+    /// A device with `total` work units.
     pub fn new(
         device: MediaDevice,
-        codecs: Vec<VideoCodec>,
+        encodes: Vec<VideoCodec>,
+        decodes: Vec<VideoCodec>,
         table: CostTable,
-        execution_units: usize,
-        headroom: f64,
+        total: u32,
     ) -> Self {
-        let headroom = if headroom.is_finite() {
-            headroom.clamp(0.05, 1.0)
-        } else {
-            0.8
-        };
-        let total = (execution_units.max(1) as f64 * UNITS_PER_EXECUTION_UNIT * headroom).round();
         Self {
             device,
-            codecs,
+            encodes,
+            decodes,
             table,
-            total: total as u32,
+            total,
             committed: AtomicU32::new(0),
             reserved: AtomicU32::new(0),
             refused: AtomicU64::new(0),
-            last_recompute: parking_lot::Mutex::new(None),
         }
     }
 
+    /// The host's total: `execution_units` codec-pool threads at
+    /// `headroom` of their time (0.8 keeps a fifth for the async side and
+    /// for content harder than the benchmark's).
+    pub fn host_total(execution_units: usize, headroom: f64) -> u32 {
+        (execution_units.max(1) as f64 * UNITS_PER_EXECUTION_UNIT * clamp_headroom(headroom))
+            .round() as u32
+    }
+
+    /// A GPU's total: one execution unit — the device, whose engines the
+    /// saturation benchmark priced as a whole (design §15.7, decision 7)
+    /// — at `headroom`.
+    pub fn device_total(headroom: f64) -> u32 {
+        (UNITS_PER_EXECUTION_UNIT * clamp_headroom(headroom)).round() as u32
+    }
+
+    #[allow(dead_code)]
     pub fn device(&self) -> &MediaDevice {
         &self.device
+    }
+
+    #[allow(dead_code)]
+    pub fn encodes(&self) -> &[VideoCodec] {
+        &self.encodes
+    }
+
+    #[allow(dead_code)]
+    pub fn decodes(&self) -> &[VideoCodec] {
+        &self.decodes
+    }
+
+    #[allow(dead_code)]
+    pub fn table(&self) -> &CostTable {
+        &self.table
     }
 
     pub fn total(&self) -> u32 {
         self.total
     }
 
+    #[allow(dead_code)]
     pub fn committed(&self) -> u32 {
         self.committed.load(Ordering::Relaxed)
     }
@@ -211,110 +301,18 @@ impl VideoCapacity {
         )
     }
 
-    /// What a shared screen costs to admit (§15.6): one more decode, at
-    /// the content cap and the room's default rate, priced at the dearest
-    /// codec this node runs since the codec is the sender's choice. Asked
-    /// before the floor is granted, so a share the node cannot afford is
-    /// refused rather than the room slowed.
-    pub fn content_cost(&self, settings: &VideoRoomSettings) -> u32 {
-        self.codecs
-            .iter()
-            .map(|&c| self.decode_units(c, settings.content_max_resolution, settings.fps.max(1)))
-            .max()
-            .unwrap_or_else(|| {
-                units(
-                    CostTable::worst(&self.table.decode),
-                    settings.content_max_resolution,
-                    settings.fps.max(1),
-                )
-            })
-    }
-
-    /// What a room's video costs now: a decode per source — a camera or a
-    /// shared screen — at what it sends (the room's canvas until frames
-    /// arrive), an encode per flavor, a composite per output at the room's
-    /// target rate. A presentation composite has one more tile than the
-    /// room has cameras, which `sources` already counts.
-    pub fn room_cost(&self, video: &VideoRoom) -> u32 {
-        let st = video.status();
-        let fps = st.target_fps.max(1);
-        let decode: u32 = video
-            .participants()
-            .iter()
-            .flat_map(|p| p.source.iter().chain(p.content.iter()))
-            .map(|s| {
-                let resolution = if s.resolution.pixels() == 0 {
-                    st.resolution
-                } else {
-                    s.resolution
-                };
-                self.decode_units(s.codec, resolution, if s.fps > 0 { s.fps } else { fps })
-            })
-            .sum();
-        // A flavor every one of whose subscribers is on the passthrough
-        // fast path is not being encoded, and an output with no flavor
-        // left to encode is not being composed (§5.6). Charging for them
-        // would keep reserving a budget nothing spends.
-        let idle = idle_flavors(video, &st);
-        let encode: u32 = st
-            .outputs
-            .iter()
-            .flat_map(|o| o.flavors.iter())
-            .filter(|f| !idle.contains(&f.flavor))
-            .map(|f| self.encode_units(f.flavor.codec, f.flavor.resolution, f.flavor.fps.max(1)))
-            .sum();
-        let compose: u32 = st
-            .outputs
-            .iter()
-            .filter(|o| o.flavors.iter().any(|f| !idle.contains(&f.flavor)))
-            .map(|o| self.compose_units(st.sources, o.resolution, fps))
-            .sum();
-        decode.saturating_add(encode).saturating_add(compose)
-    }
-
-    /// What one more video participant would add: its decode, an encode
-    /// (it may need a flavor of its own), and a composite when it starts
-    /// the room's video or wants a canvas without itself. Priced at the
-    /// dearest of `codecs`, since which one the caller ends up with is
-    /// decided in the answer.
-    pub fn join_cost(
-        &self,
-        settings: &VideoRoomSettings,
-        codecs: &[VideoCodec],
-        room_video: Option<&VideoRoom>,
-    ) -> u32 {
-        let fps = settings.fps.max(1);
-        let codec_cost = codecs
-            .iter()
-            .map(|&c| {
-                self.decode_units(c, settings.resolution, fps)
-                    .saturating_add(self.encode_units(c, settings.resolution, fps))
-            })
-            .max()
-            .unwrap_or(0);
-        let compose = match room_video {
-            None => self.compose_units(1, settings.resolution, fps),
-            Some(video) if settings.exclude_self => {
-                self.compose_units(video.status().sources + 1, settings.resolution, fps)
-            }
-            Some(_) => 0,
-        };
-        codec_cost.saturating_add(compose)
-    }
-
-    /// Admit a join costing `cost` if it fits, holding the units until the
-    /// next recompute sees the participant in a room. `false` refuses.
-    pub fn try_reserve(&self, cost: u32) -> bool {
+    /// Take `units` if they fit; `false` refuses.
+    fn reserve(&self, units: u32) -> bool {
         let committed = self.committed();
         let mut reserved = self.reserved();
         loop {
-            if committed.saturating_add(reserved).saturating_add(cost) > self.total {
+            if committed.saturating_add(reserved).saturating_add(units) > self.total {
                 self.refused.fetch_add(1, Ordering::Relaxed);
                 return false;
             }
             match self.reserved.compare_exchange_weak(
                 reserved,
-                reserved + cost,
+                reserved + units,
                 Ordering::AcqRel,
                 Ordering::Relaxed,
             ) {
@@ -324,18 +322,20 @@ impl VideoCapacity {
         }
     }
 
-    /// Re-price every room and drop the reservations; returns what is
-    /// committed.
-    pub fn recompute(&self, rooms: impl IntoIterator<Item = Arc<ConferenceRoom>>) -> u32 {
-        let committed: u32 = rooms
-            .into_iter()
-            .filter_map(|room| room.video())
-            .map(|video| self.room_cost(&video))
-            .fold(0u32, |a, b| a.saturating_add(b));
-        self.committed.store(committed, Ordering::Relaxed);
-        self.reserved.store(0, Ordering::Relaxed);
-        *self.last_recompute.lock() = Some(Instant::now());
-        committed
+    fn release(&self, units: u32) {
+        let mut reserved = self.reserved();
+        loop {
+            let next = reserved.saturating_sub(units);
+            match self.reserved.compare_exchange_weak(
+                reserved,
+                next,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return,
+                Err(now) => reserved = now,
+            }
+        }
     }
 
     /// The budget line for cluster membership.
@@ -343,7 +343,7 @@ impl VideoCapacity {
         DeviceBudget {
             device: self.device.to_string(),
             codecs: self
-                .codecs
+                .encodes
                 .iter()
                 .map(|c| c.sdp_name().to_string())
                 .collect(),
@@ -354,32 +354,55 @@ impl VideoCapacity {
 
     /// For `/status`.
     pub fn json(&self) -> serde_json::Value {
-        let mut codecs: Vec<&VideoCodec> = self.codecs.iter().collect();
+        let mut codecs: Vec<VideoCodec> = self.encodes.clone();
+        for c in &self.decodes {
+            if !codecs.contains(c) {
+                codecs.push(*c);
+            }
+        }
         codecs.sort_by_key(|c| c.sdp_name());
         let table: serde_json::Map<String, serde_json::Value> = codecs
             .iter()
-            .map(|&&c| {
-                (
-                    c.sdp_name().to_string(),
-                    serde_json::json!({
-                        "encode_ns_per_px": round2(self.table.encode_ns_per_px(c)),
-                        "decode_ns_per_px": round2(self.table.decode_ns_per_px(c)),
-                        // What one 720p15 stream of it costs, for a feel of the unit.
-                        "encode_units_720p15": self.encode_units(c, Resolution::new(1280, 720), 15),
-                        "decode_units_720p15": self.decode_units(c, Resolution::new(1280, 720), 15),
-                    }),
-                )
+            .map(|&c| {
+                let mut row = serde_json::Map::new();
+                if self.encodes.contains(&c) {
+                    row.insert(
+                        "encode_ns_per_px".into(),
+                        round2(self.table.encode_ns_per_px(c)).into(),
+                    );
+                    // What one 720p15 stream of it costs, for a feel of the unit.
+                    row.insert(
+                        "encode_units_720p15".into(),
+                        self.encode_units(c, Resolution::new(1280, 720), 15).into(),
+                    );
+                }
+                if self.decodes.contains(&c) {
+                    row.insert(
+                        "decode_ns_per_px".into(),
+                        round2(self.table.decode_ns_per_px(c)).into(),
+                    );
+                    row.insert(
+                        "decode_units_720p15".into(),
+                        self.decode_units(c, Resolution::new(1280, 720), 15).into(),
+                    );
+                }
+                (c.sdp_name().to_string(), serde_json::Value::Object(row))
             })
             .collect();
         serde_json::json!({
             "device": self.device.to_string(),
-            "unit": "one thousandth of one codec-pool thread's time per second",
+            "unit": if self.device.is_host() {
+                "one thousandth of one codec-pool thread's time per second"
+            } else {
+                "one thousandth of the device's saturated throughput"
+            },
             "total": self.total,
             "committed": self.committed(),
             "reserved": self.reserved(),
             "left": self.left(),
             "refused": self.refused(),
-            "codecs": codecs.iter().map(|c| c.sdp_name()).collect::<Vec<_>>(),
+            "codecs": self.encodes.iter().map(|c| c.sdp_name()).collect::<Vec<_>>(),
+            "decodes": self.decodes.iter().map(|c| c.sdp_name()).collect::<Vec<_>>(),
             "compose_ns_per_px": round2(self.table.compose),
             "table": table,
             "source": match &self.table.source {
@@ -390,8 +413,317 @@ impl VideoCapacity {
                     "measured": measured.iter().map(|c| c.sdp_name()).collect::<Vec<_>>(),
                 }),
             },
-            "last_recompute_secs_ago": self.last_recompute.lock().map(|t| t.elapsed().as_secs()),
         })
+    }
+}
+
+fn clamp_headroom(headroom: f64) -> f64 {
+    if headroom.is_finite() {
+        headroom.clamp(0.05, 1.0)
+    } else {
+        0.8
+    }
+}
+
+/// A node's video budget: one [`DeviceCapacity`] per device — the
+/// device its rooms run on, and the host beside it when that is a GPU —
+/// with every stage priced on the device it runs on (design §15.7,
+/// block 8c). A join is admitted only when it fits on every device it
+/// touches.
+pub struct VideoCapacity {
+    /// Where the rooms run.
+    room_device: MediaDevice,
+    devices: Vec<DeviceCapacity>,
+    last_recompute: parking_lot::Mutex<Option<Instant>>,
+}
+
+impl VideoCapacity {
+    /// A budget on the devices given; `room_device` must be one of them
+    /// and the host must be among them.
+    pub fn new(room_device: MediaDevice, devices: Vec<DeviceCapacity>) -> Self {
+        debug_assert!(devices.iter().any(|d| d.device == room_device));
+        Self {
+            room_device,
+            devices,
+            last_recompute: parking_lot::Mutex::new(None),
+        }
+    }
+
+    /// The host alone: `execution_units` codec-pool threads at
+    /// `headroom`, running `codecs` both ways.
+    #[allow(dead_code)]
+    pub fn host(
+        codecs: Vec<VideoCodec>,
+        table: CostTable,
+        execution_units: usize,
+        headroom: f64,
+    ) -> Self {
+        Self::new(
+            MediaDevice::Host,
+            vec![DeviceCapacity::new(
+                MediaDevice::Host,
+                codecs.clone(),
+                codecs,
+                table,
+                DeviceCapacity::host_total(execution_units, headroom),
+            )],
+        )
+    }
+
+    /// The device the rooms run on.
+    pub fn device(&self) -> &MediaDevice {
+        &self.room_device
+    }
+
+    #[allow(dead_code)]
+    pub fn devices(&self) -> &[DeviceCapacity] {
+        &self.devices
+    }
+
+    /// The room device's budget.
+    fn room(&self) -> &DeviceCapacity {
+        self.on(&self.room_device)
+    }
+
+    /// The budget of `device`, or the room device's when the node has no
+    /// such device (a stage reported on a device this node never priced).
+    fn on(&self, device: &MediaDevice) -> &DeviceCapacity {
+        self.devices
+            .iter()
+            .find(|d| &d.device == device)
+            .or_else(|| self.devices.iter().find(|d| d.device == self.room_device))
+            .or_else(|| self.devices.first())
+            .expect("a capacity has at least one device")
+    }
+
+    /// Where a `codec` would be decoded: the room's device when it has
+    /// the decoder, the host otherwise (the room uploads what the host
+    /// decodes).
+    fn decoder_of(&self, codec: VideoCodec) -> &DeviceCapacity {
+        let room = self.room();
+        if room.decodes.contains(&codec) {
+            return room;
+        }
+        self.devices
+            .iter()
+            .find(|d| d.decodes.contains(&codec))
+            .unwrap_or(room)
+    }
+
+    /// Where a `codec` would be encoded: the room's device when it has
+    /// the encoder, the host otherwise (the canvas is downloaded for it).
+    fn encoder_of(&self, codec: VideoCodec) -> &DeviceCapacity {
+        let room = self.room();
+        if room.encodes.contains(&codec) {
+            return room;
+        }
+        self.devices
+            .iter()
+            .find(|d| d.encodes.contains(&codec))
+            .unwrap_or(room)
+    }
+
+    /// Total units on the room's device.
+    pub fn total(&self) -> u32 {
+        self.room().total()
+    }
+
+    #[allow(dead_code)]
+    pub fn committed(&self) -> u32 {
+        self.room().committed()
+    }
+
+    #[allow(dead_code)]
+    pub fn reserved(&self) -> u32 {
+        self.room().reserved()
+    }
+
+    /// Units a new room or participant may still cost on the room's
+    /// device.
+    pub fn left(&self) -> u32 {
+        self.room().left()
+    }
+
+    /// Joins refused for want of budget on any device, since start.
+    #[allow(dead_code)]
+    pub fn refused(&self) -> u64 {
+        self.devices.iter().map(|d| d.refused()).sum()
+    }
+
+    /// What a shared screen costs to admit (§15.6): one more decode, at
+    /// the content cap and the room's default rate, priced at the dearest
+    /// codec this node decodes since the codec is the sender's choice.
+    /// Asked before the floor is granted, so a share the node cannot
+    /// afford is refused rather than the room slowed.
+    pub fn content_cost(&self, settings: &VideoRoomSettings) -> Cost {
+        let res = settings.content_max_resolution;
+        let fps = settings.fps.max(1);
+        let mut best: Option<(&DeviceCapacity, u32)> = None;
+        for d in &self.devices {
+            for &c in &d.decodes {
+                let u = self.decoder_of(c).decode_units(c, res, fps);
+                if best.map(|(_, b)| u > b).unwrap_or(true) {
+                    best = Some((self.decoder_of(c), u));
+                }
+            }
+        }
+        let mut cost = Cost::zero();
+        match best {
+            Some((d, u)) => cost.add(&d.device, u),
+            None => {
+                let room = self.room();
+                cost.add(
+                    &room.device,
+                    units(CostTable::worst(&room.table.decode), res, fps),
+                );
+            }
+        }
+        cost
+    }
+
+    /// What a room's video costs now: a decode per source — a camera or a
+    /// shared screen — at what it sends (the room's canvas until frames
+    /// arrive), an encode per flavor, a composite per output at the room's
+    /// target rate, each on the device the room says it runs on. A
+    /// presentation composite has one more tile than the room has
+    /// cameras, which `sources` already counts.
+    pub fn room_cost(&self, video: &VideoRoom) -> Cost {
+        let st = video.status();
+        let fps = st.target_fps.max(1);
+        let mut cost = Cost::zero();
+        for p in video.participants() {
+            for s in p.source.iter().chain(p.content.iter()) {
+                let resolution = if s.resolution.pixels() == 0 {
+                    st.resolution
+                } else {
+                    s.resolution
+                };
+                let d = self.on(&s.device);
+                cost.add(
+                    &d.device,
+                    d.decode_units(s.codec, resolution, if s.fps > 0 { s.fps } else { fps }),
+                );
+            }
+        }
+        // A flavor every one of whose subscribers is on the passthrough
+        // fast path is not being encoded, and an output with no flavor
+        // left to encode is not being composed (§5.6). Charging for them
+        // would keep reserving a budget nothing spends.
+        let idle = idle_flavors(video, &st);
+        for o in &st.outputs {
+            let mut live = false;
+            for f in o.flavors.iter().filter(|f| !idle.contains(&f.flavor)) {
+                live = true;
+                let d = self.on(&f.device);
+                cost.add(
+                    &d.device,
+                    d.encode_units(f.flavor.codec, f.flavor.resolution, f.flavor.fps.max(1)),
+                );
+            }
+            if live {
+                let d = self.on(&o.device);
+                cost.add(&d.device, d.compose_units(st.sources, o.resolution, fps));
+            }
+        }
+        cost
+    }
+
+    /// What one more video participant would add: its decode, an encode
+    /// (it may need a flavor of its own), and a composite when it starts
+    /// the room's video or wants a canvas without itself — each where it
+    /// would run. Priced at the dearest of `codecs`, since which one the
+    /// caller ends up with is decided in the answer.
+    pub fn join_cost(
+        &self,
+        settings: &VideoRoomSettings,
+        codecs: &[VideoCodec],
+        room_video: Option<&VideoRoom>,
+    ) -> Cost {
+        let fps = settings.fps.max(1);
+        let mut dearest: Option<Cost> = None;
+        for &c in codecs {
+            let mut cost = Cost::zero();
+            let dec = self.decoder_of(c);
+            cost.add(&dec.device, dec.decode_units(c, settings.resolution, fps));
+            let enc = self.encoder_of(c);
+            cost.add(&enc.device, enc.encode_units(c, settings.resolution, fps));
+            if dearest
+                .as_ref()
+                .map(|d| cost.total() > d.total())
+                .unwrap_or(true)
+            {
+                dearest = Some(cost);
+            }
+        }
+        let mut cost = dearest.unwrap_or_default();
+        let room = self.room();
+        let compose = match room_video {
+            None => room.compose_units(1, settings.resolution, fps),
+            Some(video) if settings.exclude_self => {
+                room.compose_units(video.status().sources + 1, settings.resolution, fps)
+            }
+            Some(_) => 0,
+        };
+        cost.add(&room.device, compose);
+        cost
+    }
+
+    /// Admit a join costing `cost` if it fits on every device it
+    /// touches, holding the units until the next recompute sees the
+    /// participant in a room. `false` refuses, and holds nothing.
+    pub fn try_reserve(&self, cost: &Cost) -> bool {
+        let mut taken: Vec<(&DeviceCapacity, u32)> = Vec::new();
+        for (device, units) in &cost.0 {
+            let d = self.on(device);
+            if d.reserve(*units) {
+                taken.push((d, *units));
+            } else {
+                for (d, u) in taken {
+                    d.release(u);
+                }
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Re-price every room and drop the reservations; returns what is
+    /// committed.
+    pub fn recompute(&self, rooms: impl IntoIterator<Item = Arc<ConferenceRoom>>) -> Cost {
+        let mut committed = Cost::zero();
+        for room in rooms {
+            if let Some(video) = room.video() {
+                committed.extend(&self.room_cost(&video));
+            }
+        }
+        for d in &self.devices {
+            d.committed
+                .store(committed.on(&d.device), Ordering::Relaxed);
+            d.reserved.store(0, Ordering::Relaxed);
+        }
+        *self.last_recompute.lock() = Some(Instant::now());
+        committed
+    }
+
+    /// The budget lines for cluster membership, the room device's first.
+    pub fn budgets(&self) -> Vec<DeviceBudget> {
+        self.devices.iter().map(|d| d.budget()).collect()
+    }
+
+    /// The room device's budget line.
+    #[allow(dead_code)]
+    pub fn budget(&self) -> DeviceBudget {
+        self.room().budget()
+    }
+
+    /// For `/status`: the room device's figures at the top, every
+    /// device under `devices`.
+    pub fn json(&self) -> serde_json::Value {
+        let mut json = self.room().json();
+        json["devices"] = serde_json::Value::Array(self.devices.iter().map(|d| d.json()).collect());
+        json["last_recompute_secs_ago"] =
+            serde_json::json!(self.last_recompute.lock().map(|t| t.elapsed().as_secs()));
+        json
     }
 }
 
@@ -399,9 +731,9 @@ fn round2(x: f64) -> f64 {
     (x * 100.0).round() / 100.0
 }
 
-/// Price this node's codecs by running each for a share of `seconds` on
-/// the backend's device (design §9.3: "re-measured per node and per device
-/// at start"). `seconds == 0` skips the run and uses `fallback` as it is.
+/// Price the host's codecs by running each for a share of `seconds` on
+/// the host (design §9.3: "re-measured per node and per device at
+/// start"). `seconds == 0` skips the run and uses `fallback` as it is.
 /// A codec that fails to measure keeps its fallback constant. Composition
 /// is timed once on a 720p nine-tile grid. Blocking: run it off the async
 /// runtime.
@@ -425,9 +757,10 @@ pub fn self_benchmark(
     };
     let mut measured = Vec::new();
     for &codec in codecs {
-        match bench::measure_codec(&backend.registry, &backend.device, codec, &settings) {
+        match bench::measure_codec(&backend.registry, &MediaDevice::Host, codec, &settings) {
             Ok(cost) => {
                 info!(
+                    device = "host",
                     codec = %codec.sdp_name(),
                     encode_ns_per_px = format!("{:.2}", cost.encode_ns_per_px),
                     decode_ns_per_px = format!("{:.2}", cost.decode_ns_per_px),
@@ -445,12 +778,123 @@ pub fn self_benchmark(
             }
         }
     }
-    if backend.device.is_host() {
-        table.compose = bench::measure_compose(Resolution::new(1280, 720), 9, 5);
-        info!(
-            compose_ns_per_px = format!("{:.2}", table.compose),
-            "Video self-benchmark: composition"
-        );
+    table.compose = bench::measure_compose(Resolution::new(1280, 720), 9, 5);
+    info!(
+        device = "host",
+        compose_ns_per_px = format!("{:.2}", table.compose),
+        "Video self-benchmark: composition"
+    );
+    table.source = CostSource::Benchmark {
+        seconds: started.elapsed().as_secs_f64(),
+        measured,
+    };
+    table
+}
+
+/// The stream the device benchmark saturates with: 720p30, the design's
+/// unit of GPU capacity (§9.1).
+#[allow(dead_code)]
+pub const DEVICE_BENCH_RESOLUTION: Resolution = Resolution {
+    width: 1280,
+    height: 720,
+};
+#[allow(dead_code)]
+pub const DEVICE_BENCH_FPS: u32 = 30;
+
+/// The per-pixel constant that makes `streams` real-time streams of
+/// [`DEVICE_BENCH_RESOLUTION`] at [`DEVICE_BENCH_FPS`] fill one execution
+/// unit (design §15.7, decision 7): a GPU is priced by what it sustains,
+/// not by what one stream takes.
+#[allow(dead_code)] // the device benchmark's, behind `video-hwaccel`
+pub fn ns_per_px_for_streams(streams: f64) -> f64 {
+    let streams = streams.max(0.1);
+    let units_per_stream = UNITS_PER_EXECUTION_UNIT / streams;
+    units_per_stream * NS_PER_UNIT
+        / (DEVICE_BENCH_RESOLUTION.pixels() as f64 * DEVICE_BENCH_FPS as f64)
+}
+
+/// Price a GPU's codecs by saturation (design §15.7, decision 7): each
+/// stage of each codec is run with 1, 2, 4, … streams for a share of
+/// `seconds` until its throughput stops growing, and the constant is
+/// what makes that many real-time 720p30 streams fill the device.
+/// Composition is timed on the device's compositor. `seconds == 0`
+/// skips the run and uses `fallback`.
+#[cfg(feature = "video-hwaccel")]
+pub fn self_benchmark_device(
+    backend: &VideoBackend,
+    encodes: &[VideoCodec],
+    decodes: &[VideoCodec],
+    seconds: u64,
+    fallback: CostTable,
+) -> CostTable {
+    use forge_video_hw::bench::{saturate, Stage};
+    if seconds == 0 || (encodes.is_empty() && decodes.is_empty()) {
+        info!(device = %backend.device, "Video device benchmark skipped; using the phase 0 cost table");
+        return fallback;
+    }
+    let started = Instant::now();
+    let mut table = fallback;
+    // Each stage steps 1, 2, 4, 8 streams; the composite takes one share.
+    let runs = (encodes.len() + decodes.len()) as f64 * 4.0 + 1.0;
+    let per_step = Duration::from_secs_f64((seconds as f64 / runs).max(0.2));
+    let mut measured = Vec::new();
+    let mut run = |codec: VideoCodec, stage: Stage| -> Option<f64> {
+        match saturate(
+            &backend.registry,
+            &backend.device,
+            codec,
+            stage,
+            DEVICE_BENCH_RESOLUTION,
+            DEVICE_BENCH_FPS,
+            per_step,
+            8,
+        ) {
+            Ok(sat) => {
+                let ns = ns_per_px_for_streams(sat.realtime_streams);
+                info!(
+                    device = %backend.device,
+                    codec = %codec.sdp_name(),
+                    stage = ?stage,
+                    streams = sat.streams,
+                    realtime_streams = format!("{:.1}", sat.realtime_streams),
+                    saturated = sat.saturated,
+                    ns_per_px = format!("{:.3}", ns),
+                    "Video device benchmark"
+                );
+                Some(ns)
+            }
+            Err(e) => {
+                warn!(device = %backend.device, codec = %codec.sdp_name(), stage = ?stage, error = %e,
+                      "Video device benchmark failed; keeping the table's constant");
+                None
+            }
+        }
+    };
+    for &codec in encodes {
+        if let Some(ns) = run(codec, Stage::Encode) {
+            table.encode.insert(codec, ns);
+            if !measured.contains(&codec) {
+                measured.push(codec);
+            }
+        }
+    }
+    for &codec in decodes {
+        if let Some(ns) = run(codec, Stage::Decode) {
+            table.decode.insert(codec, ns);
+            if !measured.contains(&codec) {
+                measured.push(codec);
+            }
+        }
+    }
+    match bench::measure_compose_on(&*backend.hw, DEVICE_BENCH_RESOLUTION, 9, 30) {
+        Ok(ns) => {
+            table.compose = ns;
+            info!(device = %backend.device, compose_ns_per_px = format!("{:.2}", ns),
+                  "Video device benchmark: composition");
+        }
+        Err(e) => {
+            warn!(device = %backend.device, error = %e, "Video device benchmark: composition failed; keeping the table's constant");
+        }
     }
     table.source = CostSource::Benchmark {
         seconds: started.elapsed().as_secs_f64(),
@@ -494,12 +938,12 @@ fn idle_flavors(
 impl ContentGate for VideoCapacity {
     fn admit(&self, room: &str, participant: &str) -> bool {
         let cost = self.content_cost(&VideoRoomSettings::default());
-        let admitted = self.try_reserve(cost);
+        let admitted = self.try_reserve(&cost);
         if !admitted {
             warn!(
                 room,
                 participant,
-                cost,
+                %cost,
                 left = self.left(),
                 "screen share refused: over the video budget"
             );
@@ -515,13 +959,51 @@ mod tests {
     use forge_conference::AudioFormat;
 
     fn capacity(units: usize) -> VideoCapacity {
-        VideoCapacity::new(
-            MediaDevice::Host,
+        VideoCapacity::host(
             vec![VideoCodec::H264, VideoCodec::VP8],
             CostTable::phase0(),
             units,
             0.8,
         )
+    }
+
+    /// A GPU node: the device encodes H.264 only and decodes H.264 and
+    /// VP8, at a total of `device_units`; the host beside it encodes
+    /// both with one thread.
+    fn gpu_capacity(device_units: u32) -> (MediaDevice, VideoCapacity) {
+        let gpu = MediaDevice::parse("cuda:0").unwrap();
+        let mut table = CostTable::phase0();
+        // A saturated engine: 60 real-time 720p30 H.264 encodes.
+        table
+            .encode
+            .insert(VideoCodec::H264, ns_per_px_for_streams(60.0));
+        table
+            .decode
+            .insert(VideoCodec::H264, ns_per_px_for_streams(240.0));
+        table
+            .decode
+            .insert(VideoCodec::VP8, ns_per_px_for_streams(240.0));
+        table.compose = 3.5;
+        let cap = VideoCapacity::new(
+            gpu.clone(),
+            vec![
+                DeviceCapacity::new(
+                    gpu.clone(),
+                    vec![VideoCodec::H264],
+                    vec![VideoCodec::H264, VideoCodec::VP8],
+                    table,
+                    device_units,
+                ),
+                DeviceCapacity::new(
+                    MediaDevice::Host,
+                    vec![VideoCodec::H264, VideoCodec::VP8],
+                    vec![VideoCodec::H264, VideoCodec::VP8],
+                    CostTable::phase0(),
+                    DeviceCapacity::host_total(1, 0.8),
+                ),
+            ],
+        );
+        (gpu, cap)
     }
 
     fn settings(exclude_self: bool) -> VideoRoomSettings {
@@ -556,22 +1038,28 @@ mod tests {
         let h264 =
             units(4.4, Resolution::new(1280, 720), 15) + units(1.4, Resolution::new(1280, 720), 15);
         let compose1 = units(2.0 * 1.1, Resolution::new(1280, 720), 15);
-        assert_eq!(first, h264 + compose1);
+        assert_eq!(first.total(), h264 + compose1);
+        assert_eq!(
+            first.on(&MediaDevice::Host),
+            first.total(),
+            "all on the host"
+        );
+        assert_eq!(first.to_string(), format!("{} on host", first.total()));
         // The dearest allowed codec sets the price.
         let either = cap.join_cost(&settings(false), &[VideoCodec::H264, VideoCodec::VP8], None);
-        assert!(either > first);
+        assert!(either.total() > first.total());
 
-        assert!(cap.try_reserve(first));
-        assert_eq!(cap.left(), 800 - first);
+        assert!(cap.try_reserve(&first));
+        assert_eq!(cap.left(), 800 - first.total());
         // Ten more do not fit in one thread.
         let mut admitted = 1;
-        while cap.try_reserve(first) {
+        while cap.try_reserve(&first) {
             admitted += 1;
         }
         assert!((4..10).contains(&admitted), "{admitted}");
         assert_eq!(cap.refused(), 1);
         // A recompute over no rooms frees everything.
-        assert_eq!(cap.recompute(Vec::<Arc<ConferenceRoom>>::new()), 0);
+        assert!(cap.recompute(Vec::<Arc<ConferenceRoom>>::new()).is_zero());
         assert_eq!(cap.left(), 800);
     }
 
@@ -598,14 +1086,11 @@ mod tests {
             },
             &backend,
         );
-        let cap = VideoCapacity::new(
-            MediaDevice::Host,
-            vec![VideoCodec::VP8],
-            CostTable::phase0(),
-            4,
-            1.0,
+        let cap = VideoCapacity::host(vec![VideoCodec::VP8], CostTable::phase0(), 4, 1.0);
+        assert!(
+            cap.room_cost(&video).is_zero(),
+            "no sources, no outputs yet"
         );
-        assert_eq!(cap.room_cost(&video), 0, "no sources, no outputs yet");
 
         video.add_source("alice", VideoCodec::VP8, "").unwrap();
         let sub = video
@@ -628,31 +1113,120 @@ mod tests {
         let expected = units(1.8, res, 15)            // alice's decode at the canvas size
             + units(11.7, res, 15)                   // bob's VP8 flavor
             + units(2.0 * 1.1, res, 15); // one output, one source tile
-        assert_eq!(cost, expected);
+        assert_eq!(cost.total(), expected);
 
         // Joining an existing room with a canvas to share adds no composite;
         // asking for one without yourself does.
         let more = cap.join_cost(&settings(false), &[VideoCodec::VP8], Some(&video));
         assert_eq!(
-            more,
+            more.total(),
             units(1.8, Resolution::new(1280, 720), 15)
                 + units(11.7, Resolution::new(1280, 720), 15)
         );
         let own = cap.join_cost(&settings(true), &[VideoCodec::VP8], Some(&video));
-        assert!(own > more);
+        assert!(own.total() > more.total());
 
         // The recompute over this room commits exactly its cost.
-        cap.try_reserve(5);
-        assert_eq!(cap.recompute(vec![Arc::clone(&room)]), expected);
+        let mut five = Cost::zero();
+        five.add(&MediaDevice::Host, 5);
+        cap.try_reserve(&five);
+        assert_eq!(cap.recompute(vec![Arc::clone(&room)]).total(), expected);
         assert_eq!(cap.reserved(), 0);
         assert_eq!(cap.left(), cap.total() - expected);
         let budget = cap.budget();
         assert_eq!(budget.device, "host");
         assert_eq!(budget.codecs, vec!["VP8"]);
         assert_eq!(budget.total, 4000);
+        assert_eq!(cap.budgets().len(), 1);
         assert_eq!(cap.json()["left"], cap.left());
+        assert_eq!(cap.json()["devices"].as_array().unwrap().len(), 1);
         drop(sub);
         room.disable_video();
+    }
+
+    #[test]
+    fn a_join_on_a_gpu_node_is_priced_where_each_stage_runs() {
+        let (gpu, cap) = gpu_capacity(DeviceCapacity::device_total(1.0));
+        assert_eq!(cap.device(), &gpu);
+        assert_eq!(cap.total(), 1000, "one execution unit: the device");
+        let res = Resolution::new(1280, 720);
+        // H.264: decode, encode and composite all on the device. Sixty
+        // real-time 720p30 encodes fill it, so one 720p15 encode is a
+        // 120th of it, and the decode a 480th.
+        let h264 = cap.join_cost(&settings(false), &[VideoCodec::H264], None);
+        assert_eq!(h264.on(&MediaDevice::Host), 0);
+        assert_eq!(
+            h264.on(&gpu),
+            units(ns_per_px_for_streams(60.0), res, 15)
+                + units(ns_per_px_for_streams(240.0), res, 15)
+                + units(3.5 * 1.1, res, 15)
+        );
+        assert_eq!(
+            units(ns_per_px_for_streams(60.0), res, 15),
+            9,
+            "1000 / 60 / 2, rounded up"
+        );
+        // VP8: decoded on the device, encoded on the host, composed on
+        // the device.
+        let vp8 = cap.join_cost(&settings(false), &[VideoCodec::VP8], None);
+        assert_eq!(vp8.on(&MediaDevice::Host), units(11.7, res, 15));
+        assert_eq!(
+            vp8.on(&gpu),
+            units(ns_per_px_for_streams(240.0), res, 15) + units(3.5 * 1.1, res, 15)
+        );
+        assert!(vp8.to_string().contains("on host"));
+        assert!(vp8.to_string().contains("on cuda:0"));
+        // The budgets advertise what each device encodes.
+        let budgets = cap.budgets();
+        assert_eq!(budgets.len(), 2);
+        assert_eq!(budgets[0].device, "cuda:0");
+        assert_eq!(budgets[0].codecs, vec!["H264"]);
+        assert_eq!(budgets[1].device, "host");
+        assert_eq!(budgets[1].codecs, vec!["H264", "VP8"]);
+        assert_eq!(cap.json()["devices"].as_array().unwrap().len(), 2);
+        assert_eq!(cap.json()["device"], "cuda:0");
+    }
+
+    #[test]
+    fn a_saturated_device_refuses_a_join_and_holds_nothing_for_it() {
+        // A device with room for a couple of joins; the host beside it
+        // has a whole thread.
+        let (gpu, cap) = gpu_capacity(120);
+        let h264 = cap.join_cost(&settings(false), &[VideoCodec::H264], None);
+        let vp8 = cap.join_cost(&settings(false), &[VideoCodec::VP8], None);
+        let mut admitted = 0;
+        while cap.try_reserve(&h264) {
+            admitted += 1;
+        }
+        assert!(admitted >= 1, "{admitted}");
+        assert_eq!(cap.refused(), 1);
+        // The device is full: a VP8 join, whose encode would go to the
+        // host, still needs the device for its decode and composite —
+        // refused, and the host keeps every unit it had.
+        let host_left = cap.devices()[1].left();
+        assert!(!cap.try_reserve(&vp8));
+        assert_eq!(
+            cap.devices()[1].left(),
+            host_left,
+            "a refused join holds nothing"
+        );
+        assert_eq!(cap.devices()[1].reserved(), 0);
+        assert_eq!(cap.refused(), 2);
+        assert!(cap.devices()[0].left() < h264.on(&gpu));
+        // A recompute over no rooms frees everything on both devices.
+        cap.recompute(Vec::<Arc<ConferenceRoom>>::new());
+        assert_eq!(cap.devices()[0].left(), 120);
+        assert!(cap.try_reserve(&vp8));
+    }
+
+    #[test]
+    fn the_saturation_constant_fills_the_device_with_that_many_streams() {
+        // Sixty real-time 720p30 streams: each costs 1000/60 units.
+        let ns = ns_per_px_for_streams(60.0);
+        assert_eq!(units(ns, DEVICE_BENCH_RESOLUTION, DEVICE_BENCH_FPS), 17);
+        assert!((ns - 0.6029).abs() < 0.001, "{ns}");
+        // Nothing sustained is priced as a tenth of a stream, never free.
+        assert!(ns_per_px_for_streams(0.0) > ns);
     }
 
     #[test]
@@ -670,5 +1244,109 @@ mod tests {
         // Zero seconds: the table, untouched.
         let table = self_benchmark(&backend, &[VideoCodec::VP8], 0, CostTable::phase0());
         assert_eq!(table.source, CostSource::Phase0);
+    }
+
+    /// The node on a GPU (design §15.7, block 8c), on the box: the
+    /// device named by `FCP_TEST_VIDEO_DEVICE` opens as the rooms'
+    /// backend, its codecs are what the node offers, the saturation
+    /// benchmark prices it, and the budgets advertise the device beside
+    /// the host. Skips without the variable or when the device does not
+    /// open. Run through `deploy/gcp-gpu/gpu-box test`.
+    #[cfg(feature = "video-hwaccel")]
+    #[test]
+    fn the_node_opens_the_device_and_prices_it_by_saturation() {
+        use crate::video_bridge::node_codecs;
+        use forge_conference::video::CodecPool;
+        let Some(device) = std::env::var("FCP_TEST_VIDEO_DEVICE")
+            .ok()
+            .and_then(|d| MediaDevice::parse(&d))
+            .filter(|d| !d.is_host())
+        else {
+            eprintln!("FCP_TEST_VIDEO_DEVICE unset: skipping");
+            return;
+        };
+        let mut registry = forge_video_codecs::default_registry();
+        let Some(hw) = forge_video_codecs::open_device(&mut registry, &device) else {
+            eprintln!("{device} did not open: skipping");
+            return;
+        };
+        let backend = VideoBackend::on_device(registry, CodecPool::new(2), hw);
+        assert_eq!(backend.device, device);
+
+        // What the node offers: the device's codecs, and — with the raw
+        // codec allowed, as in CI — the host filling in the rest.
+        let codecs = node_codecs(&backend, false);
+        let dev = codecs.on(&device).expect("the device is listed").clone();
+        let host = codecs
+            .on(&MediaDevice::Host)
+            .expect("the host is listed")
+            .clone();
+        eprintln!(
+            "{device}: encodes {:?}, decodes {:?}; host encodes {:?}",
+            dev.encodes, dev.decodes, host.encodes
+        );
+        assert!(dev.encodes.contains(&VideoCodec::H264), "NVENC has H.264");
+        assert!(dev.decodes.contains(&VideoCodec::H264), "NVDEC has H.264");
+        assert!(!dev.encodes.contains(&VideoCodec::VP8), "NVENC has no VP8");
+        assert!(
+            codecs.usable.contains(&VideoCodec::VP8),
+            "VP8 is encoded on the host"
+        );
+        assert!(node_codecs(&backend, true)
+            .usable
+            .contains(&VideoCodec::H264));
+
+        // The saturation benchmark, briefly.
+        let table =
+            self_benchmark_device(&backend, &dev.encodes, &dev.decodes, 6, CostTable::phase0());
+        let h264 = table.encode_ns_per_px(VideoCodec::H264);
+        let streams = 1000.0
+            / (h264 * DEVICE_BENCH_RESOLUTION.pixels() as f64 * DEVICE_BENCH_FPS as f64 / 1e6);
+        eprintln!(
+            "H.264 encode {h264:.3} ns/px = {streams:.1} real-time 720p30 streams; compose {:.2} ns/px",
+            table.compose
+        );
+        assert!(h264 > 0.0 && h264 < 4.4, "measured, not the table's 4.4");
+        assert!(streams > 10.0, "{streams}");
+        assert!(table.compose > 0.0);
+
+        // The budgets: the device first with what it encodes, the host beside it.
+        let capacity = VideoCapacity::new(
+            device.clone(),
+            vec![
+                DeviceCapacity::new(
+                    device.clone(),
+                    dev.encodes.clone(),
+                    dev.decodes.clone(),
+                    table,
+                    DeviceCapacity::device_total(0.8),
+                ),
+                DeviceCapacity::new(
+                    MediaDevice::Host,
+                    host.encodes.clone(),
+                    host.decodes.clone(),
+                    CostTable::phase0(),
+                    DeviceCapacity::host_total(2, 0.8),
+                ),
+            ],
+        );
+        let budgets = capacity.budgets();
+        assert_eq!(budgets[0].device, device.to_string());
+        assert!(budgets[0].codecs.contains(&"H264".to_string()));
+        assert!(!budgets[0].codecs.contains(&"VP8".to_string()));
+        assert_eq!(budgets[1].device, "host");
+        // A VP8 join spends the host on its encode and the device on the rest.
+        let settings = VideoRoomSettings::default();
+        let vp8 = capacity.join_cost(&settings, &[VideoCodec::VP8], None);
+        assert!(vp8.on(&MediaDevice::Host) > 0);
+        assert!(vp8.on(&device) > 0);
+        let h264 = capacity.join_cost(&settings, &[VideoCodec::H264], None);
+        assert_eq!(h264.on(&MediaDevice::Host), 0);
+        eprintln!("join costs: VP8 {vp8}; H.264 {h264}");
+        assert!(capacity.try_reserve(&h264));
+        eprintln!(
+            "{}",
+            serde_json::to_string_pretty(&capacity.json()).unwrap()
+        );
     }
 }

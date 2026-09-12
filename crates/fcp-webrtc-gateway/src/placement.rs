@@ -95,9 +95,8 @@ impl ConferencePlacement {
             };
             let members: Vec<fcp_cluster::ClusterMember> =
                 cluster.members.iter().map(|m| m.value().clone()).collect();
-            let need = (!video_codecs.is_empty()).then(|| fcp_cluster::VideoNeed {
-                codecs: video_codecs.to_vec(),
-            });
+            let need = (!video_codecs.is_empty())
+                .then(|| fcp_cluster::VideoNeed::of(video_codecs.to_vec()));
             if let Some(pick) = fcp_cluster::choose_conference_node(
                 &hosts,
                 &members,

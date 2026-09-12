@@ -715,6 +715,8 @@ export interface LiveVideoParticipant {
 }
 
 export interface LiveVideoFlavor {
+  /** Where the flavor is encoded: the room's device, or `host` when the device has no encoder for the codec. */
+  device?: string
   codec: string
   profile: string
   resolution: string
@@ -751,6 +753,8 @@ export interface LiveRoomVideo {
   fps: number
   target_fps: number
   resolution: string
+  /** The device the room runs on (`host`, or a GPU as `cuda:0`); each output, flavor and source says where it actually runs. */
+  device?: string
   sources: number
   encoders: number
   ticks: number
@@ -762,6 +766,8 @@ export interface LiveRoomVideo {
     /** `composite`, `cameras` or `content`. */
     view?: string
     resolution: string
+    /** Where it is composed. */
+    device?: string
     flavors: LiveVideoFlavor[]
   }[]
 }

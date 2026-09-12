@@ -7,7 +7,7 @@ import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { ApiRequestError } from '@/api/client'
-import { conferenceLive, CONTENT_LAYOUT_LABELS, VIDEO_LAYOUT_LABELS, type LiveVideoParticipant } from '@/api/endpoints'
+import { conferenceLive, CONTENT_LAYOUT_LABELS, VIDEO_LAYOUT_LABELS, type LiveRoomVideo, type LiveVideoParticipant } from '@/api/endpoints'
 
 /** How often the live view refreshes while open. */
 const REFRESH_MS = 3000
@@ -40,6 +40,20 @@ function errorText(err: unknown): string {
  * layout, the pinned and spotlighted participants, each participant's
  * video state, and the host controls the conference server exposes.
  */
+/** The stages of a room's pipeline that run off its device (§15.7): a
+ * codec the device cannot encode, an output composed on the host. */
+function fallbacks(video: LiveRoomVideo): string[] {
+  if (!video.device) return []
+  const out = new Set<string>()
+  for (const o of video.outputs ?? []) {
+    if (o.device && o.device !== video.device) out.add(`${o.view ?? 'composite'} composite`)
+    for (const f of o.flavors ?? []) {
+      if (f.device && f.device !== video.device) out.add(`${f.codec} encode`)
+    }
+  }
+  return [...out]
+}
+
 export function LiveVideoDialog({ room, onOpenChange }: {
   room: string | null
   onOpenChange: (open: boolean) => void
@@ -143,6 +157,19 @@ export function LiveVideoDialog({ room, onOpenChange }: {
                   <Label className="text-xs">Pipeline</Label>
                   <p className="text-sm">{video.sources} source{video.sources === 1 ? '' : 's'}, {video.encoders} encoder{video.encoders === 1 ? '' : 's'}</p>
                 </div>
+                {video.device && (
+                  <div>
+                    <Label className="text-xs">Device</Label>
+                    <p className="text-sm">
+                      <span className="font-mono">{video.device}</span>
+                      {fallbacks(video).length > 0 && (
+                        <span className="text-muted-foreground" title="Stages the device lacks run on the host, one copy per frame">
+                          {' '}({fallbacks(video).join(', ')} on host)
+                        </span>
+                      )}
+                    </p>
+                  </div>
+                )}
                 <div className="col-span-2 flex items-center gap-2 text-sm">
                   <Pin className="h-4 w-4 text-muted-foreground" />
                   <span className="text-muted-foreground">Pinned:</span>
