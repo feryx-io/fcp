@@ -1767,6 +1767,60 @@ the driver's JIT. The box script now builds the product's FFmpeg
 snapshot, and CI installs the FFmpeg development headers so the crate
 and the feature compile there without a GPU (the tests skip).
 
+**8b as built (2026-09-12; forge-media `v2026.09.12.1`: forge-video
+0.6.0, forge-video-hw 0.2.0, forge-video-codecs 0.1.3, forge-conference
+0.13.0; FCP v0.25.134).** As planned, with one shape settled by the
+parity test. forge-video's `DeviceBackend` is what a room is placed on
+(its compositor and scaler, `upload` / `download`, `resident`; the host
+is `HostBackend`), and the compositor's chrome is one piece of code for
+every device — `tile_geometry`, `draw_chrome_under`, `draw_band`,
+`label_text` — which the host compositor draws through, pixel for pixel
+as before, and a device compositor paints into host planes and uploads.
+`parity::scenes` is the golden set (nine scenes: mixed sizes and
+aspects, avatars, speaking, muted, presentation with a 4:3 document,
+content alone, sixteen tiles, a tiny canvas), the host's rendering the
+reference. `CodecRegistry::decodable_on` / `encodable_on` split what
+`codecs_on` asked of both; `testing::FakeBackend` is a device that is not
+there (host frames behind device handles, copies counted, a compositor
+that can be told to fail) with the raw codec registered on it. forge-
+video-hw's `DeviceCompositor` is one filter graph per output: onto a
+background uploaded once, in tile order, each tile's chrome plane (ring,
+bars or avatar, cached by what it shows and uploaded when that changes),
+its picture through `scale_cuda` (bilinear for cameras, Lanczos for a
+shrunk screen) and its name band, each an `overlay_cuda`; the graph is
+rebuilt when its shape changes and a steady scene crosses the bus not at
+all. The first cut painted every ring into one underlay under all the
+pictures and drew picture-in-picture at 23 dB (the main picture covered
+the corner's ring); tile order, the host's order, is what fixed it.
+`HwBackend` is the backend over an open `HwDevice`, with the codecs
+registered on the same open device; forge-video-codecs' `open_device`
+does both. forge-conference places each stage on the device when it can
+and on the host otherwise, one copy per frame: a decoder the device
+lacks uploads what it decodes (at decode time, once, not per output); an
+encoder it lacks — VP8 and VP9 on NVENC, so every WebM recording — takes
+the canvas downloaded once a tick for all such flavors; an output whose
+device compositor does not build composes on the host from downloaded
+tiles. Found on the way: an oversize shared screen decoded on a device
+was dropped (the shrink only knew host frames); it is shrunk on the
+device's scaler now. The status names the device per stage
+(`VideoRoomStatus::device`, per source, output and flavor; the conference
+server's JSON carries them as `device`), `video_frames_moved_total`
+counts the copies, and five fake-device room tests run in CI. The
+`CodecPool` binds no context per thread: FFmpeg pushes the CUDA context
+per call, so the plan's item is dropped. On the L4: every scene within
+39.5 dB or better of the host (the scaler is the difference; the chrome
+is identical), the room test end to end (NVDEC in, the device composite,
+NVENC out to one subscriber and the downloaded canvas to a VP8 one). The
+plan's open check: a 720p composite costs the host 3.9 ms a tick at any
+tile count (release build) and the device 0.5 / 1.5 / 3.3 / 5.7 ms for
+1 / 4 / 9 / 16 tiles — the graph's cost is about 0.35 ms per filter
+stage, launch and sync overhead rather than pixels, so the device is
+cheaper below about nine tiles and dearer above. It fits a 30 fps tick
+with room to spare and composition is not what a GPU node is bought for,
+so the graph stays for 8c, priced by 8c's benchmark in the budget either
+way; a single-kernel compositor (decision 2's alternative) is a later
+optimisation if the number matters.
+
 ## 16. Resolved questions
 
 Raised with the first draft and decided 2026-09-04, each as recommended.
