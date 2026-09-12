@@ -69,8 +69,41 @@ pub struct ClusterMember {
 pub struct VideoDeviceBudget {
     /// `host`, or a GPU as `backend:address`.
     pub device: String,
-    /// SDP names of the codecs the device runs (`H264`, `VP8`, …).
+    /// SDP names of the codecs the device *encodes* (`H264`, `VP8`, …).
     pub codecs: Vec<String>,
+    /// What a new room or participant may still cost here: on a device
+    /// with engines, the tightest engine's.
+    pub left: u32,
+    pub total: u32,
+    /// A GPU's engines, each a budget of its own (FCP §15.8): NVENC,
+    /// NVDEC and the compute cores saturate separately, and placement
+    /// wants the encoder's. Absent on the host, and on a node from
+    /// before engines were advertised.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engines: Option<VideoEngines>,
+}
+
+impl VideoDeviceBudget {
+    /// What placement weighs: the encode engine's `left` when the
+    /// device has engines, the device's otherwise.
+    pub fn placement_left(&self) -> u32 {
+        self.engines
+            .as_ref()
+            .map(|e| e.encode.left)
+            .unwrap_or(self.left)
+    }
+}
+
+/// The three budgets of a GPU.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VideoEngines {
+    pub encode: EngineBudget,
+    pub decode: EngineBudget,
+    pub compose: EngineBudget,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EngineBudget {
     pub left: u32,
     pub total: u32,
 }
@@ -104,7 +137,7 @@ impl ClusterMember {
         self.video_budget
             .iter()
             .filter(|b| codecs.is_empty() || b.codecs.iter().any(|c| codecs.contains(c)))
-            .map(|b| b.left)
+            .map(|b| b.placement_left())
             .max()
             .or(Some(0))
     }
@@ -124,7 +157,7 @@ impl ClusterMember {
                 .video_budget
                 .iter()
                 .filter(|b| b.codecs.contains(first))
-                .map(|b| b.left)
+                .map(|b| b.placement_left())
                 .collect();
             if !with_first.is_empty() {
                 return with_first.into_iter().max();
@@ -563,12 +596,14 @@ mod tests {
                 codecs: vec!["H264".into(), "VP8".into()],
                 left: 700,
                 total: 8000,
+                engines: None,
             },
             VideoDeviceBudget {
                 device: "vaapi:/dev/dri/renderD128".into(),
                 codecs: vec!["H264".into()],
                 left: 3000,
                 total: 20000,
+                engines: None,
             },
         ];
         let back: ClusterMember =
@@ -580,6 +615,48 @@ mod tests {
         assert_eq!(back.video_budget_left(&["VP8".to_string()]), Some(700));
         assert_eq!(back.video_budget_left(&["AV1".to_string()]), Some(0));
         assert_eq!(back.video_budget_left(&[]), Some(3000));
+    }
+
+    #[test]
+    fn a_device_s_engines_are_optional_on_the_wire_and_placement_reads_the_encoder_s() {
+        // A budget written before engines existed: `engines` absent.
+        let old = r#"{"device":"cuda:0","codecs":["H264"],"left":500,"total":800}"#;
+        let b: VideoDeviceBudget = serde_json::from_str(old).unwrap();
+        assert_eq!(b.engines, None);
+        assert_eq!(b.placement_left(), 500);
+        // Without engines the field is not written.
+        assert!(!serde_json::to_string(&b).unwrap().contains("engines"));
+        // With engines: placement weighs the encoder, `left` is the
+        // tightest engine's for a reader that knows no better.
+        let gpu = VideoDeviceBudget {
+            device: "cuda:0".into(),
+            codecs: vec!["H264".into()],
+            left: 100,
+            total: 800,
+            engines: Some(VideoEngines {
+                encode: EngineBudget {
+                    left: 600,
+                    total: 800,
+                },
+                decode: EngineBudget {
+                    left: 790,
+                    total: 800,
+                },
+                compose: EngineBudget {
+                    left: 100,
+                    total: 800,
+                },
+            }),
+        };
+        let back: VideoDeviceBudget =
+            serde_json::from_str(&serde_json::to_string(&gpu).unwrap()).unwrap();
+        assert_eq!(back, gpu);
+        assert_eq!(back.placement_left(), 600);
+        let mut m = member("conf-3", None);
+        m.video_budget = vec![gpu];
+        assert_eq!(m.video_budget_left(&["H264".to_string()]), Some(600));
+        let need = crate::VideoNeed::of(vec!["H264".to_string()]);
+        assert_eq!(m.video_budget_left_for(&need), Some(600));
     }
 
     #[test]

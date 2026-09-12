@@ -94,19 +94,29 @@ At start the node prices each device it has (design §9.3, §15.7):
   real-time streams fill the device. The composite is timed on the
   device's compositor with a nine-tile 720p grid.
 
-The GPU is one execution unit: its budget is `1000 × video_budget_headroom`
-work units, and a stage's units are its share of the saturated
-throughput. On an L4, sixty real-time 720p30 H.264 encodes saturate
-NVENC, so one 720p15 H.264 encode costs nine units of 800.
+A GPU is three engines that saturate separately — NVENC, NVDEC and
+the compute cores that run the composite — so its budget is three:
+`encode`, `decode` and `compose`, each of `1000 × video_budget_headroom`
+work units, and a stage's units are its share of that engine's
+saturated throughput. On an L4, sixty real-time 720p30 H.264 encodes
+saturate NVENC, so one 720p15 H.264 encode costs nine units of the
+encode engine's 800. The composite is priced the same way, by
+saturation: several graphs run at once until the summed tick rate stops
+growing. A join is admitted only when every engine it touches has room,
+and a share, which is a decode alone, is admitted while the compose
+engine is out.
 
-Give a GPU node a longer `video_benchmark_seconds` than the default
-ten: the saturation run steps four times for every stage of every
-codec, and short steps overshoot (a six-second run read 109 real-time
-H.264 encodes where long steps measure 62). A minute is reasonable.
-The composite is priced at the compositor's per-tick cost as if the
-device ran one graph at a time, which it does not, so that part of the
-budget is conservative: a 720p15 composite is about five per cent of
-an L4.
+Each step of the saturation run lasts at least a second after a
+one-second warm-up whatever `video_benchmark_seconds` says (short steps
+overshoot: a six-second run without the warm-up read 109 real-time
+H.264 encodes where long steps measure 62), so a GPU node's benchmark
+takes about a minute and a half for three encoders, five decoders and
+the composite, and the log says what it took.
+
+On the wire, a GPU's budget line carries `left` and `total` of its
+tightest engine — what a node from before engines were advertised
+reads — and `engines` with the three; placement weighs the encode
+engine's `left`, and the admin cluster page shows all three.
 
 A join is priced on the device each of its stages would run on — the
 decode and the composite on the GPU, the encode on the GPU when it has
@@ -116,15 +126,16 @@ on a host node, and holds nothing. Every few seconds the rooms are
 re-priced from what each stage actually runs on.
 
 In cluster membership the node advertises **two budgets**: the GPU's,
-with the codecs the GPU *encodes* (decision 5), and the host's beside
-it. Placement prefers a device only when it encodes the meeting's first
-codec, so a VP8-first meeting is not sent to a GPU node for a budget it
-would spend on that node's host; an H.264-first meeting takes the GPU
-with the most left. `GET /status` reports every device under
-`video_capacity.devices` (total, committed, reserved, left, the codecs
-it encodes and decodes, the cost table and where it came from) with the
-room device's figures at the top; the admin cluster page shows one
-budget line per device.
+with the codecs the GPU *encodes* (decision 5) and its engines, and the
+host's beside it. Placement prefers a device only when it encodes the
+meeting's first codec, so a VP8-first meeting is not sent to a GPU node
+for a budget it would spend on that node's host; an H.264-first meeting
+takes the GPU whose encode engine has the most left. `GET /status`
+reports every device under `video_capacity.devices` (total, committed,
+reserved, left, the engines, the codecs it encodes and decodes, the
+cost table and where it came from) with the room device's figures at
+the top; the admin cluster page shows one budget line per device with
+its engines.
 
 ## Testing on hardware
 

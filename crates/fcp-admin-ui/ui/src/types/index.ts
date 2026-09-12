@@ -934,9 +934,17 @@ export interface ClusterNodeInfo {
 
 export interface VideoDeviceBudget {
   device: string
+  /** SDP names of the codecs the device encodes. */
   codecs: string[]
+  /** On a device with engines, the tightest engine's. */
   left: number
   total: number
+  /** A GPU's engines, each a budget of its own; absent on the host. */
+  engines?: {
+    encode: { left: number; total: number }
+    decode: { left: number; total: number }
+    compose: { left: number; total: number }
+  }
 }
 
 export interface ClusterNodesResponse {

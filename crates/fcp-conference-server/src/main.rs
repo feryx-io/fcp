@@ -49,11 +49,33 @@ use fcp_conference_server::{config, recording};
 /// The node's video budget as cluster membership carries it.
 #[cfg(feature = "storage-redis")]
 fn cluster_budget(b: &video_capacity::DeviceBudget) -> fcp_cluster::VideoDeviceBudget {
+    use video_capacity::Engine;
+    let engine = |e: Engine| {
+        b.engines
+            .as_ref()
+            .and_then(|es| es.iter().find(|(x, _, _)| *x == e))
+            .map(|(_, left, total)| fcp_cluster::EngineBudget {
+                left: *left,
+                total: *total,
+            })
+    };
     fcp_cluster::VideoDeviceBudget {
         device: b.device.clone(),
         codecs: b.codecs.clone(),
         left: b.left,
         total: b.total,
+        engines: match (
+            engine(Engine::Encode),
+            engine(Engine::Decode),
+            engine(Engine::Compose),
+        ) {
+            (Some(encode), Some(decode), Some(compose)) => Some(fcp_cluster::VideoEngines {
+                encode,
+                decode,
+                compose,
+            }),
+            _ => None,
+        },
     }
 }
 
