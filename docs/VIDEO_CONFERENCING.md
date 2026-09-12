@@ -1973,11 +1973,23 @@ cluster page shows the three under a GPU's line. `ContentGate::admit`
 takes the room's settings. Tests: the compose engine running out while
 encode has plenty (an H.264 join refused, a share admitted, `left` the
 tightest engine's), a smaller content cap priced lower, `engines` on
-the wire both ways, placement reading the encoder's budget. The box
-run of the two hardware tests (the composite's saturation, the node's
-benchmark with the floor) is the one thing this block still owes; the
-notes 8c carried about the benchmark's coarseness and the composite's
-pricing are answered by the code either way.
+the wire both ways, placement reading the encoder's budget. On the box (L4), both hardware tests
+green, and two numbers that settle 8c's notes. With the warm-up, the
+saturation run reads what 8a measured with long steps — 62 real-time
+720p30 H.264 encodes, 78 AV1, 57 HEVC; 255, 279 and 329 decodes — and
+the node's benchmark, at the one-second floor, took 79 seconds for
+three encoders, five decoders and the composite. The composite's
+saturation is the surprise: nine 720p tiles render at 1,737 ticks a
+second on one graph (0.58 ms a tick, 0.61 ns/px), and a second graph
+adds nothing, so the engine holds about fifty-eight rooms' 30 fps
+composites; the 3.1 ms a tick that 8b and 8c reported was the first
+render's uploads and graph build averaged over sixty frames, not the
+steady state — the device composite is about seven times cheaper than
+the host's at nine tiles, not dearer. An H.264 join at 720p15 now
+costs 21 units of the GPU (9 encode, 2 decode, 10 compose) where 8c
+charged 110, and a VP8 join 35 on the GPU plus 162 on the host. The
+single-kernel compositor (decision 4) is further off than the plan
+thought.
 
 ## 16. Resolved questions
 
