@@ -684,6 +684,7 @@ crate (`forge-rtp` 111, `forge-sdp` 90, `forge-core` 22).
 | 6 | **Passthrough fast path, bitrate ladder, polish** — done 2026-09-10 (§15.5): single-source forwarding (v0.25.117/118), ladder switching (v0.25.119), overload shedding and parser fuzzing (v0.25.121; forge-media `v2026.09.10`) | both | done |
 | 7 | **Screen share** — done 2026-09-11 (§15.6): the content source kind, the per-room floor and the `Composite` / `Cameras` / `Content` views (7a, forge-media `v2026.09.11`; v0.25.123), the RFC 4796 content section on SIP with its settings, API, events and UI (7b, v0.25.124), RFC 8285 header extensions and a second video mid on WebRTC with the join page's share button and the floor told by SIP `INFO` (7c, forge-media `v2026.09.11.1`; v0.25.125/126), content across trunks with a room-wide floor (7d, forge-media `v2026.09.11.2`; v0.25.127), BFCP floor control for SIP room systems in the new `forge-bfcp` (7e, forge-media `v2026.09.11.3`; v0.25.128) | both | done |
 | 8 | **GPU backend** — done 2026-09-12 (§15.7): `forge-video-hw` over FFmpeg device contexts with NVDEC decoders, NVENC encoders and the L4's numbers (8a); the pipeline on the device — the filter-graph compositor, per-stage host fallback, parity within 39.5 dB (8b); the node — `[conference] video_device`, the `video-hwaccel` feature, the saturation budget, per-device budgets and placement by the first codec, the NVIDIA image (8c). NVIDIA built and measured, VAAPI compiles; the box is `deploy/gcp-gpu` | forge-media, FCP | done |
+| 9 | **MP4 recording sink** — planned 2026-09-12 (§15.9): a fragmented-MP4 writer `forge-mp4` (H.264 / HEVC / AV1 with Opus), the recorder recording on the device a room runs on, `auto` picking MP4 where H.264 is encodable | forge-media, FCP | 1 week |
 
 Each phase is one PR per repository (forge-media release tag, then the
 FCP bump), reviewed before the next starts. Sizes are for one person and
@@ -1990,6 +1991,98 @@ costs 21 units of the GPU (9 encode, 2 decode, 10 compose) where 8c
 charged 110, and a VP8 join 35 on the GPU plus 162 on the host. The
 single-kernel compositor (decision 4) is further off than the plan
 thought.
+
+### 15.9 Phase 9 plan — the MP4 recording sink (2026-09-12)
+
+Recordings are WebM: VP8 or VP9 with Opus, written by `forge-webm`
+(§15.4). That was the right first container — a writer of a few
+hundred lines with no licence to think about — and it has one cost that
+phase 8 made plain: a room on a GPU records on the host, because NVENC
+has no VP8, and every WebM player short of a browser wants a
+transcode. MP4 (ISO base media, ISO/IEC 14496-12) fixes both: H.264,
+HEVC and AV1 go in as they come off the encoder, so a GPU room records
+on NVENC, and the file plays everywhere. §16 kept MP4 as an option;
+this is it.
+
+**What the surveys found.** `RecordRequest` takes any codec — the room
+does not care — and `RecordingSink` hands out `CodedFrame`s: for H.264
+and HEVC an Annex B byte stream (start codes before each NAL unit,
+parameter sets in-band on keyframes — 8a's NVENC repeats them on every
+IDR, OpenH264 does too), for AV1 a temporal unit of OBUs. The
+conference server's `recording.rs` accepts VP8 and VP9 only
+(`webm_codec`), mixes the room to 48 kHz Opus through `audiopus` behind
+the `recording-webm` feature, and stamps both against the first frame's
+clock; `RecordingFormat` in fcp-core is `Wav | Webm`, stored as text in
+`conference_recordings.format` (an unknown value reads as the default,
+so a newer node's rows do not break an older one); `GET /recordings/
+{file}` picks `video/webm` by extension; the admin UI plays the file in
+a `<video>`. `forge-webm` has a reader for its tests and a fuzz target
+on that reader, the pattern to follow.
+
+**Decisions, each with a recommendation.**
+
+1. **Write it ourselves or use a crate.** The `mp4` crate writes whole
+   files (the `moov` after the `mdat`, nothing playable until the
+   end); `mp4-atom` and `re_mp4` read. A fragmented writer is a small
+   thing — `ftyp`, a `moov` with empty sample tables and an `mvex`,
+   then `moof` + `mdat` per fragment — and `forge-webm` set the
+   precedent. **Recommended: a new `forge-mp4` crate, no dependencies
+   beyond `thiserror`, with a reader for its tests and a fuzz target.**
+2. **Fragmented or whole.** A recording grows for an hour and must
+   survive the node dying: a whole-file MP4 with its `moov` at the end
+   is unplayable until then; a fragmented one is playable to the last
+   complete fragment and streams. **Recommended: fragmented MP4**, one
+   fragment per video keyframe as they come (the recording's flavor is
+   a subscriber's, so the room's keyframe interval, ten seconds by
+   default, is the fragment length — no extra keyframes asked for),
+   `tfdt` on every fragment, and an `mfra` (fragment random access)
+   appended on a clean stop for fast seeking; a file cut short seeks
+   by scanning `moof`s, which every browser does.
+3. **Audio.** AAC is what MP4 players expect and has no encoder this
+   workspace can take (fdk-aac's licence, no pure-Rust one); Opus in
+   MP4 is a standard (`Opus` sample entry with `dOps`, per the Opus in
+   ISOBMFF spec) that Chrome, Firefox, Safari 17 and VLC play.
+   **Recommended: Opus, the same 48 kHz mix the WebM path already
+   encodes; AAC deferred** until a player that matters lacks Opus.
+4. **Video codecs.** H.264 (`avc1` + `avcC`, samples as AVCC length-
+   prefixed NAL units converted from Annex B, SPS/PPS lifted from the
+   first keyframe), HEVC (`hvc1` + `hvcC`, VPS/SPS/PPS arrays) and AV1
+   (`av01` + `av1C`, the sequence header OBU, samples as temporal
+   units). VP8 and VP9 stay WebM (VP9 in MP4 is legal and pointless
+   here). **Recommended: all three**, since the depacketizers already
+   hand the writer what it needs and the parameter-set lifting is the
+   same shape for each; H.264 is the one 9b's tests run on the box.
+5. **What `auto` means.** Today `recording_format = auto` is WebM when
+   the room has video. **Recommended: `auto` is MP4 when the node can
+   encode H.264 (natively or on its device) and WebM otherwise**, so a
+   GPU node records on NVENC and a host node with OpenH264 records the
+   container every player opens, while a VP8-only build changes
+   nothing; `mp4` and `webm` stay as explicit choices, and
+   `recording_video_codec` grows `h264`, `hevc` and `av1`, validated
+   against the format (`vp8` in `mp4` is refused at start, as is `h264`
+   in `webm`).
+6. **The player and the API.** `video/mp4` by extension, `Mp4` in
+   `RecordingFormat` (an older node reads an `mp4` row as the default,
+   as designed), the admin UI's `<video>` needs nothing. Retention,
+   consent and the compliance sweep are format-blind already.
+
+**Blocks.**
+
+| Block | What | Where |
+|---|---|---|
+| 9a | **`forge-mp4`.** forge-media (release): the writer — `Mp4Config` with a video track (`avc1`/`hvc1`/`av01`, size, the codec configuration record built from the first keyframe's parameter sets) and an Opus audio track (`dOps` from the same pre-skip/sample-rate the WebM path uses), `ftyp` + `moov` (`mvhd`, `trak` × 2 with `stsd` and empty `stts`/`stsc`/`stsz`/`stco`, `mvex` with `trex`) written at open, then `moof` (`mfhd`, `traf` × 2 with `tfhd`, `tfdt`, `trun`) + `mdat` per fragment, a fragment closed at each video keyframe, `mfra`/`tfra`/`mfro` on `finish`; Annex B → AVCC conversion; 90 kHz and 48 kHz timescales; a `read` module that parses the boxes back (tracks, fragments, sample counts and durations, the codec record) for the tests and a fuzz target `mp4_read` with seeds derived by a test. Tests: round trips per codec from synthetic NAL units, a file cut mid-fragment still parsing to its last complete one, `mfra` present on a clean stop and absent otherwise, and — if `ffprobe` is on the machine — the file probing as `h264`/`opus` (skipped without it). forge-conference unchanged | forge-mp4 (new) |
+| 9b | **The recorder.** FCP: `recording.rs` gains the MP4 path behind `recording-mp4` (`dep:forge-mp4` + `forge-codecs/opus`, the same Opus the WebM feature builds), `FormatChoice::Mp4`, `auto` per decision 5, `recording_video_codec` in `h264`/`hevc`/`av1`/`vp8`/`vp9` validated against the format, the recording flavor asked for at the room's resolution as today; `RecordingFormat::Mp4` in fcp-core (`mp4` on the wire and in the store, migration-free), `video/mp4` on download, `docs/COMPLIANCE.md` and `docs/GPU.md` mention. Tests: a room recorded to MP4 with the raw codec standing in for H.264 (the raw payload is not NAL units, so the FCP loopback test asserts the container's tracks and fragments through `forge_mp4::read`, and the codec record is checked in 9a's own tests); on the box, a GPU room recorded on NVENC into an MP4 that `ffprobe` reads as H.264 + Opus, through `gpu-box test` | fcp-conference-server, fcp-core, fcp-api-core, fcp-admin-ui (types only), deploy configs, docs |
+
+**Order and size.** 9a first, released; 9b after the repoint. About a
+week: four days for the writer and its reader, two for the recorder,
+one on the box.
+
+**What this phase does not do.** AAC (decision 3); MP4 for VP8/VP9;
+transcoding an existing WebM to MP4 (a job, not a sink); SIPREC or
+per-participant recordings (§11's scope is the composite); a
+`faststart` whole-file mode; encrypted MP4 (`cenc`) — recordings are
+protected at rest by the store's encryption and the file system, as
+today.
 
 ## 16. Resolved questions
 
