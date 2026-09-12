@@ -28,10 +28,18 @@ gcloud auth application-default login            # once, for Terraform
 deploy/gcp-gpu/gpu-box up                        # create the VM; first time: 10–15 min of setup on the box
 deploy/gcp-gpu/gpu-box log                       # watch the driver and FFmpeg install
 deploy/gcp-gpu/gpu-box ssh                       # a shell
-deploy/gcp-gpu/gpu-box sync                      # rsync this checkout to ~/fcp on the box
+deploy/gcp-gpu/gpu-box sync [dir]                # copy this checkout (or one directory) to ~/fcp on the box
 deploy/gcp-gpu/gpu-box down                      # destroy the VM, keep the disk
 deploy/gcp-gpu/gpu-box status
+deploy/gcp-gpu/gpu-box move us-central1-c        # follow Spot capacity: the disk goes by snapshot
 ```
+
+Spot L4 capacity comes and goes by zone: a stockout looks like "does
+not have enough resources available". `move` snapshots the disk into
+another zone (three minutes; the VM must be down) and records the zone
+in `zone.auto.tfvars`, which git ignores. When every zone is out,
+`terraform apply -var up=true -var spot=false` in `deploy/gcp-gpu` runs
+the box on demand for the session, about 0.70 USD an hour.
 
 The first boot of a fresh disk installs the NVIDIA driver (Google's
 installer; it reboots once), the CUDA 12.4 toolkit from NVIDIA's apt
@@ -40,9 +48,21 @@ replace the driver), the build dependencies, and FFmpeg 7.1 from source
 with `nvenc`, `nvdec`, `cuvid`, `scale_cuda` and `libnpp` under
 `/opt/ffmpeg-nv`. The `nv-codec-headers` (MIT) are pinned to the NVENC
 SDK the 550 driver speaks, 12.2; a newer driver could take newer
-headers. Proven 2026-09-11: `h264_nvenc`, `hevc_nvenc` and `av1_nvenc`
+headers. The build is the product's (design §15.7, decision 4): LGPL,
+the CUDA filters compiled by clang (`cuda-llvm`, targeting `sm_86`, the
+newest Debian 12's clang 14 knows; the L4 runs its PTX through the
+driver's JIT), no `libnpp`; the CUDA toolkit on the box is for `nvcc`
+experiments only. Proven 2026-09-11: `h264_nvenc`, `hevc_nvenc` and `av1_nvenc`
 each encode 720p30 at about 170 fps on synthetic input, and a CUVID
-decode feeds `scale_cuda` without leaving the device. `/etc/profile.d/
+decode feeds `scale_cuda` without leaving the device. Phase 8a's crate measured the
+engines from here: about 62 real-time 720p30 H.264 encodes, 79 AV1, 57
+HEVC, and 237 to 306 decodes.
+
+The box runs the crate's tests: `gpu-box up`, `gpu-box sync
+external/forge-media`, then on the box `cargo test -p forge-video-hw --
+--nocapture` with `/etc/profile.d/gpu-box.sh` sourced (a non-interactive
+`gpu-box ssh --command` must source it itself). Rust is installed per
+OS Login user once (`rustup`) and stays on the disk. `/etc/profile.d/
 gpu-box.sh` puts it on `PATH`, `PKG_CONFIG_PATH` and
 `LD_LIBRARY_PATH`. Rust is per user: `curl https://sh.rustup.rs -sSf | sh`
 on the box, once, on the disk. Every later boot skips what is there.

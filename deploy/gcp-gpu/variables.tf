@@ -11,9 +11,9 @@ variable "region" {
 }
 
 variable "zone" {
-  description = "Zone for the VM and its disk (the disk is zonal, so changing this after the first apply means a new disk)."
+  description = "Zone for the VM and its disk. The disk is zonal: to follow Spot capacity to another zone, `gpu-box move <zone>` snapshots it there and this default (or a zone.auto.tfvars) is updated."
   type        = string
-  default     = "us-central1-a"
+  default     = "us-central1-b"
 }
 
 variable "up" {

@@ -1725,6 +1725,48 @@ name later, but a node's backend is one device); GPU-side RTP
 depacketization or SRTP (they stay on the host, as the design has it);
 and a GPU runner in CI.
 
+**8a as built (2026-09-12; forge-media `v2026.09.12`: forge-video-hw
+0.1.0, forge-video-codecs 0.1.2; FCP v0.25.133).** As planned, and the
+numbers clear the gate. `forge-video-hw` sits over `ffmpeg-sys-next` 7.1
+(bindings generated against the machine's FFmpeg, `avcodec` and
+`avfilter` only): `HwDevice` opens a `MediaDevice::Gpu` — `cuda:0`;
+`vaapi` and `qsv` compile, untested (decision 3) — and hands out
+`HwFrames` pools by size; a `DeviceFrame`'s handle is an `AVFrame` in
+device memory, NV12 throughout, and `frame::upload` / `download` cross
+the bus with one chroma interleave each way, bit-exact. `HwDecoder` is
+FFmpeg's `h264`, `hevc`, `vp8`, `vp9` and `av1` decoders with the
+device's acceleration (NVDEC), output left on the device; `NvEncoder` is
+`h264_nvenc`, `hevc_nvenc` and `av1_nvenc` taking device frames (a host
+frame is uploaded), zero latency, parameter sets in-band on every IDR,
+`ContentHint` mapped to preset and spatial AQ, keyframe on demand, and
+the bitrate retarget by reopening before the next frame, which is then
+a keyframe (decision 6). `DeviceScaler` is `scale_cuda` in a kept
+two-node filter graph per pair of sizes. `probe` says what a device
+offers, `register` puts it in a `CodecRegistry`, and forge-video-codecs'
+`hwaccel` feature registers the default device when it opens.
+`bench::saturate` runs 1, 2, 4, … streams of one stage on their own
+threads until the summed frame rate stops growing (decision 7). On the
+L4 (driver 550, the LGPL `cuda-llvm` FFmpeg of decision 4, 720p30 at
+1.2 Mb/s): H.264 encodes saturate at about 62 real-time streams, AV1 at
+79, HEVC at 57; decodes at 237, 252 and 306; round trips 25–26 dB
+against the source; `scale_cuda` matches the host's bilinear within
+29 dB. Well past the forty-stream gate, so decisions 2 and 7 stand for
+8b. Two measurements the plan should carry: a CPU-fed encode is about
+16 streams on four vCPUs — that is the upload, which is why the
+saturation bench feeds device frames and why 8b keeps the frames on the
+device — and the filter graph's per-tick cost was not measured in 8a
+beyond the scaler, so 8b measures the compositor's graph against the
+host composite before committing to it. Found on the way: a temporary
+`BufferRef` handed its raw pointer to a codec context and then dropped
+it (a dangling `hw_frames_ctx`, a segfault in `avcodec_free_context`;
+fixed with an owning `into_raw`); NVENC has no `repeat_headers` option;
+Debian 12's clang 14 knows `sm_86` at most, which the L4 runs through
+the driver's JIT. The box script now builds the product's FFmpeg
+(decision 4), `gpu-box sync` takes one directory and goes by tar,
+`gpu-box move <zone>` follows Spot capacity with the disk as a
+snapshot, and CI installs the FFmpeg development headers so the crate
+and the feature compile there without a GPU (the tests skip).
+
 ## 16. Resolved questions
 
 Raised with the first draft and decided 2026-09-04, each as recommended.
