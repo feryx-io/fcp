@@ -44,7 +44,7 @@ if [ ! -f /opt/gpu-box/.deps ]; then
   apt-get install -y -q \
     build-essential clang cmake pkg-config nasm yasm git curl unzip \
     libssl-dev libclang-dev libopus-dev libvpx-dev \
-    libdav1d-dev libnuma-dev python3-pip
+    libdav1d-dev libnuma-dev python3-pip rsync
   mkdir -p /opt/gpu-box && touch /opt/gpu-box/.deps
 fi
 
@@ -62,14 +62,14 @@ if [ ! -x /opt/ffmpeg-nv/bin/ffmpeg ]; then
   make -C nv-codec-headers install PREFIX=/usr/local
   git clone --depth 1 --branch n7.1 https://git.ffmpeg.org/ffmpeg.git
   cd ffmpeg
-  # The L4 is sm_89; FFmpeg's default nvcc flags target an arch CUDA
-  # 12 no longer builds for.
-  ./configure --prefix=/opt/ffmpeg-nv --enable-shared --enable-gpl \
-    --enable-nonfree --enable-cuda-nvcc --enable-libnpp \
-    --nvccflags="-gencode arch=compute_89,code=sm_89 -O2" \
+  # The build that ships (design §15.7, decision 4): LGPL, the CUDA
+  # filters compiled by clang (`cuda-llvm`, no nvcc, no toolkit needed
+  # at build time), no libnpp. What is measured here is what runs
+  # there. Debian 12's clang 14 knows sm_86 at most; the L4 (sm_89)
+  # runs that PTX through the driver's JIT.
+  ./configure --prefix=/opt/ffmpeg-nv --enable-shared \
+    --enable-ffnvcodec --enable-cuda-llvm --nvccflags="--cuda-gpu-arch=sm_86 -O2" \
     --enable-nvenc --enable-nvdec --enable-cuvid \
-    --extra-cflags=-I/usr/local/cuda/include \
-    --extra-ldflags=-L/usr/local/cuda/lib64 \
     --enable-libvpx --enable-libopus --enable-libdav1d \
     --disable-doc --disable-programs --enable-ffmpeg
   make -j"$(nproc)"

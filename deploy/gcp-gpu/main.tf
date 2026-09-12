@@ -23,6 +23,9 @@ resource "google_compute_disk" "boot" {
 
   lifecycle {
     prevent_destroy = true
+    # A disk moved to another zone (`gpu-box move`) comes back from a
+    # snapshot, not the image: that is not a reason to replace it.
+    ignore_changes = [image, snapshot]
   }
 }
 
