@@ -838,7 +838,7 @@ pub fn self_benchmark_device(
     let runs = (encodes.len() + decodes.len()) as f64 * 4.0 + 1.0;
     let per_step = Duration::from_secs_f64((seconds as f64 / runs).max(0.2));
     let mut measured = Vec::new();
-    let mut run = |codec: VideoCodec, stage: Stage| -> Option<f64> {
+    let run = |codec: VideoCodec, stage: Stage| -> Option<f64> {
         match saturate(
             &backend.registry,
             &backend.device,
