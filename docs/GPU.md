@@ -99,6 +99,15 @@ work units, and a stage's units are its share of the saturated
 throughput. On an L4, sixty real-time 720p30 H.264 encodes saturate
 NVENC, so one 720p15 H.264 encode costs nine units of 800.
 
+Give a GPU node a longer `video_benchmark_seconds` than the default
+ten: the saturation run steps four times for every stage of every
+codec, and short steps overshoot (a six-second run read 109 real-time
+H.264 encodes where long steps measure 62). A minute is reasonable.
+The composite is priced at the compositor's per-tick cost as if the
+device ran one graph at a time, which it does not, so that part of the
+budget is conservative: a 720p15 composite is about five per cent of
+an L4.
+
 A join is priced on the device each of its stages would run on — the
 decode and the composite on the GPU, the encode on the GPU when it has
 the codec and on the host otherwise — and admitted only when it fits on
