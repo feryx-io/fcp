@@ -683,7 +683,7 @@ crate (`forge-rtp` 111, `forge-sdp` 90, `forge-core` 22).
 | 5 | **Recording and cascade** — done 2026-09-08 (§15.4): WebM muxing and a recording registry (v0.25.110–112), trunk video (v0.25.113/114), cross-node speaker state (v0.25.115); MP4 deferred | both | done |
 | 6 | **Passthrough fast path, bitrate ladder, polish** — done 2026-09-10 (§15.5): single-source forwarding (v0.25.117/118), ladder switching (v0.25.119), overload shedding and parser fuzzing (v0.25.121; forge-media `v2026.09.10`) | both | done |
 | 7 | **Screen share** — done 2026-09-11 (§15.6): the content source kind, the per-room floor and the `Composite` / `Cameras` / `Content` views (7a, forge-media `v2026.09.11`; v0.25.123), the RFC 4796 content section on SIP with its settings, API, events and UI (7b, v0.25.124), RFC 8285 header extensions and a second video mid on WebRTC with the join page's share button and the floor told by SIP `INFO` (7c, forge-media `v2026.09.11.1`; v0.25.125/126), content across trunks with a room-wide floor (7d, forge-media `v2026.09.11.2`; v0.25.127), BFCP floor control for SIP room systems in the new `forge-bfcp` (7e, forge-media `v2026.09.11.3`; v0.25.128) | both | done |
-| 8 | **GPU backend** — planned 2026-09-11 (§15.7): a `forge-video-hw` crate over FFmpeg device contexts with NVDEC decoders, NVENC encoders and the numbers §9.4 left open (8a); the pipeline on the device — a filter-graph compositor, per-stage host fallback, layout parity tests (8b); the node — `[conference] video_device`, saturation benchmark, per-device budget and placement, the NVIDIA container image (8c). NVIDIA built and measured, VAAPI designed for; the box is `deploy/gcp-gpu` | forge-media, FCP | 3–4 weeks |
+| 8 | **GPU backend** — done 2026-09-12 (§15.7): `forge-video-hw` over FFmpeg device contexts with NVDEC decoders, NVENC encoders and the L4's numbers (8a); the pipeline on the device — the filter-graph compositor, per-stage host fallback, parity within 39.5 dB (8b); the node — `[conference] video_device`, the `video-hwaccel` feature, the saturation budget, per-device budgets and placement by the first codec, the NVIDIA image (8c). NVIDIA built and measured, VAAPI compiles; the box is `deploy/gcp-gpu` | forge-media, FCP | done |
 
 Each phase is one PR per repository (forge-media release tag, then the
 FCP bump), reviewed before the next starts. Sizes are for one person and
@@ -1820,6 +1820,134 @@ with room to spare and composition is not what a GPU node is bought for,
 so the graph stays for 8c, priced by 8c's benchmark in the budget either
 way; a single-kernel compositor (decision 2's alternative) is a later
 optimisation if the number matters.
+
+**8c as built (2026-09-12; FCP v0.25.135).** As planned, with two
+things the code had to settle. `[conference] video_device` names the
+device (`host`, or `cuda:0`; validated at start) and the `video-hwaccel`
+feature — forge-video-codecs' `hwaccel` and forge-video-hw, not part of
+`video-all` — lets the node open it through `open_device`, falling back
+to the host with a warning when it does not open. First: the node's
+codec list. `usable_codecs` asked for a decoder and an encoder on one
+device, which on a GPU would have dropped VP8 and VP9 (NVDEC decodes
+them, NVENC encodes neither) and, under `native_only`, everything else
+too — a GPU node would have offered no video at all. `node_codecs` is
+now a map per device: a codec is usable when the node decodes it
+somewhere and encodes it somewhere, the device's own codecs always
+count, and the host's count under `native_only` only with a binding.
+Second: the budget. `VideoCapacity` holds one `DeviceCapacity` per
+device — the GPU and the host beside it — and a `Cost` is units per
+device: a join is priced on the device each stage would run on (decode
+and composite on the room's device, the encode where the codec's
+encoder is), reserved only when it fits everywhere it touches and
+holding nothing when refused (still a 503 before the 180), and rooms
+are re-priced from the device each stage reports in 8b's status. The
+GPU is one execution unit (`1000 × headroom` units) priced by
+saturation (decision 7, `self_benchmark_device`): each stage of each
+codec runs with 1, 2, 4, 8 streams of 720p30 for a share of
+`video_benchmark_seconds` until throughput stops growing, and the
+constant is what makes that many real-time streams fill the device; the
+composite is timed on the device's compositor. Membership advertises
+every device's budget with the codecs it *encodes* (decision 5) — the
+list per node was there since phase 3, only one entry was ever pushed —
+and placement prefers a device only when it encodes the meeting's first
+codec (`VideoNeed::first`, `video_budget_left_for`; the any-codec rule
+when no device has it), so a VP8-first meeting is not sent to a GPU for
+a budget it would spend on that node's host. `/status` lists every
+device under `video_capacity.devices`; the Live Video dialog shows the
+room's device and what fell back; the cluster page already showed one
+line per device. Deploy: `Dockerfile.conference.nvidia` builds the LGPL
+`cuda-llvm` FFmpeg in the image and the binary with `video-hwaccel` and
+the native bindings, the container toolkit injecting the driver's
+libraries (`NVIDIA_DRIVER_CAPABILITIES=compute,video,utility`);
+`docker-compose.gpu.yml` and a GPU configuration sample; `gpu-box test`
+runs the hardware tests; `docs/GPU.md`. On the box, the conference
+server built with the feature against `cuda:0` passes every test, and
+the node test opens the device (encodes H.264, AV1, HEVC; decodes all
+five), prices it and advertises the two budgets (`cuda:0` with H264,
+AV1, H265; `host` with all five). Two measurements to carry: the
+saturation run with the test's six-second budget read 109 real-time
+H.264 encodes against 8a's 62 measured with long steps — the default
+ten seconds spread over four steps of every stage and codec is coarse,
+and a GPU node is better given a minute; and the composite is priced
+single-threaded at the compositor's per-tick cost (6.4 ns/px in the
+debug test build, about 3.6 in release), which makes a 720p15
+composite about five per cent of the device although the device runs
+several graphs at once — the budget is conservative there, and a
+per-engine split (decision 7's follow-up) would price it better. Not
+done, as the plan says: VAAPI and AMF beyond compiling, an MP4 sink (a
+GPU room's WebM is VP8 on the host), a room moving between devices,
+more than one GPU per node, GPU-side RTP or SRTP, a GPU runner in CI.
+Phase 8 is complete.
+### 15.8 Phase 8 follow-ups — the budget's engines (2026-09-12)
+
+Phase 8 shipped with three things its own measurements say the budget
+gets wrong on a GPU, one small mispricing that predates it, and two
+larger items it deferred. This section settles which to do now and
+how, in one block.
+
+**What the numbers say.** A GPU's budget is one number priced by
+saturation (8c, decision 7), but NVENC, NVDEC and the CUDA cores
+saturate separately: a node out of NVENC with decode to spare reads as
+full, and the composite is priced at the compositor's per-tick cost as
+if the device ran one graph at a time — a 720p15 composite is about
+five per cent of an L4 by that reckoning, although the device runs many
+graphs at once. The saturation run with short steps overshoots (a
+six-second run read 109 real-time H.264 encodes where long steps
+measure 62). And `ContentGate::admit` prices a share with the default
+room settings rather than the room's own.
+
+**Decisions, each with a recommendation.**
+
+1. **Engines, not one number.** Three ways: keep the one number and
+   only fix the composite by measuring it saturated (the smallest
+   change; a node out of one engine still reads as full); three
+   budgets per device on the wire, each stage charged to its engine
+   and placement matching the *encode* engine (right, but a wire and a
+   UI change); or three budgets kept internally with one advertised —
+   the tightest engine's — which keeps admission exact and placement
+   blind to why. **Recommended: three budgets on the wire, as an
+   optional addition an older node simply lacks.** `VideoDeviceBudget`
+   gains `engines: Option<Engines>` with `encode`, `decode` and
+   `compose` each `{ left, total }`; a node without it reads as today.
+   `DeviceCapacity` holds three pools for a GPU (the host keeps one:
+   its threads are one pool) and charges each stage to its engine;
+   `video_budget_left_for` takes the encode engine's `left` when the
+   budget has engines; `left`/`total` on the wire stay the tightest
+   engine's, so an older placer still sees something true. The
+   composite's constant comes from its own saturation — 1, 2, 4, 8
+   graphs at once until the summed tick rate stops growing — through
+   a `measure_compose_saturated` beside `measure_compose_on`. `/status`
+   lists the engines; the cluster page shows three bars for a GPU
+   device and one for the host.
+2. **The benchmark budget.** Longer default seconds, fewer steps, a
+   warm-up, or a floor per step. **Recommended: a warm-up and a
+   floor** — `bench::saturate` discards each step's first second
+   before it counts, and the device benchmark runs each step for at
+   least one second whatever `video_benchmark_seconds` says, logging
+   what it took. The default stays 10: the host's benchmark keeps it,
+   and a GPU node's run takes what its floor needs (about half a
+   minute for three encoders, five decoders and the composite).
+3. **The share's price.** **Recommended: `ContentGate::admit` takes
+   the room's settings** — `admit(room, participant, &VideoRoomSettings)`
+   in forge-conference, the capacity pricing the share at the room's
+   content cap and rate.
+4. **A single-kernel compositor** (decision 2's alternative).
+   **Deferred**: the graph fits the tick with room to spare; revisit
+   if the compose engine is what saturates first once 1 measures it.
+5. **An MP4/H.264 recording sink**, which would let a GPU room record
+   on NVENC rather than VP8 on the host. **Deferred**: a muxer of its
+   own (forge-webm's sibling) and a phase of its own if wanted.
+6. Multi-GPU nodes, VAAPI and AMF beyond compiling, GPU-side RTP:
+   unchanged, deferred.
+
+**Block.**
+
+| Block | What | Where |
+|---|---|---|
+| 8d | **The budget's engines.** forge-media (release): `bench::saturate` with a per-step warm-up; `forge_video::bench::measure_compose_saturated` (graphs in parallel until throughput stops growing, on any backend); `ContentGate::admit` with the room's settings (forge-conference 0.14.0). FCP: `DeviceCapacity` with a pool per engine on a GPU (`Engine::{Encode, Decode, Compose}`), each stage charged to its engine and `Cost` naming engines; `self_benchmark_device` with the one-second floor and the composite's saturation; `VideoDeviceBudget.engines` (optional, `skip_serializing_if`) and `video_budget_left_for` on the encode engine; `/status` engines; the cluster page's bars; the Live Video dialog unchanged. Tests: a device out of encode but not decode refuses an encode-bearing join and admits a decode-only one (a source without a flavor); membership with and without `engines` on the wire, both ways; placement on the encode engine; the share priced at the room's cap; on the box, the composite's saturation and the warm-up's effect on the H.264 number | forge-video, forge-video-hw, forge-conference; fcp-conference-server, fcp-cluster, fcp-admin-ui |
+
+**Size.** About a week; one forge-media release, one FCP PR after its
+repoint. The 8d numbers replace the two notes 8c carried.
 
 ## 16. Resolved questions
 
