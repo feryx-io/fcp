@@ -31,6 +31,10 @@ video-hwaccel = ["forge-video-codecs/hwaccel", "dep:forge-video-hw"]
 # Without it every recording is the audio-only WAV it always was, and
 # `conference.recording_format` says so at startup.
 recording-webm = ["dep:forge-webm", "forge-codecs/opus"]
+# Record to fragmented MP4 instead — H.264, HEVC or AV1 with Opus (design
+# §15.9): what a GPU node records on NVENC, and the container every player
+# opens. Same Opus dependency as WebM's.
+recording-mp4 = ["dep:forge-mp4", "forge-codecs/opus"]
 
 [[bin]]
 name = "fcp-conference"
@@ -65,6 +69,7 @@ forge-video = { path = "../../external/forge-media/crates/forge-video" }
 forge-video-codecs = { path = "../../external/forge-media/crates/forge-video-codecs" }
 forge-video-hw = { path = "../../external/forge-media/crates/forge-video-hw", optional = true }
 forge-webm = { path = "../../external/forge-media/crates/forge-webm", optional = true }
+forge-mp4 = { path = "../../external/forge-media/crates/forge-mp4", optional = true }
 
 # SIP stack from siphon-rs
 sip-core = { path = "../../external/siphon-rs/crates/sip-core" }

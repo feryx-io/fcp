@@ -24,6 +24,10 @@ pub enum RecordingFormat {
     /// The room's composite video and its mixed audio: VP8 or VP9 with
     /// Opus, in Matroska.
     Webm,
+    /// The composite and the mix as fragmented MP4: H.264, HEVC or AV1
+    /// with Opus — what a GPU node records on its encoder, and the
+    /// container every player opens (design §15.9).
+    Mp4,
 }
 
 impl RecordingFormat {
@@ -32,6 +36,7 @@ impl RecordingFormat {
         match self {
             RecordingFormat::Wav => "wav",
             RecordingFormat::Webm => "webm",
+            RecordingFormat::Mp4 => "mp4",
         }
     }
 
@@ -40,18 +45,20 @@ impl RecordingFormat {
         match self {
             RecordingFormat::Wav => "audio/wav",
             RecordingFormat::Webm => "video/webm",
+            RecordingFormat::Mp4 => "video/mp4",
         }
     }
 
     /// Whether the container carries video.
     pub fn has_video(&self) -> bool {
-        matches!(self, RecordingFormat::Webm)
+        matches!(self, RecordingFormat::Webm | RecordingFormat::Mp4)
     }
 
     pub fn as_str(&self) -> &'static str {
         match self {
             RecordingFormat::Wav => "wav",
             RecordingFormat::Webm => "webm",
+            RecordingFormat::Mp4 => "mp4",
         }
     }
 
@@ -59,6 +66,7 @@ impl RecordingFormat {
         match s.to_ascii_lowercase().as_str() {
             "wav" => Some(RecordingFormat::Wav),
             "webm" => Some(RecordingFormat::Webm),
+            "mp4" => Some(RecordingFormat::Mp4),
             _ => None,
         }
     }
@@ -283,14 +291,22 @@ mod tests {
 
     #[test]
     fn formats_and_enums_round_trip_through_their_strings() {
-        for f in [RecordingFormat::Wav, RecordingFormat::Webm] {
+        for f in [
+            RecordingFormat::Wav,
+            RecordingFormat::Webm,
+            RecordingFormat::Mp4,
+        ] {
             assert_eq!(RecordingFormat::parse(f.as_str()), Some(f));
+            assert_eq!(f.extension(), f.as_str());
         }
         assert_eq!(RecordingFormat::parse("WebM"), Some(RecordingFormat::Webm));
-        assert_eq!(RecordingFormat::parse("mp4"), None);
+        assert_eq!(RecordingFormat::parse("MP4"), Some(RecordingFormat::Mp4));
+        assert_eq!(RecordingFormat::parse("mkv"), None);
         assert_eq!(RecordingFormat::Webm.extension(), "webm");
         assert_eq!(RecordingFormat::Webm.content_type(), "video/webm");
+        assert_eq!(RecordingFormat::Mp4.content_type(), "video/mp4");
         assert!(RecordingFormat::Webm.has_video());
+        assert!(RecordingFormat::Mp4.has_video());
         assert!(!RecordingFormat::Wav.has_video());
 
         for t in [

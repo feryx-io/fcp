@@ -42,7 +42,7 @@ COPY crates ./crates
 COPY external ./external
 
 RUN cargo build --release -p fcp-conference-server \
-    --features video-hwaccel,video-vpx,video-openh264,video-dav1d
+    --features video-hwaccel,video-vpx,video-openh264,video-dav1d,recording-mp4,recording-webm
 
 # Runtime: the same Debian as the builder so the FFmpeg libraries match.
 FROM debian:bookworm-slim

@@ -144,8 +144,8 @@ export function RecordingsPage() {
       accessorKey: 'format',
       header: 'Format',
       cell: ({ row }) => (
-        <Badge variant={row.original.format === 'webm' ? 'default' : 'secondary'}>
-          {row.original.format === 'webm'
+        <Badge variant={row.original.format !== 'wav' ? 'default' : 'secondary'}>
+          {row.original.format !== 'wav'
             ? <Video className="mr-1 h-3 w-3" />
             : <Volume2 className="mr-1 h-3 w-3" />}
           {row.original.format}
@@ -345,7 +345,7 @@ export function RecordingsPage() {
             <div className="flex h-32 items-center justify-center text-muted-foreground">
               Loading the recording...
             </div>
-          ) : playing?.format === 'webm' ? (
+          ) : playing && playing.format !== 'wav' ? (
             <video src={mediaUrl} controls autoPlay className="w-full rounded" />
           ) : (
             <audio src={mediaUrl} controls autoPlay className="w-full" />

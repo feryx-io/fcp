@@ -9,7 +9,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use fcp_conference_server::recording::{WebmRecorder, WebmSettings, WebmVideoSettings};
+use fcp_conference_server::recording::{Recorder, RecorderSettings, VideoSettings};
+use fcp_core::recording::RecordingFormat;
 use forge_conference::video::{VideoBackend, VideoRoomSettings};
 use forge_conference::{AudioFormat, ConferenceRoom};
 use forge_core::{AudioCodec, VideoCodec};
@@ -55,11 +56,12 @@ async fn an_audio_only_recording_is_opus_in_webm() {
     let room = room("rec-audio");
     room.add_participant("alice", true).unwrap();
 
-    let recorder = WebmRecorder::start(
+    let recorder = Recorder::start(
         "rec-1",
         &room,
-        WebmSettings {
+        RecorderSettings {
             path: path.clone(),
+            container: RecordingFormat::Webm,
             video: None,
             audio_bitrate: 32_000,
         },
@@ -116,12 +118,13 @@ async fn a_room_with_video_records_the_composite_beside_the_mix() {
         &VideoBackend::raw(),
     );
 
-    let recorder = WebmRecorder::start(
+    let recorder = Recorder::start(
         "rec-1",
         &room,
-        WebmSettings {
+        RecorderSettings {
             path: path.clone(),
-            video: Some(WebmVideoSettings {
+            container: RecordingFormat::Webm,
+            video: Some(VideoSettings {
                 codec: VideoCodec::VP8,
                 resolution: None,
                 max_kbps: None,

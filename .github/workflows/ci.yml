@@ -152,11 +152,13 @@ jobs:
           cargo fmt $pkgs -- --check
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
-      # `recording-webm` is off by default (it builds libopus from source),
-      # so the conference server's WebM recording test only runs when it is
-      # asked for by name.
+      # `recording-webm` and `recording-mp4` are off by default (they build
+      # libopus from source), so the conference server's recording tests
+      # only run when asked for by name; the MP4 one needs real H.264
+      # frames, so `video-openh264` comes along (the codec action above
+      # built it).
       - name: Tests
-        run: cargo test --all-targets --features fcp-conference-server/recording-webm
+        run: cargo test --all-targets --features fcp-conference-server/recording-webm,fcp-conference-server/recording-mp4,fcp-conference-server/video-openh264
 
   security-audit:
     name: Security Audit
