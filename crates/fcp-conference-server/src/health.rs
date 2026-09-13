@@ -473,6 +473,7 @@ async fn status_handler(State(state): State<Arc<ConferenceState>>) -> Json<serde
         "total_calls": call_stats.total,
         "active_rooms": active_rooms.len(),
         "total_participants": total_participants,
+        "draining": state.conference_handler.is_draining(),
         "video_capacity": state
             .conference_handler
             .video_capacity()

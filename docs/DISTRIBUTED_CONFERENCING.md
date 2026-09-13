@@ -15,7 +15,7 @@ The work lands in five phases. This document tracks what is in place.
 | 2 | Inter-node trunks (cascaded mixing) | ✅ v0.25.83 |
 | 3 | Cross-node control (kick, gain, lock, announce, end) | ✅ v0.25.84 |
 | 4 | Resilience (registry expiry, trunk teardown, draining, trunk SRTP) | ✅ v0.25.85 |
-| 5 | Participant migration off a draining node | 📐 planned 2026-09-13 |
+| 5 | Participant migration off a draining node | 🟡 5a v0.25.146 (the node); 5b, 5c planned |
 
 Decisions (2026-09-02): full-mesh trunks between hosting nodes; new
 participants stay on a hosting node until it reaches a capacity setting;
@@ -594,7 +594,6 @@ ticket** as a URI header:
 ```
 REFER sip:… SIP/2.0
 Refer-To: <sip:8000@10.0.0.21:5074?X-FCP-Migrate=eyJ2IjoxLCJ0ZW5…>
-Referred-By: <sip:conf-a@10.0.0.20:5074>
 Event: refer
 ```
 
@@ -702,6 +701,30 @@ new host.
 Events: `participant_left` gains `migrated_to` (the target node id) and
 `participant_joined` gains `migrated_from`; consumers that count joins and
 leaves see one of each, labelled. `GET /status` reports `draining`.
+
+```toml
+[cluster]
+secret = "…"                  # tickets are signed under it; unset = no migration
+migration_timeout_secs = 15   # how long a leg's holder has to report after the REFER
+```
+
+*5a shipped 2026-09-13 (v0.25.146; forge-media `v2026.09.13.1`).* As
+planned: `fcp_core::MigrationTicket` (the join token's wire form and
+signing, shared), `migration.rs` on the conference server (the planner
+over `choose_conference_node`, the ledger of REFERs in flight, the
+used-ticket cache, the `Refer-To` and sipfrag forms), the drain step in
+`main` between "refuse new callers" and the wait, `handle_notify` on the
+conference handler trait (the SIP layer offers a NOTIFY to the conference
+handler first, as it does a REFER), admission on a ticket in
+`handle_invite`, and forge-conference's `add_participant_admitted` (past
+the lock and the waiting room, capacity still applied, hosts tracked, no
+join sound). One thing the plan's example showed and this does not send:
+a `Referred-By` header — siphon-rs's `send_refer` takes no extra headers,
+and nothing reads it. Tested: the ticket, planner, ledger, sipfrag and
+`Refer-To` forms, and the room method are unit tests; the REFER → NOTIFY
+round trip and the two-node move are not automated yet — there is no SIP
+test client against a running node in the repo — and are checked by hand
+with a phone that follows REFER, then properly under 5b.
 
 ### 5b: the call manager
 

@@ -1204,6 +1204,14 @@ impl SipMessageHandler {
                 handle.send_final(response).await;
             }
             Method::Notify => {
+                // A conference node's own sessions first: the outcome of a
+                // REFER it sent (phase 5 migration).
+                if let Some(ref conf) = self.conference_handler {
+                    if let Ok(resp) = conf.handle_notify(request) {
+                        handle.send_final(resp).await;
+                        return Ok(());
+                    }
+                }
                 let response = self.handle_notify(request).await?;
                 handle.send_final(response).await;
             }

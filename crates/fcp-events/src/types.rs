@@ -528,6 +528,12 @@ pub enum ConferenceEvent {
         /// Whether the participant joined with a negotiated video stream.
         #[serde(default)]
         has_video: bool,
+        /// Set when the participant arrived by migration from a draining
+        /// node (`docs/DISTRIBUTED_CONFERENCING.md`, phase 5): that
+        /// node's id. The same participant id left it with
+        /// `migrated_to`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        migrated_from: Option<String>,
         tenant_id: TenantId,
         #[serde(with = "system_time_serde")]
         timestamp: SystemTime,
@@ -537,6 +543,10 @@ pub enum ConferenceEvent {
     ParticipantLeft {
         room_number: String,
         participant_id: String,
+        /// Set when the participant did not hang up but moved to another
+        /// node as this one drained: that node's id.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        migrated_to: Option<String>,
         tenant_id: TenantId,
         #[serde(with = "system_time_serde")]
         timestamp: SystemTime,
