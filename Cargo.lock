@@ -2197,7 +2197,7 @@ checksum = "9f1f227452a390804cdb637b74a86990f2a7d7ba4b7d5693aac9b4dd6defd8d6"
 
 [[package]]
 name = "fcp-admin"
-version = "0.25.139"
+version = "0.25.140"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2234,7 +2234,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-admin-ui"
-version = "0.25.139"
+version = "0.25.140"
 dependencies = [
  "axum 0.7.9",
  "include_dir",
@@ -2243,7 +2243,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-api-core"
-version = "0.25.139"
+version = "0.25.140"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2283,7 +2283,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-api-gateway"
-version = "0.25.139"
+version = "0.25.140"
 dependencies = [
  "anyhow",
  "axum 0.7.9",
@@ -2313,7 +2313,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-b2bua-core"
-version = "0.25.139"
+version = "0.25.140"
 dependencies = [
  "anyhow",
  "bytes",
@@ -2336,7 +2336,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-billing"
-version = "0.25.139"
+version = "0.25.140"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2350,7 +2350,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-call-manager"
-version = "0.25.139"
+version = "0.25.140"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2408,7 +2408,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-cli"
-version = "0.25.139"
+version = "0.25.140"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2441,7 +2441,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-cluster"
-version = "0.25.139"
+version = "0.25.140"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2460,7 +2460,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-conference-server"
-version = "0.25.139"
+version = "0.25.140"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -2547,7 +2547,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-crypto"
-version = "0.25.139"
+version = "0.25.140"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -2565,7 +2565,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-events"
-version = "0.25.139"
+version = "0.25.140"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2582,7 +2582,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-events-server"
-version = "0.25.139"
+version = "0.25.140"
 dependencies = [
  "anyhow",
  "axum 0.7.9",
@@ -2639,7 +2639,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-ivr"
-version = "0.25.139"
+version = "0.25.140"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2680,7 +2680,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-jobs"
-version = "0.25.139"
+version = "0.25.140"
 dependencies = [
  "anyhow",
  "axum 0.7.9",
@@ -2740,7 +2740,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-media-server"
-version = "0.25.139"
+version = "0.25.140"
 dependencies = [
  "anyhow",
  "clap",
@@ -2763,7 +2763,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-pbx"
-version = "0.25.139"
+version = "0.25.140"
 dependencies = [
  "dashmap 6.1.0",
  "fcp-b2bua-core",
@@ -2802,7 +2802,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-presence"
-version = "0.25.139"
+version = "0.25.140"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -2829,7 +2829,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-presence-server"
-version = "0.25.139"
+version = "0.25.140"
 dependencies = [
  "anyhow",
  "axum 0.7.9",
@@ -2860,7 +2860,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-queue"
-version = "0.25.139"
+version = "0.25.140"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2882,7 +2882,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-registrar"
-version = "0.25.139"
+version = "0.25.140"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2928,7 +2928,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-sbc"
-version = "0.25.139"
+version = "0.25.140"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2979,7 +2979,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-sbc-core"
-version = "0.25.139"
+version = "0.25.140"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -3057,7 +3057,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-storage-postgres"
-version = "0.25.139"
+version = "0.25.140"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3078,7 +3078,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-storage-redis"
-version = "0.25.139"
+version = "0.25.140"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3098,7 +3098,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-testkit"
-version = "0.25.139"
+version = "0.25.140"
 dependencies = [
  "anyhow",
  "libc",
@@ -3110,7 +3110,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-tts-server"
-version = "0.25.139"
+version = "0.25.140"
 dependencies = [
  "anyhow",
  "axum 0.7.9",
@@ -3148,7 +3148,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-voicemail-server"
-version = "0.25.139"
+version = "0.25.140"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3192,7 +3192,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-webhooks"
-version = "0.25.139"
+version = "0.25.140"
 dependencies = [
  "fcp-core",
  "fcp-events",
@@ -3210,7 +3210,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-webrtc-gateway"
-version = "0.25.139"
+version = "0.25.140"
 dependencies = [
  "anyhow",
  "async-trait",
