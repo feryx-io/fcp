@@ -204,6 +204,18 @@ browser must have picked G.722 or G.711.
 | 5077 | UDP | conference server | SIP |
 | 34000–36000 | UDP | browsers, conference server | ICE and RTP |
 
+## When a conference node drains
+
+A conference node taken down for maintenance moves its callers to
+another node rather than hanging them up
+(`docs/DISTRIBUTED_CONFERENCING.md`, phase 5). For a browser this is the
+gateway's business: the node REFERs the gateway's SIP leg to the room on
+another node, the gateway dials it with the migration ticket, opens the
+new leg and swaps it under the running relay. The browser's peer
+connection, SDP and tracks are untouched; the room goes quiet for about
+the time of one INVITE and comes back. The session's `sip_target` then
+names the new node. Nothing in the join page or the client API changes.
+
 ## Not yet
 
 - Recording, cascaded video and the WebRTC gateway's video on trunks:

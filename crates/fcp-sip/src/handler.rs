@@ -445,6 +445,9 @@ pub struct SipMessageHandler {
     /// Map SIP Call-ID header values → FCP internal CallId for trace correlation.
     /// Populated at call creation (A-leg) and B-leg INVITE (B-leg).
     sip_call_id_map: Arc<dashmap::DashMap<String, String>>,
+    /// Conference calls whose B-leg is being moved to another conference
+    /// node (phase 5b), so a second REFER while one is in flight is refused.
+    conference_migrations: Arc<dashmap::DashMap<fcp_b2bua_core::CallId, ()>>,
 }
 
 #[derive(Clone)]
@@ -779,6 +782,7 @@ impl SipMessageHandler {
             flow_registry: Arc::new(crate::flow::FlowRegistry::new()),
             sip_trace_tx: None,
             sip_call_id_map: Arc::new(dashmap::DashMap::new()),
+            conference_migrations: Arc::new(dashmap::DashMap::new()),
         };
 
         // Start session timer event loop
@@ -1204,6 +1208,14 @@ impl SipMessageHandler {
                 handle.send_final(response).await;
             }
             Method::Notify => {
+                // A conference node's own sessions first: the outcome of a
+                // REFER it sent (phase 5 migration).
+                if let Some(ref conf) = self.conference_handler {
+                    if let Ok(resp) = conf.handle_notify(request) {
+                        handle.send_final(resp).await;
+                        return Ok(());
+                    }
+                }
                 let response = self.handle_notify(request).await?;
                 handle.send_final(response).await;
             }
@@ -3509,6 +3521,10 @@ impl SipMessageHandler {
                                                 if let Some(host) = conf_host.as_deref() {
                                                     let target_uri =
                                                         format!("sip:{}@{}", room_number, host);
+                                                    self.mark_conference_call(
+                                                        &call_id,
+                                                        room_number,
+                                                    );
                                                     match sip_registrar::Binding::new(
                                                         SmolStr::new(destination_aor),
                                                         SmolStr::new(&target_uri),
@@ -4466,6 +4482,7 @@ impl SipMessageHandler {
                                         if let Some(host) = conf_host.as_deref() {
                                             let target_uri =
                                                 format!("sip:{}@{}", extension_number, host);
+                                            self.mark_conference_call(&call_id, extension_number);
                                             info!(
                                                 call_id = %call_id,
                                                 room_number = %extension_number,
@@ -4584,6 +4601,7 @@ impl SipMessageHandler {
                                             .unwrap_or(server_uri);
                                         let target_uri =
                                             format!("sip:{}@{}", extension_number, host);
+                                        self.mark_conference_call(&call_id, extension_number);
                                         info!(
                                             call_id = %call_id,
                                             room_number = %extension_number,
@@ -8234,6 +8252,16 @@ impl SipMessageHandler {
             .unwrap_or(refer_to_raw.as_str())
             .trim();
 
+        // A conference node draining asks for the caller to be moved to
+        // another node (phase 5b): executed here, never relayed.
+        if !is_a_leg && call.conference_room.is_some() {
+            if let Some(migration) =
+                crate::conference_migration::parse_migration_refer(refer_to_raw.as_str())
+            {
+                return Ok(self.start_conference_migration(request, &call, migration));
+            }
+        }
+
         let refer_uri = sip_core::SipUri::parse(refer_uri_str)
             .map_err(|_| anyhow::anyhow!("Invalid Refer-To URI"))?;
 
@@ -9633,6 +9661,66 @@ impl SipMessageHandler {
         let _ = self.subscription_index.insert(key, sub.id().clone());
     }
 
+    /// Remember that a call's B-leg is a conference node hosting `room`.
+    fn mark_conference_call(&self, call_id: &fcp_b2bua_core::CallId, room: &str) {
+        let _ = self.call_manager.update_call(call_id, |c| {
+            c.conference_room = Some(room.to_string());
+        });
+    }
+
+    /// A REFER with a migration ticket on a conference call's B-leg
+    /// (`docs/DISTRIBUTED_CONFERENCING.md`, phase 5b): answer it at once
+    /// and run the move in the background — the REFER's own transaction
+    /// must not wait on an INVITE to another node.
+    fn start_conference_migration(
+        &self,
+        request: &sip_core::Request,
+        call: &fcp_b2bua_core::Call,
+        migration: crate::conference_migration::MigrationRefer,
+    ) -> sip_core::Response {
+        if !self.b2bua_config.conference_migration {
+            info!(call_id = %call.id, "Conference migration is off; refusing the REFER");
+            return self.create_simple_response(request, 603, "Decline");
+        }
+        let Some(uac) = self.uac.clone() else {
+            return self.create_simple_response(request, 500, "No UAC Configured");
+        };
+        let Some(old_b_dialog) = call.b_leg.as_ref().and_then(|b| b.dialog.clone()) else {
+            return self.create_simple_response(request, 481, "Call/Transaction Does Not Exist");
+        };
+        if call.a_leg.dialog.is_none() {
+            return self.create_simple_response(request, 481, "Call/Transaction Does Not Exist");
+        }
+        if self.conference_migrations.insert(call.id, ()).is_some() {
+            return self.create_simple_response(request, 491, "Request Pending");
+        }
+        info!(
+            call_id = %call.id,
+            room = ?call.conference_room,
+            to = %migration.target.as_str(),
+            anchored = call.media_anchored,
+            "Moving the conference leg to another node"
+        );
+        let ctx = ConferenceMigration {
+            uac,
+            local_uri: self.uas.local_uri.clone(),
+            call_manager: self.call_manager.clone(),
+            dialog_manager: Arc::clone(&self.dialog_manager),
+            session_timer_manager: Arc::clone(&self.session_timer_manager),
+            media_manager: self.media_manager.clone(),
+            sip_call_id_map: Arc::clone(&self.sip_call_id_map),
+            in_flight: Arc::clone(&self.conference_migrations),
+            b2bua_config: self.b2bua_config.clone(),
+            local_addr: self.local_addr.clone(),
+            call_id: call.id,
+            old_b_dialog,
+            target: migration.target,
+            ticket: migration.ticket,
+        };
+        tokio::spawn(ctx.run());
+        self.create_simple_response(request, 202, "Accepted")
+    }
+
     fn dialog_is_refresher(dialog: &sip_dialog::Dialog) -> bool {
         dialog
             .refresher()
@@ -9644,17 +9732,7 @@ impl SipMessageHandler {
     }
 
     fn start_session_timer(&self, dialog: &sip_dialog::Dialog) {
-        if let Some(expires) = dialog.session_expires() {
-            let is_refresher = Self::dialog_is_refresher(dialog);
-            self.session_timer_manager
-                .start_timer(dialog.id().clone(), expires, is_refresher);
-        } else if self.b2bua_config.session_timer.enabled {
-            let expires =
-                Duration::from_secs(self.b2bua_config.session_timer.session_expires_secs as u64);
-            // SBC is always refresher when forcing session timers
-            self.session_timer_manager
-                .start_timer(dialog.id().clone(), expires, true);
-        }
+        start_session_timer_for(&self.session_timer_manager, &self.b2bua_config, dialog);
     }
 
     fn create_transient_subscription(
@@ -12914,6 +12992,314 @@ fn generate_unhold_sdp(sdp: Option<&str>, local_addr: &str, rtp_port: u16) -> St
             addr = local_addr,
             port = rtp_port,
         )
+    }
+}
+
+/// Arm a leg's session timer from its dialog, or from the B2BUA's own
+/// setting when the timer is forced.
+fn start_session_timer_for(
+    session_timer_manager: &SessionTimerManager,
+    b2bua_config: &B2buaConfig,
+    dialog: &sip_dialog::Dialog,
+) {
+    if let Some(expires) = dialog.session_expires() {
+        let is_refresher = SipMessageHandler::dialog_is_refresher(dialog);
+        session_timer_manager.start_timer(dialog.id().clone(), expires, is_refresher);
+    } else if b2bua_config.session_timer.enabled {
+        let expires = Duration::from_secs(b2bua_config.session_timer.session_expires_secs as u64);
+        // SBC is always refresher when forcing session timers
+        session_timer_manager.start_timer(dialog.id().clone(), expires, true);
+    }
+}
+
+/// One conference leg on its way to another node (phase 5b): everything
+/// the move needs, cloned out of the handler so it can run on its own
+/// task after the REFER is answered.
+struct ConferenceMigration {
+    uac: Arc<SipUserAgentClient>,
+    /// What the NOTIFY is signed as.
+    local_uri: sip_core::SipUri,
+    call_manager: Arc<fcp_b2bua_core::CallManager>,
+    dialog_manager: Arc<DialogManager>,
+    session_timer_manager: Arc<SessionTimerManager>,
+    media_manager: Option<Arc<fcp_media::MediaManager>>,
+    sip_call_id_map: Arc<dashmap::DashMap<String, String>>,
+    in_flight: Arc<dashmap::DashMap<fcp_b2bua_core::CallId, ()>>,
+    b2bua_config: B2buaConfig,
+    local_addr: String,
+    call_id: fcp_b2bua_core::CallId,
+    /// The leg on the draining node: where the NOTIFY goes, and what is
+    /// dropped once the caller is on the new node.
+    old_b_dialog: sip_dialog::Dialog,
+    /// The room on the new node.
+    target: sip_core::SipUri,
+    ticket: String,
+}
+
+/// How long the new node may take to answer the INVITE.
+const MIGRATION_INVITE_TIMEOUT: Duration = Duration::from_secs(20);
+/// How long a re-INVITE, a NOTIFY or a BYE in the move may take.
+const MIGRATION_STEP_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Why a move did not happen: what the old node is told, and why.
+type MigrationFailure = (u16, &'static str, String);
+
+impl ConferenceMigration {
+    async fn run(self) {
+        let call_id = self.call_id;
+        let outcome = self.migrate().await;
+        self.in_flight.remove(&call_id);
+        match outcome {
+            Ok(()) => info!(call_id = %call_id, "Conference leg moved to the new node"),
+            Err((code, reason, why)) => {
+                warn!(
+                    call_id = %call_id,
+                    code,
+                    error = %why,
+                    "Conference leg not moved; the caller stays on the old node"
+                );
+                self.notify_old_node(code, reason).await;
+            }
+        }
+    }
+
+    /// The move.
+    async fn migrate(&self) -> std::result::Result<(), MigrationFailure> {
+        let call = self
+            .call_manager
+            .get_call(&self.call_id)
+            .ok_or_else(|| (481, "Call Gone", "call no longer exists".to_string()))?;
+        let mut a_dialog = call
+            .a_leg
+            .dialog
+            .clone()
+            .ok_or_else(|| (481, "Call Gone", "no A-leg dialog".to_string()))?;
+        let a_sdp = call
+            .a_leg
+            .sdp
+            .clone()
+            .or_else(|| {
+                call.original_invite
+                    .as_ref()
+                    .filter(|r| !r.body().is_empty())
+                    .map(|r| String::from_utf8_lossy(r.body()).to_string())
+            })
+            .ok_or_else(|| {
+                (
+                    488,
+                    "Not Acceptable Here",
+                    "no caller SDP to offer".to_string(),
+                )
+            })?;
+        let anchored = call
+            .media_anchored
+            .then_some(call.media_session_id)
+            .flatten()
+            .zip(self.media_manager.clone());
+
+        // The offer: the caller's SDP, or the media session's B side when
+        // media is anchored here.
+        let offer = match &anchored {
+            Some((session_id, media_manager)) => {
+                let session = media_manager
+                    .get_session(session_id)
+                    .await
+                    .map_err(|e| (500, "Server Internal Error", format!("media session: {e}")))?;
+                let (rtp_port, _) = session.ports();
+                fcp_media::rewrite_sdp_for_anchoring(&a_sdp, &self.local_addr, rtp_port, None)
+            }
+            None => a_sdp.clone(),
+        };
+
+        // The new B-leg, the ticket as a request header.
+        let mut headers = sip_core::Headers::new();
+        headers
+            .push(
+                SmolStr::new(fcp_core::MIGRATION_TICKET_HEADER),
+                SmolStr::new(&self.ticket),
+            )
+            .map_err(|e| (500, "Server Internal Error", format!("ticket header: {e}")))?;
+        let target = self.target.as_str().to_string();
+        let handle = tokio::time::timeout(
+            Duration::from_secs(5),
+            self.uac.invite_with_headers(&target, Some(&offer), headers),
+        )
+        .await
+        .map_err(|_| {
+            (
+                503,
+                "Service Unavailable",
+                "INVITE could not be sent".to_string(),
+            )
+        })?
+        .map_err(|e| (503, "Service Unavailable", format!("INVITE failed: {e}")))?;
+        let handle = Arc::new(handle);
+        let final_response = tokio::time::timeout(MIGRATION_INVITE_TIMEOUT, handle.await_final())
+            .await
+            .map_err(|_| {
+                (
+                    408,
+                    "Request Timeout",
+                    "new node did not answer".to_string(),
+                )
+            })?
+            .map_err(|e| (503, "Service Unavailable", format!("INVITE failed: {e}")))?;
+        let code = final_response.start_line().code();
+        if !(200..300).contains(&code) {
+            let reason = match code {
+                403 => "Forbidden",
+                503 => "Service Unavailable",
+                _ => "Not Acceptable Here",
+            };
+            return Err((code, reason, format!("new node answered {code}")));
+        }
+        let new_b_dialog = handle.dialog.read().await.clone();
+        let answer = String::from_utf8_lossy(final_response.body()).to_string();
+        if answer.is_empty() {
+            let _ = self.uac.bye(&new_b_dialog).await;
+            return Err((
+                488,
+                "Not Acceptable Here",
+                "new node answered without SDP".to_string(),
+            ));
+        }
+
+        // The caller is still here?
+        if self.call_manager.get_call(&self.call_id).is_none() {
+            let _ = self.uac.bye(&new_b_dialog).await;
+            return Err((481, "Call Gone", "call ended during the move".to_string()));
+        }
+
+        // Point the caller at the new node.
+        let mut a_sdp_now = a_sdp.clone();
+        match &anchored {
+            Some((session_id, media_manager)) => {
+                media_manager
+                    .update_session_b_leg(session_id, answer.clone())
+                    .await
+                    .map_err(|e| {
+                        (
+                            500,
+                            "Server Internal Error",
+                            format!("media session B side: {e}"),
+                        )
+                    })?;
+            }
+            None => {
+                let resp = tokio::time::timeout(
+                    MIGRATION_STEP_TIMEOUT,
+                    self.uac.send_reinvite(&mut a_dialog, Some(&answer)),
+                )
+                .await;
+                let ok = matches!(&resp, Ok(Ok(r)) if (200..300).contains(&r.start_line().code()));
+                if !ok {
+                    let _ = self.uac.bye(&new_b_dialog).await;
+                    let why = match resp {
+                        Ok(Ok(r)) => format!(
+                            "caller answered the re-INVITE with {}",
+                            r.start_line().code()
+                        ),
+                        Ok(Err(e)) => format!("re-INVITE to the caller failed: {e}"),
+                        Err(_) => "re-INVITE to the caller timed out".to_string(),
+                    };
+                    return Err((500, "Server Internal Error", why));
+                }
+                if let Ok(Ok(r)) = resp {
+                    if !r.body().is_empty() {
+                        a_sdp_now = String::from_utf8_lossy(r.body()).to_string();
+                    }
+                }
+                let _ = self.dialog_manager.insert(a_dialog.clone());
+                // A phone that moved its media in its answer: tell the
+                // new node, which was offered the old endpoint.
+                if crate::conference_migration::media_endpoint_changed(&a_sdp, &a_sdp_now) {
+                    let mut b = new_b_dialog.clone();
+                    let outcome = tokio::time::timeout(
+                        MIGRATION_STEP_TIMEOUT,
+                        self.uac.send_reinvite(&mut b, Some(&a_sdp_now)),
+                    )
+                    .await;
+                    match outcome {
+                        Ok(Ok(r)) if (200..300).contains(&r.start_line().code()) => {}
+                        Ok(Ok(r)) => warn!(
+                            call_id = %self.call_id,
+                            status = r.start_line().code(),
+                            "The new node refused the caller's moved media endpoint"
+                        ),
+                        Ok(Err(e)) => warn!(
+                            call_id = %self.call_id,
+                            error = %e,
+                            "The re-INVITE with the caller's moved media endpoint failed"
+                        ),
+                        Err(_) => warn!(
+                            call_id = %self.call_id,
+                            "The re-INVITE with the caller's moved media endpoint timed out"
+                        ),
+                    }
+                }
+            }
+        }
+
+        // Swap the legs.
+        let new_sip_call_id = new_b_dialog.id().call_id().to_string();
+        let old_sip_call_id = self.old_b_dialog.id().call_id().to_string();
+        let a_dialog_for_call = a_dialog.clone();
+        let new_b_dialog_for_call = new_b_dialog.clone();
+        let pass_through = anchored.is_none();
+        let swapped = self.call_manager.update_call(&self.call_id, |c| {
+            let mut leg = fcp_b2bua_core::CallLeg::new_outbound(target.clone(), None);
+            leg.dialog = Some(new_b_dialog_for_call.clone());
+            leg.sdp = Some(answer.clone());
+            leg.outbound_handle = Some(Arc::clone(&handle));
+            c.b_leg = Some(leg);
+            if pass_through {
+                c.a_leg.dialog = Some(a_dialog_for_call.clone());
+                c.a_leg.sdp = Some(a_sdp_now.clone());
+            }
+        });
+        if swapped.is_err() {
+            let _ = self.uac.bye(&new_b_dialog).await;
+            return Err((481, "Call Gone", "call ended during the move".to_string()));
+        }
+        let _ = self.dialog_manager.insert(new_b_dialog.clone());
+        self.sip_call_id_map
+            .insert(new_sip_call_id, self.call_id.to_string());
+        self.sip_call_id_map.remove(&old_sip_call_id);
+        self.session_timer_manager
+            .stop_timer(self.old_b_dialog.id());
+        self.dialog_manager.remove(self.old_b_dialog.id());
+        start_session_timer_for(
+            &self.session_timer_manager,
+            &self.b2bua_config,
+            &new_b_dialog,
+        );
+
+        // Tell the old node, then drop its leg. Its own BYE may cross
+        // ours; each side answers 481 to a dialog it no longer holds.
+        self.notify_old_node(200, "OK").await;
+        let old = self.old_b_dialog.clone();
+        let uac = Arc::clone(&self.uac);
+        tokio::spawn(async move {
+            let _ = tokio::time::timeout(MIGRATION_STEP_TIMEOUT, uac.bye(&old)).await;
+        });
+        Ok(())
+    }
+
+    /// The REFER's implicit subscription, reported once: a sipfrag NOTIFY
+    /// on the old leg (RFC 3515 §2.4.5), `Subscription-State: terminated`.
+    async fn notify_old_node(&self, code: u16, reason: &str) {
+        let mut dialog = self.old_b_dialog.clone();
+        if let Err(e) = crate::conference_migration::report_refer_outcome(
+            &self.uac,
+            &self.local_uri,
+            &mut dialog,
+            code,
+            reason,
+        )
+        .await
+        {
+            debug!(call_id = %self.call_id, code, error = %e, "refer NOTIFY failed");
+        }
     }
 }
 

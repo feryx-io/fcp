@@ -1044,6 +1044,17 @@ pub struct ClusterSection {
     /// node it was sent to.
     #[serde(default)]
     pub secret: Option<String>,
+    /// When this node drains, how long (seconds) the holder of a caller's
+    /// leg has to move the caller to another node after the REFER before
+    /// the caller is given up on and hung up with the rest
+    /// (`docs/DISTRIBUTED_CONFERENCING.md`, phase 5). Default: 15.
+    /// Migration needs `secret`.
+    #[serde(default = "default_migration_timeout")]
+    pub migration_timeout_secs: u64,
+}
+
+fn default_migration_timeout() -> u64 {
+    15
 }
 
 fn default_speaker_interval() -> u64 {
@@ -1078,6 +1089,7 @@ impl Default for ClusterSection {
             trunk_srtp: default_trunk_srtp(),
             speaker_interval_ms: default_speaker_interval(),
             secret: None,
+            migration_timeout_secs: default_migration_timeout(),
         }
     }
 }

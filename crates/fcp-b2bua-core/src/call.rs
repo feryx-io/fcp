@@ -234,6 +234,12 @@ pub struct Call {
     /// Whether media is anchored for this call
     pub media_anchored: bool,
 
+    /// The conference room this call was routed to, when the B-leg is a
+    /// conference node: what lets a REFER from that node be executed as
+    /// a migration rather than relayed to the caller
+    /// (`docs/DISTRIBUTED_CONFERENCING.md`, phase 5b).
+    pub conference_room: Option<String>,
+
     /// Time when call was created
     pub created_at: SystemTime,
 
@@ -358,6 +364,7 @@ impl Call {
             original_invite: Some(request),
             media_session_id: None,
             media_anchored: false,
+            conference_room: None,
             created_at: SystemTime::now(),
             established_at: None,
             ended_at: None,
@@ -449,6 +456,7 @@ impl Call {
             original_invite: None,
             media_session_id: None,
             media_anchored: false,
+            conference_room: None,
             created_at: SystemTime::now(),
             established_at: None,
             ended_at: None,

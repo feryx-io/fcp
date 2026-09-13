@@ -11,6 +11,7 @@
 pub mod adapters;
 pub mod auth;
 pub mod conference;
+pub mod conference_migration;
 pub mod config;
 pub mod exports;
 pub mod flow;

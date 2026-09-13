@@ -100,4 +100,15 @@ pub trait ConferenceHandler: Send + Sync {
     /// The handler should set up the referred party as a new conference participant.
     /// Returns `Ok(Response)` if handled, `Err` if not a conference REFER.
     fn handle_refer(&self, request: &sip_core::Request) -> Result<sip_core::Response>;
+
+    /// Handle an in-dialog NOTIFY for a conference participant: the
+    /// outcome of a REFER this handler sent (RFC 3515 §2.4.5), as a
+    /// migrating caller's leg reports it (`docs/DISTRIBUTED_CONFERENCING.md`,
+    /// phase 5).
+    /// Returns `Ok(Response)` if the Call-ID belongs to a session this
+    /// handler holds, `Err` otherwise, so the caller can fall through to
+    /// normal B2BUA NOTIFY handling.
+    fn handle_notify(&self, _request: &sip_core::Request) -> Result<sip_core::Response> {
+        Err(anyhow::anyhow!("not a conference NOTIFY"))
+    }
 }

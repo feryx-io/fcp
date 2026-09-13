@@ -187,6 +187,7 @@ impl Default for SbcConfig {
                 voicemail_server_uri: None,
                 conference_server_uri: None,
                 conference_node_capacity: 0,
+                conference_migration: true,
             },
             admission: AdmissionConfig::default(),
             rate_limit: RateLimitPolicyConfig::default(),

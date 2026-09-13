@@ -83,11 +83,48 @@ pub const JOIN_TOKEN_VERSION: u8 = 1;
 /// The longest lifetime the admin API will mint.
 pub const MAX_JOIN_TOKEN_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 
-fn unix_now() -> u64 {
+pub(crate) fn unix_now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+/// Why a signed payload could not be opened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SignedError {
+    Malformed,
+    BadSignature,
+}
+
+/// `base64url(payload) "." base64url(hmac-sha256(secret, payload))`: the
+/// wire form join tokens and migration tickets share.
+pub(crate) fn sign_payload(payload: &[u8], secret: &[u8]) -> String {
+    let mut mac = HmacSha256::new_from_slice(secret).expect("HMAC takes any key length");
+    mac.update(payload);
+    let sig = mac.finalize().into_bytes();
+    format!(
+        "{}.{}",
+        URL_SAFE_NO_PAD.encode(payload),
+        URL_SAFE_NO_PAD.encode(sig)
+    )
+}
+
+/// The payload of a wire-form value whose signature checks out.
+pub(crate) fn open_signed(token: &str, secret: &[u8]) -> Result<Vec<u8>, SignedError> {
+    let token = token.trim();
+    let (payload_b64, sig_b64) = token.split_once('.').ok_or(SignedError::Malformed)?;
+    let payload = URL_SAFE_NO_PAD
+        .decode(payload_b64)
+        .map_err(|_| SignedError::Malformed)?;
+    let sig = URL_SAFE_NO_PAD
+        .decode(sig_b64)
+        .map_err(|_| SignedError::Malformed)?;
+    let mut mac = HmacSha256::new_from_slice(secret).expect("HMAC takes any key length");
+    mac.update(&payload);
+    mac.verify_slice(&sig)
+        .map_err(|_| SignedError::BadSignature)?;
+    Ok(payload)
 }
 
 impl JoinToken {
@@ -113,14 +150,7 @@ impl JoinToken {
     /// Sign with `secret` into the wire form.
     pub fn mint(&self, secret: &[u8]) -> String {
         let payload = serde_json::to_vec(self).expect("a join token serialises");
-        let mut mac = HmacSha256::new_from_slice(secret).expect("HMAC takes any key length");
-        mac.update(&payload);
-        let sig = mac.finalize().into_bytes();
-        format!(
-            "{}.{}",
-            URL_SAFE_NO_PAD.encode(payload),
-            URL_SAFE_NO_PAD.encode(sig)
-        )
+        sign_payload(&payload, secret)
     }
 
     /// Verify a wire-form token against `secret` as of now.
@@ -130,18 +160,10 @@ impl JoinToken {
 
     /// Verify as of `now` (seconds since the Unix epoch).
     pub fn verify_at(token: &str, secret: &[u8], now: u64) -> Result<Self, JoinTokenError> {
-        let token = token.trim();
-        let (payload_b64, sig_b64) = token.split_once('.').ok_or(JoinTokenError::Malformed)?;
-        let payload = URL_SAFE_NO_PAD
-            .decode(payload_b64)
-            .map_err(|_| JoinTokenError::Malformed)?;
-        let sig = URL_SAFE_NO_PAD
-            .decode(sig_b64)
-            .map_err(|_| JoinTokenError::Malformed)?;
-        let mut mac = HmacSha256::new_from_slice(secret).expect("HMAC takes any key length");
-        mac.update(&payload);
-        mac.verify_slice(&sig)
-            .map_err(|_| JoinTokenError::BadSignature)?;
+        let payload = open_signed(token, secret).map_err(|e| match e {
+            SignedError::Malformed => JoinTokenError::Malformed,
+            SignedError::BadSignature => JoinTokenError::BadSignature,
+        })?;
         let parsed: JoinToken =
             serde_json::from_slice(&payload).map_err(|_| JoinTokenError::Malformed)?;
         if parsed.version != JOIN_TOKEN_VERSION {

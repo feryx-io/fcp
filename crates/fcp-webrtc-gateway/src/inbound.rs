@@ -148,6 +148,40 @@ impl InboundMessageHandler for GatewayInboundHandler {
                             .await;
                     }
                 },
+                Method::Refer => {
+                    // The conference node is draining and names another
+                    // node for this session (phase 5c). Any other REFER is
+                    // a transfer, which the gateway does not do.
+                    let refer_to = request
+                        .headers()
+                        .get("Refer-To")
+                        .map(str::to_string)
+                        .unwrap_or_default();
+                    match fcp_sip::conference_migration::parse_migration_refer(&refer_to) {
+                        Some(refer) => {
+                            use crate::session::MigrationStart;
+                            let (code, reason) =
+                                match self.sessions.begin_migration(&call_id, refer).await {
+                                    MigrationStart::Accepted => (202, "Accepted"),
+                                    MigrationStart::Unknown => {
+                                        (481, "Call/Transaction Does Not Exist")
+                                    }
+                                    MigrationStart::Busy => (491, "Request Pending"),
+                                    MigrationStart::NotReady => (480, "Temporarily Unavailable"),
+                                };
+                            debug!(%peer, call_id = %call_id, code, "REFER to move the session");
+                            handle
+                                .send_final(simple_response(&request, code, reason))
+                                .await;
+                        }
+                        None => {
+                            debug!(%peer, call_id = %call_id, "REFER that is not a move; the gateway does not transfer");
+                            handle
+                                .send_final(simple_response(&request, 603, "Decline"))
+                                .await;
+                        }
+                    }
+                }
                 Method::Options => {
                     handle
                         .send_final(simple_response(&request, 200, "OK"))

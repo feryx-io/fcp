@@ -25,6 +25,7 @@ pub mod join_token;
 pub mod line_binding;
 pub mod meeting;
 pub mod metrics;
+pub mod migration_ticket;
 pub mod permissions;
 pub mod phone_number;
 pub mod porting;
@@ -82,6 +83,9 @@ pub use crate::identifiers::*;
 pub use crate::join_token::{JoinRole, JoinToken, JoinTokenError, JOIN_TOKEN_HEADER};
 pub use crate::line_binding::{BindingType, DeviceBinding, LineBinding, RingStrategy};
 pub use crate::meeting::Meeting;
+pub use crate::migration_ticket::{
+    MigrationTicket, MigrationTicketError, MIGRATION_TICKET_HEADER, MIGRATION_TICKET_TTL,
+};
 pub use crate::permissions::{DeploymentMode, Permission, UserRole};
 pub use crate::phone_number::{E911Address, NumberState, PhoneNumber};
 pub use crate::porting::{

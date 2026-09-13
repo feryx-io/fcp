@@ -15,7 +15,7 @@ The work lands in five phases. This document tracks what is in place.
 | 2 | Inter-node trunks (cascaded mixing) | ✅ v0.25.83 |
 | 3 | Cross-node control (kick, gain, lock, announce, end) | ✅ v0.25.84 |
 | 4 | Resilience (registry expiry, trunk teardown, draining, trunk SRTP) | ✅ v0.25.85 |
-| 5 | Participant migration off a draining node | 📐 planned 2026-09-13 |
+| 5 | Participant migration off a draining node | ✅ 5a v0.25.146 (the node), 5b v0.25.147 (the call manager), 5c v0.25.148 (the WebRTC gateway) |
 
 Decisions (2026-09-02): full-mesh trunks between hosting nodes; new
 participants stay on a hosting node until it reaches a capacity setting;
@@ -594,7 +594,6 @@ ticket** as a URI header:
 ```
 REFER sip:… SIP/2.0
 Refer-To: <sip:8000@10.0.0.21:5074?X-FCP-Migrate=eyJ2IjoxLCJ0ZW5…>
-Referred-By: <sip:conf-a@10.0.0.20:5074>
 Event: refer
 ```
 
@@ -703,6 +702,30 @@ Events: `participant_left` gains `migrated_to` (the target node id) and
 `participant_joined` gains `migrated_from`; consumers that count joins and
 leaves see one of each, labelled. `GET /status` reports `draining`.
 
+```toml
+[cluster]
+secret = "…"                  # tickets are signed under it; unset = no migration
+migration_timeout_secs = 15   # how long a leg's holder has to report after the REFER
+```
+
+*5a shipped 2026-09-13 (v0.25.146; forge-media `v2026.09.13.1`).* As
+planned: `fcp_core::MigrationTicket` (the join token's wire form and
+signing, shared), `migration.rs` on the conference server (the planner
+over `choose_conference_node`, the ledger of REFERs in flight, the
+used-ticket cache, the `Refer-To` and sipfrag forms), the drain step in
+`main` between "refuse new callers" and the wait, `handle_notify` on the
+conference handler trait (the SIP layer offers a NOTIFY to the conference
+handler first, as it does a REFER), admission on a ticket in
+`handle_invite`, and forge-conference's `add_participant_admitted` (past
+the lock and the waiting room, capacity still applied, hosts tracked, no
+join sound). One thing the plan's example showed and this does not send:
+a `Referred-By` header — siphon-rs's `send_refer` takes no extra headers,
+and nothing reads it. Tested: the ticket, planner, ledger, sipfrag and
+`Refer-To` forms, and the room method are unit tests; the REFER → NOTIFY
+round trip and the two-node move are not automated yet — there is no SIP
+test client against a running node in the repo — and are checked by hand
+with a phone that follows REFER, then properly under 5b.
+
 ### 5b: the call manager
 
 The B2BUA already relays a REFER from either leg to the other, which is
@@ -737,6 +760,29 @@ is refused (603) and the caller is hung up at the end of the drain. It
 does not go through the transfer policy (`transfer`, `allow_refer`): it is
 not a transfer the caller asked for.
 
+```toml
+[b2bua]
+conference_migration = true   # false refuses the REFER (603); the caller is hung up at the end of the drain
+```
+
+*5b shipped 2026-09-13 (v0.25.147).* As planned, with the SIP in
+`fcp-sip`'s handler and the rest in `conference_migration.rs`. The REFER
+is answered 202 at once and the move runs on its own task, since the
+REFER's transaction must not wait on an INVITE to another node; `Call`
+carries `conference_room`, set on the three routing branches that produce
+a conference target. One detail the plan left open: the caller is
+offered to the new node with its last SDP (early offer) and then
+re-INVITEd with the node's answer, so a phone that keeps its ports — the
+usual case — needs nothing more, and one whose answer moves its media
+(a new port or address on any section) gets that answer forwarded to the
+new node in a second re-INVITE. The new leg's session timer is armed as
+the original's was, so the conference node's RFC 4028 reaper does not
+hang the moved caller up. Tested: the `Refer-To` reading, the moved-media
+check and the sipfrag body are unit tests; the move itself is not
+automated — the `fcp-sip` harness has no UAC, so the B2BUA's outbound
+side cannot be driven in a test — and is checked by hand between two
+nodes on the GPU box.
+
 ### 5c: the WebRTC gateway
 
 The gateway refuses every inbound request but BYE, INFO, OPTIONS and
@@ -756,6 +802,23 @@ CANCEL. It gains REFER, for its own sessions, when the `Refer-To` carries
 5. On failure, NOTIFY it and keep the old leg.
 
 The join page needs no change; the migration is invisible to it.
+
+*5c shipped 2026-09-13 (v0.25.148).* As planned. The relay takes a swap
+channel and replaces its SIP side between packets (the far end's SSRCs
+start over); the session keeps the shape the browser negotiated and
+builds the new offer from it with the same code the first INVITE used
+(`build_sip_offer`, now shared), so the new node is offered exactly the
+sections the browser has; the REFER is answered 202 (481 unknown, 491 a
+move already in flight, 480 not relaying yet) and the move runs on its
+own task; a REFER that is not a move is answered 603 — the gateway
+still does not transfer. The old leg's ports go back to the pool two
+seconds after the swap, once the relay has dropped its sockets. The
+sipfrag NOTIFY is `fcp_sip::conference_migration::report_refer_outcome`,
+shared with the call manager. Tested: the relay swap in process
+(`tests/relay.rs`: a real peer-connection pair, the SIP side swapped to
+a second far end under SRTP with a new payload type, audio both ways
+after it, nothing more at the old far end); the SIP side of the move
+by hand, as for 5b.
 
 ### Order and tests
 

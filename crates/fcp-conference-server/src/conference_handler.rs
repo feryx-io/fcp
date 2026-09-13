@@ -5,7 +5,7 @@ use crate::video_bridge::{
 use anyhow::{bail, Context, Result};
 use dashmap::DashMap;
 use fcp_core::storage::TenantStore;
-use fcp_core::{DynStorage, Meeting, TenantId};
+use fcp_core::{DynStorage, Meeting, MigrationTicket, TenantId};
 use fcp_events::{ConferenceEvent, EventPublisher, PlatformEvent};
 use fcp_media::{
     construct_answer, construct_answer_for_a_leg, decode_sdes_key_params,
@@ -46,6 +46,7 @@ use tracing::{debug, info, warn};
 use crate::audio_bridge::{self, AudioStats};
 use crate::bfcp::{BfcpAssignment, Floors};
 use crate::config::{AiSection, ConferenceSection};
+use crate::migration::{self, Notice};
 use crate::trunks::{self, TRUNK_NODE_HEADER, TRUNK_TENANT_HEADER};
 use futures::StreamExt;
 
@@ -238,6 +239,17 @@ pub struct ConferenceCallHandler {
     content_claims: DashMap<String, (ContentClaim, Instant)>,
     /// Calls that have been answered and are waiting for PIN input.
     pending_pin_auth: DashMap<String, PendingPinAuth>,
+    /// The REFERs sent to callers' legs as this node drains
+    /// (`docs/DISTRIBUTED_CONFERENCING.md`, phase 5).
+    migrations: migration::Migrations,
+    /// Migration tickets admitted here, so each admits once.
+    used_tickets: migration::UsedTickets,
+    /// The secret migration tickets are signed under (`cluster.secret`);
+    /// `None` means this node neither issues nor accepts them.
+    cluster_secret: std::sync::RwLock<Option<String>>,
+    /// How long a caller's leg has to report after a REFER
+    /// (`cluster.migration_timeout_secs`).
+    migration_timeout: std::sync::RwLock<Duration>,
     /// Pre-loaded DTMF feedback audio: "Muted" / "Unmuted" PCM samples
     pub dtmf_muted_samples: Option<Arc<Vec<i16>>>,
     pub dtmf_unmuted_samples: Option<Arc<Vec<i16>>>,
@@ -687,6 +699,10 @@ impl ConferenceCallHandler {
             speaker_claims: DashMap::new(),
             content_claims: DashMap::new(),
             pending_pin_auth: DashMap::new(),
+            migrations: migration::Migrations::default(),
+            used_tickets: migration::UsedTickets::default(),
+            cluster_secret: std::sync::RwLock::new(None),
+            migration_timeout: std::sync::RwLock::new(Duration::from_secs(15)),
             dtmf_muted_samples: None,
             dtmf_unmuted_samples: None,
             dtmf_locked_samples: None,
@@ -770,6 +786,177 @@ impl ConferenceCallHandler {
     pub fn start_draining(&self) {
         self.draining.store(true, Ordering::Relaxed);
         info!("Conference handler entering drain mode — rejecting new INVITEs");
+    }
+
+    pub fn is_draining(&self) -> bool {
+        self.draining.load(Ordering::Relaxed)
+    }
+
+    // ---- participant migration (phase 5) ---------------------------------
+
+    /// The secret migration tickets are minted and verified under, and
+    /// how long a REFER may wait for its report. No secret, no migration.
+    pub fn set_migration(&self, secret: Option<String>, timeout: Duration) {
+        *self.cluster_secret.write().unwrap() = secret.filter(|s| !s.is_empty());
+        *self.migration_timeout.write().unwrap() = timeout;
+    }
+
+    pub fn migration_enabled(&self) -> bool {
+        self.cluster_secret.read().unwrap().is_some()
+    }
+
+    /// The callers this node could move: every session that is a caller
+    /// (not a trunk), admitted (not in the waiting room) and not already
+    /// being moved; with the meeting's video need, for placement.
+    pub async fn migration_candidates(&self) -> Vec<migration::Candidate> {
+        let sessions: Vec<(String, TenantId, String, String)> = self
+            .sessions
+            .iter()
+            .filter(|e| e.trunk_peer.is_none())
+            .map(|e| {
+                (
+                    e.key().clone(),
+                    e.tenant_id,
+                    e.room_number.clone(),
+                    e.participant_id.clone(),
+                )
+            })
+            .collect();
+        let mut out = Vec::with_capacity(sessions.len());
+        for (call_id, tenant_id, room_number, participant_id) in sessions {
+            if self.migrations.is_migrating(&call_id) {
+                continue;
+            }
+            if let Ok(room) = self.bridge.get_room(&room_number) {
+                if room.waiting_participants().contains(&participant_id) {
+                    continue;
+                }
+            }
+            let video = match self.lookup_meeting(&tenant_id, &room_number).await {
+                Ok(Some(m)) if m.video_enabled => Some(fcp_cluster::VideoNeed::of(
+                    m.video_codecs
+                        .iter()
+                        .map(|c| c.sdp_name().to_string())
+                        .collect(),
+                )),
+                _ => None,
+            };
+            out.push(migration::Candidate {
+                call_id,
+                tenant_id,
+                room_number,
+                video,
+            });
+        }
+        out
+    }
+
+    /// Ask the holder of `call_id`'s leg to move the caller to `target`:
+    /// a REFER with the room on the target and a ticket for the
+    /// participant as they are here — role, mute, gain, video — in the
+    /// `Refer-To`. Accepted (2xx) means the move is in flight and the
+    /// ledger waits for its report; anything else leaves the caller here.
+    pub async fn refer_to_node(
+        &self,
+        call_id: &str,
+        target: &fcp_cluster::ClusterMember,
+    ) -> Result<()> {
+        let secret = self
+            .cluster_secret
+            .read()
+            .unwrap()
+            .clone()
+            .context("cluster.secret is not set")?;
+        let (mut dialog, room_number, ticket) = {
+            let s = self
+                .sessions
+                .get(call_id)
+                .with_context(|| format!("no session for {call_id}"))?;
+            let room = self
+                .bridge
+                .get_room(&s.room_number)
+                .map_err(|e| anyhow::anyhow!("room {}: {e}", s.room_number))?;
+            let meta = room.get_participant_metadata(&s.participant_id).ok();
+            let video_on = room
+                .video()
+                .and_then(|v| v.participant(&s.participant_id))
+                .map(|i| i.state.name() != "disabled")
+                .unwrap_or(true);
+            let ticket = MigrationTicket {
+                version: fcp_core::migration_ticket::MIGRATION_TICKET_VERSION,
+                tenant_id: s.tenant_id,
+                room_number: s.room_number.clone(),
+                participant_id: s.participant_id.clone(),
+                display_name: s.display_name.clone(),
+                caller_id: s.caller_id.clone(),
+                is_host: s.is_host,
+                muted: meta
+                    .as_ref()
+                    .is_some_and(|m| m.state == forge_mixer::ParticipantState::Muted),
+                gain: meta.as_ref().map(|m| m.gain).unwrap_or(1.0),
+                video: video_on,
+                token_join: s.joined_by_token,
+                from_node: self.node_id.clone(),
+                expires_at: MigrationTicket::expiry_from_now(),
+                nonce: MigrationTicket::new_nonce(),
+            };
+            (
+                s.dialog.clone(),
+                s.room_number.clone(),
+                ticket.mint(secret.as_bytes()),
+            )
+        };
+        let refer_to = migration::refer_to(&room_number, target, &ticket);
+        let refer_to =
+            SipUri::parse(&refer_to).map_err(|e| anyhow::anyhow!("Refer-To {refer_to}: {e}"))?;
+        let (response, _subscription) = tokio::time::timeout(
+            migration::REFER_TIMEOUT,
+            self.uac.send_refer(&mut dialog, &refer_to, None),
+        )
+        .await
+        .context("REFER unanswered")??;
+        let code = response.start_line().code();
+        if !(200..300).contains(&code) {
+            bail!("REFER refused with {code}");
+        }
+        if let Some(mut s) = self.sessions.get_mut(call_id) {
+            s.dialog = dialog;
+        }
+        let timeout = *self.migration_timeout.read().unwrap();
+        self.migrations.begin(call_id, &target.node_id, timeout);
+        info!(
+            call_id = %call_id,
+            room = %room_number,
+            to = %target.node_id,
+            "Participant referred to another node"
+        );
+        Ok(())
+    }
+
+    /// REFERs still waiting for their report.
+    pub fn migrations_pending(&self) -> usize {
+        self.migrations.pending()
+    }
+
+    /// Give up on the REFERs whose holder never reported; those callers
+    /// stay and are hung up with the rest.
+    pub fn expire_migrations(&self) -> Vec<String> {
+        let expired = self.migrations.expire(Instant::now());
+        for call_id in &expired {
+            warn!(call_id = %call_id, "Migration unreported in time; the caller stays");
+        }
+        expired
+    }
+
+    /// The caller is on the other node: drop this leg.
+    async fn finish_migration(&self, call_id: &str) {
+        if let Some(dialog) = self.sessions.get(call_id).map(|s| s.dialog.clone()) {
+            match tokio::time::timeout(BYE_TIMEOUT, self.uac.bye(&dialog)).await {
+                Ok(Ok(_)) | Ok(Err(_)) => {}
+                Err(_) => debug!(call_id = %call_id, "BYE after migration unanswered"),
+            }
+        }
+        self.remove_session(call_id);
     }
 
     /// Maximum number of entries in the meeting cache (from config).
@@ -2577,6 +2764,7 @@ impl ConferenceCallHandler {
         self.publish_event(ConferenceEvent::ParticipantJoined {
             room_number: room_number.to_string(),
             participant_id: participant_id.clone(),
+            migrated_from: None,
             is_host: false,
             has_video: false,
             tenant_id,
@@ -3054,6 +3242,9 @@ impl ConferenceCallHandler {
     /// Remove a participant by SIP call ID (called on BYE).
     fn remove_session(&self, call_id: &str) {
         if let Some((_, mut session)) = self.sessions.remove(call_id) {
+            // A leg that was being moved leaves as a migration, whether
+            // its holder reported first or simply hung up (phase 5).
+            let migrated_to = self.migrations.take(call_id).map(|m| m.target_node);
             // Update secondary room index
             if let Some(mut ids) = self.room_sessions.get_mut(&session.room_number) {
                 ids.retain(|id| id != call_id);
@@ -3066,6 +3257,7 @@ impl ConferenceCallHandler {
                 call_id = %call_id,
                 room = %session.room_number,
                 participant = %session.participant_id,
+                migrated_to = ?migrated_to,
                 "Participant left conference"
             );
 
@@ -3131,6 +3323,7 @@ impl ConferenceCallHandler {
                 self.publish_event(ConferenceEvent::ParticipantLeft {
                     room_number: session.room_number.clone(),
                     participant_id: session.participant_id.clone(),
+                    migrated_to,
                     tenant_id: session.tenant_id,
                     timestamp: SystemTime::now(),
                 });
@@ -5062,6 +5255,48 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             return Ok(());
         }
 
+        // 0b'. A migration ticket (phase 5): a caller moving here from a
+        // draining node, to be admitted as the participant they already
+        // were — past PIN, lock and waiting room. Refused when it does
+        // not verify, was used before, or no cluster secret is set.
+        let migrate = match sip_parse::header(request.headers(), fcp_core::MIGRATION_TICKET_HEADER)
+        {
+            Some(value) => {
+                let secret = self.cluster_secret.read().unwrap().clone();
+                let Some(secret) = secret else {
+                    warn!(%peer, "Migration ticket received but cluster.secret is not set");
+                    let reject =
+                        UserAgentServer::create_response(request, 403, "Migration Not Configured");
+                    handle.send_final(reject).await;
+                    return Ok(());
+                };
+                match MigrationTicket::verify(value.as_str(), secret.as_bytes()) {
+                    Ok(ticket) if self.used_tickets.admit(&ticket) => Some(ticket),
+                    Ok(ticket) => {
+                        warn!(%peer, participant = %ticket.participant_id, "Migration ticket used twice");
+                        let reject = UserAgentServer::create_response(
+                            request,
+                            403,
+                            "Migration Ticket Already Used",
+                        );
+                        handle.send_final(reject).await;
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        warn!(%peer, error = %e, "Migration ticket refused");
+                        let reject = UserAgentServer::create_response(
+                            request,
+                            403,
+                            "Invalid Migration Ticket",
+                        );
+                        handle.send_final(reject).await;
+                        return Ok(());
+                    }
+                }
+            }
+            None => None,
+        };
+
         // 0c. A join token (a browser through the WebRTC gateway): the
         // token names the tenant, room, participant and role, and stands
         // in for the PIN. Refused outright when it does not verify or no
@@ -5098,17 +5333,19 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             None => None,
         };
 
-        // 1. Extract room number (the token's, when there is one)
-        let room_number = match &join {
-            Some(token) => token.room_number.clone(),
-            None => extract_room_number(request)
+        // 1. Extract room number (the ticket's or the token's, when there is one)
+        let room_number = match (&migrate, &join) {
+            (Some(ticket), _) => ticket.room_number.clone(),
+            (None, Some(token)) => token.room_number.clone(),
+            (None, None) => extract_room_number(request)
                 .context("Failed to extract room number from Request-URI")?,
         };
 
         // 2. Extract tenant and look up meeting
-        let tenant_id = match &join {
-            Some(token) => token.tenant_id,
-            None => self.resolve_tenant(request).await?,
+        let tenant_id = match (&migrate, &join) {
+            (Some(ticket), _) => ticket.tenant_id,
+            (None, Some(token)) => token.tenant_id,
+            (None, None) => self.resolve_tenant(request).await?,
         };
         let meeting = self
             .lookup_meeting(&tenant_id, &room_number)
@@ -5595,12 +5832,20 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
 
         // 12. Generate participant ID and extract caller info
         let call_id = extract_call_id(request);
-        let (mut display_name, caller_id) = extract_caller_info(request);
+        let (mut display_name, mut caller_id) = extract_caller_info(request);
         if let Some(token) = &join {
             display_name = Some(token.display_name.clone());
         }
+        if let Some(ticket) = &migrate {
+            display_name = ticket.display_name.clone();
+            caller_id = ticket.caller_id.clone();
+        }
         let short_uuid = uuid::Uuid::new_v4().to_string();
-        let participant_id = format!("{}-{}", &call_id[..call_id.len().min(8)], &short_uuid[..8]);
+        let participant_id = match &migrate {
+            // The same participant as on the node they came from.
+            Some(ticket) => ticket.participant_id.clone(),
+            None => format!("{}-{}", &call_id[..call_id.len().min(8)], &short_uuid[..8]),
+        };
 
         // 13. Get or create conference room, configure with meeting settings
         let room = self.room_for_join(&tenant_id, &room_number).await?;
@@ -5612,9 +5857,18 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             warn!(room = %room_number, error = %e, "Failed to configure room (may already be configured)");
         }
 
-        // 14. PIN authentication (if required) — a join token settles the
-        // role instead, with no PIN collected.
-        let is_host = if let Some(token) = &join {
+        // 14. PIN authentication (if required) — a migration ticket or a
+        // join token settles the role instead, with no PIN collected.
+        let is_host = if let Some(ticket) = &migrate {
+            info!(
+                room = %room_number,
+                participant = %participant_id,
+                from = %ticket.from_node,
+                host = ticket.is_host,
+                "Admitted by migration ticket"
+            );
+            ticket.is_host
+        } else if let Some(token) = &join {
             let host = token.role == fcp_core::JoinRole::Host;
             info!(
                 room = %room_number,
@@ -5912,7 +6166,11 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
 
         // Determine if the participant should wait for a moderator.
         // Check the meeting config directly (handler-level) as the authoritative source.
-        let should_wait = if meeting.wait_for_moderator && !is_host && room.host_count() == 0 {
+        let should_wait = if migrate.is_none()
+            && meeting.wait_for_moderator
+            && !is_host
+            && room.host_count() == 0
+        {
             info!(
                 room = %room_number,
                 participant = %participant_id,
@@ -5929,7 +6187,12 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         let should_wait = if should_wait {
             true
         } else {
-            match room.add_participant_quiet(&participant_id, is_host) {
+            // A migrant was admitted once already: no lock, no waiting room.
+            let added = match &migrate {
+                Some(_) => room.add_participant_admitted(&participant_id, is_host),
+                None => room.add_participant_quiet(&participant_id, is_host),
+            };
+            match added {
                 Ok(()) => false,
                 Err(ConferenceError::WaitingForModerator) => true,
                 Err(ConferenceError::ConferenceFull(max)) => {
@@ -6199,6 +6462,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                                 PlatformEvent::Conference(ConferenceEvent::ParticipantLeft {
                                     room_number: rn.clone(),
                                     participant_id: pid.clone(),
+                                    migrated_to: None,
                                     tenant_id,
                                     timestamp: SystemTime::now(),
                                 });
@@ -6233,6 +6497,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                                 PlatformEvent::Conference(ConferenceEvent::ParticipantJoined {
                                     room_number: rn.clone(),
                                     participant_id: pid.clone(),
+                                    migrated_from: None,
                                     is_host: false,
                                     has_video: wait_video.is_some(),
                                     tenant_id,
@@ -6379,7 +6644,8 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                     last_refreshed: Instant::now(),
                     video: pending_video.take(),
                     content: pending_content.take(),
-                    joined_by_token: join.is_some(),
+                    joined_by_token: join.is_some()
+                        || migrate.as_ref().is_some_and(|t| t.token_join),
                     bfcp: bfcp_assignment.clone(),
                 },
             );
@@ -6418,11 +6684,34 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             }
         }
 
+        // A migrant arrives as they were: muted, at their gain, with
+        // their video off if a host had turned it off.
+        if let Some(ticket) = &migrate {
+            if ticket.muted {
+                if let Err(e) = room
+                    .set_participant_state(&participant_id, forge_mixer::ParticipantState::Muted)
+                {
+                    warn!(participant = %participant_id, error = %e, "Could not restore mute");
+                }
+            }
+            if (ticket.gain - 1.0).abs() > f32::EPSILON {
+                if let Err(e) = room.set_participant_gain(&participant_id, ticket.gain) {
+                    warn!(participant = %participant_id, error = %e, "Could not restore gain");
+                }
+            }
+            if !ticket.video {
+                if let Some(video) = room.video() {
+                    video.set_participant_video_enabled(&participant_id, false);
+                }
+            }
+        }
+
         // Publish join event
         self.sync_room_registry(&room_number);
         self.publish_event(ConferenceEvent::ParticipantJoined {
             room_number: room_number.clone(),
             participant_id: participant_id.clone(),
+            migrated_from: migrate.as_ref().map(|t| t.from_node.clone()),
             is_host,
             has_video: pending_video.is_some(),
             tenant_id,
@@ -7538,6 +7827,42 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             refer_start.elapsed(),
         );
         Ok(response)
+    }
+
+    /// The report on a REFER this node sent as it drained (phase 5): a
+    /// `message/sipfrag` NOTIFY from the caller's leg. 2xx means the
+    /// caller is on the other node, so this leg is dropped; a failure
+    /// leaves them here. Any NOTIFY on a session this node holds is
+    /// answered 200, whether or not it is migrating.
+    fn handle_notify(&self, request: &sip_core::Request) -> Result<sip_core::Response> {
+        let call_id = extract_call_id(request);
+        if !self.sessions.contains_key(&call_id) {
+            anyhow::bail!("No conference session for call_id: {}", call_id)
+        }
+        let body = String::from_utf8_lossy(request.body());
+        let status = migration::sipfrag_status(&body);
+        match status.and_then(|code| self.migrations.on_notify(&call_id, code)) {
+            Some(Notice::Succeeded) => {
+                info!(call_id = %call_id, "Participant is on the other node; dropping this leg");
+                if let Some(me) = self.me() {
+                    let call_id = call_id.clone();
+                    tokio::spawn(async move { me.finish_migration(&call_id).await });
+                } else {
+                    self.remove_session(&call_id);
+                }
+            }
+            Some(Notice::Failed(code)) => {
+                warn!(call_id = %call_id, code, "Migration failed; the caller stays here")
+            }
+            Some(Notice::Pending) => debug!(call_id = %call_id, "Migration in progress"),
+            None => {
+                debug!(call_id = %call_id, status = ?status, "NOTIFY on a session not migrating")
+            }
+        }
+        let local_sip_uri = self.parse_local_sip_uri();
+        let uas = UserAgentServer::new(local_sip_uri.clone(), local_sip_uri);
+        uas.create_ok(request, None)
+            .map_err(|e| anyhow::anyhow!("Failed to create 200 for NOTIFY: {}", e))
     }
 }
 
