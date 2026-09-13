@@ -15,7 +15,7 @@ The work lands in five phases. This document tracks what is in place.
 | 2 | Inter-node trunks (cascaded mixing) | ✅ v0.25.83 |
 | 3 | Cross-node control (kick, gain, lock, announce, end) | ✅ v0.25.84 |
 | 4 | Resilience (registry expiry, trunk teardown, draining, trunk SRTP) | ✅ v0.25.85 |
-| 5 | Participant migration off a draining node | 🟡 5a v0.25.146 (the node), 5b v0.25.147 (the call manager); 5c planned |
+| 5 | Participant migration off a draining node | ✅ 5a v0.25.146 (the node), 5b v0.25.147 (the call manager), 5c v0.25.148 (the WebRTC gateway) |
 
 Decisions (2026-09-02): full-mesh trunks between hosting nodes; new
 participants stay on a hosting node until it reaches a capacity setting;
@@ -802,6 +802,23 @@ CANCEL. It gains REFER, for its own sessions, when the `Refer-To` carries
 5. On failure, NOTIFY it and keep the old leg.
 
 The join page needs no change; the migration is invisible to it.
+
+*5c shipped 2026-09-13 (v0.25.148).* As planned. The relay takes a swap
+channel and replaces its SIP side between packets (the far end's SSRCs
+start over); the session keeps the shape the browser negotiated and
+builds the new offer from it with the same code the first INVITE used
+(`build_sip_offer`, now shared), so the new node is offered exactly the
+sections the browser has; the REFER is answered 202 (481 unknown, 491 a
+move already in flight, 480 not relaying yet) and the move runs on its
+own task; a REFER that is not a move is answered 603 — the gateway
+still does not transfer. The old leg's ports go back to the pool two
+seconds after the swap, once the relay has dropped its sockets. The
+sipfrag NOTIFY is `fcp_sip::conference_migration::report_refer_outcome`,
+shared with the call manager. Tested: the relay swap in process
+(`tests/relay.rs`: a real peer-connection pair, the SIP side swapped to
+a second far end under SRTP with a new payload type, audio both ways
+after it, nothing more at the old far end); the SIP side of the move
+by hand, as for 5b.
 
 ### Order and tests
 

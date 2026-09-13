@@ -17,12 +17,14 @@ use crate::relay::{
     SipLeg, SipVideoLeg,
 };
 use dashmap::DashMap;
+use fcp_core::MIGRATION_TICKET_HEADER;
 use fcp_media::{
     construct_offer, extract_telephone_event_pt, parse_content_sdes_crypto, parse_sdes_crypto,
     parse_sdp_codecs, parse_video_sdes_crypto, parse_video_sections, remote_audio_endpoint,
     AudioOfferSection, OfferOptions, SdesCryptoLine, SdpCodecInfo, SrtpOffer, VideoOffer,
     VideoOfferSection,
 };
+use fcp_sip::conference_migration::{report_refer_outcome, MigrationRefer};
 use fcp_sip::uac::SipUserAgentClient;
 use forge_api::routes::webrtc::WebRtcManager;
 use forge_core::AudioCodec;
@@ -35,7 +37,7 @@ use forge_webrtc::{
     TransportConfig, VideoConfig,
 };
 use serde::{Deserialize, Serialize};
-use sip_core::Headers;
+use sip_core::{Headers, SipUri};
 use sip_uac::integrated::CallHandle;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -307,6 +309,57 @@ pub struct Session {
     ports: Vec<PortPair>,
     stop: Arc<Notify>,
     stats: Arc<RelayStats>,
+    /// What the browser negotiated, kept so the SIP side can be offered
+    /// the same shape again to another node (phase 5c).
+    shape: Option<SipShape>,
+    /// The current SIP leg's port pairs, a subset of `ports`.
+    sip_ports: Vec<PortPair>,
+    /// Hands the running relay a new SIP leg.
+    swap_tx: Option<mpsc::Sender<SipLeg>>,
+    /// A move to another node is in flight.
+    migrating: bool,
+}
+
+/// The browser's side of the negotiation, as the SIP offer mirrors it.
+#[derive(Clone)]
+struct SipShape {
+    audio_codec: AudioCodec,
+    audio_pt: u8,
+    video: Option<NegotiatedVideo>,
+    content: Option<NegotiatedVideo>,
+}
+
+/// A SIP offer built for a shape: the SDP and what it was built from.
+struct SipOffer {
+    offer: String,
+    codec_name: &'static str,
+    audio_ports: PortPair,
+    audio_srtp: Option<SrtpOffer>,
+    video: Option<OfferedVideo>,
+    content: Option<OfferedVideo>,
+}
+
+impl SipOffer {
+    /// Every port pair the offer took from the pool.
+    fn ports(&self) -> Vec<PortPair> {
+        std::iter::once(self.audio_ports)
+            .chain(self.video.as_ref().map(|v| v.ports))
+            .chain(self.content.as_ref().map(|c| c.ports))
+            .collect()
+    }
+}
+
+/// How a REFER asking for a move was taken.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MigrationStart {
+    /// The move is under way; 202.
+    Accepted,
+    /// No session on that Call-ID.
+    Unknown,
+    /// A move is already in flight.
+    Busy,
+    /// The session is not relaying yet, or is over.
+    NotReady,
 }
 
 impl Session {
@@ -643,6 +696,10 @@ impl SessionManager {
             ports: conn.ice_ports.into_iter().collect(),
             stop: Arc::new(Notify::new()),
             stats: Arc::new(RelayStats::default()),
+            shape: None,
+            sip_ports: Vec::new(),
+            swap_tx: None,
+            migrating: false,
         };
         let info = session.info();
         let session_token = session.session_token.clone();
@@ -747,92 +804,27 @@ impl SessionManager {
         }
 
         // 3. The SIP leg's ports, keys and offer.
-        let audio_ports = match self.ports.allocate().await {
-            Ok(p) => p,
-            Err(e) => {
-                self.finish(&session, &peer, Some(format!("no media ports: {e}")))
-                    .await;
-                return;
-            }
+        let shape = SipShape {
+            audio_codec,
+            audio_pt,
+            video: video.clone(),
+            content: content.clone(),
         };
-        session.write().await.ports.push(audio_ports);
-        // A port pair and, under SRTP, a key per video section offered.
-        let mut offered_video = None;
-        let mut offered_content = None;
-        if let Some(v) = video.clone() {
-            match self.ports.allocate().await {
-                Ok(ports) => {
-                    session.write().await.ports.push(ports);
-                    offered_video = Some(OfferedVideo {
-                        negotiated: v,
-                        ports,
-                        srtp: self.cfg.srtp.then(|| SrtpOffer::generate().ok()).flatten(),
-                    });
-                }
-                Err(e) => {
-                    warn!(session = %id, error = %e, "no ports for video; joining audio-only")
-                }
-            }
-        }
-        if let (Some(_), Some(c)) = (&offered_video, content.clone()) {
-            match self.ports.allocate().await {
-                Ok(ports) => {
-                    session.write().await.ports.push(ports);
-                    offered_content = Some(OfferedVideo {
-                        negotiated: c,
-                        ports,
-                        srtp: self.cfg.srtp.then(|| SrtpOffer::generate().ok()).flatten(),
-                    });
-                }
-                Err(e) => {
-                    warn!(session = %id, error = %e, "no ports for a shared screen; joining without one")
-                }
-            }
-        }
-        let audio_srtp = if self.cfg.srtp {
-            SrtpOffer::generate().ok()
-        } else {
-            None
-        };
-        let codec_name = audio_codec_name(audio_codec);
-        let sip_codecs = [SdpCodecInfo {
-            payload_type: audio_pt,
-            encoding_name: codec_name.to_string(),
-            clock_rate: 8000,
-        }];
-        fn section_of(o: &OfferedVideo) -> VideoOfferSection<'_> {
-            VideoOfferSection {
-                rtp_port: o.ports.rtp_port,
-                payload_type: o.negotiated.payload_type,
-                codec: o.negotiated.codec,
-                fmtp: o.negotiated.fmtp.as_deref(),
-                feedback: true,
-                srtp: o.srtp.as_ref().map(|s| &s.sdp),
-            }
-        }
-        let video_section = offered_video.as_ref().map(section_of);
-        let content_section = offered_content.as_ref().map(section_of);
-        let offer = match construct_offer(&OfferOptions {
-            server_ip: &self.cfg.public_ip,
-            origin_id: &id[5..13.min(id.len())],
-            session_name: "fcp-webrtc-gw",
-            audio: AudioOfferSection {
-                rtp_port: audio_ports.rtp_port,
-                codecs: &sip_codecs,
-                telephone_event: Some((101, 8000)),
-                srtp: audio_srtp.as_ref().map(|s| &s.sdp),
-                ptime_ms: Some(20),
-            },
-            video: video_section,
-            content: content_section,
-        }) {
+        let sip_offer = match self.build_sip_offer(&id, &shape).await {
             Ok(o) => o,
-            Err(e) => {
-                self.finish(&session, &peer, Some(format!("offer: {e}")))
-                    .await;
+            Err(why) => {
+                self.finish(&session, &peer, Some(why)).await;
                 return;
             }
         };
+        {
+            let mut s = session.write().await;
+            s.ports.extend(sip_offer.ports());
+            s.sip_ports = sip_offer.ports();
+            s.shape = Some(shape);
+        }
+        let codec_name = sip_offer.codec_name;
+        let offer = sip_offer.offer.clone();
 
         // 4. Where to, and with what headers.
         let (target, headers) = match self.target_for(&session, video.as_ref()).await {
@@ -851,8 +843,8 @@ impl SessionManager {
             session = %id,
             target = %target,
             codec = codec_name,
-            video = offered_video.is_some(),
-            content = offered_content.is_some(),
+            video = sip_offer.video.is_some(),
+            content = sip_offer.content.is_some(),
             "sending INVITE"
         );
         let handle = match self
@@ -914,10 +906,10 @@ impl SessionManager {
             .open_sip_leg(
                 &answer,
                 codec_name,
-                audio_ports,
-                audio_srtp,
-                offered_video,
-                offered_content,
+                sip_offer.audio_ports,
+                sip_offer.audio_srtp,
+                sip_offer.video,
+                sip_offer.content,
             )
             .await
         {
@@ -974,7 +966,10 @@ impl SessionManager {
             },
             inactivity_timeout: self.cfg.inactivity_timeout,
         };
-        let end = run_relay(browser, plan.leg, stats, stop).await;
+        let (swap_tx, swap_rx) = mpsc::channel(1);
+        session.write().await.swap_tx = Some(swap_tx);
+        let end = run_relay(browser, plan.leg, stats, stop, swap_rx).await;
+        session.write().await.swap_tx = None;
         log_relay_end(&id, &end);
         self.by_sip_call_id.remove(&sip_call_id);
         let hung_up_here = session.read().await.is_over();
@@ -1018,6 +1013,375 @@ impl SessionManager {
                     )),
                 }
             }
+        }
+    }
+
+    /// The SIP side's ports, keys and offer for a shape. Audio must get
+    /// its ports; a video section that cannot is left out. On `Err`
+    /// nothing stays allocated.
+    async fn build_sip_offer(&self, id: &str, shape: &SipShape) -> Result<SipOffer, String> {
+        let audio_ports = self
+            .ports
+            .allocate()
+            .await
+            .map_err(|e| format!("no media ports: {e}"))?;
+        // A port pair and, under SRTP, a key per video section offered.
+        let mut offered_video = None;
+        let mut offered_content = None;
+        if let Some(v) = shape.video.clone() {
+            match self.ports.allocate().await {
+                Ok(ports) => {
+                    offered_video = Some(OfferedVideo {
+                        negotiated: v,
+                        ports,
+                        srtp: self.cfg.srtp.then(|| SrtpOffer::generate().ok()).flatten(),
+                    });
+                }
+                Err(e) => {
+                    warn!(session = %id, error = %e, "no ports for video; joining audio-only")
+                }
+            }
+        }
+        if let (Some(_), Some(c)) = (&offered_video, shape.content.clone()) {
+            match self.ports.allocate().await {
+                Ok(ports) => {
+                    offered_content = Some(OfferedVideo {
+                        negotiated: c,
+                        ports,
+                        srtp: self.cfg.srtp.then(|| SrtpOffer::generate().ok()).flatten(),
+                    });
+                }
+                Err(e) => {
+                    warn!(session = %id, error = %e, "no ports for a shared screen; joining without one")
+                }
+            }
+        }
+        let audio_srtp = if self.cfg.srtp {
+            SrtpOffer::generate().ok()
+        } else {
+            None
+        };
+        let codec_name = audio_codec_name(shape.audio_codec);
+        let sip_codecs = [SdpCodecInfo {
+            payload_type: shape.audio_pt,
+            encoding_name: codec_name.to_string(),
+            clock_rate: 8000,
+        }];
+        fn section_of(o: &OfferedVideo) -> VideoOfferSection<'_> {
+            VideoOfferSection {
+                rtp_port: o.ports.rtp_port,
+                payload_type: o.negotiated.payload_type,
+                codec: o.negotiated.codec,
+                fmtp: o.negotiated.fmtp.as_deref(),
+                feedback: true,
+                srtp: o.srtp.as_ref().map(|s| &s.sdp),
+            }
+        }
+        let video_section = offered_video.as_ref().map(section_of);
+        let content_section = offered_content.as_ref().map(section_of);
+        let built = construct_offer(&OfferOptions {
+            server_ip: &self.cfg.public_ip,
+            origin_id: &id[5..13.min(id.len())],
+            session_name: "fcp-webrtc-gw",
+            audio: AudioOfferSection {
+                rtp_port: audio_ports.rtp_port,
+                codecs: &sip_codecs,
+                telephone_event: Some((101, 8000)),
+                srtp: audio_srtp.as_ref().map(|s| &s.sdp),
+                ptime_ms: Some(20),
+            },
+            video: video_section,
+            content: content_section,
+        });
+        let offer = match built {
+            Ok(o) => o,
+            Err(e) => {
+                self.ports.deallocate(audio_ports).await;
+                for p in offered_video
+                    .iter()
+                    .chain(offered_content.iter())
+                    .map(|o| o.ports)
+                {
+                    self.ports.deallocate(p).await;
+                }
+                return Err(format!("offer: {e}"));
+            }
+        };
+        Ok(SipOffer {
+            offer,
+            codec_name,
+            audio_ports,
+            audio_srtp,
+            video: offered_video,
+            content: offered_content,
+        })
+    }
+
+    // ------------------------------------------------------------ migration
+
+    /// The conference node this session is on is draining and sent a
+    /// REFER naming another node, with a ticket
+    /// (`docs/DISTRIBUTED_CONFERENCING.md`, phase 5c). Start the move —
+    /// it runs on its own task, the REFER being answered at once — and say
+    /// how the REFER is to be answered.
+    pub async fn begin_migration(
+        self: &Arc<Self>,
+        sip_call_id: &str,
+        refer: MigrationRefer,
+    ) -> MigrationStart {
+        let Some(id) = self
+            .by_sip_call_id
+            .get(sip_call_id)
+            .map(|e| e.value().clone())
+        else {
+            return MigrationStart::Unknown;
+        };
+        let Some(session) = self.sessions.get(&id).map(|e| e.value().clone()) else {
+            return MigrationStart::Unknown;
+        };
+        let old_dialog = {
+            let mut s = session.write().await;
+            if s.state != SessionState::Connected
+                || s.swap_tx.is_none()
+                || s.shape.is_none()
+                || s.is_over()
+            {
+                return MigrationStart::NotReady;
+            }
+            let Some(dialog) = s.dialog.clone() else {
+                return MigrationStart::NotReady;
+            };
+            if s.migrating {
+                return MigrationStart::Busy;
+            }
+            s.migrating = true;
+            dialog
+        };
+        info!(session = %id, to = %refer.target.as_str(), "moving the SIP leg to another node");
+        let mgr = Arc::clone(self);
+        tokio::spawn(async move {
+            mgr.migrate(session, old_dialog, refer).await;
+        });
+        MigrationStart::Accepted
+    }
+
+    /// The move, then its report to the old node: a sipfrag NOTIFY on the
+    /// old leg, and on success a BYE for it. The browser sees none of it.
+    async fn migrate(
+        self: Arc<Self>,
+        session: Arc<RwLock<Session>>,
+        old_dialog: sip_dialog::Dialog,
+        refer: MigrationRefer,
+    ) {
+        let id = session.read().await.id.clone();
+        let outcome = self.try_migrate(&session, &refer).await;
+        session.write().await.migrating = false;
+        let (code, reason) = match &outcome {
+            Ok(()) => {
+                info!(session = %id, "SIP leg moved to the new node");
+                (200, "OK")
+            }
+            Err((code, reason, why)) => {
+                warn!(session = %id, code, %why, "SIP leg not moved; staying on the old node");
+                (*code, *reason)
+            }
+        };
+        let mut dialog = old_dialog.clone();
+        if let Ok(local) = SipUri::parse(&self.cfg.local_uri) {
+            if let Err(e) = report_refer_outcome(&self.uac, &local, &mut dialog, code, reason).await
+            {
+                debug!(session = %id, error = %e, "refer NOTIFY failed");
+            }
+        }
+        if outcome.is_ok() {
+            // The old node's own BYE may cross this one; each side answers
+            // 481 to a dialog it no longer holds.
+            if let Err(e) = tokio::time::timeout(Duration::from_secs(10), self.uac.bye(&old_dialog))
+                .await
+                .map_err(|_| "unanswered".to_string())
+                .and_then(|r| r.map_err(|e| e.to_string()))
+            {
+                debug!(session = %id, error = %e, "BYE to the old node failed");
+            }
+        }
+    }
+
+    /// Dial the new node with the same shape the browser has, open the
+    /// leg from its answer, hand it to the relay, and take over the
+    /// session's SIP side. `Err` carries what the old node is told.
+    async fn try_migrate(
+        &self,
+        session: &Arc<RwLock<Session>>,
+        refer: &MigrationRefer,
+    ) -> Result<(), (u16, &'static str, String)> {
+        let (id, shape, display_name, old_sip_call_id) = {
+            let s = session.read().await;
+            let display_name = match &s.kind {
+                SessionKind::Room { display_name, .. } => Some(display_name.clone()),
+                SessionKind::Call { .. } => None,
+            };
+            (
+                s.id.clone(),
+                s.shape.clone(),
+                display_name,
+                s.sip_call_id.clone(),
+            )
+        };
+        let shape = shape.ok_or_else(|| (500, "Server Internal Error", "no shape".to_string()))?;
+        let sip_offer = self
+            .build_sip_offer(&id, &shape)
+            .await
+            .map_err(|why| (500, "Server Internal Error", why))?;
+        let new_ports = sip_offer.ports();
+        session
+            .write()
+            .await
+            .ports
+            .extend(new_ports.iter().copied());
+
+        let mut headers = Headers::new();
+        if let Some(name) = display_name {
+            if let Err(e) = headers.push(
+                "P-Asserted-Identity",
+                format!("\"{name}\" <{}>", self.cfg.local_uri),
+            ) {
+                {
+                    self.drop_new_leg_ports(session, &new_ports).await;
+                    return Err((500, "Server Internal Error", format!("header: {e}")));
+                }
+            }
+        }
+        if let Err(e) = headers.push(MIGRATION_TICKET_HEADER, refer.ticket.clone()) {
+            {
+                self.drop_new_leg_ports(session, &new_ports).await;
+                return Err((500, "Server Internal Error", format!("header: {e}")));
+            }
+        }
+        let target = refer.target.as_str().to_string();
+        let handle = match self
+            .uac
+            .invite_with_headers(&target, Some(&sip_offer.offer), headers)
+            .await
+        {
+            Ok(h) => Arc::new(h),
+            Err(e) => {
+                self.drop_new_leg_ports(session, &new_ports).await;
+                return Err((503, "Service Unavailable", format!("INVITE: {e}")));
+            }
+        };
+        while handle.await_provisional().await.is_some() {}
+        let final_response =
+            match tokio::time::timeout(self.cfg.invite_timeout, handle.await_final()).await {
+                Ok(Ok(r)) => r,
+                Ok(Err(e)) => {
+                    self.drop_new_leg_ports(session, &new_ports).await;
+                    return Err((503, "Service Unavailable", format!("INVITE failed: {e}")));
+                }
+                Err(_) => {
+                    let _ = handle.cancel().await;
+                    {
+                        self.drop_new_leg_ports(session, &new_ports).await;
+                        return Err((408, "Request Timeout", "no answer from the new node".into()));
+                    }
+                }
+            };
+        let code = final_response.start_line().code();
+        if !(200..300).contains(&code) {
+            let reason = match code {
+                403 => "Forbidden",
+                503 => "Service Unavailable",
+                _ => "Not Acceptable Here",
+            };
+            {
+                self.drop_new_leg_ports(session, &new_ports).await;
+                return Err((code, reason, format!("the new node answered {code}")));
+            }
+        }
+        let dialog = handle.dialog.read().await.clone();
+        let new_sip_call_id = dialog.id().call_id().to_string();
+        let answer = String::from_utf8_lossy(final_response.body()).to_string();
+        let plan = match self
+            .open_sip_leg(
+                &answer,
+                sip_offer.codec_name,
+                sip_offer.audio_ports,
+                sip_offer.audio_srtp,
+                sip_offer.video,
+                sip_offer.content,
+            )
+            .await
+        {
+            Ok(p) => p,
+            Err(why) => {
+                let _ = self.uac.bye(&dialog).await;
+                {
+                    self.drop_new_leg_ports(session, &new_ports).await;
+                    return Err((488, "Not Acceptable Here", why));
+                }
+            }
+        };
+
+        // Hand the relay the new leg, if it is still running.
+        let swap_tx = {
+            let s = session.read().await;
+            if s.is_over() {
+                None
+            } else {
+                s.swap_tx.clone()
+            }
+        };
+        let Some(swap_tx) = swap_tx else {
+            let _ = self.uac.bye(&dialog).await;
+            {
+                self.drop_new_leg_ports(session, &new_ports).await;
+                return Err((481, "Call Gone", "the session ended during the move".into()));
+            }
+        };
+        if swap_tx.send(plan.leg).await.is_err() {
+            let _ = self.uac.bye(&dialog).await;
+            {
+                self.drop_new_leg_ports(session, &new_ports).await;
+                return Err((481, "Call Gone", "the relay ended during the move".into()));
+            }
+        }
+
+        // The session's SIP side is the new leg now.
+        let old_ports = {
+            let mut s = session.write().await;
+            s.dialog = Some(dialog);
+            s.call_handle = Some(handle);
+            s.sip_call_id = Some(new_sip_call_id.clone());
+            s.sip_target = Some(target);
+            s.audio_codec = Some(plan.audio_codec);
+            s.srtp = plan.srtp;
+            s.video = plan.video;
+            s.content = plan.content;
+            let old = std::mem::replace(&mut s.sip_ports, new_ports);
+            s.ports.retain(|p| !old.contains(p));
+            old
+        };
+        self.by_sip_call_id.insert(new_sip_call_id, id.clone());
+        if let Some(old) = old_sip_call_id {
+            self.by_sip_call_id.remove(&old);
+        }
+        // The relay drops the old leg's sockets as it swaps; give that a
+        // moment before the ports go back to the pool.
+        let pool = self.ports.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            for p in old_ports {
+                pool.deallocate(p).await;
+            }
+        });
+        Ok(())
+    }
+
+    /// A move that failed after its ports were taken: give them back and
+    /// forget them.
+    async fn drop_new_leg_ports(&self, session: &Arc<RwLock<Session>>, ports: &[PortPair]) {
+        session.write().await.ports.retain(|p| !ports.contains(p));
+        for p in ports {
+            self.ports.deallocate(*p).await;
         }
     }
 

@@ -15,6 +15,12 @@
 //!
 //! The SIP side is plain RTP or SDES-SRTP per section; the browser side's
 //! DTLS-SRTP is inside the peer connection.
+//!
+//! The SIP leg can be **swapped** while the relay runs: when the
+//! conference node the session is on drains, the session dials another
+//! node and hands the relay the new leg over a channel
+//! (`docs/DISTRIBUTED_CONFERENCING.md`, phase 5c). The relay takes it
+//! between packets; the browser side is untouched.
 
 use bytes::{Bytes, BytesMut};
 use forge_rtp::rtcp::{PayloadFeedback, PsFeedback, RtpFeedback, TransportFeedback};
@@ -283,13 +289,16 @@ fn ssrc_of(packet: &[u8]) -> Option<u32> {
         .then(|| u32::from_be_bytes([packet[8], packet[9], packet[10], packet[11]]))
 }
 
-/// Run the relay until one side ends it or `stop` is signalled.
+/// Run the relay until one side ends it or `stop` is signalled. A leg
+/// arriving on `swap` replaces the SIP side from then on.
 pub async fn run_relay(
     mut browser: BrowserLeg,
-    sip: SipLeg,
+    mut sip: SipLeg,
     stats: Arc<RelayStats>,
     stop: Arc<Notify>,
+    swap: mpsc::Receiver<SipLeg>,
 ) -> RelayEnd {
+    let mut swap = Some(swap);
     // What each side sends each video section with, learned from the
     // first packet each way, so feedback can be re-addressed.
     let mut browser_video_ssrc: Option<u32> = None;
@@ -305,6 +314,14 @@ pub async fn run_relay(
     loop {
         tokio::select! {
             _ = stop.notified() => return RelayEnd::Stopped,
+
+            new_leg = next_swap(&mut swap) => {
+                // The far end's SSRCs start over with the new leg.
+                sip = new_leg;
+                sip_video_ssrc = None;
+                sip_content_ssrc = None;
+                debug!("SIP leg swapped; relaying to the new far end");
+            }
 
             _ = liveness.tick() => {
                 if last_browser_activity.elapsed() > browser.inactivity_timeout {
@@ -460,6 +477,18 @@ pub async fn run_relay(
             }
         }
     }
+}
+
+/// The next SIP leg to swap in; never, once the sender is gone (the
+/// session keeps the leg it has).
+async fn next_swap(swap: &mut Option<mpsc::Receiver<SipLeg>>) -> SipLeg {
+    if let Some(rx) = swap {
+        if let Some(leg) = rx.recv().await {
+            return leg;
+        }
+        *swap = None;
+    }
+    std::future::pending().await
 }
 
 fn is_remb(p: &RtcpPacket) -> bool {
