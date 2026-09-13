@@ -2121,11 +2121,15 @@ room to stop encoding for it. On the box, `gpu-box test` now builds with
 `ffprobe` when the machine has one — run on the L4 the same day: two
 seconds of room came to 32 H.264 frames and 100 Opus frames in 330 KB
 with nothing dropped, and `ffprobe` read the streams as `h264` and
-`opus`. Follow-up for forge-mp4: the
-per-track durations (`tkhd`, `mdhd`) are written as zero and not
-patched on finish — players take the movie duration and the fragments,
-so nothing is wrong on playback, but a tool reading the track header
-sees zero.
+`opus`. A follow-up recorded here on the day — that the per-track
+durations (`tkhd`, `mdhd`) were written as zero and not patched on
+finish — turned out to be the reader's fault, not the writer's: the
+writer patched all three headers, and forge-mp4's `read` took the
+`tkhd` duration from the reserved field four bytes before it. Fixed
+2026-09-13 (forge-media `v2026.09.13`, forge-mp4 0.1.1; FCP
+v0.25.144): the reader reads both headers, `TrackInfo::media_duration`
+carries the `mdhd`'s, and the writer's test asserts them on a finished
+file.
 
 **What this phase does not do.** AAC (decision 3); MP4 for VP8/VP9;
 transcoding an existing WebM to MP4 (a job, not a sink); SIPREC or
