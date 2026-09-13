@@ -7,7 +7,7 @@ mixes its local participants and exchanges one mixed stream per peer node,
 so a room with participants on three nodes costs three extra audio streams,
 not three hundred.
 
-The work lands in four phases. This document tracks what is in place.
+The work lands in five phases. This document tracks what is in place.
 
 | Phase | What | Status |
 |---|---|---|
@@ -15,6 +15,7 @@ The work lands in four phases. This document tracks what is in place.
 | 2 | Inter-node trunks (cascaded mixing) | ✅ v0.25.83 |
 | 3 | Cross-node control (kick, gain, lock, announce, end) | ✅ v0.25.84 |
 | 4 | Resilience (registry expiry, trunk teardown, draining, trunk SRTP) | ✅ v0.25.85 |
+| 5 | Participant migration off a draining node | 📐 planned 2026-09-13 |
 
 Decisions (2026-09-02): full-mesh trunks between hosting nodes; new
 participants stay on a hosting node until it reaches a capacity setting;
@@ -555,6 +556,219 @@ nodes. Since v0.25.127:
 
 - Participant migration off a draining node (REFER back into the room, or
   a call-manager-side re-INVITE) — callers on a node that goes away redial.
+  Phase 5, below.
 - Registry and membership when Redis itself is unreachable: every node
   keeps what it has (trunks are left as they are on a registry read
   failure) and reconciles when Redis returns.
+
+## Phase 5: participant migration
+
+Phase 4's drain keeps a node's callers until they leave on their own or
+`drain_wait_secs` runs out, then hangs them up; they redial and land on a
+surviving node. Phase 5 moves them instead. A drained node asks whoever
+holds each caller's leg to re-place the call on another node, hands that
+node everything it needs to admit the caller as the same participant, and
+drops its own leg once the new one is up. From the caller's side the room
+goes quiet for a moment and comes back; nobody redials, nobody re-enters a
+PIN, a locked room does not lock them out.
+
+### Who holds a caller's leg
+
+A conference node's SIP peer is rarely the phone. The legs a draining node
+holds, and what each needs:
+
+| Leg | Peer | How it re-places |
+|---|---|---|
+| A SIP caller through the call manager (the common case) | the call manager's B2BUA B-leg | 5b: the B2BUA dials the new node as a fresh B-leg, re-INVITEs the caller with the new node's answer (or re-points the anchored media session), swaps legs |
+| A browser through the WebRTC gateway | the gateway's own SIP leg (it dials the node itself and relays the browser's media) | 5c: the gateway dials the new node, swaps the relay's SIP side underneath the browser; the browser sees nothing |
+| A SIP endpoint that dialed the node directly, or a dial-out leg | the endpoint | it follows the REFER as any transfer, if it supports REFER; otherwise it is hung up at the end of the drain as today |
+| An inter-node trunk (`__trunk__<peer>`) | a peer node | not migrated: the peers' reconcilers re-dial trunks as the registry changes |
+| A caller still in the waiting room | any of the above | not migrated: never admitted, hung up at the end of the drain |
+
+### The mechanism: REFER with a ticket
+
+The node sends each caller's leg an in-dialog **REFER** (RFC 3515) whose
+`Refer-To` names the room on a surviving node and carries a **migration
+ticket** as a URI header:
+
+```
+REFER sip:… SIP/2.0
+Refer-To: <sip:8000@10.0.0.21:5074?X-FCP-Migrate=eyJ2IjoxLCJ0ZW5…>
+Referred-By: <sip:conf-a@10.0.0.20:5074>
+Event: refer
+```
+
+The leg's holder dials the new node with `X-FCP-Migrate: <ticket>` as a
+request header — RFC 3261 §19.1.5's rule for URI headers, restricted to
+this one header (the URI-header channel is otherwise stripped, as
+`SipUri::without_uri_headers` does today, so nothing else can be smuggled
+through a `Refer-To`). It reports the outcome with the REFER's implicit
+subscription, a **NOTIFY** with a `message/sipfrag` body: `SIP/2.0 200 OK`
+once the new leg is answered, a failure code otherwise. On success it also
+BYEs the old leg; the draining node treats either the 2xx NOTIFY or the
+BYE as "gone to the new node".
+
+Why REFER and not a call-manager-side watch on `draining` in membership:
+the dialog is the one channel that reaches whoever holds the leg, whatever
+it is — the call manager, the gateway, a phone — and the draining node is
+the one party that knows which of its legs are callers. Nothing has to
+record, per call, which node a B-leg went to (the call manager keeps no
+such record today; the node lives only in the B-leg dialog's remote
+target). And a phone that understands REFER gets migration for free.
+
+### The ticket
+
+The ticket is what lets the new node admit the caller **as the participant
+they already were**, past every check a fresh caller would face. It is a
+JSON payload, base64url-encoded and signed with HMAC-SHA256 under the
+**`cluster.secret`** — the same shared secret that authenticates
+cross-node control (phase 3) — in the join token's wire form
+(`payload.signature`, `fcp_core::join_token`):
+
+| Claim | Meaning |
+|---|---|
+| `v` | ticket version, 1 |
+| `tenant`, `room` | the room; the new node takes both from the ticket, not the request |
+| `participant` | the participant id, kept across the move so operator tooling and events keep naming the same participant |
+| `name`, `caller_id` | display name and caller id as the old node had them |
+| `host` | moderator role (host PIN or a host join token on the old node) |
+| `muted`, `gain` | mixer state, reapplied on the new node |
+| `video` | whether the participant's video was on (the new node's answer negotiates video as usual; this restores the on/off control) |
+| `token_join` | the caller came through the WebRTC gateway (`joined_by_token`), so the new node speaks the gateway's floor `INFO` |
+| `from` | the draining node's id, for the events |
+| `exp`, `nonce` | 60 s expiry; the nonce is remembered by the admitting node for that long so a ticket admits once |
+
+A node with no `cluster.secret` neither issues nor accepts tickets:
+without it there is no cross-node trust, and its drain hangs callers up as
+in phase 4. Why not the join token: it is a browser-facing credential under
+a different secret (`join_secret`, which may be unset), it names a room
+rather than a participant, and it deliberately does not bypass the lock or
+the waiting room.
+
+What the ticket **bypasses** on the new node: PIN collection, the lock
+and wait-for-moderator. What it **does not** bypass: the draining refusal
+(placement never picks a draining node, and a node that started draining
+in between refuses the ticket like any other caller), the node's own
+`max_participants_per_node`, the per-source rate limit, the codec check,
+and the video budget — a room's video that does not fit is refused with
+503 exactly as for a fresh join. Placement already weighed capacity and
+budget when it chose the node, so a refusal is the rare case; the caller
+then stays on the old node until the drain hangs them up.
+
+### On the draining node
+
+The shutdown sequence gains one step between "refuse new callers" and
+"wait for callers to leave":
+
+1. Advertise `draining`, refuse new callers (503) — as today.
+2. **Migrate.** For every countable participant (not a trunk, not in the
+   waiting room), choose a target with `choose_conference_node` — the same
+   rule the call manager applies, with the room's hosts from the registry
+   (the draining node is excluded by the rule itself), live membership,
+   capacity 0 (a hosting node is always preferred, so the room stays on as
+   few nodes as possible), the draining node's own region as the caller's
+   proxy (the caller was placed here because here was local, or nothing
+   was), and the meeting's video need. No target — no other live
+   conference node — means no migration: the drain goes on as in phase 4.
+   Otherwise mint the ticket, send the REFER (32 at a time, each bounded
+   to 5 s like the shutdown BYEs), and mark the participant *migrating*
+   with a deadline of `cluster.migration_timeout_secs` (default 15).
+   A REFER that is rejected (a phone answering 501, a gateway that predates
+   5c answering 405) leaves the participant where they are.
+3. **Resolve.** A migrating participant leaves when a NOTIFY with a 2xx
+   sipfrag arrives (the node then BYEs the leg itself) or when the peer
+   BYEs first; either way the leave is a migration, not a hangup. A NOTIFY
+   with a final non-2xx, or the deadline, leaves them in place. The step
+   ends when every migration has resolved, or at the deadline.
+4. Wait `drain_wait_secs` for whoever remains, hang them up, leave the
+   registry — as today.
+
+Media continuity: the old node keeps mixing for a migrating participant
+until the leg is dropped, and the new node starts mixing them when their
+RTP arrives, so the gap is the caller's re-INVITE (5b) or the relay's
+swap (5c). While both nodes hold the participant the registry shows both
+hosting the room, and the reconcilers may briefly trunk them together;
+the caller sends media to one node at a time, so nothing doubles.
+
+State that **moves** with the participant: identity, role, mute, gain,
+video on/off. State that **does not**: a screen share (the content floor
+is released when the old leg drops; the presenter shares again), BFCP (the
+room system re-associates on the new SDP, if it does), a pin or spotlight
+on the participant (room-wide layout is already on every node; a
+per-participant pin is not), and a **recording** running on the draining
+node, which stops at shutdown as today — the operator restarts it on the
+new host.
+
+Events: `participant_left` gains `migrated_to` (the target node id) and
+`participant_joined` gains `migrated_from`; consumers that count joins and
+leaves see one of each, labelled. `GET /status` reports `draining`.
+
+### 5b: the call manager
+
+The B2BUA already relays a REFER from either leg to the other, which is
+the wrong thing for this one: the phone would be told to dial a conference
+node directly, past the call manager. A REFER on the **B-leg of a
+conference call** whose `Refer-To` carries `X-FCP-Migrate` is instead
+executed by the B2BUA itself:
+
+1. Answer 202. Mark the call migrating; a second REFER while one is in
+   flight is answered 491.
+2. Dial `sip:<room>@<host>` with `X-FCP-Migrate` as a header, offering the
+   caller's SDP — the A-leg's last offer when media is passed through
+   (the normal case for conference calls), the media session's B-side
+   offer when anchored.
+3. On the new node's 2xx: pass-through media re-INVITEs the A-leg with the
+   new node's answer so the phone sends to the new node; anchored media
+   re-points the session's B side (`update_session_b_leg`) and the phone
+   sees nothing. If the A-leg re-INVITE fails, BYE the new leg and report
+   failure.
+4. Swap the call's B-leg (dialog, SDP, handle, the `sip_call_id_map`
+   entry), NOTIFY `200 OK` on the old leg, BYE it. The old node's own BYE
+   may cross; each side answers 481 to a dialog it no longer holds and
+   goes on.
+5. On the new node's failure: NOTIFY it, keep everything as it was; the
+   old node hangs up at the end of its drain, as today.
+
+To know that a call *is* a conference call, `Call` records the room it was
+routed to (`conference_room`), set on the three routing branches that
+produce a conference target. Migration is on by default and can be turned
+off with `[b2bua] conference_migration = false`, in which case the REFER
+is refused (603) and the caller is hung up at the end of the drain. It
+does not go through the transfer policy (`transfer`, `allow_refer`): it is
+not a transfer the caller asked for.
+
+### 5c: the WebRTC gateway
+
+The gateway refuses every inbound request but BYE, INFO, OPTIONS and
+CANCEL. It gains REFER, for its own sessions, when the `Refer-To` carries
+`X-FCP-Migrate`:
+
+1. Answer 202.
+2. Build a fresh SIP side — new port pairs, new SDES keys, the same
+   sections the browser has (audio, camera, screen) — and dial the new node
+   with the ticket, exactly as `drive` dials the first node.
+3. On 2xx, open the new `SipLeg` from the answer and hand it to the running
+   relay over a channel; the relay swaps its SIP side between packets
+   (sockets, SRTP contexts, payload types). The browser's PeerConnection,
+   its SDP and its tracks are untouched.
+4. Update the session (`sip_call_id`, `dialog`, the `by_sip_call_id`
+   index), NOTIFY `200 OK` and BYE the old leg, release the old ports.
+5. On failure, NOTIFY it and keep the old leg.
+
+The join page needs no change; the migration is invisible to it.
+
+### Order and tests
+
+5a first — the ticket, the REFER on drain, the NOTIFY handling, admission
+on a ticket, the events — and it is complete on its own for endpoints
+that follow REFER; 5b then makes it real for every SIP caller through the
+call manager; 5c for browsers. One PR each.
+
+Tests: the ticket's mint/verify/expiry/replay and the drain planner (which
+participant goes where, given a registry and membership) are unit tests;
+the REFER → NOTIFY/BYE resolution is tested against a siphon-rs test UAC
+playing the leg's holder. The end-to-end move across two nodes needs
+Redis for the registry and a meeting in Postgres, so it runs where the
+service-gated suites do (`FCP_TEST_REDIS_URL`, `FCP_TEST_DATABASE_URL`):
+two conference nodes, a caller joined on the first, SIGTERM, the caller
+admitted on the second as the same participant with the room locked.
