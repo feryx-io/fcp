@@ -13,8 +13,12 @@
 //! parts with none: reading the `Refer-To`, deciding whether the caller's
 //! answer moved its media, and the sipfrag body.
 
+use crate::uac::SipUserAgentClient;
 use fcp_core::MIGRATION_TICKET_HEADER;
 use sip_core::SipUri;
+use sip_dialog::Dialog;
+use std::time::Duration;
+use tracing::debug;
 
 /// What a migration `Refer-To` says.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,6 +87,49 @@ pub fn media_endpoint_changed(offered: &str, answered: &str) -> bool {
 /// The `message/sipfrag` body reporting a REFER's outcome (RFC 3515).
 pub fn sipfrag(code: u16, reason: &str) -> String {
     format!("SIP/2.0 {code} {reason}\r\n")
+}
+
+/// How long the report may take to be answered.
+const NOTIFY_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Report a REFER's outcome on the dialog it arrived in: the implicit
+/// `refer` subscription's one NOTIFY (RFC 3515 §2.4.5), a sipfrag body
+/// with `code` and `Subscription-State: terminated`. `local_uri` is what
+/// the notifier signs as. Returns the far end's status.
+pub async fn report_refer_outcome(
+    uac: &SipUserAgentClient,
+    local_uri: &SipUri,
+    dialog: &mut Dialog,
+    code: u16,
+    reason: &str,
+) -> anyhow::Result<u16> {
+    let id = dialog.id().clone();
+    let sub_id =
+        sip_dialog::SubscriptionId::new(id.call_id(), id.remote_tag(), id.local_tag(), "refer")
+            .map_err(|e| anyhow::anyhow!("refer subscription id: {e}"))?;
+    let mut sub = sip_dialog::Subscription::unchecked_new(
+        sub_id,
+        sip_dialog::SubscriptionState::Terminated,
+        dialog.local_uri().clone(),
+        dialog.remote_uri().clone(),
+        dialog.remote_target().clone(),
+        Duration::from_secs(0),
+        dialog.local_cseq(),
+        0,
+    );
+    let uas = sip_uas::UserAgentServer::new(local_uri.clone(), local_uri.clone());
+    let request = uas
+        .create_notify_sipfrag(&mut sub, code, reason)
+        .map_err(|e| anyhow::anyhow!("refer NOTIFY: {e}"))?;
+    let response = tokio::time::timeout(
+        NOTIFY_TIMEOUT,
+        uac.inner().send_in_dialog_non_invite(dialog, request),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("refer NOTIFY unanswered"))??;
+    let status = response.start_line().code();
+    debug!(code, status, "refer NOTIFY answered");
+    Ok(status)
 }
 
 #[cfg(test)]

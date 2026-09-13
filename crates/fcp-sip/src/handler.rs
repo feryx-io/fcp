@@ -9703,7 +9703,7 @@ impl SipMessageHandler {
         );
         let ctx = ConferenceMigration {
             uac,
-            uas: Arc::clone(&self.uas),
+            local_uri: self.uas.local_uri.clone(),
             call_manager: self.call_manager.clone(),
             dialog_manager: Arc::clone(&self.dialog_manager),
             session_timer_manager: Arc::clone(&self.session_timer_manager),
@@ -13017,7 +13017,8 @@ fn start_session_timer_for(
 /// task after the REFER is answered.
 struct ConferenceMigration {
     uac: Arc<SipUserAgentClient>,
-    uas: Arc<sip_uas::UserAgentServer>,
+    /// What the NOTIFY is signed as.
+    local_uri: sip_core::SipUri,
     call_manager: Arc<fcp_b2bua_core::CallManager>,
     dialog_manager: Arc<DialogManager>,
     session_timer_manager: Arc<SessionTimerManager>,
@@ -13288,52 +13289,16 @@ impl ConferenceMigration {
     /// on the old leg (RFC 3515 §2.4.5), `Subscription-State: terminated`.
     async fn notify_old_node(&self, code: u16, reason: &str) {
         let mut dialog = self.old_b_dialog.clone();
-        let id = dialog.id().clone();
-        let sub_id = match sip_dialog::SubscriptionId::new(
-            id.call_id(),
-            id.remote_tag(),
-            id.local_tag(),
-            "refer",
-        ) {
-            Ok(id) => id,
-            Err(e) => {
-                warn!(call_id = %self.call_id, error = %e, "No refer subscription id for NOTIFY");
-                return;
-            }
-        };
-        let mut sub = sip_dialog::Subscription::unchecked_new(
-            sub_id,
-            sip_dialog::SubscriptionState::Terminated,
-            dialog.local_uri().clone(),
-            dialog.remote_uri().clone(),
-            dialog.remote_target().clone(),
-            Duration::from_secs(0),
-            dialog.local_cseq(),
-            0,
-        );
-        let request = match self.uas.create_notify_sipfrag(&mut sub, code, reason) {
-            Ok(r) => r,
-            Err(e) => {
-                warn!(call_id = %self.call_id, error = %e, "Could not build the refer NOTIFY");
-                return;
-            }
-        };
-        match tokio::time::timeout(
-            MIGRATION_STEP_TIMEOUT,
-            self.uac
-                .inner()
-                .send_in_dialog_non_invite(&mut dialog, request),
+        if let Err(e) = crate::conference_migration::report_refer_outcome(
+            &self.uac,
+            &self.local_uri,
+            &mut dialog,
+            code,
+            reason,
         )
         .await
         {
-            Ok(Ok(r)) => debug!(
-                call_id = %self.call_id,
-                code,
-                status = r.start_line().code(),
-                "refer NOTIFY answered"
-            ),
-            Ok(Err(e)) => debug!(call_id = %self.call_id, code, error = %e, "refer NOTIFY failed"),
-            Err(_) => debug!(call_id = %self.call_id, code, "refer NOTIFY unanswered"),
+            debug!(call_id = %self.call_id, code, error = %e, "refer NOTIFY failed");
         }
     }
 }

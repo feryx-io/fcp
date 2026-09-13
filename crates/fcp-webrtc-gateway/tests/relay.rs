@@ -265,7 +265,14 @@ async fn relay_case(srtp: bool, base_port: u16) {
     };
     let stats = Arc::new(RelayStats::default());
     let stop = Arc::new(Notify::new());
-    let relay = tokio::spawn(run_relay(browser_leg, sip, stats.clone(), stop.clone()));
+    let (_swap_tx, swap_rx) = mpsc::channel(1);
+    let relay = tokio::spawn(run_relay(
+        browser_leg,
+        sip,
+        stats.clone(),
+        stop.clone(),
+        swap_rx,
+    ));
 
     // Browser → far end: audio, a DTMF event, video.
     let br_audio = browser.sender().unwrap();
@@ -590,11 +597,13 @@ async fn relay_ends_when_the_browser_closes() {
         inactivity_timeout: Duration::from_secs(2),
     };
     let stop = Arc::new(Notify::new());
+    let (_swap_tx, swap_rx) = mpsc::channel(1);
     let relay = tokio::spawn(run_relay(
         browser_leg,
         sip,
         Arc::new(RelayStats::default()),
         stop,
+        swap_rx,
     ));
     // A video packet from the browser with no SIP video leg is dropped, not fatal.
     let vs = browser.video_sender().unwrap();
@@ -615,4 +624,106 @@ async fn relay_ends_when_the_browser_closes() {
         matches!(&end, RelayEnd::BrowserFailed(why) if why.contains("no media or RTCP")),
         "{end:?}"
     );
+}
+
+/// The SIP leg swapped under a running relay (phase 5c): the browser's
+/// audio goes to the new far end, the new far end's audio reaches the
+/// browser, and the old far end hears nothing more.
+#[tokio::test]
+async fn the_sip_leg_can_be_swapped_under_the_browser() {
+    init_tracing();
+    let (gateway, browser, gw_events, mut br_events) = connected_pair().await;
+    let (_, browser_audio_pt) = gateway.negotiated_codec();
+    let (relay_audio, far_audio) = socket_pair(40400, 40402, 0xB8).await;
+    let sip = SipLeg {
+        audio: SipAudioLeg {
+            socket: relay_audio,
+            srtp: None,
+            payload_type: 9,
+            telephone_event_pt: None,
+        },
+        video: None,
+        content: None,
+    };
+    let browser_leg = BrowserLeg {
+        events: gw_events,
+        audio: gateway.sender().unwrap(),
+        audio_payload_type: browser_audio_pt,
+        telephone_event_pt: None,
+        video: None,
+        content: None,
+        inactivity_timeout: Duration::from_secs(30),
+    };
+    let stats = Arc::new(RelayStats::default());
+    let stop = Arc::new(Notify::new());
+    let (swap_tx, swap_rx) = mpsc::channel(1);
+    let relay = tokio::spawn(run_relay(
+        browser_leg,
+        sip,
+        stats.clone(),
+        stop.clone(),
+        swap_rx,
+    ));
+
+    // Before the swap: the first far end hears the browser.
+    let br_audio = browser.sender().unwrap();
+    br_audio
+        .send_audio(Bytes::from_static(&[0x11; 160]), 160)
+        .await
+        .unwrap();
+    let got = recv_rtp(&far_audio, &None).await;
+    assert_eq!(got.payload[0], 0x11);
+
+    // A new far end, SRTP this time, with a different payload type: the
+    // relay takes the new leg between packets.
+    let (relay_audio2, far_audio2) = socket_pair(40404, 40406, 0xB8).await;
+    let (audio_srtp, far_audio_srtp) = srtp_pair();
+    let far_audio_srtp = Some(far_audio_srtp);
+    swap_tx
+        .send(SipLeg {
+            audio: SipAudioLeg {
+                socket: relay_audio2,
+                srtp: Some(audio_srtp),
+                payload_type: 96,
+                telephone_event_pt: None,
+            },
+            video: None,
+            content: None,
+        })
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // After: the browser's audio reaches the new far end, re-tagged and
+    // protected under the new key.
+    br_audio
+        .send_audio(Bytes::from_static(&[0x22; 160]), 320)
+        .await
+        .unwrap();
+    let got = recv_rtp(&far_audio2, &far_audio_srtp).await;
+    assert_eq!(got.header.payload_type(), 96);
+    assert_eq!(got.payload[0], 0x22);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), far_audio.recv_rtp_raw())
+            .await
+            .is_err(),
+        "the old far end hears nothing after the swap"
+    );
+
+    // And the new far end's audio reaches the browser, re-tagged.
+    let pkt = RtpPacket::build(96, 7, 4800, 0xF00D, Bytes::from_static(&[0x33; 160]), false);
+    send_rtp(&far_audio2, &far_audio_srtp, &pkt).await;
+    let ev = next_event(&mut br_events, |e| matches!(e, PeerEvent::Rtp(_))).await;
+    let PeerEvent::Rtp(pkt) = ev else {
+        unreachable!()
+    };
+    assert_eq!(pkt.header.payload_type(), browser_audio_pt);
+    assert_eq!(pkt.payload[0], 0x33);
+
+    stop.notify_one();
+    let end = tokio::time::timeout(Duration::from_secs(5), relay)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(end, RelayEnd::Stopped);
 }
