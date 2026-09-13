@@ -536,6 +536,25 @@ meeting has video and this node can encode for it, WAV otherwise), `wav`,
 or `webm`, with `recording_video_codec`, `recording_resolution` (the
 room's cap by default) and `recording_audio_bitrate` beside it.
 
+*Shipped in 9 (2026-09-12, §15.9).* MP4 is the second container:
+forge-media's `forge-mp4` writes fragmented ISO base media — H.264
+(`avc1`), HEVC (`hvc1`) or AV1 (`av01`) with Opus (`dOps`), the header on
+the first keyframe (its parameter sets make the codec record), a
+fragment per keyframe, an `mfra` on a clean stop — so a file a node
+stopped writing plays to its last fragment and a GPU room records what
+NVENC produces without a host encode. The conference server's recorder
+is one task with two writers behind it (`recording-mp4` beside
+`recording-webm`, both on the same Opus). `recording_format` gained
+`mp4`, and `auto` now means MP4 when the node can encode H.264 —
+natively or on its device — WebM when it can encode VP8 or VP9 instead,
+WAV otherwise; `recording_video_codec` takes `auto`, `h264`, `hevc`,
+`av1`, `vp8` or `vp9`, is validated at startup against the container
+named, and under `auto` a named codec picks its container.
+`RecordingFormat::Mp4` is `mp4` on the wire and in the store (an older
+node reads it as the default, as designed); downloads are `video/mp4`;
+the admin UI's player needed nothing. VP8 and VP9 stay WebM, and AAC is
+still not written.
+
 A recording is a **row first**: `conference_recordings` (migration 053)
 and `fcp_core::recording::RecordingStore` hold id, tenant, meeting, room,
 node, path, format, trigger, consent, start, end, duration, size and the
@@ -684,7 +703,7 @@ crate (`forge-rtp` 111, `forge-sdp` 90, `forge-core` 22).
 | 6 | **Passthrough fast path, bitrate ladder, polish** — done 2026-09-10 (§15.5): single-source forwarding (v0.25.117/118), ladder switching (v0.25.119), overload shedding and parser fuzzing (v0.25.121; forge-media `v2026.09.10`) | both | done |
 | 7 | **Screen share** — done 2026-09-11 (§15.6): the content source kind, the per-room floor and the `Composite` / `Cameras` / `Content` views (7a, forge-media `v2026.09.11`; v0.25.123), the RFC 4796 content section on SIP with its settings, API, events and UI (7b, v0.25.124), RFC 8285 header extensions and a second video mid on WebRTC with the join page's share button and the floor told by SIP `INFO` (7c, forge-media `v2026.09.11.1`; v0.25.125/126), content across trunks with a room-wide floor (7d, forge-media `v2026.09.11.2`; v0.25.127), BFCP floor control for SIP room systems in the new `forge-bfcp` (7e, forge-media `v2026.09.11.3`; v0.25.128) | both | done |
 | 8 | **GPU backend** — done 2026-09-12 (§15.7): `forge-video-hw` over FFmpeg device contexts with NVDEC decoders, NVENC encoders and the L4's numbers (8a); the pipeline on the device — the filter-graph compositor, per-stage host fallback, parity within 39.5 dB (8b); the node — `[conference] video_device`, the `video-hwaccel` feature, the saturation budget, per-device budgets and placement by the first codec, the NVIDIA image (8c). NVIDIA built and measured, VAAPI compiles; the box is `deploy/gcp-gpu` | forge-media, FCP | done |
-| 9 | **MP4 recording sink** — planned 2026-09-12 (§15.9): a fragmented-MP4 writer `forge-mp4` (H.264 / HEVC / AV1 with Opus), the recorder recording on the device a room runs on, `auto` picking MP4 where H.264 is encodable | forge-media, FCP | 1 week |
+| 9 | **MP4 recording sink** — done 2026-09-12 (§15.9): `forge-mp4`, a fragmented-MP4 writer for H.264 / HEVC / AV1 with Opus, with a reader and a fuzz target (9a, forge-media `v2026.09.12.3`; v0.25.141); the recorder behind `recording-mp4`, `recording_format = mp4`, `auto` picking MP4 where H.264 is encodable so a GPU room records on NVENC (9b, v0.25.142) | forge-media, FCP | done |
 
 Each phase is one PR per repository (forge-media release tag, then the
 FCP bump), reviewed before the next starts. Sizes are for one person and
@@ -2076,6 +2095,34 @@ on that reader, the pattern to follow.
 **Order and size.** 9a first, released; 9b after the repoint. About a
 week: four days for the writer and its reader, two for the recorder,
 one on the box.
+
+*9a shipped 2026-09-12 (forge-media `v2026.09.12.3`; FCP v0.25.141).*
+`forge-mp4` 0.1.0 as the table says, with one refinement: a fragment
+closes at a keyframe once `FragmentLimits::min_ms` (1 s) has passed and
+at `max_ms` (30 s) regardless, so a room whose keyframe interval is long
+still writes playable fragments. Both tracks are on a millisecond
+timescale rather than 90 kHz and 48 kHz — the recorder already stamps
+in milliseconds, and one timescale keeps the `tfdt`s comparable. The
+`mfra` indexes video keyframes, so an audio-only file has none (it
+needs no seeking help). The reader is `forge_mp4::read`, the fuzz
+target `mp4_read`.
+
+*9b shipped 2026-09-12 (v0.25.142).* The recorder as the table says.
+Two things differ from the plan. The FCP loopback test records real
+H.264 from OpenH264 rather than the raw test codec, because the writer
+lifts SPS and PPS off the first keyframe and the raw payload has none —
+so the conference server's CI test run adds `video-openh264` beside the
+two recording features. And a first video frame the writer cannot open
+the track from (a raw payload, a stream that did not start on a
+keyframe) turns the recording into its audio, once and with a warning,
+rather than a warning per frame; dropping the sink's receiver tells the
+room to stop encoding for it. On the box, `gpu-box test` now builds with
+`recording-mp4` and records a 720p room off NVENC, probing the file with
+`ffprobe` when the machine has one. Follow-up for forge-mp4: the
+per-track durations (`tkhd`, `mdhd`) are written as zero and not
+patched on finish — players take the movie duration and the fragments,
+so nothing is wrong on playback, but a tool reading the track header
+sees zero.
 
 **What this phase does not do.** AAC (decision 3); MP4 for VP8/VP9;
 transcoding an existing WebM to MP4 (a job, not a sink); SIPREC or

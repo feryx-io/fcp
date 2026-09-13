@@ -268,9 +268,10 @@ enum RecordingWriter {
     /// forge-conference's own recorder on the room: mixed audio to WAV,
     /// as conference recordings have always been.
     Wav,
-    /// This node's muxer: the composite and the mix to one WebM file.
-    #[cfg(feature = "recording-webm")]
-    Webm(crate::recording::WebmRecorder),
+    /// This node's muxer: the composite and the mix to one WebM or MP4
+    /// file.
+    #[cfg(any(feature = "recording-webm", feature = "recording-mp4"))]
+    Media(crate::recording::Recorder),
 }
 
 /// Tracks an active RFC 4575 conference event subscription.
@@ -1709,7 +1710,8 @@ impl ConferenceCallHandler {
 
     /// Start recording a room. The container follows
     /// `conference.recording_format`: a meeting with video records its
-    /// composite and mix to WebM, one without records the mix to WAV as
+    /// composite and mix to MP4 or WebM (whichever the node's codecs and
+    /// the setting allow, §15.9), one without records the mix to WAV as
     /// it always has. The registry row is written before the first
     /// sample, so a recording is addressable from the moment it starts.
     pub async fn start_room_recording(
@@ -1734,22 +1736,25 @@ impl ConferenceCallHandler {
             .flatten();
         let conf = self.conference_config.read().clone();
 
-        // What the composite could be recorded as, if the room has one.
-        let room_video = match (&meeting, room.video()) {
-            (Some(m), Some(_)) if m.video_enabled => {
-                let usable = self
-                    .video_backend
-                    .as_ref()
-                    .map(|b| crate::video_bridge::usable_codecs(b, conf.video_native_codecs_only))
-                    .unwrap_or_default();
-                let configured = forge_core::VideoCodec::from_sdp_name(&conf.recording_video_codec);
-                crate::recording::pick_video_codec(configured, &usable)
-            }
-            _ => None,
+        // Whether the room has a composite to record, and what this node
+        // could encode it with.
+        let room_video = matches!((&meeting, room.video()), (Some(m), Some(_)) if m.video_enabled);
+        let usable = if room_video {
+            self.video_backend
+                .as_ref()
+                .map(|b| crate::video_bridge::usable_codecs(b, conf.video_native_codecs_only))
+                .unwrap_or_default()
+        } else {
+            Vec::new()
         };
+        // Validated at startup; an unparsable name reads as `auto`.
+        let configured = crate::recording::parse_video_codec(&conf.recording_video_codec)
+            .ok()
+            .flatten();
         let choice =
             crate::recording::FormatChoice::parse(&conf.recording_format).unwrap_or_default();
-        let (format, video_codec) = crate::recording::plan_format(choice, room_video);
+        let (format, video_codec) =
+            crate::recording::plan_format(choice, configured, &usable, room_video);
 
         let path = format!(
             "{}/{}-{}-{}.{}",
@@ -1788,12 +1793,13 @@ impl ConferenceCallHandler {
                     .map_err(|e| anyhow::anyhow!("starting the recorder: {e}"))?;
                 RecordingWriter::Wav
             }
-            fcp_core::RecordingFormat::Webm => {
-                #[cfg(feature = "recording-webm")]
+            fcp_core::RecordingFormat::Webm | fcp_core::RecordingFormat::Mp4 => {
+                #[cfg(any(feature = "recording-webm", feature = "recording-mp4"))]
                 {
-                    let settings = crate::recording::WebmSettings {
+                    let settings = crate::recording::RecorderSettings {
                         path: std::path::PathBuf::from(&path),
-                        video: video_codec.map(|codec| crate::recording::WebmVideoSettings {
+                        container: format,
+                        video: video_codec.map(|codec| crate::recording::VideoSettings {
                             codec,
                             resolution: conf
                                 .recording_resolution
@@ -1803,16 +1809,20 @@ impl ConferenceCallHandler {
                         }),
                         audio_bitrate: conf.recording_audio_bitrate,
                     };
-                    RecordingWriter::Webm(crate::recording::WebmRecorder::start(
+                    RecordingWriter::Media(crate::recording::Recorder::start(
                         &record.id.to_string(),
                         &room,
                         settings,
                     )?)
                 }
-                #[cfg(not(feature = "recording-webm"))]
+                #[cfg(not(any(feature = "recording-webm", feature = "recording-mp4")))]
                 {
                     let _ = video_codec;
-                    anyhow::bail!("this build cannot write WebM (feature `recording-webm`)")
+                    anyhow::bail!(
+                        "this build cannot write {} (feature `recording-{}`)",
+                        format.as_str(),
+                        format.as_str()
+                    )
                 }
             }
         };
@@ -1889,8 +1899,8 @@ impl ConferenceCallHandler {
                     .unwrap_or(0);
                 (secs, size)
             }
-            #[cfg(feature = "recording-webm")]
-            RecordingWriter::Webm(recorder) => {
+            #[cfg(any(feature = "recording-webm", feature = "recording-mp4"))]
+            RecordingWriter::Media(recorder) => {
                 let outcome = recorder.stop().await;
                 (outcome.duration_secs, outcome.size_bytes)
             }

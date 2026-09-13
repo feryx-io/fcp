@@ -1060,7 +1060,7 @@ export interface ConferenceRecording {
   room_number: string
   node_id: string
   file_name: string
-  /** `wav` (mixed audio) or `webm` (composite video and audio). */
+  /** `wav` (mixed audio), `webm` or `mp4` (composite video and audio). */
   format: string
   /** `auto`, `api` or `dtmf`. */
   trigger: string

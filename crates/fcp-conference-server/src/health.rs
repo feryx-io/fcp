@@ -3281,11 +3281,11 @@ async fn list_recordings_handler(
     let mut all_recordings = Vec::new();
     while let Ok(Some(entry)) = read_dir.next_entry().await {
         let path = entry.path();
-        // Both containers a room records to (§11): WAV for audio-only
-        // meetings, WebM when the room has video.
+        // The containers a room records to (§11, §15.9): WAV for
+        // audio-only meetings, MP4 or WebM when the room has video.
         if matches!(
             path.extension().and_then(|e| e.to_str()),
-            Some("wav") | Some("webm")
+            Some("wav") | Some("webm") | Some("mp4")
         ) {
             let filename = path
                 .file_name()
@@ -3507,6 +3507,7 @@ async fn local_download(state: &ConferenceState, filename: &str) -> axum::respon
 
     let content_type = match path.extension().and_then(|e| e.to_str()) {
         Some("webm") => "video/webm",
+        Some("mp4") => "video/mp4",
         _ => "audio/wav",
     };
     let stream = tokio_util::io::ReaderStream::new(file);
@@ -3880,6 +3881,7 @@ mod tests {
     #[test]
     fn only_a_bare_file_name_is_forwarded_to_a_peer() {
         assert!(forwardable_file_name("8001-1788800000-abc123.webm"));
+        assert!(forwardable_file_name("8001-1788800000-abc123.mp4"));
         assert!(forwardable_file_name("room.wav"));
         for bad in [
             "",

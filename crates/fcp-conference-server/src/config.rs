@@ -782,26 +782,32 @@ pub struct ConferenceSection {
     #[serde(default)]
     pub exit_sound: Option<String>,
 
-    /// What to record a room to: `auto` (WebM when the meeting has video
-    /// and this node can encode VP8 or VP9 for it, WAV otherwise), `wav`
-    /// (mixed audio only, as recordings have always been) or `webm`.
-    /// A build without the `recording-webm` feature records WAV whatever
-    /// this says, and logs that at startup.
+    /// What to record a room to: `wav` (mixed audio only, as recordings
+    /// have always been), `webm` (VP8 or VP9 with Opus), `mp4` (H.264,
+    /// HEVC or AV1 with Opus, fragmented — the container every player
+    /// opens, and what a GPU node records on its encoder) or `auto`
+    /// (design §15.9): MP4 when the meeting has video and this node can
+    /// encode H.264 — natively or on its device — WebM when it can encode
+    /// VP8 or VP9 instead, WAV otherwise. A build without the
+    /// `recording-webm` / `recording-mp4` feature records what it can,
+    /// and logs that at startup.
     #[serde(default = "default_recording_format")]
     pub recording_format: String,
 
-    /// The codec a WebM recording's video track uses: `vp8` (the default
-    /// and the one every player decodes) or `vp9`. Ignored when the node
-    /// cannot encode it.
+    /// The codec a recording's video track uses: `auto` (the container's
+    /// first codec this node encodes — H.264 for MP4, VP8 for WebM),
+    /// `h264`, `hevc`, `av1` (MP4) or `vp8`, `vp9` (WebM). With
+    /// `recording_format = auto` a named codec also picks its container.
+    /// Ignored when the node cannot encode it.
     #[serde(default = "default_recording_video_codec")]
     pub recording_video_codec: String,
 
-    /// The size a WebM recording's video is written at, e.g. `720p` or
+    /// The size a recording's video is written at, e.g. `720p` or
     /// `640x360`. The room's own is the default and the cap.
     #[serde(default)]
     pub recording_resolution: Option<String>,
 
-    /// Opus bitrate for a WebM recording's audio, in bits per second.
+    /// Opus bitrate for a recording's audio, in bits per second.
     #[serde(default = "default_recording_audio_bitrate")]
     pub recording_audio_bitrate: u32,
 
@@ -819,7 +825,7 @@ fn default_recording_format() -> String {
 }
 
 fn default_recording_video_codec() -> String {
-    "vp8".to_string()
+    "auto".to_string()
 }
 
 fn default_recording_audio_bitrate() -> u32 {
@@ -1090,16 +1096,34 @@ pub fn validate_config(config: &ConferenceServerConfig) -> Result<()> {
         ),
     }
     // What a room is recorded to.
-    if crate::recording::FormatChoice::parse(&config.conference.recording_format).is_none() {
+    let Some(choice) = crate::recording::FormatChoice::parse(&config.conference.recording_format)
+    else {
         anyhow::bail!(
-            "conference.recording_format '{}' is not one of auto, wav, webm",
+            "conference.recording_format '{}' is not one of auto, wav, webm, mp4",
             config.conference.recording_format
         );
-    }
-    match config.conference.recording_video_codec.to_ascii_uppercase().as_str() {
-        "VP8" | "VP9" => {}
-        other => anyhow::bail!(
-            "conference.recording_video_codec '{other}' is not one of vp8, vp9 (WebM carries no other)"
+    };
+    let codec = crate::recording::parse_video_codec(&config.conference.recording_video_codec);
+    match codec {
+        Ok(None) => {}
+        Ok(Some(codec)) => {
+            if let Some(container) = choice.container() {
+                if !crate::recording::container_carries(container, codec) {
+                    anyhow::bail!(
+                        "conference.recording_video_codec '{}' is not a codec {} carries ({})",
+                        config.conference.recording_video_codec,
+                        container.as_str(),
+                        crate::recording::codecs_of(container)
+                            .iter()
+                            .map(|c| crate::recording::codec_config_name(*c))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
+                }
+            }
+        }
+        Err(other) => anyhow::bail!(
+            "conference.recording_video_codec '{other}' is not one of auto, h264, hevc, av1, vp8, vp9"
         ),
     }
     if let Some(res) = &config.conference.recording_resolution {

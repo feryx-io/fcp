@@ -21,7 +21,7 @@ What the device lacks runs on the host, one copy per frame:
 |---|---|---|
 | Decode | H.264, HEVC, VP8, VP9, AV1 (NVDEC) | the codec has no hardware decoder; the host decodes and uploads each frame |
 | Composite | the filter graph | the graph does not build; the host composes from downloaded tiles |
-| Encode | H.264, HEVC, AV1 (NVENC) | the codec is VP8 or VP9 — a browser that offered only VP8, every WebM recording; the canvas is downloaded once a tick for all such flavors |
+| Encode | H.264, HEVC, AV1 (NVENC) | the codec is VP8 or VP9 — a browser that offered only VP8, a WebM recording; the canvas is downloaded once a tick for all such flavors |
 
 The room's status says where each stage runs (`GET
 /conferences/{room}/video`: `device` on the room, each output, each
@@ -81,6 +81,17 @@ feature, the wrong device name — leaves the node on the host with a
 warning in the log; nothing else changes. `video_device` is validated at
 start: `host`, or `backend:address` with a backend of `cuda`, `vaapi`
 or `qsv` (only CUDA is built and measured; the others compile).
+
+## Recording
+
+A room on a GPU records to **MP4** on NVENC (design §15.9): with the
+`recording-mp4` feature — the NVIDIA image has it — and
+`recording_format = "auto"` (the default) or `"mp4"`, the recording's
+flavor is H.264 encoded on the device like any subscriber's, and
+`forge-mp4` writes it fragmented, so the file plays to its last
+fragment if the node dies and opens in every player. `recording_format
+= "webm"` or `recording_video_codec = "vp8"` still records, but the
+composite is then VP8 encoded on the host.
 
 ## What the node prices and advertises
 
@@ -175,7 +186,6 @@ fifty-eight rooms' 30 fps composites of nine tiles.
 
 ## What is not done
 
-VAAPI and AMF beyond compiling; an MP4/H.264 recording sink (a GPU
-room's WebM is VP8 encoded on the host); a room moving between devices;
+VAAPI and AMF beyond compiling; a room moving between devices;
 more than one GPU per node (`cuda:1` names a second device, but a
 node's rooms are on one); GPU-side RTP or SRTP; a GPU runner in CI.

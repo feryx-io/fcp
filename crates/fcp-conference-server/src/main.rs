@@ -2071,10 +2071,10 @@ async fn run_recording_cleanup(
         let mut deleted = 0u32;
         for entry in dir.flatten() {
             let path = entry.path();
-            // Both containers a room is recorded to (§11).
+            // The containers a room is recorded to (§11, §15.9).
             if !matches!(
                 path.extension().and_then(|e| e.to_str()),
-                Some("wav") | Some("webm")
+                Some("wav") | Some("webm") | Some("mp4")
             ) {
                 continue;
             }

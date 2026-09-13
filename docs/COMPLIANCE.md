@@ -119,7 +119,7 @@ audit event.
 |---|---|
 | `GET /recordings` | Newest first. Filter by `room_number`, `meeting_id`, `since`/`until` (Unix seconds), `running`; page with `limit`/`offset` |
 | `GET /recordings/{id}` | One recording |
-| `GET /recordings/{id}/download` | The file, streamed from whichever node holds it, as `audio/wav` or `video/webm` |
+| `GET /recordings/{id}/download` | The file, streamed from whichever node holds it, as `audio/wav`, `video/mp4` or `video/webm` |
 | `DELETE /recordings/{id}` | File first, then row. 409 while it is still being written |
 
 Downloads and deletes go through the configured conference server
@@ -136,5 +136,6 @@ recorded. The admin UI's **Recordings** page lists them with a player.
 3. Run `POST /compliance/retention/run` once and read the report.
 4. Give your compliance officer `GET /audit-log` and `GET /cdrs/export`.
 5. For conferences, decide `recording_format` on each node (`auto` records
-   video meetings to WebM, audio-only ones to WAV) and let
+   video meetings to MP4 where the node encodes H.264 and to WebM where it
+   encodes VP8 or VP9, audio-only ones to WAV) and let
    `recording_retention_days` do the rest.
