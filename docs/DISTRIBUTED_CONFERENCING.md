@@ -15,7 +15,7 @@ The work lands in five phases. This document tracks what is in place.
 | 2 | Inter-node trunks (cascaded mixing) | ✅ v0.25.83 |
 | 3 | Cross-node control (kick, gain, lock, announce, end) | ✅ v0.25.84 |
 | 4 | Resilience (registry expiry, trunk teardown, draining, trunk SRTP) | ✅ v0.25.85 |
-| 5 | Participant migration off a draining node | 🟡 5a v0.25.146 (the node); 5b, 5c planned |
+| 5 | Participant migration off a draining node | 🟡 5a v0.25.146 (the node), 5b v0.25.147 (the call manager); 5c planned |
 
 Decisions (2026-09-02): full-mesh trunks between hosting nodes; new
 participants stay on a hosting node until it reaches a capacity setting;
@@ -759,6 +759,29 @@ off with `[b2bua] conference_migration = false`, in which case the REFER
 is refused (603) and the caller is hung up at the end of the drain. It
 does not go through the transfer policy (`transfer`, `allow_refer`): it is
 not a transfer the caller asked for.
+
+```toml
+[b2bua]
+conference_migration = true   # false refuses the REFER (603); the caller is hung up at the end of the drain
+```
+
+*5b shipped 2026-09-13 (v0.25.147).* As planned, with the SIP in
+`fcp-sip`'s handler and the rest in `conference_migration.rs`. The REFER
+is answered 202 at once and the move runs on its own task, since the
+REFER's transaction must not wait on an INVITE to another node; `Call`
+carries `conference_room`, set on the three routing branches that produce
+a conference target. One detail the plan left open: the caller is
+offered to the new node with its last SDP (early offer) and then
+re-INVITEd with the node's answer, so a phone that keeps its ports — the
+usual case — needs nothing more, and one whose answer moves its media
+(a new port or address on any section) gets that answer forwarded to the
+new node in a second re-INVITE. The new leg's session timer is armed as
+the original's was, so the conference node's RFC 4028 reaper does not
+hang the moved caller up. Tested: the `Refer-To` reading, the moved-media
+check and the sipfrag body are unit tests; the move itself is not
+automated — the `fcp-sip` harness has no UAC, so the B2BUA's outbound
+side cannot be driven in a test — and is checked by hand between two
+nodes on the GPU box.
 
 ### 5c: the WebRTC gateway
 

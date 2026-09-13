@@ -167,6 +167,14 @@ pub struct B2buaConfig {
     /// every room on a single node. Only used with cluster membership.
     #[serde(default)]
     pub conference_node_capacity: usize,
+
+    /// When a conference node drains, execute the REFER it sends on a
+    /// conference call's B-leg — a fresh B-leg to the node it names, the
+    /// caller re-INVITEd, the old leg dropped — instead of relaying it to
+    /// the caller. `false` refuses the REFER (603); the caller is then hung
+    /// up when the node finishes draining. Default: true.
+    #[serde(default = "default_true")]
+    pub conference_migration: bool,
 }
 
 impl Default for B2buaConfig {
@@ -184,6 +192,7 @@ impl Default for B2buaConfig {
             voicemail_server_uri: None,
             conference_server_uri: None,
             conference_node_capacity: 0,
+            conference_migration: true,
         }
     }
 }
@@ -275,6 +284,7 @@ mod tests {
             voicemail_server_uri: None,
             conference_server_uri: None,
             conference_node_capacity: 0,
+            conference_migration: true,
         };
         let session = B2buaSession::with_config(call_id, config.clone());
         assert_eq!(session.call_id, call_id);
@@ -323,6 +333,7 @@ mod tests {
             voicemail_server_uri: None,
             conference_server_uri: None,
             conference_node_capacity: 0,
+            conference_migration: true,
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let deserialized: B2buaConfig = serde_json::from_str(&json).unwrap();
