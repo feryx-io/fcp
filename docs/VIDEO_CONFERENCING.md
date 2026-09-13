@@ -2118,7 +2118,10 @@ keyframe) turns the recording into its audio, once and with a warning,
 rather than a warning per frame; dropping the sink's receiver tells the
 room to stop encoding for it. On the box, `gpu-box test` now builds with
 `recording-mp4` and records a 720p room off NVENC, probing the file with
-`ffprobe` when the machine has one. Follow-up for forge-mp4: the
+`ffprobe` when the machine has one — run on the L4 the same day: two
+seconds of room came to 32 H.264 frames and 100 Opus frames in 330 KB
+with nothing dropped, and `ffprobe` read the streams as `h264` and
+`opus`. Follow-up for forge-mp4: the
 per-track durations (`tkhd`, `mdhd`) are written as zero and not
 patched on finish — players take the movie duration and the fragments,
 so nothing is wrong on playback, but a tool reading the track header

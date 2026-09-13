@@ -90,7 +90,7 @@ case "${1:-}" in
     # NVENC) and pointed at the GPU. Extra arguments go to `cargo test`
     # (a test name, `--release`).
     shift
-    "$0" sync
+    "$here/gpu-box" sync
     gcloud compute ssh "$name" --project "$project" --zone "$zone" --tunnel-through-iap --quiet \
       --command "source /etc/profile.d/gpu-box.sh; set -e; cd fcp/external/forge-media && cargo test -p forge-video-hw $* -- --nocapture; cd ~/fcp && FCP_TEST_VIDEO_DEVICE=cuda:0 OPENSSL_NO_VENDOR=1 cargo test -p fcp-conference-server --features video-hwaccel,recording-mp4 $* -- --nocapture"
     ;;
