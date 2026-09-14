@@ -315,6 +315,8 @@ struct CdrQueryParams {
     to_uri: Option<String>,
     /// Filter by disposition (answered, busy, no_answer, failed, cancelled)
     disposition: Option<String>,
+    /// `call` (default), `queue`, `conference`, `gateway` or `all`
+    kind: Option<String>,
     /// Start time range begin (Unix timestamp in seconds)
     start_time_from: Option<u64>,
     /// Start time range end (Unix timestamp in seconds)
@@ -334,6 +336,13 @@ async fn cdrs_handler(
 
     // Build CDR query from parameters
     let mut query = CdrQuery::default();
+    match fcp_core::storage::CdrKind::listing_filter(
+        params.kind.as_deref(),
+        params.call_id.is_some(),
+    ) {
+        Ok(kind) => query.kind = kind,
+        Err(error) => return Json(serde_json::json!({ "error": error, "cdrs": [] })),
+    }
 
     // Parse call_id if provided
     if let Some(ref call_id_str) = params.call_id {

@@ -24,11 +24,17 @@ pub trait QueueHandler: Send + Sync {
     /// - Sending provisional/final SIP responses via `handle`
     /// - Setting up RTP and MOH playback
     /// - Enqueuing the call and starting the distribution loop
+    /// `call_id` is the B2BUA call the INVITE created. The implementor ends
+    /// it (`CallManager::terminate_call_with`) when it refuses the caller
+    /// and when the caller's queue session ends, so the call's record is
+    /// written and its queue record carries the same id
+    /// (`docs/CDR_PIPELINE.md` §5).
     async fn handle_invite(
         &self,
         request: &sip_core::Request,
         handle: &sip_transaction::ServerTransactionHandle,
         peer: SocketAddr,
+        call_id: fcp_b2bua_core::CallId,
     ) -> Result<()>;
 
     /// Clean up when a BYE is received for a queued caller or agent.

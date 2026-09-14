@@ -175,6 +175,16 @@ impl JoinToken {
         Ok(parsed)
     }
 
+    /// What a token says, **without** checking its signature or expiry: for
+    /// attributing a record to the tenant a conference node has already
+    /// admitted the token for, never for admitting anyone. `None` when the
+    /// token is not one.
+    pub fn peek_unverified(token: &str) -> Option<Self> {
+        let (payload_b64, _) = token.trim().split_once('.')?;
+        let payload = URL_SAFE_NO_PAD.decode(payload_b64).ok()?;
+        serde_json::from_slice(&payload).ok()
+    }
+
     /// Seconds until expiry as of now (zero when past).
     pub fn seconds_left(&self) -> u64 {
         self.expires_at.saturating_sub(unix_now())
@@ -187,6 +197,23 @@ mod tests {
 
     fn tenant() -> TenantId {
         TenantId::new()
+    }
+
+    #[test]
+    fn a_token_can_be_read_without_its_secret_but_not_verified() {
+        let t = JoinToken::new(
+            tenant(),
+            "8001",
+            "Ann",
+            JoinRole::Guest,
+            Duration::from_secs(300),
+        );
+        let token = t.mint(b"secret");
+        let peeked = JoinToken::peek_unverified(&token).expect("reads");
+        assert_eq!(peeked.tenant_id, t.tenant_id);
+        assert_eq!(peeked.room_number, "8001");
+        assert!(JoinToken::verify(&token, b"other").is_err());
+        assert!(JoinToken::peek_unverified("not a token").is_none());
     }
 
     #[test]

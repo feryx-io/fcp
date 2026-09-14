@@ -165,6 +165,10 @@ pub struct ListCdrsQuery {
     /// Filter by disposition (answered, busy, no_answer, failed, cancelled)
     pub disposition: Option<String>,
 
+    /// What the records are records of: `call` (the default), `queue`,
+    /// `conference`, `gateway`, or `all`. With `call_id`, every kind.
+    pub kind: Option<String>,
+
     /// Filter by start time (Unix timestamp in seconds)
     pub start_time_from: Option<String>,
 
@@ -312,8 +316,11 @@ fn build_cdr_query(
         from_uri: params.from_uri.clone(),
         to_uri: params.to_uri.clone(),
         disposition: None,
-        // Every kind, as before the pipeline; `?kind=` arrives in phase 3.
-        kind: None,
+        kind: fcp_core::storage::CdrKind::listing_filter(
+            params.kind.as_deref(),
+            params.call_id.is_some(),
+        )
+        .map_err(ApiError::BadRequest)?,
         start_time_from: None,
         start_time_to: None,
         limit: Some(limit),

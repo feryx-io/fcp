@@ -1721,6 +1721,10 @@ impl SipMessageHandler {
         call.a_leg_invite_tx = Some(handle.key().clone());
         call.max_duration = billing_max_duration;
         call.emergency = emergency.clone();
+        // A caller transferred here carries the call it left, from the
+        // Refer-To this B2BUA relayed (see handle_refer).
+        call.correlation_id = sip_parse::header(request.headers(), TRANSFERRED_FROM_HEADER)
+            .and_then(|v| v.as_str().trim().parse::<fcp_core::CallId>().ok());
 
         // Store call in CallManager
         let call_id = self.call_manager.create_call(call);
@@ -1828,6 +1832,9 @@ impl SipMessageHandler {
         if let Some(conf_handler) = &self.conference_handler {
             if conf_handler.can_handle(request).await {
                 debug!(call_id = %call_id, "Routing to conference handler");
+                // The room keeps its own record of the leg; this call object
+                // would otherwise outlive it.
+                self.call_manager.discard_call(&call_id);
                 return conf_handler
                     .handle_invite(request, handle, peer, peer_identity)
                     .await;
@@ -1838,7 +1845,18 @@ impl SipMessageHandler {
         if let Some(queue_handler) = &self.queue_handler {
             if queue_handler.can_handle(request).await {
                 debug!(call_id = %call_id, "Routing to queue handler");
-                return queue_handler.handle_invite(request, handle, peer).await;
+                let result = queue_handler
+                    .handle_invite(request, handle, peer, call_id)
+                    .await;
+                if let Err(e) = &result {
+                    // The queue ends the call when it refuses or finishes;
+                    // an error left it to us.
+                    let _ = self.call_manager.terminate_call_with(
+                        &call_id,
+                        fcp_cdr::TerminationReason::failed(format!("Queue: {e}")),
+                    );
+                }
+                return result;
             }
         }
 
@@ -3808,9 +3826,11 @@ impl SipMessageHandler {
                                     {
                                         let trunk_name = route.trunk_name.clone();
                                         let allowed_codecs = route.allowed_codecs.clone();
+                                        let route_trunks = route_trunks(&routes);
                                         let _ = self.call_manager.update_call(&call_id, |call| {
                                             call.trunk_name = trunk_name;
                                             call.outbound_allowed_codecs = allowed_codecs;
+                                            call.route_trunks = route_trunks;
                                         });
                                     }
                                     // Build bindings for primary + failover routes
@@ -4764,9 +4784,11 @@ impl SipMessageHandler {
                                     {
                                         let trunk_name = route.trunk_name.clone();
                                         let allowed_codecs = route.allowed_codecs.clone();
+                                        let route_trunks = route_trunks(&routes);
                                         let _ = self.call_manager.update_call(&call_id, |call| {
                                             call.trunk_name = trunk_name;
                                             call.outbound_allowed_codecs = allowed_codecs;
+                                            call.route_trunks = route_trunks;
                                         });
                                     }
                                     // Build bindings for primary + failover routes
@@ -5113,6 +5135,22 @@ impl SipMessageHandler {
                 (from_uri, Some(headers))
             }
             None => (caller_from_uri, None),
+        };
+        // A call into a conference room names itself, so the room's record
+        // of the leg shares this call's id.
+        let emergency_headers = if self
+            .call_manager
+            .get_call(&call_id)
+            .is_some_and(|c| c.conference_room.is_some())
+        {
+            let mut headers = emergency_headers.unwrap_or_default();
+            let _ = headers.push(
+                SmolStr::new(fcp_core::CALL_ID_HEADER),
+                SmolStr::new(call_id.to_string()),
+            );
+            Some(headers)
+        } else {
+            emergency_headers
         };
 
         if let Some(ref name) = caller_display_name {
@@ -6230,12 +6268,17 @@ impl SipMessageHandler {
 
             // Store the winning B-leg handle and flow token (RFC 5626)
             let winning_flow_token_clone = winning_flow_token.clone();
+            let winner_uri = target.to_string();
             let _ = self.call_manager.update_call(&call_id, |call| {
                 if let Some(b_leg) = &mut call.b_leg {
                     b_leg.outbound_handle = Some(Arc::clone(&handle));
                     b_leg.flow_token = winning_flow_token_clone;
                 }
                 call.state = fcp_b2bua_core::CallState::Established;
+                // A failover route that answered names its own trunk.
+                if let Some(trunk) = answering_trunk(&call.route_trunks, &winner_uri) {
+                    call.trunk_name = Some(trunk);
+                }
             });
 
             // Extract SDP from winning B-leg response
@@ -8245,7 +8288,13 @@ impl SipMessageHandler {
             }
         }
 
-        let refer_uri = sip_core::SipUri::parse(refer_uri_str)
+        // The transferred caller's phone copies the Refer-To's URI headers
+        // into its new INVITE (RFC 3261 §19.1.5), which is how the new call
+        // learns the call it came from.
+        let refer_with_origin =
+            with_uri_header(refer_uri_str, TRANSFERRED_FROM_HEADER, &call.id.to_string());
+        let refer_uri = sip_core::SipUri::parse(&refer_with_origin)
+            .or_else(|_| sip_core::SipUri::parse(refer_uri_str))
             .map_err(|_| anyhow::anyhow!("Invalid Refer-To URI"))?;
 
         // B2BUA transfer policy check (primary gate)
@@ -10096,9 +10145,16 @@ impl SipMessageHandler {
             .await;
         handle.send_final(picker_response).await;
 
-        let _ = self
-            .call_manager
-            .terminate_call(feature_call_id, Some(format!("{} completed", label)));
+        // The feature call's record points at the call it picked up.
+        let _ = self.call_manager.update_call(feature_call_id, |call| {
+            call.correlation_id = Some(fcp_core::CallId::from_uuid(*ringing_call_id.as_uuid()));
+        });
+        let _ = self.call_manager.terminate_call_with(
+            feature_call_id,
+            fcp_cdr::TerminationReason::Completed {
+                detail: format!("{} completed", label),
+            },
+        );
 
         info!(
             pickup_call_id = %feature_call_id,
@@ -10539,7 +10595,11 @@ impl SipMessageHandler {
             }
         }
 
-        // Terminate the feature-code call
+        // Terminate the feature-code call; its record points at the parked
+        // call it brought back.
+        let _ = self.call_manager.update_call(call_id, |call| {
+            call.correlation_id = Some(fcp_core::CallId::from_uuid(*parked_call_id.as_uuid()));
+        });
         let _ = self.call_manager.terminate_call(call_id, None);
 
         Ok(())
@@ -12677,6 +12737,40 @@ fn terminate_dialog(
     );
 }
 
+/// Each route's target and trunk, for naming the trunk that answered.
+fn route_trunks(routes: &[OutboundRoute]) -> Vec<(String, String)> {
+    routes
+        .iter()
+        .filter_map(|r| r.trunk_name.clone().map(|t| (r.target_uri.clone(), t)))
+        .collect()
+}
+
+/// The trunk whose route target is `winner` (a fork target, which may
+/// have gained or lost angle brackets on the way).
+fn answering_trunk(route_trunks: &[(String, String)], winner: &str) -> Option<String> {
+    let bare = |s: &str| {
+        s.trim()
+            .trim_start_matches('<')
+            .trim_end_matches('>')
+            .to_string()
+    };
+    let winner = bare(winner);
+    route_trunks
+        .iter()
+        .find(|(target, _)| bare(target) == winner)
+        .map(|(_, trunk)| trunk.clone())
+}
+
+/// The header a transferred call's INVITE carries naming the call it left.
+pub const TRANSFERRED_FROM_HEADER: &str = "X-FCP-Transferred-From";
+
+/// `uri` with a URI header added (`?name=value`, or `&name=value` when it
+/// has headers already).
+fn with_uri_header(uri: &str, name: &str, value: &str) -> String {
+    let sep = if uri.contains('?') { '&' } else { '?' };
+    format!("{uri}{sep}{name}={value}")
+}
+
 /// The record's RTP counters from a media session's statistics. The
 /// backend reports no jitter yet; a zero is left out rather than stored as
 /// a measurement.
@@ -13222,6 +13316,10 @@ impl ConferenceMigration {
                 SmolStr::new(&self.ticket),
             )
             .map_err(|e| (500, "Server Internal Error", format!("ticket header: {e}")))?;
+        let _ = headers.push(
+            SmolStr::new(fcp_core::CALL_ID_HEADER),
+            SmolStr::new(self.call_id.to_string()),
+        );
         let target = self.target.as_str().to_string();
         let handle = tokio::time::timeout(
             Duration::from_secs(5),
@@ -13411,6 +13509,40 @@ impl ConferenceMigration {
 mod tests {
     use super::*;
     use crate::registrar::FcpRegistrar;
+
+    #[test]
+    fn a_transfer_origin_is_added_as_a_uri_header_and_survives_parsing() {
+        let plain = with_uri_header("sip:1003@10.0.0.1:5060", TRANSFERRED_FROM_HEADER, "abc");
+        assert_eq!(plain, "sip:1003@10.0.0.1:5060?X-FCP-Transferred-From=abc");
+        let more = with_uri_header("sip:1003@pbx?Foo=bar", TRANSFERRED_FROM_HEADER, "abc");
+        assert_eq!(more, "sip:1003@pbx?Foo=bar&X-FCP-Transferred-From=abc");
+        let uri = sip_core::SipUri::parse(&plain).expect("parses");
+        assert_eq!(
+            uri.headers()
+                .get("x-fcp-transferred-from")
+                .map(|v| v.as_str()),
+            Some("abc")
+        );
+    }
+
+    #[test]
+    fn the_trunk_that_answered_is_found_by_its_route_target() {
+        let routes = vec![
+            (
+                "sip:+15550100@primary.example:5060".to_string(),
+                "primary".to_string(),
+            ),
+            (
+                "sip:+15550100@backup.example:5060".to_string(),
+                "backup".to_string(),
+            ),
+        ];
+        assert_eq!(
+            answering_trunk(&routes, "<sip:+15550100@backup.example:5060>").as_deref(),
+            Some("backup")
+        );
+        assert_eq!(answering_trunk(&routes, "sip:someone@else"), None);
+    }
 
     #[test]
     fn rewrite_sdp_direction_replaces_sendrecv_in_every_rtp_section() {

@@ -491,7 +491,7 @@ async fn main() -> Result<()> {
                     Some(Arc::clone(&sbc_hooks) as Arc<dyn fcp_events::EventPublisher>),
                 ));
                 // The SBC keeps no Redis: its records are stored locally.
-                let writer = fcp_cdr::start_node(&sbc_config.storage.cdr, processor, None)
+                let writer = fcp_cdr::start_node(&sbc_config.storage.cdr, Some(processor), None)
                     .context("Failed to start the CDR spool")?;
                 manager.set_cdr_writer(writer);
             }

@@ -89,9 +89,15 @@ impl Default for NodeConfig {
 /// directly. Needs a tokio runtime.
 pub fn start_node(
     config: &NodeConfig,
-    processor: Arc<Processor>,
+    processor: Option<Arc<Processor>>,
     stream: Option<Arc<dyn Sink>>,
 ) -> Result<CdrWriter> {
+    let needs_processor = || {
+        Error::Sink(
+            "this node has no database: its records need [cdr] spool_dir and sink = \"stream\""
+                .into(),
+        )
+    };
     if config.sink == SinkKind::Stream && config.spool_dir.is_none() {
         return Err(Error::Sink(
             "[cdr] sink = \"stream\" needs a spool_dir: the spool is what stands between a call and the stream".into(),
@@ -99,7 +105,7 @@ pub fn start_node(
     }
     let Some(dir) = &config.spool_dir else {
         warn!("No [cdr] spool_dir configured: records go straight to the database and are lost if it refuses them");
-        return Ok(CdrWriter::direct(processor));
+        return Ok(CdrWriter::direct(processor.ok_or_else(needs_processor)?));
     };
     let spool = Spool::open(
         dir,
@@ -117,9 +123,10 @@ pub fn start_node(
     );
     spool.start_fsync();
     let sink: Arc<dyn Sink> = match config.sink {
-        SinkKind::Local => {
-            Arc::new(LocalSink::new(Arc::clone(&processor)).with_dead_letters(spool.clone()))
-        }
+        SinkKind::Local => Arc::new(
+            LocalSink::new(Arc::clone(processor.as_ref().ok_or_else(needs_processor)?))
+                .with_dead_letters(spool.clone()),
+        ),
         SinkKind::Stream => stream.ok_or_else(|| {
             Error::Sink("[cdr] sink = \"stream\" needs storage.redis_url on this node".into())
         })?,
@@ -133,5 +140,5 @@ pub fn start_node(
             ..ShipperConfig::default()
         },
     );
-    Ok(CdrWriter::spooled(spool, Some(processor)))
+    Ok(CdrWriter::spooled(spool, processor))
 }

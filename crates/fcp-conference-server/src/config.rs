@@ -17,6 +17,11 @@ pub struct ConferenceServerConfig {
     #[serde(default)]
     pub storage: StorageSection,
 
+    /// The CDR pipeline's node side: where each participant's leg record
+    /// spools before it ships (`docs/CDR_PIPELINE.md`).
+    #[serde(default)]
+    pub cdr: fcp_cdr::NodeConfig,
+
     #[serde(default)]
     pub http: HttpSection,
 

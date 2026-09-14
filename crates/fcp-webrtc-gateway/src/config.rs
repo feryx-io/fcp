@@ -36,6 +36,13 @@ pub struct GatewayConfig {
     #[serde(default)]
     pub storage: StorageSection,
 
+    /// The CDR pipeline's node side (`docs/CDR_PIPELINE.md`). The gateway
+    /// keeps no database, so its session records need `spool_dir`,
+    /// `sink = "stream"` and `storage.redis_url`, and an `fcp-jobs`
+    /// processor to store them.
+    #[serde(default)]
+    pub cdr: fcp_cdr::NodeConfig,
+
     #[serde(default)]
     pub cluster: ClusterSection,
 

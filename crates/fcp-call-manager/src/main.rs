@@ -642,7 +642,7 @@ async fn main() -> Result<()> {
         });
         #[cfg(not(feature = "storage-redis"))]
         let stream: Option<Arc<dyn fcp_cdr::sink::Sink>> = None;
-        fcp_cdr::start_node(&config.cdr, processor, stream)
+        fcp_cdr::start_node(&config.cdr, Some(processor), stream)
             .context("Failed to start the CDR spool")?
     };
     call_manager_inner.set_cdr_writer(cdr_writer.clone());
@@ -781,6 +781,7 @@ async fn main() -> Result<()> {
             Arc::clone(&dyn_storage),
             cdr_writer.clone(),
             config.service.node_id.clone(),
+            Arc::clone(&call_manager),
         );
         info!(
             queues = config.queue.queues.len(),
@@ -1678,6 +1679,10 @@ async fn main() -> Result<()> {
         let _ = tx.send(true);
         // Wait briefly for de-registration attempts
         tokio::time::sleep(Duration::from_secs(4)).await;
+    }
+    // The last calls' records leave before we do.
+    if let Some(writer) = call_manager.cdr_writer() {
+        writer.flush(Duration::from_secs(5)).await;
     }
     listener.stop().await?;
     info!("Shutdown complete");

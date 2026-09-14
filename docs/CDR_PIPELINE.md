@@ -1,6 +1,6 @@
 # The CDR Pipeline — Design
 
-Status: **phases 1 and 2 done** (2026-09-14, v0.25.159 and v0.25.160);
+Status: **phases 1–3 done** (2026-09-14, v0.25.159, v0.25.160 and v0.25.161);
 design agreed the same day with every recommendation in §14 taken. This document is the
 plan of record for the dedicated CDR pipeline that `STATUS.md` kept on
 the Phase 5 roadmap on 2026-09-02 ("inline CDR creation plus `fcp-jobs`
@@ -300,7 +300,7 @@ MVP had). New or changed fields:
 | `hangup_party` | `caller`, `callee`, `system` | node | From `TerminationReason`, which replaces the free-text `reason: Option<String>` of `terminate_call` |
 | `hangup_cause`, `sip_status_code`, `sip_reason` | as today | node | Derived from the enum, not from substring matches on the reason |
 | `node_id`, `region` | text | node | Which node owned the call; the region it advertised |
-| `correlation_id` | `CallId`, nullable | node | The call this one replaced or was transferred from (REFER, Replaces), the parked call for a retrieve |
+| `correlation_id` | `CallId`, nullable | node | The call a transferred caller left (REFER), the ringing call a pickup took, the parked call a retrieve brought back. Replaces is not implemented by the B2BUA, so an attended transfer is not linked |
 | `trunk_name` | text, nullable | node | Already on `CallEvent::Ended`; stored |
 | `codec_a_leg`, `codec_b_leg` | as today | node | Parsed with `sip-sdp`, not sniffed |
 | `rtp_packets_*`, `rtp_bytes_*`, `packets_lost`, `jitter_ms`, `rtt_ms` | as today plus two | node | From `MediaSessionStats` at `terminate_session`, which the handler already calls before the CDR |
@@ -622,6 +622,86 @@ session, the SBC fills `gateway_id`; queue segments carry the real
 `call_id`; transfers and Replaces set `correlation_id` on both records.
 `?kind=` on the listing. The conference and gateway test-floor
 scenarios assert their records.
+
+*Phase 3 shipped 2026-09-14 (v0.25.161).* Every leg the platform carries
+now has a record, correlated by call id:
+
+- **Conference legs.** The conference server writes a `conference`
+  record whenever a participant's session ends, from the one function
+  every leave goes through, now given the reason: a BYE from the far end
+  (the participant, or a dial-out's destination), a CANCEL, a kick, the
+  room closing, the node stopping, a session timer, a trunk closing or
+  being replaced, a migration. The record carries the room, the
+  participant, host and dial-out and trunk flags, video and content,
+  `migrated_from` and `migrated_to`, the codec, and packet counts (the
+  audio bridge counts packets, not bytes). Trunk and dial-out legs are
+  recorded too. `[cdr]` on the conference server works as on the call
+  manager.
+- **One call id across nodes.** A call manager's INVITE to a conference
+  room, and its migration INVITE, carry `X-FCP-Call-Id`, and so do the
+  gateway's; the conference leg's record takes that id, so a leg reached
+  through a call manager sits beside the call's own record and a
+  browser's legs on two nodes share the gateway session's id. A phone
+  dialing a room directly gets an id of its own. The header correlates
+  records and decides nothing else.
+- **Gateway sessions.** The WebRTC gateway writes a `gateway` record per
+  session: the browser's time, who ended it, the relay's packet counts,
+  the SIP side's last Call-ID. The gateway keeps no database, so its
+  records ship only through the stream (`[cdr] spool_dir`, `sink =
+  "stream"`, `storage.redis_url`) and an `fcp-jobs` stores them; the
+  tenant is read from the join token without verifying it
+  (`JoinToken::peek_unverified`) — the conference node verified it when
+  it admitted the browser — or taken from `[conference] tenant_id`.
+- **Queue segments** carry the B2BUA call's id: the SIP handler passes it
+  to the queue handler, which ends that call when it refuses the caller
+  (with the status the caller was sent) or when the caller's session
+  ends, so the call's record and the segment's are written together.
+- **Transfers.** The call manager adds `X-FCP-Transferred-From: <call
+  id>` to the Refer-To it relays; the transferred caller's phone copies
+  it into the new INVITE (RFC 3261 §19.1.5) and the new call's record
+  points at the call it left. A pickup's feature call points at the call
+  it picked up, a retrieve's at the parked call.
+- **Where a call went and what was kept.** On failover the record names
+  the trunk that answered, not the primary route's (`gateway_id` is the
+  trunk name, as the trunk statistics query already assumed). A
+  recording started by a flow node or through the API is the record's
+  `recording_url`.
+- **Listing.** `GET /cdrs` (the API and the call manager's) lists `call`
+  records by default, a kind with `?kind=`, every kind with `?kind=all`
+  or when filtering by `call_id`.
+- **Shutdown.** A node stopping gracefully waits up to five seconds for
+  its records to leave (`CdrWriter::flush`): the direct writes stored and
+  the spool shipped and synced. Without it a draining conference node's
+  last migration record was lost with the process.
+
+Two **product bugs** found on the way, both fixed. **A call routed to a
+queue or a conference room was never ended**: the SIP handler created
+the call before handing the INVITE over, neither handler knew its id,
+and their BYEs never reached the B2BUA, so the call sat in the call map
+forever with no record written — on the call manager for every queued
+caller, on a conference node for every participant. The conference path
+now drops the call when it hands the INVITE over (the room records the
+leg), and the queue ends it. And **a queue was unreachable at a
+Request-URI with a port**: the queue read the tenant from the URI's
+host without removing the port, so `127.0.0.1:5070` was looked up as a
+tenant domain, not found, and the queue declined the call; the host is
+now parsed.
+
+Not done, and why: a caller who never gets past a room's PIN, or is
+refused before the answer (full, locked, rate-limited, draining), leaves
+no conference record — a call manager's call record still covers one
+that came through it; a recording started by the SBC's local capture is
+kept in its recording store and not on the call; attended transfer is
+not linked, since the B2BUA does not implement Replaces.
+
+Tests: the call floor asserts the transfer link and a new scenario puts
+a caller in a queue and hangs up (one call id on both records, the call
+answered and the segment abandoned, the default listing showing the
+call alone, no call left live); the room floor asserts each leg's record
+for a direct join, a kick, and a call through a call manager (the leg
+under the call's id); the gateway's drain scenario ships the session's
+record through the stream into the database and finds the browser's leg
+on each node under the session's id, one ended by the migration.
 
 **Phase 4 — reading at volume.** The partition conversion and
 `ensure_partitions`; keyset pagination and the streamed export; the

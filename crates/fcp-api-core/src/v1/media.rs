@@ -150,6 +150,11 @@ pub async fn start_recording(
         .await;
 
     result.map_err(|e| ApiError::NotFound(format!("Failed to start recording: {}", e)))?;
+    // The call's record names its recording.
+    let path = req.path.clone();
+    let _ = state
+        .call_manager
+        .update_call(&sip_call_id, |call| call.recording_path = Some(path));
 
     Ok((
         StatusCode::OK,

@@ -1319,7 +1319,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "117725a109d387c937a1533ce01b450cbde6b88abceea8473c4d7a85853cda3c"
 dependencies = [
  "lazy_static",
- "windows-sys 0.52.0",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
@@ -2211,7 +2211,7 @@ checksum = "9f1f227452a390804cdb637b74a86990f2a7d7ba4b7d5693aac9b4dd6defd8d6"
 
 [[package]]
 name = "fcp-admin"
-version = "0.25.160"
+version = "0.25.162"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2248,7 +2248,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-admin-ui"
-version = "0.25.160"
+version = "0.25.162"
 dependencies = [
  "axum 0.7.9",
  "include_dir",
@@ -2257,7 +2257,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-api-core"
-version = "0.25.160"
+version = "0.25.162"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2299,7 +2299,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-api-gateway"
-version = "0.25.160"
+version = "0.25.162"
 dependencies = [
  "anyhow",
  "axum 0.7.9",
@@ -2329,7 +2329,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-b2bua-core"
-version = "0.25.160"
+version = "0.25.162"
 dependencies = [
  "anyhow",
  "bytes",
@@ -2353,7 +2353,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-billing"
-version = "0.25.160"
+version = "0.25.162"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2369,7 +2369,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-call-manager"
-version = "0.25.160"
+version = "0.25.162"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2429,7 +2429,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-cdr"
-version = "0.25.160"
+version = "0.25.162"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2450,7 +2450,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-cli"
-version = "0.25.160"
+version = "0.25.162"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2483,7 +2483,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-cluster"
-version = "0.25.160"
+version = "0.25.162"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2502,7 +2502,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-conference-server"
-version = "0.25.160"
+version = "0.25.162"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -2513,6 +2513,7 @@ dependencies = [
  "dashmap 6.1.0",
  "fcp-api-core",
  "fcp-b2bua-core",
+ "fcp-cdr",
  "fcp-cluster",
  "fcp-core",
  "fcp-events",
@@ -2591,7 +2592,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-crypto"
-version = "0.25.160"
+version = "0.25.162"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -2609,7 +2610,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-events"
-version = "0.25.160"
+version = "0.25.162"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2627,7 +2628,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-events-server"
-version = "0.25.160"
+version = "0.25.162"
 dependencies = [
  "anyhow",
  "axum 0.7.9",
@@ -2684,7 +2685,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-ivr"
-version = "0.25.160"
+version = "0.25.162"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2725,7 +2726,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-jobs"
-version = "0.25.160"
+version = "0.25.162"
 dependencies = [
  "anyhow",
  "axum 0.7.9",
@@ -2793,7 +2794,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-media-server"
-version = "0.25.160"
+version = "0.25.162"
 dependencies = [
  "anyhow",
  "clap",
@@ -2816,7 +2817,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-pbx"
-version = "0.25.160"
+version = "0.25.162"
 dependencies = [
  "dashmap 6.1.0",
  "fcp-b2bua-core",
@@ -2855,7 +2856,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-presence"
-version = "0.25.160"
+version = "0.25.162"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -2882,7 +2883,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-presence-server"
-version = "0.25.160"
+version = "0.25.162"
 dependencies = [
  "anyhow",
  "axum 0.7.9",
@@ -2913,7 +2914,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-queue"
-version = "0.25.160"
+version = "0.25.162"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2935,7 +2936,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-registrar"
-version = "0.25.160"
+version = "0.25.162"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2981,7 +2982,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-sbc"
-version = "0.25.160"
+version = "0.25.162"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3033,7 +3034,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-sbc-core"
-version = "0.25.160"
+version = "0.25.162"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -3113,7 +3114,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-storage-postgres"
-version = "0.25.160"
+version = "0.25.162"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3136,7 +3137,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-storage-redis"
-version = "0.25.160"
+version = "0.25.162"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3157,7 +3158,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-testkit"
-version = "0.25.160"
+version = "0.25.162"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3190,7 +3191,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-tts-server"
-version = "0.25.160"
+version = "0.25.162"
 dependencies = [
  "anyhow",
  "axum 0.7.9",
@@ -3228,7 +3229,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-voicemail-server"
-version = "0.25.160"
+version = "0.25.162"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3272,7 +3273,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-webhooks"
-version = "0.25.160"
+version = "0.25.162"
 dependencies = [
  "fcp-core",
  "fcp-events",
@@ -3290,7 +3291,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-webrtc-gateway"
-version = "0.25.160"
+version = "0.25.162"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3299,11 +3300,13 @@ dependencies = [
  "bytes",
  "clap",
  "dashmap 6.1.0",
+ "fcp-cdr",
  "fcp-cluster",
  "fcp-core",
  "fcp-events",
  "fcp-media",
  "fcp-sip",
+ "fcp-storage-postgres",
  "fcp-storage-redis",
  "fcp-testkit",
  "forge-api",
@@ -6840,9 +6843,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.38"
+version = "0.23.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "69f9466fb2c14ea04357e91413efb882e2a6d4a406e625449bc0a5d360d53a21"
+checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
 dependencies = [
  "aws-lc-rs",
  "log",

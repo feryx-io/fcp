@@ -13,6 +13,11 @@ tcp_bind = "0.0.0.0:5060"
 [storage]
 database_url = "postgresql://postgres:password@postgres:5432/fcp"
 
+# Each participant's leg record spools here before it is stored
+# (docs/CDR_PIPELINE.md); a persistent volume.
+[cdr]
+spool_dir = "/var/lib/fcp/cdr-spool"
+
 [http]
 bind_address = "0.0.0.0:8090"
 # auth_enabled = true

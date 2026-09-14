@@ -695,10 +695,46 @@ async fn main() -> Result<()> {
     let _media_manager = create_media_manager(&config).await?;
 
     // 15. Create CallManager for B2BUA call tracking
-    let call_manager = Arc::new(fcp_sip::CallManager::with_storage_and_events(
+    let mut call_manager_inner = fcp_sip::CallManager::with_storage_and_events(
         Arc::clone(&dyn_storage),
         Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>,
-    ));
+    );
+    call_manager_inner.set_node_id(&config.service.node_id);
+    let region = config
+        .cluster
+        .region
+        .clone()
+        .or_else(|| std::env::var("FCP_REGION").ok());
+    call_manager_inner.set_region(region.clone());
+
+    // 15b. The CDR pipeline's node side (docs/CDR_PIPELINE.md): each
+    // participant's leg record spools here and ships to the in-process
+    // processor, or with `[cdr] sink = "stream"` to the Redis stream.
+    let cdr_writer = {
+        let billing = call_manager_inner
+            .billing()
+            .cloned()
+            .context("call manager has no billing engine")?;
+        let processor = Arc::new(fcp_sip::CallManager::processor(
+            &dyn_storage,
+            &billing,
+            Some(Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>),
+        ));
+        #[cfg(feature = "storage-redis")]
+        let stream: Option<Arc<dyn fcp_cdr::sink::Sink>> = redis_storage.as_ref().map(|redis| {
+            Arc::new(fcp_storage_redis::cdr_stream::RedisCdrStream::new(
+                redis.clone(),
+                config.service.node_id.clone(),
+                Duration::from_secs(24 * 3600),
+            )) as Arc<dyn fcp_cdr::sink::Sink>
+        });
+        #[cfg(not(feature = "storage-redis"))]
+        let stream: Option<Arc<dyn fcp_cdr::sink::Sink>> = None;
+        fcp_cdr::start_node(&config.cdr, Some(processor), stream)
+            .context("Failed to start the CDR spool")?
+    };
+    call_manager_inner.set_cdr_writer(cdr_writer.clone());
+    let call_manager = Arc::new(call_manager_inner);
 
     // 16. Create RTP port pool for conference participants
     let port_pool = Arc::new(PortPool::new(
@@ -779,6 +815,7 @@ async fn main() -> Result<()> {
         config.service.node_id.clone(),
     );
     conference_handler.set_video_backend(video_backend);
+    conference_handler.set_cdr(cdr_writer, region);
     conference_handler.set_video_capacity(Arc::clone(&video_capacity));
 
     // Initialize TTS service if configured (supports local/Kokoro + cloud providers)
@@ -1830,6 +1867,10 @@ async fn main() -> Result<()> {
     if let Some(tx) = trunk_shutdown_tx {
         let _ = tx.send(true);
         tokio::time::sleep(Duration::from_secs(4)).await;
+    }
+    // The legs' records, written as the rooms emptied, leave before we do.
+    if let Some(writer) = call_manager.cdr_writer() {
+        writer.flush(Duration::from_secs(5)).await;
     }
     listener.stop().await?;
     info!("Shutdown complete");

@@ -21,6 +21,7 @@ path = "src/main.rs"
 [dependencies]
 # FCP crates
 fcp-core = { path = "../fcp-core" }
+fcp-cdr = { path = "../fcp-cdr" }
 fcp-sip = { path = "../fcp-sip", features = ["tls", "ws"] }
 fcp-media = { path = "../fcp-media" }
 
@@ -74,10 +75,11 @@ socket2 = "0.5"
 uuid = { workspace = true }
 
 fcp-events = { path = "../fcp-events" }
-fcp-storage-redis = { path = "../fcp-storage-redis", optional = true }
+fcp-storage-redis = { path = "../fcp-storage-redis", features = ["cdr"], optional = true }
 fcp-cluster = { path = "../fcp-cluster", optional = true }
 
 [dev-dependencies]
 fcp-testkit = { path = "../fcp-testkit" }
+fcp-storage-postgres = { path = "../fcp-storage-postgres" }
 tempfile = "3"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

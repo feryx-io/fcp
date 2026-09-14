@@ -8,6 +8,7 @@
 //! `FCP_TEST_DATABASE_URL` (and `FCP_TEST_REDIS_URL` for the cluster).
 
 use bytes::Bytes;
+use fcp_core::storage::{CdrKind, HangupParty};
 use fcp_core::{JoinRole, JoinToken};
 use fcp_testkit::cluster::{ClusterOptions, ConferenceCluster};
 use fcp_testkit::media::{allocate_port_pair, tone_frame, Codec, ToneDetector};
@@ -32,6 +33,7 @@ const A_WHILE: Duration = Duration::from_secs(20);
 struct Gateway {
     service: Option<Service>,
     http: u16,
+    _dir: tempfile::TempDir,
 }
 
 impl Gateway {
@@ -43,9 +45,13 @@ impl Gateway {
         let http = free_port();
         // The gateway wants 400 ports: a band below the phones' 30000+.
         let rtp_start = 20000 + (uuid::Uuid::new_v4().as_u128() % 20) as u16 * 400;
+        let dir = tempfile::tempdir().expect("tempdir");
+        // With Redis, the gateway's session records ship to the CDR stream
+        // (the only sink a node without a database has).
         let cluster = match cluster_redis {
             Some(redis) => format!(
-                "[storage]\nredis_url = \"{redis}\"\n\n[cluster]\nenabled = true\nheartbeat_interval_secs = 1\n"
+                "[storage]\nredis_url = \"{redis}\"\n\n[cluster]\nenabled = true\nheartbeat_interval_secs = 1\n\n[cdr]\nspool_dir = \"{}/cdr-spool\"\nsink = \"stream\"\n",
+                dir.path().display()
             ),
             None => String::new(),
         };
@@ -90,6 +96,7 @@ format = "compact"
         Self {
             service: Some(service),
             http,
+            _dir: dir,
         }
     }
 
@@ -523,5 +530,84 @@ async fn a_browser_survives_its_node_draining() {
     }
     gw.service.take().unwrap().stop().await;
     cluster.stop_all().await;
+
+    // The records (docs/CDR_PIPELINE.md §5): the gateway's session, from the
+    // stream, stored by a processor as fcp-jobs would; and the browser's leg
+    // on each node, the drained one and the one it moved to, all under the
+    // session's call id.
+    let consumer = store_the_stream(db.url(), &cluster.redis_url).await;
+    let sessions = seed.cdrs(Some(CdrKind::Gateway), 1, A_WHILE).await;
+    let session = &sessions[0];
+    assert_eq!(session.tenant_id, seed.tenant_id, "{session:#?}");
+    assert_eq!(session.to_uri, format!("conference:{ROOM}"), "{session:#?}");
+    assert!(session.answer_time.is_some(), "{session:#?}");
+    assert_eq!(
+        session.hangup_party,
+        Some(HangupParty::Caller),
+        "{session:#?}"
+    );
+    assert_eq!(session.node_id.as_deref(), Some("e2e-webrtc-gw"));
+    assert!(
+        session.rtp_packets_received.unwrap_or(0) > 0,
+        "{session:#?}"
+    );
+    let legs: Vec<_> = seed
+        .cdrs(Some(CdrKind::Conference), 3, A_WHILE)
+        .await
+        .into_iter()
+        .filter(|r| r.call_id == session.call_id)
+        .collect();
+    assert_eq!(legs.len(), 2, "the browser's leg on each node: {legs:#?}");
+    let moved = legs
+        .iter()
+        .find(|r| {
+            r.custom_data
+                .as_ref()
+                .is_some_and(|d| !d["migrated_to"].is_null())
+        })
+        .unwrap_or_else(|| panic!("no record of the leg that moved: {legs:#?}"));
+    assert_eq!(moved.hangup_party, Some(HangupParty::System), "{moved:#?}");
+    let arrived = legs
+        .iter()
+        .find(|r| {
+            r.custom_data
+                .as_ref()
+                .is_some_and(|d| !d["migrated_from"].is_null())
+        })
+        .unwrap_or_else(|| panic!("no record of the leg that arrived: {legs:#?}"));
+    assert_ne!(moved.node_id, arrived.node_id);
+    consumer.stop().await;
     db.drop_db().await;
+}
+
+/// A processor consuming the CDR stream into the test database, as the
+/// one in fcp-jobs does.
+async fn store_the_stream(db_url: &str, redis_url: &str) -> fcp_cdr::Consumer {
+    let pg = fcp_storage_postgres::PostgresStorage::new(fcp_storage_postgres::PostgresConfig {
+        connection_string: db_url.to_string(),
+        max_connections: 2,
+        connection_timeout: Duration::from_secs(10),
+        encryption: None,
+        read_replica_url: None,
+        max_replica_lag: Duration::from_secs(5),
+    })
+    .await
+    .expect("connect to the test database");
+    let redis = fcp_storage_redis::RedisStorage::new(fcp_storage_redis::RedisConfig {
+        url: redis_url.to_string(),
+        ..Default::default()
+    })
+    .await
+    .expect("connect to redis");
+    let source = Arc::new(fcp_storage_redis::cdr_stream::RedisCdrStream::new(
+        redis,
+        "e2e-processor",
+        Duration::from_secs(3600),
+    ));
+    let store: Arc<dyn fcp_core::storage::CdrStore> = Arc::new(pg);
+    fcp_cdr::Consumer::spawn(
+        source,
+        Arc::new(fcp_cdr::Processor::new(store, None)),
+        fcp_cdr::ConsumerConfig::default(),
+    )
 }
