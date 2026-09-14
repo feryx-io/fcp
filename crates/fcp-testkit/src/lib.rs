@@ -17,6 +17,7 @@
 //!   crate's binary.
 
 pub mod bins;
+pub mod certs;
 pub mod db;
 pub mod media;
 pub mod phone;

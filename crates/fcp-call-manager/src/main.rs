@@ -451,10 +451,15 @@ async fn main() -> Result<()> {
 
     // Set up TCP response routing
     let (client_tx, client_rx) = tokio::sync::mpsc::channel(1024);
-    tcp_pool.set_inbound_tx(client_tx).await;
+    tcp_pool.set_inbound_tx(client_tx.clone()).await;
 
-    // 7. Create transport dispatcher
+    // 7. Create transport dispatcher. Responses arriving on the
+    // connections it opens — an INVITE sent over TLS answered on the same
+    // stream, as an inter-node conference trunk's is — must reach the
+    // inbound pipeline too; the dispatcher wires its TLS pool as well as
+    // the shared TCP one.
     let dispatcher = create_transport_dispatcher(&config, Arc::clone(&tcp_pool)).await?;
+    dispatcher.set_inbound_tx(client_tx).await;
 
     // 8. Create transaction manager with shared pool
     let transaction_manager = TransactionManager::new_with_pool(dispatcher.clone(), tcp_pool);

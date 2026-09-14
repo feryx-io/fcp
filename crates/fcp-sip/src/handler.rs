@@ -4583,22 +4583,17 @@ impl SipMessageHandler {
 
                             match meeting_result {
                                 Ok(Some(meeting)) if meeting.enabled => {
-                                    let conf_uri = {
-                                        let guard =
-                                            self.conference_server_uri_override.read().unwrap();
-                                        guard.clone().or_else(|| {
-                                            self.b2bua_config.conference_server_uri.clone()
-                                        })
-                                    };
-                                    if let Some(ref server_uri) = conf_uri {
-                                        // Build target URI: sip:{room_number}@{conference_host}
-                                        let host = server_uri
-                                            .strip_prefix("sip:")
-                                            .or_else(|| server_uri.strip_prefix("sips:"))
-                                            .unwrap_or(server_uri)
-                                            .split('@')
-                                            .next_back()
-                                            .unwrap_or(server_uri);
+                                    // The same placement as the other conference
+                                    // routes: the cluster's choice of node, else
+                                    // the configured conference server.
+                                    let conf_host = self
+                                        .conference_target_host(
+                                            &tenant_id,
+                                            extension_number,
+                                            ConferenceVideoNeed::of(&meeting).as_ref(),
+                                        )
+                                        .await;
+                                    if let Some(host) = conf_host.as_deref() {
                                         let target_uri =
                                             format!("sip:{}@{}", extension_number, host);
                                         self.mark_conference_call(&call_id, extension_number);

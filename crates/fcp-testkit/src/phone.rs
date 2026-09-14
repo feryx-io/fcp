@@ -114,6 +114,16 @@ impl Inner {
     /// Place a call to `target` (a bare number is a user or extension at
     /// the server) and follow it to its end on a task.
     async fn place_call(self: &Arc<Self>, target: &str) -> Result<Call> {
+        self.place_call_with_headers(target, sip_core::Headers::new())
+            .await
+    }
+
+    /// As [`Inner::place_call`], with extra request headers.
+    async fn place_call_with_headers(
+        self: &Arc<Self>,
+        target: &str,
+        headers: sip_core::Headers,
+    ) -> Result<Call> {
         let target = if target.starts_with("sip:") || target.starts_with("sips:") {
             target.to_string()
         } else {
@@ -124,7 +134,8 @@ impl Inner {
         let handle = Arc::new(
             tokio::time::timeout(
                 Duration::from_secs(5),
-                self.uac().invite(target.as_str(), Some(&offer)),
+                self.uac()
+                    .invite_with_headers(target.as_str(), Some(&offer), headers),
             )
             .await
             .context("INVITE could not be sent")??,
@@ -247,16 +258,31 @@ impl Inner {
     }
 
     /// A REFER arrived on `dialog`: dial `refer_to`, report, and on
-    /// success drop the old leg.
+    /// success drop the old leg. The Refer-To's URI headers become the
+    /// INVITE's request headers (RFC 3261 §19.1.5) — that is how a
+    /// migration ticket reaches the new node from a phone.
     async fn follow_refer(self: Arc<Self>, old_call_id: String, dialog: Dialog, refer_to: String) {
-        let target = refer_to
+        let raw = refer_to
             .split('<')
             .nth(1)
             .and_then(|s| s.split('>').next())
             .unwrap_or(&refer_to)
             .trim()
             .to_string();
-        let outcome = match self.place_call(&target).await {
+        let (target, headers) = match SipUri::parse(&raw) {
+            Ok(uri) => {
+                let mut headers = sip_core::Headers::new();
+                for (name, value) in uri.headers() {
+                    let _ = headers.push(
+                        smol_str::SmolStr::new(name.as_str()),
+                        smol_str::SmolStr::new(value.as_str()),
+                    );
+                }
+                (uri.without_uri_headers().as_str().to_string(), headers)
+            }
+            Err(_) => (raw, sip_core::Headers::new()),
+        };
+        let outcome = match self.place_call_with_headers(&target, headers).await {
             Ok(call) => match call.answered(Duration::from_secs(15)).await {
                 Ok(()) => Ok(()),
                 Err(_) => Err(match call.phase() {

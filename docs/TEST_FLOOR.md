@@ -121,7 +121,7 @@ One PR each, in order.
 | T1 ✅ v0.25.150 | The phone, the seed, the binary locator. Call manager: register (good and bad password, listed at `/registrations`), a call answered with audio heard both ways, hangup from either side, a CDR at `/cdrs` | `fcp-testkit`, `fcp-call-manager/tests/calls.rs` |
 | T2 ✅ v0.25.153 | Call features on the call manager: busy, decline, no answer within the forking timeout, an unregistered callee, hold and resume relayed, RFC 2833 DTMF through anchored media, DTMF INFO relayed, blind transfer (REFER, the new call, the old leg dropped) | `fcp-call-manager/tests/calls.rs` |
 | T3 ✅ v0.25.154 | Conference server: a room joined directly, the PIN entered by DTMF (guest and host, three wrong ones hung up), two phones hearing each other through the mixer, mute by DTMF and by API and a kick, the room's participants at `/conferences/{room}`, leave and auto-destroy; the same room reached through the call manager (the room number dialed as an extension, `conference_server_uri`) | `fcp-conference-server/tests/rooms.rs` |
-| T4 | Two conference nodes with Redis under `cluster.secret`: placement spreads a room past `conference_node_capacity`, a caller on each node hears the other over the trunk, and phase 5 end to end — SIGTERM one node, the caller through the call manager stays in the room on the other (same participant id, `migrated_from`), a phone that dialed the node directly follows the REFER itself | `fcp-conference-server/tests/cluster.rs` |
+| T4 ✅ v0.25.156 | Two conference nodes with Redis under `cluster.secret` and mutual-TLS trunks from a test CA: placement spreads a room past `conference_node_capacity`, a caller on each node hears the other over the trunk, and phase 5 end to end — SIGTERM one node, the caller through the call manager stays in the room on the other as the same participant, a phone that dialed the node directly follows the REFER itself | `fcp-conference-server/tests/cluster.rs` |
 | T5 | WebRTC gateway: a forge-webrtc peer standing in for the browser joins a room through the gateway's HTTP API and hears a phone in it; the migration swap under the browser against two real nodes | `fcp-webrtc-gateway/tests/rooms.rs` |
 
 *T1 shipped 2026-09-14 (v0.25.150).* As planned, with three things
@@ -196,6 +196,51 @@ from RFC 2833 as well as INFO and in-band; no join tone plays unless a
 sound file is configured, so the tones the tests listen for meet
 nothing else in the mix. The four run in about nine seconds after the
 build.
+
+*T4 shipped 2026-09-14 (v0.25.156).* Two scenarios in
+`crates/fcp-conference-server/tests/cluster.rs`, each starting two
+conference nodes and a call manager on one database and a Redis logical
+database of the test's own (the URL's `/N`, so membership and the
+registry never see another test's nodes — a random base per process
+and one index per test, since two tests drawing the same one at random
+placed callers on each other's nodes about once in fifteen runs), with
+inter-node trunks under mutual TLS from a CA the testkit mints with
+rcgen (`fcp_testkit::certs::ClusterCa`). Gated on `FCP_TEST_DATABASE_URL`
+and `FCP_TEST_REDIS_URL`. The two ran green only after **four product
+bugs**, none of which the unit tests or the earlier by-hand checks had
+found:
+
+1. **Placement never spread a room.** A room number dialed as an
+   unknown extension took the third routing branch, which read
+   `conference_server_uri` directly and never asked the cluster; it now
+   goes through `conference_target_host` like the other two. Then the
+   rule itself: a hosting node full for the room was excluded from the
+   hosting step and re-included in the least-loaded step, where every
+   conference node tied on load and the tie fell to node id — the same
+   node every time, so `conference_node_capacity` capped nothing. A node
+   at capacity for a room is now out of the least-loaded step too (it is
+   used only when every live node is full).
+2. **Conference nodes advertised no load.** Nothing ever fed the node's
+   caller count into membership's `active_calls`, so "least loaded"
+   could not tell the nodes apart. The registry hook now carries the
+   node's total on every join and leave.
+3. **The dialing side of a trunk never heard the answer.** The
+   conference server wired the inbound channel into its TCP pool only;
+   the 200 OK to a trunk INVITE arrives on the outbound TLS connection
+   that carried the INVITE, and was dropped, so the dialer never started
+   its media bridge and audio crossed the trunk in neither direction.
+   `RealTransportDispatcher::set_inbound_tx` wires both pools; the
+   conference server and the call manager now call it.
+4. **A caller admitted as the drain began was hung up.** The drain took
+   one snapshot of its callers, REFERed them, and hung up whatever was
+   left — including a caller whose INVITE was answered just before the
+   SIGTERM and whose session landed after the snapshot. The drain now
+   takes a second pass for callers admitted since the first.
+
+The phone learnt what a phone does with a `Refer-To`'s URI headers: copy
+them into the INVITE as request headers (RFC 3261 §19.1.5), which is how
+Carol's migration ticket reaches the new node. The two scenarios take
+about six seconds together after the build.
 
 After each phase the manual checklist's rows that the phase covers get
 `Automated` in their Status column and the test name in Notes, so the

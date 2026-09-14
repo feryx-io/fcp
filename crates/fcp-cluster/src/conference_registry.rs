@@ -332,6 +332,29 @@ pub fn choose_conference_node(
             .map(|m| (*m).clone())
     };
 
+    // A node already at capacity for this room is full for it: the
+    // least-loaded step must not hand it the caller the hosting step
+    // just refused it (membership's load is a heartbeat old, and a tie
+    // there falls to node id — the same node, every time). Only when
+    // every live node is full does the room overfill one.
+    let full: Vec<&str> = if capacity == 0 {
+        Vec::new()
+    } else {
+        hosts
+            .iter()
+            .filter(|h| h.participants >= capacity)
+            .map(|h| h.node_id.as_str())
+            .collect()
+    };
+    let least_loaded_open = |candidates: &[&ClusterMember]| -> Option<ClusterMember> {
+        let open: Vec<&ClusterMember> = candidates
+            .iter()
+            .copied()
+            .filter(|m| !full.contains(&m.node_id.as_str()))
+            .collect();
+        least_loaded(&open).or_else(|| least_loaded(candidates))
+    };
+
     if let Some(region) = local_region {
         if let Some((_, member)) = hosting.iter().find(|(_, m)| m.in_region(region)) {
             return Some((*member).clone());
@@ -341,7 +364,7 @@ pub fn choose_conference_node(
             .copied()
             .filter(|m| m.in_region(region))
             .collect();
-        if let Some(pick) = least_loaded(&local) {
+        if let Some(pick) = least_loaded_open(&local) {
             return Some(pick);
         }
     }
@@ -349,7 +372,7 @@ pub fn choose_conference_node(
     if let Some((_, member)) = hosting.first() {
         return Some((*member).clone());
     }
-    least_loaded(&live)
+    least_loaded_open(&live)
 }
 
 #[cfg(test)]
@@ -448,6 +471,37 @@ mod tests {
         let mut all = members.clone();
         all[1].draining = true;
         assert!(choose_conference_node(&[], &all, 0, None, None).is_none());
+    }
+
+    #[test]
+    fn a_node_full_for_the_room_is_not_chosen_by_load_either() {
+        // conf-a hosts the room at capacity; membership still shows both
+        // nodes idle (the heartbeat is a second old) and conf-a sorts
+        // first by id. The caller must go to conf-b.
+        let members = vec![
+            member("conf-a", "conference", 0),
+            member("conf-b", "conference", 0),
+        ];
+        let pick = choose_conference_node(&[host("conf-a", 1)], &members, 1, None, None).unwrap();
+        assert_eq!(pick.node_id, "conf-b");
+        // The same in the caller's region.
+        let mut regional = members.clone();
+        regional[0].region = Some("east".into());
+        regional[1].region = Some("east".into());
+        let pick =
+            choose_conference_node(&[host("conf-a", 1)], &regional, 1, Some("east"), None).unwrap();
+        assert_eq!(pick.node_id, "conf-b");
+        // Every node full: the room overfills the least loaded one
+        // rather than refusing the caller.
+        let pick = choose_conference_node(
+            &[host("conf-a", 1), host("conf-b", 1)],
+            &members,
+            1,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(pick.node_id, "conf-a");
     }
 
     fn member(id: &str, node_type: &str, calls: usize) -> ClusterMember {
