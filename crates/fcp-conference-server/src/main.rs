@@ -407,10 +407,15 @@ async fn main() -> Result<()> {
     // 6. Create shared TCP connection pool
     let tcp_pool = Arc::new(ConnectionPool::new());
     let (client_tx, client_rx) = tokio::sync::mpsc::channel(1024);
-    tcp_pool.set_inbound_tx(client_tx).await;
+    tcp_pool.set_inbound_tx(client_tx.clone()).await;
 
-    // 7. Create transport dispatcher
+    // 7. Create transport dispatcher. Responses arriving on the
+    // connections it opens — an INVITE sent over TLS answered on the same
+    // stream, as an inter-node conference trunk's is — must reach the
+    // inbound pipeline too; the dispatcher wires its TLS pool as well as
+    // the shared TCP one.
     let dispatcher = create_transport_dispatcher(&config, Arc::clone(&tcp_pool)).await?;
+    dispatcher.set_inbound_tx(client_tx).await;
 
     // 8. Create transaction manager with shared pool
     let transaction_manager = TransactionManager::new_with_pool(dispatcher.clone(), tcp_pool);
@@ -1164,9 +1169,17 @@ async fn main() -> Result<()> {
         struct RedisRoomRegistry {
             registry: fcp_cluster::ConferenceRegistry,
             trunks: Option<Arc<trunks::TrunkManager>>,
+            /// Membership's active-call counter: the load this node
+            /// advertises, read by every heartbeat.
+            active_calls: Arc<std::sync::atomic::AtomicUsize>,
         }
         #[async_trait::async_trait]
         impl conference_handler::RoomRegistry for RedisRoomRegistry {
+            fn node_callers_changed(&self, total: usize) {
+                self.active_calls
+                    .store(total, std::sync::atomic::Ordering::Relaxed);
+            }
+
             async fn room_locked(&self, tenant_id: &str, room_number: &str) -> bool {
                 match self.registry.room(tenant_id, room_number).await {
                     Ok(record) => record.locked,
@@ -1203,6 +1216,7 @@ async fn main() -> Result<()> {
         conference_handler.set_room_registry(Arc::new(RedisRoomRegistry {
             registry: registry.clone(),
             trunks: trunk_manager,
+            active_calls: cm.active_calls_counter(),
         }));
 
         let refresh_handler = Arc::clone(&conference_handler);
@@ -1835,13 +1849,45 @@ async fn migrate_callers(
     local_region: Option<&str>,
     timeout: Duration,
 ) {
+    // Two passes: a caller admitted between the first snapshot and its
+    // REFERs (an INVITE answered just before the SIGTERM) would otherwise
+    // be hung up with the leftovers.
+    for pass in 0..2 {
+        let candidates = handler.migration_candidates().await;
+        if candidates.is_empty() {
+            return;
+        }
+        if pass > 0 {
+            info!(
+                callers = candidates.len(),
+                "Draining: callers admitted since the first pass"
+            );
+        }
+        migrate_once(
+            handler,
+            registry,
+            members,
+            local_region,
+            timeout,
+            candidates,
+        )
+        .await;
+    }
+}
+
+/// One round of the above: plan, REFER, wait for the reports.
+#[cfg(feature = "storage-redis")]
+async fn migrate_once(
+    handler: &Arc<conference_handler::ConferenceCallHandler>,
+    registry: &fcp_cluster::ConferenceRegistry,
+    members: &Arc<dashmap::DashMap<String, fcp_cluster::ClusterMember>>,
+    local_region: Option<&str>,
+    timeout: Duration,
+    candidates: Vec<migration::Candidate>,
+) {
     use futures::StreamExt;
     use std::collections::HashMap;
 
-    let candidates = handler.migration_candidates().await;
-    if candidates.is_empty() {
-        return;
-    }
     let mut hosts = HashMap::new();
     for c in &candidates {
         let key = (c.tenant_id.to_string(), c.room_number.clone());

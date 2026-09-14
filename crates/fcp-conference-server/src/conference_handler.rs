@@ -165,6 +165,11 @@ pub trait RoomRegistry: Send + Sync {
     async fn room_locked(&self, _tenant_id: &str, _room_number: &str) -> bool {
         false
     }
+
+    /// How many callers this node has across every room: what it
+    /// advertises as its load in cluster membership, so placement's
+    /// "least-loaded conference node" can tell the nodes apart.
+    fn node_callers_changed(&self, _total: usize) {}
 }
 
 /// What a room hears when the tenant asks for a recording announcement
@@ -781,6 +786,16 @@ impl ConferenceCallHandler {
             room_number.to_string(),
             self.countable_participants(room_number),
         );
+        registry.node_callers_changed(self.node_callers());
+    }
+
+    /// Callers on this node across every room (trunks and virtual
+    /// participants excluded).
+    pub fn node_callers(&self) -> usize {
+        self.active_rooms()
+            .iter()
+            .map(|(room, _)| self.countable_participants(room))
+            .sum()
     }
 
     pub fn start_draining(&self) {

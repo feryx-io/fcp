@@ -21,6 +21,7 @@ tempfile = "3"
 tokio = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
+rcgen = "0.13"
 
 # The seed writes fixtures the way the binaries read them.
 fcp-core = { path = "../fcp-core" }
