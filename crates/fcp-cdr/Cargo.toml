@@ -7,10 +7,12 @@ description = "The CDR pipeline: the record a node builds at hangup, the local s
 [dependencies]
 fcp-core = { path = "../fcp-core" }
 fcp-billing = { path = "../fcp-billing" }
+fcp-events = { path = "../fcp-events" }
 sip-sdp = { path = "../../external/siphon-rs/crates/sip-sdp" }
 
 anyhow.workspace = true
 async-trait = "0.1"
+rust_decimal.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -19,5 +21,6 @@ tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+rust_decimal_macros.workspace = true
 tempfile = "3"
 tokio = { workspace = true, features = ["test-util"] }

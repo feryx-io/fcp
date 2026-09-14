@@ -13,7 +13,8 @@
 //! stale ones easy to find and drop.
 
 use fcp_core::billing::{
-    BalanceTransactionKind, BalanceTransactionRequest, Rate, RatePlan, TenantBalance,
+    BalanceTransactionKind, BalanceTransactionRequest, BillingStore, Decimal, Rate, RatePlan,
+    TenantBalance,
 };
 use fcp_core::encryption::EncryptionStore;
 use fcp_core::recording::RecordingStore;
@@ -25,6 +26,7 @@ use fcp_core::storage::{ConferenceStore, TrunkStore, WebhookStore};
 use fcp_core::{CallId, PhoneNumber, StorageError, Tenant, TenantId};
 use fcp_crypto::EncryptionSettings;
 use fcp_storage_postgres::{PostgresConfig, PostgresStorage};
+use rust_decimal_macros::dec;
 use sqlx::{Connection, PgConnection};
 use std::time::{Duration, SystemTime};
 use uuid::Uuid;
@@ -174,7 +176,7 @@ fn cdr(
     tenant_id: TenantId,
     to_uri: &str,
     answered_ms: Option<u64>,
-    cost: Option<f64>,
+    cost: Option<Decimal>,
 ) -> CallDetailRecord {
     let start = SystemTime::now() - Duration::from_secs(120);
     let (disposition, answer_time) = match answered_ms {
@@ -241,8 +243,8 @@ fn rate_plan(tenant_id: TenantId, name: &str, is_default: bool) -> RatePlan {
         tenant_id,
         name: name.to_string(),
         currency: "USD".to_string(),
-        default_rate_per_minute: 0.02,
-        connect_fee: 0.0,
+        default_rate_per_minute: dec!(0.02),
+        connect_fee: Decimal::ZERO,
         billing_increment_secs: 60,
         is_default,
         enabled: true,
@@ -251,7 +253,7 @@ fn rate_plan(tenant_id: TenantId, name: &str, is_default: bool) -> RatePlan {
     }
 }
 
-fn rate(plan_id: Uuid, prefix: &str, per_minute: f64) -> Rate {
+fn rate(plan_id: Uuid, prefix: &str, per_minute: Decimal) -> Rate {
     Rate {
         id: Uuid::new_v4(),
         rate_plan_id: plan_id,
@@ -265,16 +267,16 @@ fn rate(plan_id: Uuid, prefix: &str, per_minute: f64) -> Rate {
 fn balance(tenant_id: TenantId, enforce: bool) -> TenantBalance {
     TenantBalance {
         tenant_id,
-        balance: 0.0,
+        balance: Decimal::ZERO,
         currency: "USD".to_string(),
-        credit_limit: 0.0,
+        credit_limit: Decimal::ZERO,
         enforce,
         low_balance_threshold: None,
         updated_at: SystemTime::now(),
     }
 }
 
-fn charge(tenant_id: TenantId, call_id: CallId, amount: f64) -> BalanceTransactionRequest {
+fn charge(tenant_id: TenantId, call_id: CallId, amount: Decimal) -> BalanceTransactionRequest {
     BalanceTransactionRequest {
         tenant_id,
         kind: BalanceTransactionKind::CallCharge,
@@ -300,8 +302,8 @@ fn is_not_found(e: &anyhow::Error) -> bool {
     )
 }
 
-fn approx(a: f64, b: f64) -> bool {
-    (a - b).abs() < 1e-9
+fn approx(a: Decimal, b: Decimal) -> bool {
+    a == b
 }
 
 // ─── Migrations ──────────────────────────────────────────────────────────
@@ -529,7 +531,7 @@ async fn cdrs_insert_query_count_and_aggregate() {
         a.id,
         "sip:+14155550100@a.example.com",
         Some(90_000),
-        Some(0.04),
+        Some(dec!(0.04)),
     );
     let answered_id = answered.call_id;
     s.insert_cdr(answered).await.unwrap();
@@ -537,7 +539,7 @@ async fn cdrs_insert_query_count_and_aggregate() {
         a.id,
         "sip:+442079460000@a.example.com",
         Some(30_000),
-        Some(0.03),
+        Some(dec!(0.03)),
     ))
     .await
     .unwrap();
@@ -548,7 +550,7 @@ async fn cdrs_insert_query_count_and_aggregate() {
         b.id,
         "sip:+14155550100@b.example.com",
         Some(10_000),
-        Some(1.0),
+        Some(dec!(1)),
     ))
     .await
     .unwrap();
@@ -557,7 +559,7 @@ async fn cdrs_insert_query_count_and_aggregate() {
     assert_eq!(got.tenant_id, a.id);
     assert_eq!(got.disposition, CallDisposition::Answered);
     assert_eq!(got.call_duration_ms, Some(90_000));
-    assert_eq!(got.cost, Some(0.04));
+    assert_eq!(got.cost, Some(dec!(0.04)));
     assert_eq!(got.currency.as_deref(), Some("USD"));
     assert_eq!(got.gateway_id.as_deref(), Some("trunk-a"));
 
@@ -636,7 +638,7 @@ async fn cdrs_insert_query_count_and_aggregate() {
     assert_eq!(agg.inbound_calls, 1);
     assert_eq!(agg.outbound_calls, 0);
     assert!(
-        approx(agg.total_cost, 0.07),
+        approx(agg.total_cost, dec!(0.07)),
         "total_cost = {}",
         agg.total_cost
     );
@@ -658,7 +660,7 @@ async fn cdrs_insert_query_count_and_aggregate() {
     // Tenant b's expensive call must not leak into a's aggregate.
     let agg_b = s.aggregate_usage(&b.id, from, to).await.unwrap();
     assert_eq!(agg_b.total_calls, 1);
-    assert!(approx(agg_b.total_cost, 1.0));
+    assert!(approx(agg_b.total_cost, dec!(1.0)));
 
     db.finish().await;
 }
@@ -675,7 +677,7 @@ async fn cdr_records_are_idempotent_by_cdr_id_and_keep_their_kind_and_pipeline_f
         a.id,
         "sip:+14155550100@a.example.com",
         Some(45_000),
-        Some(0.02),
+        Some(dec!(0.02)),
     );
     call.hangup_party = Some(fcp_core::storage::HangupParty::Callee);
     call.node_id = Some("node-1".into());
@@ -696,7 +698,7 @@ async fn cdr_records_are_idempotent_by_cdr_id_and_keep_their_kind_and_pipeline_f
 
     // A replay of the same record stores nothing and is not an error.
     let mut replay = call.clone();
-    replay.cost = Some(99.0);
+    replay.cost = Some(dec!(99));
     s.insert_cdr(replay).await.unwrap();
 
     // A queue segment of the same call sits beside the call's own record.
@@ -706,11 +708,34 @@ async fn cdr_records_are_idempotent_by_cdr_id_and_keep_their_kind_and_pipeline_f
     queue.kind = fcp_core::storage::CdrKind::Queue;
     s.insert_cdr(queue.clone()).await.unwrap();
 
-    // A second call record for the same call is refused: one per call.
+    // A second call record for the same call is refused: one per call. The
+    // refusal is a CdrRejected, and the batch it was in stores nothing.
     let mut duplicate = cdr(a.id, "sip:+14155550100@a.example.com", Some(1_000), None);
     duplicate.call_id = call.call_id;
     duplicate.cdr_id = Uuid::new_v4();
-    assert!(s.insert_cdr(duplicate).await.is_err());
+    let innocent = cdr(a.id, "sip:bob@a.example.com", Some(1_000), None);
+    let err = s
+        .insert_cdrs(vec![innocent.clone(), duplicate])
+        .await
+        .expect_err("a second call record");
+    assert!(
+        err.downcast_ref::<fcp_core::storage::CdrRejected>()
+            .is_some(),
+        "{err:#}"
+    );
+    assert!(
+        s.get_cdr(&innocent.call_id).await.unwrap().is_none(),
+        "rolled back"
+    );
+
+    // A batch reports which of its records are new.
+    let fresh = cdr(a.id, "sip:carol@a.example.com", Some(2_000), None);
+    let new = s
+        .insert_cdrs(vec![call.clone(), fresh.clone(), fresh.clone()])
+        .await
+        .unwrap();
+    assert_eq!(new, vec![fresh.cdr_id]);
+    s.insert_cdrs(vec![innocent.clone()]).await.unwrap();
 
     let all = s
         .query_cdrs(CdrQuery {
@@ -719,13 +744,13 @@ async fn cdr_records_are_idempotent_by_cdr_id_and_keep_their_kind_and_pipeline_f
         })
         .await
         .unwrap();
-    assert_eq!(all.len(), 2, "{all:#?}");
+    assert_eq!(all.len(), 4, "{all:#?}");
     let calls_only = CdrQuery {
         tenant_id: Some(a.id),
         kind: Some(fcp_core::storage::CdrKind::Call),
         ..Default::default()
     };
-    assert_eq!(s.count_cdrs(calls_only.clone()).await.unwrap(), 1);
+    assert_eq!(s.count_cdrs(calls_only.clone()).await.unwrap(), 3);
     let queues = s
         .query_cdrs(CdrQuery {
             tenant_id: Some(a.id),
@@ -742,7 +767,7 @@ async fn cdr_records_are_idempotent_by_cdr_id_and_keep_their_kind_and_pipeline_f
     assert_eq!(got.cdr_id, call.cdr_id);
     assert_eq!(got.kind, fcp_core::storage::CdrKind::Call);
     assert_eq!(got.schema_version, fcp_core::storage::CDR_SCHEMA_VERSION);
-    assert_eq!(got.cost, Some(0.02), "the replay changed nothing");
+    assert_eq!(got.cost, Some(dec!(0.02)), "the replay changed nothing");
     assert_eq!(
         got.hangup_party,
         Some(fcp_core::storage::HangupParty::Callee)
@@ -761,6 +786,42 @@ async fn cdr_records_are_idempotent_by_cdr_id_and_keep_their_kind_and_pipeline_f
     assert_eq!(got.billable_seconds, Some(60));
     assert!(got.rated_at.is_some());
     assert!(got.created_at.is_some());
+}
+
+#[tokio::test]
+async fn usage_sums_money_exactly_and_counts_the_stored_direction() {
+    let db = require_db!();
+    let s = db.storage();
+    let a = tenant("a");
+    s.put_tenant(a.clone()).await.unwrap();
+
+    // Ten charges of 0.1: a float column sums these to 0.9999999999999999.
+    let mut batch = Vec::new();
+    for i in 0..10 {
+        let mut r = cdr(
+            a.id,
+            "sip:+14155550100@a.example.com",
+            Some(60_000),
+            Some(dec!(0.1)),
+        );
+        // The enricher's direction; nothing in phone_numbers says so.
+        r.direction = Some(if i < 3 {
+            fcp_core::CallDirection::Inbound
+        } else {
+            fcp_core::CallDirection::Outbound
+        });
+        batch.push(r);
+    }
+    s.insert_cdrs(batch).await.unwrap();
+
+    let now = SystemTime::now();
+    let agg = s
+        .aggregate_usage(&a.id, now - Duration::from_secs(3600), now)
+        .await
+        .unwrap();
+    assert_eq!(agg.total_calls, 10);
+    assert_eq!(agg.total_cost, dec!(1));
+    assert_eq!((agg.inbound_calls, agg.outbound_calls), (3, 7));
 }
 
 #[tokio::test]
@@ -861,24 +922,24 @@ async fn rate_plans_default_flag_uniqueness_and_rates() {
     assert_eq!(defaults, vec![second.id]);
 
     // Rates: upsert on prefix replaces, longest-prefix data round-trips.
-    s.upsert_rate(&a.id, rate(second.id, "44", 0.03))
+    s.upsert_rate(&a.id, rate(second.id, "44", dec!(0.03)))
         .await
         .unwrap();
-    s.upsert_rate(&a.id, rate(second.id, "4420", 0.01))
+    s.upsert_rate(&a.id, rate(second.id, "4420", dec!(0.01)))
         .await
         .unwrap();
-    let mut replaced = rate(second.id, "44", 0.05);
+    let mut replaced = rate(second.id, "44", dec!(0.05));
     replaced.description = Some("UK".to_string());
     s.upsert_rate(&a.id, replaced).await.unwrap();
     let rates = s.list_rates(&a.id, second.id).await.unwrap();
     assert_eq!(rates.len(), 2);
     let uk = rates.iter().find(|r| r.prefix == "44").unwrap();
-    assert!(approx(uk.rate_per_minute, 0.05));
+    assert!(approx(uk.rate_per_minute, dec!(0.05)));
     assert_eq!(uk.description.as_deref(), Some("UK"));
 
     // Rates on a plan the tenant does not own are rejected.
     let err = s
-        .upsert_rate(&b.id, rate(second.id, "1", 0.01))
+        .upsert_rate(&b.id, rate(second.id, "1", dec!(0.01)))
         .await
         .unwrap_err();
     assert!(is_not_found(&err), "expected NotFound, got {err:#}");
@@ -934,7 +995,7 @@ async fn balances_settings_ledger_and_single_settlement() {
         .apply_balance_transaction(BalanceTransactionRequest {
             tenant_id: a.id,
             kind: BalanceTransactionKind::TopUp,
-            amount: 10.0,
+            amount: dec!(10),
             currency: "USD".to_string(),
             call_id: None,
             description: Some("card".to_string()),
@@ -942,62 +1003,62 @@ async fn balances_settings_ledger_and_single_settlement() {
         })
         .await
         .unwrap();
-    assert!(approx(topup.balance_after, 10.0));
+    assert!(approx(topup.balance_after, dec!(10.0)));
     let row = s
         .get_balance(&a.id)
         .await
         .unwrap()
         .expect("balance row created");
-    assert!(approx(row.balance, 10.0));
+    assert!(approx(row.balance, dec!(10.0)));
     assert!(!row.enforce);
     assert_eq!(row.currency, "USD");
 
     // Upserting settings keeps the amount.
     let mut settings = balance(a.id, true);
-    settings.credit_limit = 2.5;
-    settings.low_balance_threshold = Some(1.0);
+    settings.credit_limit = dec!(2.5);
+    settings.low_balance_threshold = Some(dec!(1));
     s.upsert_balance(settings).await.unwrap();
     let row = s.get_balance(&a.id).await.unwrap().unwrap();
     assert!(
-        approx(row.balance, 10.0),
+        approx(row.balance, dec!(10.0)),
         "amount preserved: {}",
         row.balance
     );
     assert!(row.enforce);
-    assert!(approx(row.credit_limit, 2.5));
-    assert_eq!(row.low_balance_threshold, Some(1.0));
-    assert!(approx(row.available(), 12.5));
+    assert!(approx(row.credit_limit, dec!(2.5)));
+    assert_eq!(row.low_balance_threshold, Some(dec!(1)));
+    assert!(approx(row.available(), dec!(12.5)));
 
     // A call charge debits; a second charge for the same call is a Conflict
     // and must roll back so the balance is untouched.
     let call_id = CallId::new();
     let debit = s
-        .apply_balance_transaction(charge(a.id, call_id, 0.06))
+        .apply_balance_transaction(charge(a.id, call_id, dec!(0.06)))
         .await
         .unwrap();
-    assert!(approx(debit.balance_after, 9.94));
+    assert!(approx(debit.balance_after, dec!(9.94)));
     assert_eq!(debit.call_id, Some(call_id));
     assert_eq!(debit.kind, BalanceTransactionKind::CallCharge);
 
     let err = s
-        .apply_balance_transaction(charge(a.id, call_id, 0.06))
+        .apply_balance_transaction(charge(a.id, call_id, dec!(0.06)))
         .await
         .unwrap_err();
     assert!(is_conflict(&err), "expected Conflict, got {err:#}");
     assert!(approx(
         s.get_balance(&a.id).await.unwrap().unwrap().balance,
-        9.94
+        dec!(9.94)
     ));
 
     // A different call charges normally; adjustments can go either way.
-    s.apply_balance_transaction(charge(a.id, CallId::new(), 0.04))
+    s.apply_balance_transaction(charge(a.id, CallId::new(), dec!(0.04)))
         .await
         .unwrap();
     let adj = s
         .apply_balance_transaction(BalanceTransactionRequest {
             tenant_id: a.id,
             kind: BalanceTransactionKind::Adjustment,
-            amount: -5.0,
+            amount: dec!(-5),
             currency: "USD".to_string(),
             call_id: None,
             description: Some("write-off".to_string()),
@@ -1005,7 +1066,7 @@ async fn balances_settings_ledger_and_single_settlement() {
         })
         .await
         .unwrap();
-    assert!(approx(adj.balance_after, 4.90));
+    assert!(approx(adj.balance_after, dec!(4.90)));
 
     // Ledger: newest first, paginated, tenant-scoped.
     let ledger = s.list_balance_transactions(&a.id, 10, 0).await.unwrap();
@@ -1043,7 +1104,7 @@ async fn balance_debits_serialize_under_concurrency() {
         let s = s.clone();
         let tenant_id = a.id;
         handles.push(tokio::spawn(async move {
-            s.apply_balance_transaction(charge(tenant_id, CallId::new(), 0.01))
+            s.apply_balance_transaction(charge(tenant_id, CallId::new(), dec!(0.01)))
                 .await
                 .unwrap()
         }));
@@ -1053,7 +1114,11 @@ async fn balance_debits_serialize_under_concurrency() {
     }
 
     let row = s.get_balance(&a.id).await.unwrap().unwrap();
-    assert!(approx(row.balance, -0.25), "balance = {}", row.balance);
+    assert!(
+        approx(row.balance, dec!(-0.25)),
+        "balance = {}",
+        row.balance
+    );
     assert_eq!(
         s.list_balance_transactions(&a.id, 100, 0)
             .await

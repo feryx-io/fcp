@@ -81,43 +81,70 @@ Initiated -> Ringing -> Established -> Terminated
 
 ### Overview
 
-CDRs are automatically generated when calls terminate. They capture caller/callee information, timestamps, durations, disposition, codec info, and SIP status codes.
+Every finished call produces a call detail record, which travels a
+pipeline from the node that owned the call to the database. The design and
+its phases are in [docs/CDR_PIPELINE.md](docs/CDR_PIPELINE.md); this is
+what exists.
 
-### CDR Generation Flow
+### On the node
 
-1. `CallManager` detects call termination (BYE, CANCEL, timeout)
-2. `create_and_insert_cdr()` maps `CallState` to `CallDisposition` and `HangupCause`
-3. Extracts SIP Call-ID from original INVITE headers
-4. Calculates setup, call, and total durations in milliseconds
-5. Extracts codec info from SDP on both legs
-6. Inserts `CallDetailRecord` into storage via `CdrStore::insert_cdr()`
+1. The handler ends the call with a `TerminationReason` (hung up by the
+   caller or the callee, cancelled, rejected with a status, no answer, a
+   platform decision, a setup failure), after taking the media session's
+   RTP counters.
+2. `CallManager::terminate_call_with` builds the record with
+   `fcp_cdr::RecordBuilder`: disposition, hangup cause, SIP status and
+   hangup party from the reason; durations; codecs parsed from each leg's
+   SDP; trunk, node and region; a fresh `cdr_id`. The queue handler builds
+   its own records the same way, as `kind = queue`.
+3. The record is appended to the node's spool (`[cdr] spool_dir`), a
+   directory of JSON Lines segments synced every 100 ms, and a shipper
+   drains the spool to the sink: the in-process processor
+   (`sink = "local"`, the default) or the Redis stream `fcp:cdrs`
+   (`sink = "stream"`). A database or Redis outage delays records; a
+   crash loses nothing that reached the page cache.
+
+### The processor
+
+In-process on the node, or in `fcp-jobs` with `[cdr] enabled = true`
+consuming the stream through the consumer group `cdr-processor`:
+
+1. **Normalize**: validate, fill the durations and the end time.
+2. **Enrich**: the call's direction, from the tenant's numbers.
+3. **Rate**: the tenant's default plan (cached for a minute in
+   `fcp-jobs`), stamping cost, currency, plan, prefix and billable
+   seconds. Money is exact decimal (`NUMERIC(18,6)` in the database).
+4. **Store**: the batch in one transaction, a replayed `cdr_id` skipped.
+   A record the database refuses is kept as a dead letter
+   (`fcp:cdrs:dead`, or the spool's `dead.jsonl`).
+5. **Settle**: one ledger charge per call, however often a record is
+   replayed.
+6. **Announce**: `cdr.written` on the event bus, for webhooks and the
+   WebSocket stream.
+
+Status and metrics: the call manager's `/cdr/status` and `/metrics`,
+`fcp-jobs`' `/status` (under `cdr`) and `/metrics`.
 
 ### CDR Fields
 
-The `CallDetailRecord` struct contains 30+ fields organized as:
+`fcp_core::storage::CallDetailRecord` (`fcp_cdr::Record`):
 
-- **Identity**: `call_id`, `tenant_id`, `sip_call_id`
-- **Parties**: `from_uri`, `to_uri`, display names
-- **Timestamps**: `start_time`, `answer_time`, `end_time`
+- **Identity**: `cdr_id`, `kind` (`call`, `queue`, `conference`, `gateway`), `schema_version`, `call_id`, `tenant_id`, `sip_call_id`, `correlation_id`
+- **Parties**: `from_uri`, `to_uri`, display names, `direction`
+- **Timestamps**: `start_time`, `answer_time`, `end_time`, `created_at`
 - **Durations**: `setup_duration_ms`, `call_duration_ms`, `total_duration_ms`
-- **Disposition**: `disposition` (Answered/Busy/NoAnswer/Failed/Cancelled), `hangup_cause`, `hangup_party`
+- **Disposition**: `disposition` (answered, busy, no_answer, failed, cancelled), `hangup_cause`, `hangup_party`
 - **SIP**: `sip_status_code`, `sip_reason`
-- **Media**: `media_anchored`, codec info, RTP statistics
-- **Billing**: `cost`, `currency`, `custom_data`
-
-### Async CDR Processing (fcp-jobs)
-
-The `fcp-jobs` worker processes CDR jobs from a Redis queue:
-
-1. Job payload is deserialized as `CallDetailRecord`
-2. Required fields (`from_uri`, `to_uri`) are validated
-3. CDR is stored via `CdrStore::insert_cdr()`
-4. Storage errors trigger retry with exponential backoff; invalid payloads fail permanently
+- **Where**: `node_id`, `region`, `trunk_name`, `gateway_id`, `route_id`
+- **Media**: `media_anchored`, codecs, RTP packets and bytes each way, loss and jitter, `recording_url`
+- **Billing**: `cost`, `currency`, `rate_plan_id`, `matched_prefix`, `billable_seconds`, `rated_at`
+- **Custom**: `custom_data` (the queue record's queue, agent, wait and handle times)
 
 ### REST API
 
 - `GET /v1/cdrs` — Query CDRs with filters (tenant, time range, disposition)
-- `GET /v1/cdrs/:call_id` — Get a specific CDR
+- `GET /v1/cdrs/:call_id` — Get a call's record
+- `GET /v1/cdrs/export` — CSV export
 
 ---
 

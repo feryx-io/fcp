@@ -6,21 +6,21 @@ use crate::hooks::{BillingHook, EventBusHook, NoopHook};
 use crate::rating::{dialed_digits_from_uri, rate_call, RatedCall};
 use async_trait::async_trait;
 use fcp_core::billing::{
-    BalanceTransaction, BalanceTransactionKind, BalanceTransactionRequest, Rate, RatePlan,
-    TenantBalance,
+    BalanceTransaction, BalanceTransactionKind, BalanceTransactionRequest, BillingStore, Decimal,
+    Rate, RatePlan, TenantBalance,
 };
-use fcp_core::storage::CdrStore;
 use fcp_core::{CallId, TenantId};
 use fcp_events::{BillingEvent, EventPublisher};
-use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime};
 use tracing::{debug, info, warn};
 
 /// The slice of storage the engine needs. Blanket-implemented for every
-/// [`CdrStore`] (so `Arc<DynStorage>` works directly); tests supply an
+/// [`BillingStore`] (so `Arc<DynStorage>` works directly); tests supply an
 /// in-memory implementation.
 #[async_trait]
-pub trait BillingStore: Send + Sync {
+pub trait LedgerStore: Send + Sync {
     async fn default_rate_plan(
         &self,
         tenant_id: &TenantId,
@@ -35,7 +35,7 @@ pub trait BillingStore: Send + Sync {
 }
 
 #[async_trait]
-impl<T: CdrStore + ?Sized> BillingStore for T {
+impl<T: BillingStore + ?Sized> LedgerStore for T {
     async fn default_rate_plan(
         &self,
         tenant_id: &TenantId,
@@ -55,6 +55,16 @@ impl<T: CdrStore + ?Sized> BillingStore for T {
     }
 }
 
+/// A call rated against its tenant's plan, before anything is charged.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Rating {
+    pub rated: RatedCall,
+    /// The rate plan the cost came from.
+    pub rate_plan_id: String,
+    /// Dialed digits the call was rated for.
+    pub destination: String,
+}
+
 /// Outcome of settling one call at CDR creation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Settlement {
@@ -65,29 +75,72 @@ pub struct Settlement {
     pub destination: String,
     /// Balance after the charge, when the tenant tracks a balance and the
     /// debit was applied.
-    pub balance_after: Option<f64>,
+    pub balance_after: Option<Decimal>,
+}
+
+type CachedPlan = Option<(RatePlan, Vec<Rate>)>;
+
+/// Tenants' default plans, each kept for a while after it was read
+/// (`docs/CDR_PIPELINE.md` §7).
+struct PlanCache {
+    ttl: Duration,
+    plans: Mutex<HashMap<TenantId, (Instant, CachedPlan)>>,
 }
 
 /// Billing engine. Cheap to clone (all state is shared).
 #[derive(Clone)]
 pub struct BillingEngine {
-    store: Arc<dyn BillingStore>,
+    store: Arc<dyn LedgerStore>,
     hook: Arc<dyn BillingHook>,
+    plan_cache: Option<Arc<PlanCache>>,
 }
 
 impl BillingEngine {
     /// Engine with no external hook (events are dropped). Accepts any
     /// store, typically `Arc<DynStorage>`.
-    pub fn new<S: BillingStore + 'static>(store: Arc<S>) -> Self {
+    pub fn new<S: LedgerStore + 'static>(store: Arc<S>) -> Self {
         Self::from_dyn(store)
     }
 
     /// Engine over an already type-erased store.
-    pub fn from_dyn(store: Arc<dyn BillingStore>) -> Self {
+    pub fn from_dyn(store: Arc<dyn LedgerStore>) -> Self {
         Self {
             store,
             hook: Arc::new(NoopHook),
+            plan_cache: None,
         }
+    }
+
+    /// Keep each tenant's default plan for `ttl` after reading it, instead
+    /// of reading it for every call. The CDR processor rates this way; a
+    /// plan changed now rates calls ending within `ttl` on the old plan.
+    pub fn with_plan_cache(mut self, ttl: Duration) -> Self {
+        self.plan_cache = Some(Arc::new(PlanCache {
+            ttl,
+            plans: Mutex::new(HashMap::new()),
+        }));
+        self
+    }
+
+    /// The tenant's default plan, from the cache when one is kept.
+    async fn default_plan(&self, tenant_id: &TenantId) -> anyhow::Result<CachedPlan> {
+        if let Some(cache) = &self.plan_cache {
+            let plans = cache.plans.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some((read_at, plan)) = plans.get(tenant_id) {
+                if read_at.elapsed() < cache.ttl {
+                    return Ok(plan.clone());
+                }
+            }
+        }
+        let plan = self.store.default_rate_plan(tenant_id).await?;
+        if let Some(cache) = &self.plan_cache {
+            cache
+                .plans
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(*tenant_id, (Instant::now(), plan.clone()));
+        }
+        Ok(plan)
     }
 
     /// Replace the hook.
@@ -123,7 +176,7 @@ impl BillingEngine {
             }
         };
 
-        let (plan, rates) = match self.store.default_rate_plan(tenant_id).await {
+        let (plan, rates) = match self.default_plan(tenant_id).await {
             Ok(Some(p)) => p,
             Ok(None) => return allow,
             Err(e) => {
@@ -150,8 +203,8 @@ impl BillingEngine {
                 info!(
                     tenant_id = %tenant_id,
                     destination = %dialed,
-                    available,
-                    required,
+                    available = %available,
+                    required = %required,
                     currency = %currency,
                     "Balance admission denied"
                 );
@@ -170,22 +223,19 @@ impl BillingEngine {
         decision
     }
 
-    /// Rate a finished call and debit the tenant's balance.
-    ///
-    /// Returns `None` when billing is not configured for the tenant or the
-    /// destination is not billable; otherwise the rating for the CDR plus the
-    /// balance after the charge. Failures are logged, never fatal — the CDR
-    /// is written regardless.
-    pub async fn settle(
+    /// Rate a finished call against the tenant's default plan, writing
+    /// nothing. `None` when the destination has no dialable digits or the
+    /// tenant has no plan (or the lookup failed, which is logged).
+    pub async fn rate(
         &self,
         tenant_id: &TenantId,
         call_id: CallId,
         to_uri: &str,
         duration_ms: u64,
-    ) -> Option<Settlement> {
+    ) -> Option<Rating> {
         let dialed = dialed_digits_from_uri(to_uri)?;
 
-        let (plan, rates) = match self.store.default_rate_plan(tenant_id).await {
+        let (plan, rates) = match self.default_plan(tenant_id).await {
             Ok(Some(p)) => p,
             Ok(None) => return None,
             Err(e) => {
@@ -197,15 +247,32 @@ impl BillingEngine {
         let rated = rate_call(&plan, &rates, &dialed, duration_ms);
         debug!(
             call_id = %call_id,
-            cost = rated.cost,
+            cost = %rated.cost,
             currency = %rated.currency,
             matched_prefix = ?rated.matched_prefix,
             billable_secs = rated.billable_secs,
             "Call rated"
         );
+        Some(Rating {
+            rated,
+            rate_plan_id: plan.id.to_string(),
+            destination: dialed,
+        })
+    }
 
-        let balance_after = if rated.cost > 0.0 {
-            self.charge(tenant_id, call_id, &rated).await
+    /// Charge a rated call to the tenant's balance and announce the rating.
+    /// Once per call: the ledger refuses a second charge for the same call,
+    /// which is logged and not an error. Returns the balance after the
+    /// charge, when the tenant tracks one.
+    pub async fn settle_rated(
+        &self,
+        tenant_id: &TenantId,
+        call_id: CallId,
+        rating: &Rating,
+    ) -> Option<Decimal> {
+        let rated = &rating.rated;
+        let balance_after = if rated.cost > Decimal::ZERO {
+            self.charge(tenant_id, call_id, rated).await
         } else {
             None
         };
@@ -218,16 +285,32 @@ impl BillingEngine {
                 currency: rated.currency.clone(),
                 matched_prefix: rated.matched_prefix.clone(),
                 billable_secs: rated.billable_secs,
-                destination: dialed.clone(),
+                destination: rating.destination.clone(),
                 balance_after,
                 timestamp: SystemTime::now(),
             })
             .await;
+        balance_after
+    }
 
+    /// Rate a finished call and debit the tenant's balance: [`rate`] then
+    /// [`settle_rated`].
+    ///
+    /// [`rate`]: BillingEngine::rate
+    /// [`settle_rated`]: BillingEngine::settle_rated
+    pub async fn settle(
+        &self,
+        tenant_id: &TenantId,
+        call_id: CallId,
+        to_uri: &str,
+        duration_ms: u64,
+    ) -> Option<Settlement> {
+        let rating = self.rate(tenant_id, call_id, to_uri, duration_ms).await?;
+        let balance_after = self.settle_rated(tenant_id, call_id, &rating).await;
         Some(Settlement {
-            rated,
-            rate_plan_id: Some(plan.id.to_string()),
-            destination: dialed,
+            rated: rating.rated,
+            rate_plan_id: Some(rating.rate_plan_id),
+            destination: rating.destination,
             balance_after,
         })
     }
@@ -238,7 +321,7 @@ impl BillingEngine {
         tenant_id: &TenantId,
         call_id: CallId,
         rated: &RatedCall,
-    ) -> Option<f64> {
+    ) -> Option<Decimal> {
         let before = match self.store.balance(tenant_id).await {
             Ok(Some(b)) => b,
             Ok(None) => return None,
@@ -338,7 +421,7 @@ impl BillingEngine {
         self.hook.on_event(balance_changed(txn)).await;
 
         let after = txn.balance_after;
-        if txn.amount >= 0.0 {
+        if txn.amount >= Decimal::ZERO {
             return;
         }
         if let Some(threshold) = before.low_balance_threshold {
@@ -354,7 +437,10 @@ impl BillingEngine {
                     .await;
             }
         }
-        if before.enforce && before.available() > 0.0 && after + before.credit_limit <= 0.0 {
+        if before.enforce
+            && before.available() > Decimal::ZERO
+            && after + before.credit_limit <= Decimal::ZERO
+        {
             self.hook
                 .on_event(BillingEvent::BalanceDepleted {
                     tenant_id: txn.tenant_id,
@@ -397,6 +483,7 @@ mod tests {
     use super::*;
     use crate::hooks::RecordingHook;
     use crate::rating::test_support::{plan, rate};
+    use rust_decimal_macros::dec;
     use std::collections::HashMap;
     use std::sync::Mutex;
     use uuid::Uuid;
@@ -411,7 +498,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl BillingStore for MemStore {
+    impl LedgerStore for MemStore {
         async fn default_rate_plan(
             &self,
             tenant_id: &TenantId,
@@ -442,9 +529,9 @@ mod tests {
                 .entry(request.tenant_id)
                 .or_insert_with(|| TenantBalance {
                     tenant_id: request.tenant_id,
-                    balance: 0.0,
+                    balance: Decimal::ZERO,
                     currency: request.currency.clone(),
-                    credit_limit: 0.0,
+                    credit_limit: Decimal::ZERO,
                     enforce: false,
                     low_balance_threshold: None,
                     updated_at: SystemTime::now(),
@@ -468,14 +555,14 @@ mod tests {
     }
 
     fn setup(
-        balance: f64,
+        balance: Decimal,
         enforce: bool,
-        threshold: Option<f64>,
+        threshold: Option<Decimal>,
     ) -> (TenantId, Arc<MemStore>, Arc<RecordingHook>, BillingEngine) {
         let mut p = plan();
         let tenant = p.tenant_id;
-        let rates = vec![rate(p.id, "44", 0.03)];
-        p.default_rate_per_minute = 0.02;
+        let rates = vec![rate(p.id, "44", dec!(0.03))];
+        p.default_rate_per_minute = dec!(0.02);
         let store = Arc::new(MemStore::default());
         store.plans.lock().unwrap().insert(tenant, (p, rates));
         store.balances.lock().unwrap().insert(
@@ -484,7 +571,7 @@ mod tests {
                 tenant_id: tenant,
                 balance,
                 currency: "USD".into(),
-                credit_limit: 0.0,
+                credit_limit: Decimal::ZERO,
                 enforce,
                 low_balance_threshold: threshold,
                 updated_at: SystemTime::now(),
@@ -504,7 +591,7 @@ mod tests {
 
     #[tokio::test]
     async fn admit_allows_non_billable_destination() {
-        let (tenant, _, hook, engine) = setup(0.0, true, None);
+        let (tenant, _, hook, engine) = setup(dec!(0.0), true, None);
         let d = engine.admit(&tenant, "sip:alice@example.com").await;
         assert!(d.is_allowed());
         assert!(hook.events().is_empty());
@@ -512,7 +599,7 @@ mod tests {
 
     #[tokio::test]
     async fn admit_denies_and_emits_rejection() {
-        let (tenant, _, hook, engine) = setup(0.0, true, None);
+        let (tenant, _, hook, engine) = setup(dec!(0.0), true, None);
         let d = engine.admit(&tenant, "sip:+15550100@example.com").await;
         assert!(!d.is_allowed());
         assert_eq!(names(&hook), vec!["billing.call_rejected"]);
@@ -520,7 +607,7 @@ mod tests {
 
     #[tokio::test]
     async fn admit_caps_duration_when_enforced() {
-        let (tenant, _, _, engine) = setup(0.06, true, None);
+        let (tenant, _, _, engine) = setup(dec!(0.06), true, None);
         match engine.admit(&tenant, "sip:+15550100@example.com").await {
             AdmissionDecision::Allow { max_duration } => {
                 assert_eq!(max_duration, Some(Duration::from_secs(180)));
@@ -531,7 +618,7 @@ mod tests {
 
     #[tokio::test]
     async fn admit_ignores_unenforced_balance() {
-        let (tenant, _, _, engine) = setup(-5.0, false, None);
+        let (tenant, _, _, engine) = setup(dec!(-5.0), false, None);
         assert_eq!(
             engine.admit(&tenant, "sip:+15550100@example.com").await,
             AdmissionDecision::Allow { max_duration: None }
@@ -540,25 +627,25 @@ mod tests {
 
     #[tokio::test]
     async fn admit_allows_without_plan() {
-        let (tenant, store, _, engine) = setup(0.0, true, None);
+        let (tenant, store, _, engine) = setup(dec!(0.0), true, None);
         store.plans.lock().unwrap().clear();
         assert!(engine.admit(&tenant, "sip:+15550100@x").await.is_allowed());
     }
 
     #[tokio::test]
     async fn settle_rates_debits_and_emits() {
-        let (tenant, store, hook, engine) = setup(1.0, true, Some(0.95));
+        let (tenant, store, hook, engine) = setup(dec!(1.0), true, Some(dec!(0.95)));
         let call_id = CallId::new();
         let s = engine
             .settle(&tenant, call_id, "sip:+442079460000@x", 90_000)
             .await
             .expect("settled");
         // 90s → 120s billed at 0.03/min = 0.06
-        assert!((s.rated.cost - 0.06).abs() < 1e-9);
-        assert_eq!(s.balance_after, Some(0.94));
+        assert_eq!(s.rated.cost, dec!(0.06));
+        assert_eq!(s.balance_after, Some(dec!(0.94)));
         assert_eq!(s.destination, "442079460000");
         let bal = store.balances.lock().unwrap()[&tenant].balance;
-        assert!((bal - 0.94).abs() < 1e-9);
+        assert_eq!(bal, dec!(0.94));
         assert_eq!(
             names(&hook),
             vec![
@@ -571,7 +658,7 @@ mod tests {
 
     #[tokio::test]
     async fn settle_emits_depleted_when_enforced_balance_hits_zero() {
-        let (tenant, _, hook, engine) = setup(0.02, true, None);
+        let (tenant, _, hook, engine) = setup(dec!(0.02), true, None);
         engine
             .settle(&tenant, CallId::new(), "sip:+15550100@x", 60_000)
             .await
@@ -581,7 +668,7 @@ mod tests {
 
     #[tokio::test]
     async fn settle_does_not_emit_depleted_when_not_enforced() {
-        let (tenant, _, hook, engine) = setup(0.02, false, None);
+        let (tenant, _, hook, engine) = setup(dec!(0.02), false, None);
         engine
             .settle(&tenant, CallId::new(), "sip:+15550100@x", 60_000)
             .await
@@ -591,7 +678,7 @@ mod tests {
 
     #[tokio::test]
     async fn settle_is_idempotent_per_call() {
-        let (tenant, store, _, engine) = setup(1.0, true, None);
+        let (tenant, store, _, engine) = setup(dec!(1.0), true, None);
         let call_id = CallId::new();
         let first = engine
             .settle(&tenant, call_id, "sip:+15550100@x", 60_000)
@@ -601,19 +688,19 @@ mod tests {
             .settle(&tenant, call_id, "sip:+15550100@x", 60_000)
             .await
             .unwrap();
-        assert_eq!(first.balance_after, Some(0.98));
-        assert_eq!(second.balance_after, Some(0.98));
+        assert_eq!(first.balance_after, Some(dec!(0.98)));
+        assert_eq!(second.balance_after, Some(dec!(0.98)));
         assert_eq!(store.ledger.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]
     async fn settle_skips_debit_for_unanswered_call() {
-        let (tenant, store, hook, engine) = setup(1.0, true, None);
+        let (tenant, store, hook, engine) = setup(dec!(1.0), true, None);
         let s = engine
             .settle(&tenant, CallId::new(), "sip:+15550100@x", 0)
             .await
             .unwrap();
-        assert_eq!(s.rated.cost, 0.0);
+        assert_eq!(s.rated.cost, Decimal::ZERO);
         assert_eq!(s.balance_after, None);
         assert!(store.ledger.lock().unwrap().is_empty());
         assert_eq!(names(&hook), vec!["billing.call_rated"]);
@@ -621,25 +708,25 @@ mod tests {
 
     #[tokio::test]
     async fn settle_without_balance_row_only_rates() {
-        let (tenant, store, hook, engine) = setup(1.0, true, None);
+        let (tenant, store, hook, engine) = setup(dec!(1.0), true, None);
         store.balances.lock().unwrap().clear();
         let s = engine
             .settle(&tenant, CallId::new(), "sip:+15550100@x", 60_000)
             .await
             .unwrap();
-        assert!((s.rated.cost - 0.02).abs() < 1e-9);
+        assert_eq!(s.rated.cost, dec!(0.02));
         assert_eq!(s.balance_after, None);
         assert_eq!(names(&hook), vec!["billing.call_rated"]);
     }
 
     #[tokio::test]
     async fn top_up_emits_change_only() {
-        let (tenant, _, hook, engine) = setup(0.0, true, Some(1.0));
+        let (tenant, _, hook, engine) = setup(dec!(0.0), true, Some(dec!(1.0)));
         let txn = engine
             .apply_transaction(BalanceTransactionRequest {
                 tenant_id: tenant,
                 kind: BalanceTransactionKind::TopUp,
-                amount: 10.0,
+                amount: dec!(10),
                 currency: "USD".into(),
                 call_id: None,
                 description: Some("card payment".into()),
@@ -647,18 +734,18 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(txn.balance_after, 10.0);
+        assert_eq!(txn.balance_after, dec!(10));
         assert_eq!(names(&hook), vec!["billing.balance_changed"]);
     }
 
     #[tokio::test]
     async fn negative_adjustment_crossing_threshold_emits_low() {
-        let (tenant, _, hook, engine) = setup(2.0, false, Some(1.0));
+        let (tenant, _, hook, engine) = setup(dec!(2.0), false, Some(dec!(1.0)));
         engine
             .apply_transaction(BalanceTransactionRequest {
                 tenant_id: tenant,
                 kind: BalanceTransactionKind::Adjustment,
-                amount: -1.5,
+                amount: dec!(-1.5),
                 currency: "USD".into(),
                 call_id: None,
                 description: None,
@@ -670,5 +757,46 @@ mod tests {
             names(&hook),
             vec!["billing.balance_changed", "billing.balance_low"]
         );
+    }
+
+    #[tokio::test]
+    async fn rate_writes_nothing_and_settle_rated_charges_once() {
+        let (tenant, store, hook, engine) = setup(dec!(1), true, None);
+        let call_id = CallId::new();
+        let rating = engine
+            .rate(&tenant, call_id, "sip:+442079460000@x", 60_000)
+            .await
+            .expect("rated");
+        assert_eq!(rating.rated.cost, dec!(0.03));
+        assert!(store.ledger.lock().unwrap().is_empty());
+        assert!(hook.events().is_empty());
+
+        assert_eq!(
+            engine.settle_rated(&tenant, call_id, &rating).await,
+            Some(dec!(0.97))
+        );
+        engine.settle_rated(&tenant, call_id, &rating).await;
+        assert_eq!(store.ledger.lock().unwrap().len(), 1, "charged once");
+    }
+
+    #[tokio::test]
+    async fn the_plan_cache_serves_a_plan_until_it_expires() {
+        let (tenant, store, _, engine) = setup(dec!(1), false, None);
+        let engine = engine.with_plan_cache(Duration::from_millis(200));
+        assert!(engine
+            .rate(&tenant, CallId::new(), "sip:+15550100@x", 60_000)
+            .await
+            .is_some());
+        // The plan goes away; the cached copy still rates.
+        store.plans.lock().unwrap().clear();
+        assert!(engine
+            .rate(&tenant, CallId::new(), "sip:+15550100@x", 60_000)
+            .await
+            .is_some());
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        assert!(engine
+            .rate(&tenant, CallId::new(), "sip:+15550100@x", 60_000)
+            .await
+            .is_none());
     }
 }

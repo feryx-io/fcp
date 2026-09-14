@@ -50,7 +50,7 @@ Filter events for a specific call.
 Filter by event type categories.
 
 - **Type**: Comma-separated string
-- **Values**: `call`, `media`, `ivr`, `recording`, `system`
+- **Values**: `call`, `media`, `ivr`, `recording`, `system`, `billing`, `cdr`
 - **Example**: `call,media`
 
 ## Examples
@@ -301,6 +301,39 @@ Other billing types: `balance_low` (`balance`, `threshold`, `currency`),
 `balance_depleted` (`balance`, `credit_limit`, `currency`),
 `call_rejected` (`destination`, `available`, `required`, `currency`) and
 `call_cut_off` (`call_id`, `max_duration_secs`).
+
+Money fields are exact decimals serialized as JSON numbers.
+
+### CDR Events
+
+Emitted by the CDR processor once a record is in the database, rated
+where it could be (`docs/CDR_PIPELINE.md` §10). Subscribe a webhook to
+`cdr.written` to feed the rated record to a billing or analytics system.
+Delivery is at least once: a replayed batch announces its records again,
+so skip a `cdr_id` already seen.
+
+#### CDR Written
+
+```json
+{
+  "event_type": "cdr",
+  "cdr": {
+    "type": "written",
+    "cdr_id": "0f5bee62-94cc-4859-9798-de71d1decbbe",
+    "call_id": "call-123e4567-e89b-12d3-a456-426614174000",
+    "tenant_id": "tenant-123e4567-e89b-12d3-a456-426614174000",
+    "kind": "call",
+    "disposition": "answered",
+    "start_time": 1705584000,
+    "end_time": 1705584095,
+    "duration_ms": 90210,
+    "cost": 0.06,
+    "currency": "USD",
+    "node_id": "call-manager-1",
+    "timestamp": 1705584096
+  }
+}
+```
 
 ## Client Handling
 

@@ -422,7 +422,7 @@ impl App {
         &self,
         tenant: TenantId,
         answered_ms: Option<u64>,
-        cost: Option<f64>,
+        cost: Option<fcp_core::billing::Decimal>,
     ) -> CallId {
         self.seed_cdr_full(tenant, answered_ms, cost).await.0
     }
@@ -432,7 +432,7 @@ impl App {
         &self,
         tenant: TenantId,
         answered_ms: Option<u64>,
-        cost: Option<f64>,
+        cost: Option<fcp_core::billing::Decimal>,
     ) -> (CallId, String) {
         self.seed_cdr_aged(tenant, answered_ms, cost, Duration::from_secs(300))
             .await
@@ -443,7 +443,7 @@ impl App {
         &self,
         tenant: TenantId,
         answered_ms: Option<u64>,
-        cost: Option<f64>,
+        cost: Option<fcp_core::billing::Decimal>,
         age: Duration,
     ) -> (CallId, String) {
         let start = SystemTime::now() - age;
@@ -1531,10 +1531,28 @@ async fn database_api_tokens_authenticate_and_are_scoped() {
 #[tokio::test]
 async fn cdrs_usage_and_billing_summary() {
     let app = require_app!();
-    let a1 = app.seed_cdr(app.tenant_a, Some(58_000), Some(0.25)).await;
-    let _a2 = app.seed_cdr(app.tenant_a, Some(30_000), Some(0.10)).await;
+    let a1 = app
+        .seed_cdr(
+            app.tenant_a,
+            Some(58_000),
+            Some(rust_decimal_macros::dec!(0.25)),
+        )
+        .await;
+    let _a2 = app
+        .seed_cdr(
+            app.tenant_a,
+            Some(30_000),
+            Some(rust_decimal_macros::dec!(0.10)),
+        )
+        .await;
     let _a3 = app.seed_cdr(app.tenant_a, None, None).await;
-    let b1 = app.seed_cdr(app.tenant_b, Some(10_000), Some(1.00)).await;
+    let b1 = app
+        .seed_cdr(
+            app.tenant_b,
+            Some(10_000),
+            Some(rust_decimal_macros::dec!(1.00)),
+        )
+        .await;
 
     // The platform token is a cross-tenant reporting identity: with no
     // tenant selected it sees every tenant's records...
@@ -4198,7 +4216,11 @@ async fn compliance_policy_audit_log_export_and_retention() {
 
     // ── Export ──
     let (_, _) = app
-        .seed_cdr_full(app.tenant_a, Some(5_000), Some(0.10))
+        .seed_cdr_full(
+            app.tenant_a,
+            Some(5_000),
+            Some(rust_decimal_macros::dec!(0.10)),
+        )
         .await;
     let (_, _) = app.seed_cdr_full(app.tenant_a, None, None).await;
     let (_, _) = app.seed_cdr_full(app.tenant_b, Some(1_000), None).await;

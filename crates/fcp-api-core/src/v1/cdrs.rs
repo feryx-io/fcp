@@ -68,7 +68,7 @@ pub struct CdrResponse {
     pub rtp_packets_lost: Option<u64>,
     pub rtp_jitter_ms: Option<f64>,
     pub recording_url: Option<String>,
-    pub cost: Option<f64>,
+    pub cost: Option<fcp_core::billing::Decimal>,
     pub currency: Option<String>,
     pub rate_plan_id: Option<String>,
     pub matched_prefix: Option<String>,

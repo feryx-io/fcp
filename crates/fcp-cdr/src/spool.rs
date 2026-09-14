@@ -281,6 +281,17 @@ impl Spool {
         Ok((out, at))
     }
 
+    /// Keep a record the processor refused in `dead.jsonl`, with the
+    /// reason, for a person to look at.
+    pub fn dead_letter_record(&self, record: &CallDetailRecord, reason: &str) -> Result<()> {
+        let mut line = serde_json::to_vec(&serde_json::json!({
+            "reason": reason,
+            "record": record,
+        }))?;
+        line.push(b'\n');
+        self.dead_letter(&line)
+    }
+
     fn dead_letter(&self, line: &[u8]) -> Result<()> {
         let mut dead = OpenOptions::new()
             .create(true)

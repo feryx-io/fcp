@@ -4,8 +4,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use fcp_core::storage::CallDetailRecord;
+use tracing::error;
 
 use crate::processor::Processor;
+use crate::spool::Spool;
 use crate::{Error, Result};
 
 /// Accepts a batch of records. `Ok` means every record in the batch is
@@ -20,28 +22,46 @@ pub trait Sink: Send + Sync {
 }
 
 /// The in-process sink: the processor runs right here, against the node's
-/// own store. This is the deployment without Redis.
+/// own store. Records the processor refuses are kept in the spool's
+/// `dead.jsonl`.
 pub struct LocalSink {
     processor: Arc<Processor>,
+    dead_letters: Option<Spool>,
 }
 
 impl LocalSink {
     pub fn new(processor: Arc<Processor>) -> Self {
-        Self { processor }
+        Self {
+            processor,
+            dead_letters: None,
+        }
+    }
+
+    /// Keep refused records in `spool`'s dead letters.
+    pub fn with_dead_letters(mut self, spool: Spool) -> Self {
+        self.dead_letters = Some(spool);
+        self
     }
 }
 
 #[async_trait]
 impl Sink for LocalSink {
     async fn ship(&self, records: Vec<CallDetailRecord>) -> Result<()> {
-        self.processor
-            .process(records)
-            .await
-            .map(|_| ())
-            .map_err(|e| match e {
-                Error::Store(inner) => Error::Store(inner),
-                other => Error::Sink(other.to_string()),
-            })
+        let outcome = self.processor.process(records).await?;
+        for rejection in outcome.rejected {
+            match &self.dead_letters {
+                Some(spool) => {
+                    if let Err(e) = spool.dead_letter_record(&rejection.record, &rejection.reason) {
+                        // Refuse the batch: it comes back and is tried again.
+                        return Err(Error::Sink(format!("could not keep a dead letter: {e}")));
+                    }
+                }
+                None => {
+                    error!(cdr_id = %rejection.record.cdr_id, reason = %rejection.reason, record = %serde_json::to_string(&rejection.record).unwrap_or_default(), "CDR refused and no spool to keep it in");
+                }
+            }
+        }
+        Ok(())
     }
 
     fn name(&self) -> &'static str {

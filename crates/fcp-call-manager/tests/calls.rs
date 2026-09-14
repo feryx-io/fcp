@@ -274,6 +274,18 @@ async fn a_call_is_answered_heard_both_ways_and_recorded() {
             && cdr["rtp_packets_sent"].as_u64().unwrap_or(0) > 0,
         "the anchored media's counters are on the record: {cdr}"
     );
+    // The pipeline's status: the spool drained (the cursor commits just
+    // after the record lands), one record stored here.
+    let deadline = tokio::time::Instant::now() + SOON;
+    let status = loop {
+        let status = stack.get("/cdr/status").await;
+        if status["spool"]["pending_bytes"] == 0 {
+            break status;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "{status}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    assert_eq!(status["processor"]["stored"], 1, "{status}");
 
     stack.finish().await;
 }

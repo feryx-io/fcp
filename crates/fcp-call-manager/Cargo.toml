@@ -43,7 +43,7 @@ forge-transcoder = { path = "../../external/forge-media/crates/forge-transcoder"
 
 # Storage backend
 fcp-storage-postgres = { path = "../fcp-storage-postgres" }
-fcp-storage-redis = { path = "../fcp-storage-redis", features = ["event-bus", "metrics"], optional = true }
+fcp-storage-redis = { path = "../fcp-storage-redis", features = ["event-bus", "metrics", "cdr"], optional = true }
 fcp-cluster = { path = "../fcp-cluster", optional = true }
 
 # SIP stack from siphon-rs

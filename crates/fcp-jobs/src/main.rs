@@ -3,6 +3,7 @@
 //! This service processes background jobs asynchronously using a Redis-backed queue.
 //! It supports multiple job types, retry logic, and priority queuing.
 
+mod cdr;
 mod cli;
 mod config;
 mod job;
@@ -29,6 +30,7 @@ struct AppState {
     config: JobsConfig,
     queue: Arc<JobQueue>,
     worker_pool: Arc<WorkerPool>,
+    cdr: Option<Arc<cdr::CdrRole>>,
 }
 
 #[tokio::main]
@@ -75,11 +77,23 @@ async fn main() -> Result<()> {
     // Start workers
     let worker_handles = worker_pool.start().await;
 
+    // The CDR processor role (docs/CDR_PIPELINE.md)
+    let cdr_role = if config.cdr.enabled {
+        Some(Arc::new(
+            cdr::CdrRole::start(&config)
+                .await
+                .context("Failed to start the CDR processor")?,
+        ))
+    } else {
+        None
+    };
+
     // Create application state
     let state = AppState {
         config: config.clone(),
         queue: Arc::new(queue),
         worker_pool: Arc::new(worker_pool),
+        cdr: cdr_role.clone(),
     };
 
     // Start health check server if enabled
@@ -87,6 +101,7 @@ async fn main() -> Result<()> {
         let app = Router::new()
             .route("/health", get(health_handler))
             .route("/status", get(status_handler))
+            .route("/metrics", get(metrics_handler))
             .layer(TraceLayer::new_for_http())
             .with_state(state.clone());
 
@@ -125,6 +140,12 @@ async fn main() -> Result<()> {
     // Wait for workers to finish
     for handle in worker_handles {
         let _ = handle.await;
+    }
+
+    // Finish the CDR batch in hand; what is unacknowledged stays in the
+    // stream for the next consumer.
+    if let Some(role) = &cdr_role {
+        role.stop().await;
     }
 
     // Shutdown health check server
@@ -213,6 +234,10 @@ async fn status_handler(State(state): State<AppState>) -> impl IntoResponse {
             "completed": stats.completed,
             "failed": stats.failed,
         },
+        "cdr": match &state.cdr {
+            Some(role) => role.status().await,
+            None => serde_json::Value::Null,
+        },
         "config": {
             "max_retries": state.config.retry.max_retries,
             "job_timeout_secs": state.config.workers.job_timeout.as_secs(),
@@ -221,6 +246,22 @@ async fn status_handler(State(state): State<AppState>) -> impl IntoResponse {
     });
 
     (StatusCode::OK, Json(status)).into_response()
+}
+
+/// Prometheus text: the CDR processor's counters when it runs here.
+async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse {
+    let body = match &state.cdr {
+        Some(role) => role.metrics(&state.config.service.node_id).await,
+        None => String::new(),
+    };
+    (
+        StatusCode::OK,
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; version=0.0.4",
+        )],
+        body,
+    )
 }
 
 /// Graceful shutdown signal handler

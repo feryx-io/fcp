@@ -485,8 +485,13 @@ async fn main() -> Result<()> {
             );
             // The CDR pipeline's node side (docs/CDR_PIPELINE.md §4.1).
             if let Some(billing) = manager.billing().cloned() {
-                let processor = Arc::new(fcp_sip::CallManager::processor(storage, &billing));
-                let writer = fcp_cdr::start_node(&sbc_config.storage.cdr, processor)
+                let processor = Arc::new(fcp_sip::CallManager::processor(
+                    storage,
+                    &billing,
+                    Some(Arc::clone(&sbc_hooks) as Arc<dyn fcp_events::EventPublisher>),
+                ));
+                // The SBC keeps no Redis: its records are stored locally.
+                let writer = fcp_cdr::start_node(&sbc_config.storage.cdr, processor, None)
                     .context("Failed to start the CDR spool")?;
                 manager.set_cdr_writer(writer);
             }

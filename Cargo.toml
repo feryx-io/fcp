@@ -10,7 +10,7 @@ resolver = "2"
 
 [workspace.package]
 edition = "2021"
-version = "0.25.159"
+version = "0.25.160"
 license = "MIT OR Apache-2.0"
 authors = ["FCP Team"]
 repository = "https://github.com/thevoiceguy/fcp.git"
@@ -25,6 +25,10 @@ thiserror = "1"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 uuid = { version = "1", features = ["v4", "serde"] }
+# Money is exact decimal (docs/CDR_PIPELINE.md §14.3). `serde-float` keeps it a
+# JSON number on every surface; strings are accepted too.
+rust_decimal = { version = "1", features = ["serde-float"] }
+rust_decimal_macros = "1"
 
 [patch."https://github.com/thevoiceguy/siphon-rs"]
 sip-sdp = { path = "external/siphon-rs/crates/sip-sdp" }

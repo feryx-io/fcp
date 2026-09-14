@@ -57,7 +57,7 @@ impl CallManager {
     /// Create a new call manager with storage backend for CDR creation.
     pub fn with_storage(storage: Arc<fcp_core::DynStorage>) -> Self {
         let billing = Arc::new(fcp_billing::BillingEngine::new(Arc::clone(&storage)));
-        let cdr = Self::direct_writer(&storage, &billing);
+        let cdr = Self::direct_writer(&storage, &billing, None);
         Self {
             calls: Arc::new(DashMap::new()),
             storage: Some(storage),
@@ -75,19 +75,30 @@ impl CallManager {
     fn direct_writer(
         storage: &Arc<fcp_core::DynStorage>,
         billing: &Arc<fcp_billing::BillingEngine>,
+        events: Option<Arc<dyn EventPublisher>>,
     ) -> fcp_cdr::CdrWriter {
-        fcp_cdr::CdrWriter::direct(Arc::new(Self::processor(storage, billing)))
+        fcp_cdr::CdrWriter::direct(Arc::new(Self::processor(storage, billing, events)))
     }
 
     /// The in-process processor for this node's records: stores into
-    /// `storage`, rates and settles through `billing`.
+    /// `storage`, fills the call's direction from the tenant's numbers,
+    /// rates and settles through `billing`, and announces `cdr.written` on
+    /// `events` (`docs/CDR_PIPELINE.md` §4.3).
     pub fn processor(
         storage: &Arc<fcp_core::DynStorage>,
         billing: &Arc<fcp_billing::BillingEngine>,
+        events: Option<Arc<dyn EventPublisher>>,
     ) -> fcp_cdr::Processor {
         let store: Arc<dyn fcp_core::storage::CdrStore> = storage.clone();
         let rater: Arc<dyn fcp_cdr::Rater> = billing.clone();
-        fcp_cdr::Processor::new(store, Some(rater))
+        let numbers: Arc<dyn fcp_core::storage::PhoneNumberStore> = storage.clone();
+        let processor = fcp_cdr::Processor::new(store, Some(rater)).with_enricher(Arc::new(
+            fcp_cdr::DirectionEnricher::new(numbers, std::time::Duration::from_secs(60)),
+        ));
+        match events {
+            Some(events) => processor.with_events(events),
+            None => processor,
+        }
     }
 
     /// Create a new call manager with storage and event publishing.
@@ -98,7 +109,7 @@ impl CallManager {
         let billing = Arc::new(
             fcp_billing::BillingEngine::new(Arc::clone(&storage)).with_events(Arc::clone(&events)),
         );
-        let cdr = Self::direct_writer(&storage, &billing);
+        let cdr = Self::direct_writer(&storage, &billing, Some(Arc::clone(&events)));
         Self {
             calls: Arc::new(DashMap::new()),
             storage: Some(storage),
