@@ -887,9 +887,80 @@ pub enum HangupParty {
     System,
 }
 
+/// What a call detail record is a record of. One `Call` record exists per
+/// call; the other kinds are records beside it, correlated by `call_id`
+/// (`docs/CDR_PIPELINE.md` §5).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CdrKind {
+    /// The call as the B2BUA saw it: the winning leg, start to end.
+    #[default]
+    Call,
+    /// A segment of a call spent in an ACD queue.
+    Queue,
+    /// A participant's leg on a conference server.
+    Conference,
+    /// A browser's session through the WebRTC gateway.
+    Gateway,
+}
+
+impl CdrKind {
+    /// The name stored in the database and shown by the API.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            CdrKind::Call => "call",
+            CdrKind::Queue => "queue",
+            CdrKind::Conference => "conference",
+            CdrKind::Gateway => "gateway",
+        }
+    }
+}
+
+impl std::str::FromStr for CdrKind {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "call" => Ok(CdrKind::Call),
+            "queue" => Ok(CdrKind::Queue),
+            "conference" => Ok(CdrKind::Conference),
+            "gateway" => Ok(CdrKind::Gateway),
+            other => Err(format!("unknown CDR kind: {other}")),
+        }
+    }
+}
+
+impl std::fmt::Display for CdrKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// The schema version stamped on records built by this build of the
+/// platform; the pipeline's normalizer decodes by it.
+pub const CDR_SCHEMA_VERSION: u16 = 1;
+
+fn default_cdr_schema_version() -> u16 {
+    CDR_SCHEMA_VERSION
+}
+
 /// Call Detail Record (CDR)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CallDetailRecord {
+    /// The record's own identity and the pipeline's idempotency key: minted
+    /// by the node that built the record, so a replay of the same record
+    /// stores nothing twice.
+    #[serde(default = "uuid::Uuid::new_v4")]
+    pub cdr_id: uuid::Uuid,
+
+    /// What this is a record of; `Call` unless stated.
+    #[serde(default)]
+    pub kind: CdrKind,
+
+    /// The record layout this record was built with.
+    #[serde(default = "default_cdr_schema_version")]
+    pub schema_version: u16,
+
     /// Unique call identifier (FCP internal)
     pub call_id: crate::CallId,
 
@@ -929,11 +1000,32 @@ pub struct CallDetailRecord {
     pub sip_status_code: Option<u16>,
     pub sip_reason: Option<String>,
 
+    /// Which way the call went, as the tenant's numbers say; stored so the
+    /// aggregates need not derive it per row. Filled by the pipeline's
+    /// enricher (phase 2); `None` until then.
+    #[serde(default)]
+    pub direction: Option<crate::call_state::CallDirection>,
+
+    /// The node that owned the call and the region it advertised.
+    #[serde(default)]
+    pub node_id: Option<String>,
+    #[serde(default)]
+    pub region: Option<String>,
+
+    /// The call this one replaced or was transferred from.
+    #[serde(default)]
+    pub correlation_id: Option<crate::CallId>,
+
+    /// The trunk the call left or arrived on.
+    #[serde(default)]
+    pub trunk_name: Option<String>,
+
     /// Routing information (placeholders for future use)
     pub route_id: Option<String>,
     pub gateway_id: Option<String>,
 
-    /// Media information
+    /// Media information. The RTP counters are totals over both legs as the
+    /// media session saw them at the end of the call.
     pub media_anchored: bool,
     pub codec_a_leg: Option<String>,
     pub codec_b_leg: Option<String>,
@@ -941,13 +1033,30 @@ pub struct CallDetailRecord {
     pub rtp_packets_received: Option<u64>,
     pub rtp_bytes_sent: Option<u64>,
     pub rtp_bytes_received: Option<u64>,
+    #[serde(default)]
+    pub rtp_packets_lost: Option<u64>,
+    #[serde(default)]
+    pub rtp_jitter_ms: Option<f64>,
 
     /// Recording
     pub recording_url: Option<String>,
 
-    /// Cost (for billing)
+    /// Cost (for billing), and what it came from.
     pub cost: Option<f64>,
     pub currency: Option<String>,
+    #[serde(default)]
+    pub rate_plan_id: Option<String>,
+    #[serde(default)]
+    pub matched_prefix: Option<String>,
+    #[serde(default)]
+    pub billable_seconds: Option<u32>,
+    #[serde(default, with = "optional_system_time_serde")]
+    pub rated_at: Option<SystemTime>,
+
+    /// When the row was written by the pipeline (`end_time` is when the
+    /// call ended).
+    #[serde(default, with = "optional_system_time_serde")]
+    pub created_at: Option<SystemTime>,
 
     /// Custom fields (JSON)
     pub custom_data: Option<serde_json::Value>,
@@ -958,6 +1067,9 @@ pub struct CallDetailRecord {
 pub struct CdrQuery {
     /// Filter by tenant ID
     pub tenant_id: Option<crate::TenantId>,
+
+    /// Filter by what the record is a record of; `None` lists every kind
+    pub kind: Option<CdrKind>,
     /// Filter by call ID
     pub call_id: Option<crate::CallId>,
     /// Filter by from URI (caller)

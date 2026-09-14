@@ -26,6 +26,11 @@ pub struct CallManagerConfig {
     #[serde(default)]
     pub storage: StorageSection,
 
+    /// The CDR pipeline's node side: where finished calls' records spool
+    /// before they ship (`docs/CDR_PIPELINE.md`).
+    #[serde(default)]
+    pub cdr: fcp_cdr::NodeConfig,
+
     /// HTTP health/API endpoint configuration
     #[serde(default)]
     pub http: HttpSection,

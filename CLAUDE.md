@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Ferrous Communications Platform (FCP)** is a next-generation, carrier-grade unified communications platform written entirely in Rust. The project aims to be a multi-tenant, API-first alternative to FreeSWITCH/Kamailio/Asterisk with built-in memory safety, modern async I/O, and observability.
 
-The repository contains 37 workspace crates spanning core libraries, application services, storage backends, and standalone binaries, plus two git submodules under `external/`: the siphon-rs SIP stack and the forge-media media stack. Both submodule repositories are public.
+The repository contains 38 workspace crates spanning core libraries, application services, storage backends, and standalone binaries, plus two git submodules under `external/`: the siphon-rs SIP stack and the forge-media media stack. Both submodule repositories are public.
 
 > **Current status lives in [STATUS.md](STATUS.md)** — the phase notes below describe scope, but STATUS.md is the maintained source of truth for what is done, partial, or absent.
 
@@ -109,7 +109,7 @@ The architecture document (`ARCHITECTURE-v0.2.md`) defines a layered platform wi
 
 ```
 fcp/
-├── Cargo.toml                    # Workspace root (37 crates)
+├── Cargo.toml                    # Workspace root (38 crates)
 ├── ARCHITECTURE-v0.2.md          # Detailed architecture and roadmap
 ├── IMPLEMENTATION_DOCS.md        # Implementation details for all subsystems
 ├── Phase1 plan.md                # Original MVP implementation plan
@@ -128,6 +128,7 @@ fcp/
 │   ├── fcp-pbx/                  # PBX feature library (parking, pickup, intercom, hunt groups)
 │   ├── fcp-policy/               # Dedicated policy engine (rules, evaluator, YAML store)
 │   ├── fcp-billing/              # Billing engine (rating, balance enforcement, settlement, hooks)
+│   ├── fcp-cdr/                  # CDR pipeline (record builder, local spool, shipper, processor)
 │   ├── fcp-crypto/               # Encryption at rest (AES-256-GCM field cipher, local/AWS KMS key providers)
 │   ├── fcp-routing/              # Policy-based call routing engine (re-exports fcp-policy)
 │   │
@@ -516,7 +517,7 @@ async fn handle_request(request: Request, tenant_id: TenantId) -> Result<()> {
 - Distributed conferencing (cascaded mixing) — all four phases shipped (registry + placement, mutual-TLS inter-node trunks with cascaded mixing, cross-node control under a shared `cluster.secret`, resilience: registry freshness, trunk liveness, draining, trunk SRTP; `docs/DISTRIBUTED_CONFERENCING.md`). Participant migration off a draining node shipped 2026-09-13 as phase 5: REFER with a signed ticket, executed by the call manager's B2BUA and the WebRTC gateway
 - Multi-region support — read replicas and region-aware cluster membership shipped (`docs/MULTI_REGION.md`: Postgres primary + per-region streaming replicas with configuration reads routed to a healthy replica; `[cluster] region` on every node's heartbeat, conference placement prefers the caller's region, admin API/UI show regions; the events server's `EventBridge` forwards each region's event stream to its `[[event_bus.peer_regions]]` with loop-safe envelopes, webhooks firing only in the origin region; CockroachDB dropped)
 - Video conferencing — design agreed (`docs/VIDEO_CONFERENCING.md`): mixing core, forwarding fast path, native codecs behind cargo features, GPU backend designed in (device-resident frames, placement by capability); phases 1–2 shipped in forge-media (substrate: RTCP feedback, payload formats, frame assembler, SDP video; mixer core: `forge-video` and `forge-video-codecs`), then phase 3 in FCP (per-section SDP, `VideoRoom` and the conference server's video leg per participant, live controls, the self-benchmark and budget-aware placement), phase 4 (WebRTC: the gateway's media path, join tokens and join page), phase 5 (WebM recording, trunk video, cross-node speaker) and phase 6 (passthrough fast path, bitrate ladder, overload shedding, nightly parser fuzzing in forge-media). Phase 7, screen share, is done (§15.6): 7a the content source kind and floor, 7b the RFC 4796 section on SIP, 7c a second video mid on WebRTC and the join page's share button, 7d content across trunks with a room-wide floor, 7e BFCP floor control for SIP room systems (`forge-bfcp`, `[conference] bfcp_bind`); phase 8 (GPU backend, §15.7) — 8a `forge-video-hw` over FFmpeg device contexts, 8b the pipeline on the device, 8c the node (`[conference] video_device`, the `video-hwaccel` feature, saturation budget, placement, the NVIDIA image; `docs/GPU.md`) — built on the GPU box `deploy/gcp-gpu` (`docs/GPU_BOX.md`); phase 9 (the MP4 recording sink, §15.9) — 9a `forge-mp4`, a fragmented-MP4 writer for H.264/HEVC/AV1 with Opus, 9b the recorder (`recording_format = mp4`, `recording-mp4` feature, `auto` picking MP4 where H.264 is encodable so a GPU room records on NVENC)
-- Dedicated CDR pipeline — designed 2026-09-14 (`docs/CDR_PIPELINE.md`): the node spools every record locally and ships it to a dedicated Redis stream, the processor in `fcp-jobs` normalizes, enriches, rates, stores and announces (`cdr.written`), then partitions, rollups and a streamed export; five phases, none started
+- Dedicated CDR pipeline — designed 2026-09-14 (`docs/CDR_PIPELINE.md`): the node spools every record locally and ships it to a dedicated Redis stream, the processor in `fcp-jobs` normalizes, enriches, rates, stores and announces (`cdr.written`), then partitions, rollups and a streamed export; five phases, phase 1 done (v0.25.159: `fcp-cdr` with the record builder, typed termination reasons and the local spool, `[cdr] spool_dir`)
 
 Descoped on 2026-09-02: SQLite backend, plugin runtime (WASM/Lua), gRPC API, standalone
 proxy worker. The vision document keeps them as history; STATUS.md is authoritative.

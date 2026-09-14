@@ -6,7 +6,7 @@
 use crate::queue_audio::{AnnouncementCache, MohCache, PromptCache};
 use anyhow::{bail, Context, Result};
 use dashmap::DashMap;
-use fcp_core::storage::{CallDetailRecord, CallDisposition, CdrStore, HangupCause};
+use fcp_core::storage::CdrKind;
 use fcp_core::{TenantId, TenantStore};
 use fcp_events::EventPublisher;
 use fcp_media::{construct_answer_for_a_leg, extract_telephone_event_pt, parse_sdp_codecs};
@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicU16, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 use tokio::task::JoinHandle;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 /// Supervisor monitoring/coaching mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -160,6 +160,10 @@ pub struct QueueCallHandler {
     moh_cache: Option<Arc<MohCache>>,
     prompt_cache: Option<Arc<PromptCache>>,
     storage: Arc<fcp_core::DynStorage>,
+    /// Where a finished queue segment's record goes (`docs/CDR_PIPELINE.md`).
+    cdr: fcp_sip::CdrWriter,
+    /// This node, on every record.
+    node_id: String,
     /// Maps callee Call-ID ↔ agent Call-ID for campaign calls (reverse BYE lookup).
     campaign_call_id_map: Arc<DashMap<String, String>>,
 }
@@ -182,6 +186,8 @@ impl QueueCallHandler {
         event_bus: Arc<dyn EventPublisher>,
         uac: Arc<SipUserAgentClient>,
         storage: Arc<fcp_core::DynStorage>,
+        cdr: fcp_sip::CdrWriter,
+        node_id: String,
     ) -> Self {
         // Load announcement audio if configured
         let announcement_cache = config.queue_audio_dir.as_ref().and_then(|dir| {
@@ -261,6 +267,8 @@ impl QueueCallHandler {
             moh_cache,
             prompt_cache,
             storage,
+            cdr,
+            node_id,
             campaign_call_id_map: Arc::new(DashMap::new()),
         };
 
@@ -1345,38 +1353,22 @@ impl QueueCallHandler {
                 "Queue session removed"
             );
 
-            // Spawn CDR creation (non-blocking)
-            let storage = Arc::clone(&self.storage);
-            let cdr_call_id = call_id.to_string();
-            let cdr_tenant_id = session.tenant_id;
-            let cdr_queue_name = session.queue_name.clone();
-            let cdr_caller_uri = session.caller_uri.clone();
-            let cdr_caller_display = session.caller_display.clone();
-            let cdr_codec_name = session.codec_name.clone();
-            let cdr_agent_codec = session.agent_codec_name.clone();
-            let cdr_enqueued_at = session.enqueued_at;
-            let cdr_answered_at = session.agent_answered_at;
-            let cdr_state = session.state;
-            let cdr_agent_id = session.ringing_agent.clone();
-            let cdr_recording = session.recording_path.clone();
-            tokio::spawn(async move {
-                create_queue_cdr(
-                    &storage,
-                    &cdr_call_id,
-                    cdr_tenant_id,
-                    &cdr_queue_name,
-                    &cdr_caller_uri,
-                    cdr_caller_display.as_deref(),
-                    &cdr_codec_name,
-                    cdr_agent_codec.as_deref(),
-                    cdr_enqueued_at,
-                    cdr_answered_at,
-                    cdr_state,
-                    cdr_agent_id.as_deref(),
-                    cdr_recording.as_deref(),
-                )
-                .await;
-            });
+            // The segment's record, off the call path through the writer.
+            self.cdr.write(queue_record(
+                call_id,
+                session.tenant_id,
+                &session.queue_name,
+                &session.caller_uri,
+                session.caller_display.as_deref(),
+                &session.codec_name,
+                session.agent_codec_name.as_deref(),
+                session.enqueued_at,
+                session.agent_answered_at,
+                session.state,
+                session.ringing_agent.as_deref(),
+                session.recording_path.as_deref(),
+                &self.node_id,
+            ));
 
             // Abort MOH if running
             if let Some(moh) = session.moh_handle {
@@ -3829,11 +3821,12 @@ fn extract_domain(uri: &str) -> String {
     uri.to_string()
 }
 
-/// Create and insert a CDR for a completed queue call.
+/// The record of a finished queue segment. Its `call_id` is minted here
+/// until phase 3 of the pipeline carries the B2BUA's; `sip_call_id` is the
+/// SIP Call-ID the segment ran under.
 #[allow(clippy::too_many_arguments)]
-async fn create_queue_cdr(
-    storage: &fcp_core::DynStorage,
-    call_id: &str,
+fn queue_record(
+    sip_call_id: &str,
     tenant_id: TenantId,
     queue_name: &str,
     caller_uri: &str,
@@ -3845,41 +3838,33 @@ async fn create_queue_cdr(
     state: QueueCallState,
     agent_id: Option<&str>,
     recording_path: Option<&str>,
-) {
+    node_id: &str,
+) -> fcp_cdr::Record {
     let now = SystemTime::now();
     let total_elapsed = enqueued_at.elapsed();
 
-    // Approximate start_time by subtracting elapsed from now
+    // The session keeps Instants; the record wants wall-clock times.
     let start_time = now.checked_sub(total_elapsed).unwrap_or(now);
+    let answer_time = agent_answered_at.map(|answered_at| {
+        start_time
+            .checked_add(answered_at.duration_since(enqueued_at))
+            .unwrap_or(now)
+    });
 
-    // Compute answer_time and durations
-    let (answer_time, setup_duration_ms, call_duration_ms) =
-        if let Some(answered_at) = agent_answered_at {
-            let wait_dur = answered_at.duration_since(enqueued_at);
-            let answer_sys = start_time.checked_add(wait_dur).unwrap_or(now);
-            let talk_dur = answered_at.elapsed();
-            (
-                Some(answer_sys),
-                Some(wait_dur.as_millis() as u64),
-                Some(talk_dur.as_millis() as u64),
-            )
-        } else {
-            (None, Some(total_elapsed.as_millis() as u64), None)
-        };
-
-    let (disposition, hangup_cause) = match state {
+    let reason = match state {
         QueueCallState::Connected | QueueCallState::OverflowedToDestination => {
-            (CallDisposition::Answered, HangupCause::NormalClearing)
+            fcp_cdr::TerminationReason::Hangup { by: None }
         }
-        QueueCallState::RingingAgent => (CallDisposition::NoAnswer, HangupCause::NoAnswer),
-        QueueCallState::WaitingInQueue => (CallDisposition::Cancelled, HangupCause::NoAnswer),
+        QueueCallState::RingingAgent => fcp_cdr::TerminationReason::NoAnswer,
+        QueueCallState::WaitingInQueue => fcp_cdr::TerminationReason::Cancelled,
     };
 
-    // Build queue metadata as custom_data
     let wait_time_ms = agent_answered_at
         .map(|a| a.duration_since(enqueued_at).as_millis() as u64)
         .unwrap_or(total_elapsed.as_millis() as u64);
-    let handle_time_ms = call_duration_ms.unwrap_or(0);
+    let handle_time_ms = agent_answered_at
+        .map(|a| a.elapsed().as_millis() as u64)
+        .unwrap_or(0);
     let outcome = match state {
         QueueCallState::Connected => "answered",
         QueueCallState::OverflowedToDestination => "overflowed",
@@ -3887,51 +3872,29 @@ async fn create_queue_cdr(
         QueueCallState::WaitingInQueue => "abandoned_waiting",
     };
 
-    let custom_data = serde_json::json!({
-        "queue_name": queue_name,
-        "agent_id": agent_id,
-        "wait_time_ms": wait_time_ms,
-        "handle_time_ms": handle_time_ms,
-        "outcome": outcome,
-    });
-
-    let cdr = CallDetailRecord {
-        call_id: fcp_core::CallId::new(),
-        tenant_id,
-        sip_call_id: call_id.to_string(),
-        from_uri: caller_uri.to_string(),
-        from_display_name: caller_display.map(|s| s.to_string()),
-        to_uri: format!("queue:{}", queue_name),
-        to_display_name: None,
-        start_time,
-        answer_time,
-        end_time: Some(now),
-        setup_duration_ms,
-        call_duration_ms,
-        total_duration_ms: Some(total_elapsed.as_millis() as u64),
-        disposition,
-        hangup_cause,
-        hangup_party: None,
-        sip_status_code: None,
-        sip_reason: None,
-        route_id: None,
-        gateway_id: None,
-        media_anchored: true,
-        codec_a_leg: Some(codec_name.to_string()),
-        codec_b_leg: agent_codec_name.map(|s| s.to_string()),
-        rtp_packets_sent: None,
-        rtp_packets_received: None,
-        rtp_bytes_sent: None,
-        rtp_bytes_received: None,
-        recording_url: recording_path.map(|s| s.to_string()),
-        cost: None,
-        currency: None,
-        custom_data: Some(custom_data),
-    };
-
-    if let Err(e) = storage.insert_cdr(cdr).await {
-        error!(call_id = %call_id, error = %e, "Failed to insert queue CDR");
-    }
+    fcp_cdr::RecordBuilder::new(CdrKind::Queue, fcp_core::CallId::new(), tenant_id)
+        .sip_call_id(sip_call_id)
+        .from(caller_uri, caller_display.map(|s| s.to_string()))
+        .to(format!("queue:{}", queue_name), None)
+        .started_at(start_time)
+        .answered_at(answer_time)
+        .ended_at(Some(now))
+        .reason(reason)
+        .media_anchored(true)
+        .codecs(
+            Some(codec_name.to_string()),
+            agent_codec_name.map(|s| s.to_string()),
+        )
+        .recording(recording_path.map(|s| s.to_string()))
+        .node(Some(node_id.to_string()), None)
+        .custom_data(Some(serde_json::json!({
+            "queue_name": queue_name,
+            "agent_id": agent_id,
+            "wait_time_ms": wait_time_ms,
+            "handle_time_ms": handle_time_ms,
+            "outcome": outcome,
+        })))
+        .build()
 }
 
 /// Task that dials a campaign number, waits for answer, then bridges to an agent.

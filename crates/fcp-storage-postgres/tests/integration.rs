@@ -185,6 +185,9 @@ fn cdr(
         None => (CallDisposition::NoAnswer, None),
     };
     CallDetailRecord {
+        cdr_id: uuid::Uuid::new_v4(),
+        kind: fcp_core::storage::CdrKind::Call,
+        schema_version: fcp_core::storage::CDR_SCHEMA_VERSION,
         call_id: CallId::new(),
         tenant_id,
         sip_call_id: format!("{}@test", Uuid::new_v4()),
@@ -215,6 +218,18 @@ fn cdr(
         recording_url: None,
         cost,
         currency: cost.map(|_| "USD".to_string()),
+        direction: None,
+        node_id: None,
+        region: None,
+        correlation_id: None,
+        trunk_name: None,
+        rtp_packets_lost: None,
+        rtp_jitter_ms: None,
+        rate_plan_id: None,
+        matched_prefix: None,
+        billable_seconds: None,
+        rated_at: None,
+        created_at: None,
         custom_data: None,
     }
 }
@@ -646,6 +661,164 @@ async fn cdrs_insert_query_count_and_aggregate() {
     assert!(approx(agg_b.total_cost, 1.0));
 
     db.finish().await;
+}
+
+#[tokio::test]
+async fn cdr_records_are_idempotent_by_cdr_id_and_keep_their_kind_and_pipeline_fields() {
+    let db = require_db!();
+    let s = db.storage();
+    let a = tenant("a");
+    s.put_tenant(a.clone()).await.unwrap();
+
+    // A call record with everything the node and the processor stamp.
+    let mut call = cdr(
+        a.id,
+        "sip:+14155550100@a.example.com",
+        Some(45_000),
+        Some(0.02),
+    );
+    call.hangup_party = Some(fcp_core::storage::HangupParty::Callee);
+    call.node_id = Some("node-1".into());
+    call.region = Some("us-east".into());
+    call.trunk_name = Some("carrier-a".into());
+    call.correlation_id = Some(CallId::new());
+    call.direction = Some(fcp_core::CallDirection::Outbound);
+    call.rtp_packets_sent = Some(2_250);
+    call.rtp_packets_received = Some(2_240);
+    call.rtp_packets_lost = Some(3);
+    call.rtp_jitter_ms = Some(4.5);
+    call.rate_plan_id = Some(Uuid::new_v4().to_string());
+    call.matched_prefix = Some("+1".into());
+    call.billable_seconds = Some(60);
+    call.rated_at = Some(SystemTime::now());
+    call.created_at = Some(SystemTime::now());
+    s.insert_cdr(call.clone()).await.unwrap();
+
+    // A replay of the same record stores nothing and is not an error.
+    let mut replay = call.clone();
+    replay.cost = Some(99.0);
+    s.insert_cdr(replay).await.unwrap();
+
+    // A queue segment of the same call sits beside the call's own record.
+    let mut queue = cdr(a.id, "queue:support", Some(30_000), None);
+    queue.call_id = call.call_id;
+    queue.cdr_id = Uuid::new_v4();
+    queue.kind = fcp_core::storage::CdrKind::Queue;
+    s.insert_cdr(queue.clone()).await.unwrap();
+
+    // A second call record for the same call is refused: one per call.
+    let mut duplicate = cdr(a.id, "sip:+14155550100@a.example.com", Some(1_000), None);
+    duplicate.call_id = call.call_id;
+    duplicate.cdr_id = Uuid::new_v4();
+    assert!(s.insert_cdr(duplicate).await.is_err());
+
+    let all = s
+        .query_cdrs(CdrQuery {
+            tenant_id: Some(a.id),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(all.len(), 2, "{all:#?}");
+    let calls_only = CdrQuery {
+        tenant_id: Some(a.id),
+        kind: Some(fcp_core::storage::CdrKind::Call),
+        ..Default::default()
+    };
+    assert_eq!(s.count_cdrs(calls_only.clone()).await.unwrap(), 1);
+    let queues = s
+        .query_cdrs(CdrQuery {
+            tenant_id: Some(a.id),
+            kind: Some(fcp_core::storage::CdrKind::Queue),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(queues.len(), 1);
+    assert_eq!(queues[0].cdr_id, queue.cdr_id);
+
+    // get_cdr answers with the call's own record, every field intact.
+    let got = s.get_cdr(&call.call_id).await.unwrap().expect("stored");
+    assert_eq!(got.cdr_id, call.cdr_id);
+    assert_eq!(got.kind, fcp_core::storage::CdrKind::Call);
+    assert_eq!(got.schema_version, fcp_core::storage::CDR_SCHEMA_VERSION);
+    assert_eq!(got.cost, Some(0.02), "the replay changed nothing");
+    assert_eq!(
+        got.hangup_party,
+        Some(fcp_core::storage::HangupParty::Callee)
+    );
+    assert_eq!(got.node_id.as_deref(), Some("node-1"));
+    assert_eq!(got.region.as_deref(), Some("us-east"));
+    assert_eq!(got.trunk_name.as_deref(), Some("carrier-a"));
+    assert_eq!(got.correlation_id, call.correlation_id);
+    assert_eq!(got.direction, Some(fcp_core::CallDirection::Outbound));
+    assert_eq!(got.rtp_packets_sent, Some(2_250));
+    assert_eq!(got.rtp_packets_received, Some(2_240));
+    assert_eq!(got.rtp_packets_lost, Some(3));
+    assert_eq!(got.rtp_jitter_ms, Some(4.5));
+    assert_eq!(got.rate_plan_id, call.rate_plan_id);
+    assert_eq!(got.matched_prefix.as_deref(), Some("+1"));
+    assert_eq!(got.billable_seconds, Some(60));
+    assert!(got.rated_at.is_some());
+    assert!(got.created_at.is_some());
+}
+
+#[tokio::test]
+async fn the_pipeline_migration_gives_existing_records_an_id_a_kind_and_a_trunk() {
+    let db = require_db!();
+    let s = db.storage();
+    let a = tenant("a");
+    s.put_tenant(a.clone()).await.unwrap();
+
+    // Rows as the MVP wrote them: no pipeline columns filled.
+    let pool = s.pool();
+    for (call_id, to_uri, gateway) in [
+        (CallId::new(), "sip:bob@a.example.com", Some("trunk-x")),
+        (CallId::new(), "queue:support", None),
+    ] {
+        sqlx::query(
+            "INSERT INTO cdrs (call_id, tenant_id, sip_call_id, from_uri, to_uri, start_time,
+                               disposition, hangup_cause, media_anchored, gateway_id)
+             VALUES ($1, $2, 'x@test', 'sip:alice@a.example.com', $3, now(), 'answered',
+                     'normal_clearing', true, $4)",
+        )
+        .bind(call_id.to_string())
+        .bind(a.id.to_string())
+        .bind(to_uri)
+        .bind(gateway)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+    // Replay the backfill statements of 057 on those rows.
+    sqlx::query("UPDATE cdrs SET cdr_id = md5(call_id)::uuid")
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE cdrs SET kind = 'queue' WHERE kind = 'call' AND to_uri LIKE 'queue:%'")
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE cdrs SET trunk_name = gateway_id WHERE trunk_name IS NULL AND gateway_id IS NOT NULL")
+        .execute(pool)
+        .await
+        .unwrap();
+
+    let rows = s
+        .query_cdrs(CdrQuery {
+            tenant_id: Some(a.id),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 2, "both rows still decode: {rows:#?}");
+    let queue = rows.iter().find(|r| r.to_uri == "queue:support").unwrap();
+    assert_eq!(queue.kind, fcp_core::storage::CdrKind::Queue);
+    let call = rows.iter().find(|r| r.to_uri != "queue:support").unwrap();
+    assert_eq!(call.kind, fcp_core::storage::CdrKind::Call);
+    assert_eq!(call.trunk_name.as_deref(), Some("trunk-x"));
+    assert!(!call.cdr_id.is_nil());
+    assert_ne!(call.cdr_id, queue.cdr_id);
 }
 
 // ─── Rate plans ──────────────────────────────────────────────────────────

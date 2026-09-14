@@ -455,6 +455,9 @@ impl App {
             None => (CallDisposition::NoAnswer, None),
         };
         let cdr = CallDetailRecord {
+            cdr_id: uuid::Uuid::new_v4(),
+            kind: fcp_core::storage::CdrKind::Call,
+            schema_version: fcp_core::storage::CDR_SCHEMA_VERSION,
             call_id: CallId::new(),
             tenant_id: tenant,
             sip_call_id: format!("{}@test", Uuid::new_v4()),
@@ -485,6 +488,18 @@ impl App {
             recording_url: None,
             cost,
             currency: cost.map(|_| "USD".to_string()),
+            direction: None,
+            node_id: None,
+            region: None,
+            correlation_id: None,
+            trunk_name: None,
+            rtp_packets_lost: None,
+            rtp_jitter_ms: None,
+            rate_plan_id: None,
+            matched_prefix: None,
+            billable_seconds: None,
+            rated_at: None,
+            created_at: None,
             custom_data: None,
         };
         let id = cdr.call_id;

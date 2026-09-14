@@ -10,6 +10,7 @@ repository.workspace = true
 # FCP dependencies
 fcp-core = { path = "../fcp-core" }
 fcp-b2bua-core = { path = "../fcp-b2bua-core" }
+fcp-cdr = { path = "../fcp-cdr" }
 fcp-sip = { path = "../fcp-sip" }
 
 # SIP stack dependencies (from siphon-rs)

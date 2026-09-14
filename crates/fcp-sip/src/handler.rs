@@ -908,9 +908,12 @@ impl SipMessageHandler {
             if !still_up {
                 return;
             }
-            if let Err(e) = handler.hangup_call_by_id(
+            if let Err(e) = handler.hangup_call_by_id_with(
                 &call_id,
-                Some("Balance exhausted: affordable duration reached".to_string()),
+                fcp_cdr::TerminationReason::system(
+                    fcp_cdr::SystemCause::BalanceExhausted,
+                    "Balance exhausted: affordable duration reached",
+                ),
             ) {
                 warn!(call_id = %call_id, error = %e, "Balance cut-off hangup failed");
                 return;
@@ -1361,41 +1364,13 @@ impl SipMessageHandler {
                     self.transaction_manager.send_final(tx_key, response).await;
                 }
 
-                // Terminate media session if anchored
-                if call.media_anchored {
-                    if let (Some(media_session_id), Some(media_manager)) =
-                        (&call.media_session_id, &self.media_manager)
-                    {
-                        let media_session_id = *media_session_id;
-                        let media_manager = Arc::clone(media_manager);
-                        let call_id = call.id;
-
-                        tokio::spawn(async move {
-                            match media_manager.terminate_session(&media_session_id).await {
-                                Ok(()) => {
-                                    info!(
-                                        call_id = %call_id,
-                                        media_session_id = %media_session_id,
-                                        "Terminated media session (CANCEL)"
-                                    );
-                                }
-                                Err(e) => {
-                                    error!(
-                                        call_id = %call_id,
-                                        media_session_id = %media_session_id,
-                                        error = %e,
-                                        "Failed to terminate media session (CANCEL)"
-                                    );
-                                }
-                            }
-                        });
-                    }
-                }
-
                 stop_timers_for_call(&self.session_timer_manager, &call);
-                let _ = self
-                    .call_manager
-                    .terminate_call(&call.id, Some("Cancelled by caller".to_string()));
+                self.end_call_after_media(
+                    &call,
+                    fcp_cdr::TerminationReason::Cancelled,
+                    true,
+                    "CANCEL",
+                );
             } else {
                 debug!("CANCEL received but no matching call found");
             }
@@ -5545,7 +5520,7 @@ impl SipMessageHandler {
                     info!(call_id = %call_id, "B-leg await_final aborted due to cancellation");
                     let _ = self
                         .call_manager
-                        .terminate_call(&call_id, Some("Cancelled".to_string()));
+                        .terminate_call_with(&call_id, fcp_cdr::TerminationReason::Cancelled);
                 } else {
                     error!(
                         call_id = %call_id,
@@ -5556,7 +5531,7 @@ impl SipMessageHandler {
                     a_leg_handle.send_final(response).await;
                     let _ = self
                         .call_manager
-                        .terminate_call(&call_id, Some(format!("B-leg timeout: {}", e)));
+                        .terminate_call_with(&call_id, fcp_cdr::TerminationReason::NoAnswer);
                 }
                 return Ok(());
             }
@@ -5579,7 +5554,7 @@ impl SipMessageHandler {
             info!(call_id = %call_id, "Call already terminated, skipping final relay");
             let _ = self
                 .call_manager
-                .terminate_call(&call_id, Some("Cancelled".to_string()));
+                .terminate_call_with(&call_id, fcp_cdr::TerminationReason::Cancelled);
             return Ok(());
         }
 
@@ -5844,9 +5819,9 @@ impl SipMessageHandler {
             a_leg_handle.send_final(response).await;
             info!(call_id = %call_id, code = b_leg_status, "Rejection sent to A-leg");
 
-            let _ = self.call_manager.terminate_call(
+            let _ = self.call_manager.terminate_call_with(
                 &call_id,
-                Some(format!("B-leg rejected: {} {}", b_leg_status, reason)),
+                fcp_cdr::TerminationReason::rejected(b_leg_status, reason),
             );
         }
 
@@ -6074,6 +6049,9 @@ impl SipMessageHandler {
         let mut winning_flow_token: Option<String> = None;
         let mut cancelled_by_caller = false;
         let mut last_failure_code: Option<u16> = None;
+        // Whether the race ended because nobody answered in time, for the
+        // call's record (a timeout is no answer, not a failure).
+        let mut fork_timed_out = false;
 
         debug!(call_id = %call_id, task_count = tasks.len(), "Starting race for first 2xx response");
 
@@ -6174,6 +6152,7 @@ impl SipMessageHandler {
                     timeout_secs = fork_timeout.as_secs(),
                     "Forking timeout expired — no B-leg answered in time"
                 );
+                fork_timed_out = true;
             }
         }
 
@@ -6615,9 +6594,21 @@ impl SipMessageHandler {
                     warn!(call_id = %call_id, code, "All B-legs failed, no voicemail");
                     let response = self.create_simple_response(&request, code, reason);
                     a_leg_handle.send_final(response).await;
-                    let _ = self
-                        .call_manager
-                        .terminate_call(&call_id, Some("All B-legs failed".to_string()));
+                    // The record says what the caller was told and why: the
+                    // callee's refusal, nobody answering, or no leg that
+                    // could be reached at all.
+                    let termination = match last_failure_code {
+                        Some(refused @ (400..=699)) if refused != 408 => {
+                            fcp_cdr::TerminationReason::rejected(refused, reason)
+                        }
+                        Some(408) => fcp_cdr::TerminationReason::NoAnswer,
+                        _ if fork_timed_out => fcp_cdr::TerminationReason::NoAnswer,
+                        _ => fcp_cdr::TerminationReason::Failed {
+                            status: Some(code),
+                            detail: "All B-legs failed".to_string(),
+                        },
+                    };
+                    let _ = self.call_manager.terminate_call_with(&call_id, termination);
                 }
             }
         }
@@ -6903,6 +6894,19 @@ impl SipMessageHandler {
                 .map(|d| d.id().call_id() == dialog_call_id.as_str())
                 .unwrap_or(false);
 
+            // For the record: who hung up, and the media counters before
+            // anything tears the session down. The termination itself
+            // happens when the last leg's dialog is gone, which may be on
+            // the forwarded BYE's completion; the reason set here wins there.
+            self.call_manager.set_pending_termination(
+                &call.id,
+                fcp_cdr::TerminationReason::hangup_by(if is_a_leg {
+                    fcp_core::storage::HangupParty::Caller
+                } else {
+                    fcp_core::storage::HangupParty::Callee
+                }),
+            );
+
             // Determine which leg sent the BYE and forward to the other leg
             if let Some(uac) = &self.uac {
                 if is_a_leg {
@@ -6991,38 +6995,6 @@ impl SipMessageHandler {
                 if a_done && b_done {
                     info!(call_id = %call.id, "Both legs terminated, cleaning up call");
 
-                    // Terminate media session if anchored
-                    if call.media_anchored {
-                        if let (Some(media_session_id), Some(media_manager)) =
-                            (&call.media_session_id, &self.media_manager)
-                        {
-                            let media_session_id = *media_session_id;
-                            let media_manager = Arc::clone(media_manager);
-                            let call_id = call.id;
-
-                            // Spawn async task to terminate media session
-                            tokio::spawn(async move {
-                                match media_manager.terminate_session(&media_session_id).await {
-                                    Ok(()) => {
-                                        info!(
-                                            call_id = %call_id,
-                                            media_session_id = %media_session_id,
-                                            "Terminated media session"
-                                        );
-                                    }
-                                    Err(e) => {
-                                        error!(
-                                            call_id = %call_id,
-                                            media_session_id = %media_session_id,
-                                            error = %e,
-                                            "Failed to terminate media session"
-                                        );
-                                    }
-                                }
-                            });
-                        }
-                    }
-
                     // Cleanup per-dialog state for remaining dialogs to prevent memory leaks
                     if let Some(a_dialog) = &updated_call.a_leg.dialog {
                         self.rate_limits.remove(a_dialog.id());
@@ -7055,9 +7027,19 @@ impl SipMessageHandler {
                         }
                     }
 
-                    // Finally, terminate the call in CallManager
-                    let _ = self.call_manager.terminate_call(&call.id, None);
+                    // Finally, terminate the call in CallManager, once the
+                    // media session has given up its counters.
+                    self.end_call_after_media(
+                        &call,
+                        fcp_cdr::TerminationReason::Hangup { by: None },
+                        true,
+                        "BYE",
+                    );
                 } else {
+                    // The other leg's dialog is still up: its BYE completion
+                    // ends the call. Take the counters now, while the
+                    // session is still there.
+                    self.capture_rtp_stats(&call);
                     debug!(
                         call_id = %call.id,
                         a_done = a_done,
@@ -11390,10 +11372,9 @@ impl SipMessageHandler {
 
         let response = self.create_simple_response(request, 480, "Temporarily Unavailable");
         a_leg_handle.send_final(response).await;
-        let _ = self.call_manager.terminate_call(
-            &call_id,
-            Some("Hunt group: no members answered".to_string()),
-        );
+        let _ = self
+            .call_manager
+            .terminate_call_with(&call_id, fcp_cdr::TerminationReason::NoAnswer);
         Ok(())
     }
 
@@ -11739,10 +11720,23 @@ impl SipMessageHandler {
         call_id: &fcp_b2bua_core::CallId,
         reason: Option<String>,
     ) -> Result<()> {
+        self.hangup_call_by_id_with(call_id, fcp_cdr::TerminationReason::from(reason))
+    }
+
+    /// Hang up both legs of a call for a reason the caller knows precisely
+    /// (`docs/CDR_PIPELINE.md`): the record carries it, and the media
+    /// counters taken before the legs go.
+    pub fn hangup_call_by_id_with(
+        &self,
+        call_id: &fcp_b2bua_core::CallId,
+        reason: fcp_cdr::TerminationReason,
+    ) -> Result<()> {
         let call = self
             .call_manager
             .get_call(call_id)
             .ok_or_else(|| anyhow::anyhow!("Call not found: {}", call_id))?;
+        self.call_manager
+            .set_pending_termination(call_id, reason.clone());
 
         if let Some(uac) = &self.uac {
             if let Some(dialog) = &call.a_leg.dialog {
@@ -11767,8 +11761,77 @@ impl SipMessageHandler {
             }
         }
 
-        self.call_manager.terminate_call(call_id, reason)?;
+        self.end_call_after_media(&call, reason, false, "hangup");
         Ok(())
+    }
+
+    /// Keep the media session's current counters on the call for its
+    /// record, without ending anything. On a task of its own.
+    fn capture_rtp_stats(&self, call: &Call) {
+        let (true, Some(session_id), Some(mm)) = (
+            call.media_anchored,
+            call.media_session_id,
+            &self.media_manager,
+        ) else {
+            return;
+        };
+        let call_manager = Arc::clone(&self.call_manager);
+        let media_manager = Arc::clone(mm);
+        let call_id = call.id;
+        tokio::spawn(async move {
+            if let Ok(stats) = media_manager.get_session_stats(&session_id).await {
+                call_manager.set_rtp_stats(&call_id, rtp_stats_from(&stats));
+            }
+        });
+    }
+
+    /// End `call` for `reason` once its media session, if any, has given up
+    /// its RTP counters for the record, and — when `teardown` — been torn
+    /// down. Runs on a task of its own; the call leaves the manager when
+    /// the task is done, a few milliseconds after the signaling did.
+    fn end_call_after_media(
+        &self,
+        call: &Call,
+        reason: fcp_cdr::TerminationReason,
+        teardown: bool,
+        what: &'static str,
+    ) {
+        let call_manager = Arc::clone(&self.call_manager);
+        let call_id = call.id;
+        let media = match (
+            call.media_anchored,
+            call.media_session_id,
+            &self.media_manager,
+        ) {
+            (true, Some(session_id), Some(mm)) => Some((session_id, Arc::clone(mm))),
+            _ => None,
+        };
+        tokio::spawn(async move {
+            if let Some((session_id, media_manager)) = media {
+                match media_manager.get_session_stats(&session_id).await {
+                    Ok(stats) => call_manager.set_rtp_stats(&call_id, rtp_stats_from(&stats)),
+                    Err(e) => {
+                        debug!(call_id = %call_id, error = %e, "No media counters for the record")
+                    }
+                }
+                if teardown {
+                    match media_manager.terminate_session(&session_id).await {
+                        Ok(()) => info!(
+                            call_id = %call_id,
+                            media_session_id = %session_id,
+                            "Terminated media session ({what})"
+                        ),
+                        Err(e) => error!(
+                            call_id = %call_id,
+                            media_session_id = %session_id,
+                            error = %e,
+                            "Failed to terminate media session ({what})"
+                        ),
+                    }
+                }
+            }
+            let _ = call_manager.terminate_call_with(&call_id, reason);
+        });
     }
 
     /// Sends an MWI (Message Waiting Indicator) NOTIFY to a SIP endpoint.
@@ -12608,7 +12671,24 @@ fn terminate_dialog(
             }
         }
     });
-    let _ = call_manager.terminate_call(call_id, Some("Session expired".to_string()));
+    let _ = call_manager.terminate_call_with(
+        call_id,
+        fcp_cdr::TerminationReason::system(fcp_cdr::SystemCause::SessionExpired, "Session expired"),
+    );
+}
+
+/// The record's RTP counters from a media session's statistics. The
+/// backend reports no jitter yet; a zero is left out rather than stored as
+/// a measurement.
+fn rtp_stats_from(stats: &fcp_media::MediaSessionStats) -> fcp_cdr::RtpStats {
+    fcp_cdr::RtpStats {
+        packets_sent: stats.packets_sent,
+        packets_received: stats.packets_received,
+        bytes_sent: stats.bytes_sent,
+        bytes_received: stats.bytes_received,
+        packets_lost: stats.packets_lost,
+        jitter_ms: (stats.jitter_ms > 0.0).then_some(stats.jitter_ms),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

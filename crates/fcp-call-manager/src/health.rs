@@ -431,9 +431,26 @@ async fn cdrs_handler(
                     });
 
                     serde_json::json!({
+                        "cdr_id": cdr.cdr_id.to_string(),
+                        "kind": cdr.kind.as_str(),
                         "call_id": cdr.call_id.to_string(),
                         "tenant_id": cdr.tenant_id.to_string(),
                         "sip_call_id": cdr.sip_call_id,
+                        "direction": cdr.direction.map(|d| format!("{:?}", d).to_lowercase()),
+                        "node_id": cdr.node_id,
+                        "region": cdr.region,
+                        "trunk_name": cdr.trunk_name,
+                        "correlation_id": cdr.correlation_id.map(|c| c.to_string()),
+                        "rtp_packets_sent": cdr.rtp_packets_sent,
+                        "rtp_packets_received": cdr.rtp_packets_received,
+                        "rtp_bytes_sent": cdr.rtp_bytes_sent,
+                        "rtp_bytes_received": cdr.rtp_bytes_received,
+                        "rtp_packets_lost": cdr.rtp_packets_lost,
+                        "cost": cdr.cost,
+                        "currency": cdr.currency,
+                        "rate_plan_id": cdr.rate_plan_id,
+                        "billable_seconds": cdr.billable_seconds,
+                        "recording_url": cdr.recording_url,
                         "from_uri": cdr.from_uri,
                         "from_display_name": cdr.from_display_name,
                         "to_uri": cdr.to_uri,
@@ -1660,7 +1677,14 @@ async fn internal_hangup_handler(
         }
     };
 
-    let _ = state.call_manager.terminate_call(&call_id, req.reason);
+    let _ = state.call_manager.terminate_call_with(
+        &call_id,
+        fcp_sip::TerminationReason::system(
+            fcp_sip::SystemCause::Admin,
+            req.reason
+                .unwrap_or_else(|| "Internal hangup request".to_string()),
+        ),
+    );
 
     info!(call_id = %call_id, "Internal hangup request processed");
     (StatusCode::OK, Json(serde_json::json!({"status": "ok"}))).into_response()

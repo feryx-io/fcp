@@ -610,6 +610,26 @@ async fn main() -> Result<()> {
         Arc::clone(&event_publisher),
     );
     call_manager_inner.set_node_id(&config.service.node_id);
+    call_manager_inner.set_region(
+        config
+            .cluster
+            .region
+            .clone()
+            .or_else(|| std::env::var("FCP_REGION").ok()),
+    );
+
+    // 15b. The CDR pipeline's node side (docs/CDR_PIPELINE.md §4.1): every
+    // finished call's record spools locally, and ships to the in-process
+    // processor that rates and stores it.
+    let cdr_writer = {
+        let billing = call_manager_inner
+            .billing()
+            .cloned()
+            .context("call manager has no billing engine")?;
+        let processor = Arc::new(fcp_sip::CallManager::processor(&dyn_storage, &billing));
+        fcp_cdr::start_node(&config.cdr, processor).context("Failed to start the CDR spool")?
+    };
+    call_manager_inner.set_cdr_writer(cdr_writer.clone());
     let call_manager = Arc::new(call_manager_inner);
 
     // 15a. Wire cluster active-call counter to CallManager
@@ -743,6 +763,8 @@ async fn main() -> Result<()> {
             Arc::clone(&event_publisher),
             Arc::clone(&uac),
             Arc::clone(&dyn_storage),
+            cdr_writer.clone(),
+            config.service.node_id.clone(),
         );
         info!(
             queues = config.queue.queues.len(),
@@ -1244,9 +1266,12 @@ async fn main() -> Result<()> {
                                 "Failed to route expired parked call"
                             );
                             // Terminate the call on failure
-                            let _ = call_manager_clone_park.terminate_call(
+                            let _ = call_manager_clone_park.terminate_call_with(
                                 &parked.call_id,
-                                Some(format!("Park expiry routing failed: {}", e)),
+                                fcp_sip::TerminationReason::system(
+                                    fcp_sip::SystemCause::ParkExpired,
+                                    format!("Park expiry routing failed: {}", e),
+                                ),
                             );
                         }
                     }

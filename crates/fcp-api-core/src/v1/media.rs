@@ -442,7 +442,10 @@ pub async fn hangup_call(
     // Send BYE on both legs and terminate the call
     state
         .handler
-        .hangup_call_by_id(&call_id, Some("Hungup via API".to_string()))
+        .hangup_call_by_id_with(
+            &call_id,
+            fcp_sip::TerminationReason::system(fcp_sip::SystemCause::Admin, "Hungup via API"),
+        )
         .map_err(|e| ApiError::NotFound(format!("Failed to hangup call: {}", e)))?;
 
     Ok((

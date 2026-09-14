@@ -29,6 +29,10 @@ macro_rules! require_storage {
 /// CDR response model.
 #[derive(Debug, Serialize)]
 pub struct CdrResponse {
+    /// The record's own identity (`docs/CDR_PIPELINE.md` §5).
+    pub cdr_id: String,
+    /// What the record is a record of: `call`, `queue`, `conference`, `gateway`.
+    pub kind: String,
     pub call_id: String,
     pub tenant_id: String,
     pub sip_call_id: String,
@@ -47,12 +51,31 @@ pub struct CdrResponse {
     pub hangup_party: Option<String>,
     pub sip_status_code: Option<u16>,
     pub sip_reason: Option<String>,
+    /// `inbound`, `outbound` or `internal` once the pipeline has enriched
+    /// the record; absent until then.
+    pub direction: Option<String>,
+    pub node_id: Option<String>,
+    pub region: Option<String>,
+    pub correlation_id: Option<String>,
+    pub trunk_name: Option<String>,
     pub media_anchored: bool,
     pub codec_a_leg: Option<String>,
     pub codec_b_leg: Option<String>,
+    pub rtp_packets_sent: Option<u64>,
+    pub rtp_packets_received: Option<u64>,
+    pub rtp_bytes_sent: Option<u64>,
+    pub rtp_bytes_received: Option<u64>,
+    pub rtp_packets_lost: Option<u64>,
+    pub rtp_jitter_ms: Option<f64>,
     pub recording_url: Option<String>,
     pub cost: Option<f64>,
     pub currency: Option<String>,
+    pub rate_plan_id: Option<String>,
+    pub matched_prefix: Option<String>,
+    pub billable_seconds: Option<u32>,
+    pub rated_at: Option<u64>,
+    pub created_at: Option<u64>,
+    pub custom_data: Option<serde_json::Value>,
 }
 
 impl From<fcp_core::storage::CallDetailRecord> for CdrResponse {
@@ -77,6 +100,8 @@ impl From<fcp_core::storage::CallDetailRecord> for CdrResponse {
         });
 
         Self {
+            cdr_id: cdr.cdr_id.to_string(),
+            kind: cdr.kind.as_str().to_string(),
             call_id: cdr.call_id.to_string(),
             tenant_id: cdr.tenant_id.to_string(),
             sip_call_id: cdr.sip_call_id,
@@ -95,12 +120,29 @@ impl From<fcp_core::storage::CallDetailRecord> for CdrResponse {
             hangup_party,
             sip_status_code: cdr.sip_status_code,
             sip_reason: cdr.sip_reason,
+            direction: cdr.direction.map(|d| format!("{d:?}").to_lowercase()),
+            node_id: cdr.node_id,
+            region: cdr.region,
+            correlation_id: cdr.correlation_id.map(|c| c.to_string()),
+            trunk_name: cdr.trunk_name,
             media_anchored: cdr.media_anchored,
             codec_a_leg: cdr.codec_a_leg,
             codec_b_leg: cdr.codec_b_leg,
+            rtp_packets_sent: cdr.rtp_packets_sent,
+            rtp_packets_received: cdr.rtp_packets_received,
+            rtp_bytes_sent: cdr.rtp_bytes_sent,
+            rtp_bytes_received: cdr.rtp_bytes_received,
+            rtp_packets_lost: cdr.rtp_packets_lost,
+            rtp_jitter_ms: cdr.rtp_jitter_ms,
             recording_url: cdr.recording_url,
             cost: cdr.cost,
             currency: cdr.currency,
+            rate_plan_id: cdr.rate_plan_id,
+            matched_prefix: cdr.matched_prefix,
+            billable_seconds: cdr.billable_seconds,
+            rated_at: cdr.rated_at.map(to_timestamp),
+            created_at: cdr.created_at.map(to_timestamp),
+            custom_data: cdr.custom_data,
         }
     }
 }
@@ -270,6 +312,8 @@ fn build_cdr_query(
         from_uri: params.from_uri.clone(),
         to_uri: params.to_uri.clone(),
         disposition: None,
+        // Every kind, as before the pipeline; `?kind=` arrives in phase 3.
+        kind: None,
         start_time_from: None,
         start_time_to: None,
         limit: Some(limit),
@@ -436,6 +480,9 @@ mod tests {
 
     fn create_test_cdr() -> CallDetailRecord {
         CallDetailRecord {
+            cdr_id: uuid::Uuid::new_v4(),
+            kind: fcp_core::storage::CdrKind::Call,
+            schema_version: fcp_core::storage::CDR_SCHEMA_VERSION,
             call_id: fcp_core::CallId::new(),
             tenant_id: fcp_core::TenantId::nil(),
             sip_call_id: "test-call-id@example.com".to_string(),
@@ -466,6 +513,18 @@ mod tests {
             recording_url: None,
             cost: None,
             currency: None,
+            direction: None,
+            node_id: None,
+            region: None,
+            correlation_id: None,
+            trunk_name: None,
+            rtp_packets_lost: None,
+            rtp_jitter_ms: None,
+            rate_plan_id: None,
+            matched_prefix: None,
+            billable_seconds: None,
+            rated_at: None,
+            created_at: None,
             custom_data: None,
         }
     }

@@ -478,10 +478,20 @@ async fn main() -> Result<()> {
     }
 
     let call_manager = match &dyn_storage {
-        Some(storage) => Arc::new(fcp_sip::CallManager::with_storage_and_events(
-            Arc::clone(storage),
-            Arc::clone(&sbc_hooks),
-        )),
+        Some(storage) => {
+            let mut manager = fcp_sip::CallManager::with_storage_and_events(
+                Arc::clone(storage),
+                Arc::clone(&sbc_hooks),
+            );
+            // The CDR pipeline's node side (docs/CDR_PIPELINE.md §4.1).
+            if let Some(billing) = manager.billing().cloned() {
+                let processor = Arc::new(fcp_sip::CallManager::processor(storage, &billing));
+                let writer = fcp_cdr::start_node(&sbc_config.storage.cdr, processor)
+                    .context("Failed to start the CDR spool")?;
+                manager.set_cdr_writer(writer);
+            }
+            Arc::new(manager)
+        }
         None => Arc::new(fcp_sip::CallManager::with_events(Arc::clone(&sbc_hooks))),
     };
 

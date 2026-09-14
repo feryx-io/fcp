@@ -36,6 +36,12 @@ enable_dtmf = true
 [storage]
 database_url = "postgresql://postgres:password@postgres:5432/fcp"
 
+# Finished calls' records spool here before they are stored, so a database
+# outage delays them rather than losing them (docs/CDR_PIPELINE.md). On the
+# persistent data volume.
+[cdr]
+spool_dir = "/app/data/cdr-spool/call-manager"
+
 [http]
 bind_address = "0.0.0.0:8084"
 
