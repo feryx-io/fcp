@@ -143,6 +143,24 @@ the testkit: the smoke harness's start and stop without the one-shot
 shape, the process killed on drop so a panicking test leaves nothing
 running.
 
+The floor found its first bug on its first CI run, in siphon-rs's
+transaction layer: about one INVITE in thirty, the caller got 480 while
+the callee was ringing. A callee that answers at once sends 100, 180 and
+200 within microseconds; the call manager handles each packet on its own
+task and can process the 200 first, whose 2xx transition terminates the
+client FSM; the 100's empty action list then reaped the entry from the
+table, and the 200's `Deliver` and `GenerateAck`, which looked the entry
+up again to find the transaction user, found nothing — the final and
+its ACK were silently lost. Fixed in siphon-rs `v2026.09.14`
+(sip-transaction 0.7.1: the transaction user and context travel with
+the actions), with a regression test that fails on the old code at its
+first round. Two phone-side lessons from the same chase: the call task
+must await the final concurrently with provisionals, since a non-2xx
+leaves the transaction and its provisional stream alive for timer D
+(32 s on UDP); and after a 2xx it waits for the transaction to finish
+(the ACK to go out) before the call counts as answered, or a re-INVITE
+sent at once beats the ACK to the far end and draws a 481.
+
 After each phase the manual checklist's rows that the phase covers get
 `Automated` in their Status column and the test name in Notes, so the
 checklist shrinks to what still needs a human (TLS phones, NAT, real

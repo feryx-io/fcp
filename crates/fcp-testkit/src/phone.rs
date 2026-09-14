@@ -95,11 +95,191 @@ struct Inner {
     uac: OnceLock<Arc<IntegratedUAC>>,
     /// Answer every INVITE at once, rather than ringing until told.
     auto_answer: std::sync::atomic::AtomicBool,
+    /// On a REFER: dial the Refer-To, report with NOTIFY, drop the old
+    /// leg on success — what a phone does on a blind transfer.
+    follow_refers: std::sync::atomic::AtomicBool,
+    /// Where the server is, for bare-number targets.
+    server: SocketAddr,
 }
 
 impl Inner {
     fn emit(&self, ev: PhoneEvent) {
         let _ = self.events.send(ev);
+    }
+
+    fn uac(&self) -> &Arc<IntegratedUAC> {
+        self.uac.get().expect("uac built")
+    }
+
+    /// Place a call to `target` (a bare number is a user or extension at
+    /// the server) and follow it to its end on a task.
+    async fn place_call(self: &Arc<Self>, target: &str) -> Result<Call> {
+        let target = if target.starts_with("sip:") || target.starts_with("sips:") {
+            target.to_string()
+        } else {
+            format!("sip:{target}@{}", self.server)
+        };
+        let media = Arc::new(MediaLeg::open().await?);
+        let offer = media.sdp("sendrecv");
+        let handle = Arc::new(
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                self.uac().invite(target.as_str(), Some(&offer)),
+            )
+            .await
+            .context("INVITE could not be sent")??,
+        );
+        let invite = handle.invite_request().await;
+        let call_id = sip_parse::header(invite.headers(), "Call-ID")
+            .map(|v| v.to_string())
+            .context("INVITE has a Call-ID")?;
+        let (phase_tx, _) = watch::channel(CallPhase::Dialing);
+        let state = Arc::new(CallState {
+            call_id: call_id.clone(),
+            dialog: RwLock::new(None),
+            media: Arc::clone(&media),
+            phase: phase_tx,
+        });
+        self.calls.insert(call_id.clone(), Arc::clone(&state));
+
+        let inner = Arc::clone(self);
+        let st = Arc::clone(&state);
+        tokio::spawn(async move {
+            // Provisionals and the final together: a non-2xx leaves the
+            // transaction (and the provisional stream) alive for timer D,
+            // so waiting for the stream to end first would wait 32 s.
+            let final_fut = handle.await_final();
+            tokio::pin!(final_fut);
+            let outcome = loop {
+                tokio::select! {
+                    r = &mut final_fut => break r,
+                    p = handle.await_provisional() => match p {
+                        Some(resp) => {
+                            let code = resp.start_line().code();
+                            if code > 100 {
+                                st.phase.send_replace(CallPhase::Ringing);
+                                inner.emit(PhoneEvent::Ringing {
+                                    call_id: st.call_id.clone(),
+                                    code,
+                                });
+                            }
+                        }
+                        None => break final_fut.await,
+                    },
+                }
+            };
+            match outcome {
+                Ok(resp) if (200..300).contains(&resp.start_line().code()) => {
+                    // Let the transaction finish (the ACK go out) before the
+                    // call counts as answered, or an immediate re-INVITE
+                    // beats the ACK to the far end and draws a 481.
+                    let _ = tokio::time::timeout(Duration::from_secs(1), async {
+                        while handle.await_provisional().await.is_some() {}
+                    })
+                    .await;
+                    let dialog = handle.dialog.read().await.clone();
+                    *st.dialog.write().await = Some(dialog);
+                    let answer = String::from_utf8_lossy(resp.body()).to_string();
+                    if let Err(e) = st.media.set_remote(&answer).await {
+                        warn!(error = %e, "answer SDP unusable");
+                    }
+                    st.phase.send_replace(CallPhase::Answered);
+                    inner.emit(PhoneEvent::Answered {
+                        call_id: st.call_id.clone(),
+                    });
+                }
+                Ok(resp) => {
+                    let code = resp.start_line().code();
+                    st.phase.send_replace(CallPhase::Failed(code));
+                    inner.emit(PhoneEvent::Failed {
+                        call_id: st.call_id.clone(),
+                        code,
+                    });
+                }
+                Err(e) => {
+                    debug!(error = %e, "INVITE ended without a final");
+                    st.phase.send_replace(CallPhase::Failed(0));
+                    inner.emit(PhoneEvent::Failed {
+                        call_id: st.call_id.clone(),
+                        code: 0,
+                    });
+                }
+            }
+        });
+        Ok(Call {
+            inner: Arc::clone(self),
+            state,
+        })
+    }
+
+    /// Report a REFER's outcome on the dialog it arrived in: the implicit
+    /// `refer` subscription's NOTIFY, a sipfrag with `code`.
+    async fn notify_refer(&self, dialog: &Dialog, code: u16, reason: &str) -> Result<u16> {
+        let mut dialog = dialog.clone();
+        let id = dialog.id().clone();
+        let sub_id =
+            sip_dialog::SubscriptionId::new(id.call_id(), id.remote_tag(), id.local_tag(), "refer")
+                .map_err(|e| anyhow!("refer subscription id: {e}"))?;
+        let mut sub = sip_dialog::Subscription::unchecked_new(
+            sub_id,
+            sip_dialog::SubscriptionState::Terminated,
+            dialog.local_uri().clone(),
+            dialog.remote_uri().clone(),
+            dialog.remote_target().clone(),
+            Duration::from_secs(0),
+            dialog.local_cseq(),
+            0,
+        );
+        let uas = self.uas.get().expect("uas built");
+        let request = uas
+            .helper()
+            .lock()
+            .await
+            .create_notify_sipfrag(&mut sub, code, reason)
+            .map_err(|e| anyhow!("refer NOTIFY: {e}"))?;
+        let resp = tokio::time::timeout(
+            Duration::from_secs(10),
+            self.uac().send_in_dialog_non_invite(&mut dialog, request),
+        )
+        .await
+        .context("NOTIFY timed out")??;
+        Ok(resp.start_line().code())
+    }
+
+    /// A REFER arrived on `dialog`: dial `refer_to`, report, and on
+    /// success drop the old leg.
+    async fn follow_refer(self: Arc<Self>, old_call_id: String, dialog: Dialog, refer_to: String) {
+        let target = refer_to
+            .split('<')
+            .nth(1)
+            .and_then(|s| s.split('>').next())
+            .unwrap_or(&refer_to)
+            .trim()
+            .to_string();
+        let outcome = match self.place_call(&target).await {
+            Ok(call) => match call.answered(Duration::from_secs(15)).await {
+                Ok(()) => Ok(()),
+                Err(_) => Err(match call.phase() {
+                    CallPhase::Failed(code) if code > 0 => code,
+                    _ => 408,
+                }),
+            },
+            Err(_) => Err(503),
+        };
+        match outcome {
+            Ok(()) => {
+                let _ = self.notify_refer(&dialog, 200, "OK").await;
+                if let Some(old) = self.calls.get(&old_call_id).map(|e| e.value().clone()) {
+                    let _ = tokio::time::timeout(Duration::from_secs(10), self.uac().bye(&dialog))
+                        .await;
+                    old.phase.send_replace(CallPhase::Ended);
+                    self.calls.remove(&old_call_id);
+                }
+            }
+            Err(code) => {
+                let _ = self.notify_refer(&dialog, code, "Transfer Failed").await;
+            }
+        }
     }
 }
 
@@ -164,6 +344,8 @@ impl Phone {
             uas: OnceLock::new(),
             uac: OnceLock::new(),
             auto_answer: std::sync::atomic::AtomicBool::new(false),
+            follow_refers: std::sync::atomic::AtomicBool::new(false),
+            server,
         });
 
         let handler: Arc<dyn UasRequestHandler> = Arc::new(Handler(Arc::clone(&inner)));
@@ -232,6 +414,14 @@ impl Phone {
             .store(yes, std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// Follow a REFER as a phone does on a blind transfer: dial the
+    /// Refer-To, NOTIFY the outcome, drop the old leg on success.
+    pub fn follow_refers(&self, yes: bool) {
+        self.inner
+            .follow_refers
+            .store(yes, std::sync::atomic::Ordering::Relaxed);
+    }
+
     fn uac(&self) -> &Arc<IntegratedUAC> {
         self.inner.uac.get().expect("uac built")
     }
@@ -252,83 +442,7 @@ impl Phone {
     /// Place a call to `target` (a user or extension at the server:
     /// `sip:101@…` is built from a bare number).
     pub async fn call(&self, target: &str) -> Result<Call> {
-        let target = if target.starts_with("sip:") {
-            target.to_string()
-        } else {
-            format!("sip:{target}@{}", self.server)
-        };
-        let media = Arc::new(MediaLeg::open().await?);
-        let offer = media.sdp("sendrecv");
-        let handle = Arc::new(
-            tokio::time::timeout(
-                Duration::from_secs(5),
-                self.uac().invite(target.as_str(), Some(&offer)),
-            )
-            .await
-            .context("INVITE could not be sent")??,
-        );
-        let invite = handle.invite_request().await;
-        let call_id = sip_parse::header(invite.headers(), "Call-ID")
-            .map(|v| v.to_string())
-            .context("INVITE has a Call-ID")?;
-        let (phase_tx, _) = watch::channel(CallPhase::Dialing);
-        let state = Arc::new(CallState {
-            call_id: call_id.clone(),
-            dialog: RwLock::new(None),
-            media: Arc::clone(&media),
-            phase: phase_tx,
-        });
-        self.inner.calls.insert(call_id.clone(), Arc::clone(&state));
-
-        // Follow the INVITE to its end on a task.
-        let inner = Arc::clone(&self.inner);
-        let st = Arc::clone(&state);
-        tokio::spawn(async move {
-            while let Some(resp) = handle.await_provisional().await {
-                let code = resp.start_line().code();
-                if code > 100 {
-                    st.phase.send_replace(CallPhase::Ringing);
-                    inner.emit(PhoneEvent::Ringing {
-                        call_id: st.call_id.clone(),
-                        code,
-                    });
-                }
-            }
-            match handle.await_final().await {
-                Ok(resp) if (200..300).contains(&resp.start_line().code()) => {
-                    let dialog = handle.dialog.read().await.clone();
-                    *st.dialog.write().await = Some(dialog);
-                    let answer = String::from_utf8_lossy(resp.body()).to_string();
-                    if let Err(e) = st.media.set_remote(&answer).await {
-                        warn!(error = %e, "answer SDP unusable");
-                    }
-                    st.phase.send_replace(CallPhase::Answered);
-                    inner.emit(PhoneEvent::Answered {
-                        call_id: st.call_id.clone(),
-                    });
-                }
-                Ok(resp) => {
-                    let code = resp.start_line().code();
-                    st.phase.send_replace(CallPhase::Failed(code));
-                    inner.emit(PhoneEvent::Failed {
-                        call_id: st.call_id.clone(),
-                        code,
-                    });
-                }
-                Err(e) => {
-                    debug!(error = %e, "INVITE ended without a final");
-                    st.phase.send_replace(CallPhase::Failed(0));
-                    inner.emit(PhoneEvent::Failed {
-                        call_id: st.call_id.clone(),
-                        code: 0,
-                    });
-                }
-            }
-        });
-        Ok(Call {
-            inner: Arc::clone(&self.inner),
-            state,
-        })
+        self.inner.place_call(target).await
     }
 
     /// The next incoming call; `None` at the deadline.
@@ -529,13 +643,17 @@ impl IncomingCall {
 
     /// Refuse with `code` (486 Busy Here, 603 Decline, …).
     pub async fn reject(self, code: u16, reason: &str) -> Result<()> {
-        let (_, handle) = self
+        let (ok, handle) = self
             .pending
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .take()
             .context("already answered or cancelled")?;
         let mut response = UserAgentServer::create_response(&self.request, code, reason);
+        // The same To tag the 180 carried: one early dialog, refused.
+        if let Some(to) = ok.headers().get("To") {
+            let _ = response.headers_mut().set_or_push("To", to);
+        }
         if let Some(uas) = self.call.inner.uas.get() {
             uas.prepare_response(&mut response, &self.ctx).await;
         }
@@ -771,7 +889,19 @@ impl UasRequestHandler for Handler {
         let call_id = sip_parse::header(request.headers(), "Call-ID")
             .map(|v| v.to_string())
             .unwrap_or_default();
-        self.0.emit(PhoneEvent::Refer { call_id, refer_to });
+        self.0.emit(PhoneEvent::Refer {
+            call_id: call_id.clone(),
+            refer_to: refer_to.clone(),
+        });
+        if self
+            .0
+            .follow_refers
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            let inner = Arc::clone(&self.0);
+            let dialog = dialog.clone();
+            tokio::spawn(async move { inner.follow_refer(call_id, dialog, refer_to).await });
+        }
         Ok(())
     }
 
@@ -841,5 +971,48 @@ async fn handle_packet(
     }
     if let Some(resp) = sip_parse::parse_response(packet.payload()) {
         tm.receive_response(resp).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Two phones on loopback calling each other directly, no server:
+    /// a refusal and an answer both reach the caller.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn phones_reach_each_other_directly() {
+        let placeholder: SocketAddr = "127.0.0.1:5060".parse().unwrap();
+        let a = Phone::new("a", "x", "test.local", placeholder)
+            .await
+            .unwrap();
+        let b = Phone::new("b", "x", "test.local", placeholder)
+            .await
+            .unwrap();
+        let target = format!("sip:b@{}", b.local_addr);
+
+        let call = a.call(&target).await.unwrap();
+        let incoming = b.incoming(Duration::from_secs(3)).await.expect("b rings");
+        assert!(matches!(
+            a.expect(Duration::from_secs(3), |e| matches!(
+                e,
+                PhoneEvent::Ringing { code: 180, .. }
+            ))
+            .await,
+            Some(_)
+        ));
+        incoming.reject(486, "Busy Here").await.unwrap();
+        let err = call.answered(Duration::from_secs(3)).await.unwrap_err();
+        assert!(err.to_string().contains("486"), "{err}");
+
+        let call = a.call(&target).await.unwrap();
+        let incoming = b
+            .incoming(Duration::from_secs(3))
+            .await
+            .expect("b rings again");
+        let b_call = incoming.answer().await.unwrap();
+        call.answered(Duration::from_secs(3)).await.unwrap();
+        assert_eq!(b_call.hangup().await.unwrap(), 200);
+        assert!(call.ended(Duration::from_secs(3)).await);
     }
 }
