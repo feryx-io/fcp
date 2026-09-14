@@ -347,7 +347,7 @@ fn read_all(mut reader: impl std::io::Read) -> String {
 
 // ─── Internals ────────────────────────────────────────────────────────────
 
-fn write_temp_config(contents: &str) -> tempfile::NamedTempFile {
+pub(crate) fn write_temp_config(contents: &str) -> tempfile::NamedTempFile {
     let mut file = tempfile::Builder::new()
         .prefix("fcp-smoke-")
         .suffix(".toml")
@@ -360,7 +360,7 @@ fn write_temp_config(contents: &str) -> tempfile::NamedTempFile {
 }
 
 /// Drain a child pipe into a string on a background task.
-fn collect<R>(reader: R) -> impl std::future::Future<Output = String>
+pub(crate) fn collect<R>(reader: R) -> impl std::future::Future<Output = String>
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {

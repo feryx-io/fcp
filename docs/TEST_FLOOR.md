@@ -118,11 +118,30 @@ One PR each, in order.
 
 | Phase | What | Where |
 |---|---|---|
-| T1 | The phone, the seed, the binary locator, the Redis helper. Call manager: register (good and bad password, listed at `/registrations`), a call answered with audio heard both ways, hangup from either side, a CDR at `/cdrs` | `fcp-testkit`, `fcp-call-manager/tests/calls.rs` |
+| T1 ✅ v0.25.150 | The phone, the seed, the binary locator. Call manager: register (good and bad password, listed at `/registrations`), a call answered with audio heard both ways, hangup from either side, a CDR at `/cdrs` | `fcp-testkit`, `fcp-call-manager/tests/calls.rs` |
 | T2 | Call features on the call manager: busy, decline, no answer within `call_timeout_seconds`, an unregistered callee, hold and resume relayed, RFC 2833 DTMF through pass-through media, DTMF INFO relayed, blind transfer (REFER, NOTIFY, the new call), the `/calls` view mid-call | `fcp-call-manager/tests/calls.rs` |
 | T3 | Conference server: a room joined directly, the PIN entered by DTMF, two phones hearing each other through the mixer, mute by DTMF and by API, the room's participants at `/conferences/{room}`, leave and auto-destroy; the same room reached through the call manager (the room number as an extension, `conference_server_uri`) | `fcp-conference-server/tests/rooms.rs` |
 | T4 | Two conference nodes with Redis under `cluster.secret`: placement spreads a room past `conference_node_capacity`, a caller on each node hears the other over the trunk, and phase 5 end to end — SIGTERM one node, the caller through the call manager stays in the room on the other (same participant id, `migrated_from`), a phone that dialed the node directly follows the REFER itself | `fcp-conference-server/tests/cluster.rs` |
 | T5 | WebRTC gateway: a forge-webrtc peer standing in for the browser joins a room through the gateway's HTTP API and hears a phone in it; the migration swap under the browser against two real nodes | `fcp-webrtc-gateway/tests/rooms.rs` |
+
+*T1 shipped 2026-09-14 (v0.25.150).* As planned, with three things
+learned on the way. A call to a user rings the user's **devices**, and a
+device's contacts are the registrations on its SIP URI, so the seed
+makes a softphone device on each user's AOR beside the user and the
+extension; without it the call manager answers "User has no devices".
+The UAS gives a 180 and a 200 different To tags unless the 200 is built
+first, so the phone builds the answer at ring time and sends the 180
+with the answer's tag. And `tokio::sync::watch` drops a `send` when
+nobody is subscribed, which the phone's call phase learnt the hard way
+(`send_replace`). The three scenarios — digest registration with its
+two failure cases and the listing, a call answered with a tone heard
+each way, the call listed, hung up from the caller's side with the CDR
+checked, and hung up from the callee's side — run in about two seconds
+after the build, each on its own call manager and database. The Redis
+helper is deferred to T4, where its needs are known. `Service` joined
+the testkit: the smoke harness's start and stop without the one-shot
+shape, the process killed on drop so a panicking test leaves nothing
+running.
 
 After each phase the manual checklist's rows that the phase covers get
 `Automated` in their Status column and the test name in Notes, so the

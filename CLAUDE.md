@@ -407,6 +407,9 @@ while let Some(event) = ctx.wait_event().await {
 - Place in `tests/` directory at workspace root
 - Test interactions between multiple crates
 - Use `sip-testkit` for SIP-specific test utilities
+- End-to-end scenarios against a running binary over real SIP and RTP use
+  `fcp_testkit::{Phone, Seed, Service}` (`docs/TEST_FLOOR.md`) and live in the
+  binary crate's `tests/` (`fcp-call-manager/tests/calls.rs`)
 - Database-backed suites (`fcp-storage-postgres/tests`, `fcp-api-core/tests`) and the
   per-binary `tests/smoke.rs` files are gated on `FCP_TEST_DATABASE_URL` (and
   `FCP_TEST_REDIS_URL` for `fcp-jobs`); they skip when unset and run in CI against

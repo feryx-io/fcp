@@ -5,13 +5,37 @@ version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Test-support helpers for FCP: binary smoke tests, throwaway databases"
+description = "Test-support helpers for FCP: binary smoke tests, throwaway databases, the scripted SIP phone"
 publish = false
 
 [dependencies]
 anyhow = { workspace = true }
+async-trait = "0.1"
+bytes = { workspace = true }
+dashmap = "6"
 libc = "0.2"
+serde_json = { workspace = true }
+smol_str = "0.3"
 sqlx = { version = "0.8", features = ["runtime-tokio", "postgres"] }
 tempfile = "3"
 tokio = { workspace = true }
+tracing = { workspace = true }
 uuid = { workspace = true }
+
+# The seed writes fixtures the way the binaries read them.
+fcp-core = { path = "../fcp-core" }
+fcp-storage-postgres = { path = "../fcp-storage-postgres" }
+
+# The phone: siphon-rs for SIP, forge-media for RTP and codecs.
+sip-core = { path = "../../external/siphon-rs/crates/sip-core" }
+sip-parse = { path = "../../external/siphon-rs/crates/sip-parse" }
+sip-transaction = { path = "../../external/siphon-rs/crates/sip-transaction" }
+sip-transport = { path = "../../external/siphon-rs/crates/sip-transport" }
+sip-dialog = { path = "../../external/siphon-rs/crates/sip-dialog" }
+sip-uac = { path = "../../external/siphon-rs/crates/sip-uac" }
+sip-uas = { path = "../../external/siphon-rs/crates/sip-uas" }
+sip-dns = { path = "../../external/siphon-rs/crates/sip-dns" }
+sip-sdp = { path = "../../external/siphon-rs/crates/sip-sdp" }
+forge-rtp = { path = "../../external/forge-media/crates/forge-rtp" }
+forge-codecs = { path = "../../external/forge-media/crates/forge-codecs" }
+forge-dtmf = { path = "../../external/forge-media/crates/forge-dtmf" }
