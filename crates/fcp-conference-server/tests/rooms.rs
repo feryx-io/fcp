@@ -188,17 +188,26 @@ format = "compact"
     /// The id of the participant whose caller id or display name contains
     /// `name` (a phone with no display name is known by its user part).
     async fn participant_named(&self, name: &str) -> String {
+        // The room lists a participant a moment before the session detail
+        // (caller id, display name) is there; look again until it is.
+        let deadline = tokio::time::Instant::now() + SOON;
         let mut seen = Vec::new();
-        for pid in self.participants().await {
-            let p = self.participant(&pid).await;
-            let caller = p["caller_id"].as_str().unwrap_or("");
-            let display = p["display_name"].as_str().unwrap_or("");
-            if caller.contains(name) || display.contains(name) {
-                return pid;
+        loop {
+            seen.clear();
+            for pid in self.participants().await {
+                let p = self.participant(&pid).await;
+                let caller = p["caller_id"].as_str().unwrap_or("");
+                let display = p["display_name"].as_str().unwrap_or("");
+                if caller.contains(name) || display.contains(name) {
+                    return pid;
+                }
+                seen.push(p);
             }
-            seen.push(p);
+            if tokio::time::Instant::now() >= deadline {
+                panic!("no participant named {name}: {seen:?}");
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        panic!("no participant named {name}: {seen:?}");
     }
 
     /// Wait until `pid`'s detail satisfies `want`.
