@@ -708,11 +708,13 @@ async fn cdr_records_are_idempotent_by_cdr_id_and_keep_their_kind_and_pipeline_f
     queue.kind = fcp_core::storage::CdrKind::Queue;
     s.insert_cdr(queue.clone()).await.unwrap();
 
-    // A second call record for the same call is refused: one per call. The
-    // refusal is a CdrRejected, and the batch it was in stores nothing.
+    // A second call record for the same call is refused: one per call (at
+    // one start time, the partition key being part of every unique rule).
+    // The refusal is a CdrRejected, and the batch it was in stores nothing.
     let mut duplicate = cdr(a.id, "sip:+14155550100@a.example.com", Some(1_000), None);
     duplicate.call_id = call.call_id;
     duplicate.cdr_id = Uuid::new_v4();
+    duplicate.start_time = call.start_time;
     let innocent = cdr(a.id, "sip:bob@a.example.com", Some(1_000), None);
     let err = s
         .insert_cdrs(vec![innocent.clone(), duplicate])
@@ -822,6 +824,263 @@ async fn usage_sums_money_exactly_and_counts_the_stored_direction() {
     assert_eq!(agg.total_calls, 10);
     assert_eq!(agg.total_cost, dec!(1));
     assert_eq!((agg.inbound_calls, agg.outbound_calls), (3, 7));
+}
+
+#[tokio::test]
+async fn records_live_in_monthly_partitions_and_a_new_month_takes_its_rows_from_the_default_one() {
+    let db = require_db!();
+    let s = db.storage();
+    let a = tenant("a");
+    s.put_tenant(a.clone()).await.unwrap();
+    let pool = s.pool();
+
+    // Last month through three ahead exist after the migrations.
+    let parts: Vec<String> = sqlx::query_scalar(
+        "SELECT c.relname::text FROM pg_inherits i
+         JOIN pg_class c ON c.oid = i.inhrelid JOIN pg_class p ON p.oid = i.inhparent
+         WHERE p.relname = 'cdrs' ORDER BY 1",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap();
+    assert!(parts.contains(&"cdrs_default".to_string()), "{parts:?}");
+    assert!(parts.len() >= 6, "{parts:?}");
+
+    // A record a year ahead has no month of its own: the default partition.
+    let mut far = cdr(a.id, "sip:bob@a.example.com", Some(1_000), None);
+    far.start_time = SystemTime::now() + Duration::from_secs(365 * 86_400);
+    far.answer_time = Some(far.start_time);
+    far.end_time = Some(far.start_time + Duration::from_secs(60));
+    s.insert_cdr(far.clone()).await.unwrap();
+    let in_default: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM cdrs_default")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert_eq!(in_default, 1);
+
+    // Take away a coming month and put a record in it: it lands in the
+    // default partition, and the next ensure moves it into the month.
+    let three_ahead = SystemTime::now() + Duration::from_secs(80 * 86_400);
+    let month: String = sqlx::query_scalar(
+        "SELECT 'cdrs_' || to_char(date_trunc('month', $1::timestamptz), 'YYYY_MM')",
+    )
+    .bind(chrono::DateTime::<chrono::Utc>::from(three_ahead))
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    sqlx::query(&format!("DROP TABLE {month}"))
+        .execute(pool)
+        .await
+        .unwrap();
+    let mut soon = cdr(a.id, "sip:carol@a.example.com", Some(1_000), None);
+    soon.start_time = three_ahead;
+    s.insert_cdr(soon.clone()).await.unwrap();
+    let created = s.ensure_cdr_partitions().await.unwrap();
+    assert_eq!(created, vec![month.clone()]);
+    let in_month: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {month}"))
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert_eq!(in_month, 1, "moved out of the default partition");
+    assert!(s.get_cdr(&soon.call_id).await.unwrap().is_some());
+    assert!(
+        s.ensure_cdr_partitions().await.unwrap().is_empty(),
+        "idempotent"
+    );
+}
+
+#[tokio::test]
+async fn a_keyset_walk_crosses_months_and_ties_and_sees_every_record_once() {
+    let db = require_db!();
+    let s = db.storage();
+    let a = tenant("a");
+    s.put_tenant(a.clone()).await.unwrap();
+
+    // Twelve records over two months, four of them at one instant.
+    let now = SystemTime::now();
+    let tie = now - Duration::from_secs(3_600);
+    let mut ids = Vec::new();
+    for i in 0..12u64 {
+        let mut r = cdr(a.id, "sip:bob@a.example.com", Some(1_000), None);
+        r.start_time = if i < 4 {
+            tie
+        } else {
+            now - Duration::from_secs(i * 5 * 86_400)
+        };
+        r.answer_time = Some(r.start_time);
+        r.end_time = Some(r.start_time + Duration::from_secs(10));
+        ids.push(r.cdr_id);
+        s.insert_cdr(r).await.unwrap();
+    }
+
+    let mut seen = Vec::new();
+    let mut cursor = None;
+    loop {
+        let page = s
+            .query_cdrs(CdrQuery {
+                tenant_id: Some(a.id),
+                limit: Some(5),
+                cursor,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        if page.is_empty() {
+            break;
+        }
+        cursor = page.last().map(fcp_core::storage::CdrCursor::after);
+        seen.extend(page);
+    }
+    assert_eq!(seen.len(), 12, "every record once");
+    let mut unique: Vec<_> = seen.iter().map(|r| r.cdr_id).collect();
+    unique.sort();
+    unique.dedup();
+    assert_eq!(unique.len(), 12);
+    for pair in seen.windows(2) {
+        assert!(
+            (pair[0].start_time, pair[0].cdr_id) > (pair[1].start_time, pair[1].cdr_id),
+            "newest first, the id breaking ties"
+        );
+    }
+    let encoded = fcp_core::storage::CdrCursor::after(&seen[3]).encode();
+    assert_eq!(
+        fcp_core::storage::CdrCursor::decode(&encoded),
+        Some(fcp_core::storage::CdrCursor::after(&seen[3]))
+    );
+    let count = s
+        .count_cdrs_within(
+            CdrQuery {
+                tenant_id: Some(a.id),
+                ..Default::default()
+            },
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        count,
+        fcp_core::storage::CdrCount {
+            count: 12,
+            exact: true
+        }
+    );
+}
+
+#[tokio::test]
+async fn usage_from_rollups_and_the_open_edges_matches_usage_from_the_records() {
+    let db = require_db!();
+    let s = db.storage();
+    let a = tenant("a");
+    s.put_tenant(a.clone()).await.unwrap();
+
+    // Records over the last five hours, the current one included, one of
+    // them to a number the tenant owns.
+    let now = SystemTime::now();
+    let number = PhoneNumber::new("+14155550100".to_string(), a.id).unwrap();
+    s.put_phone_number(number).await.unwrap();
+    for i in 0..10u64 {
+        let to = if i % 3 == 0 {
+            "sip:+14155550100@a.example.com"
+        } else {
+            "sip:bob@a.example.com"
+        };
+        let mut r = cdr(a.id, to, Some(30_000), Some(dec!(0.25)));
+        r.start_time = now - Duration::from_secs(i * 1_800);
+        r.answer_time = Some(r.start_time + Duration::from_secs(2));
+        r.end_time = Some(r.start_time + Duration::from_secs(32));
+        s.insert_cdr(r).await.unwrap();
+    }
+    let from = now - Duration::from_secs(4 * 3_600 + 900);
+    let to = now + Duration::from_secs(60);
+    let live = s.aggregate_usage(&a.id, from, to).await.unwrap();
+    let live_by_number = s.aggregate_usage_by_number(&a.id, from, to).await.unwrap();
+
+    let run = s
+        .rebuild_usage_rollups(Duration::from_secs(48 * 3_600))
+        .await
+        .unwrap();
+    assert!(run.hours >= 4 && run.rows > 0, "{run:?}");
+    let rolled = s.aggregate_usage(&a.id, from, to).await.unwrap();
+    assert_eq!(rolled.total_calls, live.total_calls);
+    assert_eq!(rolled.answered_calls, live.answered_calls);
+    assert_eq!(rolled.total_duration_ms, live.total_duration_ms);
+    assert_eq!(rolled.inbound_calls, live.inbound_calls);
+    assert_eq!(rolled.total_cost, live.total_cost);
+    let rolled_by_number = s.aggregate_usage_by_number(&a.id, from, to).await.unwrap();
+    assert_eq!(rolled_by_number.len(), live_by_number.len());
+    assert_eq!(
+        rolled_by_number[0].total_calls,
+        live_by_number[0].total_calls
+    );
+
+    // A rebuild recomputes: running it again changes nothing.
+    s.rebuild_usage_rollups(Duration::from_secs(48 * 3_600))
+        .await
+        .unwrap();
+    let again = s.aggregate_usage(&a.id, from, to).await.unwrap();
+    assert_eq!(again.total_calls, live.total_calls);
+    assert_eq!(again.total_cost, live.total_cost);
+
+    // Rollups other than call records do not count as calls.
+    let mut leg = cdr(a.id, "conference:8000", Some(30_000), None);
+    leg.kind = fcp_core::storage::CdrKind::Conference;
+    leg.start_time = now - Duration::from_secs(2 * 3_600);
+    s.insert_cdr(leg).await.unwrap();
+    s.rebuild_usage_rollups(Duration::from_secs(48 * 3_600))
+        .await
+        .unwrap();
+    assert_eq!(
+        s.aggregate_usage(&a.id, from, to)
+            .await
+            .unwrap()
+            .total_calls,
+        live.total_calls
+    );
+}
+
+#[tokio::test]
+async fn retention_drops_a_month_only_once_its_rows_are_gone_and_locks_keep_to_one_host() {
+    let db = require_db!();
+    let s = db.storage();
+    let a = tenant("a");
+    s.put_tenant(a.clone()).await.unwrap();
+
+    let last_month = SystemTime::now() - Duration::from_secs(35 * 86_400);
+    let mut old = cdr(a.id, "sip:bob@a.example.com", Some(1_000), None);
+    old.start_time = last_month;
+    s.insert_cdr(old).await.unwrap();
+    let this_month_start: chrono::DateTime<chrono::Utc> =
+        sqlx::query_scalar("SELECT date_trunc('month', now())")
+            .fetch_one(s.pool())
+            .await
+            .unwrap();
+    let cutoff = SystemTime::from(this_month_start);
+
+    assert!(
+        s.drop_cdr_partitions_before(cutoff)
+            .await
+            .unwrap()
+            .is_empty(),
+        "rows still there"
+    );
+    assert_eq!(s.delete_cdrs_before(&a.id, cutoff).await.unwrap(), 1);
+    let dropped = s.drop_cdr_partitions_before(cutoff).await.unwrap();
+    assert!(!dropped.is_empty(), "last month's partition goes");
+
+    let first = s
+        .try_maintenance_lock("fcp:test")
+        .await
+        .unwrap()
+        .expect("free");
+    assert!(
+        s.try_maintenance_lock("fcp:test").await.unwrap().is_none(),
+        "held"
+    );
+    first.release().await;
+    assert!(
+        s.try_maintenance_lock("fcp:test").await.unwrap().is_some(),
+        "released"
+    );
 }
 
 #[tokio::test]

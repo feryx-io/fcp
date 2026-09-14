@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
@@ -1111,6 +1111,81 @@ pub struct CdrQuery {
     pub limit: Option<usize>,
     /// Offset for pagination
     pub offset: Option<usize>,
+    /// Keyset pagination: records strictly after this position in the
+    /// listing's order (newest first). Takes the place of `offset`.
+    pub cursor: Option<CdrCursor>,
+}
+
+/// A position in a record listing, newest first: the last record of a page
+/// (`docs/CDR_PIPELINE.md` §9). Opaque to API clients.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CdrCursor {
+    /// The record's start time, in microseconds since the Unix epoch (the
+    /// database's precision).
+    pub start_micros: i64,
+    pub cdr_id: uuid::Uuid,
+}
+
+impl CdrCursor {
+    /// The cursor after `record`.
+    pub fn after(record: &CallDetailRecord) -> Self {
+        let micros = record
+            .start_time
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|d| d.as_micros() as i64)
+            .unwrap_or(0);
+        Self {
+            start_micros: micros,
+            cdr_id: record.cdr_id,
+        }
+    }
+
+    /// The opaque form an API hands out.
+    pub fn encode(&self) -> String {
+        format!("{:x}.{}", self.start_micros, self.cdr_id.simple())
+    }
+
+    /// Read a cursor an API handed out; `None` for anything else.
+    pub fn decode(text: &str) -> Option<Self> {
+        let (micros, id) = text.trim().split_once('.')?;
+        Some(Self {
+            start_micros: i64::from_str_radix(micros, 16).ok()?,
+            cdr_id: uuid::Uuid::parse_str(id).ok()?,
+        })
+    }
+}
+
+/// A count of records, and whether it is exact or the planner's estimate
+/// (`docs/CDR_PIPELINE.md` §9).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CdrCount {
+    pub count: u64,
+    pub exact: bool,
+}
+
+/// What a rollup rebuild did.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RollupRun {
+    /// Hours recomputed.
+    pub hours: u64,
+    /// Rollup rows written.
+    pub rows: u64,
+}
+
+/// A lock that keeps a maintenance job to one host at a time. Released on
+/// `release`; a lock dropped without it is released when its connection
+/// closes.
+#[async_trait]
+pub trait MaintenanceLock: Send {
+    async fn release(self: Box<Self>);
+}
+
+/// The lock a store without coordination hands out: always granted.
+pub struct UncoordinatedLock;
+
+#[async_trait]
+impl MaintenanceLock for UncoordinatedLock {
+    async fn release(self: Box<Self>) {}
 }
 
 /// Aggregated CDR usage statistics for a tenant within a time range.
@@ -1228,6 +1303,44 @@ pub trait CdrStore: Send + Sync {
     ) -> Result<Vec<NumberUsage>> {
         let _ = (tenant_id, from, to);
         Ok(Vec::new())
+    }
+
+    /// A count that gives up being exact after `budget`, answering with the
+    /// query planner's estimate instead. The default counts exactly.
+    async fn count_cdrs_within(&self, query: CdrQuery, budget: Duration) -> Result<CdrCount> {
+        let _ = budget;
+        Ok(CdrCount {
+            count: self.count_cdrs(query).await? as u64,
+            exact: true,
+        })
+    }
+
+    /// Make sure the record table has partitions for the last month through
+    /// the next three (`docs/CDR_PIPELINE.md` §8). Returns the partitions
+    /// created. A backend without partitions does nothing.
+    async fn ensure_cdr_partitions(&self) -> Result<Vec<String>> {
+        Ok(Vec::new())
+    }
+
+    /// Drop the monthly record partitions that end before `before`, all of
+    /// whose rows retention has already removed. Returns those dropped.
+    async fn drop_cdr_partitions_before(&self, before: SystemTime) -> Result<Vec<String>> {
+        let _ = before;
+        Ok(Vec::new())
+    }
+
+    /// Recompute the hourly usage rollups for the last `window` (all of
+    /// history on the first run) in one transaction.
+    async fn rebuild_usage_rollups(&self, window: Duration) -> Result<RollupRun> {
+        let _ = window;
+        Ok(RollupRun::default())
+    }
+
+    /// Try to take the maintenance lock `name`; `None` when another host
+    /// holds it.
+    async fn try_maintenance_lock(&self, name: &str) -> Result<Option<Box<dyn MaintenanceLock>>> {
+        let _ = name;
+        Ok(Some(Box::new(UncoordinatedLock)))
     }
 }
 
@@ -3121,6 +3234,26 @@ impl CdrStore for DynStorage {
         self.cdr_store
             .aggregate_usage_by_number(tenant_id, from, to)
             .await
+    }
+
+    async fn count_cdrs_within(&self, query: CdrQuery, budget: Duration) -> Result<CdrCount> {
+        self.cdr_store.count_cdrs_within(query, budget).await
+    }
+
+    async fn ensure_cdr_partitions(&self) -> Result<Vec<String>> {
+        self.cdr_store.ensure_cdr_partitions().await
+    }
+
+    async fn drop_cdr_partitions_before(&self, before: SystemTime) -> Result<Vec<String>> {
+        self.cdr_store.drop_cdr_partitions_before(before).await
+    }
+
+    async fn rebuild_usage_rollups(&self, window: Duration) -> Result<RollupRun> {
+        self.cdr_store.rebuild_usage_rollups(window).await
+    }
+
+    async fn try_maintenance_lock(&self, name: &str) -> Result<Option<Box<dyn MaintenanceLock>>> {
+        self.cdr_store.try_maintenance_lock(name).await
     }
 }
 

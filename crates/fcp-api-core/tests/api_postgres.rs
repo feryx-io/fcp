@@ -4268,6 +4268,82 @@ async fn compliance_policy_audit_log_export_and_retention() {
     .await;
     assert_eq!(exported["actor"], "static_token", "{exported}");
 
+    // ── Reading at volume (docs/CDR_PIPELINE.md §9) ──
+    // The export as JSON Lines: one record a line.
+    let jsonl = app
+        .admin_in(
+            app.tenant_a,
+            Method::GET,
+            "/api/v1/cdrs/export?format=jsonl",
+            None,
+        )
+        .await;
+    assert_eq!(jsonl.status, StatusCode::OK, "{}", jsonl.text);
+    assert!(jsonl
+        .header("content-type")
+        .is_some_and(|ct| ct.starts_with("application/x-ndjson")));
+    let exported_records: Vec<serde_json::Value> = jsonl
+        .text
+        .lines()
+        .map(|l| serde_json::from_str(l).expect("a JSON line"))
+        .collect();
+    assert_eq!(exported_records.len(), 2, "{}", jsonl.text);
+    assert!(exported_records.iter().all(|r| r["kind"] == "call"));
+    let bad_format = app
+        .admin_in(
+            app.tenant_a,
+            Method::GET,
+            "/api/v1/cdrs/export?format=xml",
+            None,
+        )
+        .await;
+    assert_eq!(bad_format.status, StatusCode::BAD_REQUEST);
+
+    // A keyset walk: pages of one, each naming the next, until the last.
+    let mut walked = Vec::new();
+    let mut path = "/api/v1/cdrs?limit=1".to_string();
+    loop {
+        let page = app.admin_in(app.tenant_a, Method::GET, &path, None).await;
+        assert_eq!(page.status, StatusCode::OK, "{}", page.text);
+        assert_eq!(page.json["total_exact"], true, "{}", page.text);
+        for r in page.json["cdrs"].as_array().unwrap() {
+            walked.push(r["cdr_id"].as_str().unwrap().to_string());
+        }
+        match page.json["next_cursor"].as_str() {
+            Some(cursor) => path = format!("/api/v1/cdrs?limit=1&cursor={cursor}"),
+            None => break,
+        }
+        assert!(walked.len() <= 50, "the walk ends");
+    }
+    let total = app
+        .admin_in(app.tenant_a, Method::GET, "/api/v1/cdrs?limit=1000", None)
+        .await;
+    let listed = total.json["cdrs"].as_array().unwrap().len();
+    // The last page is full when the count divides evenly: one empty page more.
+    assert_eq!(walked.len(), listed, "{walked:?}");
+    let mut unique = walked.clone();
+    unique.sort();
+    unique.dedup();
+    assert_eq!(unique.len(), walked.len(), "no record twice");
+    let deep = app
+        .admin_in(app.tenant_a, Method::GET, "/api/v1/cdrs?offset=10001", None)
+        .await;
+    assert_eq!(deep.status, StatusCode::BAD_REQUEST, "{}", deep.text);
+    let bad_cursor = app
+        .admin_in(
+            app.tenant_a,
+            Method::GET,
+            "/api/v1/cdrs?cursor=nonsense",
+            None,
+        )
+        .await;
+    assert_eq!(
+        bad_cursor.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        bad_cursor.text
+    );
+
     // ── Retention ──
     let (old_call, old_sip) = app
         .seed_cdr_aged(app.tenant_a, Some(5_000), None, days(60))

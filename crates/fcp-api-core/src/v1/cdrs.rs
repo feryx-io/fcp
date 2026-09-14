@@ -12,7 +12,7 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use fcp_core::storage::{CdrQuery, CdrStore};
+use fcp_core::storage::{CdrCursor, CdrQuery, CdrStore};
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, warn};
@@ -175,6 +175,13 @@ pub struct ListCdrsQuery {
     /// Filter by start time (Unix timestamp in seconds)
     pub start_time_to: Option<String>,
 
+    /// Keyset pagination: the `next_cursor` of the previous page. Takes the
+    /// place of `offset`, and goes as deep as the records do.
+    pub cursor: Option<String>,
+
+    /// Export format: `csv` (default) or `jsonl`.
+    pub format: Option<String>,
+
     /// Maximum number of results (default: 100, max: 1000)
     #[serde(default = "default_limit")]
     pub limit: usize,
@@ -192,10 +199,24 @@ fn default_limit() -> usize {
 #[derive(Debug, Serialize)]
 pub struct ListCdrsResponse {
     pub cdrs: Vec<CdrResponse>,
+    /// Records matching the filters: exact when counting was quick, the
+    /// database's estimate otherwise (`total_exact` says which).
     pub total: usize,
+    pub total_exact: bool,
     pub limit: usize,
     pub offset: usize,
+    /// Pass as `cursor` for the page after this one; absent on the last.
+    pub next_cursor: Option<String>,
 }
+
+/// The deepest `offset` a listing accepts; past it, page with `cursor`.
+const MAX_OFFSET: usize = 10_000;
+
+/// How long a listing spends counting before it settles for an estimate.
+const COUNT_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Records per page of an export's walk.
+const EXPORT_PAGE: usize = 1_000;
 
 /// List CDRs with filters and pagination.
 ///
@@ -240,23 +261,40 @@ pub async fn list_cdrs(
         "Querying CDRs"
     );
 
-    // Execute queries in parallel
-    let (cdrs, total) = tokio::try_join!(
+    if query.cursor.is_none() && params.offset > MAX_OFFSET {
+        return Err(ApiError::BadRequest(format!(
+            "offset may not exceed {MAX_OFFSET}; page with cursor instead"
+        )));
+    }
+
+    // Execute queries in parallel. The count gives up being exact after
+    // COUNT_BUDGET (docs/CDR_PIPELINE.md §9); it ignores the cursor, which
+    // pages through the same set.
+    let count_query = CdrQuery {
+        cursor: None,
+        ..query.clone()
+    };
+    let (cdrs, count) = tokio::try_join!(
         storage.query_cdrs(query.clone()),
-        storage.count_cdrs(query.clone())
+        storage.count_cdrs_within(count_query, COUNT_BUDGET)
     )
     .map_err(|e| {
         warn!(error = %e, "Failed to query CDRs");
         ApiError::Internal("Failed to query CDRs".to_string())
     })?;
 
+    let next_cursor = (cdrs.len() == limit)
+        .then(|| cdrs.last().map(|last| CdrCursor::after(last).encode()))
+        .flatten();
     let cdr_responses: Vec<CdrResponse> = cdrs.into_iter().map(CdrResponse::from).collect();
 
     Ok(Json(ListCdrsResponse {
         cdrs: cdr_responses,
-        total,
+        total: count.count as usize,
+        total_exact: count.exact,
         limit,
         offset: params.offset,
+        next_cursor,
     }))
 }
 
@@ -321,6 +359,14 @@ fn build_cdr_query(
             params.call_id.is_some(),
         )
         .map_err(ApiError::BadRequest)?,
+        cursor: params
+            .cursor
+            .as_deref()
+            .map(|c| {
+                CdrCursor::decode(c)
+                    .ok_or_else(|| ApiError::BadRequest("Invalid cursor".to_string()))
+            })
+            .transpose()?,
         start_time_from: None,
         start_time_to: None,
         limit: Some(limit),
@@ -405,10 +451,46 @@ fn csv_field(value: &str) -> String {
     }
 }
 
-/// Maximum rows one export returns.
-const EXPORT_MAX_ROWS: usize = 100_000;
+const CSV_HEADER: &str =
+    "call_id,tenant_id,sip_call_id,start_time,answer_time,end_time,from_uri,to_uri,\
+     disposition,hangup_cause,setup_duration_ms,call_duration_ms,total_duration_ms,\
+     sip_status_code,codec_a_leg,codec_b_leg,cost,currency,recording_url,kind,cdr_id\n";
 
-/// Export CDRs as CSV with the same filters as the listing.
+/// One record as a CSV line.
+fn csv_row(r: &CdrResponse) -> String {
+    let opt_u64 = |v: Option<u64>| v.map(|n| n.to_string()).unwrap_or_default();
+    let opt_str = |v: &Option<String>| csv_field(v.as_deref().unwrap_or(""));
+    let mut line = [
+        csv_field(&r.call_id),
+        csv_field(&r.tenant_id),
+        csv_field(&r.sip_call_id),
+        r.start_time.to_string(),
+        opt_u64(r.answer_time),
+        opt_u64(r.end_time),
+        csv_field(&r.from_uri),
+        csv_field(&r.to_uri),
+        csv_field(&r.disposition),
+        csv_field(&r.hangup_cause),
+        opt_u64(r.setup_duration_ms),
+        opt_u64(r.call_duration_ms),
+        opt_u64(r.total_duration_ms),
+        r.sip_status_code.map(|c| c.to_string()).unwrap_or_default(),
+        opt_str(&r.codec_a_leg),
+        opt_str(&r.codec_b_leg),
+        r.cost.map(|c| c.to_string()).unwrap_or_default(),
+        opt_str(&r.currency),
+        opt_str(&r.recording_url),
+        csv_field(&r.kind),
+        csv_field(&r.cdr_id),
+    ]
+    .join(",");
+    line.push('\n');
+    line
+}
+
+/// Export CDRs with the same filters as the listing, every matching record,
+/// streamed page by page from a keyset walk (`docs/CDR_PIPELINE.md` §9):
+/// CSV, or JSON Lines with `format=jsonl`.
 ///
 /// GET /api/v1/cdrs/export
 pub async fn export_cdrs(
@@ -418,64 +500,107 @@ pub async fn export_cdrs(
     headers: HeaderMap,
     Query(params): Query<ListCdrsQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let storage = require_storage!(state);
+    let storage = std::sync::Arc::clone(require_storage!(state));
     let allow_all_tenants = can_access_all_tenants(identity.as_ref().map(|ext| &ext.0))
         && !headers.contains_key(PLATFORM_TENANT_HEADER);
-    let mut query = build_cdr_query(&params, &tenant, allow_all_tenants, EXPORT_MAX_ROWS)?;
-    query.offset = Some(0);
+    let mut query = build_cdr_query(&params, &tenant, allow_all_tenants, EXPORT_PAGE)?;
+    query.offset = None;
+    let jsonl = match params.format.as_deref().unwrap_or("csv") {
+        "csv" => false,
+        "jsonl" => true,
+        other => {
+            return Err(ApiError::BadRequest(format!(
+                "Invalid format: {other}. Valid values: csv, jsonl"
+            )))
+        }
+    };
 
-    let cdrs = storage.query_cdrs(query).await.map_err(|e| {
+    // The first page is read before the response starts, so a failing
+    // query is an error status rather than an empty file.
+    let first = storage.query_cdrs(query.clone()).await.map_err(|e| {
         warn!(error = %e, "Failed to export CDRs");
         ApiError::Internal("Failed to export CDRs".to_string())
     })?;
 
-    let mut csv = String::from(
-        "call_id,tenant_id,sip_call_id,start_time,answer_time,end_time,from_uri,to_uri,\
-         disposition,hangup_cause,setup_duration_ms,call_duration_ms,total_duration_ms,\
-         sip_status_code,codec_a_leg,codec_b_leg,cost,currency,recording_url\n",
-    );
-    let opt_u64 = |v: Option<u64>| v.map(|n| n.to_string()).unwrap_or_default();
-    let opt_str = |v: &Option<String>| csv_field(v.as_deref().unwrap_or(""));
-    let count = cdrs.len();
-    for cdr in cdrs {
-        let r = CdrResponse::from(cdr);
-        let row = [
-            csv_field(&r.call_id),
-            csv_field(&r.tenant_id),
-            csv_field(&r.sip_call_id),
-            r.start_time.to_string(),
-            opt_u64(r.answer_time),
-            opt_u64(r.end_time),
-            csv_field(&r.from_uri),
-            csv_field(&r.to_uri),
-            csv_field(&r.disposition),
-            csv_field(&r.hangup_cause),
-            opt_u64(r.setup_duration_ms),
-            opt_u64(r.call_duration_ms),
-            opt_u64(r.total_duration_ms),
-            r.sip_status_code.map(|c| c.to_string()).unwrap_or_default(),
-            opt_str(&r.codec_a_leg),
-            opt_str(&r.codec_b_leg),
-            r.cost.map(|c| c.to_string()).unwrap_or_default(),
-            opt_str(&r.currency),
-            opt_str(&r.recording_url),
-        ];
-        csv.push_str(&row.join(","));
-        csv.push('\n');
+    struct Walk {
+        storage: std::sync::Arc<fcp_core::DynStorage>,
+        query: CdrQuery,
+        page: Option<Vec<fcp_core::storage::CallDetailRecord>>,
+        header_sent: bool,
+        rows: usize,
     }
-    debug!(rows = count, "Exported CDRs as CSV");
+    let walk = Walk {
+        storage,
+        query,
+        page: Some(first),
+        header_sent: jsonl,
+        rows: 0,
+    };
+    let stream = futures_util::stream::unfold(walk, move |mut walk| async move {
+        if !walk.header_sent {
+            walk.header_sent = true;
+            return Some((
+                Ok::<_, std::io::Error>(axum::body::Bytes::from(CSV_HEADER)),
+                walk,
+            ));
+        }
+        let page = match walk.page.take() {
+            Some(page) => page,
+            None => return None,
+        };
+        if page.is_empty() {
+            debug!(rows = walk.rows, "Exported CDRs");
+            return None;
+        }
+        let full = page.len() == EXPORT_PAGE;
+        let mut chunk = String::new();
+        for record in &page {
+            let response = CdrResponse::from(record.clone());
+            if jsonl {
+                chunk.push_str(&serde_json::to_string(&response).unwrap_or_default());
+                chunk.push('\n');
+            } else {
+                chunk.push_str(&csv_row(&response));
+            }
+        }
+        walk.rows += page.len();
+        if full {
+            walk.query.cursor = page.last().map(CdrCursor::after);
+            match walk.storage.query_cdrs(walk.query.clone()).await {
+                Ok(next) => walk.page = Some(next),
+                Err(e) => {
+                    warn!(error = %e, rows = walk.rows, "CDR export failed part way");
+                    return Some((
+                        Err(std::io::Error::other("CDR export failed part way")),
+                        walk,
+                    ));
+                }
+            }
+        } else {
+            walk.page = Some(Vec::new());
+        }
+        Some((Ok(axum::body::Bytes::from(chunk)), walk))
+    });
 
+    let (content_type, filename) = if jsonl {
+        (
+            "application/x-ndjson",
+            "attachment; filename=\"cdrs.jsonl\"",
+        )
+    } else {
+        (
+            "text/csv; charset=utf-8",
+            "attachment; filename=\"cdrs.csv\"",
+        )
+    };
     Ok((
         StatusCode::OK,
         [
-            (header::CONTENT_TYPE, "text/csv; charset=utf-8"),
-            (
-                header::CONTENT_DISPOSITION,
-                "attachment; filename=\"cdrs.csv\"",
-            ),
+            (header::CONTENT_TYPE, content_type),
+            (header::CONTENT_DISPOSITION, filename),
             (header::CACHE_CONTROL, "no-store"),
         ],
-        csv,
+        axum::body::Body::from_stream(stream),
     ))
 }
 

@@ -10,6 +10,7 @@
 
 pub mod consumer;
 pub mod enrich;
+pub mod maintenance;
 pub mod node;
 pub mod processor;
 pub mod record;
@@ -24,6 +25,7 @@ pub use consumer::{
 };
 pub use enrich::{DirectionEnricher, Enricher};
 pub use fcp_core::storage::{CallDetailRecord as Record, CdrKind, CDR_SCHEMA_VERSION};
+pub use maintenance::{spawn_maintenance, MaintenanceConfig};
 pub use node::{start_node, NodeConfig, SinkKind};
 pub use processor::{Outcome, Processor, Rater, Rating, Rejection};
 pub use record::{RecordBuilder, RtpStats, SystemCause, TerminationReason};

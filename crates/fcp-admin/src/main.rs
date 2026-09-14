@@ -142,6 +142,13 @@ async fn main() -> Result<()> {
 
     info!("Storage backend initialized successfully");
 
+    // The record table's upkeep: the coming months' partitions and the
+    // hourly usage rollups (docs/CDR_PIPELINE.md §8-9).
+    fcp_cdr::spawn_maintenance(
+        Arc::clone(&storage) as Arc<dyn fcp_core::storage::CdrStore>,
+        fcp_cdr::MaintenanceConfig::default(),
+    );
+
     // Retention sweep: apply every tenant's compliance policy once an hour.
     // Tenants without a policy (or with no retention windows) are skipped.
     {
@@ -158,21 +165,47 @@ async fn main() -> Result<()> {
                 let Some(store) = sweep_storage.compliance_store().cloned() else {
                     continue;
                 };
+                // One admin replica sweeps at a time.
+                let lock = {
+                    use fcp_core::storage::CdrStore;
+                    match sweep_storage.try_maintenance_lock("fcp:retention").await {
+                        Ok(Some(lock)) => lock,
+                        Ok(None) => continue,
+                        Err(e) => {
+                            warn!(error = %e, "Retention sweep: could not take the lock");
+                            continue;
+                        }
+                    }
+                };
                 let tenants = match sweep_storage.list_tenants().await {
                     Ok(t) => t,
                     Err(e) => {
                         warn!(error = %e, "Retention sweep: failed to list tenants");
+                        lock.release().await;
                         continue;
                     }
                 };
+                // The oldest start time every tenant lets go of: whole months
+                // before it can be dropped once their rows are deleted.
+                let now = std::time::SystemTime::now();
+                let mut partition_cutoff = (!tenants.is_empty()).then_some(now);
                 for tenant in tenants {
                     let policy = match store.get_compliance_policy(&tenant.id).await {
                         Ok(Some(p)) if p.has_retention() => p,
-                        Ok(_) => continue,
+                        Ok(_) => {
+                            partition_cutoff = None;
+                            continue;
+                        }
                         Err(e) => {
                             warn!(tenant_id = %tenant.id, error = %e, "Retention sweep: failed to load policy");
                             continue;
                         }
+                    };
+                    partition_cutoff = match (partition_cutoff, policy.cdr_retention_days) {
+                        (Some(c), Some(days)) => {
+                            Some(c.min(fcp_core::compliance::cutoff(now, days)))
+                        }
+                        _ => None,
                     };
                     let report = fcp_core::compliance::run_retention(
                         &sweep_storage,
@@ -192,6 +225,19 @@ async fn main() -> Result<()> {
                         warn!(tenant_id = %tenant.id, error = %e, "Retention sweep: failed to record run");
                     }
                 }
+                if let Some(cutoff) = partition_cutoff {
+                    use fcp_core::storage::CdrStore;
+                    match sweep_storage.drop_cdr_partitions_before(cutoff).await {
+                        Ok(dropped) if !dropped.is_empty() => {
+                            info!(partitions = ?dropped, "Retention sweep: dropped CDR partitions")
+                        }
+                        Ok(_) => {}
+                        Err(e) => {
+                            warn!(error = %e, "Retention sweep: could not drop CDR partitions")
+                        }
+                    }
+                }
+                lock.release().await;
             }
         });
     }

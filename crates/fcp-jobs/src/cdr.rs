@@ -150,6 +150,9 @@ impl CdrRole {
             .with_events(Arc::clone(&events))
             .with_plan_cache(cache);
         let store: Arc<dyn CdrStore> = pg.clone();
+        // The record table's upkeep, beside fcp-admin's: partitions and
+        // rollups, one host at a time under the store's locks.
+        fcp_cdr::spawn_maintenance(Arc::clone(&store), fcp_cdr::MaintenanceConfig::default());
         let numbers: Arc<dyn PhoneNumberStore> = pg.clone();
         let processor = Arc::new(
             Processor::new(store, Some(Arc::new(billing)))
