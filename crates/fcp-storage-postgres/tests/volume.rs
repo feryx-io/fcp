@@ -2,7 +2,9 @@
 //! database built to migration 058, seeded with `FCP_VOLUME_ROWS` records
 //! (default one million) in the unpartitioned table, converted by 059, and
 //! then timed at what phase 4 is for — listing, deep pages, counts, the
-//! export's walk, the rollup rebuilds, usage from rollups.
+//! export's walk, the rollup rebuilds, usage from rollups — and phase 5's
+//! archive: where its walk starts, a day's tenants, a day written, and what
+//! the late-record trigger costs an insert.
 //!
 //! Not part of the suite: `cargo test -p fcp-storage-postgres --test volume
 //! -- --ignored --nocapture`, with `FCP_TEST_DATABASE_URL`. The database is
@@ -13,6 +15,7 @@ use fcp_core::storage::{CdrCursor, CdrQuery, CdrStore};
 use fcp_core::TenantId;
 use fcp_storage_postgres::{PostgresConfig, PostgresStorage};
 use sqlx::{Connection, PgConnection};
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 const TENANTS: i64 = 50;
@@ -151,16 +154,18 @@ async fn the_record_table_at_volume() {
     println!("partitioned table with its indexes: {size}");
     pool.close().await;
 
-    let s = PostgresStorage::new(PostgresConfig {
-        connection_string: url.clone(),
-        max_connections: 4,
-        connection_timeout: Duration::from_secs(30),
-        encryption: None,
-        read_replica_url: None,
-        max_replica_lag: Duration::from_secs(5),
-    })
-    .await
-    .unwrap();
+    let s = Arc::new(
+        PostgresStorage::new(PostgresConfig {
+            connection_string: url.clone(),
+            max_connections: 4,
+            connection_timeout: Duration::from_secs(30),
+            encryption: None,
+            read_replica_url: None,
+            max_replica_lag: Duration::from_secs(5),
+        })
+        .await
+        .unwrap(),
+    );
     let tenant: TenantId = "00000000-0000-0000-0000-000000000007".parse().unwrap();
     let per_tenant = CdrQuery {
         tenant_id: Some(tenant),
@@ -311,6 +316,94 @@ async fn the_record_table_at_volume() {
     );
     assert_eq!(rolled.total_calls, live.total_calls);
     assert_eq!(rolled.total_cost, live.total_cost);
+
+    // 8. The archive: where the walk starts, the tenants on a day, and
+    // every tenant's records for that day written to a directory.
+    use fcp_cdr::archive::{ArchiveConfig, Archiver, DirectoryTarget};
+    let t = Instant::now();
+    let oldest = s.cdr_archive_next_day().await.unwrap().expect("records");
+    report(
+        &format!("archive: the oldest record's day ({oldest})"),
+        t.elapsed(),
+    );
+    let day = (Utc::now() - chrono::Duration::days(30)).date_naive();
+    let t = Instant::now();
+    let tenants = s.cdr_tenants_on(day).await.unwrap();
+    report(
+        &format!(
+            "archive: the tenants with records on a day ({})",
+            tenants.len()
+        ),
+        t.elapsed(),
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let work = dir.path().join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    let archiver = Archiver::new(
+        s.clone(),
+        Arc::new(DirectoryTarget::new(dir.path().join("archive"))),
+        ArchiveConfig {
+            work_dir: work,
+            ..ArchiveConfig::default()
+        },
+    );
+    let t = Instant::now();
+    let (mut records, mut bytes) = (0u64, 0u64);
+    for tenant in &tenants {
+        let generation = s.begin_cdr_archive(tenant, day).await.unwrap();
+        let written = archiver.write(tenant, day, generation).await.unwrap();
+        records += written.records;
+        bytes += written.bytes;
+    }
+    let took = t.elapsed();
+    report(
+        &format!(
+            "archive: one day, every tenant: {records} records, {} KiB, {:.0} records/s",
+            bytes / 1024,
+            records as f64 / took.as_secs_f64()
+        ),
+        took,
+    );
+
+    // What the late-record trigger costs the processor's batched insert,
+    // disabled and then enabled with the walk under way (the batches are
+    // today's records, so none is late).
+    use fcp_core::storage::CdrKind;
+    let batch = |n: usize| -> Vec<_> {
+        (0..n)
+            .map(|_| {
+                fcp_cdr::RecordBuilder::new(CdrKind::Call, fcp_core::CallId::new(), tenant)
+                    .from("sip:1000@volume.example", None)
+                    .to("sip:+14155550100@carrier.example", None)
+                    .started_at(SystemTime::now() - Duration::from_secs(60))
+                    .ended_at(Some(SystemTime::now()))
+                    .build()
+            })
+            .collect()
+    };
+    // Alternated, twice each, so a cold first batch does not decide it.
+    for round in 1..=2 {
+        for (state, sql) in [
+            (
+                "no trigger",
+                "ALTER TABLE cdrs DISABLE TRIGGER cdrs_archive_note_late",
+            ),
+            (
+                "trigger on",
+                "ALTER TABLE cdrs ENABLE TRIGGER cdrs_archive_note_late",
+            ),
+        ] {
+            sqlx::query(sql).execute(s.pool()).await.unwrap();
+            let t = Instant::now();
+            for _ in 0..40 {
+                s.insert_cdrs(batch(500)).await.unwrap();
+            }
+            report(
+                &format!("insert 20,000 records in batches of 500, {state} ({round})"),
+                t.elapsed(),
+            );
+        }
+    }
     println!("finished {}", Utc::now());
 
     drop(s);

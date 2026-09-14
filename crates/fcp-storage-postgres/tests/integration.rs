@@ -1084,6 +1084,247 @@ async fn retention_drops_a_month_only_once_its_rows_are_gone_and_locks_keep_to_o
 }
 
 #[tokio::test]
+async fn the_archive_walks_days_notes_late_records_and_holds_each_tenants_frontier() {
+    use chrono::{Duration as Days, NaiveDate, Utc};
+    use fcp_core::cdr_archive::{day_start, CdrArchiveWrite};
+    use fcp_core::compliance::{cdr_retention_cutoff, CompliancePolicy, ComplianceStore};
+    use fcp_core::storage::CdrCursor;
+
+    let db = require_db!();
+    let s = db.storage();
+    let a = tenant("a");
+    let b = tenant("b");
+    s.put_tenant(a.clone()).await.unwrap();
+    s.put_tenant(b.clone()).await.unwrap();
+    let today = Utc::now().date_naive();
+    let (d0, d1, d2) = (
+        today - Days::days(5),
+        today - Days::days(4),
+        today - Days::days(3),
+    );
+    let at = |day: NaiveDate, secs: u64| day_start(day) + Duration::from_secs(secs);
+    let record = |tenant: TenantId, start: SystemTime| {
+        let mut r = cdr(tenant, "sip:bob@example.com", Some(1_000), None);
+        r.start_time = start;
+        r.answer_time = Some(start);
+        r.end_time = Some(start + Duration::from_secs(1));
+        r
+    };
+    let frontier = |t: TenantId| async move { s.cdr_archive_frontier(&t).await.unwrap() };
+    let write =
+        |tenant: TenantId, day: NaiveDate, generation: u64, key: Option<&str>| CdrArchiveWrite {
+            tenant_id: tenant,
+            day,
+            generation,
+            object_key: key.map(str::to_string),
+            records: 2,
+            bytes: 100,
+            sha256: key.map(|_| "ab".repeat(32)),
+        };
+
+    // Nothing to walk and nothing confirmed before there are records.
+    assert_eq!(s.cdr_archive_next_day().await.unwrap(), None);
+    assert_eq!(frontier(a.id).await, None);
+
+    // a: midnight and mid-morning on d0, the last second of d1; b: d1.
+    s.insert_cdrs(vec![
+        record(a.id, at(d0, 36_000)),
+        record(a.id, at(d0, 0)),
+        record(a.id, at(d1, 86_399)),
+        record(b.id, at(d1, 3_600)),
+    ])
+    .await
+    .unwrap();
+    assert_eq!(
+        s.cdr_archive_next_day().await.unwrap(),
+        Some(d0),
+        "the oldest record's day"
+    );
+    assert_eq!(s.cdr_tenants_on(d0).await.unwrap(), vec![a.id]);
+    let mut on_d1 = s.cdr_tenants_on(d1).await.unwrap();
+    on_d1.sort_by_key(|t| t.to_string());
+    let mut both = vec![a.id, b.id];
+    both.sort_by_key(|t| t.to_string());
+    assert_eq!(on_d1, both);
+    assert!(s.cdr_tenants_on(d2).await.unwrap().is_empty());
+
+    // A day's page is oldest first, and the day is [midnight, midnight).
+    let first = s.cdr_archive_page(&a.id, d0, None, 1).await.unwrap();
+    assert_eq!(first[0].start_time, at(d0, 0));
+    let second = s
+        .cdr_archive_page(&a.id, d0, first.last().map(CdrCursor::after), 10)
+        .await
+        .unwrap();
+    assert_eq!(second.len(), 1);
+    assert_eq!(second[0].start_time, at(d0, 36_000));
+    assert!(s
+        .cdr_archive_page(&a.id, d0, second.last().map(CdrCursor::after), 10)
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        s.cdr_archive_page(&a.id, d1, None, 10).await.unwrap().len(),
+        1
+    );
+    assert!(s
+        .cdr_archive_page(&a.id, d2, None, 10)
+        .await
+        .unwrap()
+        .is_empty());
+
+    // Walk d0 and d1.
+    let g = s.begin_cdr_archive(&a.id, d0).await.unwrap();
+    assert_eq!(g, 1);
+    assert_eq!(
+        frontier(a.id).await,
+        Some(day_start(d0)),
+        "not walked past d0 yet"
+    );
+    assert!(s
+        .complete_cdr_archive(&write(a.id, d0, g, Some("a/d0")))
+        .await
+        .unwrap());
+    s.advance_cdr_archive(d0).await.unwrap();
+    assert!(
+        s.advance_cdr_archive(d0).await.is_err(),
+        "the walk is past d0"
+    );
+    for t in [a.id, b.id] {
+        let g = s.begin_cdr_archive(&t, d1).await.unwrap();
+        assert!(s
+            .complete_cdr_archive(&write(t, d1, g, Some("d1")))
+            .await
+            .unwrap());
+    }
+    s.advance_cdr_archive(d1).await.unwrap();
+    assert_eq!(frontier(a.id).await, Some(day_start(d2)));
+    assert_eq!(frontier(b.id).await, Some(day_start(d2)));
+    let entry = s.get_cdr_archive(&a.id, d0).await.unwrap().unwrap();
+    assert!(entry.archived_at.is_some() && !entry.late);
+    assert_eq!(entry.object_key.as_deref(), Some("a/d0"));
+
+    // A late record for an archived day, and one for a day a tenant had
+    // no records on: both are pending and hold only their own tenant back.
+    s.insert_cdr(record(a.id, at(d0, 50_000))).await.unwrap();
+    assert!(s.get_cdr_archive(&a.id, d0).await.unwrap().unwrap().late);
+    assert_eq!(frontier(a.id).await, Some(day_start(d0)));
+    assert_eq!(frontier(b.id).await, Some(day_start(d2)));
+    s.insert_cdr(record(b.id, at(d0, 60_000))).await.unwrap();
+    assert_eq!(frontier(b.id).await, Some(day_start(d0)));
+    let mut pending = s.pending_cdr_archives(d2, 10).await.unwrap();
+    pending.sort_by_key(|(t, d)| (*d, t.to_string()));
+    let mut expected = vec![(a.id, d0), (b.id, d0)];
+    expected.sort_by_key(|(t, d)| (*d, t.to_string()));
+    assert_eq!(pending, expected);
+    // A record for a day the walk has not reached is not late.
+    s.insert_cdr(record(a.id, at(today, 0))).await.unwrap();
+    assert_eq!(s.pending_cdr_archives(today, 10).await.unwrap().len(), 2);
+
+    // Writing a again: unconfirmed while under way; a stale generation's
+    // confirmation is ignored.
+    let g2 = s.begin_cdr_archive(&a.id, d0).await.unwrap();
+    assert_eq!(g2, 2);
+    let entry = s.get_cdr_archive(&a.id, d0).await.unwrap().unwrap();
+    assert!(entry.archived_at.is_none() && !entry.late);
+    assert_eq!(frontier(a.id).await, Some(day_start(d0)));
+    assert!(!s
+        .complete_cdr_archive(&write(a.id, d0, 1, Some("old")))
+        .await
+        .unwrap());
+    assert!(s
+        .complete_cdr_archive(&write(a.id, d0, g2, Some("a/d0")))
+        .await
+        .unwrap());
+    assert_eq!(frontier(a.id).await, Some(day_start(d2)));
+
+    // A record stored while b's write is under way keeps the day pending.
+    let g = s.begin_cdr_archive(&b.id, d0).await.unwrap();
+    s.insert_cdr(record(b.id, at(d0, 70_000))).await.unwrap();
+    assert!(s
+        .complete_cdr_archive(&write(b.id, d0, g, Some("b/d0")))
+        .await
+        .unwrap());
+    let entry = s.get_cdr_archive(&b.id, d0).await.unwrap().unwrap();
+    assert!(entry.archived_at.is_some() && entry.late);
+    assert_eq!(frontier(b.id).await, Some(day_start(d0)));
+    assert_eq!(
+        s.pending_cdr_archives(d2, 10).await.unwrap(),
+        vec![(b.id, d0)]
+    );
+
+    // A write that finds no records keeps the object an earlier one stored.
+    let g3 = s.begin_cdr_archive(&a.id, d0).await.unwrap();
+    assert!(s
+        .complete_cdr_archive(&write(a.id, d0, g3, None))
+        .await
+        .unwrap());
+    let entry = s.get_cdr_archive(&a.id, d0).await.unwrap().unwrap();
+    assert_eq!(entry.object_key.as_deref(), Some("a/d0"));
+    assert!(entry.archived_at.is_some());
+
+    let status = s.cdr_archive_status().await.unwrap();
+    assert_eq!(status.next_day, Some(d2));
+    assert_eq!(status.archived_days, 4);
+    assert_eq!(status.pending_days, 1);
+    assert!(status.last_archived_at.is_some());
+
+    // Retention for a tenant that requires the archive stops at its
+    // frontier; the policy flag round-trips.
+    let compliance =
+        fcp_storage_postgres::compliance::PostgresComplianceStore::new(s.pool().clone());
+    let mut policy = CompliancePolicy::defaults(b.id);
+    policy.cdr_retention_days = Some(1);
+    policy.cdr_archive_required = true;
+    compliance.put_compliance_policy(&policy).await.unwrap();
+    let policy = compliance
+        .get_compliance_policy(&b.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(policy.cdr_archive_required);
+    let (cutoff, held) = cdr_retention_cutoff(s, &policy, SystemTime::now())
+        .await
+        .unwrap();
+    assert_eq!(cutoff, Some(day_start(d0)));
+    assert!(held.is_some());
+
+    // The walk does not pass a day while a record for it is being
+    // committed: moving past d2 waits for the insert, which notes itself.
+    let mut tx = s.pool().begin().await.unwrap();
+    sqlx::query(
+        "CREATE TEMP TABLE held ON COMMIT DROP AS SELECT * FROM cdrs WHERE tenant_id = $1 LIMIT 1",
+    )
+    .bind(b.id.to_string())
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE held SET cdr_id = gen_random_uuid(), start_time = $1")
+        .bind(chrono::DateTime::<Utc>::from(at(d2, 10)))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO cdrs SELECT * FROM held")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let advance = s.advance_cdr_archive(d2);
+    tokio::pin!(advance);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(500), &mut advance)
+            .await
+            .is_err(),
+        "waits for the insert"
+    );
+    tx.commit().await.unwrap();
+    advance.await.unwrap();
+    assert!(s
+        .pending_cdr_archives(d2 + Days::days(1), 10)
+        .await
+        .unwrap()
+        .contains(&(b.id, d2)));
+}
+
+#[tokio::test]
 async fn the_pipeline_migration_gives_existing_records_an_id_a_kind_and_a_trunk() {
     let db = require_db!();
     let s = db.storage();

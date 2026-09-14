@@ -1342,6 +1342,102 @@ pub trait CdrStore: Send + Sync {
         let _ = name;
         Ok(Some(Box::new(UncoordinatedLock)))
     }
+
+    // ── The archive (docs/CDR_PIPELINE.md §13, phase 5; crate::cdr_archive) ──
+    // A backend without an archive confirms nothing, so a tenant whose
+    // policy requires the archive keeps its records.
+
+    /// The first day the archiver has not enumerated. Set on the first call
+    /// to the day of the oldest record; `None` while there are none.
+    async fn cdr_archive_next_day(&self) -> Result<Option<chrono::NaiveDate>> {
+        Ok(None)
+    }
+
+    /// Record that every tenant with records on `day` has been archived:
+    /// `next_day` moves past it, once records being stored for the day at
+    /// that moment are committed (they are noted as late when they are
+    /// not in the archive).
+    async fn advance_cdr_archive(&self, day: chrono::NaiveDate) -> Result<()> {
+        let _ = day;
+        Ok(())
+    }
+
+    /// The tenants with records on `day`.
+    async fn cdr_tenants_on(&self, day: chrono::NaiveDate) -> Result<Vec<crate::TenantId>> {
+        let _ = day;
+        Ok(Vec::new())
+    }
+
+    /// Tenant-days before `before` to write again: begun and never
+    /// confirmed, or given late records. Oldest first.
+    async fn pending_cdr_archives(
+        &self,
+        before: chrono::NaiveDate,
+        limit: usize,
+    ) -> Result<Vec<(crate::TenantId, chrono::NaiveDate)>> {
+        let _ = (before, limit);
+        Ok(Vec::new())
+    }
+
+    /// Start writing a tenant's day: the day stops counting as archived,
+    /// its late-record notes are cleared, and the new generation is
+    /// returned. Records stored after this are noted as late again.
+    async fn begin_cdr_archive(
+        &self,
+        tenant_id: &crate::TenantId,
+        day: chrono::NaiveDate,
+    ) -> Result<u64> {
+        let _ = (tenant_id, day);
+        Err(anyhow::anyhow!("this store keeps no CDR archive"))
+    }
+
+    /// A page of a tenant's records on `day`, oldest first, strictly after
+    /// `after` in that order (the cursor's fields, read ascending).
+    async fn cdr_archive_page(
+        &self,
+        tenant_id: &crate::TenantId,
+        day: chrono::NaiveDate,
+        after: Option<CdrCursor>,
+        limit: usize,
+    ) -> Result<Vec<CallDetailRecord>> {
+        let _ = (tenant_id, day, after, limit);
+        Ok(Vec::new())
+    }
+
+    /// Confirm a write. `false` when a newer generation has begun since.
+    async fn complete_cdr_archive(
+        &self,
+        write: &crate::cdr_archive::CdrArchiveWrite,
+    ) -> Result<bool> {
+        let _ = write;
+        Ok(false)
+    }
+
+    /// What the archive holds for a tenant's day.
+    async fn get_cdr_archive(
+        &self,
+        tenant_id: &crate::TenantId,
+        day: chrono::NaiveDate,
+    ) -> Result<Option<crate::cdr_archive::CdrArchiveEntry>> {
+        let _ = (tenant_id, day);
+        Ok(None)
+    }
+
+    /// The start of the tenant's first day that is not archived and
+    /// confirmed: every record of the tenant's before it is in the
+    /// archive. `None` when nothing is.
+    async fn cdr_archive_frontier(
+        &self,
+        tenant_id: &crate::TenantId,
+    ) -> Result<Option<SystemTime>> {
+        let _ = tenant_id;
+        Ok(None)
+    }
+
+    /// The archive as a whole.
+    async fn cdr_archive_status(&self) -> Result<crate::cdr_archive::CdrArchiveStatus> {
+        Ok(Default::default())
+    }
 }
 
 /// Query parameters for searching available pool phone numbers.
@@ -3254,6 +3350,72 @@ impl CdrStore for DynStorage {
 
     async fn try_maintenance_lock(&self, name: &str) -> Result<Option<Box<dyn MaintenanceLock>>> {
         self.cdr_store.try_maintenance_lock(name).await
+    }
+
+    async fn cdr_archive_next_day(&self) -> Result<Option<chrono::NaiveDate>> {
+        self.cdr_store.cdr_archive_next_day().await
+    }
+
+    async fn advance_cdr_archive(&self, day: chrono::NaiveDate) -> Result<()> {
+        self.cdr_store.advance_cdr_archive(day).await
+    }
+
+    async fn cdr_tenants_on(&self, day: chrono::NaiveDate) -> Result<Vec<crate::TenantId>> {
+        self.cdr_store.cdr_tenants_on(day).await
+    }
+
+    async fn pending_cdr_archives(
+        &self,
+        before: chrono::NaiveDate,
+        limit: usize,
+    ) -> Result<Vec<(crate::TenantId, chrono::NaiveDate)>> {
+        self.cdr_store.pending_cdr_archives(before, limit).await
+    }
+
+    async fn begin_cdr_archive(
+        &self,
+        tenant_id: &crate::TenantId,
+        day: chrono::NaiveDate,
+    ) -> Result<u64> {
+        self.cdr_store.begin_cdr_archive(tenant_id, day).await
+    }
+
+    async fn cdr_archive_page(
+        &self,
+        tenant_id: &crate::TenantId,
+        day: chrono::NaiveDate,
+        after: Option<CdrCursor>,
+        limit: usize,
+    ) -> Result<Vec<CallDetailRecord>> {
+        self.cdr_store
+            .cdr_archive_page(tenant_id, day, after, limit)
+            .await
+    }
+
+    async fn complete_cdr_archive(
+        &self,
+        write: &crate::cdr_archive::CdrArchiveWrite,
+    ) -> Result<bool> {
+        self.cdr_store.complete_cdr_archive(write).await
+    }
+
+    async fn get_cdr_archive(
+        &self,
+        tenant_id: &crate::TenantId,
+        day: chrono::NaiveDate,
+    ) -> Result<Option<crate::cdr_archive::CdrArchiveEntry>> {
+        self.cdr_store.get_cdr_archive(tenant_id, day).await
+    }
+
+    async fn cdr_archive_frontier(
+        &self,
+        tenant_id: &crate::TenantId,
+    ) -> Result<Option<SystemTime>> {
+        self.cdr_store.cdr_archive_frontier(tenant_id).await
+    }
+
+    async fn cdr_archive_status(&self) -> Result<crate::cdr_archive::CdrArchiveStatus> {
+        self.cdr_store.cdr_archive_status().await
     }
 }
 

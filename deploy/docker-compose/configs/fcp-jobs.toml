@@ -26,6 +26,21 @@ backoff_multiplier = 2.0
 enabled = true
 bind_address = "0.0.0.0:8082"
 
+# The CDR archive (docs/CDR_PIPELINE.md §13, phase 5): each tenant's closed
+# days of records as gzipped JSON Lines in a bucket. Off unless enabled.
+# [cdr_archive]
+# enabled = true
+# database_url = "postgresql://postgres:password@postgres:5432/fcp"
+# prefix = "cdrs/"
+# target = "s3"
+#
+# [cdr_archive.s3]
+# bucket = "example-cdr-archive"
+# region = "us-east-1"
+# # endpoint = "http://minio:9000"   # a self-hosted store
+# # path_style = true
+# # Credentials from AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY when unset.
+
 [logging]
 level = "info"
 format = "pretty"

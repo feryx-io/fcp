@@ -55,6 +55,11 @@ pub struct CompliancePolicy {
     pub recording_retention_days: Option<u32>,
     /// Admin audit events older than this are deleted.
     pub audit_retention_days: Option<u32>,
+    /// Call detail records are deleted only once the CDR archive holds
+    /// them, confirmed (`docs/CDR_PIPELINE.md` §13, phase 5): retention
+    /// waits for the archiver rather than removing the only copy.
+    #[serde(default)]
+    pub cdr_archive_required: bool,
     pub recording_consent: RecordingConsentMode,
     /// Prompt played when `recording_consent` is `announce`.
     pub recording_consent_prompt_id: Option<String>,
@@ -71,6 +76,7 @@ impl CompliancePolicy {
             flow_trace_retention_days: None,
             recording_retention_days: None,
             audit_retention_days: None,
+            cdr_archive_required: false,
             recording_consent: RecordingConsentMode::None,
             recording_consent_prompt_id: None,
             updated_at: SystemTime::now(),
@@ -90,6 +96,30 @@ impl CompliancePolicy {
 /// The instant before which data of a given age is past its window.
 pub fn cutoff(now: SystemTime, retention_days: u32) -> SystemTime {
     now - Duration::from_secs(u64::from(retention_days) * 86_400)
+}
+
+/// The instant before which a tenant's call detail records may be deleted
+/// now: the policy's CDR window, held back to the archive's frontier when
+/// the policy requires the archive. `None` keeps every record. The second
+/// value is the window's own cutoff when the archive is holding it back.
+pub async fn cdr_retention_cutoff(
+    store: &dyn CdrStore,
+    policy: &CompliancePolicy,
+    now: SystemTime,
+) -> anyhow::Result<(Option<SystemTime>, Option<SystemTime>)> {
+    let Some(days) = policy.cdr_retention_days else {
+        return Ok((None, None));
+    };
+    let window = cutoff(now, days);
+    if !policy.cdr_archive_required {
+        return Ok((Some(window), None));
+    }
+    let frontier = store.cdr_archive_frontier(&policy.tenant_id).await?;
+    Ok(match frontier {
+        Some(f) if f >= window => (Some(window), None),
+        Some(f) => (Some(f), Some(window)),
+        None => (None, Some(window)),
+    })
 }
 
 /// How long past its retention a conference recording's row is left for
@@ -306,11 +336,27 @@ pub async fn run_retention(
         }
     }
 
-    if let Some(days) = policy.cdr_retention_days {
-        match storage.delete_cdrs_before(&tenant, cutoff(now, days)).await {
-            Ok(n) => report.cdrs_deleted = n,
-            Err(e) => report.errors.push(format!("cdrs: {e}")),
+    match cdr_retention_cutoff(storage, policy, now).await {
+        Ok((cutoff, held)) => {
+            if let Some(before) = cutoff {
+                match storage.delete_cdrs_before(&tenant, before).await {
+                    Ok(n) => report.cdrs_deleted = n,
+                    Err(e) => report.errors.push(format!("cdrs: {e}")),
+                }
+            }
+            if let Some(window) = held {
+                let at = |t: Option<SystemTime>| {
+                    t.map(|t| chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339())
+                        .unwrap_or_else(|| "the start".to_string())
+                };
+                report.errors.push(format!(
+                    "cdrs: kept from {} until the archive confirms them (retention reaches {})",
+                    at(cutoff),
+                    at(Some(window)),
+                ));
+            }
         }
+        Err(e) => report.errors.push(format!("cdrs: archive frontier: {e}")),
     }
 
     if let Some(days) = policy.audit_retention_days {
@@ -404,6 +450,82 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(n, 0);
+    }
+
+    /// A record store whose archive is confirmed up to a fixed instant.
+    struct Archived(Option<SystemTime>);
+
+    #[async_trait]
+    impl CdrStore for Archived {
+        async fn insert_cdr(&self, _: crate::storage::CallDetailRecord) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn get_cdr(
+            &self,
+            _: &crate::CallId,
+        ) -> anyhow::Result<Option<crate::storage::CallDetailRecord>> {
+            Ok(None)
+        }
+        async fn query_cdrs(
+            &self,
+            _: crate::storage::CdrQuery,
+        ) -> anyhow::Result<Vec<crate::storage::CallDetailRecord>> {
+            Ok(Vec::new())
+        }
+        async fn count_cdrs(&self, _: crate::storage::CdrQuery) -> anyhow::Result<usize> {
+            Ok(0)
+        }
+        async fn cdr_archive_frontier(&self, _: &TenantId) -> anyhow::Result<Option<SystemTime>> {
+            Ok(self.0)
+        }
+    }
+
+    #[tokio::test]
+    async fn the_archive_holds_cdr_retention_back_only_when_required() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(100 * 86_400);
+        let day = |d: u64| SystemTime::UNIX_EPOCH + Duration::from_secs(d * 86_400);
+        let mut policy = CompliancePolicy::defaults(TenantId::nil());
+
+        // No window: nothing is deleted, archive or not.
+        assert_eq!(
+            cdr_retention_cutoff(&Archived(Some(now)), &policy, now)
+                .await
+                .unwrap(),
+            (None, None)
+        );
+
+        // A window without the requirement ignores the archive.
+        policy.cdr_retention_days = Some(30);
+        assert_eq!(
+            cdr_retention_cutoff(&Archived(None), &policy, now)
+                .await
+                .unwrap(),
+            (Some(day(70)), None)
+        );
+
+        // Required: the frontier caps the window, and nothing archived
+        // keeps everything.
+        policy.cdr_archive_required = true;
+        for (frontier, expected) in [
+            (Some(day(90)), (Some(day(70)), None)),
+            (Some(day(70)), (Some(day(70)), None)),
+            (Some(day(60)), (Some(day(60)), Some(day(70)))),
+            (None, (None, Some(day(70)))),
+        ] {
+            assert_eq!(
+                cdr_retention_cutoff(&Archived(frontier), &policy, now)
+                    .await
+                    .unwrap(),
+                expected,
+                "frontier {frontier:?}"
+            );
+        }
+
+        // Policies written before the flag existed read as not required.
+        let mut json = serde_json::to_value(&policy).unwrap();
+        json.as_object_mut().unwrap().remove("cdr_archive_required");
+        let old: CompliancePolicy = serde_json::from_value(json).unwrap();
+        assert!(!old.cdr_archive_required);
     }
 
     /// Set a file's mtime without pulling in the `filetime` crate.

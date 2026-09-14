@@ -7,6 +7,7 @@ pub mod billing;
 pub mod cached_storage;
 pub mod call_forking;
 pub mod call_state;
+pub mod cdr_archive;
 pub mod codec;
 pub mod compliance;
 pub mod config;

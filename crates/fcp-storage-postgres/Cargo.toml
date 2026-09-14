@@ -33,7 +33,10 @@ uuid = { version = "1.18", features = ["v4", "serde"] }
 rust_decimal.workspace = true
 
 [dev-dependencies]
+# The volume benchmark writes the archive through the archiver.
+fcp-cdr = { path = "../fcp-cdr" }
 rust_decimal_macros.workspace = true
+tempfile = "3"
 tokio-test = "0.4"
 base64 = "0.22"
 

@@ -23,6 +23,20 @@ Windows are applied independently and in an order that keeps referential
 sense: flow traces, SIP traces, and recordings go before the CDRs they hang
 off; audit events last.
 
+### Records the archive must hold first
+
+`cdr_archive_required: true` makes CDR retention wait for the CDR archive
+(`docs/CDR_PIPELINE.md` §13, phase 5): a record is deleted only once its
+tenant's day is written to the archive and confirmed there, so retention
+never removes the only copy. The policy reports how far that is as
+`cdr_archived_before` (Unix seconds, `null` while nothing is archived):
+every one of the tenant's records that started before it is in the
+archive. A run that the archive holds back deletes up to that point and
+says so in its report (`cdrs: kept from … until the archive confirms
+them`); with no archiver running, the tenant's records are kept. The
+archive itself is written by `fcp-jobs` with `[cdr_archive] enabled`;
+turn it on before requiring it.
+
 ### When it runs
 
 - **Hourly** in `fcp-admin`, for every tenant that has at least one window
@@ -32,7 +46,9 @@ off; audit events last.
   deleted in batches of 10,000; when every tenant has a CDR window, a
   monthly CDR partition entirely older than the shortest of them is then
   dropped — once it is empty, never with rows left in it — which returns
-  its space at once (`docs/CDR_PIPELINE.md` §8).
+  its space at once (`docs/CDR_PIPELINE.md` §8). For a tenant that
+  requires the archive, the shortest window is its archive frontier when
+  that is earlier.
 - **On demand** with `POST /api/v1/compliance/retention/run`, which
   returns the report for that run.
 
@@ -118,6 +134,11 @@ every matching record, streamed as it is read rather than built in memory
 one record a line in the listing's shape. Times are Unix seconds. Every
 export is itself an audit event.
 
+For records that must be kept beyond the table, the CDR archive writes
+each tenant's day to an S3-compatible bucket or a directory as gzipped
+JSON Lines, confirmed by size and SHA-256, and announces each object as
+`cdr.archived` (`docs/CDR_PIPELINE.md` §13, phase 5).
+
 ## Conference recordings API
 
 `/api/v1/recordings` is the registry, scoped to the caller's tenant:
@@ -140,9 +161,11 @@ recorded. The admin UI's **Recordings** page lists them with a player.
    or more, recordings per industry) and set them on the policy.
 2. If you must announce recording, upload a prompt and set
    `recording_consent` to `announce` with its id.
-3. Run `POST /compliance/retention/run` once and read the report.
-4. Give your compliance officer `GET /audit-log` and `GET /cdrs/export`.
-5. For conferences, decide `recording_format` on each node (`auto` records
+3. If records must outlive the table, have the operator enable the CDR
+   archive, then set `cdr_archive_required` so retention waits for it.
+4. Run `POST /compliance/retention/run` once and read the report.
+5. Give your compliance officer `GET /audit-log` and `GET /cdrs/export`.
+6. For conferences, decide `recording_format` on each node (`auto` records
    video meetings to MP4 where the node encodes H.264 and to WebM where it
    encodes VP8 or VP9, audio-only ones to WAV) and let
    `recording_retention_days` do the rest.

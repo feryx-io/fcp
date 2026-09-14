@@ -28,6 +28,7 @@
 //! ```
 
 pub mod api_token;
+mod cdr_archive;
 mod cdr_volume;
 pub mod compliance;
 pub mod config;
@@ -1763,6 +1764,73 @@ impl CdrStore for PostgresStorage {
         name: &str,
     ) -> Result<Option<Box<dyn fcp_core::storage::MaintenanceLock>>> {
         cdr_volume::try_lock(self.writes(), name).await
+    }
+
+    // The archive reads and writes the primary: a record the trigger has
+    // already noted must be visible to the walk that answers the note.
+
+    async fn cdr_archive_next_day(&self) -> Result<Option<chrono::NaiveDate>> {
+        cdr_archive::next_day(self.writes()).await
+    }
+
+    async fn advance_cdr_archive(&self, day: chrono::NaiveDate) -> Result<()> {
+        cdr_archive::advance(self.writes(), day).await
+    }
+
+    async fn cdr_tenants_on(&self, day: chrono::NaiveDate) -> Result<Vec<fcp_core::TenantId>> {
+        cdr_archive::tenants_on(&self.pool, day).await
+    }
+
+    async fn pending_cdr_archives(
+        &self,
+        before: chrono::NaiveDate,
+        limit: usize,
+    ) -> Result<Vec<(fcp_core::TenantId, chrono::NaiveDate)>> {
+        cdr_archive::pending(&self.pool, before, limit).await
+    }
+
+    async fn begin_cdr_archive(
+        &self,
+        tenant_id: &fcp_core::TenantId,
+        day: chrono::NaiveDate,
+    ) -> Result<u64> {
+        cdr_archive::begin(self.writes(), tenant_id, day).await
+    }
+
+    async fn cdr_archive_page(
+        &self,
+        tenant_id: &fcp_core::TenantId,
+        day: chrono::NaiveDate,
+        after: Option<fcp_core::storage::CdrCursor>,
+        limit: usize,
+    ) -> Result<Vec<CallDetailRecord>> {
+        cdr_archive::page(&self.pool, tenant_id, day, after, limit).await
+    }
+
+    async fn complete_cdr_archive(
+        &self,
+        write: &fcp_core::cdr_archive::CdrArchiveWrite,
+    ) -> Result<bool> {
+        cdr_archive::complete(self.writes(), write).await
+    }
+
+    async fn get_cdr_archive(
+        &self,
+        tenant_id: &fcp_core::TenantId,
+        day: chrono::NaiveDate,
+    ) -> Result<Option<fcp_core::cdr_archive::CdrArchiveEntry>> {
+        cdr_archive::get(&self.pool, tenant_id, day).await
+    }
+
+    async fn cdr_archive_frontier(
+        &self,
+        tenant_id: &fcp_core::TenantId,
+    ) -> Result<Option<SystemTime>> {
+        cdr_archive::frontier(&self.pool, tenant_id).await
+    }
+
+    async fn cdr_archive_status(&self) -> Result<fcp_core::cdr_archive::CdrArchiveStatus> {
+        cdr_archive::status(&self.pool).await
     }
 }
 

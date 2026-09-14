@@ -312,6 +312,11 @@ where it could be (`docs/CDR_PIPELINE.md` §10). Subscribe a webhook to
 Delivery is at least once: a replayed batch announces its records again,
 so skip a `cdr_id` already seen.
 
+`cdr.archived` is emitted by the CDR archive in `fcp-jobs` once a
+tenant's day of records is written and confirmed (`docs/CDR_PIPELINE.md`
+§13, phase 5). A day that gains records after it was written is written
+again under the same key, announced with a higher `generation`.
+
 #### CDR Written
 
 ```json
@@ -331,6 +336,26 @@ so skip a `cdr_id` already seen.
     "currency": "USD",
     "node_id": "call-manager-1",
     "timestamp": 1705584096
+  }
+}
+```
+
+#### CDR Archived
+
+```json
+{
+  "event_type": "cdr",
+  "cdr": {
+    "type": "archived",
+    "tenant_id": "tenant-123e4567-e89b-12d3-a456-426614174000",
+    "day": "2024-01-18",
+    "target": "s3://example-cdr-archive",
+    "object_key": "cdrs/tenant-123e4567-e89b-12d3-a456-426614174000/2024/01/18.jsonl.gz",
+    "records": 18234,
+    "bytes": 2263114,
+    "sha256": "9f2c1c3d0b7e4a8f5d6e7c8b9a0f1e2d3c4b5a69788796a5b4c3d2e1f0a9b8c7",
+    "generation": 1,
+    "timestamp": 1705633200
   }
 }
 ```

@@ -129,6 +129,21 @@ consuming the stream through the consumer group `cdr-processor`:
 Status and metrics: the call manager's `/cdr/status` and `/metrics`,
 `fcp-jobs`' `/status` (under `cdr`) and `/metrics`.
 
+### The archive
+
+`fcp-jobs` with `[cdr_archive] enabled = true` writes each tenant's
+records for a closed UTC day (`grace_secs` after it ends, two hours by
+default) to `<prefix><tenant>/<yyyy>/<mm>/<dd>.jsonl.gz` in an
+S3-compatible bucket (`[cdr_archive.s3]`, SigV4, multipart above 256 MiB)
+or a directory (`target = "directory"`): gzipped JSON Lines of the record
+above, oldest first. Each object is confirmed by size and SHA-256 before
+the store records it and `cdr.archived` announces it. A day that gains a
+record after it was written (noted by a trigger on `cdrs`) is written
+again. One host writes at a time (`fcp:cdr-archive`). A tenant's policy
+can hold CDR retention to what the archive has confirmed
+(`cdr_archive_required`, `docs/COMPLIANCE.md`). Status under
+`cdr_archive` in `/status`; `cdr_archive_*` in `/metrics`.
+
 ### CDR Fields
 
 `fcp_core::storage::CallDetailRecord` (`fcp_cdr::Record`):
