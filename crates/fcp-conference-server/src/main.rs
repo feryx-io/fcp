@@ -1523,12 +1523,21 @@ async fn main() -> Result<()> {
         // finished off before the sweep can call it expired.
         close_off_orphaned_recordings(&dyn_storage, &config.service.node_id).await;
         tokio::spawn(supervise_task("recording-cleanup", async move {
-            run_recording_cleanup(
-                recordings_dir,
-                default_retention_days,
-                cleanup_interval_secs,
-                cleanup_storage,
-                cleanup_node,
+            // What the sweep deletes is this node's doing, in the deletion
+            // log (docs/COMPLIANCE_FOLLOWUPS.md §7).
+            let deleter = fcp_core::compliance::Deleter::new(
+                fcp_core::compliance::DeletionCause::NodeSweep,
+                cleanup_node.clone(),
+            );
+            fcp_core::compliance::deleting_as(
+                deleter,
+                run_recording_cleanup(
+                    recordings_dir,
+                    default_retention_days,
+                    cleanup_interval_secs,
+                    cleanup_storage,
+                    cleanup_node,
+                ),
             )
             .await;
         }));

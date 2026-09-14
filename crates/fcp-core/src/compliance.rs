@@ -55,6 +55,10 @@ pub struct CompliancePolicy {
     pub recording_retention_days: Option<u32>,
     /// Admin audit events older than this are deleted.
     pub audit_retention_days: Option<u32>,
+    /// Voicemail messages older than this are deleted with their audio. A
+    /// mailbox's own `retention_days`, when shorter, applies as well.
+    #[serde(default)]
+    pub voicemail_retention_days: Option<u32>,
     /// Call detail records are deleted only once the CDR archive holds
     /// them, confirmed (`docs/CDR_PIPELINE.md` §13, phase 5): retention
     /// waits for the archiver rather than removing the only copy.
@@ -76,6 +80,7 @@ impl CompliancePolicy {
             flow_trace_retention_days: None,
             recording_retention_days: None,
             audit_retention_days: None,
+            voicemail_retention_days: None,
             cdr_archive_required: false,
             recording_consent: RecordingConsentMode::None,
             recording_consent_prompt_id: None,
@@ -90,7 +95,110 @@ impl CompliancePolicy {
             || self.flow_trace_retention_days.is_some()
             || self.recording_retention_days.is_some()
             || self.audit_retention_days.is_some()
+            || self.voicemail_retention_days.is_some()
     }
+}
+
+// ── Who is deleting (docs/COMPLIANCE_FOLLOWUPS.md §7) ─────────────────
+
+/// Why data was deleted, as the deletion log records it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeletionCause {
+    /// A retention window, run by the sweep or on demand.
+    Retention,
+    /// A person or a token, through the API or a phone menu.
+    Manual,
+    /// A node removing its own recordings on its sweep.
+    NodeSweep,
+    /// Platform upkeep: files no row names, messages users deleted.
+    Upkeep,
+}
+
+impl DeletionCause {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            DeletionCause::Retention => "retention",
+            DeletionCause::Manual => "manual",
+            DeletionCause::NodeSweep => "node_sweep",
+            DeletionCause::Upkeep => "upkeep",
+        }
+    }
+}
+
+/// The cause and actor of the deletions made inside [`deleting_as`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Deleter {
+    pub cause: DeletionCause,
+    /// A username, `token-…`, `static_token`, or a host (`fcp-admin`, a
+    /// conference node's id).
+    pub actor: String,
+}
+
+impl Deleter {
+    pub fn new(cause: DeletionCause, actor: impl Into<String>) -> Self {
+        Self {
+            cause,
+            actor: actor.into(),
+        }
+    }
+}
+
+tokio::task_local! {
+    static DELETER: Deleter;
+}
+
+/// Run `f` with every deletion it makes attributed to `deleter`. Storage
+/// backends read it with [`current_deleter`] and hand it to the deletion
+/// log; a deletion made outside any scope is logged as `unattributed`.
+pub async fn deleting_as<F: std::future::Future>(deleter: Deleter, f: F) -> F::Output {
+    DELETER.scope(deleter, f).await
+}
+
+/// The deleter of the current task, if [`deleting_as`] set one.
+pub fn current_deleter() -> Option<Deleter> {
+    DELETER.try_with(Clone::clone).ok()
+}
+
+/// One entry of the deletion log.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DeletionRecord {
+    pub id: i64,
+    pub tenant_id: Option<TenantId>,
+    /// `cdr`, `call_recording`, `conference_recording`, `voicemail`,
+    /// `sip_trace`, `flow_trace`, `audit_event`, `orphan_file`.
+    pub class: String,
+    /// The item's id, or a time range for a batch.
+    pub item: String,
+    pub detail: Option<serde_json::Value>,
+    /// `retention`, `manual`, `node_sweep`, `upkeep`, `cascade` or
+    /// `unattributed`.
+    pub cause: String,
+    pub actor: String,
+    pub deleted_at: SystemTime,
+}
+
+/// Filter for [`ComplianceStore::list_deletions`].
+#[derive(Debug, Clone, Default)]
+pub struct DeletionQuery {
+    /// `None` lists every tenant (platform admins only).
+    pub tenant_id: Option<TenantId>,
+    pub class: Option<String>,
+    pub since: Option<SystemTime>,
+    pub limit: usize,
+}
+
+/// A file whose row is gone, waiting for the reaper.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingFileDeletion {
+    pub id: i64,
+    pub tenant_id: Option<TenantId>,
+    pub class: String,
+    pub path: String,
+    pub attempts: u32,
+    /// A live row still names the path (a greeting rewritten in place):
+    /// the entry is dropped and the file kept.
+    pub still_referenced: bool,
 }
 
 /// The instant before which data of a given age is past its window.
@@ -176,6 +284,9 @@ pub struct RetentionReport {
     /// node holding the file normally gets there first, file and row
     /// together; this counts what it left behind (see `run_retention`).
     pub conference_recordings_deleted: u64,
+    /// Voicemail messages, their audio queued for removal.
+    #[serde(default)]
+    pub voicemail_messages_deleted: u64,
     pub audit_events_deleted: u64,
     /// Non-fatal problems (a file that could not be removed, a store that
     /// is not configured). The run continues past each.
@@ -192,6 +303,7 @@ impl RetentionReport {
             flow_traces_deleted: 0,
             recordings_deleted: 0,
             conference_recordings_deleted: 0,
+            voicemail_messages_deleted: 0,
             audit_events_deleted: 0,
             errors: Vec::new(),
         }
@@ -203,6 +315,7 @@ impl RetentionReport {
             + self.flow_traces_deleted
             + self.recordings_deleted
             + self.conference_recordings_deleted
+            + self.voicemail_messages_deleted
             + self.audit_events_deleted
     }
 }
@@ -226,6 +339,30 @@ pub trait ComplianceStore: Send + Sync {
     ) -> anyhow::Result<u64>;
 
     async fn record_retention_run(&self, report: &RetentionReport) -> anyhow::Result<()>;
+
+    /// The deletion log, newest first.
+    async fn list_deletions(&self, query: &DeletionQuery) -> anyhow::Result<Vec<DeletionRecord>>;
+
+    /// Log a deletion that removed no row (a file no row named).
+    async fn record_deletion(&self, record: &DeletionRecord) -> anyhow::Result<()>;
+
+    /// Files due for removal, oldest first.
+    async fn due_file_deletions(&self, limit: usize) -> anyhow::Result<Vec<PendingFileDeletion>>;
+
+    /// The file is gone, or a row still names it: drop the entry.
+    async fn file_deletion_done(&self, id: i64) -> anyhow::Result<()>;
+
+    /// The file could not be removed: try again after `retry_in`.
+    async fn file_deletion_failed(
+        &self,
+        id: i64,
+        error: &str,
+        retry_in: Duration,
+    ) -> anyhow::Result<()>;
+
+    /// Of `paths`, those a recording, voicemail, greeting, prompt or
+    /// profile picture row still names.
+    async fn referenced_paths(&self, paths: &[String]) -> anyhow::Result<Vec<String>>;
     async fn list_retention_runs(
         &self,
         tenant_id: &TenantId,
@@ -233,21 +370,29 @@ pub trait ComplianceStore: Send + Sync {
     ) -> anyhow::Result<Vec<RetentionReport>>;
 }
 
-/// Apply `policy` to `storage`. Each window is independent; an error in one
-/// step is recorded and the next step still runs. Recording files are
-/// resolved from the CDRs past the recording window (their `recording_url`,
-/// a local path) and, when `recordings_dir` is given, any file in that
-/// directory tree older than the window.
+/// Apply `policy` to `storage`, every deletion attributed to `actor` in
+/// the deletion log. Each window is independent; an error in one step is
+/// recorded and the next step still runs. Recordings are deleted by their
+/// rows, whose files the reaper then removes (`docs/COMPLIANCE_FOLLOWUPS.md`
+/// §4); nothing here walks a directory, since a directory holds every
+/// tenant's files.
 pub async fn run_retention(
     storage: &DynStorage,
     policy: &CompliancePolicy,
-    recordings_dir: Option<&Path>,
+    actor: &str,
 ) -> RetentionReport {
+    deleting_as(
+        Deleter::new(DeletionCause::Retention, actor),
+        apply_retention(storage, policy),
+    )
+    .await
+}
+
+async fn apply_retention(storage: &DynStorage, policy: &CompliancePolicy) -> RetentionReport {
     let now = SystemTime::now();
     let tenant = policy.tenant_id;
     let mut report = RetentionReport::new(tenant);
 
-    // Flow traces first: they are found through the CDRs they belong to.
     if let Some(days) = policy.flow_trace_retention_days {
         match storage.flow_trace_store() {
             Some(store) => match store
@@ -280,38 +425,20 @@ pub async fn run_retention(
 
     if let Some(days) = policy.recording_retention_days {
         let before = cutoff(now, days);
-        match storage.list_recordings_before(&tenant, before).await {
-            Ok(entries) => {
-                for (call_id, url) in entries {
-                    let path = url.strip_prefix("file://").unwrap_or(&url);
-                    match tokio::fs::remove_file(path).await {
-                        Ok(()) => report.recordings_deleted += 1,
-                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                        Err(e) => report.errors.push(format!("recording {url}: {e}")),
-                    }
-                    if let Err(e) = storage.clear_recording_url(&call_id).await {
-                        report
-                            .errors
-                            .push(format!("recording {call_id}: unlink from CDR: {e}"));
-                    }
-                }
-            }
-            Err(e) => report.errors.push(format!("recordings: {e}")),
-        }
-        if let Some(dir) = recordings_dir {
-            match prune_files_older_than(dir, before).await {
-                Ok(n) => report.recordings_deleted += n,
-                Err(e) => report
-                    .errors
-                    .push(format!("recordings dir {}: {e}", dir.display())),
-            }
+        match storage.call_recording_store() {
+            Some(store) => match store.delete_call_recordings_before(&tenant, before).await {
+                Ok(n) => report.recordings_deleted = n,
+                Err(e) => report.errors.push(format!("call recordings: {e}")),
+            },
+            None => report
+                .errors
+                .push("call recordings: store not configured".to_string()),
         }
 
         // Conference recordings are the holding node's to delete: it has
         // the file, and it applies this same policy on its own sweep.
         // What is left here well past the cutoff belonged to a node that
-        // is gone, so the row goes and the file — which nothing can now
-        // reach — is reported rather than silently forgotten.
+        // is gone, so the row goes; the deletion log names the file.
         if let Some(store) = storage.recording_store() {
             let abandoned = before - CONFERENCE_RECORDING_GRACE;
             match store.expired_recordings(&tenant, abandoned).await {
@@ -319,9 +446,7 @@ pub async fn run_retention(
                     for recording in recordings {
                         // On shared storage the file is reachable here;
                         // usually it is not, and that is not an error.
-                        match tokio::fs::remove_file(&recording.path).await {
-                            Ok(()) | Err(_) => {}
-                        }
+                        let _ = tokio::fs::remove_file(&recording.path).await;
                         match store.delete_recording(&recording.id).await {
                             Ok(true) => report.conference_recordings_deleted += 1,
                             Ok(false) => {}
@@ -333,6 +458,17 @@ pub async fn run_retention(
                 }
                 Err(e) => report.errors.push(format!("conference recordings: {e}")),
             }
+        }
+    }
+
+    if let Some(days) = policy.voicemail_retention_days {
+        use crate::storage::VoicemailStore;
+        match storage
+            .delete_messages_before(&tenant, cutoff(now, days))
+            .await
+        {
+            Ok(n) => report.voicemail_messages_deleted = n,
+            Err(e) => report.errors.push(format!("voicemail: {e}")),
         }
     }
 
@@ -377,10 +513,222 @@ pub async fn run_retention(
     report
 }
 
-/// Delete regular files under `dir` (recursively) whose modification time
-/// is before `before`. Directories are left in place.
-pub async fn prune_files_older_than(dir: &Path, before: SystemTime) -> anyhow::Result<u64> {
-    let mut deleted = 0;
+// ── Platform upkeep (docs/COMPLIANCE_FOLLOWUPS.md §4) ──────────────────
+
+/// What the platform keeps tidy, whatever the tenants' policies say.
+#[derive(Debug, Clone)]
+pub struct UpkeepConfig {
+    /// The directories files may be removed from: the recordings and
+    /// voicemail directories this host mounts. A queued path outside them
+    /// is never touched.
+    pub file_roots: Vec<std::path::PathBuf>,
+    /// Remove files under the roots that no row names once they are this
+    /// old; `None` leaves them.
+    pub orphan_files_after: Option<Duration>,
+    /// Remove SIP traces of no tenant's call once they are this old.
+    pub system_traces_after: Option<Duration>,
+    /// Remove voicemail messages this long after a user deleted them.
+    pub deleted_voicemail_grace: Duration,
+    /// Files handled per round.
+    pub batch: usize,
+}
+
+impl Default for UpkeepConfig {
+    fn default() -> Self {
+        Self {
+            file_roots: Vec::new(),
+            orphan_files_after: None,
+            system_traces_after: None,
+            deleted_voicemail_grace: Duration::from_secs(7 * 86_400),
+            batch: 500,
+        }
+    }
+}
+
+/// What one upkeep round did.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct UpkeepReport {
+    pub sip_traces_adopted: u64,
+    pub flow_traces_adopted: u64,
+    pub system_traces_deleted: u64,
+    pub voicemail_expired: u64,
+    pub voicemail_purged: u64,
+    pub files_removed: u64,
+    /// Queued files kept because a row still names them.
+    pub files_kept: u64,
+    pub orphan_files_removed: u64,
+    pub errors: Vec<String>,
+}
+
+/// One round of platform upkeep, every deletion attributed to `actor`.
+pub async fn run_upkeep(storage: &DynStorage, config: &UpkeepConfig, actor: &str) -> UpkeepReport {
+    deleting_as(
+        Deleter::new(DeletionCause::Upkeep, actor),
+        upkeep(storage, config, actor),
+    )
+    .await
+}
+
+async fn upkeep(storage: &DynStorage, config: &UpkeepConfig, actor: &str) -> UpkeepReport {
+    use crate::storage::VoicemailStore;
+    let now = SystemTime::now();
+    let mut report = UpkeepReport::default();
+
+    if let Some(store) = storage.sip_trace_store() {
+        match store.adopt_system_traces().await {
+            Ok(n) => report.sip_traces_adopted = n,
+            Err(e) => report.errors.push(format!("sip traces: adopt: {e}")),
+        }
+        if let Some(after) = config.system_traces_after {
+            match store.delete_system_traces_before(now - after).await {
+                Ok(n) => report.system_traces_deleted = n,
+                Err(e) => report.errors.push(format!("sip traces: {e}")),
+            }
+        }
+    }
+    if let Some(store) = storage.flow_trace_store() {
+        match store.adopt_untenanted_traces().await {
+            Ok(n) => report.flow_traces_adopted = n,
+            Err(e) => report.errors.push(format!("flow traces: adopt: {e}")),
+        }
+    }
+    match storage.apply_mailbox_retention().await {
+        Ok(n) => report.voicemail_expired = n,
+        Err(e) => report
+            .errors
+            .push(format!("voicemail: mailbox retention: {e}")),
+    }
+    match storage
+        .purge_deleted_messages(now - config.deleted_voicemail_grace)
+        .await
+    {
+        Ok(n) => report.voicemail_purged = n,
+        Err(e) => report.errors.push(format!("voicemail: purge: {e}")),
+    }
+
+    let Some(store) = storage.compliance_store() else {
+        report
+            .errors
+            .push("files: compliance store not configured".to_string());
+        return report;
+    };
+    reap_files(store.as_ref(), config, &mut report).await;
+    if let Some(after) = config.orphan_files_after {
+        remove_orphan_files(store.as_ref(), config, now - after, actor, &mut report).await;
+    }
+    report
+}
+
+/// Whether `path` is inside one of `roots`, without climbing out of it.
+pub fn under_file_root(path: &Path, roots: &[std::path::PathBuf]) -> bool {
+    path.is_absolute()
+        && !path
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+        && roots.iter().any(|root| path.starts_with(root))
+}
+
+async fn reap_files(store: &dyn ComplianceStore, config: &UpkeepConfig, report: &mut UpkeepReport) {
+    let due = match store.due_file_deletions(config.batch).await {
+        Ok(due) => due,
+        Err(e) => {
+            report.errors.push(format!("files: {e}"));
+            return;
+        }
+    };
+    for entry in due {
+        let outcome = if entry.still_referenced {
+            report.files_kept += 1;
+            Ok(())
+        } else if !under_file_root(Path::new(&entry.path), &config.file_roots) {
+            Err("not under a configured file root".to_string())
+        } else {
+            match tokio::fs::remove_file(&entry.path).await {
+                Ok(()) => {
+                    report.files_removed += 1;
+                    Ok(())
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(e) => Err(e.to_string()),
+            }
+        };
+        let recorded = match outcome {
+            Ok(()) => store.file_deletion_done(entry.id).await,
+            Err(error) => {
+                // A minute, doubling, at most a day.
+                let retry = Duration::from_secs(60 * 2u64.pow(entry.attempts.min(10)))
+                    .min(Duration::from_secs(86_400));
+                report.errors.push(format!("file {}: {error}", entry.path));
+                store.file_deletion_failed(entry.id, &error, retry).await
+            }
+        };
+        if let Err(e) = recorded {
+            report.errors.push(format!("file {}: {e}", entry.path));
+        }
+    }
+}
+
+async fn remove_orphan_files(
+    store: &dyn ComplianceStore,
+    config: &UpkeepConfig,
+    before: SystemTime,
+    actor: &str,
+    report: &mut UpkeepReport,
+) {
+    for root in &config.file_roots {
+        let candidates = match files_older_than(root, before).await {
+            Ok(files) => files,
+            Err(e) => {
+                report
+                    .errors
+                    .push(format!("orphans {}: {e}", root.display()));
+                continue;
+            }
+        };
+        for chunk in candidates.chunks(config.batch.max(1)) {
+            let paths: Vec<String> = chunk
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect();
+            let referenced = match store.referenced_paths(&paths).await {
+                Ok(r) => r,
+                Err(e) => {
+                    report.errors.push(format!("orphans: {e}"));
+                    return;
+                }
+            };
+            for path in paths.iter().filter(|p| !referenced.contains(p)) {
+                match tokio::fs::remove_file(path).await {
+                    Ok(()) => {
+                        report.orphan_files_removed += 1;
+                        let record = DeletionRecord {
+                            id: 0,
+                            tenant_id: None,
+                            class: "orphan_file".to_string(),
+                            item: path.clone(),
+                            detail: None,
+                            cause: DeletionCause::Upkeep.as_str().to_string(),
+                            actor: actor.to_string(),
+                            deleted_at: SystemTime::now(),
+                        };
+                        if let Err(e) = store.record_deletion(&record).await {
+                            report.errors.push(format!("orphan {path}: log: {e}"));
+                        }
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => report.errors.push(format!("orphan {path}: {e}")),
+                }
+            }
+        }
+    }
+}
+
+/// Regular files under `dir` (recursively) last modified before `before`.
+pub async fn files_older_than(
+    dir: &Path,
+    before: SystemTime,
+) -> anyhow::Result<Vec<std::path::PathBuf>> {
+    let mut found = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
     while let Some(d) = stack.pop() {
         let mut entries = match tokio::fs::read_dir(&d).await {
@@ -394,12 +742,11 @@ pub async fn prune_files_older_than(dir: &Path, before: SystemTime) -> anyhow::R
             if meta.is_dir() {
                 stack.push(path);
             } else if meta.is_file() && meta.modified().map(|m| m < before).unwrap_or(false) {
-                tokio::fs::remove_file(&path).await?;
-                deleted += 1;
+                found.push(path);
             }
         }
     }
-    Ok(deleted)
+    Ok(found)
 }
 
 #[cfg(test)]
@@ -427,7 +774,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn prune_deletes_only_old_files() {
+    async fn only_old_files_are_candidates() {
         let dir = tempfile::tempdir().unwrap();
         let sub = dir.path().join("tenant");
         tokio::fs::create_dir_all(&sub).await.unwrap();
@@ -439,17 +786,45 @@ mod tests {
         filetime_set(&old, past);
 
         let before = SystemTime::now() - Duration::from_secs(86_400);
-        let n = prune_files_older_than(dir.path(), before).await.unwrap();
-        assert_eq!(n, 1);
-        assert!(!old.exists());
-        assert!(new.exists());
-        assert!(sub.is_dir(), "directories are kept");
-
+        assert_eq!(
+            files_older_than(dir.path(), before).await.unwrap(),
+            vec![old]
+        );
         // A missing directory is not an error.
-        let n = prune_files_older_than(&dir.path().join("nope"), before)
+        assert!(files_older_than(&dir.path().join("nope"), before)
             .await
-            .unwrap();
-        assert_eq!(n, 0);
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn files_are_removed_only_under_their_roots() {
+        let roots = vec![std::path::PathBuf::from("/srv/recordings")];
+        assert!(under_file_root(
+            Path::new("/srv/recordings/t/a.wav"),
+            &roots
+        ));
+        assert!(!under_file_root(
+            Path::new("/srv/recordings-other/a.wav"),
+            &roots
+        ));
+        assert!(!under_file_root(
+            Path::new("/srv/recordings/../etc/passwd"),
+            &roots
+        ));
+        assert!(!under_file_root(Path::new("recordings/a.wav"), &roots));
+        assert!(!under_file_root(Path::new("/etc/passwd"), &roots));
+    }
+
+    #[tokio::test]
+    async fn deletions_are_attributed_inside_their_scope_only() {
+        assert_eq!(current_deleter(), None);
+        let inside = deleting_as(Deleter::new(DeletionCause::Manual, "alice"), async {
+            current_deleter()
+        })
+        .await;
+        assert_eq!(inside, Some(Deleter::new(DeletionCause::Manual, "alice")));
+        assert_eq!(current_deleter(), None);
     }
 
     /// A record store whose archive is confirmed up to a fixed instant.

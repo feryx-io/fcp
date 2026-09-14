@@ -15,8 +15,9 @@ window is a number of days or `null` (keep forever, the default):
 |---|---|
 | `cdr_retention_days` | Call detail records that started before the window |
 | `sip_trace_retention_days` | Raw SIP messages captured for the tenant's calls |
-| `flow_trace_retention_days` | Flow execution traces (found through the tenant's CDRs) |
-| `recording_retention_days` | Recording files referenced by old CDRs (the reference is cleared too); when the admin service knows the recordings directory, any file in it older than the window; and **conference recordings**, which their own node deletes (see below) |
+| `flow_trace_retention_days` | Flow execution traces of the tenant's calls |
+| `recording_retention_days` | **Call recordings** by their rows (the file is removed after, and the record stops naming it) and **conference recordings**, which their own node deletes (see below) |
+| `voicemail_retention_days` | Voicemail messages, with their audio. A mailbox's own `retention_days`, when set, applies too |
 | `audit_retention_days` | Admin audit events |
 
 Windows are applied independently and in an order that keeps referential
@@ -40,8 +41,7 @@ turn it on before requiring it.
 ### When it runs
 
 - **Hourly** in `fcp-admin`, for every tenant that has at least one window
-  set. Set `call_recordings_dir` in the admin config to let the sweep
-  prune the recordings directory as well. With several admin replicas one
+  set, then the platform's upkeep (below). With several admin replicas one
   sweeps at a time (a database advisory lock, `fcp:retention`). CDRs are
   deleted in batches of 10,000; when every tenant has a CDR window, a
   monthly CDR partition entirely older than the shortest of them is then
@@ -56,6 +56,46 @@ Every run is recorded; `GET /api/v1/compliance/retention/runs` lists them
 with per-category counts and any non-fatal errors (a file that could not be
 removed, a store that is not configured). A run never stops at the first
 problem.
+
+### Every recording is a row, every deletion a log entry
+
+Since the compliance foundations (`docs/COMPLIANCE_FOLLOWUPS.md` §4, §7):
+
+- **Recordings are registered before they are kept.** A call recorded
+  through `POST /calls/:id/recording/start`, a flow's `StartRecording` node
+  or a queue with `record_calls` gets a `call_recordings` row (tenant,
+  call, source, path, consent, start and end); a room or per-participant
+  conference recording gets a `conference_recordings` row naming everyone
+  heard in it. A recording whose row cannot be written is stopped and its
+  file removed. New files go under the tenant and the UTC date
+  (`<tenant>/<yyyy>/<mm>/<dd>/…`), named for the call or the recording,
+  never for a caller or a queue; the API route's `path` is placed under the
+  tenant's directory and may not climb out of it.
+- **Rows are deleted, files follow.** Deleting a recording's or a voicemail
+  message's row — by retention, the API, a phone's voicemail menu, or a
+  number, line binding or mailbox it belonged to — queues its file in the
+  same transaction; the reaper in `fcp-admin` removes it, only from the
+  directories it mounts (`call_recordings_dir`, `voicemail_recordings_dir`,
+  `voicemail_greetings_dir`, `profile_pictures_dir`, `[retention]
+  extra_file_roots`) and only when no row names the path any more.
+  Retention never walks a directory, so one tenant's window cannot reach
+  another tenant's files. Mount the recording hosts' directories on the
+  admin host at the paths they write under.
+- **The deletion log** (`GET /api/v1/compliance/deletions?class=&since=&limit=`)
+  has an entry for every deleted recording and voicemail message, and one
+  per tenant per statement for records, traces and audit events: what,
+  when, the cause (`retention`, `manual`, `cascade`, `node_sweep`,
+  `upkeep`, or `unattributed` for a delete nothing named) and the actor (a
+  username, an API token's id, `static_token`, `fcp-admin:<node>`, a
+  conference node, `phone:<mailbox>`). It is written by the database in
+  the transaction that deletes.
+- **Platform upkeep**, hourly after the tenants' runs: SIP and flow traces
+  are given the tenant of their call's stored record; each mailbox's own
+  `retention_days` is applied; messages users deleted are purged after
+  `[retention] deleted_voicemail_grace_days` (7); SIP traces that belong to
+  no tenant's call are removed after `[retention] system_trace_days`, and
+  files under the mounted directories that no row names after
+  `[retention] orphan_files_days` — both off unless set.
 
 ### Conference recordings
 
@@ -103,6 +143,14 @@ per-user `record_all_calls`, queue `record_calls`) do not play the prompt
 — announce consent from the IVR or flow that answers them until the
 B2BUA-level announcement lands.
 
+## Who may do this
+
+The compliance routes take their own permissions, held by `super_admin`
+and `tenant_admin` (and the static token, and API tokens that carry them):
+`compliance_manage` for the policy and retention runs, `audit_view` for the
+audit and deletion logs. Other admin roles, `read_only` included, are
+refused.
+
 ## Admin audit log
 
 A middleware inside the API's auth layer records every request that is not
@@ -110,11 +158,12 @@ a `GET`/`HEAD`/`OPTIONS`, plus every CDR export, as an audit event:
 
 | Field | Meaning |
 |---|---|
-| `actor`, `actor_kind` | The username of a JWT session, `api_token`, `static_token`, or `anonymous` (pre-auth routes such as login) |
+| `actor`, `actor_kind` | The username of a JWT session, an API token's id (`token-…`), `static_token`, or `anonymous` (pre-auth routes such as login) |
 | `tenant_id` | The tenant the request acted on: the caller's own, the `x-fcp-tenant-id` override, or the default tenant for the platform token |
 | `action` | Method plus route template, e.g. `PUT /api/v1/users/:username` — stable across ids, use it to filter |
 | `path`, `method`, `status` | The concrete request and how it ended (a 401 on `/auth/login` is a failed login) |
 | `source_ip` | From `X-Forwarded-For` / `X-Real-IP` when a proxy sets them |
+| `detail` | For a `DELETE`, the route's parameters: `{"params": {"id": "…"}}` |
 
 Writes are asynchronous and best-effort; the response is never delayed or
 failed by the audit log.

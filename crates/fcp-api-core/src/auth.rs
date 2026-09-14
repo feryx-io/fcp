@@ -26,6 +26,8 @@ pub enum AuthIdentity {
     StaticToken,
     /// Database API token with stored permissions.
     ApiToken {
+        /// The token's id, so what it did can be traced to it.
+        token_id: String,
         tenant_id: TenantId,
         permissions: Vec<String>,
     },
@@ -38,6 +40,16 @@ pub enum AuthIdentity {
 }
 
 impl AuthIdentity {
+    /// Who this is in the audit and deletion logs: a username, an API
+    /// token's id, or `static_token`.
+    pub fn actor(&self) -> String {
+        match self {
+            Self::StaticToken => "static_token".to_string(),
+            Self::ApiToken { token_id, .. } => token_id.clone(),
+            Self::Session { username, .. } => username.clone(),
+        }
+    }
+
     /// Returns true if the caller has admin-level access (not an end user).
     ///
     /// - **StaticToken**: always admin (it's the master config token).
@@ -396,6 +408,7 @@ async fn validate_api_token(token: &str, store: &Arc<dyn ApiTokenStore>) -> Opti
     // Update last_used_at in the background (non-blocking)
     let store = Arc::clone(store);
     let token_id = api_token.id;
+    let identity_token_id = token_id.to_string();
     tokio::spawn(async move {
         if let Err(e) = store.update_last_used(&token_id).await {
             tracing::debug!(error = %e, "Failed to update API token last_used_at");
@@ -403,6 +416,7 @@ async fn validate_api_token(token: &str, store: &Arc<dyn ApiTokenStore>) -> Opti
     });
 
     Some(AuthIdentity::ApiToken {
+        token_id: identity_token_id,
         tenant_id,
         permissions,
     })

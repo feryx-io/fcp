@@ -141,7 +141,7 @@ export function VoicemailPage() {
 
   const markHeardMutation = useMutation({
     mutationFn: (messageId: string) =>
-      voicemail.markHeard(selectedMailbox!.id, messageId),
+      voicemail.markHeard(messageId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['voicemail-messages'] })
       queryClient.invalidateQueries({ queryKey: ['voicemail-stats'] })
@@ -150,7 +150,7 @@ export function VoicemailPage() {
 
   const deleteMessageMutation = useMutation({
     mutationFn: (messageId: string) =>
-      voicemail.deleteMessage(selectedMailbox!.id, messageId),
+      voicemail.deleteMessage(messageId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['voicemail-messages'] })
       queryClient.invalidateQueries({ queryKey: ['voicemail-stats'] })

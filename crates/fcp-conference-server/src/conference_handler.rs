@@ -315,6 +315,8 @@ pub struct ConferenceCallHandler {
     pub dtmf_ending_samples: Option<Arc<Vec<i16>>>,
     /// Recordings under way on this node, by room number (§11).
     recordings: DashMap<String, ActiveRecording>,
+    /// Per-participant recordings under way: (room, participant) → row.
+    participant_recordings: DashMap<(String, String), fcp_core::Recording>,
     /// The handler's own `Arc`, for the tasks it spawns that need the
     /// whole handler rather than a few clones — the moderator-release
     /// path, which may have to start a recording. Set once at startup by
@@ -768,6 +770,7 @@ impl ConferenceCallHandler {
             dtmf_unlocked_samples: None,
             dtmf_ending_samples: None,
             recordings: DashMap::new(),
+            participant_recordings: DashMap::new(),
             self_ref: std::sync::RwLock::new(std::sync::Weak::new()),
         }
     }
@@ -1820,6 +1823,72 @@ impl ConferenceCallHandler {
         }))
     }
 
+    /// The people in a room (or one of them) as a recording names them, so
+    /// a subject's voice can be found (`docs/COMPLIANCE_FOLLOWUPS.md` §4).
+    fn recording_participants(
+        &self,
+        room_number: &str,
+        only: Option<&str>,
+    ) -> Vec<fcp_core::RecordingParticipant> {
+        self.sessions
+            .iter()
+            .filter(|e| {
+                e.room_number == room_number
+                    && e.trunk_peer.is_none()
+                    && only.is_none_or(|p| p == e.participant_id)
+            })
+            .map(|e| fcp_core::RecordingParticipant {
+                participant_id: e.participant_id.clone(),
+                uri: Some(e.record.from_uri.clone()),
+                display_name: e.display_name.clone(),
+                joined_at: e.joined_at,
+            })
+            .collect()
+    }
+
+    /// Someone joined a room being recorded: their name goes on the row.
+    async fn note_recording_participant(&self, room_number: &str, participant_id: &str) {
+        let Some(id) = self.recordings.get(room_number).map(|r| r.record.id) else {
+            return;
+        };
+        let joined = self.recording_participants(room_number, Some(participant_id));
+        if let Some(store) = self.storage.recording_store() {
+            if let Err(e) = store.add_recording_participants(&id, &joined).await {
+                warn!(recording = %id, error = %e, "Could not add a participant to the recording's row");
+            }
+        }
+    }
+
+    /// Complete a per-participant recording's row, if one is under way.
+    fn finish_participant_recording(&self, room_number: &str, participant_id: &str) {
+        let Some((_, record)) = self
+            .participant_recordings
+            .remove(&(room_number.to_string(), participant_id.to_string()))
+        else {
+            return;
+        };
+        let Some(store) = self.storage.recording_store().cloned() else {
+            return;
+        };
+        tokio::spawn(async move {
+            let ended_at = SystemTime::now();
+            let secs = record
+                .started_at
+                .elapsed()
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let size = std::fs::metadata(&record.path)
+                .map(|m| m.len())
+                .unwrap_or(0);
+            if let Err(e) = store
+                .finish_recording(&record.id, ended_at, secs, size)
+                .await
+            {
+                warn!(recording = %record.id, error = %e, "Could not complete a participant recording's row");
+            }
+        });
+    }
+
     /// Start per-participant recording.
     pub async fn start_participant_recording(
         &self,
@@ -1850,6 +1919,35 @@ impl ConferenceCallHandler {
             .await
             .map_err(|e| anyhow::anyhow!("Failed to start recording: {}", e))?;
 
+        // A row like a room recording's, so retention, holds and erasure
+        // can find it.
+        let tenant_id = self
+            .tenant_for_room(room_number)
+            .unwrap_or(self.default_tenant_id);
+        let mut record = fcp_core::Recording::starting(
+            tenant_id,
+            room_number,
+            &self.node_id,
+            &path,
+            fcp_core::RecordingFormat::Wav,
+            fcp_core::RecordingTrigger::Api,
+        );
+        record.kind = fcp_core::RecordingKind::Participant;
+        record.participant_id = Some(participant_id.to_string());
+        record.participants = 1;
+        record.participant_list = self.recording_participants(room_number, Some(participant_id));
+        if let Some(store) = self.storage.recording_store() {
+            if let Err(e) = store.create_recording(&record).await {
+                let _ = room.stop_participant_recording(participant_id);
+                let _ = std::fs::remove_file(&path);
+                anyhow::bail!("recording not registered, so not kept: {e}");
+            }
+        }
+        self.participant_recordings.insert(
+            (room_number.to_string(), participant_id.to_string()),
+            record,
+        );
+
         info!(
             room = %room_number,
             participant = %participant_id,
@@ -1872,6 +1970,7 @@ impl ConferenceCallHandler {
 
         room.stop_participant_recording(participant_id)
             .map_err(|e| anyhow::anyhow!("Failed to stop recording: {}", e))?;
+        self.finish_participant_recording(room_number, participant_id);
 
         info!(
             room = %room_number,
@@ -2040,6 +2139,7 @@ impl ConferenceCallHandler {
         );
         record.meeting_id = meeting.as_ref().map(|m| m.id);
         record.participants = room.participant_count() as u32;
+        record.participant_list = self.recording_participants(room_number, None);
 
         // The room hears the tenant's announcement before the first
         // sample, and so does everyone who joins while this runs.
@@ -2090,15 +2190,22 @@ impl ConferenceCallHandler {
         };
 
         // The row before the event: a listener that reacts to the event
-        // can look the recording up straight away.
+        // can look the recording up straight away. A recording without a
+        // row is one no retention, hold or erasure can find, so it is not
+        // kept (docs/COMPLIANCE_FOLLOWUPS.md §4).
         if let Some(store) = self.storage.recording_store() {
             if let Err(e) = store.create_recording(&record).await {
-                warn!(
-                    room = %room_number,
-                    recording = %record.id,
-                    error = %e,
-                    "Recording started but could not be registered; it will not be listed"
-                );
+                match writer {
+                    RecordingWriter::Wav => {
+                        let _ = room.stop_recording();
+                    }
+                    #[cfg(any(feature = "recording-webm", feature = "recording-mp4"))]
+                    RecordingWriter::Media(recorder) => {
+                        recorder.stop().await;
+                    }
+                }
+                let _ = std::fs::remove_file(&record.path);
+                anyhow::bail!("recording not registered, so not kept: {e}");
             }
         }
         self.recordings.insert(
@@ -3342,6 +3449,8 @@ impl ConferenceCallHandler {
             // its holder reported first or simply hung up (phase 5).
             let migrated_to = self.migrations.take(call_id).map(|m| m.target_node);
             self.write_leg_record(&session, reason, migrated_to.as_deref());
+            // Their own recording, if one ran, ends with them.
+            self.finish_participant_recording(&session.room_number, &session.participant_id);
             // Update secondary room index
             if let Some(mut ids) = self.room_sessions.get_mut(&session.room_number) {
                 ids.retain(|id| id != call_id);
@@ -6932,6 +7041,10 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             let mut welcome_encoder = create_codec_instance(&codec_name)?;
             let player = forge_conference::AudioFeedbackPlayer::new(mixer_rate);
             let mut welcome_played = false;
+
+            // Whoever joins a room being recorded is named on its row.
+            self.note_recording_participant(&room_number, &participant_id)
+                .await;
 
             // A room being recorded tells whoever joins, when the
             // tenant's policy asks for an announcement (§11,

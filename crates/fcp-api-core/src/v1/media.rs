@@ -140,18 +140,53 @@ pub async fn start_recording(
         .as_ref()
         .ok_or_else(|| ApiError::NotFound("Media manager not available".into()))?;
 
+    // The recording goes under the tenant's directory, so one tenant's
+    // path cannot name another's file (docs/COMPLIANCE_FOLLOWUPS.md §4).
+    let relative = fcp_core::recording::tenant_recording_path(&tenant.0, &req.path)
+        .ok_or_else(|| {
+            ApiError::BadRequest("path must be a relative path without '..'".to_string())
+        })?
+        .to_string_lossy()
+        .into_owned();
+
     // Start recording
     // Recording consent: when the tenant policy says "announce", play the
     // configured prompt to the call before recording starts.
     let consent_announced = announce_recording_consent(&state, &tenant, &core_call_id).await;
 
     let result: Result<(), fcp_media::Error> = media_manager
-        .start_recording(&core_call_id, req.path.clone())
+        .start_recording(&core_call_id, relative.clone())
         .await;
 
     result.map_err(|e| ApiError::NotFound(format!("Failed to start recording: {}", e)))?;
+    let file = media_manager.recording_file(&relative);
+
+    // A recording with no row cannot be found by retention, a hold or an
+    // erasure: without one, it does not go ahead.
+    if let Some(store) = state
+        .storage
+        .as_ref()
+        .and_then(|s| s.call_recording_store())
+    {
+        let mut recording = fcp_core::recording::CallRecording::starting(
+            tenant.0,
+            core_call_id.to_string(),
+            fcp_core::recording::CallRecordingSource::Api,
+            file.clone(),
+        );
+        if consent_announced {
+            recording.consent = fcp_core::RecordingConsent::Announced;
+        }
+        if let Err(e) = store.create_call_recording(&recording).await {
+            let _ = media_manager.stop_recording(&core_call_id).await;
+            let _ = tokio::fs::remove_file(&file).await;
+            return Err(ApiError::Internal(format!(
+                "Recording not registered, so not kept: {e}"
+            )));
+        }
+    }
     // The call's record names its recording.
-    let path = req.path.clone();
+    let path = file;
     let _ = state
         .call_manager
         .update_call(&sip_call_id, |call| call.recording_path = Some(path));
@@ -198,6 +233,21 @@ pub async fn stop_recording(
     let result: Result<(), fcp_media::Error> = media_manager.stop_recording(&core_call_id).await;
 
     result.map_err(|e| ApiError::NotFound(format!("Failed to stop recording: {}", e)))?;
+    if let Some(store) = state
+        .storage
+        .as_ref()
+        .and_then(|s| s.call_recording_store())
+    {
+        if let Err(e) = fcp_core::recording::finish_call_recordings(
+            store.as_ref(),
+            &core_call_id.to_string(),
+            std::time::SystemTime::now(),
+        )
+        .await
+        {
+            tracing::warn!(call_id = %core_call_id, error = %e, "Could not close the call's recording row");
+        }
+    }
 
     Ok((
         StatusCode::OK,

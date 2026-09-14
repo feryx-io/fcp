@@ -1,6 +1,7 @@
 # Compliance Follow-ups — Design
 
-Status: **design, not implemented** (2026-09-14). This document is the
+Status: **phase 1 of 5 done** (2026-09-14, v0.25.166); design agreed the
+same day with every recommendation in §12 taken. This document is the
 plan for the three compliance items `STATUS.md` left unscheduled when the
 basics shipped on 2026-09-02: **legal hold**, **per-subject export and
 erasure**, and the **recording-consent announcement on calls recorded
@@ -521,6 +522,71 @@ One PR per phase, reviewed before the next starts.
    compliance permissions, the deletion log and audit `detail`, the admin
    UI's two broken compliance routes (`/audit-logs`, the voicemail message
    delete).
+
+   *Phase 1 shipped 2026-09-14 (v0.25.166).* Migration 062 and the pieces
+   around it, with these decisions made on the way:
+
+   - **The deletion log is written by the database.** Statement-level
+     `AFTER DELETE` triggers on `cdrs`, the two trace tables,
+     `admin_audit_log`, both recording tables and `voicemail_messages`
+     write it in the deleting transaction, so no path — the API, a phone
+     menu, a sweep, SQL typed by hand — can delete without an entry. The
+     cause and actor come from `fcp_core::compliance::deleting_as`, a
+     task-local scope the API's audit middleware opens around every
+     request and each sweep opens around its run; the Postgres backend
+     hands it to the transaction with `set_config`. A delete outside any
+     scope is logged as `unattributed`, which is visible rather than
+     silent. A cascade cannot be told by trigger depth (a cascaded
+     statement's triggers fire at the end of the outer statement), so a
+     voicemail message is logged as a cascade when its mailbox is gone in
+     the same transaction; it is the only class a foreign key cascades to.
+   - **Files are queued, not deleted in place.** The same triggers put a
+     deleted recording's or message's file on `pending_file_deletions`;
+     a reaper in `fcp-admin`'s hourly round removes it — from the
+     directories that host mounts, and only once no row names the path
+     (a greeting is rewritten under its path on every mailbox save).
+     This covers every path that deletes rows, cascades included, and the
+     conference server keeps removing its own files as before.
+   - **`call_recordings` is backfilled** from the records that name a
+     recording, one scan of `cdrs` on upgrade. Its trigger clears the
+     record's `recording_url` when the row goes, which retires
+     `CdrStore::list_recordings_before` and `clear_recording_url`; a
+     stored record closes its call's open recordings.
+   - **A recording with no row is not kept** — the API route, the flow
+     node, the queue, room and per-participant conference recordings all
+     stop the recorder and remove the file when the row cannot be written.
+   - **New file names**: calls and queues under
+     `<tenant>/<yyyy>/<mm>/<dd>/`, named for the call (flows) or the
+     recording's id (queues; campaign recordings were named for the dialled
+     number); the API route's `path` under the tenant's directory. Conference
+     recording names are unchanged: they carry a room number, not a
+     person, and the row names the tenant.
+   - **Trace tenancy** is taken from the stored record by the upkeep round
+     rather than at capture, where nothing yet knows the call's tenant; a
+     tenant's trace retention also reaches its untenanted traces through
+     its records, as before.
+   - **Upkeep** is a platform round (`[retention]` in `fcp-admin`): mailbox
+     retention, the purge of messages users deleted (seven days after),
+     `_system` SIP traces and orphan files (both off unless configured),
+     and the reaper.
+   - **Permissions**: `compliance_manage` and `audit_view` are checked on
+     the existing routes; `legal_hold_manage` and `subject_request_manage`
+     exist for phases 2, 4 and 5.
+   - **The admin UI's audit page** was written for an API that never
+     existed (paged entries by resource type); it now reads the real
+     audit log and the deletion log. The voicemail page's message delete
+     and mark-heard called routes that do not exist; they use
+     `/voicemail/messages/:id`.
+
+   Tests: the Postgres suite `tests/compliance.rs` (two tenants' recordings
+   under one window, the record's reference cleared, the reaper and its
+   roots, attribution by retention, a person, a cascade and nobody,
+   greetings kept, mailbox retention and the purge, orphans, trace
+   adoption, room participants), the API suite (the permissions against a
+   read-only session, a message deleted through the API and its mailbox's
+   cascade in the deletion log, the audit event's route parameters), and
+   unit tests for the paths, the roots, the attribution scope and the
+   permissions.
 2. **Legal hold.** The model, API and events; enforcement in every path
    of §5.2; tenant deletion refused under a hold; S3 Object Lock on held
    archive days.

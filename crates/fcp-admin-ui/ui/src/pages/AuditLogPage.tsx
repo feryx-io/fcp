@@ -1,7 +1,6 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
-import { ArrowUpDown } from 'lucide-react'
 import { DataTable } from '@/components/DataTable'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -14,44 +13,68 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
 } from '@/components/ui/dialog'
 import { auditLog } from '@/api/endpoints'
-import type { AuditEntry, AuditQueryParams } from '@/types'
+import type {
+  AuditEntry, AuditQueryParams, DeletionEntry, DeletionQueryParams,
+} from '@/types'
 
-const actionBadge = (action: string) => {
-  if (action.startsWith('create')) return 'success' as const
-  if (action.startsWith('update') || action.startsWith('modify')) return 'default' as const
-  if (action.startsWith('delete') || action.startsWith('remove')) return 'destructive' as const
+const methodBadge = (method: string) => {
+  if (method === 'POST') return 'success' as const
+  if (method === 'DELETE') return 'destructive' as const
+  if (method === 'GET') return 'secondary' as const
+  return 'default' as const
+}
+
+const causeBadge = (cause: string) => {
+  if (cause === 'manual') return 'default' as const
+  if (cause === 'unattributed') return 'destructive' as const
   return 'secondary' as const
 }
 
-export function AuditLogPage() {
-  const [filters, setFilters] = useState<AuditQueryParams>({ limit: 100, offset: 0 })
-  const [selectedEntry, setSelectedEntry] = useState<AuditEntry | null>(null)
+/** Unix seconds for the start of a `YYYY-MM-DD` date input, local time. */
+const sinceOf = (date: string): number | undefined =>
+  date ? Math.floor(new Date(`${date}T00:00:00`).getTime() / 1000) : undefined
 
-  const { data, isLoading } = useQuery({
-    queryKey: ['audit-logs', filters],
-    queryFn: () => auditLog.list(filters),
+const when = (secs: number) => new Date(secs * 1000).toLocaleString()
+
+const LIMITS = [100, 500, 1000]
+
+const CLASSES = [
+  'cdr', 'call_recording', 'conference_recording', 'voicemail',
+  'sip_trace', 'flow_trace', 'audit_event', 'orphan_file',
+]
+
+export function AuditLogPage() {
+  const [view, setView] = useState<'requests' | 'deletions'>('requests')
+  const [requestFilters, setRequestFilters] = useState<AuditQueryParams>({ limit: 100 })
+  const [deletionFilters, setDeletionFilters] = useState<DeletionQueryParams>({ limit: 100 })
+  const [requestDate, setRequestDate] = useState('')
+  const [deletionDate, setDeletionDate] = useState('')
+  const [selected, setSelected] = useState<AuditEntry | DeletionEntry | null>(null)
+
+  const requests = useQuery({
+    queryKey: ['audit-log', requestFilters],
+    queryFn: () => auditLog.list(requestFilters),
+    enabled: view === 'requests',
+  })
+  const deletions = useQuery({
+    queryKey: ['deletion-log', deletionFilters],
+    queryFn: () => auditLog.deletions(deletionFilters),
+    enabled: view === 'deletions',
   })
 
-  const entries = data?.entries ?? []
-  const total = data?.total ?? 0
-
-  const columns: ColumnDef<AuditEntry>[] = [
+  const requestColumns: ColumnDef<AuditEntry>[] = [
     {
-      accessorKey: 'timestamp',
-      header: ({ column }) => (
-        <Button variant="ghost" onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}>
-          Time <ArrowUpDown className="ml-2 h-4 w-4" />
-        </Button>
-      ),
-      cell: ({ row }) => new Date(row.original.timestamp).toLocaleString(),
+      accessorKey: 'occurred_at',
+      header: 'Time',
+      cell: ({ row }) => when(row.original.occurred_at),
     },
     {
-      accessorKey: 'actor_id',
+      accessorKey: 'actor',
       header: 'Actor',
       cell: ({ row }) => (
         <div>
-          <span className="text-sm">{row.original.actor_id}</span>
-          <p className="text-xs text-muted-foreground">{row.original.actor_type}</p>
+          <span className="text-sm">{row.original.actor}</span>
+          <p className="text-xs text-muted-foreground">{row.original.actor_kind}</p>
         </div>
       ),
     },
@@ -59,174 +82,205 @@ export function AuditLogPage() {
       accessorKey: 'action',
       header: 'Action',
       cell: ({ row }) => (
-        <Badge variant={actionBadge(row.original.action)}>
-          {row.original.action}
-        </Badge>
-      ),
-    },
-    {
-      accessorKey: 'resource_type',
-      header: 'Resource',
-      cell: ({ row }) => (
-        <div>
-          <span className="text-sm">{row.original.resource_type}</span>
-          <p className="text-xs text-muted-foreground font-mono">{row.original.resource_id}</p>
+        <div className="flex items-center gap-2">
+          <Badge variant={methodBadge(row.original.method)}>{row.original.method}</Badge>
+          <span className="font-mono text-xs">{row.original.path}</span>
         </div>
       ),
     },
     {
-      accessorKey: 'ip_address',
+      accessorKey: 'status',
+      header: 'Status',
+      cell: ({ row }) => (
+        <Badge variant={row.original.status >= 400 ? 'destructive' : 'secondary'}>
+          {row.original.status}
+        </Badge>
+      ),
+    },
+    {
+      accessorKey: 'source_ip',
       header: 'IP',
       cell: ({ row }) => (
-        <span className="font-mono text-xs">{row.original.ip_address ?? '-'}</span>
+        <span className="font-mono text-xs">{row.original.source_ip ?? '-'}</span>
       ),
     },
     {
       id: 'detail',
       cell: ({ row }) => (
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => setSelectedEntry(row.original)}
-        >
+        <Button variant="ghost" size="sm" onClick={() => setSelected(row.original)}>
           View
         </Button>
       ),
     },
   ]
 
+  const deletionColumns: ColumnDef<DeletionEntry>[] = [
+    {
+      accessorKey: 'deleted_at',
+      header: 'Time',
+      cell: ({ row }) => when(row.original.deleted_at),
+    },
+    {
+      accessorKey: 'class',
+      header: 'What',
+      cell: ({ row }) => (
+        <div>
+          <span className="text-sm">{row.original.class.replace(/_/g, ' ')}</span>
+          <p className="text-xs text-muted-foreground font-mono">{row.original.item}</p>
+        </div>
+      ),
+    },
+    {
+      accessorKey: 'cause',
+      header: 'Why',
+      cell: ({ row }) => (
+        <Badge variant={causeBadge(row.original.cause)}>
+          {row.original.cause.replace(/_/g, ' ')}
+        </Badge>
+      ),
+    },
+    {
+      accessorKey: 'actor',
+      header: 'By',
+      cell: ({ row }) => <span className="text-sm">{row.original.actor}</span>,
+    },
+    {
+      id: 'detail',
+      cell: ({ row }) => (
+        <Button variant="ghost" size="sm" onClick={() => setSelected(row.original)}>
+          View
+        </Button>
+      ),
+    },
+  ]
+
+  const limitSelect = (value: number | undefined, set: (limit: number) => void) => (
+    <div className="space-y-1">
+      <Label className="text-xs">Show</Label>
+      <Select value={String(value ?? 100)} onValueChange={(v) => set(Number(v))}>
+        <SelectTrigger><SelectValue /></SelectTrigger>
+        <SelectContent>
+          {LIMITS.map((n) => (
+            <SelectItem key={n} value={String(n)}>{n} newest</SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+  )
+
   return (
     <div className="space-y-6">
       <div>
         <h1 className="text-3xl font-bold tracking-tight">Audit Log</h1>
         <p className="text-muted-foreground">
-          Track who did what and when
-          {total > 0 && <span className="ml-1">({total} entries)</span>}
+          Who changed what through the API, and what was deleted, when, why and by whom
         </p>
       </div>
 
-      {/* Filters */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 p-4 rounded-lg border bg-card">
-        <div className="space-y-1">
-          <Label className="text-xs">Actor ID</Label>
-          <Input
-            placeholder="Username or ID"
-            value={filters.actor_id ?? ''}
-            onChange={(e) => setFilters((f) => ({ ...f, actor_id: e.target.value || undefined, offset: 0 }))}
-          />
-        </div>
-        <div className="space-y-1">
-          <Label className="text-xs">Resource Type</Label>
-          <Select
-            value={filters.resource_type ?? '__all__'}
-            onValueChange={(v) => setFilters((f) => ({ ...f, resource_type: v === '__all__' ? undefined : v, offset: 0 }))}
-          >
-            <SelectTrigger><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="__all__">All</SelectItem>
-              <SelectItem value="user">User</SelectItem>
-              <SelectItem value="tenant">Tenant</SelectItem>
-              <SelectItem value="extension">Extension</SelectItem>
-              <SelectItem value="device">Device</SelectItem>
-              <SelectItem value="phone_number">Phone Number</SelectItem>
-              <SelectItem value="flow">Flow</SelectItem>
-              <SelectItem value="routing_rule">Routing Rule</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="space-y-1">
-          <Label className="text-xs">Date From</Label>
-          <Input
-            type="date"
-            value={filters.start_time ?? ''}
-            onChange={(e) => setFilters((f) => ({ ...f, start_time: e.target.value || undefined, offset: 0 }))}
-          />
-        </div>
-        <div className="space-y-1">
-          <Label className="text-xs">Date To</Label>
-          <Input
-            type="date"
-            value={filters.end_time ?? ''}
-            onChange={(e) => setFilters((f) => ({ ...f, end_time: e.target.value || undefined, offset: 0 }))}
-          />
-        </div>
+      <div className="flex gap-2">
+        <Button
+          variant={view === 'requests' ? 'default' : 'outline'}
+          size="sm"
+          onClick={() => setView('requests')}
+        >
+          Requests
+        </Button>
+        <Button
+          variant={view === 'deletions' ? 'default' : 'outline'}
+          size="sm"
+          onClick={() => setView('deletions')}
+        >
+          Deletions
+        </Button>
       </div>
 
-      {isLoading ? (
-        <div className="flex h-32 items-center justify-center text-muted-foreground">Loading...</div>
+      {view === 'requests' ? (
+        <>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 p-4 rounded-lg border bg-card">
+            <div className="space-y-1">
+              <Label className="text-xs">Actor</Label>
+              <Input
+                placeholder="Username or token id"
+                value={requestFilters.actor ?? ''}
+                onChange={(e) => setRequestFilters((f) => ({ ...f, actor: e.target.value || undefined }))}
+              />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">Action starts with</Label>
+              <Input
+                placeholder="DELETE /api/v1/users"
+                value={requestFilters.action ?? ''}
+                onChange={(e) => setRequestFilters((f) => ({ ...f, action: e.target.value || undefined }))}
+              />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">Since</Label>
+              <Input
+                type="date"
+                value={requestDate}
+                onChange={(e) => {
+                  setRequestDate(e.target.value)
+                  setRequestFilters((f) => ({ ...f, since: sinceOf(e.target.value) }))
+                }}
+              />
+            </div>
+            {limitSelect(requestFilters.limit, (limit) => setRequestFilters((f) => ({ ...f, limit })))}
+          </div>
+          {requests.isLoading ? (
+            <div className="flex h-32 items-center justify-center text-muted-foreground">Loading...</div>
+          ) : (
+            <DataTable columns={requestColumns} data={requests.data ?? []} />
+          )}
+        </>
       ) : (
-        <DataTable columns={columns} data={entries} />
+        <>
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-4 p-4 rounded-lg border bg-card">
+            <div className="space-y-1">
+              <Label className="text-xs">What</Label>
+              <Select
+                value={deletionFilters.class ?? '__all__'}
+                onValueChange={(v) => setDeletionFilters((f) => ({ ...f, class: v === '__all__' ? undefined : v }))}
+              >
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__all__">Everything</SelectItem>
+                  {CLASSES.map((c) => (
+                    <SelectItem key={c} value={c}>{c.replace(/_/g, ' ')}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">Since</Label>
+              <Input
+                type="date"
+                value={deletionDate}
+                onChange={(e) => {
+                  setDeletionDate(e.target.value)
+                  setDeletionFilters((f) => ({ ...f, since: sinceOf(e.target.value) }))
+                }}
+              />
+            </div>
+            {limitSelect(deletionFilters.limit, (limit) => setDeletionFilters((f) => ({ ...f, limit })))}
+          </div>
+          {deletions.isLoading ? (
+            <div className="flex h-32 items-center justify-center text-muted-foreground">Loading...</div>
+          ) : (
+            <DataTable columns={deletionColumns} data={deletions.data ?? []} />
+          )}
+        </>
       )}
 
-      {/* Pagination */}
-      {total > (filters.limit ?? 100) && (
-        <div className="flex items-center justify-center gap-4">
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={(filters.offset ?? 0) === 0}
-            onClick={() => setFilters((f) => ({
-              ...f, offset: Math.max(0, (f.offset ?? 0) - (f.limit ?? 100)),
-            }))}
-          >
-            Previous
-          </Button>
-          <span className="text-sm text-muted-foreground">
-            {(filters.offset ?? 0) + 1}-{Math.min((filters.offset ?? 0) + (filters.limit ?? 100), total)} of {total}
-          </span>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={(filters.offset ?? 0) + (filters.limit ?? 100) >= total}
-            onClick={() => setFilters((f) => ({
-              ...f, offset: (f.offset ?? 0) + (f.limit ?? 100),
-            }))}
-          >
-            Next
-          </Button>
-        </div>
-      )}
-
-      {/* Detail Dialog */}
-      <Dialog open={!!selectedEntry} onOpenChange={() => setSelectedEntry(null)}>
+      <Dialog open={!!selected} onOpenChange={() => setSelected(null)}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
-            <DialogTitle>Audit Entry Detail</DialogTitle>
-            <DialogDescription>Full audit record including changes.</DialogDescription>
+            <DialogTitle>{selected && 'path' in selected ? 'Request' : 'Deletion'}</DialogTitle>
+            <DialogDescription>The full entry.</DialogDescription>
           </DialogHeader>
-          {selectedEntry && (
-            <div className="space-y-3 text-sm">
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <p className="text-xs text-muted-foreground">Timestamp</p>
-                  <p>{new Date(selectedEntry.timestamp).toLocaleString()}</p>
-                </div>
-                <div>
-                  <p className="text-xs text-muted-foreground">Actor</p>
-                  <p>{selectedEntry.actor_id} ({selectedEntry.actor_type})</p>
-                </div>
-                <div>
-                  <p className="text-xs text-muted-foreground">Action</p>
-                  <Badge variant={actionBadge(selectedEntry.action)}>{selectedEntry.action}</Badge>
-                </div>
-                <div>
-                  <p className="text-xs text-muted-foreground">Resource</p>
-                  <p>{selectedEntry.resource_type}: {selectedEntry.resource_id}</p>
-                </div>
-                <div>
-                  <p className="text-xs text-muted-foreground">IP Address</p>
-                  <p className="font-mono">{selectedEntry.ip_address ?? '-'}</p>
-                </div>
-              </div>
-              {selectedEntry.changes && (
-                <div>
-                  <p className="text-xs text-muted-foreground mb-1">Changes</p>
-                  <pre className="text-xs bg-muted rounded p-3 overflow-auto max-h-48 font-mono">
-                    {JSON.stringify(selectedEntry.changes, null, 2)}
-                  </pre>
-                </div>
-              )}
-            </div>
+          {selected && (
+            <pre className="text-xs bg-muted rounded p-3 overflow-auto max-h-96 font-mono">
+              {JSON.stringify(selected, null, 2)}
+            </pre>
           )}
         </DialogContent>
       </Dialog>

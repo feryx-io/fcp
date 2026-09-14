@@ -456,11 +456,17 @@ impl VoicemailService {
         // Validate recording path is within allowed directory before deletion
         validate_path_within_dir(&message.recording_path, &self.config.recordings_dir)?;
 
-        // Delete from database (CASCADE will handle file cleanup)
-        self.storage
-            .delete_message(message_id)
-            .await
-            .context("Failed to delete message from database")?;
+        // Delete from database; the deletion log names the mailbox's owner,
+        // who deleted it from the phone.
+        fcp_core::compliance::deleting_as(
+            fcp_core::compliance::Deleter::new(
+                fcp_core::compliance::DeletionCause::Manual,
+                format!("phone:{mailbox_id}"),
+            ),
+            self.storage.delete_message(message_id),
+        )
+        .await
+        .context("Failed to delete message from database")?;
 
         // Delete audio file
         if message.recording_path.exists() {

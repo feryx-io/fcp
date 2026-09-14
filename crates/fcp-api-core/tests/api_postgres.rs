@@ -158,7 +158,11 @@ impl App {
                 .with_recording_store(
                     Arc::new(PostgresRecordingStore::new(storage.pool().clone()))
                         as Arc<dyn fcp_core::recording::RecordingStore>,
-                ),
+                )
+                .with_call_recording_store(Arc::new(PostgresRecordingStore::new(
+                    storage.pool().clone(),
+                ))
+                    as Arc<dyn fcp_core::recording::CallRecordingStore>),
         );
         let dir = tempfile::Builder::new()
             .prefix("fcp-api-test-")
@@ -560,6 +564,7 @@ impl App {
             .insert_flow_trace(&FlowTraceEntry {
                 id: 0,
                 call_id: call_id.to_string(),
+                tenant_id: None,
                 flow_id: flow_id.to_string(),
                 flow_name: Some("Main IVR".to_string()),
                 node_id: Some("answer".to_string()),
@@ -2138,6 +2143,26 @@ async fn voicemail_mailboxes_crud() {
         .await;
     assert_eq!(cross.status, StatusCode::NOT_FOUND, "{}", cross.text);
 
+    // Messages deleted through the API, one by one or with their mailbox,
+    // are in the deletion log under whoever asked, their audio queued.
+    let (one, two) = (
+        fcp_core::VoicemailMessage::new(id.clone(), "+15550002222".into(), 3, "/vm/one.wav".into()),
+        fcp_core::VoicemailMessage::new(id.clone(), "+15550003333".into(), 4, "/vm/two.wav".into()),
+    );
+    {
+        use fcp_core::storage::VoicemailStore;
+        app.storage.put_message(one.clone()).await.unwrap();
+        app.storage.put_message(two.clone()).await.unwrap();
+    }
+    let gone = app
+        .admin(
+            Method::DELETE,
+            &format!("/api/v1/voicemail/messages/{}", one.id),
+            None,
+        )
+        .await;
+    assert!(gone.status.is_success(), "{} {}", gone.status, gone.text);
+
     let del = app
         .admin(
             Method::DELETE,
@@ -2146,6 +2171,59 @@ async fn voicemail_mailboxes_crud() {
         )
         .await;
     assert_eq!(del.status, StatusCode::NO_CONTENT, "{}", del.text);
+    let log = app
+        .admin(
+            Method::GET,
+            "/api/v1/compliance/deletions?class=voicemail",
+            None,
+        )
+        .await;
+    assert_eq!(log.status, StatusCode::OK, "{}", log.text);
+    let entries = log.json.as_array().unwrap();
+    let entry = |item: &str| {
+        entries
+            .iter()
+            .find(|e| e["item"] == item)
+            .unwrap_or_else(|| panic!("{item} not in {}", log.text))
+            .clone()
+    };
+    assert_eq!(entry(&one.id)["cause"], "manual");
+    assert_eq!(entry(&one.id)["actor"], "static_token");
+    assert_eq!(entry(&one.id)["detail"]["path"], "/vm/one.wav");
+    assert_eq!(entry(&two.id)["cause"], "cascade");
+    assert_eq!(entry(&two.id)["actor"], "static_token");
+    let queued: Vec<String> =
+        sqlx::query_scalar("SELECT path FROM pending_file_deletions ORDER BY path")
+            .fetch_all(app.storage.pool())
+            .await
+            .unwrap();
+    assert_eq!(queued, vec!["/vm/one.wav", "/vm/two.wav"]);
+    let other = app
+        .admin_in(
+            app.tenant_b,
+            Method::GET,
+            "/api/v1/compliance/deletions?class=voicemail",
+            None,
+        )
+        .await;
+    assert_eq!(
+        other.json.as_array().map(Vec::len),
+        Some(0),
+        "{}",
+        other.text
+    );
+    // The audit event names what the request deleted.
+    let audited = wait_for_audit(
+        &app,
+        "/api/v1/audit-log?action=DELETE%20/api/v1/voicemail/messages",
+        |e| e["status"].as_u64().is_some_and(|s| s < 300),
+    )
+    .await;
+    assert_eq!(
+        audited["detail"]["params"]["id"],
+        one.id.as_str(),
+        "{audited}"
+    );
     assert_eq!(
         app.admin(
             Method::GET,
@@ -4219,6 +4297,35 @@ async fn compliance_policy_audit_log_export_and_retention() {
     })
     .await;
     assert_eq!(by_session["actor_kind"], "session", "{by_session}");
+    // Compliance takes its own permissions: a read-only session can
+    // neither read the audit log nor change what is deleted.
+    app.create_user_with_role("watcher", "read_only").await;
+    let watcher = app.login("watcher", PASSWORD).await.json["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    for (method, path, body) in [
+        (Method::GET, "/api/v1/audit-log", None),
+        (Method::GET, "/api/v1/compliance/policy", None),
+        (
+            Method::PUT,
+            "/api/v1/compliance/policy",
+            Some(json!({ "cdr_retention_days": 1 })),
+        ),
+        (Method::POST, "/api/v1/compliance/retention/run", None),
+    ] {
+        let refused = app.send_as(&watcher, method.clone(), path, body).await;
+        assert_eq!(
+            refused.status,
+            StatusCode::FORBIDDEN,
+            "{method} {path}: {}",
+            refused.text
+        );
+    }
+    let allowed = app
+        .send_as(&jwt, Method::GET, "/api/v1/compliance/policy", None)
+        .await;
+    assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.text);
     // GET requests are not audited.
     let reads = app
         .admin(

@@ -182,6 +182,16 @@ pub enum Permission {
 
     // Debug
     DebugView,
+
+    // Compliance (docs/COMPLIANCE_FOLLOWUPS.md §4)
+    /// The retention and consent policy, and retention runs.
+    ComplianceManage,
+    /// Placing and releasing legal holds.
+    LegalHoldManage,
+    /// Subject export and erasure requests.
+    SubjectRequestManage,
+    /// The admin audit log and the deletion log.
+    AuditView,
 }
 
 impl FromStr for Permission {
@@ -219,6 +229,10 @@ impl FromStr for Permission {
             "tenant_update" => Ok(Self::TenantUpdate),
             "tenant_delete" => Ok(Self::TenantDelete),
             "debug_view" => Ok(Self::DebugView),
+            "compliance_manage" => Ok(Self::ComplianceManage),
+            "legal_hold_manage" => Ok(Self::LegalHoldManage),
+            "subject_request_manage" => Ok(Self::SubjectRequestManage),
+            "audit_view" => Ok(Self::AuditView),
             other => Err(format!("unknown permission: {}", other)),
         }
     }
@@ -258,6 +272,10 @@ impl Permission {
             Self::TenantUpdate => "tenant_update",
             Self::TenantDelete => "tenant_delete",
             Self::DebugView => "debug_view",
+            Self::ComplianceManage => "compliance_manage",
+            Self::LegalHoldManage => "legal_hold_manage",
+            Self::SubjectRequestManage => "subject_request_manage",
+            Self::AuditView => "audit_view",
         }
     }
 
@@ -294,6 +312,10 @@ impl Permission {
             Self::TenantUpdate => "Update Tenants",
             Self::TenantDelete => "Delete Tenants",
             Self::DebugView => "View Debug Information",
+            Self::ComplianceManage => "Manage Compliance Policy",
+            Self::LegalHoldManage => "Manage Legal Holds",
+            Self::SubjectRequestManage => "Manage Subject Requests",
+            Self::AuditView => "View Audit Logs",
         }
     }
 }
@@ -307,6 +329,16 @@ impl UserRole {
         match (self, permission, mode) {
             // SuperAdmin has all permissions in all modes
             (SuperAdmin, _, _) => true,
+
+            // Compliance belongs to whoever administers the tenant: the
+            // policy decides what is deleted, holds stop deletion, and
+            // subject requests export or erase people's data.
+            (
+                TenantAdmin,
+                ComplianceManage | LegalHoldManage | SubjectRequestManage | AuditView,
+                _,
+            ) => true,
+            (_, ComplianceManage | LegalHoldManage | SubjectRequestManage | AuditView, _) => false,
 
             // TenantAdmin - full admin within a single tenant.
             //
@@ -517,6 +549,10 @@ impl UserRole {
             TenantUpdate,
             TenantDelete,
             DebugView,
+            ComplianceManage,
+            LegalHoldManage,
+            SubjectRequestManage,
+            AuditView,
         ];
 
         all_permissions
@@ -560,6 +596,36 @@ mod tests {
             Permission::PhoneNumberViewCarrierData,
             DeploymentMode::Enterprise
         ));
+    }
+
+    #[test]
+    fn compliance_belongs_to_tenant_and_super_admins_only() {
+        use Permission::*;
+        for mode in [
+            DeploymentMode::Enterprise,
+            DeploymentMode::Carrier,
+            DeploymentMode::ServiceProvider,
+        ] {
+            for perm in [
+                ComplianceManage,
+                LegalHoldManage,
+                SubjectRequestManage,
+                AuditView,
+            ] {
+                assert!(UserRole::SuperAdmin.has_permission(perm, mode));
+                assert!(UserRole::TenantAdmin.has_permission(perm, mode));
+                for role in [
+                    UserRole::TelecomAdmin,
+                    UserRole::UserAdmin,
+                    UserRole::DepartmentAdmin,
+                    UserRole::ReadOnly,
+                    UserRole::EndUser,
+                ] {
+                    assert!(!role.has_permission(perm, mode), "{role:?} {perm:?}");
+                }
+                assert_eq!(perm.as_str().parse::<Permission>(), Ok(perm));
+            }
+        }
     }
 
     #[test]

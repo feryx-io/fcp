@@ -54,9 +54,16 @@ pub struct AdminConfig {
     #[serde(default)]
     pub prompts_dir: Option<String>,
 
-    /// Directory holding call recordings; pruned by tenant retention policies.
+    /// Directory holding call recordings, mounted at the path the
+    /// recording hosts write under. Recordings are deleted by their rows;
+    /// the reaper removes the files from here.
     #[serde(default)]
     pub call_recordings_dir: Option<String>,
+
+    /// Platform upkeep beside the tenants' retention
+    /// (`docs/COMPLIANCE_FOLLOWUPS.md` §4).
+    #[serde(default)]
+    pub retention: RetentionConfig,
 
     /// Security policy configuration (account lockout, password expiration)
     #[serde(default)]
@@ -65,6 +72,43 @@ pub struct AdminConfig {
     /// TTS configuration for prompt audio synthesis
     #[serde(default)]
     pub tts: Option<TtsSection>,
+}
+
+/// The `[retention]` section: what the platform tidies whatever the
+/// tenants' policies say.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct RetentionConfig {
+    /// Remove files in the recordings, voicemail and profile picture
+    /// directories that no row names once they are this many days old.
+    /// Unset leaves them.
+    #[serde(default)]
+    pub orphan_files_days: Option<u32>,
+    /// Remove SIP traces of no tenant's call (registrations, options)
+    /// after this many days. Unset keeps them.
+    #[serde(default)]
+    pub system_trace_days: Option<u32>,
+    /// Remove voicemail messages this many days after a user deleted them.
+    #[serde(default = "default_deleted_voicemail_grace_days")]
+    pub deleted_voicemail_grace_days: u32,
+    /// More directories files may be removed from (a queue's recording
+    /// directory mounted here, a voicemail server's).
+    #[serde(default)]
+    pub extra_file_roots: Vec<String>,
+}
+
+fn default_deleted_voicemail_grace_days() -> u32 {
+    7
+}
+
+impl Default for RetentionConfig {
+    fn default() -> Self {
+        Self {
+            orphan_files_days: None,
+            system_trace_days: None,
+            deleted_voicemail_grace_days: default_deleted_voicemail_grace_days(),
+            extra_file_roots: Vec::new(),
+        }
+    }
 }
 
 /// TTS configuration for synthesizing prompt audio.

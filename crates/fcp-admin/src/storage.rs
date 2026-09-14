@@ -65,7 +65,12 @@ pub async fn initialize_storage(config: &StorageConfig) -> Result<StorageResult>
     let dyn_st = DynStorage::from_all_in_one(storage.clone())
         .with_emergency_store(emergency_store as Arc<dyn fcp_core::e911::EmergencyStore>)
         .with_compliance_store(compliance_store as Arc<dyn fcp_core::compliance::ComplianceStore>)
-        .with_recording_store(recording_store as Arc<dyn fcp_core::recording::RecordingStore>)
+        .with_recording_store(
+            recording_store.clone() as Arc<dyn fcp_core::recording::RecordingStore>
+        )
+        .with_call_recording_store(
+            recording_store as Arc<dyn fcp_core::recording::CallRecordingStore>,
+        )
         .with_encryption_store(storage.clone() as Arc<dyn fcp_core::encryption::EncryptionStore>)
         .with_sip_trace_store(sip_trace_store as Arc<dyn fcp_core::sip_trace::SipTraceStore>)
         .with_api_token_store(api_token_store as Arc<dyn fcp_core::storage::ApiTokenStore>)

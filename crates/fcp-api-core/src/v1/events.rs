@@ -326,6 +326,7 @@ mod tests {
             event_types: None,
         };
         let identity = AuthIdentity::ApiToken {
+            token_id: "token-test".to_string(),
             tenant_id,
             permissions: vec!["admin".to_string()],
         };
@@ -344,6 +345,7 @@ mod tests {
             event_types: None,
         };
         let identity = AuthIdentity::ApiToken {
+            token_id: "token-test".to_string(),
             tenant_id: scoped_tenant,
             permissions: vec!["admin".to_string()],
         };
