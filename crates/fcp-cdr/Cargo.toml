@@ -12,6 +12,16 @@ sip-sdp = { path = "../../external/siphon-rs/crates/sip-sdp" }
 
 anyhow.workspace = true
 async-trait = "0.1"
+bytes.workspace = true
+chrono = "0.4"
+# The archive (docs/CDR_PIPELINE.md §13, phase 5): gzipped JSON Lines to a
+# directory or an S3-compatible bucket, signed with SigV4.
+flate2 = "1"
+hex = "0.4"
+hmac = "0.12"
+sha2 = "0.10"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+tokio-util = { version = "0.7", features = ["io"] }
 rust_decimal.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -43,13 +43,22 @@ pub struct PolicyResponse {
     pub audit_retention_days: Option<u32>,
     pub recording_consent: String,
     pub recording_consent_prompt_id: Option<String>,
+    /// CDRs are deleted only once the archive has confirmed them.
+    pub cdr_archive_required: bool,
+    /// Unix seconds: every one of the tenant's CDRs that started before
+    /// this is in the archive, confirmed. `null` when none is.
+    pub cdr_archived_before: Option<u64>,
     /// False until the tenant has saved a policy (defaults shown).
     pub configured: bool,
     pub updated_at: u64,
 }
 
 impl PolicyResponse {
-    fn from_policy(p: CompliancePolicy, configured: bool) -> Self {
+    fn from_policy(
+        p: CompliancePolicy,
+        configured: bool,
+        archived_before: Option<SystemTime>,
+    ) -> Self {
         Self {
             tenant_id: p.tenant_id.to_string(),
             cdr_retention_days: p.cdr_retention_days,
@@ -59,6 +68,8 @@ impl PolicyResponse {
             audit_retention_days: p.audit_retention_days,
             recording_consent: p.recording_consent.to_string(),
             recording_consent_prompt_id: p.recording_consent_prompt_id,
+            cdr_archive_required: p.cdr_archive_required,
+            cdr_archived_before: archived_before.map(unix_secs),
             configured,
             updated_at: unix_secs(p.updated_at),
         }
@@ -81,6 +92,21 @@ pub struct UpdatePolicyRequest {
     pub recording_consent: Option<String>,
     #[serde(default, deserialize_with = "deserialize_double_option")]
     pub recording_consent_prompt_id: Option<Option<String>>,
+    pub cdr_archive_required: Option<bool>,
+}
+
+/// How far the tenant's CDR archive is confirmed; `None` when it is not
+/// known (no storage, or the lookup failed, which is logged).
+async fn archived_before(state: &ApiState, tenant: &fcp_core::TenantId) -> Option<SystemTime> {
+    use fcp_core::storage::CdrStore;
+    let storage = state.storage.as_ref()?;
+    match storage.cdr_archive_frontier(tenant).await {
+        Ok(frontier) => frontier,
+        Err(e) => {
+            tracing::warn!(tenant_id = %tenant, error = %e, "Could not read the CDR archive frontier");
+            None
+        }
+    }
 }
 
 /// Distinguish "absent" (keep current) from `null` (clear).
@@ -114,7 +140,10 @@ pub async fn get_policy(
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     let configured = stored.is_some();
     let policy = stored.unwrap_or_else(|| CompliancePolicy::defaults(tenant.0));
-    Ok(Json(PolicyResponse::from_policy(policy, configured)))
+    let archived = archived_before(&state, &tenant.0).await;
+    Ok(Json(PolicyResponse::from_policy(
+        policy, configured, archived,
+    )))
 }
 
 pub async fn update_policy(
@@ -148,6 +177,9 @@ pub async fn update_policy(
     if let Some(v) = req.audit_retention_days {
         check_days("audit_retention_days", v)?;
         policy.audit_retention_days = v;
+    }
+    if let Some(required) = req.cdr_archive_required {
+        policy.cdr_archive_required = required;
     }
     if let Some(mode) = req.recording_consent {
         policy.recording_consent = match mode.as_str() {
@@ -192,7 +224,8 @@ pub async fn update_policy(
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     info!(tenant_id = %tenant.0, "Compliance policy updated");
-    Ok(Json(PolicyResponse::from_policy(policy, true)))
+    let archived = archived_before(&state, &tenant.0).await;
+    Ok(Json(PolicyResponse::from_policy(policy, true, archived)))
 }
 
 // ─── Retention ───────────────────────────────────────────────────────────

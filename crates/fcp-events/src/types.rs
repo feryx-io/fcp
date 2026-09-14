@@ -1379,6 +1379,7 @@ impl PlatformEvent {
             },
             PlatformEvent::Cdr(e) => match e {
                 CdrEvent::Written { .. } => "cdr.written",
+                CdrEvent::Archived { .. } => "cdr.archived",
             },
         }
     }
@@ -1469,7 +1470,9 @@ impl PlatformEvent {
                 | SystemEvent::NodeLeft { .. } => None,
             },
             PlatformEvent::Billing(e) => Some(e.tenant_id()),
-            PlatformEvent::Cdr(CdrEvent::Written { tenant_id, .. }) => Some(tenant_id),
+            PlatformEvent::Cdr(
+                CdrEvent::Written { tenant_id, .. } | CdrEvent::Archived { tenant_id, .. },
+            ) => Some(tenant_id),
             PlatformEvent::Media(_)
             | PlatformEvent::Ivr(_)
             | PlatformEvent::Recording(_)
@@ -1497,6 +1500,7 @@ impl PlatformEvent {
             PlatformEvent::Sip(_) => None,
             PlatformEvent::Billing(event) => event.call_id(),
             PlatformEvent::Cdr(CdrEvent::Written { call_id, .. }) => Some(call_id),
+            PlatformEvent::Cdr(CdrEvent::Archived { .. }) => None,
         }
     }
 
@@ -1517,7 +1521,9 @@ impl PlatformEvent {
             PlatformEvent::Presence(event) => event.timestamp(),
             PlatformEvent::Sip(event) => event.timestamp(),
             PlatformEvent::Billing(event) => event.timestamp(),
-            PlatformEvent::Cdr(CdrEvent::Written { timestamp, .. }) => *timestamp,
+            PlatformEvent::Cdr(
+                CdrEvent::Written { timestamp, .. } | CdrEvent::Archived { timestamp, .. },
+            ) => *timestamp,
         }
     }
 }
@@ -1869,7 +1875,9 @@ pub enum BillingEvent {
 /// the database, rated where it could be: what an external billing or
 /// analytics system subscribes to (`cdr.written`). Delivery is at least
 /// once — a replayed batch announces its records again — so consumers skip
-/// a `cdr_id` they have seen.
+/// a `cdr_id` they have seen. `Archived` is announced once a tenant's day
+/// is in the archive, confirmed (`cdr.archived`); a day given late records
+/// is written again under the same key with a higher `generation`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum CdrEvent {
@@ -1892,6 +1900,24 @@ pub enum CdrEvent {
         /// The node that owned the call.
         node_id: Option<String>,
         /// When the record was written.
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+    Archived {
+        tenant_id: TenantId,
+        /// The UTC day, `YYYY-MM-DD`.
+        day: String,
+        /// Where the object is: the target (`s3://bucket` or a directory)
+        /// and the key within it.
+        target: String,
+        object_key: String,
+        /// Records in the object, and its size compressed.
+        records: u64,
+        bytes: u64,
+        /// Hex SHA-256 of the object.
+        sha256: String,
+        /// How many times the day has been written.
+        generation: u64,
         #[serde(with = "system_time_serde")]
         timestamp: SystemTime,
     },

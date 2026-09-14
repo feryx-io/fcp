@@ -38,6 +38,10 @@ pub struct JobsConfig {
     /// The CDR processor role (`docs/CDR_PIPELINE.md`)
     #[serde(default)]
     pub cdr: crate::cdr::CdrConfig,
+
+    /// The CDR archive role (`docs/CDR_PIPELINE.md` §13, phase 5)
+    #[serde(default)]
+    pub cdr_archive: crate::archive::CdrArchiveConfig,
 }
 
 /// Service configuration

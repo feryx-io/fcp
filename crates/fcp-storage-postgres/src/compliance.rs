@@ -59,8 +59,8 @@ impl ComplianceStore for PostgresComplianceStore {
     ) -> anyhow::Result<Option<CompliancePolicy>> {
         let row = sqlx::query(
             "SELECT cdr_retention_days, sip_trace_retention_days, flow_trace_retention_days,
-                    recording_retention_days, audit_retention_days, recording_consent,
-                    recording_consent_prompt_id, updated_at
+                    recording_retention_days, audit_retention_days, cdr_archive_required,
+                    recording_consent, recording_consent_prompt_id, updated_at
              FROM compliance_policies WHERE tenant_id = $1",
         )
         .bind(tenant_id.to_string())
@@ -82,6 +82,7 @@ impl ComplianceStore for PostgresComplianceStore {
             flow_trace_retention_days: days("flow_trace_retention_days")?,
             recording_retention_days: days("recording_retention_days")?,
             audit_retention_days: days("audit_retention_days")?,
+            cdr_archive_required: row.try_get("cdr_archive_required")?,
             recording_consent: if consent == "announce" {
                 RecordingConsentMode::Announce
             } else {
@@ -98,8 +99,8 @@ impl ComplianceStore for PostgresComplianceStore {
             "INSERT INTO compliance_policies
                 (tenant_id, cdr_retention_days, sip_trace_retention_days,
                  flow_trace_retention_days, recording_retention_days, audit_retention_days,
-                 recording_consent, recording_consent_prompt_id, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                 recording_consent, recording_consent_prompt_id, updated_at, cdr_archive_required)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
              ON CONFLICT (tenant_id) DO UPDATE SET
                 cdr_retention_days = EXCLUDED.cdr_retention_days,
                 sip_trace_retention_days = EXCLUDED.sip_trace_retention_days,
@@ -108,7 +109,8 @@ impl ComplianceStore for PostgresComplianceStore {
                 audit_retention_days = EXCLUDED.audit_retention_days,
                 recording_consent = EXCLUDED.recording_consent,
                 recording_consent_prompt_id = EXCLUDED.recording_consent_prompt_id,
-                updated_at = EXCLUDED.updated_at",
+                updated_at = EXCLUDED.updated_at,
+                cdr_archive_required = EXCLUDED.cdr_archive_required",
         )
         .bind(policy.tenant_id.to_string())
         .bind(days(policy.cdr_retention_days))
@@ -119,6 +121,7 @@ impl ComplianceStore for PostgresComplianceStore {
         .bind(policy.recording_consent.to_string())
         .bind(&policy.recording_consent_prompt_id)
         .bind(to_datetime(policy.updated_at))
+        .bind(policy.cdr_archive_required)
         .execute(&self.pool)
         .await?;
         Ok(())

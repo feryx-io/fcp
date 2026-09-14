@@ -4035,6 +4035,12 @@ async fn compliance_policy_audit_log_export_and_retention() {
     assert_eq!(defaults.json["configured"], false);
     assert!(defaults.json["cdr_retention_days"].is_null());
     assert_eq!(defaults.json["recording_consent"], "none");
+    assert_eq!(defaults.json["cdr_archive_required"], false);
+    assert!(
+        defaults.json["cdr_archived_before"].is_null(),
+        "nothing archived: {}",
+        defaults.text
+    );
 
     let bad_days = app
         .admin(
@@ -4122,6 +4128,42 @@ async fn compliance_policy_audit_log_export_and_retention() {
         cleared.text
     );
     assert_eq!(cleared.json["cdr_retention_days"], 30);
+    let required = app
+        .admin(
+            Method::PUT,
+            "/api/v1/compliance/policy",
+            Some(json!({ "cdr_archive_required": true })),
+        )
+        .await;
+    assert_eq!(required.status, StatusCode::OK, "{}", required.text);
+    assert_eq!(required.json["cdr_archive_required"], true);
+    assert_eq!(required.json["cdr_retention_days"], 30, "the rest kept");
+    // Nothing is archived, so the retention run keeps the records and
+    // says why.
+    let run = app
+        .admin(Method::POST, "/api/v1/compliance/retention/run", None)
+        .await;
+    assert_eq!(run.status, StatusCode::OK, "{}", run.text);
+    assert!(
+        run.json["errors"].as_array().unwrap().iter().any(|e| e
+            .as_str()
+            .unwrap()
+            .contains("until the archive confirms them")),
+        "{}",
+        run.text
+    );
+    let relaxed = app
+        .admin(
+            Method::PUT,
+            "/api/v1/compliance/policy",
+            Some(json!({ "cdr_archive_required": false })),
+        )
+        .await;
+    assert_eq!(
+        relaxed.json["cdr_archive_required"], false,
+        "{}",
+        relaxed.text
+    );
     let other = app
         .admin_in(app.tenant_b, Method::GET, "/api/v1/compliance/policy", None)
         .await;
@@ -4503,7 +4545,8 @@ async fn compliance_policy_audit_log_export_and_retention() {
         .admin(Method::GET, "/api/v1/compliance/retention/runs", None)
         .await;
     assert_eq!(runs.status, StatusCode::OK, "{}", runs.text);
-    assert_eq!(runs.json.as_array().unwrap().len(), 2, "{}", runs.text);
+    // The two runs above, and the one the archive requirement held back.
+    assert_eq!(runs.json.as_array().unwrap().len(), 3, "{}", runs.text);
     assert_eq!(
         runs.json[1]["cdrs_deleted"], 1,
         "oldest last: {}",

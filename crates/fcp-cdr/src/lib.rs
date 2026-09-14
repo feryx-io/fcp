@@ -8,6 +8,7 @@
 //! Every stage tolerates a replay: the record's `cdr_id` is minted once, in
 //! the builder, and the store skips a duplicate.
 
+pub mod archive;
 pub mod consumer;
 pub mod enrich;
 pub mod maintenance;
@@ -20,6 +21,7 @@ pub mod spool;
 pub mod stats;
 pub mod writer;
 
+pub use archive::{ArchiveConfig, ArchiveTarget, Archiver, DirectoryTarget, S3Config, S3Target};
 pub use consumer::{
     Consumer, ConsumerConfig, RecordSource, SourceStatus, SourcedRecord, Undecodable,
 };

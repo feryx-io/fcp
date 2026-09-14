@@ -201,10 +201,23 @@ async fn main() -> Result<()> {
                             continue;
                         }
                     };
-                    partition_cutoff = match (partition_cutoff, policy.cdr_retention_days) {
-                        (Some(c), Some(days)) => {
-                            Some(c.min(fcp_core::compliance::cutoff(now, days)))
+                    // A tenant whose policy requires the CDR archive lets
+                    // go only of what the archive has confirmed.
+                    let cdr_cutoff = match fcp_core::compliance::cdr_retention_cutoff(
+                        &*sweep_storage,
+                        &policy,
+                        now,
+                    )
+                    .await
+                    {
+                        Ok((cutoff, _)) => cutoff,
+                        Err(e) => {
+                            warn!(tenant_id = %tenant.id, error = %e, "Retention sweep: no CDR archive frontier");
+                            None
                         }
+                    };
+                    partition_cutoff = match (partition_cutoff, cdr_cutoff) {
+                        (Some(c), Some(t)) => Some(c.min(t)),
                         _ => None,
                     };
                     let report = fcp_core::compliance::run_retention(

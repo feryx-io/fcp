@@ -1,6 +1,6 @@
 # The CDR Pipeline — Design
 
-Status: **phases 1–4 done** (2026-09-14, v0.25.159 to v0.25.163);
+Status: **all five phases done** (2026-09-14, v0.25.159 to v0.25.164);
 design agreed the same day with every recommendation in §14 taken. This document is the
 plan of record for the dedicated CDR pipeline that `STATUS.md` kept on
 the Phase 5 roadmap on 2026-09-02 ("inline CDR creation plus `fcp-jobs`
@@ -801,6 +801,99 @@ from the closed partition so the archive matches the table; a
 `cdr.archived` event; retention allowed to drop a partition only after
 its archive is confirmed when a tenant's policy says so. Optional and
 last; the vision's data lake, without the Parquet (§15).
+
+*Phase 5 shipped 2026-09-14 (v0.25.164).* `fcp_cdr::archive` holds the
+`Archiver`, the `ArchiveTarget` trait and two targets: `S3Target` for any
+S3-compatible store and `DirectoryTarget` for a mounted volume or a path
+another tool syncs. `fcp-jobs` runs it as its own role,
+`[cdr_archive] enabled = true`, beside the processor rather than inside
+`[cdr]`: it needs the database and nothing the processor has, so a
+replica can archive without consuming the stream. One host writes at a
+time, under the advisory lock `fcp:cdr-archive`.
+
+The object is one tenant's records for one UTC day, at
+`<prefix><tenant>/<yyyy>/<mm>/<dd>.jsonl.gz`: gzip, one record per line
+in the pipeline's own record format (`CallDetailRecord` with its
+`schema_version`), oldest first. Two things differ from the sentence
+above. A day is written once it ended `grace_secs` ago (two hours by
+default), from the table, not once its partition closes: partitions are
+monthly, and waiting a month to archive a day would leave the archive a
+month behind. And "matches the table" is kept by bookkeeping rather than
+by waiting for the table to stop changing, because a node's spool can
+deliver a record days late:
+
+- `cdr_archives` has a row per tenant-day begun, with the object's key,
+  record count, size, SHA-256, a generation and `archived_at`, set only
+  once the target confirms the object and cleared when the day is begun
+  again.
+- `cdr_archive_state.next_day` is how far the walk has gone. Every
+  earlier day is written for every tenant that had records on it, or
+  listed as pending.
+- A statement-level trigger on `cdrs` notes, in `cdr_archive_late`, each
+  tenant-day at or before `next_day` that a new record lands on. The
+  next run writes that day again under the same key, a generation
+  higher. The trigger holds the state row in `KEY SHARE` mode, and
+  moving `next_day` takes it `FOR UPDATE`, so the walk cannot pass a day
+  while a record for it is being committed unnoticed. The integration
+  test holds an insert open and watches the walk wait for it.
+
+A tenant's frontier is the start of its first day that is not archived
+and confirmed: the earliest of `next_day`, its unconfirmed days and its
+late notes. `CompliancePolicy.cdr_archive_required` (migration 061)
+holds CDR retention to that frontier, in `run_retention` and in the
+admin sweep's partition cutoff alike. With nothing archived, nothing is
+deleted, and the run's report says why. The policy API returns the
+frontier as `cdr_archived_before`.
+
+Confirmation: an S3 object carries its SHA-256 as `x-amz-meta-sha256`,
+and a HEAD after the upload must return that hash and the size before the
+store records the day. Every request signs its payload's hash, so the
+store refuses a body that is not the one hashed; the test sends a wrong
+one to be sure. A directory object is written under a temporary name,
+synced, renamed and hashed again. Objects above 256 MiB go as a
+multipart upload in 64 MiB parts, aborted on failure. A failed write
+leaves the tenant-day unconfirmed and is retried at the start of the
+next run; a run stops after three failures in a row.
+
+The S3 client is written here, SigV4 and the five requests it needs,
+rather than taken from the AWS SDK. `fcp-crypto` shows what the SDK
+costs: its default HTTP client carries open advisories and has to be
+swapped out feature by feature. The signer is tested against the S3
+reference's published signatures, and the target against Garage, a
+self-hosted S3-compatible store, for a whole PUT, a three-part upload, a
+replaced object, a refused body and a wrong secret (`fcp-cdr/tests/s3.rs`,
+run when `FCP_TEST_S3_*` is set). Credentials are static or come from
+`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_SESSION_TOKEN`.
+Instance profiles and web identity are not implemented; on EKS or EC2,
+supply keys or a token refreshed into the environment.
+
+What the archive does not do: keep objects for a period, lock them
+against deletion, or move them to colder storage. Those belong to the
+bucket's lifecycle rules and object lock, where the store enforces them.
+Record times in an object are whole seconds, the precision the record's
+JSON form has always had in the spool and the stream; the durations
+beside them are in milliseconds.
+`cdr.archived` carries the tenant, the day, the target, the key, the
+count, the size, the hash and the generation. Status is under
+`cdr_archive` in `fcp-jobs`' `/status` (the walk, pending days, totals)
+and `cdr_archive_*` in `/metrics`.
+
+**Measured** with the same volume harness and VM as phase 4, at ten
+million records:
+
+| What | Time |
+|---|---|
+| The walk's first step: the oldest record's day, over 10 M rows | 292 ms |
+| The tenants with records on a day (50) | 67 ms |
+| One day written, every tenant: 27,397 records to 50 objects, 1.9 MiB gzipped (74 bytes a record) | 3.7 s, 7,300 records/s |
+| 20,000 records inserted in batches of 500, the late-record trigger off, then on, twice each (at 1 M rows) | 800 / 721 / 748 / 746 ms |
+
+The trigger's cost is inside the run-to-run noise: with the walk under
+way and no record late, it takes the state row's lock and filters an
+empty set. A write's pace is the walk through the tenant's index plus
+gzip, in the harness's debug build, and it runs once a day per tenant
+rather than on the call path. At that pace a tenant with ten million
+records a day takes about 23 minutes to write, well inside the day.
 
 ## 14. Open questions
 

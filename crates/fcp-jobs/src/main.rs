@@ -3,6 +3,7 @@
 //! This service processes background jobs asynchronously using a Redis-backed queue.
 //! It supports multiple job types, retry logic, and priority queuing.
 
+mod archive;
 mod cdr;
 mod cli;
 mod config;
@@ -31,6 +32,7 @@ struct AppState {
     queue: Arc<JobQueue>,
     worker_pool: Arc<WorkerPool>,
     cdr: Option<Arc<cdr::CdrRole>>,
+    cdr_archive: Option<Arc<archive::CdrArchiveRole>>,
 }
 
 #[tokio::main]
@@ -88,12 +90,24 @@ async fn main() -> Result<()> {
         None
     };
 
+    // The CDR archive role (docs/CDR_PIPELINE.md §13, phase 5)
+    let archive_role = if config.cdr_archive.enabled {
+        Some(Arc::new(
+            archive::CdrArchiveRole::start(&config)
+                .await
+                .context("Failed to start the CDR archive")?,
+        ))
+    } else {
+        None
+    };
+
     // Create application state
     let state = AppState {
         config: config.clone(),
         queue: Arc::new(queue),
         worker_pool: Arc::new(worker_pool),
         cdr: cdr_role.clone(),
+        cdr_archive: archive_role.clone(),
     };
 
     // Start health check server if enabled
@@ -146,6 +160,9 @@ async fn main() -> Result<()> {
     // stream for the next consumer.
     if let Some(role) = &cdr_role {
         role.stop().await;
+    }
+    if let Some(role) = &archive_role {
+        role.stop();
     }
 
     // Shutdown health check server
@@ -238,6 +255,10 @@ async fn status_handler(State(state): State<AppState>) -> impl IntoResponse {
             Some(role) => role.status().await,
             None => serde_json::Value::Null,
         },
+        "cdr_archive": match &state.cdr_archive {
+            Some(role) => role.status().await,
+            None => serde_json::Value::Null,
+        },
         "config": {
             "max_retries": state.config.retry.max_retries,
             "job_timeout_secs": state.config.workers.job_timeout.as_secs(),
@@ -248,12 +269,16 @@ async fn status_handler(State(state): State<AppState>) -> impl IntoResponse {
     (StatusCode::OK, Json(status)).into_response()
 }
 
-/// Prometheus text: the CDR processor's counters when it runs here.
+/// Prometheus text: the CDR processor's and the archive's counters, for
+/// the roles that run here.
 async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse {
-    let body = match &state.cdr {
+    let mut body = match &state.cdr {
         Some(role) => role.metrics(&state.config.service.node_id).await,
         None => String::new(),
     };
+    if let Some(role) = &state.cdr_archive {
+        body.push_str(&role.metrics(&state.config.service.node_id).await);
+    }
     (
         StatusCode::OK,
         [(
