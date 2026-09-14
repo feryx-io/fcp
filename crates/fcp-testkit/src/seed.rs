@@ -5,9 +5,12 @@
 //! creates a user.
 
 use fcp_core::storage::{
-    password::compute_ha1, CredentialStore, DeviceStore, ExtensionStore, TenantStore, User,
+    password::compute_ha1, ConferenceStore, CredentialStore, DeviceStore, ExtensionStore,
+    TenantStore, User,
 };
-use fcp_core::{Device, DeviceType, Extension, ExtensionTarget, Tenant, TenantId};
+use fcp_core::{
+    Device, DeviceType, Extension, ExtensionTarget, Meeting, MeetingId, Tenant, TenantId,
+};
 use fcp_storage_postgres::{PostgresConfig, PostgresStorage};
 use std::time::{Duration, SystemTime};
 
@@ -102,6 +105,34 @@ impl Seed {
             password: password.to_string(),
             extension: extension.to_string(),
         }
+    }
+
+    /// A conference room: `room` is what callers dial. A guest PIN, when
+    /// given, is required of every caller; a host PIN makes its caller a
+    /// moderator.
+    pub async fn meeting(&self, room: &str, guest_pin: Option<&str>, host_pin: Option<&str>) {
+        let meeting: Meeting = serde_json::from_value(serde_json::json!({
+            "id": MeetingId::new(),
+            "tenant_id": self.tenant_id,
+            "room_number": room,
+            "name": format!("Room {room}"),
+            "guest_pin": guest_pin,
+            "host_pin": host_pin,
+            "require_guest_pin": guest_pin.is_some(),
+            "max_participants": 10,
+            "wait_for_moderator": false,
+            "enabled": true,
+            "auto_record": false,
+            "default_locked": false,
+            "permanent": true,
+            "created_at": SystemTime::now(),
+            "updated_at": SystemTime::now(),
+        }))
+        .expect("meeting fixture deserializes");
+        self.storage
+            .put_meeting(meeting)
+            .await
+            .expect("seed meeting");
     }
 
     /// The storage, for fixtures this helper has no shorthand for.
