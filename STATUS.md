@@ -59,7 +59,7 @@ Vision items in `docs/ARCHITECTURE-v0.2.md` that are descoped above remain in th
 
 ## Known weak spots
 
-- **Test coverage** outside the SIP stack is thin: the Postgres backend and the core REST handlers (users, devices, templates, provisioning) now have database-backed tests, and every binary now has a start/health/SIGTERM smoke test, but the binaries' actual call paths (SIP + media end to end) still have no automated coverage; the REST surface is covered except for TTS synthesis (needs a provider) and a porting API that does not exist yet. Workspace `TODO`/`todo!()` count is low (~45, mostly `fcp-media`'s RemoteBackend), so the debt is coverage, not stubs.
+- **Test coverage** outside the SIP stack is thin: the Postgres backend and the core REST handlers (users, devices, templates, provisioning) now have database-backed tests, and every binary now has a start/health/SIGTERM smoke test, but the binaries' actual call paths (SIP + media end to end) still have no automated coverage — the **test floor** is planned for that (2026-09-13, `docs/TEST_FLOOR.md`: a scripted SIP phone with media in `fcp-testkit`, then scenarios against the running binaries in five phases, T1 the phone and basic calls through T5 the WebRTC gateway); the REST surface is covered except for TTS synthesis (needs a provider) and a porting API that does not exist yet. Workspace `TODO`/`todo!()` count is low (~45, mostly `fcp-media`'s RemoteBackend), so the debt is coverage, not stubs.
 - `proc-macro-error2`/`redis 0.25` future-incompat warnings were cleared in v0.25.63.
 
 ## Next steps (agreed 2026-09-01)

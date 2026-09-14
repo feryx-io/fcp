@@ -6,6 +6,11 @@ in-process stubs.
 
 ## Current state
 
+The plan for end-to-end SIP + media tests against the running binaries —
+the test floor — is `docs/TEST_FLOOR.md`; the tests land next to each
+binary as its `tests/calls.rs` / `tests/rooms.rs`, on the same gating as
+the smoke tests.
+
 Database-backed tests live next to the crates they exercise and are gated on
 `FCP_TEST_DATABASE_URL` (CI runs them against a `postgres:16` service):
 
