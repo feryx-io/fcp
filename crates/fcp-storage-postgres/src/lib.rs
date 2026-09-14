@@ -28,6 +28,7 @@
 //! ```
 
 pub mod api_token;
+mod cdr_volume;
 pub mod compliance;
 pub mod config;
 pub mod emergency;
@@ -41,6 +42,7 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use fcp_core::porting::PortingStore;
+use fcp_core::storage::{CdrCount, RollupRun};
 use fcp_core::{
     storage::{
         AvailableNumberQuery, CdrStore, ConferenceStore, CredentialStore, DeviceStore,
@@ -78,6 +80,15 @@ use fcp_crypto::{EncryptionSettings, FieldCipher};
 fn system_time_to_datetime(st: SystemTime) -> DateTime<Utc> {
     let duration = st.duration_since(UNIX_EPOCH).unwrap_or_default();
     DateTime::from_timestamp(duration.as_secs() as i64, duration.subsec_nanos()).unwrap_or_default()
+}
+
+/// A timestamp to the database's precision (microseconds): what a record's
+/// times are read with, so a keyset cursor names a row's position exactly.
+fn datetime_to_system_time_micros(dt: DateTime<Utc>) -> SystemTime {
+    match u64::try_from(dt.timestamp_micros()) {
+        Ok(micros) => UNIX_EPOCH + Duration::from_micros(micros),
+        Err(_) => UNIX_EPOCH,
+    }
 }
 
 fn datetime_to_system_time(dt: DateTime<Utc>) -> SystemTime {
@@ -363,6 +374,17 @@ impl PostgresStorage {
             .context("Failed to run PostgreSQL migrations")?;
 
         info!("PostgreSQL migrations complete");
+
+        // The record table's coming months (docs/CDR_PIPELINE.md §8); the
+        // maintenance job keeps them coming. Not fatal: rows past the last
+        // partition land in the default one.
+        match cdr_volume::ensure_partitions(&pool).await {
+            Ok(created) if !created.is_empty() => {
+                info!(partitions = ?created, "Created CDR partitions")
+            }
+            Ok(_) => {}
+            Err(e) => tracing::warn!(error = %e, "Could not create CDR partitions"),
+        }
 
         // Encryption at rest: resolve the provider and load the key ring.
         let settings = match config.encryption {
@@ -1475,7 +1497,7 @@ impl CdrStore for PostgresStorage {
                     .push_bind(row.rated_at)
                     .push_bind(row.created_at);
             });
-            query.push(" ON CONFLICT (cdr_id) DO NOTHING RETURNING cdr_id");
+            query.push(" ON CONFLICT (cdr_id, start_time) DO NOTHING RETURNING cdr_id");
             let returned = query
                 .build()
                 .fetch_all(&mut *tx)
@@ -1511,24 +1533,25 @@ impl CdrStore for PostgresStorage {
 
     async fn query_cdrs(&self, query: CdrQuery) -> Result<Vec<CallDetailRecord>> {
         let (mut sql, binds) = cdr_filter_sql("SELECT * FROM cdrs", &query)?;
-        sql.push_str(" ORDER BY start_time DESC");
+        // Newest first, the record id breaking ties, so a cursor names one
+        // position exactly (docs/CDR_PIPELINE.md §9).
+        sql.push_str(" ORDER BY start_time DESC, cdr_id DESC");
         if let Some(limit) = query.limit {
             sql.push_str(&format!(" LIMIT {}", limit));
         }
-        if let Some(offset) = query.offset {
-            sql.push_str(&format!(" OFFSET {}", offset));
+        if query.cursor.is_none() {
+            if let Some(offset) = query.offset {
+                sql.push_str(&format!(" OFFSET {}", offset));
+            }
         }
 
         let rows = bind_cdr_filters(sqlx::query(&sql), binds)
             .fetch_all(&self.pool)
             .await?;
 
-        let cdrs = rows
-            .into_iter()
-            .filter_map(|row| row_to_cdr(row).ok())
-            .collect();
-
-        Ok(cdrs)
+        // A row that does not decode is an error, not a record quietly
+        // left out of the listing.
+        rows.into_iter().map(row_to_cdr).collect()
     }
 
     async fn count_cdrs(&self, query: CdrQuery) -> Result<usize> {
@@ -1542,12 +1565,29 @@ impl CdrStore for PostgresStorage {
     }
 
     async fn delete_cdrs_before(&self, tenant_id: &TenantId, before: SystemTime) -> Result<u64> {
-        let result = sqlx::query("DELETE FROM cdrs WHERE tenant_id = $1 AND start_time < $2")
+        // In batches, so a tenant's first sweep over years of records is
+        // many short transactions rather than one long one.
+        const BATCH: i64 = 10_000;
+        let mut deleted = 0;
+        loop {
+            let batch = sqlx::query(
+                "DELETE FROM cdrs WHERE (cdr_id, start_time) IN (
+                     SELECT cdr_id, start_time FROM cdrs
+                     WHERE tenant_id = $1 AND start_time < $2
+                     LIMIT $3)",
+            )
             .bind(tenant_id.to_string())
             .bind(system_time_to_datetime(before))
+            .bind(BATCH)
             .execute(self.writes())
-            .await?;
-        Ok(result.rows_affected())
+            .await?
+            .rows_affected();
+            deleted += batch;
+            if batch < BATCH as u64 {
+                break;
+            }
+        }
+        Ok(deleted)
     }
 
     async fn list_recordings_before(
@@ -1589,9 +1629,153 @@ impl CdrStore for PostgresStorage {
         from: SystemTime,
         to: SystemTime,
     ) -> Result<UsageAggregation> {
+        // Closed hours the rollups cover come from the rollups; the edges of
+        // the range, and the hours not yet rolled up, from the records
+        // (docs/CDR_PIPELINE.md §9).
+        let (from_dt, to_dt) = (system_time_to_datetime(from), system_time_to_datetime(to));
+        let Some((lo, hi)) = cdr_volume::rollup_span(&self.pool, from_dt, to_dt).await? else {
+            return self.live_usage(tenant_id, from_dt, to_dt).await;
+        };
+        let mut total = self.rolled_up_usage(tenant_id, lo, hi).await?;
+        for (a, b) in [(from_dt, lo), (hi, to_dt)] {
+            if a < b {
+                let part = self.live_usage(tenant_id, a, b).await?;
+                total.total_calls += part.total_calls;
+                total.answered_calls += part.answered_calls;
+                total.total_duration_ms += part.total_duration_ms;
+                total.inbound_calls += part.inbound_calls;
+                total.outbound_calls += part.outbound_calls;
+                total.total_cost += part.total_cost;
+            }
+        }
+        Ok(total)
+    }
+
+    async fn aggregate_usage_by_number(
+        &self,
+        tenant_id: &fcp_core::TenantId,
+        from: SystemTime,
+        to: SystemTime,
+    ) -> Result<Vec<NumberUsage>> {
+        let (from_dt, to_dt) = (system_time_to_datetime(from), system_time_to_datetime(to));
+        let Some((lo, hi)) = cdr_volume::rollup_span(&self.pool, from_dt, to_dt).await? else {
+            return self
+                .live_usage_by_number(tenant_id, from_dt, to_dt, Some(100))
+                .await;
+        };
+        let mut by_number: HashMap<String, NumberUsage> = HashMap::new();
+        let mut add = |usage: NumberUsage| {
+            let entry = by_number
+                .entry(usage.number.clone())
+                .or_insert_with(|| NumberUsage {
+                    number: usage.number.clone(),
+                    ..Default::default()
+                });
+            entry.total_calls += usage.total_calls;
+            entry.answered_calls += usage.answered_calls;
+            entry.total_duration_ms += usage.total_duration_ms;
+            entry.inbound_calls += usage.inbound_calls;
+            entry.outbound_calls += usage.outbound_calls;
+        };
+        for usage in self.rolled_up_usage_by_number(tenant_id, lo, hi).await? {
+            add(usage);
+        }
+        for (a, b) in [(from_dt, lo), (hi, to_dt)] {
+            if a < b {
+                for usage in self.live_usage_by_number(tenant_id, a, b, None).await? {
+                    add(usage);
+                }
+            }
+        }
+        let mut out: Vec<NumberUsage> = by_number.into_values().collect();
+        out.sort_by(|a, b| {
+            b.total_calls
+                .cmp(&a.total_calls)
+                .then(a.number.cmp(&b.number))
+        });
+        out.truncate(100);
+        Ok(out)
+    }
+
+    async fn count_cdrs_within(&self, query: CdrQuery, budget: Duration) -> Result<CdrCount> {
+        let (sql, binds) = cdr_filter_sql("SELECT COUNT(*) AS count FROM cdrs", &query)?;
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(&format!(
+            "SET LOCAL statement_timeout = {}",
+            budget.as_millis().max(1)
+        ))
+        .execute(&mut *tx)
+        .await?;
+        match bind_cdr_filters(sqlx::query(&sql), binds)
+            .fetch_one(&mut *tx)
+            .await
+        {
+            Ok(row) => {
+                tx.commit().await?;
+                Ok(CdrCount {
+                    count: row.get::<i64, _>("count") as u64,
+                    exact: true,
+                })
+            }
+            // Too slow to count: the planner's estimate of the same query.
+            Err(e)
+                if e.as_database_error()
+                    .and_then(|d| d.code())
+                    .is_some_and(|c| c == "57014") =>
+            {
+                drop(tx);
+                let (explain, binds) =
+                    cdr_filter_sql("EXPLAIN (FORMAT JSON) SELECT 1 FROM cdrs", &query)?;
+                let row = bind_cdr_filters(sqlx::query(&explain), binds)
+                    .fetch_one(&self.pool)
+                    .await?;
+                let plan: serde_json::Value = row.try_get(0)?;
+                let estimate = plan[0]["Plan"]["Plan Rows"].as_f64().unwrap_or(0.0);
+                Ok(CdrCount {
+                    count: estimate.max(0.0) as u64,
+                    exact: false,
+                })
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    async fn ensure_cdr_partitions(&self) -> Result<Vec<String>> {
+        cdr_volume::ensure_partitions(self.writes()).await
+    }
+
+    async fn drop_cdr_partitions_before(&self, before: SystemTime) -> Result<Vec<String>> {
+        cdr_volume::drop_partitions_before(self.writes(), system_time_to_datetime(before)).await
+    }
+
+    async fn rebuild_usage_rollups(&self, window: Duration) -> Result<RollupRun> {
+        cdr_volume::rebuild_rollups(
+            self.writes(),
+            window,
+            &phone_number_uri_match_sql("c.to_uri"),
+            &phone_number_uri_match_sql("c.from_uri"),
+        )
+        .await
+    }
+
+    async fn try_maintenance_lock(
+        &self,
+        name: &str,
+    ) -> Result<Option<Box<dyn fcp_core::storage::MaintenanceLock>>> {
+        cdr_volume::try_lock(self.writes(), name).await
+    }
+}
+
+/// Usage from the records and from the hourly rollups (docs/CDR_PIPELINE.md §9).
+impl PostgresStorage {
+    /// Usage in `[from, to)` counted from the call records themselves.
+    async fn live_usage(
+        &self,
+        tenant_id: &fcp_core::TenantId,
+        from_dt: DateTime<Utc>,
+        to_dt: DateTime<Utc>,
+    ) -> Result<UsageAggregation> {
         let tenant_id_str = tenant_id.to_string();
-        let from_dt = system_time_to_datetime(from);
-        let to_dt = system_time_to_datetime(to);
         // A record the pipeline has enriched carries its direction; older
         // ones are classified against the tenant's numbers here, row by row.
         let inbound_match = phone_number_uri_match_sql("c.to_uri");
@@ -1621,7 +1805,7 @@ impl CdrStore for PostgresStorage {
                 ) as outbound_calls,
                 COALESCE(SUM(c.cost), 0) as total_cost
             FROM cdrs c
-            WHERE c.tenant_id = $1 AND c.start_time >= $2 AND c.start_time < $3"
+            WHERE c.tenant_id = $1 AND c.kind = 'call' AND c.start_time >= $2 AND c.start_time < $3"
         );
 
         let row = sqlx::query(&sql)
@@ -1641,17 +1825,19 @@ impl CdrStore for PostgresStorage {
         })
     }
 
-    async fn aggregate_usage_by_number(
+    /// Usage per number in `[from, to)` counted from the call records, the
+    /// busiest `limit` numbers.
+    async fn live_usage_by_number(
         &self,
         tenant_id: &fcp_core::TenantId,
-        from: SystemTime,
-        to: SystemTime,
+        from_dt: DateTime<Utc>,
+        to_dt: DateTime<Utc>,
+        limit: Option<usize>,
     ) -> Result<Vec<NumberUsage>> {
         let tenant_id_str = tenant_id.to_string();
-        let from_dt = system_time_to_datetime(from);
-        let to_dt = system_time_to_datetime(to);
         let inbound_match = phone_number_uri_match_sql("c.to_uri");
         let outbound_match = phone_number_uri_match_sql("c.from_uri");
+        let limit_sql = limit.map(|n| format!("LIMIT {n}")).unwrap_or_default();
         let sql = format!(
             "WITH matched_numbers AS (
                 SELECT DISTINCT
@@ -1664,7 +1850,7 @@ impl CdrStore for PostgresStorage {
                 JOIN phone_numbers pn
                   ON pn.tenant_id = $1
                  AND ({outbound_match})
-                WHERE c.tenant_id = $1 AND c.start_time >= $2 AND c.start_time < $3
+                WHERE c.tenant_id = $1 AND c.kind = 'call' AND c.start_time >= $2 AND c.start_time < $3
 
                 UNION ALL
 
@@ -1678,7 +1864,7 @@ impl CdrStore for PostgresStorage {
                 JOIN phone_numbers pn
                   ON pn.tenant_id = $1
                  AND ({inbound_match})
-                WHERE c.tenant_id = $1 AND c.start_time >= $2 AND c.start_time < $3
+                WHERE c.tenant_id = $1 AND c.kind = 'call' AND c.start_time >= $2 AND c.start_time < $3
             ),
             deduped_calls AS (
                 SELECT
@@ -1704,7 +1890,7 @@ impl CdrStore for PostgresStorage {
             FROM deduped_calls
             GROUP BY number
             ORDER BY total_calls DESC, number
-            LIMIT 100"
+            {limit_sql}"
         );
 
         let rows = sqlx::query(&sql)
@@ -1727,6 +1913,74 @@ impl CdrStore for PostgresStorage {
             .collect();
 
         Ok(results)
+    }
+
+    /// Usage in the rolled-up hours `[lo, hi)`: call records only.
+    async fn rolled_up_usage(
+        &self,
+        tenant_id: &fcp_core::TenantId,
+        lo: DateTime<Utc>,
+        hi: DateTime<Utc>,
+    ) -> Result<UsageAggregation> {
+        let row = sqlx::query(
+            "SELECT COALESCE(SUM(calls), 0)::BIGINT AS total_calls,
+                    COALESCE(SUM(answered), 0)::BIGINT AS answered_calls,
+                    COALESCE(SUM(duration_ms), 0)::BIGINT AS total_duration_ms,
+                    COALESCE(SUM(calls) FILTER (WHERE direction = 'inbound'), 0)::BIGINT AS inbound_calls,
+                    COALESCE(SUM(calls) FILTER (WHERE direction = 'outbound'), 0)::BIGINT AS outbound_calls,
+                    COALESCE(SUM(cost), 0) AS total_cost
+             FROM cdr_usage_hourly
+             WHERE tenant_id = $1 AND kind = 'call' AND hour >= $2 AND hour < $3",
+        )
+        .bind(tenant_id.to_string())
+        .bind(lo)
+        .bind(hi)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(UsageAggregation {
+            total_calls: row.get::<i64, _>("total_calls") as u64,
+            answered_calls: row.get::<i64, _>("answered_calls") as u64,
+            total_duration_ms: row.get::<i64, _>("total_duration_ms") as u64,
+            inbound_calls: row.get::<i64, _>("inbound_calls") as u64,
+            outbound_calls: row.get::<i64, _>("outbound_calls") as u64,
+            total_cost: row.get::<fcp_core::billing::Decimal, _>("total_cost"),
+        })
+    }
+
+    /// Usage per number in the rolled-up hours `[lo, hi)`.
+    async fn rolled_up_usage_by_number(
+        &self,
+        tenant_id: &fcp_core::TenantId,
+        lo: DateTime<Utc>,
+        hi: DateTime<Utc>,
+    ) -> Result<Vec<NumberUsage>> {
+        let rows = sqlx::query(
+            "SELECT number,
+                    SUM(calls)::BIGINT AS total_calls,
+                    SUM(answered)::BIGINT AS answered_calls,
+                    SUM(duration_ms)::BIGINT AS total_duration_ms,
+                    SUM(inbound)::BIGINT AS inbound_calls,
+                    SUM(outbound)::BIGINT AS outbound_calls
+             FROM cdr_number_usage_hourly
+             WHERE tenant_id = $1 AND hour >= $2 AND hour < $3
+             GROUP BY number",
+        )
+        .bind(tenant_id.to_string())
+        .bind(lo)
+        .bind(hi)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| NumberUsage {
+                number: row.get("number"),
+                total_calls: row.get::<i64, _>("total_calls") as u64,
+                answered_calls: row.get::<i64, _>("answered_calls") as u64,
+                total_duration_ms: row.get::<i64, _>("total_duration_ms") as u64,
+                inbound_calls: row.get::<i64, _>("inbound_calls") as u64,
+                outbound_calls: row.get::<i64, _>("outbound_calls") as u64,
+            })
+            .collect())
     }
 }
 
@@ -2114,6 +2368,7 @@ impl EncryptionStore for PostgresStorage {
 enum CdrBind {
     Text(String),
     Time(DateTime<Utc>),
+    Uuid(uuid::Uuid),
 }
 
 /// Build `<select> WHERE …` from a [`CdrQuery`], with numbered placeholders
@@ -2256,6 +2511,16 @@ fn cdr_filter_sql(select: &str, query: &CdrQuery) -> Result<(String, Vec<CdrBind
             &mut binds,
         );
     }
+    if let Some(cursor) = &query.cursor {
+        let at = DateTime::from_timestamp_micros(cursor.start_micros).unwrap_or_default();
+        binds.push(CdrBind::Time(at));
+        binds.push(CdrBind::Uuid(cursor.cdr_id));
+        sql.push_str(&format!(
+            " AND (start_time, cdr_id) < (${}, ${})",
+            binds.len() - 1,
+            binds.len()
+        ));
+    }
 
     Ok((sql, binds))
 }
@@ -2286,6 +2551,7 @@ fn bind_cdr_filters<'q>(
         query = match bind {
             CdrBind::Text(v) => query.bind(v),
             CdrBind::Time(v) => query.bind(v),
+            CdrBind::Uuid(v) => query.bind(v),
         };
     }
     query
@@ -2512,13 +2778,13 @@ fn row_to_cdr(row: sqlx::postgres::PgRow) -> Result<CallDetailRecord> {
     let custom_data: Option<serde_json::Value> =
         row.get::<Option<serde_json::Value>, _>("custom_data");
 
-    let start_time = datetime_to_system_time(row.get::<DateTime<Utc>, _>("start_time"));
+    let start_time = datetime_to_system_time_micros(row.get::<DateTime<Utc>, _>("start_time"));
     let answer_time = row
         .get::<Option<DateTime<Utc>>, _>("answer_time")
-        .map(datetime_to_system_time);
+        .map(datetime_to_system_time_micros);
     let end_time = row
         .get::<Option<DateTime<Utc>>, _>("end_time")
-        .map(datetime_to_system_time);
+        .map(datetime_to_system_time_micros);
 
     let kind = row
         .get::<String, _>("kind")
@@ -2596,8 +2862,8 @@ fn row_to_cdr(row: sqlx::postgres::PgRow) -> Result<CallDetailRecord> {
             .map(|s| s as u32),
         rated_at: row
             .get::<Option<DateTime<Utc>>, _>("rated_at")
-            .map(datetime_to_system_time),
-        created_at: Some(datetime_to_system_time(
+            .map(datetime_to_system_time_micros),
+        created_at: Some(datetime_to_system_time_micros(
             row.get::<DateTime<Utc>, _>("created_at"),
         )),
         custom_data,

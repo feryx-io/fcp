@@ -146,7 +146,8 @@ Status and metrics: the call manager's `/cdr/status` and `/metrics`,
 
 ### REST API
 
-- `GET /v1/cdrs` — Query CDRs with filters (tenant, time range, disposition); `?kind=` for `queue`, `conference`, `gateway` or `all` (default `call`, or every kind with `call_id`)
+- `GET /v1/cdrs` — Query CDRs with filters (tenant, time range, disposition); `?kind=` for `queue`, `conference`, `gateway` or `all` (default `call`, or every kind with `call_id`); pages with `cursor` (the previous page's `next_cursor`) or `offset` up to 10,000; `total` is exact when counting takes under two seconds, else an estimate (`total_exact`)
+- `GET /v1/cdrs/export` — Every matching record, streamed, as CSV or `format=jsonl`
 - `GET /v1/cdrs/:call_id` — Get a call's record
 - `GET /v1/cdrs/export` — CSV export
 

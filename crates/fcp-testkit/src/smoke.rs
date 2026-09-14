@@ -25,14 +25,25 @@ use tokio::process::Command;
 /// principle grab it first. Smoke tests run one service per test binary, so
 /// the window is small enough in practice.
 pub fn free_port() -> u16 {
-    for _ in 0..64 {
+    // The OS may hand the same ephemeral port to two binds a moment apart
+    // once the first is released, and a stack takes several ports before
+    // any binary binds them (its SIP and HTTP ports once came out equal);
+    // so a port is never given out twice by one test process.
+    static GIVEN: std::sync::Mutex<Vec<u16>> = std::sync::Mutex::new(Vec::new());
+    for _ in 0..256 {
         let tcp = TcpListener::bind("127.0.0.1:0").expect("bind loopback tcp");
         let port = tcp.local_addr().unwrap().port();
-        if UdpSocket::bind(("127.0.0.1", port)).is_ok() {
-            return port;
+        if UdpSocket::bind(("127.0.0.1", port)).is_err() {
+            continue;
         }
+        let mut given = GIVEN.lock().unwrap_or_else(|e| e.into_inner());
+        if given.contains(&port) {
+            continue;
+        }
+        given.push(port);
+        return port;
     }
-    panic!("no port free for both TCP and UDP after 64 attempts");
+    panic!("no fresh port free for both TCP and UDP after 256 attempts");
 }
 
 /// Builder for one smoke run of a service binary.

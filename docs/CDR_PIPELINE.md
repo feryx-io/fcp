@@ -1,6 +1,6 @@
 # The CDR Pipeline — Design
 
-Status: **phases 1–3 done** (2026-09-14, v0.25.159, v0.25.160 and v0.25.161);
+Status: **phases 1–4 done** (2026-09-14, v0.25.159 to v0.25.163);
 design agreed the same day with every recommendation in §14 taken. This document is the
 plan of record for the dedicated CDR pipeline that `STATUS.md` kept on
 the Phase 5 roadmap on 2026-09-02 ("inline CDR creation plus `fcp-jobs`
@@ -366,11 +366,11 @@ one-call-record rule becomes a partial unique index on
 queries with no time bound and uses `idx_cdrs_call_id`, which is
 non-unique.
 
-The conversion migration creates the partitioned table beside the old
-one, copies in month-sized batches, and swaps names in one transaction.
-At the volumes that exist today it takes seconds; the migration is
-written to be safe at any size because it will run on a table that is
-not small by the time it matters.
+The conversion migration renames the old table, creates the partitioned
+one and its months, copies the rows, and builds the key and indexes after
+the copy, all in the migration's transaction (a migration file is one
+transaction, so the month-sized batches first planned here are not
+available to it). Measured below.
 
 Indexes: `(tenant_id, start_time DESC, cdr_id DESC)` for every listing
 and for keyset pagination; `(call_id)`; `(tenant_id, start_time)` `WHERE
@@ -709,6 +709,91 @@ hourly rollups and the usage routes on them; retention by partition
 drop under an advisory lock. Numbers measured on a seeded table of a
 hundred million rows: listing, export throughput, rollup rebuild, the
 conversion itself.
+
+*Phase 4 shipped 2026-09-14 (v0.25.163).* Migration 059 converts `cdrs`
+to monthly range partitions on `start_time` with a default partition;
+the key is `(cdr_id, start_time)` and the one-call-record rule
+`(call_id, start_time)` for call records, since Postgres puts the
+partition key in every unique rule — two call records for one call at
+different start times are no longer refused. Keys and indexes are built
+after the copy. The b-tree indexes on `from_uri` and `to_uri` are gone:
+the URI filters are substring matches, which they never served.
+`CdrStore` gains `ensure_cdr_partitions` (last month through three ahead,
+moving a new month's rows out of the default partition before attaching
+it; run when storage starts and by the maintenance job every six hours),
+`drop_cdr_partitions_before`, `count_cdrs_within`, `rebuild_usage_rollups`
+and `try_maintenance_lock` (a Postgres advisory lock on one connection).
+
+Reading: `GET /cdrs` pages by `cursor`, an opaque `(start_time, cdr_id)`
+from the last record, and returns `next_cursor`; `offset` above 10,000 is
+refused. `total` is an exact count that gives up after two seconds for
+the planner's estimate, `total_exact` saying which — a count bounded by
+time rather than read from the rollups as §9 said, because the rollups
+cannot answer the listing's filters. A row that does not decode is an
+error. The listing orders by `(start_time, cdr_id)` and reads record
+times to the microsecond. `GET /cdrs/export` streams every matching
+record from a keyset walk, CSV (now with `kind` and `cdr_id`) or
+`format=jsonl`.
+
+Usage: `cdr_usage_hourly` (tenant, hour, kind, direction) and
+`cdr_number_usage_hourly` (tenant, hour, number), with
+`cdr_rollup_state` saying which hours they cover, are recomputed for the
+last 48 hours every ten minutes — the first run covers all of history —
+in one transaction under a lock, by `fcp_cdr::spawn_maintenance`, which
+`fcp-admin` and the processor in `fcp-jobs` both run. The usage routes
+read the covered whole hours from the rollups and the edges of the range
+from the records. Usage now counts `call` records only, so a conference
+leg or queue segment beside a call does not count it twice. A record
+stored more than the window after its hour is missed by the rollups
+until a wider rebuild; a record with no stored direction is classed in
+the rollups the way the enricher would (inbound first), where the
+record-level count may put it in both columns.
+
+Retention: `fcp-admin`'s hourly sweep runs under the `fcp:retention` lock,
+deletes a tenant's records in batches of 10,000, and, when every tenant
+has a CDR window, drops the months entirely older than the shortest of
+them — only once they are empty. The rows are still deleted tenant by
+tenant first, so the recordings and flow traces found through them are
+removed too; dropping the emptied month returns its space without a
+vacuum. That is the honest version of "retention by partition drop":
+the delete is not skipped.
+
+**Measured** with `crates/fcp-storage-postgres/tests/volume.rs` on this
+project's development VM (12 vCPUs, 3.3 GB of memory, Postgres 18 with
+default settings, a local disk) at **ten million records** over twelve
+months and fifty tenants. The design asked for a hundred million; that
+needs about 60 GB of table and indexes, doubled during the conversion,
+and the VM has 48 GB free. The harness takes `FCP_VOLUME_ROWS` for a
+larger box.
+
+| What | Time |
+|---|---|
+| Conversion (059 and 060) of 10 M rows, 3.4 GB before and 6.3 GB after with the new indexes | 72 s |
+| A tenant's first page of 100 | 43 ms |
+| A page by cursor, ten deep | 6 ms |
+| A page at offset 10,000 | 200 ms |
+| Count, every tenant, 10 M | 1.6 s, exact |
+| Count, one tenant, 200 k | 2.0 s, then the estimate (199,721 for 200,000) |
+| Export walk, one tenant's 200 k records | 8.3 s, 24,000 records/s |
+| First rollup rebuild, all 8,760 hours | 240 s |
+| Rollup rebuild, the 48-hour window | 0.2 s |
+| Usage for 30 days, from the rollups | 9 ms |
+| Usage for 30 days, from the records | 797 ms |
+
+Two readings of those numbers. The first version of the migration
+created the key and the indexes before copying; seeding the same ten
+million rows into an indexed table had run twenty-two minutes when it
+was stopped, and the conversion would have done the same, so both now
+build indexes after loading. And the one-tenant count, slower than the
+platform count, is an index-only scan over a table not yet vacuumed
+(the benchmark analyzes but does not vacuum): autovacuum makes it cheaper
+on a live table, and the budget turns it into an estimate either way.
+
+**Upgrading**: 059 locks `cdrs` while it copies. A node still running the
+previous version cannot store records into the partitioned table (its
+insert names the old key), so its records wait in its spool until it is
+upgraded; a node without a spool loses them. Upgrade the nodes that write
+records together, and give every one a `spool_dir`.
 
 **Phase 5 — the archive sink.** Daily gzipped JSON Lines files per
 tenant to an S3-compatible bucket from the processor's host, written

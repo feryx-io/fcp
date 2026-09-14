@@ -27,7 +27,12 @@ off; audit events last.
 
 - **Hourly** in `fcp-admin`, for every tenant that has at least one window
   set. Set `call_recordings_dir` in the admin config to let the sweep
-  prune the recordings directory as well.
+  prune the recordings directory as well. With several admin replicas one
+  sweeps at a time (a database advisory lock, `fcp:retention`). CDRs are
+  deleted in batches of 10,000; when every tenant has a CDR window, a
+  monthly CDR partition entirely older than the shortest of them is then
+  dropped — once it is empty, never with rows left in it — which returns
+  its space at once (`docs/CDR_PIPELINE.md` §8).
 - **On demand** with `POST /api/v1/compliance/retention/run`, which
   returns the report for that run.
 
@@ -106,10 +111,12 @@ selected a tenant with the override header. The older `GET /config/audit`
 ## CDR export
 
 `GET /api/v1/cdrs/export` returns `text/csv` with the same filters as
-`GET /cdrs` (`call_id`, `from_uri`, `to_uri`, `disposition`,
+`GET /cdrs` (`call_id`, `from_uri`, `to_uri`, `disposition`, `kind`,
 `start_time_from`, `start_time_to`, and `tenant_id` for platform admins),
-capped at 100,000 rows. Times are Unix seconds. Every export is itself an
-audit event.
+every matching record, streamed as it is read rather than built in memory
+(`docs/CDR_PIPELINE.md` §9). `format=jsonl` returns JSON Lines instead,
+one record a line in the listing's shape. Times are Unix seconds. Every
+export is itself an audit event.
 
 ## Conference recordings API
 
