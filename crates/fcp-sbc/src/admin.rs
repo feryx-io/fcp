@@ -487,7 +487,13 @@ async fn terminate_call(
     // Terminate internal state immediately (CDR, events, removal from map).
     state
         .call_manager
-        .terminate_call(&call_id, Some("admin API termination".to_string()))
+        .terminate_call_with(
+            &call_id,
+            fcp_sip::TerminationReason::system(
+                fcp_sip::SystemCause::Admin,
+                "admin API termination",
+            ),
+        )
         .map_err(|e| admin_err_detail(StatusCode::NOT_FOUND, "call not found", &e.to_string()))?;
 
     // Send on-wire BYE for each established dialog (best-effort, background).

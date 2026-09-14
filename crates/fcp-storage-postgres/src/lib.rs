@@ -1417,8 +1417,17 @@ impl CdrStore for PostgresStorage {
         let start_time = system_time_to_datetime(cdr.start_time);
         let answer_time = cdr.answer_time.map(system_time_to_datetime);
         let end_time = cdr.end_time.map(system_time_to_datetime);
+        let rated_at = cdr.rated_at.map(system_time_to_datetime);
+        let created_at = cdr
+            .created_at
+            .map(system_time_to_datetime)
+            .unwrap_or_else(Utc::now);
+        let direction = cdr.direction.map(call_direction_name);
 
-        sqlx::query(
+        // A replay of a record already stored is not an error and changes
+        // nothing: cdr_id is the pipeline's idempotency key
+        // (docs/CDR_PIPELINE.md §6).
+        let result = sqlx::query(
             "INSERT INTO cdrs (
                 call_id, tenant_id, sip_call_id,
                 from_uri, from_display_name, to_uri, to_display_name,
@@ -1429,7 +1438,10 @@ impl CdrStore for PostgresStorage {
                 route_id, gateway_id,
                 media_anchored, codec_a_leg, codec_b_leg,
                 rtp_packets_sent, rtp_packets_received, rtp_bytes_sent, rtp_bytes_received,
-                recording_url, cost, currency, custom_data
+                recording_url, cost, currency, custom_data,
+                cdr_id, kind, schema_version, direction, node_id, region,
+                correlation_id, trunk_name, rtp_packets_lost, rtp_jitter_ms,
+                rate_plan_id, matched_prefix, billable_seconds, rated_at, created_at
              ) VALUES (
                 $1, $2, $3,
                 $4, $5, $6, $7,
@@ -1440,25 +1452,12 @@ impl CdrStore for PostgresStorage {
                 $19, $20,
                 $21, $22, $23,
                 $24, $25, $26, $27,
-                $28, $29, $30, $31
+                $28, $29, $30, $31,
+                $32, $33, $34, $35, $36, $37,
+                $38, $39, $40, $41,
+                $42, $43, $44, $45, $46
              )
-             ON CONFLICT(call_id) DO UPDATE SET
-                 answer_time = EXCLUDED.answer_time,
-                 end_time = EXCLUDED.end_time,
-                 setup_duration_ms = EXCLUDED.setup_duration_ms,
-                 call_duration_ms = EXCLUDED.call_duration_ms,
-                 total_duration_ms = EXCLUDED.total_duration_ms,
-                 disposition = EXCLUDED.disposition,
-                 hangup_cause = EXCLUDED.hangup_cause,
-                 hangup_party = EXCLUDED.hangup_party,
-                 rtp_packets_sent = EXCLUDED.rtp_packets_sent,
-                 rtp_packets_received = EXCLUDED.rtp_packets_received,
-                 rtp_bytes_sent = EXCLUDED.rtp_bytes_sent,
-                 rtp_bytes_received = EXCLUDED.rtp_bytes_received,
-                 recording_url = EXCLUDED.recording_url,
-                 cost = EXCLUDED.cost,
-                 currency = EXCLUDED.currency,
-                 custom_data = EXCLUDED.custom_data",
+             ON CONFLICT (cdr_id) DO NOTHING",
         )
         .bind(&call_id)
         .bind(&tenant_id)
@@ -1491,18 +1490,41 @@ impl CdrStore for PostgresStorage {
         .bind(cdr.cost)
         .bind(&cdr.currency)
         .bind(&custom_data)
+        .bind(cdr.cdr_id)
+        .bind(cdr.kind.as_str())
+        .bind(cdr.schema_version as i16)
+        .bind(direction)
+        .bind(&cdr.node_id)
+        .bind(&cdr.region)
+        .bind(cdr.correlation_id.map(|c| c.to_string()))
+        .bind(&cdr.trunk_name)
+        .bind(cdr.rtp_packets_lost.map(|p| p as i64))
+        .bind(cdr.rtp_jitter_ms)
+        .bind(&cdr.rate_plan_id)
+        .bind(&cdr.matched_prefix)
+        .bind(cdr.billable_seconds.map(|s| s as i32))
+        .bind(rated_at)
+        .bind(created_at)
         .execute(self.writes())
         .await?;
 
-        debug!(call_id = %call_id, "CDR stored");
+        if result.rows_affected() == 0 {
+            debug!(call_id = %call_id, cdr_id = %cdr.cdr_id, "CDR already stored; replay ignored");
+        } else {
+            debug!(call_id = %call_id, cdr_id = %cdr.cdr_id, "CDR stored");
+        }
         Ok(())
     }
 
     async fn get_cdr(&self, call_id: &fcp_core::CallId) -> Result<Option<CallDetailRecord>> {
-        let row = sqlx::query("SELECT * FROM cdrs WHERE call_id = $1")
-            .bind(call_id.to_string())
-            .fetch_optional(&self.pool)
-            .await?;
+        // The call's own record first; the other kinds sit beside it.
+        let row = sqlx::query(
+            "SELECT * FROM cdrs WHERE call_id = $1
+             ORDER BY (kind = 'call') DESC, start_time DESC LIMIT 1",
+        )
+        .bind(call_id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
 
         match row {
             Some(row) => Ok(Some(row_to_cdr(row)?)),
@@ -2176,8 +2198,34 @@ fn cdr_filter_sql(select: &str, query: &CdrQuery) -> Result<(String, Vec<CdrBind
             .to_string();
         push(&mut sql, "disposition =", CdrBind::Text(disp), &mut binds);
     }
+    if let Some(kind) = &query.kind {
+        push(
+            &mut sql,
+            "kind =",
+            CdrBind::Text(kind.as_str().to_string()),
+            &mut binds,
+        );
+    }
 
     Ok((sql, binds))
+}
+
+/// The name a call direction is stored under.
+fn call_direction_name(direction: fcp_core::CallDirection) -> &'static str {
+    match direction {
+        fcp_core::CallDirection::Inbound => "inbound",
+        fcp_core::CallDirection::Outbound => "outbound",
+        fcp_core::CallDirection::Internal => "internal",
+    }
+}
+
+fn call_direction_from_name(name: &str) -> Option<fcp_core::CallDirection> {
+    match name {
+        "inbound" => Some(fcp_core::CallDirection::Inbound),
+        "outbound" => Some(fcp_core::CallDirection::Outbound),
+        "internal" => Some(fcp_core::CallDirection::Internal),
+        _ => None,
+    }
 }
 
 fn bind_cdr_filters<'q>(
@@ -2422,7 +2470,18 @@ fn row_to_cdr(row: sqlx::postgres::PgRow) -> Result<CallDetailRecord> {
         .get::<Option<DateTime<Utc>>, _>("end_time")
         .map(datetime_to_system_time);
 
+    let kind = row
+        .get::<String, _>("kind")
+        .parse::<fcp_core::storage::CdrKind>()
+        .unwrap_or_default();
+    let correlation_id = row
+        .get::<Option<String>, _>("correlation_id")
+        .and_then(|s| fcp_core::CallId::from_str(&s).ok());
+
     Ok(CallDetailRecord {
+        cdr_id: row.get("cdr_id"),
+        kind,
+        schema_version: row.get::<i16, _>("schema_version") as u16,
         call_id,
         tenant_id,
         sip_call_id: row.get("sip_call_id"),
@@ -2449,6 +2508,13 @@ fn row_to_cdr(row: sqlx::postgres::PgRow) -> Result<CallDetailRecord> {
             .get::<Option<i32>, _>("sip_status_code")
             .map(|c| c as u16),
         sip_reason: row.get("sip_reason"),
+        direction: row
+            .get::<Option<String>, _>("direction")
+            .and_then(|d| call_direction_from_name(&d)),
+        node_id: row.get("node_id"),
+        region: row.get("region"),
+        correlation_id,
+        trunk_name: row.get("trunk_name"),
         route_id: row.get("route_id"),
         gateway_id: row.get("gateway_id"),
         media_anchored: row.get("media_anchored"),
@@ -2466,9 +2532,24 @@ fn row_to_cdr(row: sqlx::postgres::PgRow) -> Result<CallDetailRecord> {
         rtp_bytes_received: row
             .get::<Option<i64>, _>("rtp_bytes_received")
             .map(|b| b as u64),
+        rtp_packets_lost: row
+            .get::<Option<i64>, _>("rtp_packets_lost")
+            .map(|p| p as u64),
+        rtp_jitter_ms: row.get("rtp_jitter_ms"),
         recording_url: row.get("recording_url"),
         cost: row.get("cost"),
         currency: row.get("currency"),
+        rate_plan_id: row.get("rate_plan_id"),
+        matched_prefix: row.get("matched_prefix"),
+        billable_seconds: row
+            .get::<Option<i32>, _>("billable_seconds")
+            .map(|s| s as u32),
+        rated_at: row
+            .get::<Option<DateTime<Utc>>, _>("rated_at")
+            .map(datetime_to_system_time),
+        created_at: Some(datetime_to_system_time(
+            row.get::<DateTime<Utc>, _>("created_at"),
+        )),
         custom_data,
     })
 }

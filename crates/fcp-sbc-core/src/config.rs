@@ -38,6 +38,11 @@ pub struct SbcStorageConfig {
     #[serde(default = "default_storage_database_url")]
     pub database_url: String,
 
+    /// The CDR pipeline's node side: `spool_dir` and the spool's tuning
+    /// (`docs/CDR_PIPELINE.md`).
+    #[serde(default)]
+    pub cdr: fcp_cdr::NodeConfig,
+
     /// Streaming read replica (hot standby) that configuration reads are
     /// served from while it is healthy; writes always go to `database_url`.
     /// See `docs/MULTI_REGION.md`.
@@ -65,6 +70,7 @@ impl Default for SbcStorageConfig {
             database_url: default_storage_database_url(),
             read_replica_url: None,
             max_replica_lag_secs: default_max_replica_lag_secs(),
+            cdr: fcp_cdr::NodeConfig::default(),
         }
     }
 }
@@ -483,6 +489,7 @@ mod tests {
             database_url: "postgresql://localhost/test_sbc".to_string(),
             read_replica_url: None,
             max_replica_lag_secs: default_max_replica_lag_secs(),
+            cdr: fcp_cdr::NodeConfig::default(),
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let deserialized: SbcStorageConfig = serde_json::from_str(&json).unwrap();

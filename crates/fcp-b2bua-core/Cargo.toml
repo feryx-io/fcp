@@ -11,6 +11,7 @@ repository.workspace = true
 fcp-core = { path = "../fcp-core" }
 fcp-events = { path = "../fcp-events" }
 fcp-billing = { path = "../fcp-billing" }
+fcp-cdr = { path = "../fcp-cdr" }
 
 # SIP stack dependencies (from siphon-rs)
 sip-core = { path = "../../external/siphon-rs/crates/sip-core" }

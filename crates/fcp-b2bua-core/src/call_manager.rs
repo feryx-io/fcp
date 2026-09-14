@@ -30,6 +30,14 @@ pub struct CallManager {
     /// Billing engine: rates and settles calls at CDR creation. Present
     /// whenever storage is; publishes billing events when events are too.
     billing: Option<Arc<fcp_billing::BillingEngine>>,
+
+    /// Where a finished call's record goes (`docs/CDR_PIPELINE.md`). With
+    /// storage but no spool configured, straight to the in-process
+    /// processor; the binary swaps in a spooled writer.
+    cdr: Option<fcp_cdr::CdrWriter>,
+
+    /// The region this node advertises, stamped on every record.
+    region: Option<String>,
 }
 
 impl CallManager {
@@ -41,19 +49,45 @@ impl CallManager {
             events: None,
             node_id: None,
             billing: None,
+            cdr: None,
+            region: None,
         }
     }
 
     /// Create a new call manager with storage backend for CDR creation.
     pub fn with_storage(storage: Arc<fcp_core::DynStorage>) -> Self {
         let billing = Arc::new(fcp_billing::BillingEngine::new(Arc::clone(&storage)));
+        let cdr = Self::direct_writer(&storage, &billing);
         Self {
             calls: Arc::new(DashMap::new()),
             storage: Some(storage),
             events: None,
             node_id: None,
             billing: Some(billing),
+            cdr: Some(cdr),
+            region: None,
         }
+    }
+
+    /// A writer that hands records straight to an in-process processor over
+    /// `storage`, rating them with `billing`: the MVP's durability, until
+    /// the binary configures a spool.
+    fn direct_writer(
+        storage: &Arc<fcp_core::DynStorage>,
+        billing: &Arc<fcp_billing::BillingEngine>,
+    ) -> fcp_cdr::CdrWriter {
+        fcp_cdr::CdrWriter::direct(Arc::new(Self::processor(storage, billing)))
+    }
+
+    /// The in-process processor for this node's records: stores into
+    /// `storage`, rates and settles through `billing`.
+    pub fn processor(
+        storage: &Arc<fcp_core::DynStorage>,
+        billing: &Arc<fcp_billing::BillingEngine>,
+    ) -> fcp_cdr::Processor {
+        let store: Arc<dyn fcp_core::storage::CdrStore> = storage.clone();
+        let rater: Arc<dyn fcp_cdr::Rater> = billing.clone();
+        fcp_cdr::Processor::new(store, Some(rater))
     }
 
     /// Create a new call manager with storage and event publishing.
@@ -64,12 +98,15 @@ impl CallManager {
         let billing = Arc::new(
             fcp_billing::BillingEngine::new(Arc::clone(&storage)).with_events(Arc::clone(&events)),
         );
+        let cdr = Self::direct_writer(&storage, &billing);
         Self {
             calls: Arc::new(DashMap::new()),
             storage: Some(storage),
             events: Some(events),
             node_id: None,
             billing: Some(billing),
+            cdr: Some(cdr),
+            region: None,
         }
     }
 
@@ -80,6 +117,8 @@ impl CallManager {
             storage: None,
             events: Some(events),
             node_id: None,
+            cdr: None,
+            region: None,
             billing: None,
         }
     }
@@ -106,6 +145,41 @@ impl CallManager {
     /// Get the configured node ID.
     pub fn node_id(&self) -> Option<&str> {
         self.node_id.as_deref()
+    }
+
+    /// The region this node advertises; on every record it writes.
+    pub fn set_region(&mut self, region: Option<String>) {
+        self.region = region;
+    }
+
+    /// Where finished calls' records go. The binary sets a spooled writer
+    /// here once it has opened the spool (`[cdr] spool_dir`).
+    pub fn set_cdr_writer(&mut self, writer: fcp_cdr::CdrWriter) {
+        self.cdr = Some(writer);
+    }
+
+    /// The writer in use, for status.
+    pub fn cdr_writer(&self) -> Option<&fcp_cdr::CdrWriter> {
+        self.cdr.as_ref()
+    }
+
+    /// The storage the manager was built with.
+    pub fn storage(&self) -> Option<&Arc<fcp_core::DynStorage>> {
+        self.storage.as_ref()
+    }
+
+    /// Keep the media session's final counters on the call, for its
+    /// record. Called by the handler before it tears the session down.
+    pub fn set_rtp_stats(&self, call_id: &CallId, stats: fcp_cdr::RtpStats) {
+        let _ = self.update_call(call_id, |call| call.rtp_stats = Some(stats));
+    }
+
+    /// Record why a call is ending before the ending completes: the BYE
+    /// handler knows who hung up, but the call is only terminated once the
+    /// forwarded BYE completes, by a site that does not. A later
+    /// `terminate_call` with no better reason uses this one.
+    pub fn set_pending_termination(&self, call_id: &CallId, reason: fcp_cdr::TerminationReason) {
+        let _ = self.update_call(call_id, |call| call.termination = Some(reason));
     }
 
     /// Publish `call.emergency` for an emergency call that was just placed.
@@ -226,7 +300,11 @@ impl CallManager {
                 // Answered: transition to Established
                 (_, CallState::Established) if old_state != CallState::Established => {
                     // Extract codec from SDP if available
-                    let codec = extract_codec_from_sdp(updated_call.a_leg.sdp.as_deref())
+                    let codec = updated_call
+                        .a_leg
+                        .sdp
+                        .as_deref()
+                        .and_then(fcp_cdr::record::codec_from_sdp)
                         .unwrap_or_else(|| "unknown".to_string());
 
                     Some(PlatformEvent::Call(CallEvent::Answered {
@@ -258,15 +336,48 @@ impl CallManager {
 
     /// Terminate a call.
     ///
-    /// Marks the call as terminated and removes it from active calls after a delay.
+    /// The MVP's contract: `None` is a normal ending, `Some(text)` a
+    /// failure, with a leading SIP status code in the text honoured. A site
+    /// that knows why the call ended calls [`terminate_call_with`].
+    ///
+    /// [`terminate_call_with`]: CallManager::terminate_call_with
     pub fn terminate_call(&self, call_id: &CallId, reason: Option<String>) -> Result<()> {
+        self.terminate_call_with(call_id, fcp_cdr::TerminationReason::from(reason))
+    }
+
+    /// Terminate a call for `reason`: mark it ended or failed, publish the
+    /// termination event, write its record, and drop it from the active
+    /// calls. Synchronous and cheap; the record leaves on the writer.
+    pub fn terminate_call_with(
+        &self,
+        call_id: &CallId,
+        reason: fcp_cdr::TerminationReason,
+    ) -> Result<()> {
         let call = self.update_call(call_id, |call| {
-            if let Some(reason) = reason {
-                call.fail(reason);
+            // A reason set while the ending was under way (the BYE handler
+            // knows who hung up; the completion that ends the call does not)
+            // wins over an unspecific one.
+            let reason = match (&reason, &call.termination) {
+                (fcp_cdr::TerminationReason::Hangup { by: None }, Some(pending)) => pending.clone(),
+                _ => reason.clone(),
+            };
+            let answered = call.established_at.is_some();
+            if reason.is_failure(answered) {
+                call.fail(reason.detail().unwrap_or_else(|| "Call failed".to_string()));
             } else {
                 call.terminate();
+                call.failure_reason = reason.detail();
             }
+            call.termination = Some(reason);
         })?;
+        let reason = call
+            .termination
+            .clone()
+            .unwrap_or(fcp_cdr::TerminationReason::Hangup { by: None });
+        let hangup_party = reason
+            .outcome(call.established_at.is_some())
+            .party
+            .map(|p| format!("{p:?}").to_lowercase());
 
         info!(
             call_id = %call_id,
@@ -288,7 +399,7 @@ impl CallManager {
                         end_time: call.ended_at.unwrap_or_else(std::time::SystemTime::now),
                         duration_ms: call.duration().map(|d| d.as_millis() as u64).unwrap_or(0),
                         hangup_cause: "Normal Clearing".to_string(),
-                        hangup_party: None, // TODO: Phase 2 - track BYE direction
+                        hangup_party,
                         trunk_name: call.trunk_name.clone(),
                         node_id: node_id.clone(),
                     })
@@ -340,33 +451,69 @@ impl CallManager {
             });
         }
 
-        // Create CDR asynchronously if storage is available
-        if let Some(storage) = &self.storage {
-            let storage = Arc::clone(storage);
-            let billing = self.billing.clone();
-            let call_clone = call.clone();
-            tokio::spawn(async move {
-                if let Err(e) =
-                    create_and_insert_cdr(&storage, billing.as_deref(), &call_clone).await
-                {
-                    tracing::error!(
-                        call_id = %call_clone.id,
-                        error = %e,
-                        "Failed to create CDR (non-blocking)"
-                    );
-                } else {
-                    tracing::debug!(
-                        call_id = %call_clone.id,
-                        "CDR created successfully"
-                    );
-                }
-            });
+        // The call's record, off the call path through the writer.
+        if let Some(writer) = &self.cdr {
+            writer.write(self.record_for(&call));
         }
 
         // Remove from active calls
         self.calls.remove(call_id);
 
         Ok(())
+    }
+
+    /// The record of a finished call, from everything the manager knows.
+    pub fn record_for(&self, call: &Call) -> fcp_cdr::Record {
+        let sip_call_id = call
+            .original_invite
+            .as_ref()
+            .and_then(|invite| sip_parse::header(invite.headers(), "Call-ID"))
+            .map(|cid| cid.as_str().to_string());
+
+        // The callee from the B-leg, or the To header when no B-leg was made.
+        let (to_uri, to_display_name) = match &call.b_leg {
+            Some(b_leg) => (b_leg.remote_uri.clone(), b_leg.remote_display_name.clone()),
+            None => (
+                call.original_invite
+                    .as_ref()
+                    .and_then(|invite| sip_parse::header(invite.headers(), "To"))
+                    .map(|to| to.as_str().to_string())
+                    .unwrap_or_else(|| "unknown".to_string()),
+                None,
+            ),
+        };
+
+        let mut builder = fcp_cdr::RecordBuilder::new(
+            fcp_cdr::CdrKind::Call,
+            fcp_core::CallId::from_uuid(*call.id.as_uuid()),
+            call.tenant_id,
+        )
+        .from(
+            call.a_leg.remote_uri.clone(),
+            call.a_leg.remote_display_name.clone(),
+        )
+        .to(to_uri, to_display_name)
+        .started_at(call.created_at)
+        .answered_at(call.established_at)
+        .ended_at(call.ended_at)
+        .reason(
+            call.termination
+                .clone()
+                .unwrap_or(fcp_cdr::TerminationReason::Hangup { by: None }),
+        )
+        .media_anchored(call.media_anchored)
+        .sdp(
+            call.a_leg.sdp.as_deref(),
+            call.b_leg.as_ref().and_then(|b| b.sdp.as_deref()),
+        )
+        .rtp(call.rtp_stats)
+        .trunk(call.trunk_name.clone())
+        .node(self.node_id.clone(), self.region.clone())
+        .custom_data(call.custom_data.clone());
+        if let Some(id) = sip_call_id {
+            builder = builder.sip_call_id(id);
+        }
+        builder.build()
     }
 
     /// Get all active calls.
@@ -597,266 +744,9 @@ fn extract_user_from_uri(uri: &str) -> Option<&str> {
     after_scheme.split('@').next()
 }
 
-/// Create a CDR from a terminated call and insert it into storage.
-///
-/// This function maps call state to disposition, extracts timing information,
-/// and creates a complete CDR record. It is non-blocking and errors are logged
-/// but do not prevent call termination.
-async fn create_and_insert_cdr(
-    storage: &fcp_core::DynStorage,
-    billing: Option<&fcp_billing::BillingEngine>,
-    call: &Call,
-) -> Result<()> {
-    use fcp_core::storage::{CallDetailRecord, CdrStore};
-
-    // Map CallState to CallDisposition
-    let (disposition, hangup_cause) = map_call_state_to_disposition(call);
-
-    // Extract SIP Call-ID from original INVITE headers
-    let sip_call_id = call
-        .original_invite
-        .as_ref()
-        .and_then(|invite| sip_parse::header(invite.headers(), "Call-ID"))
-        .map(|cid| cid.as_str().to_string())
-        .unwrap_or_else(|| format!("unknown-{}", call.id));
-
-    // Extract SIP status code from failure_reason (e.g., "486 Busy Here" -> 486)
-    let sip_status_code = call
-        .failure_reason
-        .as_ref()
-        .and_then(|reason| extract_sip_status_code(reason));
-
-    // Calculate durations in milliseconds
-    let (setup_duration_ms, call_duration_ms, total_duration_ms) = calculate_durations(call);
-
-    // Extract caller information (from A-leg)
-    let from_uri = call.a_leg.remote_uri.clone();
-    let from_display_name = call.a_leg.remote_display_name.clone();
-
-    // Extract callee information (from B-leg or original INVITE To header)
-    let (to_uri, to_display_name) = if let Some(b_leg) = &call.b_leg {
-        (b_leg.remote_uri.clone(), b_leg.remote_display_name.clone())
-    } else {
-        // Parse To header from original INVITE
-        let to_uri = call
-            .original_invite
-            .as_ref()
-            .and_then(|invite| sip_parse::header(invite.headers(), "To"))
-            .map(|to| to.as_str().to_string())
-            .unwrap_or_else(|| "unknown".to_string());
-        (to_uri, None)
-    };
-
-    // Extract codec information from SDP (if available)
-    let codec_a_leg = extract_codec_from_sdp(call.a_leg.sdp.as_deref());
-    let codec_b_leg = call
-        .b_leg
-        .as_ref()
-        .and_then(|b| extract_codec_from_sdp(b.sdp.as_deref()));
-
-    // Rate the call against the tenant's default rate plan. Rating is
-    // best-effort: a missing plan, an unratable destination (named URI,
-    // internal target), or a storage error must never block CDR insertion.
-    let (cost, currency) = match billing {
-        Some(engine) => settle_cdr_cost(engine, call, &to_uri, call_duration_ms).await,
-        None => (None, None),
-    };
-
-    // Build CallDetailRecord
-    let cdr = CallDetailRecord {
-        call_id: fcp_core::CallId::from_uuid(*call.id.as_uuid()),
-        tenant_id: call.tenant_id,
-        sip_call_id,
-        from_uri,
-        from_display_name,
-        to_uri,
-        to_display_name,
-        start_time: call.created_at,
-        answer_time: call.established_at,
-        end_time: call.ended_at,
-        setup_duration_ms,
-        call_duration_ms,
-        total_duration_ms,
-        disposition,
-        hangup_cause,
-        hangup_party: None, // TODO: Phase 2 - track BYE direction
-        sip_status_code,
-        sip_reason: call.failure_reason.clone(),
-        route_id: None,
-        gateway_id: call.trunk_name.clone(),
-        media_anchored: call.media_anchored,
-        codec_a_leg,
-        codec_b_leg,
-        rtp_packets_sent: None, // TODO: Phase 2 - RTP statistics
-        rtp_packets_received: None,
-        rtp_bytes_sent: None,
-        rtp_bytes_received: None,
-        recording_url: None, // TODO: Phase 2 - recording integration
-        cost,
-        currency,
-        custom_data: call.custom_data.clone(),
-    };
-
-    // Insert CDR into storage
-    storage
-        .insert_cdr(cdr)
-        .await
-        .context("Failed to insert CDR into storage")?;
-
-    Ok(())
-}
-
-/// Rate and settle a finished call through the billing engine, returning
-/// `(cost, currency)` for the CDR. `(None, None)` when billing is not
-/// configured for the tenant or the destination has no dialable digits.
-/// Never fatal: settlement failures are logged by the engine.
-async fn settle_cdr_cost(
-    billing: &fcp_billing::BillingEngine,
-    call: &Call,
-    to_uri: &str,
-    call_duration_ms: Option<u64>,
-) -> (Option<f64>, Option<String>) {
-    let call_id = fcp_core::CallId::from_uuid(*call.id.as_uuid());
-    match billing
-        .settle(
-            &call.tenant_id,
-            call_id,
-            to_uri,
-            call_duration_ms.unwrap_or(0),
-        )
-        .await
-    {
-        Some(settlement) => (Some(settlement.rated.cost), Some(settlement.rated.currency)),
-        None => (None, None),
-    }
-}
-
-/// Map CallState and failure_reason to CallDisposition and HangupCause.
-fn map_call_state_to_disposition(
-    call: &Call,
-) -> (
-    fcp_core::storage::CallDisposition,
-    fcp_core::storage::HangupCause,
-) {
-    use fcp_core::storage::{CallDisposition, HangupCause};
-
-    match call.state {
-        CallState::Established | CallState::Parked | CallState::Terminated => {
-            // Call was answered (Parked calls were answered before being parked)
-            (CallDisposition::Answered, HangupCause::NormalClearing)
-        }
-        CallState::Failed => {
-            // Check failure_reason for specific error codes
-            if let Some(reason) = &call.failure_reason {
-                let reason_lower = reason.to_lowercase();
-
-                // Check for 486 Busy
-                if reason.contains("486") || reason_lower.contains("busy") {
-                    return (CallDisposition::Busy, HangupCause::UserBusy);
-                }
-
-                // Check for 487 Cancelled
-                if reason.contains("487") || reason_lower.contains("cancel") {
-                    return (CallDisposition::Cancelled, HangupCause::NormalClearing);
-                }
-
-                // Check for 480/408 No Answer
-                if reason.contains("480")
-                    || reason.contains("408")
-                    || reason_lower.contains("timeout")
-                {
-                    return (CallDisposition::NoAnswer, HangupCause::NoAnswer);
-                }
-
-                // Check for 603 Decline
-                if reason.contains("603") || reason_lower.contains("decline") {
-                    return (CallDisposition::Failed, HangupCause::CallRejected);
-                }
-
-                // Check for 5xx errors
-                if reason.starts_with('5') {
-                    if let Some(code) = extract_sip_status_code(reason) {
-                        if (500..600).contains(&code) {
-                            return (CallDisposition::Failed, HangupCause::InternalError);
-                        }
-                    }
-                }
-
-                // Extract status code for Other cause
-                if let Some(code) = extract_sip_status_code(reason) {
-                    return (CallDisposition::Failed, HangupCause::Other(code));
-                }
-            }
-
-            // Generic failure
-            (CallDisposition::Failed, HangupCause::Other(0))
-        }
-        _ => {
-            // Should not happen (calls should only be terminated in terminal states)
-            tracing::warn!(
-                call_id = %call.id,
-                state = ?call.state,
-                "Unexpected call state during CDR creation"
-            );
-            (CallDisposition::Failed, HangupCause::Other(0))
-        }
-    }
-}
-
 /// Extract SIP status code from a failure reason string (e.g., "486 Busy Here" -> Some(486)).
 fn extract_sip_status_code(reason: &str) -> Option<u16> {
-    reason
-        .split_whitespace()
-        .next()
-        .and_then(|code_str| code_str.parse::<u16>().ok())
-        .filter(|&code| (100..700).contains(&code))
-}
-
-/// Calculate call durations in milliseconds.
-///
-/// Returns (setup_duration_ms, call_duration_ms, total_duration_ms):
-/// - setup_duration_ms: Time from start to answer (ringing time)
-/// - call_duration_ms: Time from answer to end (talk time)
-/// - total_duration_ms: Time from start to end
-fn calculate_durations(call: &Call) -> (Option<u64>, Option<u64>, Option<u64>) {
-    let start = call.created_at;
-    let answer = call.established_at;
-    let end = call.ended_at;
-
-    // Setup duration: start -> answer
-    let setup_duration_ms =
-        answer.and_then(|ans| ans.duration_since(start).ok().map(|d| d.as_millis() as u64));
-
-    // Call duration: answer -> end
-    let call_duration_ms = answer
-        .and_then(|ans| end.and_then(|e| e.duration_since(ans).ok().map(|d| d.as_millis() as u64)));
-
-    // Total duration: start -> end
-    let total_duration_ms =
-        end.and_then(|e| e.duration_since(start).ok().map(|d| d.as_millis() as u64));
-
-    (setup_duration_ms, call_duration_ms, total_duration_ms)
-}
-
-/// Extract codec name from SDP body.
-///
-/// This is a simple implementation that looks for common codec names in SDP.
-/// A more robust implementation would parse the SDP properly.
-fn extract_codec_from_sdp(sdp: Option<&str>) -> Option<String> {
-    sdp.and_then(|body| {
-        // Look for "a=rtpmap:X codec/rate" lines
-        for line in body.lines() {
-            if line.starts_with("a=rtpmap:") {
-                // Parse "a=rtpmap:0 PCMU/8000" -> "PCMU"
-                if let Some(codec_part) = line.split_whitespace().nth(1) {
-                    if let Some(codec_name) = codec_part.split('/').next() {
-                        return Some(codec_name.to_uppercase());
-                    }
-                }
-            }
-        }
-        None
-    })
+    fcp_cdr::record::leading_status_code(reason)
 }
 
 /// Call statistics.
@@ -1038,172 +928,6 @@ mod tests {
         assert!(found.is_none());
     }
 
-    // ============================================================================
-    // CDR State Mapping Tests (Parked)
-    // ============================================================================
-
-    #[test]
-    fn test_cdr_state_mapping_parked() {
-        use fcp_core::storage::{CallDisposition, HangupCause};
-
-        let mut call = create_test_call();
-        call.establish();
-        call.park(701, "100".to_string());
-
-        let (disposition, cause) = map_call_state_to_disposition(&call);
-        assert_eq!(disposition, CallDisposition::Answered);
-        assert_eq!(cause, HangupCause::NormalClearing);
-    }
-
-    // ============================================================================
-    // CDR State Mapping Tests
-    // ============================================================================
-
-    #[test]
-    fn test_cdr_state_mapping_answered() {
-        use fcp_core::storage::{CallDisposition, HangupCause};
-
-        // Test Established state
-        let mut call = create_test_call();
-        call.establish();
-
-        let (disposition, cause) = map_call_state_to_disposition(&call);
-        assert_eq!(disposition, CallDisposition::Answered);
-        assert_eq!(cause, HangupCause::NormalClearing);
-
-        // Test Terminated state (after being established)
-        call.terminate();
-        let (disposition, cause) = map_call_state_to_disposition(&call);
-        assert_eq!(disposition, CallDisposition::Answered);
-        assert_eq!(cause, HangupCause::NormalClearing);
-    }
-
-    #[test]
-    fn test_cdr_state_mapping_busy() {
-        use fcp_core::storage::{CallDisposition, HangupCause};
-
-        let mut call = create_test_call();
-        call.fail("486 Busy Here".to_string());
-
-        let (disposition, cause) = map_call_state_to_disposition(&call);
-        assert_eq!(disposition, CallDisposition::Busy);
-        assert_eq!(cause, HangupCause::UserBusy);
-
-        // Test with lowercase "busy" keyword
-        let mut call2 = create_test_call();
-        call2.fail("User is busy".to_string());
-
-        let (disposition, cause) = map_call_state_to_disposition(&call2);
-        assert_eq!(disposition, CallDisposition::Busy);
-        assert_eq!(cause, HangupCause::UserBusy);
-    }
-
-    #[test]
-    fn test_cdr_state_mapping_cancelled() {
-        use fcp_core::storage::{CallDisposition, HangupCause};
-
-        let mut call = create_test_call();
-        call.fail("487 Request Terminated".to_string());
-
-        let (disposition, cause) = map_call_state_to_disposition(&call);
-        assert_eq!(disposition, CallDisposition::Cancelled);
-        assert_eq!(cause, HangupCause::NormalClearing);
-
-        // Test with "cancel" keyword
-        let mut call2 = create_test_call();
-        call2.fail("Call cancelled by user".to_string());
-
-        let (disposition, cause) = map_call_state_to_disposition(&call2);
-        assert_eq!(disposition, CallDisposition::Cancelled);
-        assert_eq!(cause, HangupCause::NormalClearing);
-    }
-
-    #[test]
-    fn test_cdr_state_mapping_no_answer() {
-        use fcp_core::storage::{CallDisposition, HangupCause};
-
-        // Test 480 Temporarily Unavailable
-        let mut call = create_test_call();
-        call.fail("480 Temporarily Unavailable".to_string());
-
-        let (disposition, cause) = map_call_state_to_disposition(&call);
-        assert_eq!(disposition, CallDisposition::NoAnswer);
-        assert_eq!(cause, HangupCause::NoAnswer);
-
-        // Test 408 Request Timeout
-        let mut call2 = create_test_call();
-        call2.fail("408 Request Timeout".to_string());
-
-        let (disposition, cause) = map_call_state_to_disposition(&call2);
-        assert_eq!(disposition, CallDisposition::NoAnswer);
-        assert_eq!(cause, HangupCause::NoAnswer);
-
-        // Test with "timeout" keyword
-        let mut call3 = create_test_call();
-        call3.fail("Transaction timeout".to_string());
-
-        let (disposition, cause) = map_call_state_to_disposition(&call3);
-        assert_eq!(disposition, CallDisposition::NoAnswer);
-        assert_eq!(cause, HangupCause::NoAnswer);
-    }
-
-    #[test]
-    fn test_cdr_state_mapping_declined() {
-        use fcp_core::storage::{CallDisposition, HangupCause};
-
-        let mut call = create_test_call();
-        call.fail("603 Decline".to_string());
-
-        let (disposition, cause) = map_call_state_to_disposition(&call);
-        assert_eq!(disposition, CallDisposition::Failed);
-        assert_eq!(cause, HangupCause::CallRejected);
-    }
-
-    #[test]
-    fn test_cdr_state_mapping_server_error() {
-        use fcp_core::storage::{CallDisposition, HangupCause};
-
-        let mut call = create_test_call();
-        call.fail("500 Server Internal Error".to_string());
-
-        let (disposition, cause) = map_call_state_to_disposition(&call);
-        assert_eq!(disposition, CallDisposition::Failed);
-        assert_eq!(cause, HangupCause::InternalError);
-
-        // Test 503
-        let mut call2 = create_test_call();
-        call2.fail("503 Service Unavailable".to_string());
-
-        let (disposition, cause) = map_call_state_to_disposition(&call2);
-        assert_eq!(disposition, CallDisposition::Failed);
-        assert_eq!(cause, HangupCause::InternalError);
-    }
-
-    #[test]
-    fn test_cdr_state_mapping_other_failure() {
-        use fcp_core::storage::{CallDisposition, HangupCause};
-
-        // Test with SIP status code
-        let mut call = create_test_call();
-        call.fail("404 Not Found".to_string());
-
-        let (disposition, cause) = map_call_state_to_disposition(&call);
-        assert_eq!(disposition, CallDisposition::Failed);
-        assert_eq!(cause, HangupCause::Other(404));
-
-        // Test without SIP status code
-        let mut call2 = create_test_call();
-        call2.fail("Unknown error".to_string());
-
-        let (disposition, cause) = map_call_state_to_disposition(&call2);
-        assert_eq!(disposition, CallDisposition::Failed);
-        assert_eq!(cause, HangupCause::Other(0));
-    }
-
-    // ============================================================================
-    // SIP Status Code Extraction Tests
-    // ============================================================================
-
     #[test]
     fn test_extract_sip_status_code_valid() {
         assert_eq!(extract_sip_status_code("486 Busy Here"), Some(486));
@@ -1229,163 +953,6 @@ mod tests {
         assert_eq!(extract_sip_status_code(""), None);
     }
 
-    // ============================================================================
-    // Duration Calculation Tests
-    // ============================================================================
-
-    #[test]
-    fn test_calculate_durations_complete_call() {
-        use std::time::{Duration, SystemTime};
-
-        let mut call = create_test_call();
-        let start = SystemTime::now();
-        call.created_at = start;
-
-        // Simulate 2 second setup time
-        let answer = start + Duration::from_secs(2);
-        call.established_at = Some(answer);
-
-        // Simulate 30 second call duration
-        let end = answer + Duration::from_secs(30);
-        call.ended_at = Some(end);
-
-        let (setup_ms, call_ms, total_ms) = calculate_durations(&call);
-
-        assert_eq!(setup_ms, Some(2000)); // 2 seconds setup
-        assert_eq!(call_ms, Some(30000)); // 30 seconds call
-        assert_eq!(total_ms, Some(32000)); // 32 seconds total
-    }
-
-    #[test]
-    fn test_calculate_durations_unanswered_call() {
-        use std::time::{Duration, SystemTime};
-
-        let mut call = create_test_call();
-        let start = SystemTime::now();
-        call.created_at = start;
-
-        // Call never answered (busy/no answer)
-        let end = start + Duration::from_secs(10);
-        call.ended_at = Some(end);
-
-        let (setup_ms, call_ms, total_ms) = calculate_durations(&call);
-
-        assert_eq!(setup_ms, None); // Never answered
-        assert_eq!(call_ms, None); // No call duration
-        assert_eq!(total_ms, Some(10000)); // 10 seconds total (ringing time)
-    }
-
-    #[test]
-    fn test_calculate_durations_active_call() {
-        use std::time::{Duration, SystemTime};
-
-        let mut call = create_test_call();
-        let start = SystemTime::now();
-        call.created_at = start;
-
-        // Call answered but not ended yet
-        let answer = start + Duration::from_secs(3);
-        call.established_at = Some(answer);
-        call.ended_at = None;
-
-        let (setup_ms, call_ms, total_ms) = calculate_durations(&call);
-
-        assert_eq!(setup_ms, Some(3000)); // 3 seconds setup
-        assert_eq!(call_ms, None); // Call still active
-        assert_eq!(total_ms, None); // No end time yet
-    }
-
-    // ============================================================================
-    // Codec Extraction Tests
-    // ============================================================================
-
-    #[test]
-    fn test_extract_codec_pcmu() {
-        let sdp = "v=0\r\n\
-                   o=- 123456 789012 IN IP4 192.168.1.1\r\n\
-                   s=Test\r\n\
-                   c=IN IP4 192.168.1.1\r\n\
-                   t=0 0\r\n\
-                   m=audio 5004 RTP/AVP 0\r\n\
-                   a=rtpmap:0 PCMU/8000\r\n";
-
-        assert_eq!(extract_codec_from_sdp(Some(sdp)), Some("PCMU".to_string()));
-    }
-
-    #[test]
-    fn test_extract_codec_pcma() {
-        let sdp = "v=0\r\n\
-                   o=- 123456 789012 IN IP4 192.168.1.1\r\n\
-                   s=Test\r\n\
-                   c=IN IP4 192.168.1.1\r\n\
-                   t=0 0\r\n\
-                   m=audio 5004 RTP/AVP 8\r\n\
-                   a=rtpmap:8 PCMA/8000\r\n";
-
-        assert_eq!(extract_codec_from_sdp(Some(sdp)), Some("PCMA".to_string()));
-    }
-
-    #[test]
-    fn test_extract_codec_g722() {
-        let sdp = "v=0\r\n\
-                   o=- 123456 789012 IN IP4 192.168.1.1\r\n\
-                   s=Test\r\n\
-                   c=IN IP4 192.168.1.1\r\n\
-                   t=0 0\r\n\
-                   m=audio 5004 RTP/AVP 9\r\n\
-                   a=rtpmap:9 G722/8000\r\n";
-
-        assert_eq!(extract_codec_from_sdp(Some(sdp)), Some("G722".to_string()));
-    }
-
-    #[test]
-    fn test_extract_codec_opus() {
-        let sdp = "v=0\r\n\
-                   o=- 123456 789012 IN IP4 192.168.1.1\r\n\
-                   s=Test\r\n\
-                   c=IN IP4 192.168.1.1\r\n\
-                   t=0 0\r\n\
-                   m=audio 5004 RTP/AVP 111\r\n\
-                   a=rtpmap:111 opus/48000/2\r\n";
-
-        assert_eq!(extract_codec_from_sdp(Some(sdp)), Some("OPUS".to_string()));
-    }
-
-    #[test]
-    fn test_extract_codec_no_sdp() {
-        assert_eq!(extract_codec_from_sdp(None), None);
-    }
-
-    #[test]
-    fn test_extract_codec_no_rtpmap() {
-        let sdp = "v=0\r\n\
-                   o=- 123456 789012 IN IP4 192.168.1.1\r\n\
-                   s=Test\r\n\
-                   c=IN IP4 192.168.1.1\r\n\
-                   t=0 0\r\n\
-                   m=audio 5004 RTP/AVP 0\r\n";
-
-        assert_eq!(extract_codec_from_sdp(Some(sdp)), None);
-    }
-
-    #[test]
-    fn test_extract_codec_multiple_rtpmaps() {
-        // Should return the first codec found
-        let sdp = "v=0\r\n\
-                   o=- 123456 789012 IN IP4 192.168.1.1\r\n\
-                   s=Test\r\n\
-                   c=IN IP4 192.168.1.1\r\n\
-                   t=0 0\r\n\
-                   m=audio 5004 RTP/AVP 0 8 9\r\n\
-                   a=rtpmap:0 PCMU/8000\r\n\
-                   a=rtpmap:8 PCMA/8000\r\n\
-                   a=rtpmap:9 G722/8000\r\n";
-
-        assert_eq!(extract_codec_from_sdp(Some(sdp)), Some("PCMU".to_string()));
-    }
-
-    // ============================================================================
-    // Routing Context Fields Tests (CFNA support)
     // ============================================================================
 
     #[test]

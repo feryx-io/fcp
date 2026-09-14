@@ -252,6 +252,14 @@ pub struct Call {
     /// Reason for call failure (if failed)
     pub failure_reason: Option<String>,
 
+    /// Why the call ended, as the handler that ended it knows; what the
+    /// record's disposition, cause and hangup party are derived from.
+    pub termination: Option<fcp_cdr::TerminationReason>,
+
+    /// RTP counters captured from the media session before it was torn
+    /// down; on the record when present.
+    pub rtp_stats: Option<fcp_cdr::RtpStats>,
+
     /// Flow ID if this call is executing a flow
     pub flow_id: Option<String>,
 
@@ -369,6 +377,8 @@ impl Call {
             established_at: None,
             ended_at: None,
             failure_reason: None,
+            termination: None,
+            rtp_stats: None,
             flow_id: None,
             flow_current_node: None,
             trunk_name: None,
@@ -461,6 +471,8 @@ impl Call {
             established_at: None,
             ended_at: None,
             failure_reason: None,
+            termination: None,
+            rtp_stats: None,
             flow_id: None,
             flow_current_node: None,
             trunk_name: None,

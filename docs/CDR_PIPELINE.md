@@ -1,6 +1,7 @@
 # The CDR Pipeline — Design
 
-Status: **design, not implemented** (2026-09-14). This document is the
+Status: **phase 1 done** (2026-09-14, v0.25.159); design agreed the same
+day with every recommendation in §14 taken. This document is the
 plan of record for the dedicated CDR pipeline that `STATUS.md` kept on
 the Phase 5 roadmap on 2026-09-02 ("inline CDR creation plus `fcp-jobs`
 post-processing is sufficient until carrier call volumes"). It describes
@@ -490,6 +491,44 @@ correlation id are filled. `FileBackedStorage`'s no-op `insert_cdr`
 becomes a spool with no sink, so a node without a database still keeps
 its records. The test floor's call scenarios assert their records.
 
+*Phase 1 shipped 2026-09-14 (v0.25.159).* The `fcp-cdr` crate holds the
+record builder, `TerminationReason`, the spool, the shipper, the
+in-process sink and the processor; `fcp_cdr::start_node` wires them from
+a node's `[cdr]` section (`spool_dir`, `fsync_interval_ms`,
+`segment_bytes`, `ship_batch`; under `[storage.cdr]` on the SBC). The
+record type stays `fcp_core::storage::CallDetailRecord`, re-exported as
+`fcp_cdr::Record`, with the §5 fields added; migration 057 adds the
+columns, backfills `cdr_id` from `md5(call_id)`, marks the queue
+handler's old rows `queue` and copies `gateway_id` into `trunk_name`,
+and moves the primary key to `cdr_id` with a partial unique index for
+one `call` record per call. `insert_cdr` is `ON CONFLICT (cdr_id) DO
+NOTHING`. `CallManager::terminate_call_with` takes the reason;
+`terminate_call(Option<String>)` stays as the MVP's contract, reading a
+leading status code and nothing else. The BYE handler records who hung
+up and takes the media session's counters before the session goes, so
+the record carries `hangup_party` and RTP packets and bytes each way
+(the backend reports no jitter yet, and a zero is not stored as one).
+Rating runs in the processor in phase 1 already, since it ran in the
+spawned task before; the settlement records the rate plan's id.
+
+What the plan said and phase 1 did not do: `FileBackedStorage` does not
+get a spool, because no binary that writes records runs without
+Postgres (it is a test fixture); `correlation_id` for transfers and the
+recording path on B2BUA calls move to phase 3 with the other legs, and
+the queue record's `call_id` stays minted, as phase 3 already said.
+
+The test floor found one more **product bug**, the reason the record
+matters: **every busy, declined or unanswered call through the forking
+path was recorded as a failure with no cause.** The path ended the call
+with the text "All B-legs failed", which the old substring matcher could
+not read, so a 486 from the callee was `failed`/`other(0)` in the table.
+The path now passes the callee's status, or no answer when the fork
+timed out. Four call scenarios assert their records (answered and hung
+up by the caller with counters and codec; hung up by the callee; busy
+and declined with status, cause and party; no answer), and a new one
+renames the `cdrs` table away under a call, ends the call, gives the
+table back and sees the one record land from the spool.
+
 **Phase 2 — the processor in `fcp-jobs`.** `StreamSink`, the consumer
 group, batches, backoff, stale claim, the dead-letter stream, trimming
 by MINID. Rating and settlement move into the processor with the
@@ -523,8 +562,8 @@ last; the vision's data lake, without the Parquet (§15).
 
 ## 14. Open questions
 
-Each with a recommendation; the design proceeds on the recommendation
-unless ruled otherwise.
+Each with a recommendation. Settled 2026-09-14: the user merged the design
+and asked to proceed, so every recommendation below is the decision.
 
 1. **Where the processor runs.** In `fcp-jobs` (recommended: the worker
    exists, has Redis, a config, a smoke test and a deploy unit; the

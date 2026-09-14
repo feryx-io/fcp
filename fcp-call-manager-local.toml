@@ -14,6 +14,10 @@ realm = "fcp.local"
 database_url = "postgresql://fcp:fcp_password@localhost:5432/fcp"
 redis_url = "redis://localhost:6379"
 
+# CDR spool (docs/CDR_PIPELINE.md); data/ is git-ignored.
+[cdr]
+spool_dir = "data/cdr-spool"
+
 [http]
 bind_address = "0.0.0.0:8084"
 api_token = "svc-local-secret"

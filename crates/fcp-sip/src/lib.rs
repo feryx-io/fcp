@@ -40,6 +40,10 @@ pub use fcp_b2bua_core::{
     B2buaConfig, Call, CallDirection, CallId, CallLeg, CallManager, CallState, CallStats,
 };
 
+// Re-export the CDR pipeline's types the binaries wire up
+// (`docs/CDR_PIPELINE.md`).
+pub use fcp_cdr::{CdrWriter, RtpStats, SystemCause, TerminationReason};
+
 // Re-export commonly used types for convenience
 pub use exports::*;
 

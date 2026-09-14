@@ -17,7 +17,7 @@ thiserror = "1.0"
 async-trait = "0.1"
 
 # PostgreSQL database
-sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "macros", "migrate", "chrono"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "macros", "migrate", "chrono", "uuid"] }
 tokio = { version = "1.48", features = ["full"] }
 chrono = "0.4"
 

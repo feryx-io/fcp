@@ -1,0 +1,23 @@
+[package]
+name = "fcp-cdr"
+version.workspace = true
+edition = "2021"
+description = "The CDR pipeline: the record a node builds at hangup, the local spool it goes to, and the processor that stores it"
+
+[dependencies]
+fcp-core = { path = "../fcp-core" }
+fcp-billing = { path = "../fcp-billing" }
+sip-sdp = { path = "../../external/siphon-rs/crates/sip-sdp" }
+
+anyhow.workspace = true
+async-trait = "0.1"
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true }
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true, features = ["test-util"] }

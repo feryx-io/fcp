@@ -22,6 +22,7 @@ fcp-core = { path = "../fcp-core" }
 fcp-sip = { path = "../fcp-sip", features = ["ws"] }
 fcp-sbc-core = { path = "../fcp-sbc-core" }
 fcp-b2bua-core = { path = "../fcp-b2bua-core" }
+fcp-cdr = { path = "../fcp-cdr" }
 fcp-routing = { path = "../fcp-routing" }
 fcp-media = { path = "../fcp-media" }
 fcp-events = { path = "../fcp-events" }

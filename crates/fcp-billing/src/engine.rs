@@ -59,6 +59,8 @@ impl<T: CdrStore + ?Sized> BillingStore for T {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Settlement {
     pub rated: RatedCall,
+    /// The rate plan the cost came from.
+    pub rate_plan_id: Option<String>,
     /// Dialed digits the call was rated for.
     pub destination: String,
     /// Balance after the charge, when the tenant tracks a balance and the
@@ -224,6 +226,7 @@ impl BillingEngine {
 
         Some(Settlement {
             rated,
+            rate_plan_id: Some(plan.id.to_string()),
             destination: dialed,
             balance_after,
         })

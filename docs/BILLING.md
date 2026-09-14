@@ -12,7 +12,8 @@ systems as `billing.*` platform events (webhooks / WebSocket).
 | Data model | `fcp-core/src/billing.rs` | `RatePlan`, `Rate`, `TenantBalance`, `BalanceTransaction` — shared with the storage contract (`CdrStore`) |
 | Engine | `fcp-billing` | Rating, balance admission math, settlement, external hooks (`BillingEngine`, `BillingHook`) |
 | Persistence | `fcp-storage-postgres`, migrations 047/048 | `rate_plans`, `rates`, `tenant_balances`, `balance_transactions` |
-| Call path | `fcp-sip` handler + `fcp-b2bua-core` call manager | 402 at admission, cut-off watchdog, settlement at CDR creation |
+| Call path | `fcp-sip` handler + `fcp-b2bua-core` call manager | 402 at admission, cut-off watchdog |
+| CDR pipeline | `fcp-cdr` processor | Settlement as each record is processed, off the call path (`docs/CDR_PIPELINE.md`) |
 | Admin API | `fcp-api-core` `/v1/rate-plans`, `/v1/billing/*` | Plan/rate CRUD, balance settings, ledger, credits |
 | Events | `fcp-events` `BillingEvent` | `billing.call_rated`, `billing.balance_changed`, `billing.balance_low`, `billing.balance_depleted`, `billing.call_rejected`, `billing.call_cut_off` |
 

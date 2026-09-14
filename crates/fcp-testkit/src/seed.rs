@@ -139,4 +139,14 @@ impl Seed {
     pub fn storage(&self) -> &PostgresStorage {
         &self.storage
     }
+
+    /// Run one SQL statement against the test database, for a scenario
+    /// that has to break something on purpose (the CDR pipeline's outage
+    /// test takes the table away and gives it back).
+    pub async fn execute(&self, sql: &str) {
+        sqlx::query(sql)
+            .execute(self.storage.pool())
+            .await
+            .unwrap_or_else(|e| panic!("{sql}: {e}"));
+    }
 }

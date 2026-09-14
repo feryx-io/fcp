@@ -52,6 +52,9 @@ realm = "{REALM}"
 [storage]
 database_url = "{db}"
 
+[cdr]
+spool_dir = "{dir}/cdr-spool"
+
 [http]
 bind_address = "127.0.0.1:{http}"
 
@@ -91,6 +94,24 @@ format = "compact"
         Phone::new(&user.username, &user.password, REALM, self.sip)
             .await
             .expect("phone binds")
+    }
+
+    /// The records at `/cdrs`, once at least `n` are there.
+    async fn cdrs(&self, n: usize, within: Duration) -> Vec<serde_json::Value> {
+        let deadline = tokio::time::Instant::now() + within;
+        loop {
+            let body = self.get("/cdrs").await;
+            let cdrs = body["cdrs"].as_array().cloned().unwrap_or_default();
+            if cdrs.len() >= n {
+                return cdrs;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "{} of {n} CDRs after {within:?}: {body}",
+                cdrs.len()
+            );
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
     }
 
     async fn get(&self, path: &str) -> serde_json::Value {
@@ -234,18 +255,25 @@ async fn a_call_is_answered_heard_both_ways_and_recorded() {
     );
     assert!(bob_call.ended(SOON).await);
 
-    // And a CDR says the call was answered.
-    let deadline = tokio::time::Instant::now() + SOON;
-    let cdr = loop {
-        let cdrs = stack.get("/cdrs").await;
-        if let Some(first) = cdrs["cdrs"].as_array().and_then(|c| c.first()) {
-            break first.clone();
-        }
-        assert!(tokio::time::Instant::now() < deadline, "no CDR: {cdrs}");
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    };
+    // And the call's record says what happened (docs/CDR_PIPELINE.md §5):
+    // answered, hung up by the caller, the codec, media both ways, the node.
+    let cdr = stack.cdrs(1, SOON).await.remove(0);
+    assert_eq!(cdr["kind"], "call", "{cdr}");
+    assert!(
+        cdr["cdr_id"].as_str().is_some_and(|id| !id.is_empty()),
+        "{cdr}"
+    );
     assert_eq!(cdr["disposition"], "Answered", "{cdr}");
+    assert_eq!(cdr["hangup_cause"], "NormalClearing", "{cdr}");
+    assert_eq!(cdr["hangup_party"], "Caller", "{cdr}");
     assert!(cdr["call_duration_ms"].as_u64().unwrap_or(0) > 0, "{cdr}");
+    assert_eq!(cdr["codec_a_leg"], "PCMU", "{cdr}");
+    assert_eq!(cdr["node_id"], "e2e-call-manager", "{cdr}");
+    assert!(
+        cdr["rtp_packets_received"].as_u64().unwrap_or(0) > 0
+            && cdr["rtp_packets_sent"].as_u64().unwrap_or(0) > 0,
+        "the anchored media's counters are on the record: {cdr}"
+    );
 
     stack.finish().await;
 }
@@ -279,6 +307,11 @@ async fn the_callee_can_hang_up() {
         "Alice's phone gets BYE"
     );
     assert!(alice_call.ended(SOON).await);
+
+    // The record knows it was the callee who hung up.
+    let cdr = stack.cdrs(1, SOON).await.remove(0);
+    assert_eq!(cdr["disposition"], "Answered", "{cdr}");
+    assert_eq!(cdr["hangup_party"], "Callee", "{cdr}");
 
     stack.finish().await;
 }
@@ -330,6 +363,24 @@ async fn busy_and_decline_reach_the_caller() {
             }
         }
     }
+
+    // Each rejection is on the record as what the callee sent, not as a
+    // guess from the failure text.
+    let cdrs = stack.cdrs(2, SOON).await;
+    let by_status = |code: u64| {
+        cdrs.iter()
+            .find(|c| c["sip_status_code"].as_u64() == Some(code))
+            .unwrap_or_else(|| panic!("no record with status {code}: {cdrs:#?}"))
+    };
+    let busy = by_status(486);
+    assert_eq!(busy["disposition"], "Busy", "{busy}");
+    assert_eq!(busy["hangup_cause"], "UserBusy", "{busy}");
+    assert_eq!(busy["hangup_party"], "Callee", "{busy}");
+    let declined = by_status(603);
+    assert_eq!(declined["disposition"], "Failed", "{declined}");
+    assert_eq!(declined["hangup_cause"], "CallRejected", "{declined}");
+    assert_eq!(declined["hangup_party"], "Callee", "{declined}");
+
     stack.finish().await;
 }
 
@@ -367,6 +418,48 @@ async fn an_unanswered_call_times_out_and_the_callee_is_cancelled() {
         "Bob's phone was cancelled"
     );
     assert!(ringing.ended(SOON).await);
+
+    let cdr = stack.cdrs(1, SOON).await.remove(0);
+    assert_eq!(cdr["disposition"], "NoAnswer", "{cdr}");
+    assert_eq!(cdr["hangup_cause"], "NoAnswer", "{cdr}");
+    assert!(cdr["answer_time_epoch"].is_null(), "{cdr}");
+    stack.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_record_survives_the_database_going_away_under_the_call() {
+    let stack = stack_or_skip!();
+    let (_alice_phone, alice_call, bob_phone, _bob_call) = answered_call(&stack).await;
+
+    // The CDR table goes away while the call is up: the database refuses
+    // the record when the call ends (docs/CDR_PIPELINE.md §6).
+    stack
+        .seed
+        .execute("ALTER TABLE cdrs RENAME TO cdrs_away")
+        .await;
+    assert_eq!(alice_call.hangup().await.unwrap(), 200);
+    assert!(
+        bob_phone
+            .expect(SOON, |e| matches!(e, PhoneEvent::Bye { .. }))
+            .await
+            .is_some(),
+        "Bob's phone gets BYE"
+    );
+    // Long enough for the shipper to have tried and backed off.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // The table comes back; the spooled record lands, once.
+    stack
+        .seed
+        .execute("ALTER TABLE cdrs_away RENAME TO cdrs")
+        .await;
+    let cdrs = stack.cdrs(1, Duration::from_secs(20)).await;
+    assert_eq!(cdrs.len(), 1, "{cdrs:#?}");
+    assert_eq!(cdrs[0]["disposition"], "Answered", "{}", cdrs[0]);
+    assert_eq!(cdrs[0]["hangup_party"], "Caller", "{}", cdrs[0]);
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(stack.cdrs(1, SOON).await.len(), 1, "no second copy");
+
     stack.finish().await;
 }
 
