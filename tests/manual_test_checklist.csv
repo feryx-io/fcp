@@ -58,31 +58,31 @@ CALL-006,Calling,fcp-call-manager,Forked call - winner takes all,First answer wi
 2. Answer on Device A
 3. Observe Device B",Device B stops ringing (receives CANCEL),,,,
 CALL-007,Calling,fcp-call-manager,Call to unregistered user,Call user with no active registration,Target user not registered,"1. Ensure bob is not registered
-2. Alice calls bob",Call fails with 480 Temporarily Unavailable or 404,,,,
+2. Alice calls bob",Call fails with 480 Temporarily Unavailable or 404,Automated,fcp-call-manager/tests,2026-09-14,calls.rs: a_call_to_an_unregistered_user_fails
 CALL-008,Calling,fcp-call-manager,Caller hangup,Caller terminates call,Active call,"1. Establish call
 2. Caller hangs up",Call terminated cleanly (BYE sent),Automated,fcp-call-manager/tests,2026-09-14,calls.rs: a_call_is_answered_heard_both_ways_and_recorded
 CALL-009,Calling,fcp-call-manager,Callee hangup,Callee terminates call,Active call,"1. Establish call
 2. Callee hangs up",Call terminated cleanly (BYE sent),Automated,fcp-call-manager/tests,2026-09-14,calls.rs: the_callee_can_hang_up
 CALL-010,Calling,fcp-call-manager,Rejected call (486 Busy),Callee rejects incoming call,Incoming call ringing,"1. Alice calls Bob
-2. Bob rejects/declines call",Call fails with 486 Busy Here,,,,
+2. Bob rejects/declines call",Call fails with 486 Busy Here,Automated,fcp-call-manager/tests,2026-09-14,calls.rs: busy_and_decline_reach_the_caller
 CALL-011,Calling,fcp-call-manager,No answer timeout,Call times out when not answered,Ringing call,"1. Alice calls Bob
 2. Bob does not answer
-3. Wait for timeout",Call fails with 408 Request Timeout or 480,,,,
+3. Wait for timeout",Call fails with 408 Request Timeout or 480,Automated,fcp-call-manager/tests,2026-09-14,calls.rs: an_unanswered_call_times_out_and_the_callee_is_cancelled
 CALL-012,Calling,fcp-call-manager,Call hold,Place call on hold,Active call,"1. Establish call
 2. Alice puts call on hold (re-INVITE with sendonly)
-3. Resume call",Hold music or silence and call resumes correctly,,,,
+3. Resume call",Hold music or silence and call resumes correctly,Automated,fcp-call-manager/tests,2026-09-14,calls.rs: hold_and_resume_are_relayed_to_the_far_end
 CALL-013,Calling,fcp-call-manager,Attended transfer,Transfer call with consultation,Two active calls,"1. Alice calls Bob (Call 1)
 2. Alice calls Charlie (Call 2)
 3. Alice transfers Bob to Charlie (REFER)",Bob and Charlie connected Alice disconnected,,,,
 CALL-014,Calling,fcp-call-manager,Blind transfer,Transfer call without consultation,Active call,"1. Alice calls Bob
 2. Alice blind transfers to Charlie
-3. Charlie answers",Bob and Charlie connected,,,,
+3. Charlie answers",Bob and Charlie connected,Automated,fcp-call-manager/tests,2026-09-14,calls.rs: a_blind_transfer_moves_the_caller_to_a_third_phone
 CALL-015,Calling,fcp-call-manager,DTMF - RFC 2833,DTMF tones via RTP events,Active call,"1. Establish call
 2. Send DTMF digits
-3. Verify digits received",DTMF digits transmitted correctly,,,,
+3. Verify digits received",DTMF digits transmitted correctly,Automated,fcp-call-manager/tests,2026-09-14,calls.rs: dtmf_crosses_as_rfc_2833_and_as_info
 CALL-016,Calling,fcp-call-manager,DTMF - SIP INFO,DTMF tones via SIP INFO method,Active call,"1. Establish call
 2. Send DTMF via SIP INFO
-3. Verify digits received",DTMF digits transmitted correctly,,,,
+3. Verify digits received",DTMF digits transmitted correctly,Automated,fcp-call-manager/tests,2026-09-14,calls.rs: dtmf_crosses_as_rfc_2833_and_as_info
 MEDIA-001,Media,fcp-media/forge-media,Codec negotiation PCMU,Negotiate G.711 μ-law codec,Both endpoints support PCMU,"1. Establish call
 2. Check negotiated codec in SDP",PCMU (payload 0) negotiated,Automated,fcp-call-manager/tests,2026-09-14,"calls.rs: a_call_is_answered_heard_both_ways_and_recorded (PCMU, tones heard both ways)"
 MEDIA-002,Media,fcp-media/forge-media,Codec negotiation PCMA,Negotiate G.711 A-law codec,Both endpoints support PCMA,"1. Establish call with PCMA preferred

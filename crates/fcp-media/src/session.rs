@@ -202,7 +202,7 @@ impl Default for MediaSessionConfig {
             jitter_buffer_ms: 50,
             enable_plc: true,
             enable_echo_cancellation: false,
-            enable_relay_rfc2833: false,
+            enable_relay_rfc2833: true,
         }
     }
 }

@@ -119,7 +119,7 @@ One PR each, in order.
 | Phase | What | Where |
 |---|---|---|
 | T1 ✅ v0.25.150 | The phone, the seed, the binary locator. Call manager: register (good and bad password, listed at `/registrations`), a call answered with audio heard both ways, hangup from either side, a CDR at `/cdrs` | `fcp-testkit`, `fcp-call-manager/tests/calls.rs` |
-| T2 | Call features on the call manager: busy, decline, no answer within `call_timeout_seconds`, an unregistered callee, hold and resume relayed, RFC 2833 DTMF through pass-through media, DTMF INFO relayed, blind transfer (REFER, NOTIFY, the new call), the `/calls` view mid-call | `fcp-call-manager/tests/calls.rs` |
+| T2 ✅ v0.25.153 | Call features on the call manager: busy, decline, no answer within the forking timeout, an unregistered callee, hold and resume relayed, RFC 2833 DTMF through anchored media, DTMF INFO relayed, blind transfer (REFER, the new call, the old leg dropped) | `fcp-call-manager/tests/calls.rs` |
 | T3 | Conference server: a room joined directly, the PIN entered by DTMF, two phones hearing each other through the mixer, mute by DTMF and by API, the room's participants at `/conferences/{room}`, leave and auto-destroy; the same room reached through the call manager (the room number as an extension, `conference_server_uri`) | `fcp-conference-server/tests/rooms.rs` |
 | T4 | Two conference nodes with Redis under `cluster.secret`: placement spreads a room past `conference_node_capacity`, a caller on each node hears the other over the trunk, and phase 5 end to end — SIGTERM one node, the caller through the call manager stays in the room on the other (same participant id, `migrated_from`), a phone that dialed the node directly follows the REFER itself | `fcp-conference-server/tests/cluster.rs` |
 | T5 | WebRTC gateway: a forge-webrtc peer standing in for the browser joins a room through the gateway's HTTP API and hears a phone in it; the migration swap under the browser against two real nodes | `fcp-webrtc-gateway/tests/rooms.rs` |
@@ -160,6 +160,24 @@ leaves the transaction and its provisional stream alive for timer D
 (32 s on UDP); and after a 2xx it waits for the transaction to finish
 (the ACK to go out) before the call counts as answered, or a re-INVITE
 sent at once beats the ACK to the far end and draws a 481.
+
+*T2 shipped 2026-09-14 (v0.25.153).* Six more scenarios in the same
+file, and two product bugs found by the first run of them. **RFC 2833
+digits never crossed a call.** The call manager anchors media on every
+call by default (`anchor_for_dtmf`), and the anchored session's
+`enable_relay_rfc2833` defaulted to `false`, so the engine detected the
+telephone-event packets and dropped them; tones crossed, digits did not.
+The default is now `true`. **A busy or declined callee reached the
+caller as 480.** When every B-leg had failed and there was no voicemail,
+the B2BUA answered 480 whatever the callee had said; it now answers with
+the callee's own final (486, 603, …) when there was one, 480 when the
+legs timed out — which is also what a caller hears when nobody picks up
+within `[b2bua.forking] timeout`, the test accepting 408 as well. The
+phone gained `follow_refers`, what a phone does on a blind transfer:
+dial the Refer-To, NOTIFY the outcome, drop the old leg on success; the
+transfer scenario watches Carol ring, Alice's new call answer, and Bob's
+leg get its BYE. Timing: the nine scenarios run in about four seconds
+after the build.
 
 After each phase the manual checklist's rows that the phase covers get
 `Automated` in their Status column and the test name in Notes, so the
