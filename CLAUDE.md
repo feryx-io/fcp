@@ -407,6 +407,9 @@ while let Some(event) = ctx.wait_event().await {
 - Place in `tests/` directory at workspace root
 - Test interactions between multiple crates
 - Use `sip-testkit` for SIP-specific test utilities
+- End-to-end scenarios against a running binary over real SIP and RTP use
+  `fcp_testkit::{Phone, Seed, Service}` (`docs/TEST_FLOOR.md`) and live in the
+  binary crate's `tests/` (`fcp-call-manager/tests/calls.rs`)
 - Database-backed suites (`fcp-storage-postgres/tests`, `fcp-api-core/tests`) and the
   per-binary `tests/smoke.rs` files are gated on `FCP_TEST_DATABASE_URL` (and
   `FCP_TEST_REDIS_URL` for `fcp-jobs`); they skip when unset and run in CI against
@@ -649,6 +652,7 @@ cargo run -p siphond -- --mode registrar
 - **docs/WEBRTC.md**: Browsers through the WebRTC gateway — join flow, join tokens, gateway configuration, ports
 - **docs/GPU.md**: Video on a GPU — the `video-hwaccel` build, `[conference] video_device`, what runs on the device and what falls back, the saturation budget, placement, the NVIDIA image
 - **docs/GPU_BOX.md**: The GPU development box for video phase 8 — a Spot L4 on GCP under `deploy/gcp-gpu`, up and down per session
+- **docs/TEST_FLOOR.md**: End-to-end tests against the running binaries over real SIP and RTP — the scripted phone in `fcp-testkit`, the seed and binary locator, the five phases
 - **Phase1 plan.md**: Detailed MVP implementation plan with sprint breakdowns
 - **IMPLEMENTATION_DOCS.md**: Index of implementation documentation for completed features
   - **Dial Node B2BUA**: Complete 4-phase implementation (outbound calls, response handling, media bridging)

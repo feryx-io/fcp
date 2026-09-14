@@ -6,6 +6,13 @@ in-process stubs.
 
 ## Current state
 
+End-to-end SIP + media tests against the running binaries — the test
+floor, `docs/TEST_FLOOR.md` — live next to each binary on the same
+gating as the smoke tests: `crates/fcp-call-manager/tests/calls.rs`
+(T1: registration, a heard call, hang-up either side, the CDR) so far.
+The scripted phone, the seed and the service runner are in
+`fcp-testkit`.
+
 Database-backed tests live next to the crates they exercise and are gated on
 `FCP_TEST_DATABASE_URL` (CI runs them against a `postgres:16` service):
 
