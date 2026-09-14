@@ -17,6 +17,8 @@ use crate::spool::Spool;
 pub struct CdrWriter {
     spool: Option<Spool>,
     direct: Option<Arc<Processor>>,
+    /// Records handed to the processor directly and not yet stored.
+    in_flight: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl std::fmt::Debug for CdrWriter {
@@ -34,6 +36,7 @@ impl CdrWriter {
         Self {
             spool: Some(spool),
             direct: fallback,
+            in_flight: Arc::default(),
         }
     }
 
@@ -42,12 +45,50 @@ impl CdrWriter {
         Self {
             spool: None,
             direct: Some(processor),
+            in_flight: Arc::default(),
         }
     }
 
     /// Whether records have anywhere to go.
     pub fn is_configured(&self) -> bool {
         self.spool.is_some() || self.direct.is_some()
+    }
+
+    /// Wait, up to `timeout`, for the records already written to leave the
+    /// node: the direct writes to be stored, the spool to be shipped and
+    /// synced. Called by a node stopping gracefully, so the last calls'
+    /// records do not wait for its next start (or its disk). Returns
+    /// whether everything left.
+    pub async fn flush(&self, timeout: std::time::Duration) -> bool {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let direct_done = self.in_flight.load(std::sync::atomic::Ordering::Relaxed) == 0;
+            let spool_done = match &self.spool {
+                Some(spool) => spool
+                    .status()
+                    .map(|s| s.pending_bytes == 0)
+                    .unwrap_or(false),
+                None => true,
+            };
+            if direct_done && spool_done {
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                warn!(
+                    direct_pending = self.in_flight.load(std::sync::atomic::Ordering::Relaxed),
+                    "CDRs still on the node at shutdown; the spool keeps them for the next start"
+                );
+                if let Some(spool) = &self.spool {
+                    let _ = spool.sync();
+                }
+                return false;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        if let Some(spool) = &self.spool {
+            let _ = spool.sync();
+        }
+        true
     }
 
     /// The spool, for status.
@@ -126,7 +167,10 @@ impl CdrWriter {
         match &self.direct {
             Some(processor) => {
                 let processor = Arc::clone(processor);
+                let in_flight = Arc::clone(&self.in_flight);
+                in_flight.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 tokio::spawn(async move {
+                    let _done = InFlight(in_flight);
                     let cdr_id = record.cdr_id;
                     let call_id = record.call_id;
                     match processor.process(vec![record]).await {
@@ -145,5 +189,38 @@ impl CdrWriter {
                 warn!(cdr_id = %record.cdr_id, call_id = %record.call_id, "CDR dropped: no spool and no store configured")
             }
         }
+    }
+}
+
+/// Counts a direct write down when its task ends, however it ends.
+struct InFlight(Arc<std::sync::atomic::AtomicUsize>);
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::processor::tests::{record, MemStore};
+    use crate::spool::SpoolConfig;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn flush_waits_for_direct_writes_and_reports_an_unshipped_spool() {
+        let store = Arc::new(MemStore::default());
+        let direct = CdrWriter::direct(Arc::new(Processor::new(store.clone(), None)));
+        direct.write(record("sip:bob@x"));
+        assert!(direct.flush(Duration::from_secs(2)).await);
+        assert_eq!(store.records.lock().unwrap().len(), 1);
+
+        // A spool nothing ships from cannot be flushed.
+        let dir = tempfile::tempdir().unwrap();
+        let spool = Spool::open(dir.path(), SpoolConfig::default()).unwrap();
+        let spooled = CdrWriter::spooled(spool, None);
+        spooled.write(record("sip:bob@x"));
+        assert!(!spooled.flush(Duration::from_millis(150)).await);
     }
 }

@@ -29,6 +29,12 @@ struct Stack {
 impl Stack {
     /// `None` without a database to test against.
     async fn start() -> Option<Self> {
+        Self::start_with("", 40).await
+    }
+
+    /// As [`Stack::start`], with `extra` TOML appended to the config and
+    /// `rtp_ports` in the media range (a queue wants at least 100).
+    async fn start_with(extra: &str, rtp_ports: u16) -> Option<Self> {
         let db = TestDatabase::create().await?;
         let seed = Seed::new(db.url(), REALM).await;
         let sip_port = free_port();
@@ -73,9 +79,11 @@ tts_cache_dir = "{dir}/tts-cache"
 [logging]
 level = "info"
 format = "compact"
+
+{extra}
 "#,
             db = db.url(),
-            rtp_end = rtp_start + 40,
+            rtp_end = rtp_start + rtp_ports,
             dir = dir.path().display(),
         );
         let service =
@@ -98,9 +106,14 @@ format = "compact"
 
     /// The records at `/cdrs`, once at least `n` are there.
     async fn cdrs(&self, n: usize, within: Duration) -> Vec<serde_json::Value> {
+        self.cdrs_at("/cdrs", n, within).await
+    }
+
+    /// The records at `path` (`/cdrs?…`), once at least `n` are there.
+    async fn cdrs_at(&self, path: &str, n: usize, within: Duration) -> Vec<serde_json::Value> {
         let deadline = tokio::time::Instant::now() + within;
         loop {
-            let body = self.get("/cdrs").await;
+            let body = self.get(path).await;
             let cdrs = body["cdrs"].as_array().cloned().unwrap_or_default();
             if cdrs.len() >= n {
                 return cdrs;
@@ -600,5 +613,83 @@ async fn a_blind_transfer_moves_the_caller_to_a_third_phone() {
     assert!(alice_call.ended(SOON).await, "Alice's old leg is over");
 
     assert_eq!(carol_call.hangup().await.unwrap(), 200);
+
+    // Two call records, and the new call knows the call it came from
+    // (docs/CDR_PIPELINE.md §5): the Refer-To this call manager relayed
+    // carried it, and Alice's phone copied it into the new INVITE.
+    let records = stack.cdrs(2, SOON).await;
+    let with_bob = records
+        .iter()
+        .find(|r| r["to_uri"].as_str().unwrap_or("").contains(":1002@"))
+        .unwrap_or_else(|| panic!("no record of the call to Bob: {records:#?}"));
+    let with_carol = records
+        .iter()
+        .find(|r| r["to_uri"].as_str().unwrap_or("").contains(":1003@"))
+        .unwrap_or_else(|| panic!("no record of the call to Carol: {records:#?}"));
+    assert_eq!(
+        with_carol["correlation_id"], with_bob["call_id"],
+        "the transferred call points at the call it left: {with_carol}"
+    );
+    assert!(with_bob["correlation_id"].is_null(), "{with_bob}");
+    stack.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_queued_caller_leaves_a_call_record_and_a_queue_record_under_one_id() {
+    let Some(stack) = Stack::start_with(
+        r#"
+[queue]
+enabled = true
+
+[queue.queues.support]
+name = "support"
+extension = "7000"
+"#,
+        200,
+    )
+    .await
+    else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let alice_phone = stack.phone(&alice).await;
+    assert_eq!(alice_phone.register().await.unwrap(), 200);
+
+    // Alice calls the queue; it answers her and nobody takes the call.
+    let call = alice_phone.call("7000").await.unwrap();
+    if let Err(e) = call.answered(SOON).await {
+        stack
+            .fail(&format!("the queue did not answer: {e}"), &alice_phone)
+            .await;
+    }
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(call.hangup().await.unwrap(), 200);
+
+    // The call and its time in the queue, recorded under one call id; the
+    // default listing shows the call alone.
+    let records = stack.cdrs_at("/cdrs?kind=all", 2, SOON).await;
+    assert_eq!(records.len(), 2, "{records:#?}");
+    let call_record = records
+        .iter()
+        .find(|r| r["kind"] == "call")
+        .expect("call record");
+    let queue_record = records
+        .iter()
+        .find(|r| r["kind"] == "queue")
+        .expect("queue record");
+    assert_eq!(
+        call_record["call_id"], queue_record["call_id"],
+        "{records:#?}"
+    );
+    assert_eq!(call_record["disposition"], "Answered", "{call_record}");
+    assert_eq!(queue_record["disposition"], "Cancelled", "{queue_record}");
+    let calls_only = stack.cdrs(1, SOON).await;
+    assert_eq!(calls_only.len(), 1, "{calls_only:#?}");
+    assert_eq!(calls_only[0]["kind"], "call");
+
+    // And the call is gone from the live calls.
+    let live = stack.get("/calls").await;
+    assert_eq!(live["count"].as_u64().unwrap_or(0), 0, "{live}");
     stack.finish().await;
 }

@@ -310,6 +310,7 @@ pub struct RecordBuilder {
     codec_a_leg: Option<String>,
     codec_b_leg: Option<String>,
     rtp: Option<RtpStats>,
+    rtp_packets: Option<(u64, u64)>,
     trunk_name: Option<String>,
     gateway_id: Option<String>,
     route_id: Option<String>,
@@ -340,6 +341,7 @@ impl RecordBuilder {
             codec_a_leg: None,
             codec_b_leg: None,
             rtp: None,
+            rtp_packets: None,
             trunk_name: None,
             gateway_id: None,
             route_id: None,
@@ -410,6 +412,13 @@ impl RecordBuilder {
 
     pub fn rtp(mut self, stats: Option<RtpStats>) -> Self {
         self.rtp = stats;
+        self
+    }
+
+    /// Packet counts alone, `(sent, received)`, for a leg whose media path
+    /// counts nothing else (a conference participant).
+    pub fn rtp_packets(mut self, sent: u64, received: u64) -> Self {
+        self.rtp_packets = Some((sent, received));
         self
     }
 
@@ -497,8 +506,14 @@ impl RecordBuilder {
             media_anchored: self.media_anchored,
             codec_a_leg: self.codec_a_leg,
             codec_b_leg: self.codec_b_leg,
-            rtp_packets_sent: self.rtp.map(|s| s.packets_sent),
-            rtp_packets_received: self.rtp.map(|s| s.packets_received),
+            rtp_packets_sent: self
+                .rtp
+                .map(|s| s.packets_sent)
+                .or(self.rtp_packets.map(|p| p.0)),
+            rtp_packets_received: self
+                .rtp
+                .map(|s| s.packets_received)
+                .or(self.rtp_packets.map(|p| p.1)),
             rtp_bytes_sent: self.rtp.map(|s| s.bytes_sent),
             rtp_bytes_received: self.rtp.map(|s| s.bytes_received),
             rtp_packets_lost: self.rtp.map(|s| s.packets_lost),

@@ -115,6 +115,10 @@ struct QueueSession {
     agent_answered_at: Option<Instant>,
     /// Agent's negotiated codec name (set when agent answers with SDP).
     agent_codec_name: Option<String>,
+    /// The B2BUA call the caller's INVITE created; ended with the session,
+    /// and the queue record's `call_id`. `None` for calls the queue placed
+    /// itself (callbacks, campaigns).
+    b2bua_call_id: Option<fcp_sip::CallId>,
 }
 
 /// State machine for a queue call.
@@ -164,6 +168,10 @@ pub struct QueueCallHandler {
     cdr: fcp_sip::CdrWriter,
     /// This node, on every record.
     node_id: String,
+
+    /// The B2BUA's calls, ended with their queue sessions
+    /// (`docs/CDR_PIPELINE.md` §5).
+    call_manager: Arc<fcp_sip::CallManager>,
     /// Maps callee Call-ID ↔ agent Call-ID for campaign calls (reverse BYE lookup).
     campaign_call_id_map: Arc<DashMap<String, String>>,
 }
@@ -188,6 +196,7 @@ impl QueueCallHandler {
         storage: Arc<fcp_core::DynStorage>,
         cdr: fcp_sip::CdrWriter,
         node_id: String,
+        call_manager: Arc<fcp_sip::CallManager>,
     ) -> Self {
         // Load announcement audio if configured
         let announcement_cache = config.queue_audio_dir.as_ref().and_then(|dir| {
@@ -269,6 +278,7 @@ impl QueueCallHandler {
             storage,
             cdr,
             node_id,
+            call_manager,
             campaign_call_id_map: Arc::new(DashMap::new()),
         };
 
@@ -395,16 +405,14 @@ impl QueueCallHandler {
 
     /// Extract a tenant domain from SIP addressing.
     fn extract_tenant_domain(request: &sip_core::Request) -> Option<String> {
+        // The Request-URI's host, without its port or parameters: a call to
+        // `sip:7000@127.0.0.1:5070` is to a host literal, not to a tenant
+        // domain called "127.0.0.1:5070".
         let request_uri = request.uri().to_string();
-        let uri_str = request_uri
-            .strip_prefix("sip:")
-            .or_else(|| request_uri.strip_prefix("sips:"))
-            .unwrap_or(&request_uri);
-
-        if let Some(domain) = uri_str.split('@').nth(1) {
-            let domain = domain.split(';').next().unwrap_or(domain).trim();
+        if let Ok(parsed) = sip_core::SipUri::parse(request_uri.trim()) {
+            let domain = parsed.host().trim().to_string();
             if !domain.is_empty() && domain != "localhost" && domain != "127.0.0.1" {
-                return Some(domain.to_string());
+                return Some(domain);
             }
         }
 
@@ -1343,6 +1351,21 @@ impl QueueCallHandler {
         }
     }
 
+    /// End the B2BUA call for a caller the queue refused with `response`.
+    fn refuse_call(&self, b2bua_call_id: fcp_sip::CallId, response: &sip_core::Response) {
+        let _ = self.call_manager.terminate_call_with(
+            &b2bua_call_id,
+            fcp_sip::TerminationReason::Failed {
+                status: Some(response.start_line().code()),
+                detail: format!(
+                    "Queue: {} {}",
+                    response.start_line().code(),
+                    response.start_line().reason()
+                ),
+            },
+        );
+    }
+
     /// Remove and clean up a queue session, inserting a CDR for the call.
     fn remove_session(&self, call_id: &str) {
         if let Some((_, session)) = self.sessions.remove(call_id) {
@@ -1353,8 +1376,17 @@ impl QueueCallHandler {
                 "Queue session removed"
             );
 
+            // The call ends with its session; its record and the segment's
+            // share the call's id.
+            if let Some(b2bua_call_id) = session.b2bua_call_id {
+                let _ = self.call_manager.terminate_call_with(
+                    &b2bua_call_id,
+                    fcp_sip::TerminationReason::Hangup { by: None },
+                );
+            }
             // The segment's record, off the call path through the writer.
             self.cdr.write(queue_record(
+                session.b2bua_call_id,
                 call_id,
                 session.tenant_id,
                 &session.queue_name,
@@ -1931,6 +1963,7 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
         request: &sip_core::Request,
         handle: &sip_transaction::ServerTransactionHandle,
         _peer: SocketAddr,
+        b2bua_call_id: fcp_sip::CallId,
     ) -> Result<()> {
         // 1. Extract extension and look up queue
         let extension = Self::extract_extension(request)
@@ -1955,7 +1988,8 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
                     "Tenant lookup unavailable"
                 };
                 let response = sip_uas::UserAgentServer::create_response(request, status, reason);
-                handle.send_final(response).await;
+                handle.send_final(response.clone()).await;
+                self.refuse_call(b2bua_call_id, &response);
                 return Ok(());
             }
         };
@@ -1991,7 +2025,8 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
                 );
                 let reject =
                     UserAgentServer::create_response(request, 480, "Temporarily Unavailable");
-                handle.send_final(reject).await;
+                handle.send_final(reject.clone()).await;
+                self.refuse_call(b2bua_call_id, &reject);
                 return Ok(());
             }
         }
@@ -2014,7 +2049,8 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
                 );
                 let reject =
                     UserAgentServer::create_response(request, 480, "Temporarily Unavailable");
-                handle.send_final(reject).await;
+                handle.send_final(reject.clone()).await;
+                self.refuse_call(b2bua_call_id, &reject);
                 return Ok(());
             }
         }
@@ -2023,7 +2059,8 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
         let body = request.body();
         if body.is_empty() {
             let reject = UserAgentServer::create_response(request, 400, "Missing SDP");
-            handle.send_final(reject).await;
+            handle.send_final(reject.clone()).await;
+            self.refuse_call(b2bua_call_id, &reject);
             return Ok(());
         }
         let sdp_offer = std::str::from_utf8(&body[..]).context("SDP body is not valid UTF-8")?;
@@ -2034,7 +2071,8 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
             Some(c) => c,
             None => {
                 let reject = UserAgentServer::create_response(request, 488, "Not Acceptable Here");
-                handle.send_final(reject).await;
+                handle.send_final(reject.clone()).await;
+                self.refuse_call(b2bua_call_id, &reject);
                 return Ok(());
             }
         };
@@ -2075,6 +2113,10 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
 
         // 8. Send 200 OK
         handle.send_final(response).await;
+        // The call is answered, by the queue.
+        let _ = self
+            .call_manager
+            .update_call(&b2bua_call_id, |call| call.establish());
 
         // 9. Create RTP socket pair
         let rtp_socket = match RtpSocketPair::new(port_pair, RtpSocketConfig::default()).await {
@@ -2213,6 +2255,7 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
                             enqueued_at: Instant::now(),
                             agent_answered_at: None,
                             agent_codec_name: None,
+                            b2bua_call_id: Some(b2bua_call_id),
                         },
                     );
 
@@ -2312,6 +2355,7 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
                 enqueued_at: Instant::now(),
                 agent_answered_at: None,
                 agent_codec_name: None,
+                b2bua_call_id: Some(b2bua_call_id),
             },
         );
 
@@ -3382,6 +3426,7 @@ fn spawn_callback_ring(
                 enqueued_at: Instant::now(),
                 agent_answered_at: Some(Instant::now()),
                 agent_codec_name: None,
+                b2bua_call_id: None,
             },
         );
     });
@@ -3821,11 +3866,13 @@ fn extract_domain(uri: &str) -> String {
     uri.to_string()
 }
 
-/// The record of a finished queue segment. Its `call_id` is minted here
-/// until phase 3 of the pipeline carries the B2BUA's; `sip_call_id` is the
-/// SIP Call-ID the segment ran under.
+/// The record of a finished queue segment. Its `call_id` is the B2BUA
+/// call's, so the segment sits beside the call's own record; a call the
+/// queue placed itself gets one of its own. `sip_call_id` is the SIP Call-ID
+/// the segment ran under.
 #[allow(clippy::too_many_arguments)]
 fn queue_record(
+    b2bua_call_id: Option<fcp_sip::CallId>,
     sip_call_id: &str,
     tenant_id: TenantId,
     queue_name: &str,
@@ -3872,7 +3919,10 @@ fn queue_record(
         QueueCallState::WaitingInQueue => "abandoned_waiting",
     };
 
-    fcp_cdr::RecordBuilder::new(CdrKind::Queue, fcp_core::CallId::new(), tenant_id)
+    let call_id = b2bua_call_id
+        .map(|id| fcp_core::CallId::from_uuid(*id.as_uuid()))
+        .unwrap_or_default();
+    fcp_cdr::RecordBuilder::new(CdrKind::Queue, call_id, tenant_id)
         .sip_call_id(sip_call_id)
         .from(caller_uri, caller_display.map(|s| s.to_string()))
         .to(format!("queue:{}", queue_name), None)
@@ -4258,6 +4308,7 @@ async fn campaign_dial_task(
                                             enqueued_at: Instant::now(),
                                             agent_answered_at: Some(Instant::now()),
                                             agent_codec_name: Some(agent_codec_name.clone()),
+                                            b2bua_call_id: None,
                                         },
                                     );
 

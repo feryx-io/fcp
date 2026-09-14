@@ -41,7 +41,7 @@ use sip_core::{Headers, SipUri};
 use sip_uac::integrated::CallHandle;
 use std::collections::HashSet;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use tokio::sync::{mpsc, Mutex, Notify, RwLock};
 use tracing::{debug, info, warn};
 
@@ -318,6 +318,14 @@ pub struct Session {
     swap_tx: Option<mpsc::Sender<SipLeg>>,
     /// A move to another node is in flight.
     migrating: bool,
+    /// The session's record: its call id (sent to the conference node, so
+    /// the room's record of the leg shares it), when it began and connected,
+    /// and who ended it (`docs/CDR_PIPELINE.md` §5).
+    record_call_id: fcp_core::CallId,
+    started_at: SystemTime,
+    connected_at: Option<SystemTime>,
+    ended_by: Option<fcp_core::storage::HangupParty>,
+    last_sip_call_id: Option<String>,
 }
 
 /// The browser's side of the negotiation, as the SIP offer mirrors it.
@@ -461,6 +469,19 @@ pub struct SessionManager {
     ports: PortPool,
     placement: Arc<ConferencePlacement>,
     cfg: SessionConfig,
+    cdr: Option<CdrSettings>,
+}
+
+/// Where the gateway's session records go and what they name
+/// (`docs/CDR_PIPELINE.md` §5).
+#[derive(Clone)]
+pub struct CdrSettings {
+    pub writer: fcp_sip::CdrWriter,
+    pub node_id: String,
+    pub region: Option<String>,
+    /// The tenant for a session whose join token names none (`[conference]
+    /// tenant_id`).
+    pub default_tenant: Option<fcp_core::TenantId>,
 }
 
 impl SessionManager {
@@ -479,7 +500,19 @@ impl SessionManager {
             ports,
             placement,
             cfg,
+            cdr: None,
         }
+    }
+
+    /// Where session records go, when they go anywhere.
+    pub fn cdr_writer(&self) -> Option<&fcp_sip::CdrWriter> {
+        self.cdr.as_ref().map(|c| &c.writer)
+    }
+
+    /// Write a record of every session that ends.
+    pub fn with_cdr(mut self, settings: CdrSettings) -> Self {
+        self.cdr = Some(settings);
+        self
     }
 
     /// Join a room: a new peer connection with an audio (and, if asked,
@@ -704,6 +737,11 @@ impl SessionManager {
             sip_ports: Vec::new(),
             swap_tx: None,
             migrating: false,
+            record_call_id: fcp_core::CallId::new(),
+            started_at: SystemTime::now(),
+            connected_at: None,
+            ended_by: None,
+            last_sip_call_id: None,
         };
         let info = session.info();
         let session_token = session.session_token.clone();
@@ -936,6 +974,7 @@ impl SessionManager {
                 return;
             }
             s.state = SessionState::Connected;
+            s.connected_at.get_or_insert_with(SystemTime::now);
             s.dialog = Some(dialog.clone());
             s.sip_call_id = Some(sip_call_id.clone());
             s.audio_codec = Some(plan.audio_codec.clone());
@@ -1261,6 +1300,9 @@ impl SessionManager {
                 return Err((500, "Server Internal Error", format!("header: {e}")));
             }
         }
+        // The new node's record of the leg keeps the session's call id.
+        let record_call_id = session.read().await.record_call_id;
+        let _ = headers.push(fcp_core::CALL_ID_HEADER, record_call_id.to_string());
         let target = refer.target.as_str().to_string();
         let handle = match self
             .uac
@@ -1424,6 +1466,10 @@ impl SessionManager {
                         .push(JOIN_TOKEN_HEADER, token)
                         .map_err(|e| format!("header: {e}"))?;
                 }
+                let record_call_id = session.read().await.record_call_id;
+                headers
+                    .push(fcp_core::CALL_ID_HEADER, record_call_id.to_string())
+                    .map_err(|e| format!("header: {e}"))?;
                 Ok((format!("sip:{room_number}@{host}"), headers))
             }
         }
@@ -1527,6 +1573,10 @@ impl SessionManager {
             }
             s.dialog = None;
             s.call_handle = None;
+            if s.sip_call_id.is_some() {
+                s.last_sip_call_id = s.sip_call_id.clone();
+            }
+            self.write_record(&s);
             (
                 s.id.clone(),
                 s.connection_id.clone(),
@@ -1548,6 +1598,72 @@ impl SessionManager {
             tokio::time::sleep(LINGER).await;
             sessions.remove(&id);
         });
+    }
+
+    /// The record of a session that is over: `kind = gateway`, the call id
+    /// it gave the conference node, the browser's time, the relay's
+    /// packet counts.
+    fn write_record(&self, s: &Session) {
+        let Some(cdr) = &self.cdr else {
+            return;
+        };
+        let (to_uri, display_name, tenant) = match &s.kind {
+            SessionKind::Call { destination } => (destination.clone(), None, None),
+            SessionKind::Room {
+                room_number,
+                display_name,
+                join_token,
+                ..
+            } => (
+                format!("conference:{room_number}"),
+                Some(display_name.clone()),
+                join_token
+                    .as_deref()
+                    .and_then(fcp_core::JoinToken::peek_unverified)
+                    .map(|t| t.tenant_id),
+            ),
+        };
+        let Some(tenant_id) = tenant.or(cdr.default_tenant) else {
+            warn!(session = %s.id, "no tenant for the session's record; not written");
+            return;
+        };
+        let reason = match &s.state {
+            SessionState::Failed(why) => fcp_sip::TerminationReason::failed(why.clone()),
+            _ if s.connected_at.is_none() => fcp_sip::TerminationReason::Cancelled,
+            _ => fcp_sip::TerminationReason::Hangup { by: s.ended_by },
+        };
+        let stats = s.stats.snapshot();
+        let mut builder = fcp_cdr::RecordBuilder::new(
+            fcp_core::storage::CdrKind::Gateway,
+            s.record_call_id,
+            tenant_id,
+        )
+        .from(format!("webrtc:{}", s.id), display_name)
+        .to(to_uri, None)
+        .started_at(s.started_at)
+        .answered_at(s.connected_at)
+        .ended_at(Some(SystemTime::now()))
+        .reason(reason)
+        .media_anchored(true)
+        .codecs(s.audio_codec.clone(), None)
+        .rtp_packets(
+            stats.audio_to_sip + stats.video_to_sip + stats.content_to_sip,
+            stats.audio_to_browser + stats.video_to_browser + stats.content_to_browser,
+        )
+        .node(Some(cdr.node_id.clone()), cdr.region.clone())
+        .custom_data(Some(serde_json::json!({
+            "session_id": s.id,
+            "sip_target": s.sip_target,
+            "srtp": s.srtp,
+            "video": s.video.is_some(),
+            "content": s.content.is_some(),
+            "dropped": stats.dropped,
+            "srtp_errors": stats.srtp_errors,
+        })));
+        if let Some(sip_call_id) = &s.last_sip_call_id {
+            builder = builder.sip_call_id(sip_call_id.clone());
+        }
+        cdr.writer.write(builder.build());
     }
 
     // ------------------------------------------------------------ signalling
@@ -1622,6 +1738,7 @@ impl SessionManager {
             }
             let state = s.state.clone();
             s.state = SessionState::Terminated;
+            s.ended_by = Some(fcp_core::storage::HangupParty::Caller);
             (s.dialog.take(), s.call_handle.take(), s.stop.clone(), state)
         };
         info!(session = %id, from = ?state, "hangup");
@@ -1660,6 +1777,7 @@ impl SessionManager {
             let mut s = session.write().await;
             if !s.is_over() {
                 s.state = SessionState::Terminated;
+                s.ended_by = Some(fcp_core::storage::HangupParty::Callee);
             }
             s.dialog = None;
             s.stop.clone()

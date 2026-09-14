@@ -127,6 +127,7 @@ services:
     volumes:
       - ./configs/fcp-conference-server.toml:/app/fcp-conference-server.toml:ro
       - fcp-recordings:/var/fcp/conference/recordings
+      - fcp-conference-cdr-spool:/var/lib/fcp/cdr-spool
       - ./configs/announcements:/var/fcp/conference/announcements:ro
     environment:
       - RUST_LOG=info
@@ -262,6 +263,8 @@ volumes:
   redis-data:
     driver: local
   fcp-recordings:
+    driver: local
+  fcp-conference-cdr-spool:
     driver: local
   fcp-media-recordings:
     driver: local

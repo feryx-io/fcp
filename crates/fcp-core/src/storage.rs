@@ -930,6 +930,26 @@ impl std::str::FromStr for CdrKind {
     }
 }
 
+impl CdrKind {
+    /// The kind filter a listing applies for a `?kind=` parameter
+    /// (`docs/CDR_PIPELINE.md` §5): a kind lists that kind, `all` every
+    /// kind, and no parameter the call records alone — or every kind when
+    /// the listing asks for one call's records.
+    pub fn listing_filter(
+        param: Option<&str>,
+        for_one_call: bool,
+    ) -> std::result::Result<Option<CdrKind>, String> {
+        match param.map(str::trim) {
+            Some("all") => Ok(None),
+            Some(kind) => kind.parse().map(Some).map_err(|_| {
+                format!("Invalid kind: {kind}. Valid values: call, queue, conference, gateway, all")
+            }),
+            None if for_one_call => Ok(None),
+            None => Ok(Some(CdrKind::Call)),
+        }
+    }
+}
+
 impl std::fmt::Display for CdrKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
@@ -3890,6 +3910,21 @@ impl WebhookStore for DynStorage {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn a_listing_shows_call_records_unless_asked_for_a_kind_all_or_one_call() {
+        assert_eq!(
+            CdrKind::listing_filter(None, false),
+            Ok(Some(CdrKind::Call))
+        );
+        assert_eq!(CdrKind::listing_filter(None, true), Ok(None));
+        assert_eq!(CdrKind::listing_filter(Some("all"), false), Ok(None));
+        assert_eq!(
+            CdrKind::listing_filter(Some("queue"), true),
+            Ok(Some(CdrKind::Queue))
+        );
+        assert!(CdrKind::listing_filter(Some("calls"), false).is_err());
+    }
 
     #[tokio::test]
     async fn test_file_backed_storage_users() {

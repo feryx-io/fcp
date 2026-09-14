@@ -4,6 +4,7 @@
 //! mute and are muted, and leave. Skipped without
 //! `FCP_TEST_DATABASE_URL`.
 
+use fcp_core::storage::{CallDisposition, CdrKind, HangupParty};
 use fcp_testkit::media::allocate_port_pair;
 use fcp_testkit::smoke::{http_get, http_post, loopback};
 use fcp_testkit::{bins, free_port, Phone, PhoneEvent, Seed, Service, TestDatabase};
@@ -318,6 +319,36 @@ async fn two_phones_in_a_room_hear_each_other_and_leave() {
     assert_eq!(bob_call.hangup().await.unwrap(), 200);
     stack.wait_participants(0).await;
 
+    // A record of each leg (docs/CDR_PIPELINE.md §5): the room, the
+    // participant, who hung up, the media that crossed.
+    let records = stack.seed.cdrs(Some(CdrKind::Conference), 2, SOON).await;
+    assert_eq!(records.len(), 2, "{records:#?}");
+    for record in &records {
+        let data = record.custom_data.as_ref().expect("leg data");
+        assert_eq!(data["room_number"], ROOM, "{record:#?}");
+        assert_eq!(record.to_uri, format!("conference:{ROOM}"));
+        assert_eq!(record.disposition, CallDisposition::Answered, "{record:#?}");
+        assert_eq!(
+            record.hangup_party,
+            Some(HangupParty::Caller),
+            "{record:#?}"
+        );
+        assert!(record.rtp_packets_received.unwrap_or(0) > 0, "{record:#?}");
+        assert!(record.codec_a_leg.is_some(), "{record:#?}");
+    }
+    assert!(
+        records.iter().any(|r| r.from_uri.contains("alice")),
+        "{records:#?}"
+    );
+    assert!(
+        records.iter().any(|r| r.from_uri.contains("bob")),
+        "{records:#?}"
+    );
+    assert_ne!(
+        records[0].call_id, records[1].call_id,
+        "two legs, two calls"
+    );
+
     stack.finish().await;
 }
 
@@ -434,6 +465,19 @@ async fn mute_by_dtmf_and_by_api_and_a_kick() {
     );
     stack.wait_participants(1).await;
 
+    // Bob's leg is on the record as ended by the platform.
+    let records = stack.seed.cdrs(Some(CdrKind::Conference), 1, SOON).await;
+    let kicked = records
+        .iter()
+        .find(|r| r.from_uri.contains("bob"))
+        .unwrap_or_else(|| panic!("no record of Bob's leg: {records:#?}"));
+    assert_eq!(
+        kicked.hangup_party,
+        Some(HangupParty::System),
+        "{kicked:#?}"
+    );
+    assert_eq!(kicked.sip_reason.as_deref(), Some("Kicked"), "{kicked:#?}");
+
     assert_eq!(alice_call.hangup().await.unwrap(), 200);
     stack.finish().await;
 }
@@ -475,5 +519,26 @@ async fn a_room_is_reached_through_the_call_manager() {
     assert_eq!(alice_call.hangup().await.unwrap(), 200);
     stack.wait_participants(1).await;
     assert_eq!(bob_call.hangup().await.unwrap(), 200);
+    stack.wait_participants(0).await;
+
+    // Alice's leg in the room carries the call manager's call id, so it
+    // sits beside that call's record (docs/CDR_PIPELINE.md §5); Bob, who
+    // dialed the room directly, has a call id of his own.
+    let calls = stack.seed.cdrs(Some(CdrKind::Call), 1, SOON).await;
+    let legs = stack.seed.cdrs(Some(CdrKind::Conference), 2, SOON).await;
+    let alice_call_record = calls
+        .iter()
+        .find(|r| r.from_uri.contains("alice"))
+        .unwrap_or_else(|| panic!("no call record for Alice: {calls:#?}"));
+    let alice_leg = legs
+        .iter()
+        .find(|r| r.call_id == alice_call_record.call_id)
+        .unwrap_or_else(|| panic!("no leg with Alice's call id: {legs:#?}"));
+    assert_eq!(alice_leg.kind, CdrKind::Conference);
+    let bob_leg = legs
+        .iter()
+        .find(|r| r.from_uri.contains("bob"))
+        .unwrap_or_else(|| panic!("no leg for Bob: {legs:#?}"));
+    assert_ne!(bob_leg.call_id, alice_call_record.call_id);
     stack.finish().await;
 }

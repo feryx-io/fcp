@@ -143,6 +143,54 @@ pub struct ParticipantSession {
     /// The BFCP ids the answer gave a room system that offered floor
     /// control (§15.6, 7e).
     pub bfcp: Option<BfcpAssignment>,
+    /// What the leg's record needs that nothing else here keeps
+    /// (`docs/CDR_PIPELINE.md` §5).
+    pub record: LegRecord,
+}
+
+/// The parts of a conference leg's record the session does not otherwise
+/// hold.
+#[derive(Debug, Clone)]
+pub struct LegRecord {
+    /// The call the leg belongs to: the call manager's or the gateway's,
+    /// named in `X-FCP-Call-Id`, or one of the leg's own.
+    pub call_id: fcp_core::CallId,
+    /// Who the leg is from, and to.
+    pub from_uri: String,
+    pub to_uri: Option<String>,
+    /// The node a migrated participant came from.
+    pub migrated_from: Option<String>,
+}
+
+impl LegRecord {
+    /// A leg that arrived with `request`.
+    pub fn from_request(request: &sip_core::Request, migrated_from: Option<String>) -> Self {
+        let call_id = sip_parse::header(request.headers(), fcp_core::CALL_ID_HEADER)
+            .and_then(|v| v.as_str().trim().parse::<fcp_core::CallId>().ok())
+            .unwrap_or_default();
+        let from_uri = request
+            .headers()
+            .get_smol("From")
+            .and_then(sip_parse::parse_from_header)
+            .and_then(|from| from.inner().sip_uri().map(|u| u.as_str().to_string()))
+            .unwrap_or_else(|| "unknown".to_string());
+        Self {
+            call_id,
+            from_uri,
+            to_uri: None,
+            migrated_from,
+        }
+    }
+
+    /// A leg this node placed or accepted for itself.
+    pub fn own(from_uri: String, to_uri: Option<String>) -> Self {
+        Self {
+            call_id: fcp_core::CallId::new(),
+            from_uri,
+            to_uri,
+            migrated_from: None,
+        }
+    }
 }
 
 /// Sink for "this node now has N local participants in room R" updates,
@@ -244,6 +292,10 @@ pub struct ConferenceCallHandler {
     content_claims: DashMap<String, (ContentClaim, Instant)>,
     /// Calls that have been answered and are waiting for PIN input.
     pending_pin_auth: DashMap<String, PendingPinAuth>,
+    /// Where leg records go (`docs/CDR_PIPELINE.md`), and the region they
+    /// name.
+    cdr: Option<fcp_sip::CdrWriter>,
+    region: Option<String>,
     /// The REFERs sent to callers' legs as this node drains
     /// (`docs/DISTRIBUTED_CONFERENCING.md`, phase 5).
     migrations: migration::Migrations,
@@ -704,6 +756,8 @@ impl ConferenceCallHandler {
             speaker_claims: DashMap::new(),
             content_claims: DashMap::new(),
             pending_pin_auth: DashMap::new(),
+            cdr: None,
+            region: None,
             migrations: migration::Migrations::default(),
             used_tickets: migration::UsedTickets::default(),
             cluster_secret: std::sync::RwLock::new(None),
@@ -971,7 +1025,13 @@ impl ConferenceCallHandler {
                 Err(_) => debug!(call_id = %call_id, "BYE after migration unanswered"),
             }
         }
-        self.remove_session(call_id);
+        self.remove_session_for(
+            call_id,
+            fcp_sip::TerminationReason::system(
+                fcp_sip::SystemCause::Migration,
+                "Moved to another node",
+            ),
+        );
     }
 
     /// Maximum number of entries in the meeting cache (from config).
@@ -2404,7 +2464,10 @@ impl ConferenceCallHandler {
             }
         }
 
-        self.remove_session(&call_id);
+        self.remove_session_for(
+            &call_id,
+            fcp_sip::TerminationReason::system(fcp_sip::SystemCause::Admin, "Kicked"),
+        );
         Ok(())
     }
 
@@ -2764,6 +2827,10 @@ impl ConferenceCallHandler {
                 content: None,
                 joined_by_token: false,
                 bfcp: None,
+                record: LegRecord::own(
+                    format!("conference:{room_number}"),
+                    Some(destination.to_string()),
+                ),
             },
         );
 
@@ -2874,7 +2941,10 @@ impl ConferenceCallHandler {
                 }
                 drop(session);
             }
-            self.remove_session(call_id);
+            self.remove_session_for(
+                call_id,
+                fcp_sip::TerminationReason::system(fcp_sip::SystemCause::Other, "Room closed"),
+            );
         }
 
         // Stop recording if active
@@ -2951,7 +3021,10 @@ impl ConferenceCallHandler {
             })
             .await;
         for call_id in &call_ids {
-            self.remove_session(call_id);
+            self.remove_session_for(
+                call_id,
+                fcp_sip::TerminationReason::system(fcp_sip::SystemCause::Other, "Node stopped"),
+            );
         }
 
         // Stop recordings and delete all active rooms
@@ -3097,7 +3170,13 @@ impl ConferenceCallHandler {
                 }
                 drop(session);
             }
-            self.remove_session(call_id);
+            self.remove_session_for(
+                call_id,
+                fcp_sip::TerminationReason::system(
+                    fcp_sip::SystemCause::SessionExpired,
+                    "Session expired",
+                ),
+            );
         }
 
         if !expired.is_empty() {
@@ -3255,11 +3334,14 @@ impl ConferenceCallHandler {
     }
 
     /// Remove a participant by SIP call ID (called on BYE).
-    fn remove_session(&self, call_id: &str) {
+    /// Remove a session for `reason` (`Hangup { by: None }` for a BYE from
+    /// the far end), writing the leg's record.
+    fn remove_session_for(&self, call_id: &str, reason: fcp_sip::TerminationReason) {
         if let Some((_, mut session)) = self.sessions.remove(call_id) {
             // A leg that was being moved leaves as a migration, whether
             // its holder reported first or simply hung up (phase 5).
             let migrated_to = self.migrations.take(call_id).map(|m| m.target_node);
+            self.write_leg_record(&session, reason, migrated_to.as_deref());
             // Update secondary room index
             if let Some(mut ids) = self.room_sessions.get_mut(&session.room_number) {
                 ids.retain(|id| id != call_id);
@@ -3407,6 +3489,86 @@ impl ConferenceCallHandler {
         } else {
             debug!(call_id = %call_id, "No conference session found for BYE");
         }
+    }
+
+    /// Where this node's conference leg records go, and the region they
+    /// name. Set once at start-up (`[cdr]`); unset, no records are written.
+    pub fn set_cdr(&mut self, writer: fcp_sip::CdrWriter, region: Option<String>) {
+        self.cdr = Some(writer);
+        self.region = region;
+    }
+
+    /// The record of a conference leg that ended for `reason`
+    /// (`docs/CDR_PIPELINE.md` §5): `kind = conference`, the call id the
+    /// leg arrived with, the participant, the room, packet counts.
+    fn write_leg_record(
+        &self,
+        session: &ParticipantSession,
+        reason: fcp_sip::TerminationReason,
+        migrated_to: Option<&str>,
+    ) {
+        let Some(writer) = &self.cdr else {
+            return;
+        };
+        let reason = match (migrated_to, reason) {
+            (Some(node), _) => fcp_sip::TerminationReason::system(
+                fcp_sip::SystemCause::Migration,
+                format!("Moved to node {node}"),
+            ),
+            // A BYE from the far end: the participant, or the destination
+            // of a dial-out.
+            (None, fcp_sip::TerminationReason::Hangup { by: None }) => {
+                fcp_sip::TerminationReason::hangup_by(if session.is_dial_out {
+                    fcp_core::storage::HangupParty::Callee
+                } else {
+                    fcp_core::storage::HangupParty::Caller
+                })
+            }
+            (None, reason) => reason,
+        };
+        let record = fcp_cdr::RecordBuilder::new(
+            fcp_core::storage::CdrKind::Conference,
+            session.record.call_id,
+            session.tenant_id,
+        )
+        .sip_call_id(session.call_id.clone())
+        .from(
+            session.record.from_uri.clone(),
+            session.display_name.clone(),
+        )
+        .to(
+            session
+                .record
+                .to_uri
+                .clone()
+                .unwrap_or_else(|| format!("conference:{}", session.room_number)),
+            None,
+        )
+        .started_at(session.joined_at)
+        .answered_at(Some(session.joined_at))
+        .ended_at(Some(SystemTime::now()))
+        .reason(reason)
+        .media_anchored(true)
+        .codecs(Some(session.codec_name.clone()), None)
+        .rtp_packets(
+            session.stats.packets_sent.load(Ordering::Relaxed),
+            session.stats.packets_received.load(Ordering::Relaxed),
+        )
+        .node(Some(self.node_id.clone()), self.region.clone())
+        .custom_data(Some(serde_json::json!({
+            "room_number": session.room_number,
+            "participant_id": session.participant_id,
+            "is_host": session.is_host,
+            "dial_out": session.is_dial_out,
+            "trunk_peer": session.trunk_peer,
+            "joined_by_token": session.joined_by_token,
+            "video": session.video.is_some(),
+            "content": session.content.is_some(),
+            "migrated_from": session.record.migrated_from,
+            "migrated_to": migrated_to,
+        })))
+        .build();
+        writer.write(record);
     }
 
     /// Build a forge-conference RoomConfig from a Meeting's settings.
@@ -4044,7 +4206,10 @@ impl ConferenceCallHandler {
                 }
                 _ => continue,
             };
-            self.remove_session(&call_id);
+            self.remove_session_for(
+                &call_id,
+                fcp_sip::TerminationReason::system(fcp_sip::SystemCause::Other, "Trunk closed"),
+            );
             let uac = Arc::clone(&self.uac);
             let room = room_number.to_string();
             let peer = peer.to_string();
@@ -4866,7 +5031,10 @@ impl ConferenceCallHandler {
             .collect();
         for call_id in stale {
             info!(room = %room_number, peer = %peer_node, call_id = %call_id, "Replacing stale conference trunk");
-            self.remove_session(&call_id);
+            self.remove_session_for(
+                &call_id,
+                fcp_sip::TerminationReason::system(fcp_sip::SystemCause::Other, "Trunk replaced"),
+            );
         }
 
         let call_id = extract_call_id(request);
@@ -5039,6 +5207,10 @@ impl ConferenceCallHandler {
                 content,
                 joined_by_token: false,
                 bfcp: None,
+                record: LegRecord::own(
+                    format!("trunk:{}", leg.peer_node),
+                    Some(format!("conference:{}", leg.room_number)),
+                ),
             },
         );
         info!(
@@ -6662,6 +6834,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                     joined_by_token: join.is_some()
                         || migrate.as_ref().is_some_and(|t| t.token_join),
                     bfcp: bfcp_assignment.clone(),
+                    record: LegRecord::from_request(request, None),
                 },
             );
 
@@ -6970,6 +7143,10 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 content,
                 joined_by_token: join.is_some(),
                 bfcp: bfcp_assignment.clone(),
+                record: LegRecord::from_request(
+                    request,
+                    migrate.as_ref().map(|t| t.from_node.clone()),
+                ),
             },
         );
 
@@ -7378,7 +7555,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
     fn handle_bye(&self, call_id: &str) -> Result<()> {
         let bye_start = Instant::now();
         let result = if self.sessions.contains_key(call_id) {
-            self.remove_session(call_id);
+            self.remove_session_for(call_id, fcp_sip::TerminationReason::Hangup { by: None });
             Ok(())
         } else if self.pending_pin_auth.remove(call_id).is_some() {
             info!(call_id = %call_id, "BYE received during conference PIN collection");
@@ -7397,7 +7574,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
     fn handle_cancel(&self, call_id: &str) -> Result<bool> {
         if self.sessions.contains_key(call_id) {
             info!(call_id = %call_id, "CANCEL received for conference participant");
-            self.remove_session(call_id);
+            self.remove_session_for(call_id, fcp_sip::TerminationReason::Cancelled);
             Ok(true)
         } else if self.pending_pin_auth.remove(call_id).is_some() {
             info!(call_id = %call_id, "CANCEL received during conference PIN collection");
@@ -7863,7 +8040,13 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                     let call_id = call_id.clone();
                     tokio::spawn(async move { me.finish_migration(&call_id).await });
                 } else {
-                    self.remove_session(&call_id);
+                    self.remove_session_for(
+                        &call_id,
+                        fcp_sip::TerminationReason::system(
+                            fcp_sip::SystemCause::Migration,
+                            "Moved to another node",
+                        ),
+                    );
                 }
             }
             Some(Notice::Failed(code)) => {

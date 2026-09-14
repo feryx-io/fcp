@@ -260,6 +260,18 @@ pub struct Call {
     /// down; on the record when present.
     pub rtp_stats: Option<fcp_cdr::RtpStats>,
 
+    /// The call this one came from: the call a transferred caller left, the
+    /// ringing call a pickup took, the parked call a retrieve brought back
+    /// (`docs/CDR_PIPELINE.md` §5).
+    pub correlation_id: Option<fcp_core::CallId>,
+
+    /// Where the call's recording is being written, when it is recorded.
+    pub recording_path: Option<String>,
+
+    /// Each outbound route's target and trunk, primary first, so the trunk
+    /// that answered can be named on the record rather than the primary.
+    pub route_trunks: Vec<(String, String)>,
+
     /// Flow ID if this call is executing a flow
     pub flow_id: Option<String>,
 
@@ -379,6 +391,9 @@ impl Call {
             failure_reason: None,
             termination: None,
             rtp_stats: None,
+            correlation_id: None,
+            recording_path: None,
+            route_trunks: Vec::new(),
             flow_id: None,
             flow_current_node: None,
             trunk_name: None,
@@ -473,6 +488,9 @@ impl Call {
             failure_reason: None,
             termination: None,
             rtp_stats: None,
+            correlation_id: None,
+            recording_path: None,
+            route_trunks: Vec::new(),
             flow_id: None,
             flow_current_node: None,
             trunk_name: None,

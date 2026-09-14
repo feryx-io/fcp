@@ -81,6 +81,12 @@ pub use crate::geographic::{
 };
 pub use crate::identifiers::*;
 pub use crate::join_token::{JoinRole, JoinToken, JoinTokenError, JOIN_TOKEN_HEADER};
+
+/// The header a call manager's INVITE to a conference node, and a WebRTC
+/// gateway's, carries naming its own call or session, so the conference
+/// leg's record shares that call's id (`docs/CDR_PIPELINE.md` §5). It
+/// correlates records and decides nothing else.
+pub const CALL_ID_HEADER: &str = "X-FCP-Call-Id";
 pub use crate::line_binding::{BindingType, DeviceBinding, LineBinding, RingStrategy};
 pub use crate::meeting::Meeting;
 pub use crate::migration_ticket::{

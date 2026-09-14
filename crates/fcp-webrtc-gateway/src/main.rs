@@ -321,13 +321,33 @@ async fn main() -> Result<()> {
             })
             .collect(),
     };
-    let sessions = Arc::new(SessionManager::new(
+    let mut session_manager = SessionManager::new(
         uac,
         app_state.webrtc_manager.clone(),
         PortPool::new(relay_ports),
         placement,
         session_cfg,
-    ));
+    );
+    // Session records (docs/CDR_PIPELINE.md): through the spool to the
+    // Redis stream, the only sink a node without a database has.
+    #[cfg(feature = "storage-redis")]
+    if let Some(writer) = start_cdr(&config).await? {
+        session_manager = session_manager.with_cdr(fcp_webrtc_gateway::session::CdrSettings {
+            writer,
+            node_id: config.service.node_id.clone(),
+            region: config
+                .cluster
+                .region
+                .clone()
+                .or_else(|| std::env::var("FCP_REGION").ok()),
+            default_tenant: config
+                .conference
+                .tenant_id
+                .as_deref()
+                .and_then(|t| t.parse().ok()),
+        });
+    }
+    let sessions = Arc::new(session_manager);
 
     // 10. Inbound SIP: responses to our INVITEs, BYE from the far end.
     let sip_bind: std::net::SocketAddr = config
@@ -500,6 +520,10 @@ async fn main() -> Result<()> {
         cm.shutdown().await;
     }
 
+    // The last sessions' records leave before we do.
+    if let Some(writer) = sessions.cdr_writer() {
+        writer.flush(Duration::from_secs(5)).await;
+    }
     info!("Shutdown complete");
     Ok(())
 }
@@ -566,4 +590,40 @@ fn init_tracing(config: &GatewayConfig) {
                 .init();
         }
     }
+}
+
+/// The gateway's CDR writer, when `[cdr]` asks for one: a spool shipping
+/// to the Redis stream. Anything else is refused with a warning, since the
+/// gateway has no database to store records itself.
+#[cfg(feature = "storage-redis")]
+async fn start_cdr(
+    config: &fcp_webrtc_gateway::config::GatewayConfig,
+) -> anyhow::Result<Option<fcp_sip::CdrWriter>> {
+    let cdr = &config.cdr;
+    if cdr.spool_dir.is_none() {
+        return Ok(None);
+    }
+    if cdr.sink != fcp_cdr::SinkKind::Stream {
+        tracing::warn!("[cdr] spool_dir is set but sink is not \"stream\": the gateway has no database, so it writes no session records");
+        return Ok(None);
+    }
+    let Some(url) = &config.storage.redis_url else {
+        tracing::warn!("[cdr] sink = \"stream\" needs storage.redis_url; no session records");
+        return Ok(None);
+    };
+    let redis = fcp_storage_redis::RedisStorage::new(fcp_storage_redis::RedisConfig {
+        url: url.clone(),
+        ..Default::default()
+    })
+    .await
+    .context("Failed to connect to Redis for the CDR stream")?;
+    let stream: std::sync::Arc<dyn fcp_cdr::sink::Sink> =
+        std::sync::Arc::new(fcp_storage_redis::cdr_stream::RedisCdrStream::new(
+            redis,
+            config.service.node_id.clone(),
+            Duration::from_secs(24 * 3600),
+        ));
+    let writer =
+        fcp_cdr::start_node(cdr, None, Some(stream)).context("Failed to start the CDR spool")?;
+    Ok(Some(writer))
 }

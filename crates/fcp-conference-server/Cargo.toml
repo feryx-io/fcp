@@ -43,6 +43,7 @@ path = "src/main.rs"
 [dependencies]
 # FCP crates
 fcp-core = { path = "../fcp-core" }
+fcp-cdr = { path = "../fcp-cdr" }
 fcp-sip = { path = "../fcp-sip", features = ["ws"] }
 fcp-api-core = { path = "../fcp-api-core" }
 fcp-sbc-core = { path = "../fcp-sbc-core" }
@@ -52,7 +53,7 @@ fcp-events = { path = "../fcp-events" }
 
 # Storage backend
 fcp-storage-postgres = { path = "../fcp-storage-postgres" }
-fcp-storage-redis = { path = "../fcp-storage-redis", optional = true }
+fcp-storage-redis = { path = "../fcp-storage-redis", features = ["cdr"], optional = true }
 fcp-cluster = { path = "../fcp-cluster", optional = true }
 
 # forge-media crates (conference engine)

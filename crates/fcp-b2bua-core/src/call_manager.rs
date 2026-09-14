@@ -185,6 +185,13 @@ impl CallManager {
         let _ = self.update_call(call_id, |call| call.rtp_stats = Some(stats));
     }
 
+    /// Forget a call without ending it or writing its record: for a call
+    /// handed to a handler that keeps its own record of it (a conference
+    /// node's leg).
+    pub fn discard_call(&self, call_id: &CallId) {
+        self.calls.remove(call_id);
+    }
+
     /// Record why a call is ending before the ending completes: the BYE
     /// handler knows who hung up, but the call is only terminated once the
     /// forwarded BYE completes, by a site that does not. A later
@@ -518,6 +525,8 @@ impl CallManager {
             call.b_leg.as_ref().and_then(|b| b.sdp.as_deref()),
         )
         .rtp(call.rtp_stats)
+        .correlation(call.correlation_id)
+        .recording(call.recording_path.clone())
         .trunk(call.trunk_name.clone())
         .node(self.node_id.clone(), self.region.clone())
         .custom_data(call.custom_data.clone());

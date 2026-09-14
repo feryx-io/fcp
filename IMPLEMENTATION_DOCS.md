@@ -95,8 +95,12 @@ what exists.
 2. `CallManager::terminate_call_with` builds the record with
    `fcp_cdr::RecordBuilder`: disposition, hangup cause, SIP status and
    hangup party from the reason; durations; codecs parsed from each leg's
-   SDP; trunk, node and region; a fresh `cdr_id`. The queue handler builds
-   its own records the same way, as `kind = queue`.
+   SDP; trunk, node and region; the call it came from (a transfer, pickup
+   or retrieve); a fresh `cdr_id`. The queue handler writes a `queue`
+   record under the same call id, the conference server a `conference`
+   record per participant leg (under the call manager's or gateway's call
+   id, from `X-FCP-Call-Id`), and the WebRTC gateway a `gateway` record per
+   browser session (through the stream only).
 3. The record is appended to the node's spool (`[cdr] spool_dir`), a
    directory of JSON Lines segments synced every 100 ms, and a shipper
    drains the spool to the sink: the in-process processor
@@ -142,7 +146,7 @@ Status and metrics: the call manager's `/cdr/status` and `/metrics`,
 
 ### REST API
 
-- `GET /v1/cdrs` — Query CDRs with filters (tenant, time range, disposition)
+- `GET /v1/cdrs` — Query CDRs with filters (tenant, time range, disposition); `?kind=` for `queue`, `conference`, `gateway` or `all` (default `call`, or every kind with `call_id`)
 - `GET /v1/cdrs/:call_id` — Get a call's record
 - `GET /v1/cdrs/export` — CSV export
 

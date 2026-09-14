@@ -140,6 +140,38 @@ impl Seed {
         &self.storage
     }
 
+    /// The records of `kind` (every kind for `None`) in the test database,
+    /// once at least `n` are there, oldest first. Panics after `within`.
+    pub async fn cdrs(
+        &self,
+        kind: Option<fcp_core::storage::CdrKind>,
+        n: usize,
+        within: std::time::Duration,
+    ) -> Vec<fcp_core::storage::CallDetailRecord> {
+        use fcp_core::storage::{CdrQuery, CdrStore};
+        let deadline = tokio::time::Instant::now() + within;
+        loop {
+            let mut records = self
+                .storage
+                .query_cdrs(CdrQuery {
+                    kind,
+                    ..Default::default()
+                })
+                .await
+                .expect("query records");
+            if records.len() >= n {
+                records.reverse();
+                return records;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "{} of {n} {kind:?} records after {within:?}: {records:#?}",
+                records.len()
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+    }
+
     /// Run one SQL statement against the test database, for a scenario
     /// that has to break something on purpose (the CDR pipeline's outage
     /// test takes the table away and gives it back).

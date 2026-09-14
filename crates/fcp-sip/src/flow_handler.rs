@@ -2233,6 +2233,11 @@ impl FlowCallHandler {
                     recording_path = %recording_filename,
                     "Recording started successfully"
                 );
+                // The call's record names its recording.
+                if let Some(cm) = &self.call_manager {
+                    let path = recording_filename.clone();
+                    let _ = cm.update_call(&call_id, |call| call.recording_path = Some(path));
+                }
 
                 let context_entry = self
                     .contexts
