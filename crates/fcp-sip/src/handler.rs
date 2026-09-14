@@ -6610,9 +6610,15 @@ impl SipMessageHandler {
                         }
                     }
                 } else {
-                    warn!(call_id = %call_id, "All B-legs failed, no voicemail — returning 480");
-                    let response =
-                        self.create_simple_response(&request, 480, "Temporarily Unavailable");
+                    // The callee's own refusal, when there was one (a single
+                    // phone saying busy or declining is what the caller
+                    // should hear), else 480.
+                    let (code, reason) = match last_failure_code {
+                        Some(code @ (400..=699)) if code != 408 => (code, reason_phrase(code)),
+                        _ => (480, "Temporarily Unavailable"),
+                    };
+                    warn!(call_id = %call_id, code, "All B-legs failed, no voicemail");
+                    let response = self.create_simple_response(&request, code, reason);
                     a_leg_handle.send_final(response).await;
                     let _ = self
                         .call_manager
@@ -12992,6 +12998,28 @@ fn generate_unhold_sdp(sdp: Option<&str>, local_addr: &str, rtp_port: u16) -> St
             addr = local_addr,
             port = rtp_port,
         )
+    }
+}
+
+/// The reason phrase a final response carries (RFC 3261 §21).
+fn reason_phrase(code: u16) -> &'static str {
+    match code {
+        400 => "Bad Request",
+        403 => "Forbidden",
+        404 => "Not Found",
+        408 => "Request Timeout",
+        410 => "Gone",
+        480 => "Temporarily Unavailable",
+        486 => "Busy Here",
+        487 => "Request Terminated",
+        488 => "Not Acceptable Here",
+        500 => "Server Internal Error",
+        503 => "Service Unavailable",
+        600 => "Busy Everywhere",
+        603 => "Decline",
+        604 => "Does Not Exist Anywhere",
+        606 => "Not Acceptable",
+        _ => "Call Failed",
     }
 }
 

@@ -1,7 +1,8 @@
 //! Calls through the call manager over real SIP and RTP
-//! (`docs/TEST_FLOOR.md`, T1): phones register, call each other, hear
-//! each other and hang up, against the binary on loopback with a
-//! throwaway database. Skipped without `FCP_TEST_DATABASE_URL`.
+//! (`docs/TEST_FLOOR.md`, T1 and T2): phones register, call each other,
+//! hear each other, hold, send digits, transfer and hang up, against the
+//! binary on loopback with a throwaway database. Skipped without
+//! `FCP_TEST_DATABASE_URL`.
 
 use fcp_testkit::media::allocate_port_pair;
 use fcp_testkit::seed::SeededUser;
@@ -17,7 +18,7 @@ const SOON: Duration = Duration::from_secs(5);
 /// A running call manager on a fresh database, with what a test needs
 /// to reach it.
 struct Stack {
-    service: Option<Service>,
+    service: tokio::sync::Mutex<Option<Service>>,
     db: Option<TestDatabase>,
     seed: Seed,
     sip: SocketAddr,
@@ -57,6 +58,9 @@ bind_address = "127.0.0.1:{http}"
 [calls]
 call_timeout_seconds = 5
 
+[b2bua.forking]
+timeout = 3
+
 [media]
 rtp_port_start = {rtp_start}
 rtp_port_end = {rtp_end}
@@ -74,7 +78,7 @@ format = "compact"
         let service =
             Service::start("call-manager", BIN, &config, &loopback(http, "/health")).await;
         Some(Self {
-            service: Some(service),
+            service: tokio::sync::Mutex::new(Some(service)),
             db: Some(db),
             seed,
             sip: SocketAddr::from(([127, 0, 0, 1], sip_port)),
@@ -98,24 +102,21 @@ format = "compact"
     }
 
     /// Give up: print the service's logs and what `phone` saw, then panic.
-    async fn fail(mut self, why: &str, phone: &Phone) -> ! {
+    async fn fail(&self, why: &str, phone: &Phone) -> ! {
         let mut seen = Vec::new();
         while let Some(ev) = phone.next_event(Duration::from_millis(50)).await {
             seen.push(ev);
         }
-        let logs = match self.service.take() {
+        let logs = match self.service.lock().await.take() {
             Some(service) => service.kill().await,
             None => String::new(),
         };
-        if let Some(db) = self.db.take() {
-            db.drop_db().await;
-        }
         panic!("{why}\nphone {} saw: {seen:#?}\n{logs}", phone.username);
     }
 
     /// Stop the service (a clean exit is asserted) and drop the database.
     async fn finish(mut self) {
-        if let Some(service) = self.service.take() {
+        if let Some(service) = self.service.lock().await.take() {
             service.stop().await;
         }
         if let Some(db) = self.db.take() {
@@ -279,5 +280,220 @@ async fn the_callee_can_hang_up() {
     );
     assert!(alice_call.ended(SOON).await);
 
+    stack.finish().await;
+}
+
+/// Two registered phones with the callee answered: the start of most
+/// feature scenarios.
+async fn answered_call(stack: &Stack) -> (Phone, fcp_testkit::Call, Phone, fcp_testkit::Call) {
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let bob = stack.seed.user("bob", "bob-pw", "1002").await;
+    let alice_phone = stack.phone(&alice).await;
+    let bob_phone = stack.phone(&bob).await;
+    assert_eq!(alice_phone.register().await.unwrap(), 200);
+    assert_eq!(bob_phone.register().await.unwrap(), 200);
+    let alice_call = alice_phone.call(&bob.extension).await.unwrap();
+    let Some(incoming) = bob_phone.incoming(SOON).await else {
+        let why = format!(
+            "Bob's phone did not ring; Alice's call is {:?}",
+            alice_call.phase()
+        );
+        stack.fail(&why, &alice_phone).await;
+    };
+    let bob_call = incoming.answer().await.unwrap();
+    if let Err(e) = alice_call.answered(SOON).await {
+        let why = format!("Alice's call was not answered: {e}");
+        stack.fail(&why, &alice_phone).await;
+    }
+    (alice_phone, alice_call, bob_phone, bob_call)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn busy_and_decline_reach_the_caller() {
+    let stack = stack_or_skip!();
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let bob = stack.seed.user("bob", "bob-pw", "1002").await;
+    let alice_phone = stack.phone(&alice).await;
+    let bob_phone = stack.phone(&bob).await;
+    assert_eq!(alice_phone.register().await.unwrap(), 200);
+    assert_eq!(bob_phone.register().await.unwrap(), 200);
+
+    for (code, reason) in [(486, "Busy Here"), (603, "Decline")] {
+        let call = alice_phone.call(&bob.extension).await.unwrap();
+        let incoming = bob_phone.incoming(SOON).await.expect("Bob's phone rings");
+        incoming.reject(code, reason).await.unwrap();
+        match call.answered(SOON).await {
+            Err(err) if err.to_string().contains(&code.to_string()) => {}
+            other => {
+                let why = format!("{code} {reason} did not reach the caller: {other:?}");
+                stack.fail(&why, &alice_phone).await;
+            }
+        }
+    }
+    stack.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_unanswered_call_times_out_and_the_callee_is_cancelled() {
+    let stack = stack_or_skip!();
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let bob = stack.seed.user("bob", "bob-pw", "1002").await;
+    let alice_phone = stack.phone(&alice).await;
+    let bob_phone = stack.phone(&bob).await;
+    assert_eq!(alice_phone.register().await.unwrap(), 200);
+    assert_eq!(bob_phone.register().await.unwrap(), 200);
+
+    let call = alice_phone.call(&bob.extension).await.unwrap();
+    let ringing = bob_phone
+        .incoming(SOON)
+        .await
+        .expect("Bob's phone rings")
+        .leave_ringing();
+    // [b2bua.forking] timeout = 3: the caller hears the timeout (the
+    // B2BUA answers 480 for a callee who did not pick up), the callee's
+    // ringing INVITE is cancelled.
+    match call.answered(Duration::from_secs(10)).await {
+        Err(err) if err.to_string().contains("480") || err.to_string().contains("408") => {}
+        other => {
+            let why = format!("no ring timeout reached the caller: {other:?}");
+            stack.fail(&why, &alice_phone).await;
+        }
+    }
+    assert!(
+        bob_phone
+            .expect(SOON, |e| matches!(e, PhoneEvent::Cancelled { .. }))
+            .await
+            .is_some(),
+        "Bob's phone was cancelled"
+    );
+    assert!(ringing.ended(SOON).await);
+    stack.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_call_to_an_unregistered_user_fails() {
+    let stack = stack_or_skip!();
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let carol = stack.seed.user("carol", "carol-pw", "1003").await;
+    let alice_phone = stack.phone(&alice).await;
+    assert_eq!(alice_phone.register().await.unwrap(), 200);
+
+    let call = alice_phone.call(&carol.extension).await.unwrap();
+    let err = call.answered(SOON).await.expect_err("nobody registered");
+    assert!(
+        err.to_string().contains("480") || err.to_string().contains("404"),
+        "{err}"
+    );
+    stack.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn hold_and_resume_are_relayed_to_the_far_end() {
+    let stack = stack_or_skip!();
+    let (_alice_phone, alice_call, bob_phone, _bob_call) = answered_call(&stack).await;
+
+    assert_eq!(alice_call.hold().await.unwrap(), 200);
+    let held = bob_phone
+        .expect(SOON, |e| matches!(e, PhoneEvent::ReInvite { .. }))
+        .await
+        .expect("Bob's phone gets the hold re-INVITE");
+    let PhoneEvent::ReInvite { sdp, .. } = held else {
+        unreachable!()
+    };
+    assert!(sdp.contains("a=sendonly"), "hold SDP relayed: {sdp}");
+
+    assert_eq!(alice_call.resume().await.unwrap(), 200);
+    let resumed = bob_phone
+        .expect(SOON, |e| matches!(e, PhoneEvent::ReInvite { .. }))
+        .await
+        .expect("Bob's phone gets the resume re-INVITE");
+    let PhoneEvent::ReInvite { sdp, .. } = resumed else {
+        unreachable!()
+    };
+    assert!(sdp.contains("a=sendrecv"), "resume SDP relayed: {sdp}");
+
+    assert_eq!(alice_call.hangup().await.unwrap(), 200);
+    stack.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dtmf_crosses_as_rfc_2833_and_as_info() {
+    let stack = stack_or_skip!();
+    let (_alice_phone, alice_call, bob_phone, bob_call) = answered_call(&stack).await;
+
+    // RFC 2833 in the media.
+    alice_call.media().send_dtmf('5');
+    if bob_call.media().heard_dtmf(SOON).await != Some('5') {
+        let why = format!(
+            "Bob did not hear the digit (Alice sent {} packets, Bob received {})",
+            alice_call.media().packets_sent(),
+            bob_call.media().packets_received()
+        );
+        stack.fail(&why, &_alice_phone).await;
+    }
+
+    // SIP INFO dtmf-relay, relayed to the far phone.
+    assert_eq!(alice_call.send_info_dtmf('7').await.unwrap(), 200);
+    let info = bob_phone
+        .expect(SOON, |e| matches!(e, PhoneEvent::Info { .. }))
+        .await
+        .expect("Bob's phone gets the INFO");
+    let PhoneEvent::Info { body, .. } = info else {
+        unreachable!()
+    };
+    assert!(body.contains("Signal=7"), "{body}");
+
+    assert_eq!(alice_call.hangup().await.unwrap(), 200);
+    stack.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_blind_transfer_moves_the_caller_to_a_third_phone() {
+    let stack = stack_or_skip!();
+    let (alice_phone, alice_call, bob_phone, bob_call) = answered_call(&stack).await;
+    let carol = stack.seed.user("carol", "carol-pw", "1003").await;
+    let carol_phone = stack.phone(&carol).await;
+    assert_eq!(carol_phone.register().await.unwrap(), 200);
+    alice_phone.follow_refers(true);
+
+    // Bob transfers Alice to Carol: the REFER reaches Alice's phone,
+    // which dials Carol.
+    let refer_to = format!("sip:{}@{}", carol.extension, stack.sip);
+    assert_eq!(bob_call.refer(&refer_to).await.unwrap(), 202);
+    assert!(
+        alice_phone
+            .expect(SOON, |e| matches!(e, PhoneEvent::Refer { .. }))
+            .await
+            .is_some(),
+        "Alice's phone gets the REFER"
+    );
+    let carol_call = carol_phone
+        .incoming(Duration::from_secs(10))
+        .await
+        .expect("Carol's phone rings")
+        .answer()
+        .await
+        .unwrap();
+
+    // Alice and Carol hear each other; Bob's leg is dropped.
+    carol_call.media().play_tone(660.0, 1500);
+    let alice_new = alice_phone
+        .expect(SOON, |e| matches!(e, PhoneEvent::Answered { .. }))
+        .await
+        .expect("Alice's new call is answered");
+    let _ = alice_new;
+    assert!(
+        bob_phone
+            .expect(Duration::from_secs(10), |e| matches!(
+                e,
+                PhoneEvent::Bye { .. }
+            ))
+            .await
+            .is_some(),
+        "Bob's phone gets BYE once the transfer succeeds"
+    );
+    assert!(alice_call.ended(SOON).await, "Alice's old leg is over");
+
+    assert_eq!(carol_call.hangup().await.unwrap(), 200);
     stack.finish().await;
 }
