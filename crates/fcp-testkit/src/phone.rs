@@ -993,14 +993,13 @@ mod tests {
 
         let call = a.call(&target).await.unwrap();
         let incoming = b.incoming(Duration::from_secs(3)).await.expect("b rings");
-        assert!(matches!(
-            a.expect(Duration::from_secs(3), |e| matches!(
+        assert!(a
+            .expect(Duration::from_secs(3), |e| matches!(
                 e,
                 PhoneEvent::Ringing { code: 180, .. }
             ))
-            .await,
-            Some(_)
-        ));
+            .await
+            .is_some());
         incoming.reject(486, "Busy Here").await.unwrap();
         let err = call.answered(Duration::from_secs(3)).await.unwrap_err();
         assert!(err.to_string().contains("486"), "{err}");
