@@ -433,3 +433,37 @@ pub fn temp_dir() -> tempfile::TempDir {
 pub fn toml_path(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
+
+/// `POST` a JSON body (or none) over plain HTTP/1.1, as [`http_get`] does:
+/// the status and the body.
+pub async fn http_post(url: &str, body: &str) -> anyhow::Result<(u16, String)> {
+    let rest = url
+        .strip_prefix("http://")
+        .ok_or_else(|| anyhow::anyhow!("only http:// URLs are supported: {url}"))?;
+    let (authority, path) = match rest.split_once('/') {
+        Some((a, p)) => (a, format!("/{p}")),
+        None => (rest, "/".to_string()),
+    };
+    let mut stream = tokio::time::timeout(Duration::from_secs(2), TcpStream::connect(authority))
+        .await
+        .map_err(|_| anyhow::anyhow!("connect timeout"))??;
+    let request = format!(
+        "POST {path} HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\nAccept: */*\r\n\
+         Content-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(request.as_bytes()).await?;
+    let mut raw = Vec::new();
+    tokio::time::timeout(Duration::from_secs(5), stream.read_to_end(&mut raw))
+        .await
+        .map_err(|_| anyhow::anyhow!("read timeout"))??;
+    let text = String::from_utf8_lossy(&raw);
+    let (head, body) = text.split_once("\r\n\r\n").unwrap_or((&text, ""));
+    let status = head
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|code| code.parse::<u16>().ok())
+        .ok_or_else(|| anyhow::anyhow!("malformed response: {head:?}"))?;
+    Ok((status, body.to_string()))
+}

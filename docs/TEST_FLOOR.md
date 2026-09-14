@@ -120,7 +120,7 @@ One PR each, in order.
 |---|---|---|
 | T1 ✅ v0.25.150 | The phone, the seed, the binary locator. Call manager: register (good and bad password, listed at `/registrations`), a call answered with audio heard both ways, hangup from either side, a CDR at `/cdrs` | `fcp-testkit`, `fcp-call-manager/tests/calls.rs` |
 | T2 ✅ v0.25.153 | Call features on the call manager: busy, decline, no answer within the forking timeout, an unregistered callee, hold and resume relayed, RFC 2833 DTMF through anchored media, DTMF INFO relayed, blind transfer (REFER, the new call, the old leg dropped) | `fcp-call-manager/tests/calls.rs` |
-| T3 | Conference server: a room joined directly, the PIN entered by DTMF, two phones hearing each other through the mixer, mute by DTMF and by API, the room's participants at `/conferences/{room}`, leave and auto-destroy; the same room reached through the call manager (the room number as an extension, `conference_server_uri`) | `fcp-conference-server/tests/rooms.rs` |
+| T3 ✅ v0.25.154 | Conference server: a room joined directly, the PIN entered by DTMF (guest and host, three wrong ones hung up), two phones hearing each other through the mixer, mute by DTMF and by API and a kick, the room's participants at `/conferences/{room}`, leave and auto-destroy; the same room reached through the call manager (the room number dialed as an extension, `conference_server_uri`) | `fcp-conference-server/tests/rooms.rs` |
 | T4 | Two conference nodes with Redis under `cluster.secret`: placement spreads a room past `conference_node_capacity`, a caller on each node hears the other over the trunk, and phase 5 end to end — SIGTERM one node, the caller through the call manager stays in the room on the other (same participant id, `migrated_from`), a phone that dialed the node directly follows the REFER itself | `fcp-conference-server/tests/cluster.rs` |
 | T5 | WebRTC gateway: a forge-webrtc peer standing in for the browser joins a room through the gateway's HTTP API and hears a phone in it; the migration swap under the browser against two real nodes | `fcp-webrtc-gateway/tests/rooms.rs` |
 
@@ -178,6 +178,24 @@ dial the Refer-To, NOTIFY the outcome, drop the old leg on success; the
 transfer scenario watches Carol ring, Alice's new call answer, and Bob's
 leg get its BYE. Timing: the nine scenarios run in about four seconds
 after the build.
+
+*T3 shipped 2026-09-14 (v0.25.154).* Four scenarios in
+`crates/fcp-conference-server/tests/rooms.rs`, all passing on their
+first complete run — the mixer, the PIN collector, the DTMF commands,
+the control API and the call manager's room routing did what the docs
+say. What the phase added to the kit: `Seed::meeting` (a room with
+optional guest and host PINs), `http_post`, and a `Stack` that starts
+the conference server and, for the routed scenario, a call manager on
+the same database with `[b2bua] conference_server_uri` pointing at it
+(the call manager first, so one process runs the migrations). Things
+learned: the conference server refuses an RTP range under 100 ports;
+`GET /conferences/{room}` lists participant ids and the detail (state,
+host, caller id) is a second request per participant; a phone with no
+display name is known by its caller id; a PIN is digits then `#`, taken
+from RFC 2833 as well as INFO and in-band; no join tone plays unless a
+sound file is configured, so the tones the tests listen for meet
+nothing else in the mix. The four run in about nine seconds after the
+build.
 
 After each phase the manual checklist's rows that the phase covers get
 `Automated` in their Status column and the test name in Notes, so the
