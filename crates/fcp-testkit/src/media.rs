@@ -43,21 +43,23 @@ impl Codec {
         }
     }
 
-    fn encode(self, pcm: i16) -> u8 {
+    /// One sample to the wire.
+    pub fn encode(self, pcm: i16) -> u8 {
         match self {
             Codec::Pcmu => forge_codecs::g711::encode_ulaw(pcm),
             Codec::Pcma => forge_codecs::g711::encode_alaw(pcm),
         }
     }
 
-    fn decode(self, byte: u8) -> i16 {
+    /// One wire byte to a sample.
+    pub fn decode(self, byte: u8) -> i16 {
         match self {
             Codec::Pcmu => forge_codecs::g711::decode_ulaw(byte),
             Codec::Pcma => forge_codecs::g711::decode_alaw(byte),
         }
     }
 
-    fn from_payload_type(pt: u8) -> Option<Self> {
+    pub fn from_payload_type(pt: u8) -> Option<Self> {
         match pt {
             0 => Some(Codec::Pcmu),
             8 => Some(Codec::Pcma),
@@ -447,18 +449,7 @@ impl MediaLeg {
                     let mut p = playing.lock().unwrap();
                     match &mut *p {
                         Playing::Tone { hz, until, phase } if Instant::now() < *until => {
-                            let step = 2.0 * std::f32::consts::PI * *hz / 8000.0;
-                            let samples: Vec<i16> = (0..FRAME)
-                                .map(|_| {
-                                    let s = (phase.sin() * 0.7 * i16::MAX as f32) as i16;
-                                    *phase += step;
-                                    if *phase > 2.0 * std::f32::consts::PI {
-                                        *phase -= 2.0 * std::f32::consts::PI;
-                                    }
-                                    s
-                                })
-                                .collect();
-                            Some(samples)
+                            Some(tone_frame(*hz, phase))
                         }
                         Playing::Tone { .. } => {
                             *p = Playing::Nothing;
@@ -560,9 +551,59 @@ impl Drop for MediaLeg {
     }
 }
 
+/// A 20 ms frame of a sine at `hz` (8 kHz, 160 samples), continuing
+/// from `phase`, which it advances: what the phone's sender plays.
+pub fn tone_frame(hz: f32, phase: &mut f32) -> Vec<i16> {
+    let step = 2.0 * std::f32::consts::PI * hz / 8000.0;
+    (0..FRAME)
+        .map(|_| {
+            let s = (phase.sin() * 0.7 * i16::MAX as f32) as i16;
+            *phase += step;
+            if *phase > 2.0 * std::f32::consts::PI {
+                *phase -= 2.0 * std::f32::consts::PI;
+            }
+            s
+        })
+        .collect()
+}
+
+/// Hears one frequency in a stream of 8 kHz frames, the way a
+/// [`MediaLeg`] does: `heard` once the tone has dominated three
+/// consecutive frames.
+pub struct ToneDetector {
+    hz: u32,
+    run: u32,
+    best: u32,
+}
+
+impl ToneDetector {
+    pub fn new(hz: u32) -> Self {
+        Self {
+            hz,
+            run: 0,
+            best: 0,
+        }
+    }
+
+    pub fn feed(&mut self, samples: &[i16]) {
+        let energy: f64 = samples.iter().map(|&s| (s as f64) * (s as f64)).sum();
+        let rms = (energy / samples.len().max(1) as f64).sqrt();
+        if rms > 200.0 && goertzel_ratio(samples, self.hz) > 0.5 {
+            self.run += 1;
+            self.best = self.best.max(self.run);
+        } else {
+            self.run = 0;
+        }
+    }
+
+    pub fn heard(&self) -> bool {
+        self.best >= 3
+    }
+}
+
 /// How much of a frame's energy sits at `hz`: about 1 for a pure tone
 /// there, about 0 for anything else.
-fn goertzel_ratio(samples: &[i16], hz: u32) -> f64 {
+pub fn goertzel_ratio(samples: &[i16], hz: u32) -> f64 {
     let n = samples.len();
     if n == 0 {
         return 0.0;

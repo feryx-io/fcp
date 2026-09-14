@@ -9,7 +9,7 @@ in-process stubs.
 End-to-end SIP + media tests against the running binaries — the test
 floor, `docs/TEST_FLOOR.md` — live next to each binary on the same
 gating as the smoke tests: `crates/fcp-call-manager/tests/calls.rs`
-(T1: registration, a heard call, hang-up either side, the CDR; T2: busy, decline, no answer, an unregistered callee, hold and resume, DTMF both ways, blind transfer) and `crates/fcp-conference-server/tests/rooms.rs` (T3: rooms joined directly and through the call manager, the mixer heard, PINs, mute, kick) and `crates/fcp-conference-server/tests/cluster.rs` (T4: two nodes, a room spread over the trunk, a caller migrated off a draining node; needs Redis too) so far.
+(T1: registration, a heard call, hang-up either side, the CDR; T2: busy, decline, no answer, an unregistered callee, hold and resume, DTMF both ways, blind transfer) and `crates/fcp-conference-server/tests/rooms.rs` (T3: rooms joined directly and through the call manager, the mixer heard, PINs, mute, kick) and `crates/fcp-conference-server/tests/cluster.rs` (T4: two nodes, a room spread over the trunk, a caller migrated off a draining node; needs Redis too) and `crates/fcp-webrtc-gateway/tests/rooms.rs` (T5: a forge-webrtc peer as the browser joins through the gateway's HTTP API and hears a phone; the migration swap under the browser against two nodes).
 The scripted phone, the seed and the service runner are in
 `fcp-testkit`.
 

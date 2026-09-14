@@ -122,7 +122,7 @@ One PR each, in order.
 | T2 ✅ v0.25.153 | Call features on the call manager: busy, decline, no answer within the forking timeout, an unregistered callee, hold and resume relayed, RFC 2833 DTMF through anchored media, DTMF INFO relayed, blind transfer (REFER, the new call, the old leg dropped) | `fcp-call-manager/tests/calls.rs` |
 | T3 ✅ v0.25.154 | Conference server: a room joined directly, the PIN entered by DTMF (guest and host, three wrong ones hung up), two phones hearing each other through the mixer, mute by DTMF and by API and a kick, the room's participants at `/conferences/{room}`, leave and auto-destroy; the same room reached through the call manager (the room number dialed as an extension, `conference_server_uri`) | `fcp-conference-server/tests/rooms.rs` |
 | T4 ✅ v0.25.156 | Two conference nodes with Redis under `cluster.secret` and mutual-TLS trunks from a test CA: placement spreads a room past `conference_node_capacity`, a caller on each node hears the other over the trunk, and phase 5 end to end — SIGTERM one node, the caller through the call manager stays in the room on the other as the same participant, a phone that dialed the node directly follows the REFER itself | `fcp-conference-server/tests/cluster.rs` |
-| T5 | WebRTC gateway: a forge-webrtc peer standing in for the browser joins a room through the gateway's HTTP API and hears a phone in it; the migration swap under the browser against two real nodes | `fcp-webrtc-gateway/tests/rooms.rs` |
+| T5 ✅ v0.25.157 | WebRTC gateway: a forge-webrtc peer standing in for the browser joins a room through the gateway's HTTP API — the offer, its answer, trickled candidates, DTLS-SRTP — and hears a phone in it and is heard; the migration swap under the browser against two real nodes, the browser's peer connection untouched | `fcp-webrtc-gateway/tests/rooms.rs` |
 
 *T1 shipped 2026-09-14 (v0.25.150).* As planned, with three things
 learned on the way. A call to a user rings the user's **devices**, and a
@@ -241,6 +241,39 @@ The phone learnt what a phone does with a `Refer-To`'s URI headers: copy
 them into the INVITE as request headers (RFC 3261 §19.1.5), which is how
 Carol's migration ticket reaches the new node. The two scenarios take
 about six seconds together after the build.
+
+*T5 shipped 2026-09-14 (v0.25.157).* Two scenarios in
+`crates/fcp-webrtc-gateway/tests/rooms.rs`. The browser is a forge-webrtc
+`PeerConnection` answering with PCMU only, driven the way the join page
+drives a real one: `POST /v1/rooms/{room}/join` with a join token
+minted against the conference server's `join_secret` (past the room's
+PIN), the offer answered on `/answer`, host candidates trickled on
+`/ice-candidate`, `GET /v1/rooms/{id}` polled to `connected`; audio in
+is `PeerEvent::Rtp` decoded with the testkit's codec and fed to a
+`ToneDetector`, audio out is the testkit's `tone_frame` encoded and sent
+through `AudioSender`. The first scenario puts the browser in a room
+with a phone on a single conference server and hears each from the
+other. The second starts two conference nodes and a cluster-aware
+gateway with `node_capacity = 1`, joins the browser, dials the other
+node from a phone, SIGTERMs the browser's node, and checks that the
+gateway's leg is referred, that the participant reappears on the other
+node with its `sip_target` changed and its state still `connected`,
+that the peer connection never left `Connected`, and that the browser
+still hears the phone. The two-node harness moved from T4's test into
+`fcp_testkit::cluster` (`ConferenceCluster`, `Node`, `private_redis_url`)
+so both crates start the same nodes; the conference server's cluster
+test keeps only the call manager and its scenarios. The gateway wants a
+media range of 400 ports, so its band sits below the phones' at
+20000–28000. One **product bug**, the worst the floor has found: **every
+join through the running gateway panicked.** The gateway took the
+peer's event channel before creating the offer, and since forge-media
+v2026.08.24 (in FCP since v0.25.57, 2026-09-01) the peer brings its
+transport, and the channel with it, up on the offer, so `take_events`
+returned nothing and the join handler hit an `expect`; the browser saw
+an empty reply. No test drove the binary's HTTP join, and the in-process
+relay test builds its peers the other way round. The events are now
+taken after the offer, as a missing channel is an error rather than a
+panic. The two run in about nine seconds after the build.
 
 After each phase the manual checklist's rows that the phase covers get
 `Automated` in their Status column and the test name in Notes, so the

@@ -604,11 +604,15 @@ impl SessionManager {
             let mut peer = PeerConnection::with_config(cfg)
                 .await
                 .map_err(|e| SessionError::Internal(format!("peer connection: {e}")))?;
-            let events = peer.take_events().expect("events taken once");
+            // The offer brings the transport up, and the event channel
+            // with it; there is nothing to take before then.
             let offer = peer
                 .create_offer()
                 .await
                 .map_err(|e| SessionError::Internal(format!("offer: {e}")))?;
+            let events = peer
+                .take_events()
+                .ok_or_else(|| SessionError::Internal("peer connection has no events".into()))?;
             let (offer, events) = self.gather_then_reoffer(&mut peer, events, offer).await;
             Ok::<_, SessionError>((peer, events, offer))
         }
