@@ -79,4 +79,5 @@ fcp-cluster = { path = "../fcp-cluster", optional = true }
 
 [dev-dependencies]
 fcp-testkit = { path = "../fcp-testkit" }
+tempfile = "3"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

@@ -18,6 +18,7 @@
 
 pub mod bins;
 pub mod certs;
+pub mod cluster;
 pub mod db;
 pub mod media;
 pub mod phone;

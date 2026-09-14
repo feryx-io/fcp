@@ -434,9 +434,15 @@ pub fn toml_path(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
-/// `POST` a JSON body (or none) over plain HTTP/1.1, as [`http_get`] does:
-/// the status and the body.
-pub async fn http_post(url: &str, body: &str) -> anyhow::Result<(u16, String)> {
+/// One plain HTTP/1.1 request: the status and the body. `headers` are
+/// extra request headers (`("Authorization", "Bearer …")`); a body is
+/// sent as JSON.
+pub async fn http_request(
+    method: &str,
+    url: &str,
+    headers: &[(&str, &str)],
+    body: Option<&str>,
+) -> anyhow::Result<(u16, String)> {
     let rest = url
         .strip_prefix("http://")
         .ok_or_else(|| anyhow::anyhow!("only http:// URLs are supported: {url}"))?;
@@ -447,11 +453,19 @@ pub async fn http_post(url: &str, body: &str) -> anyhow::Result<(u16, String)> {
     let mut stream = tokio::time::timeout(Duration::from_secs(2), TcpStream::connect(authority))
         .await
         .map_err(|_| anyhow::anyhow!("connect timeout"))??;
-    let request = format!(
-        "POST {path} HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\nAccept: */*\r\n\
-         Content-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
-        body.len()
+    let mut request = format!(
+        "{method} {path} HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\nAccept: */*\r\n"
     );
+    for (name, value) in headers {
+        request.push_str(&format!("{name}: {value}\r\n"));
+    }
+    match body {
+        Some(body) => request.push_str(&format!(
+            "Content-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        )),
+        None => request.push_str("\r\n"),
+    }
     stream.write_all(request.as_bytes()).await?;
     let mut raw = Vec::new();
     tokio::time::timeout(Duration::from_secs(5), stream.read_to_end(&mut raw))
@@ -466,4 +480,9 @@ pub async fn http_post(url: &str, body: &str) -> anyhow::Result<(u16, String)> {
         .and_then(|code| code.parse::<u16>().ok())
         .ok_or_else(|| anyhow::anyhow!("malformed response: {head:?}"))?;
     Ok((status, body.to_string()))
+}
+
+/// `POST` a JSON body over plain HTTP/1.1: the status and the body.
+pub async fn http_post(url: &str, body: &str) -> anyhow::Result<(u16, String)> {
+    http_request("POST", url, &[], Some(body)).await
 }
