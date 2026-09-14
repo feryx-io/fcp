@@ -12,6 +12,7 @@ use axum::{
     response::IntoResponse,
     Json,
 };
+use fcp_core::billing::{BillingStore, Decimal};
 use fcp_core::storage::{CdrStore, DeviceStore, PhoneNumberStore};
 use fcp_core::CredentialStore;
 use serde::{Deserialize, Serialize};
@@ -49,8 +50,8 @@ pub struct UsageResponse {
     pub inbound_calls: u64,
     pub outbound_calls: u64,
     /// Sum of rated call costs in the period, in the tenant's rate-plan
-    /// currency (0.0 when billing is not configured).
-    pub total_cost: f64,
+    /// currency (0 when billing is not configured).
+    pub total_cost: Decimal,
 }
 
 /// Per-number usage response.

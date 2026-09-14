@@ -18,7 +18,7 @@ use fcp_billing::{
     BalanceTransaction, BalanceTransactionKind, BalanceTransactionRequest, BillingEngine,
     TenantBalance,
 };
-use fcp_core::storage::CdrStore;
+use fcp_core::billing::{BillingStore, Decimal};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -37,13 +37,13 @@ macro_rules! require_storage {
 #[derive(Debug, Serialize)]
 pub struct BalanceResponse {
     pub tenant_id: String,
-    pub balance: f64,
+    pub balance: Decimal,
     pub currency: String,
-    pub credit_limit: f64,
+    pub credit_limit: Decimal,
     /// Funds that may still be spent (balance + credit limit).
-    pub available: f64,
+    pub available: Decimal,
     pub enforce: bool,
-    pub low_balance_threshold: Option<f64>,
+    pub low_balance_threshold: Option<Decimal>,
     pub updated_at: u64,
 }
 
@@ -68,8 +68,8 @@ pub struct BalanceTransactionResponse {
     pub id: String,
     pub tenant_id: String,
     pub kind: BalanceTransactionKind,
-    pub amount: f64,
-    pub balance_after: f64,
+    pub amount: Decimal,
+    pub balance_after: Decimal,
     pub currency: String,
     pub call_id: Option<String>,
     pub description: Option<String>,
@@ -99,20 +99,20 @@ impl From<BalanceTransaction> for BalanceTransactionResponse {
 #[derive(Debug, Deserialize)]
 pub struct UpdateBalanceRequest {
     pub currency: Option<String>,
-    pub credit_limit: Option<f64>,
+    pub credit_limit: Option<Decimal>,
     pub enforce: Option<bool>,
     /// `null` clears the threshold; omit to leave it unchanged.
     #[serde(default, deserialize_with = "deserialize_double_option")]
-    pub low_balance_threshold: Option<Option<f64>>,
+    pub low_balance_threshold: Option<Option<Decimal>>,
 }
 
 /// Distinguish an omitted field (`None`) from an explicit `null`
 /// (`Some(None)`).
-fn deserialize_double_option<'de, D>(deserializer: D) -> Result<Option<Option<f64>>, D::Error>
+fn deserialize_double_option<'de, D>(deserializer: D) -> Result<Option<Option<Decimal>>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    Option::<f64>::deserialize(deserializer).map(Some)
+    Option::<Decimal>::deserialize(deserializer).map(Some)
 }
 
 /// Credit or adjustment request.
@@ -121,7 +121,7 @@ pub struct CreateTransactionRequest {
     /// `top_up` (positive amount) or `adjustment` (either sign).
     /// `call_charge` entries are written only by settlement.
     pub kind: BalanceTransactionKind,
-    pub amount: f64,
+    pub amount: Decimal,
     /// Currency used when this entry creates the tenant's balance row.
     /// Defaults to USD.
     pub currency: Option<String>,
@@ -166,13 +166,8 @@ fn validate_currency(currency: &str) -> Result<String, ApiError> {
     Ok(code)
 }
 
-fn validate_finite(value: f64, field: &str) -> Result<(), ApiError> {
-    if !value.is_finite() {
-        return Err(ApiError::BadRequest(format!(
-            "{field} must be a finite number"
-        )));
-    }
-    Ok(())
+fn validate_finite(value: Decimal, field: &str) -> Result<(), ApiError> {
+    crate::v1::rate_plans::validate_money_precision(value, field)
 }
 
 /// The engine used by the API: settlement is not involved here, but the
@@ -214,9 +209,9 @@ pub async fn update_balance(
     let created = existing.is_none();
     let mut balance = existing.unwrap_or_else(|| TenantBalance {
         tenant_id: tenant.0,
-        balance: 0.0,
+        balance: Decimal::ZERO,
         currency: "USD".to_string(),
-        credit_limit: 0.0,
+        credit_limit: Decimal::ZERO,
         enforce: false,
         low_balance_threshold: None,
         updated_at: SystemTime::now(),
@@ -227,7 +222,7 @@ pub async fn update_balance(
     }
     if let Some(limit) = req.credit_limit {
         validate_finite(limit, "credit_limit")?;
-        if limit < 0.0 {
+        if limit < Decimal::ZERO {
             return Err(ApiError::BadRequest(
                 "credit_limit must not be negative".to_string(),
             ));
@@ -252,7 +247,7 @@ pub async fn update_balance(
     info!(
         tenant_id = %tenant.0,
         enforce = balance.enforce,
-        credit_limit = balance.credit_limit,
+        credit_limit = %balance.credit_limit,
         "Balance settings updated"
     );
 
@@ -277,11 +272,11 @@ pub async fn create_transaction(
     Json(req): Json<CreateTransactionRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     validate_finite(req.amount, "amount")?;
-    if req.amount == 0.0 {
+    if req.amount.is_zero() {
         return Err(ApiError::BadRequest("amount must not be zero".to_string()));
     }
     match req.kind {
-        BalanceTransactionKind::TopUp if req.amount < 0.0 => {
+        BalanceTransactionKind::TopUp if req.amount < Decimal::ZERO => {
             return Err(ApiError::BadRequest(
                 "top_up amount must be positive; use an adjustment to debit".to_string(),
             ));
@@ -311,8 +306,8 @@ pub async fn create_transaction(
     info!(
         tenant_id = %tenant.0,
         kind = txn.kind.as_str(),
-        amount = txn.amount,
-        balance_after = txn.balance_after,
+        amount = %txn.amount,
+        balance_after = %txn.balance_after,
         "Balance transaction applied"
     );
     Ok((

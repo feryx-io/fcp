@@ -1392,128 +1392,105 @@ fn row_to_tenant(row: sqlx::postgres::PgRow) -> Result<Tenant> {
 #[async_trait]
 impl CdrStore for PostgresStorage {
     async fn insert_cdr(&self, cdr: CallDetailRecord) -> Result<()> {
-        let call_id = cdr.call_id.to_string();
-        let tenant_id = cdr.tenant_id.to_string();
-        let disposition = serde_json::to_string(&cdr.disposition)?
-            .trim_matches('"')
-            .to_string();
-        let hangup_cause = match cdr.hangup_cause {
-            HangupCause::Other(code) => format!("other:{}", code),
-            _ => serde_json::to_string(&cdr.hangup_cause)?
-                .trim_matches('"')
-                .to_string(),
-        };
-        let hangup_party = cdr.hangup_party.map(|p| {
-            serde_json::to_string(&p)
-                .unwrap_or_default()
-                .trim_matches('"')
-                .to_string()
-        });
-        let custom_data = cdr
-            .custom_data
-            .map(|v| serde_json::to_value(&v))
-            .transpose()?;
+        self.insert_cdrs(vec![cdr]).await.map(|_| ())
+    }
 
-        let start_time = system_time_to_datetime(cdr.start_time);
-        let answer_time = cdr.answer_time.map(system_time_to_datetime);
-        let end_time = cdr.end_time.map(system_time_to_datetime);
-        let rated_at = cdr.rated_at.map(system_time_to_datetime);
-        let created_at = cdr
-            .created_at
-            .map(system_time_to_datetime)
-            .unwrap_or_else(Utc::now);
-        let direction = cdr.direction.map(call_direction_name);
-
-        // A replay of a record already stored is not an error and changes
-        // nothing: cdr_id is the pipeline's idempotency key
-        // (docs/CDR_PIPELINE.md §6).
-        let result = sqlx::query(
-            "INSERT INTO cdrs (
-                call_id, tenant_id, sip_call_id,
-                from_uri, from_display_name, to_uri, to_display_name,
-                start_time, answer_time, end_time,
-                setup_duration_ms, call_duration_ms, total_duration_ms,
-                disposition, hangup_cause, hangup_party,
-                sip_status_code, sip_reason,
-                route_id, gateway_id,
-                media_anchored, codec_a_leg, codec_b_leg,
-                rtp_packets_sent, rtp_packets_received, rtp_bytes_sent, rtp_bytes_received,
-                recording_url, cost, currency, custom_data,
-                cdr_id, kind, schema_version, direction, node_id, region,
-                correlation_id, trunk_name, rtp_packets_lost, rtp_jitter_ms,
-                rate_plan_id, matched_prefix, billable_seconds, rated_at, created_at
-             ) VALUES (
-                $1, $2, $3,
-                $4, $5, $6, $7,
-                $8, $9, $10,
-                $11, $12, $13,
-                $14, $15, $16,
-                $17, $18,
-                $19, $20,
-                $21, $22, $23,
-                $24, $25, $26, $27,
-                $28, $29, $30, $31,
-                $32, $33, $34, $35, $36, $37,
-                $38, $39, $40, $41,
-                $42, $43, $44, $45, $46
-             )
-             ON CONFLICT (cdr_id) DO NOTHING",
-        )
-        .bind(&call_id)
-        .bind(&tenant_id)
-        .bind(&cdr.sip_call_id)
-        .bind(&cdr.from_uri)
-        .bind(&cdr.from_display_name)
-        .bind(&cdr.to_uri)
-        .bind(&cdr.to_display_name)
-        .bind(start_time)
-        .bind(answer_time)
-        .bind(end_time)
-        .bind(cdr.setup_duration_ms.map(|d| d as i64))
-        .bind(cdr.call_duration_ms.map(|d| d as i64))
-        .bind(cdr.total_duration_ms.map(|d| d as i64))
-        .bind(&disposition)
-        .bind(&hangup_cause)
-        .bind(&hangup_party)
-        .bind(cdr.sip_status_code.map(|c| c as i64))
-        .bind(&cdr.sip_reason)
-        .bind(&cdr.route_id)
-        .bind(&cdr.gateway_id)
-        .bind(cdr.media_anchored)
-        .bind(&cdr.codec_a_leg)
-        .bind(&cdr.codec_b_leg)
-        .bind(cdr.rtp_packets_sent.map(|p| p as i64))
-        .bind(cdr.rtp_packets_received.map(|p| p as i64))
-        .bind(cdr.rtp_bytes_sent.map(|b| b as i64))
-        .bind(cdr.rtp_bytes_received.map(|b| b as i64))
-        .bind(&cdr.recording_url)
-        .bind(cdr.cost)
-        .bind(&cdr.currency)
-        .bind(&custom_data)
-        .bind(cdr.cdr_id)
-        .bind(cdr.kind.as_str())
-        .bind(cdr.schema_version as i16)
-        .bind(direction)
-        .bind(&cdr.node_id)
-        .bind(&cdr.region)
-        .bind(cdr.correlation_id.map(|c| c.to_string()))
-        .bind(&cdr.trunk_name)
-        .bind(cdr.rtp_packets_lost.map(|p| p as i64))
-        .bind(cdr.rtp_jitter_ms)
-        .bind(&cdr.rate_plan_id)
-        .bind(&cdr.matched_prefix)
-        .bind(cdr.billable_seconds.map(|s| s as i32))
-        .bind(rated_at)
-        .bind(created_at)
-        .execute(self.writes())
-        .await?;
-
-        if result.rows_affected() == 0 {
-            debug!(call_id = %call_id, cdr_id = %cdr.cdr_id, "CDR already stored; replay ignored");
-        } else {
-            debug!(call_id = %call_id, cdr_id = %cdr.cdr_id, "CDR stored");
+    async fn insert_cdrs(&self, cdrs: Vec<CallDetailRecord>) -> Result<Vec<uuid::Uuid>> {
+        if cdrs.is_empty() {
+            return Ok(Vec::new());
         }
-        Ok(())
+        let rows = cdrs
+            .iter()
+            .map(CdrRow::from_record)
+            .collect::<Result<Vec<_>>>()?;
+
+        // One transaction; the rows go in chunks that keep a statement's
+        // binds under Postgres's limit. A replayed cdr_id is skipped, and
+        // RETURNING says which rows were new (docs/CDR_PIPELINE.md §6).
+        let mut tx = self.writes().begin().await?;
+        let mut new_ids = Vec::with_capacity(rows.len());
+        for chunk in rows.chunks(CDR_INSERT_CHUNK) {
+            let mut query = sqlx::QueryBuilder::<Postgres>::new(
+                "INSERT INTO cdrs (
+                    call_id, tenant_id, sip_call_id,
+                    from_uri, from_display_name, to_uri, to_display_name,
+                    start_time, answer_time, end_time,
+                    setup_duration_ms, call_duration_ms, total_duration_ms,
+                    disposition, hangup_cause, hangup_party,
+                    sip_status_code, sip_reason,
+                    route_id, gateway_id,
+                    media_anchored, codec_a_leg, codec_b_leg,
+                    rtp_packets_sent, rtp_packets_received, rtp_bytes_sent, rtp_bytes_received,
+                    recording_url, cost, currency, custom_data,
+                    cdr_id, kind, schema_version, direction, node_id, region,
+                    correlation_id, trunk_name, rtp_packets_lost, rtp_jitter_ms,
+                    rate_plan_id, matched_prefix, billable_seconds, rated_at, created_at
+                 ) ",
+            );
+            query.push_values(chunk, |mut b, row| {
+                b.push_bind(&row.call_id)
+                    .push_bind(&row.tenant_id)
+                    .push_bind(&row.r.sip_call_id)
+                    .push_bind(&row.r.from_uri)
+                    .push_bind(&row.r.from_display_name)
+                    .push_bind(&row.r.to_uri)
+                    .push_bind(&row.r.to_display_name)
+                    .push_bind(row.start_time)
+                    .push_bind(row.answer_time)
+                    .push_bind(row.end_time)
+                    .push_bind(row.r.setup_duration_ms.map(|d| d as i64))
+                    .push_bind(row.r.call_duration_ms.map(|d| d as i64))
+                    .push_bind(row.r.total_duration_ms.map(|d| d as i64))
+                    .push_bind(&row.disposition)
+                    .push_bind(&row.hangup_cause)
+                    .push_bind(&row.hangup_party)
+                    .push_bind(row.r.sip_status_code.map(|c| c as i64))
+                    .push_bind(&row.r.sip_reason)
+                    .push_bind(&row.r.route_id)
+                    .push_bind(&row.r.gateway_id)
+                    .push_bind(row.r.media_anchored)
+                    .push_bind(&row.r.codec_a_leg)
+                    .push_bind(&row.r.codec_b_leg)
+                    .push_bind(row.r.rtp_packets_sent.map(|p| p as i64))
+                    .push_bind(row.r.rtp_packets_received.map(|p| p as i64))
+                    .push_bind(row.r.rtp_bytes_sent.map(|b| b as i64))
+                    .push_bind(row.r.rtp_bytes_received.map(|b| b as i64))
+                    .push_bind(&row.r.recording_url)
+                    .push_bind(row.r.cost)
+                    .push_bind(&row.r.currency)
+                    .push_bind(&row.custom_data)
+                    .push_bind(row.r.cdr_id)
+                    .push_bind(row.r.kind.as_str())
+                    .push_bind(row.r.schema_version as i16)
+                    .push_bind(row.direction)
+                    .push_bind(&row.r.node_id)
+                    .push_bind(&row.r.region)
+                    .push_bind(row.r.correlation_id.map(|c| c.to_string()))
+                    .push_bind(&row.r.trunk_name)
+                    .push_bind(row.r.rtp_packets_lost.map(|p| p as i64))
+                    .push_bind(row.r.rtp_jitter_ms)
+                    .push_bind(&row.r.rate_plan_id)
+                    .push_bind(&row.r.matched_prefix)
+                    .push_bind(row.r.billable_seconds.map(|s| s as i32))
+                    .push_bind(row.rated_at)
+                    .push_bind(row.created_at);
+            });
+            query.push(" ON CONFLICT (cdr_id) DO NOTHING RETURNING cdr_id");
+            let returned = query
+                .build()
+                .fetch_all(&mut *tx)
+                .await
+                .map_err(cdr_insert_error)?;
+            new_ids.extend(returned.iter().map(|r| r.get::<uuid::Uuid, _>("cdr_id")));
+        }
+        tx.commit().await.map_err(cdr_insert_error)?;
+
+        debug!(
+            records = rows.len(),
+            stored = new_ids.len(),
+            "CDR batch stored"
+        );
+        Ok(new_ids)
     }
 
     async fn get_cdr(&self, call_id: &fcp_core::CallId) -> Result<Option<CallDetailRecord>> {
@@ -1615,6 +1592,8 @@ impl CdrStore for PostgresStorage {
         let tenant_id_str = tenant_id.to_string();
         let from_dt = system_time_to_datetime(from);
         let to_dt = system_time_to_datetime(to);
+        // A record the pipeline has enriched carries its direction; older
+        // ones are classified against the tenant's numbers here, row by row.
         let inbound_match = phone_number_uri_match_sql("c.to_uri");
         let outbound_match = phone_number_uri_match_sql("c.from_uri");
         let sql = format!(
@@ -1623,22 +1602,24 @@ impl CdrStore for PostgresStorage {
                 COUNT(*) FILTER (WHERE c.answer_time IS NOT NULL) as answered_calls,
                 COALESCE(SUM(c.call_duration_ms) FILTER (WHERE c.answer_time IS NOT NULL), 0)::BIGINT as total_duration_ms,
                 COUNT(*) FILTER (
-                    WHERE EXISTS (
+                    WHERE CASE WHEN c.direction IS NOT NULL THEN c.direction = 'inbound'
+                    ELSE EXISTS (
                         SELECT 1
                         FROM phone_numbers pn
                         WHERE pn.tenant_id = $1
                           AND ({inbound_match})
-                    )
+                    ) END
                 ) as inbound_calls,
                 COUNT(*) FILTER (
-                    WHERE EXISTS (
+                    WHERE CASE WHEN c.direction IS NOT NULL THEN c.direction = 'outbound'
+                    ELSE EXISTS (
                         SELECT 1
                         FROM phone_numbers pn
                         WHERE pn.tenant_id = $1
                           AND ({outbound_match})
-                    )
+                    ) END
                 ) as outbound_calls,
-                COALESCE(SUM(c.cost), 0)::FLOAT8 as total_cost
+                COALESCE(SUM(c.cost), 0) as total_cost
             FROM cdrs c
             WHERE c.tenant_id = $1 AND c.start_time >= $2 AND c.start_time < $3"
         );
@@ -1656,7 +1637,7 @@ impl CdrStore for PostgresStorage {
             total_duration_ms: row.get::<i64, _>("total_duration_ms") as u64,
             inbound_calls: row.get::<i64, _>("inbound_calls") as u64,
             outbound_calls: row.get::<i64, _>("outbound_calls") as u64,
-            total_cost: row.get::<f64, _>("total_cost"),
+            total_cost: row.get::<fcp_core::billing::Decimal, _>("total_cost"),
         })
     }
 
@@ -1747,7 +1728,10 @@ impl CdrStore for PostgresStorage {
 
         Ok(results)
     }
+}
 
+#[async_trait]
+impl fcp_core::billing::BillingStore for PostgresStorage {
     async fn create_rate_plan(&self, plan: fcp_core::billing::RatePlan) -> Result<()> {
         let mut tx = self.writes().begin().await?;
         if plan.is_default {
@@ -2019,7 +2003,7 @@ impl CdrStore for PostgresStorage {
         .bind(&request.currency)
         .fetch_one(&mut *tx)
         .await?;
-        let balance_after: f64 = row.get("balance");
+        let balance_after: fcp_core::billing::Decimal = row.get("balance");
         let currency: String = row.get("currency");
 
         let id = uuid::Uuid::new_v4();
@@ -2135,6 +2119,72 @@ enum CdrBind {
 /// Build `<select> WHERE …` from a [`CdrQuery`], with numbered placeholders
 /// and typed bind values in placeholder order. Shared by `query_cdrs` and
 /// `count_cdrs` so the two can never disagree about which rows match.
+/// Rows per `INSERT` statement: 46 binds each, under Postgres's 65535.
+const CDR_INSERT_CHUNK: usize = 1000;
+
+/// A record's column values that need converting before they are bound.
+struct CdrRow<'a> {
+    r: &'a CallDetailRecord,
+    call_id: String,
+    tenant_id: String,
+    disposition: String,
+    hangup_cause: String,
+    hangup_party: Option<String>,
+    custom_data: Option<serde_json::Value>,
+    start_time: DateTime<Utc>,
+    answer_time: Option<DateTime<Utc>>,
+    end_time: Option<DateTime<Utc>>,
+    rated_at: Option<DateTime<Utc>>,
+    created_at: DateTime<Utc>,
+    direction: Option<&'static str>,
+}
+
+impl<'a> CdrRow<'a> {
+    fn from_record(r: &'a CallDetailRecord) -> Result<Self> {
+        let unquote = |s: String| s.trim_matches('"').to_string();
+        Ok(Self {
+            r,
+            call_id: r.call_id.to_string(),
+            tenant_id: r.tenant_id.to_string(),
+            disposition: unquote(serde_json::to_string(&r.disposition)?),
+            hangup_cause: match r.hangup_cause {
+                HangupCause::Other(code) => format!("other:{}", code),
+                _ => unquote(serde_json::to_string(&r.hangup_cause)?),
+            },
+            hangup_party: r
+                .hangup_party
+                .map(|p| serde_json::to_string(&p).map(unquote))
+                .transpose()?,
+            custom_data: r.custom_data.clone(),
+            start_time: system_time_to_datetime(r.start_time),
+            answer_time: r.answer_time.map(system_time_to_datetime),
+            end_time: r.end_time.map(system_time_to_datetime),
+            rated_at: r.rated_at.map(system_time_to_datetime),
+            created_at: r
+                .created_at
+                .map(system_time_to_datetime)
+                .unwrap_or_else(Utc::now),
+            direction: r.direction.map(call_direction_name),
+        })
+    }
+}
+
+/// A batch insert's failure: a row Postgres refuses for what it holds
+/// (an integrity or data exception, SQLSTATE classes 23 and 22) is a
+/// [`CdrRejected`](fcp_core::storage::CdrRejected), anything else the
+/// database being unavailable.
+fn cdr_insert_error(err: sqlx::Error) -> anyhow::Error {
+    let refused = err
+        .as_database_error()
+        .and_then(|e| e.code())
+        .is_some_and(|code| code.starts_with("23") || code.starts_with("22"));
+    if refused {
+        anyhow::Error::new(fcp_core::storage::CdrRejected(err.to_string()))
+    } else {
+        err.into()
+    }
+}
+
 fn cdr_filter_sql(select: &str, query: &CdrQuery) -> Result<(String, Vec<CdrBind>)> {
     let mut sql = format!("{select} WHERE 1=1");
     let mut binds: Vec<CdrBind> = Vec::new();

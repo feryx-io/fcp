@@ -55,6 +55,64 @@ impl CdrWriter {
         self.spool.as_ref()
     }
 
+    /// The in-process processor records go to (or fall back to), for
+    /// status.
+    pub fn processor(&self) -> Option<&Arc<Processor>> {
+        self.direct.as_ref()
+    }
+
+    /// The node's part of a status route: what the spool holds and what
+    /// the in-process processor has done.
+    pub fn status(&self) -> serde_json::Value {
+        let spool = self.spool.as_ref().map(|spool| match spool.status() {
+            Ok(s) => serde_json::json!({
+                "dir": spool.dir().display().to_string(),
+                "pending_bytes": s.pending_bytes,
+                "segments": s.segments,
+                "oldest_pending_age_seconds": s.oldest_pending_age.map(|d| d.as_secs_f64()),
+            }),
+            Err(e) => serde_json::json!({ "error": e.to_string() }),
+        });
+        serde_json::json!({
+            "spool": spool,
+            "processor": self.direct.as_ref().map(|p| p.stats().snapshot()),
+        })
+    }
+
+    /// The node's part of `/metrics`, with `labels` on every sample.
+    pub fn prometheus(&self, labels: &str) -> String {
+        let mut out = String::new();
+        if let Some(Ok(status)) = self.spool.as_ref().map(|s| s.status()) {
+            for (name, help, value) in [
+                (
+                    "cdr_spool_pending_bytes",
+                    "Bytes of records spooled and not yet shipped.",
+                    status.pending_bytes as f64,
+                ),
+                (
+                    "cdr_spool_segments",
+                    "Spool segment files on disk.",
+                    status.segments as f64,
+                ),
+                (
+                    "cdr_spool_oldest_age_seconds",
+                    "How long the oldest unshipped record has waited.",
+                    status
+                        .oldest_pending_age
+                        .map(|d| d.as_secs_f64())
+                        .unwrap_or(0.0),
+                ),
+            ] {
+                crate::stats::family(&mut out, name, "gauge", help);
+                out.push_str(&format!("{name}{{{labels}}} {value}\n"));
+            }
+        }
+        if let Some(processor) = &self.direct {
+            out.push_str(&processor.stats().snapshot().prometheus(labels));
+        }
+        out
+    }
+
     /// Take the record. Never blocks on storage; never panics.
     pub fn write(&self, record: CallDetailRecord) {
         if let Some(spool) = &self.spool {
@@ -71,8 +129,15 @@ impl CdrWriter {
                 tokio::spawn(async move {
                     let cdr_id = record.cdr_id;
                     let call_id = record.call_id;
-                    if let Err(e) = processor.process(vec![record]).await {
-                        error!(%cdr_id, %call_id, error = %e, "CDR lost: no spool and the store refused it");
+                    match processor.process(vec![record]).await {
+                        Ok(outcome) => {
+                            for rejection in outcome.rejected {
+                                error!(%cdr_id, %call_id, reason = %rejection.reason, record = %serde_json::to_string(&rejection.record).unwrap_or_default(), "CDR refused and no spool to keep it in");
+                            }
+                        }
+                        Err(e) => {
+                            error!(%cdr_id, %call_id, error = %e, "CDR lost: no spool and the store is unavailable");
+                        }
                     }
                 });
             }

@@ -8,21 +8,29 @@
 //! Every stage tolerates a replay: the record's `cdr_id` is minted once, in
 //! the builder, and the store skips a duplicate.
 
+pub mod consumer;
+pub mod enrich;
 pub mod node;
 pub mod processor;
 pub mod record;
 pub mod shipper;
 pub mod sink;
 pub mod spool;
+pub mod stats;
 pub mod writer;
 
+pub use consumer::{
+    Consumer, ConsumerConfig, RecordSource, SourceStatus, SourcedRecord, Undecodable,
+};
+pub use enrich::{DirectionEnricher, Enricher};
 pub use fcp_core::storage::{CallDetailRecord as Record, CdrKind, CDR_SCHEMA_VERSION};
-pub use node::{start_node, NodeConfig};
-pub use processor::{Processor, Rater, Rating};
+pub use node::{start_node, NodeConfig, SinkKind};
+pub use processor::{Outcome, Processor, Rater, Rating, Rejection};
 pub use record::{RecordBuilder, RtpStats, SystemCause, TerminationReason};
 pub use shipper::{Shipper, ShipperConfig};
 pub use sink::{LocalSink, Sink};
 pub use spool::{Cursor, Spool, SpoolConfig, SpoolStatus};
+pub use stats::{ProcessorStats, StatsSnapshot};
 pub use writer::CdrWriter;
 
 /// What can go wrong in the pipeline.

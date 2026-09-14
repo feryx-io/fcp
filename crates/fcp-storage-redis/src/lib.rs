@@ -5,6 +5,8 @@
 //! - `RedisEventBus` — distributed event bus via Pub/Sub + Streams
 //! - Parking store — Redis-backed call parking for cross-node pickup
 
+#[cfg(feature = "cdr")]
+pub mod cdr_stream;
 pub mod circuit_breaker;
 pub mod registration;
 

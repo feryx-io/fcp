@@ -50,6 +50,9 @@ pub enum PlatformEvent {
 
     /// Billing event (rating, balance changes, enforcement)
     Billing(BillingEvent),
+
+    /// Call detail record event (`docs/CDR_PIPELINE.md` §10)
+    Cdr(CdrEvent),
 }
 
 /// Call lifecycle events.
@@ -1374,6 +1377,9 @@ impl PlatformEvent {
                 BillingEvent::CallRejected { .. } => "billing.call_rejected",
                 BillingEvent::CallCutOff { .. } => "billing.call_cut_off",
             },
+            PlatformEvent::Cdr(e) => match e {
+                CdrEvent::Written { .. } => "cdr.written",
+            },
         }
     }
 
@@ -1463,6 +1469,7 @@ impl PlatformEvent {
                 | SystemEvent::NodeLeft { .. } => None,
             },
             PlatformEvent::Billing(e) => Some(e.tenant_id()),
+            PlatformEvent::Cdr(CdrEvent::Written { tenant_id, .. }) => Some(tenant_id),
             PlatformEvent::Media(_)
             | PlatformEvent::Ivr(_)
             | PlatformEvent::Recording(_)
@@ -1489,6 +1496,7 @@ impl PlatformEvent {
             PlatformEvent::Presence(_) => None,
             PlatformEvent::Sip(_) => None,
             PlatformEvent::Billing(event) => event.call_id(),
+            PlatformEvent::Cdr(CdrEvent::Written { call_id, .. }) => Some(call_id),
         }
     }
 
@@ -1509,6 +1517,7 @@ impl PlatformEvent {
             PlatformEvent::Presence(event) => event.timestamp(),
             PlatformEvent::Sip(event) => event.timestamp(),
             PlatformEvent::Billing(event) => event.timestamp(),
+            PlatformEvent::Cdr(CdrEvent::Written { timestamp, .. }) => *timestamp,
         }
     }
 }
@@ -1778,7 +1787,7 @@ pub enum BillingEvent {
         tenant_id: TenantId,
         call_id: CallId,
         /// Total cost in `currency` (4 decimal places).
-        cost: f64,
+        cost: fcp_core::billing::Decimal,
         currency: String,
         /// Rate prefix that matched, `None` when the plan default applied.
         matched_prefix: Option<String>,
@@ -1787,7 +1796,7 @@ pub enum BillingEvent {
         /// Destination the call was rated for (dialed digits).
         destination: String,
         /// Balance after the charge was applied, when the tenant tracks one.
-        balance_after: Option<f64>,
+        balance_after: Option<fcp_core::billing::Decimal>,
         #[serde(with = "system_time_serde")]
         timestamp: SystemTime,
     },
@@ -1799,8 +1808,8 @@ pub enum BillingEvent {
         /// `top_up`, `call_charge` or `adjustment`.
         kind: String,
         /// Signed amount: positive credits, negative debits.
-        amount: f64,
-        balance_after: f64,
+        amount: fcp_core::billing::Decimal,
+        balance_after: fcp_core::billing::Decimal,
         currency: String,
         call_id: Option<CallId>,
         description: Option<String>,
@@ -1812,8 +1821,8 @@ pub enum BillingEvent {
     /// The balance crossed below the tenant's low-balance threshold.
     BalanceLow {
         tenant_id: TenantId,
-        balance: f64,
-        threshold: f64,
+        balance: fcp_core::billing::Decimal,
+        threshold: fcp_core::billing::Decimal,
         currency: String,
         #[serde(with = "system_time_serde")]
         timestamp: SystemTime,
@@ -1823,8 +1832,8 @@ pub enum BillingEvent {
     /// further billable calls will be refused.
     BalanceDepleted {
         tenant_id: TenantId,
-        balance: f64,
-        credit_limit: f64,
+        balance: fcp_core::billing::Decimal,
+        credit_limit: fcp_core::billing::Decimal,
         currency: String,
         #[serde(with = "system_time_serde")]
         timestamp: SystemTime,
@@ -1836,9 +1845,9 @@ pub enum BillingEvent {
         /// Dialed digits the admission check priced.
         destination: String,
         /// Funds available (balance + credit limit).
-        available: f64,
+        available: fcp_core::billing::Decimal,
         /// Cost of the first billing increment that could not be covered.
-        required: f64,
+        required: fcp_core::billing::Decimal,
         currency: String,
         #[serde(with = "system_time_serde")]
         timestamp: SystemTime,
@@ -1851,6 +1860,38 @@ pub enum BillingEvent {
         call_id: CallId,
         /// Seconds the call was allowed to run.
         max_duration_secs: u64,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+}
+
+/// Call detail record events. `Written` is announced once a record is in
+/// the database, rated where it could be: what an external billing or
+/// analytics system subscribes to (`cdr.written`). Delivery is at least
+/// once — a replayed batch announces its records again — so consumers skip
+/// a `cdr_id` they have seen.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum CdrEvent {
+    Written {
+        /// The record's own identity.
+        cdr_id: uuid::Uuid,
+        call_id: CallId,
+        tenant_id: TenantId,
+        /// `call`, `queue`, `conference` or `gateway`.
+        kind: fcp_core::storage::CdrKind,
+        disposition: fcp_core::storage::CallDisposition,
+        #[serde(with = "system_time_serde")]
+        start_time: SystemTime,
+        #[serde(with = "system_time_serde")]
+        end_time: SystemTime,
+        /// Answered duration.
+        duration_ms: u64,
+        cost: Option<fcp_core::billing::Decimal>,
+        currency: Option<String>,
+        /// The node that owned the call.
+        node_id: Option<String>,
+        /// When the record was written.
         #[serde(with = "system_time_serde")]
         timestamp: SystemTime,
     },

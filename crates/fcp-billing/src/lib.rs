@@ -23,10 +23,10 @@ pub mod hooks;
 pub mod rating;
 
 pub use balance::{check_admission, AdmissionDecision};
-pub use engine::{BillingEngine, BillingStore, Settlement};
+pub use engine::{BillingEngine, LedgerStore, Rating, Settlement};
 pub use fcp_core::billing::{
-    BalanceTransaction, BalanceTransactionKind, BalanceTransactionRequest, Rate, RatePlan,
-    TenantBalance,
+    BalanceTransaction, BalanceTransactionKind, BalanceTransactionRequest, BillingStore, Decimal,
+    Rate, RatePlan, TenantBalance,
 };
 pub use hooks::{BillingHook, CompositeHook, EventBusHook, NoopHook};
-pub use rating::{dialed_digits_from_uri, rate_call, RatedCall, SelectedRate};
+pub use rating::{dialed_digits_from_uri, rate_call, round_money, RatedCall, SelectedRate};

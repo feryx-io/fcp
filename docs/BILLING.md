@@ -9,7 +9,7 @@ systems as `billing.*` platform events (webhooks / WebSocket).
 
 | Piece | Where | Role |
 |---|---|---|
-| Data model | `fcp-core/src/billing.rs` | `RatePlan`, `Rate`, `TenantBalance`, `BalanceTransaction` — shared with the storage contract (`CdrStore`) |
+| Data model | `fcp-core/src/billing.rs` | `RatePlan`, `Rate`, `TenantBalance`, `BalanceTransaction` — and the storage contract `BillingStore` |
 | Engine | `fcp-billing` | Rating, balance admission math, settlement, external hooks (`BillingEngine`, `BillingHook`) |
 | Persistence | `fcp-storage-postgres`, migrations 047/048 | `rate_plans`, `rates`, `tenant_balances`, `balance_transactions` |
 | Call path | `fcp-sip` handler + `fcp-b2bua-core` call manager | 402 at admission, cut-off watchdog |
@@ -51,11 +51,14 @@ With `enforce = true`:
    (whole billing increments the available funds cover after the connect
    fee). A watchdog hangs the call up (BYE on both legs) when the answered
    duration reaches it and emits `billing.call_cut_off`.
-3. **Settlement** — at call end the rated cost is debited atomically
-   (one `call_charge` ledger entry per call; a retried CDR cannot
-   double-charge). `billing.balance_changed` is emitted, plus
-   `billing.balance_low` / `billing.balance_depleted` when the debit crosses
-   those lines.
+3. **Settlement** — when the CDR processor handles the call's record
+   (`docs/CDR_PIPELINE.md` §7), in-process on the node or in `fcp-jobs`,
+   the rated cost is debited atomically (one `call_charge` ledger entry per
+   call; a replayed record cannot double-charge). `billing.balance_changed`
+   is emitted, plus `billing.balance_low` / `billing.balance_depleted` when
+   the debit crosses those lines. The processor in `fcp-jobs` caches each
+   tenant's plan for `[cdr] cache_secs` (a minute), so a plan changed now
+   rates calls ending within that minute on the old plan.
 
 Storage failures during admission **fail open** (the call is admitted and an
 error is logged): a billing outage must not take signaling down. Settlement is
@@ -91,6 +94,16 @@ external system integrates by:
 
 Inbound direction (payments landing in FCP) is the transactions endpoint
 above; `external_ref` ties the ledger entry to the remote record.
+
+## Money
+
+Every amount — rates, connect fees, balances, credit limits, thresholds,
+ledger entries, call costs, usage totals — is an exact decimal
+(`rust_decimal::Decimal`, re-exported as `fcp_billing::Decimal`) and
+`NUMERIC(18,6)` in Postgres (migration 058). Ratings round to four places,
+halves away from zero. The API and every event carry money as JSON
+numbers; the API refuses amounts with more than six decimal places or
+twelve whole digits.
 
 ## Not yet
 

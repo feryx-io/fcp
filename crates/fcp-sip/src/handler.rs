@@ -1703,8 +1703,8 @@ impl SipMessageHandler {
                     info!(
                         tenant_id = %tenant_id,
                         destination = %destination,
-                        available,
-                        required,
+                        available = %available,
+                        required = %required,
                         currency = %currency,
                         "Rejecting INVITE: insufficient balance"
                     );

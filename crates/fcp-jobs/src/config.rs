@@ -34,6 +34,10 @@ pub struct JobsConfig {
     /// Logging configuration
     #[serde(default)]
     pub logging: LoggingConfig,
+
+    /// The CDR processor role (`docs/CDR_PIPELINE.md`)
+    #[serde(default)]
+    pub cdr: crate::cdr::CdrConfig,
 }
 
 /// Service configuration

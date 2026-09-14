@@ -14,6 +14,11 @@ path = "src/main.rs"
 [dependencies]
 # FCP crates
 fcp-core = { path = "../fcp-core" }
+fcp-billing = { path = "../fcp-billing" }
+fcp-cdr = { path = "../fcp-cdr" }
+fcp-events = { path = "../fcp-events" }
+fcp-storage-postgres = { path = "../fcp-storage-postgres" }
+fcp-storage-redis = { path = "../fcp-storage-redis", features = ["event-bus", "cdr"] }
 
 # HTTP server for health checks
 axum = { version = "0.7" }
@@ -49,3 +54,9 @@ num_cpus = "1.16"
 
 [dev-dependencies]
 fcp-testkit = { path = "../fcp-testkit" }
+fcp-core = { path = "../fcp-core" }
+redis = { version = "0.27", features = ["tokio-comp"] }
+rust_decimal.workspace = true
+rust_decimal_macros.workspace = true
+tempfile = "3"
+uuid = { workspace = true }

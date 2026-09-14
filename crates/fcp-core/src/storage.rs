@@ -1042,7 +1042,7 @@ pub struct CallDetailRecord {
     pub recording_url: Option<String>,
 
     /// Cost (for billing), and what it came from.
-    pub cost: Option<f64>,
+    pub cost: Option<crate::billing::Decimal>,
     pub currency: Option<String>,
     #[serde(default)]
     pub rate_plan_id: Option<String>,
@@ -1061,6 +1061,12 @@ pub struct CallDetailRecord {
     /// Custom fields (JSON)
     pub custom_data: Option<serde_json::Value>,
 }
+
+/// A record the store refused for what it is rather than for being
+/// unavailable: retrying it will not help (`docs/CDR_PIPELINE.md` §6).
+#[derive(Debug, thiserror::Error)]
+#[error("CDR rejected by the store: {0}")]
+pub struct CdrRejected(pub String);
 
 /// CDR query filter
 #[derive(Debug, Clone, Default)]
@@ -1104,7 +1110,7 @@ pub struct UsageAggregation {
     /// configured). All of a tenant's rated calls share the currency of the
     /// tenant's default rate plan.
     #[serde(default)]
-    pub total_cost: f64,
+    pub total_cost: crate::billing::Decimal,
 }
 
 /// Per-number CDR usage breakdown.
@@ -1129,6 +1135,24 @@ pub struct NumberUsage {
 pub trait CdrStore: Send + Sync {
     /// Insert a new CDR
     async fn insert_cdr(&self, cdr: CallDetailRecord) -> Result<()>;
+
+    /// Store a batch of records in one transaction and return the ids of
+    /// the ones that were not already there; a record whose `cdr_id` is
+    /// stored already is skipped. When the store refuses a record for what
+    /// it is (a constraint or a value it cannot hold), nothing in the batch
+    /// is stored and the error is a [`CdrRejected`], so the caller can
+    /// store the records one at a time to find it; any other error is the
+    /// store being unavailable. The default stores one record at a time and
+    /// reports every record as new.
+    async fn insert_cdrs(&self, cdrs: Vec<CallDetailRecord>) -> Result<Vec<uuid::Uuid>> {
+        let mut ids = Vec::with_capacity(cdrs.len());
+        for cdr in cdrs {
+            let id = cdr.cdr_id;
+            self.insert_cdr(cdr).await?;
+            ids.push(id);
+        }
+        Ok(ids)
+    }
 
     /// Get a CDR by call ID
     async fn get_cdr(&self, call_id: &crate::CallId) -> Result<Option<CallDetailRecord>>;
@@ -1184,185 +1208,6 @@ pub trait CdrStore: Send + Sync {
     ) -> Result<Vec<NumberUsage>> {
         let _ = (tenant_id, from, to);
         Ok(Vec::new())
-    }
-
-    // ── Rate plans (billing MVP) ─────────────────────────────────────────
-    // Defaulted so existing backends and test doubles keep compiling; the
-    // defaults fail loudly rather than pretending to persist anything.
-
-    /// Create a rate plan. When `plan.is_default` is set, any previous
-    /// default plan for the tenant loses its default flag.
-    async fn create_rate_plan(&self, plan: crate::billing::RatePlan) -> Result<()> {
-        let _ = plan;
-        Err(anyhow::Error::new(crate::Error::Storage(
-            crate::error::StorageError::Database(
-                "rate plans are not supported by this storage backend".to_string(),
-            ),
-        )))
-    }
-
-    /// Get a rate plan by id, scoped to a tenant.
-    async fn get_rate_plan(
-        &self,
-        tenant_id: &crate::TenantId,
-        plan_id: uuid::Uuid,
-    ) -> Result<Option<crate::billing::RatePlan>> {
-        let _ = (tenant_id, plan_id);
-        Err(anyhow::Error::new(crate::Error::Storage(
-            crate::error::StorageError::Database(
-                "rate plans are not supported by this storage backend".to_string(),
-            ),
-        )))
-    }
-
-    /// List a tenant's rate plans.
-    async fn list_rate_plans(
-        &self,
-        tenant_id: &crate::TenantId,
-    ) -> Result<Vec<crate::billing::RatePlan>> {
-        let _ = tenant_id;
-        Err(anyhow::Error::new(crate::Error::Storage(
-            crate::error::StorageError::Database(
-                "rate plans are not supported by this storage backend".to_string(),
-            ),
-        )))
-    }
-
-    /// Replace a rate plan's mutable fields (name, currency, rates config,
-    /// default/enabled flags). When `plan.is_default` is set, any previous
-    /// default plan for the tenant loses its default flag.
-    async fn update_rate_plan(&self, plan: crate::billing::RatePlan) -> Result<()> {
-        let _ = plan;
-        Err(anyhow::Error::new(crate::Error::Storage(
-            crate::error::StorageError::Database(
-                "rate plans are not supported by this storage backend".to_string(),
-            ),
-        )))
-    }
-
-    /// Delete a rate plan and its rates.
-    async fn delete_rate_plan(
-        &self,
-        tenant_id: &crate::TenantId,
-        plan_id: uuid::Uuid,
-    ) -> Result<()> {
-        let _ = (tenant_id, plan_id);
-        Err(anyhow::Error::new(crate::Error::Storage(
-            crate::error::StorageError::Database(
-                "rate plans are not supported by this storage backend".to_string(),
-            ),
-        )))
-    }
-
-    /// Add or replace a rate on a plan (upsert on `(rate_plan_id, prefix)`).
-    async fn upsert_rate(
-        &self,
-        tenant_id: &crate::TenantId,
-        rate: crate::billing::Rate,
-    ) -> Result<()> {
-        let _ = (tenant_id, rate);
-        Err(anyhow::Error::new(crate::Error::Storage(
-            crate::error::StorageError::Database(
-                "rate plans are not supported by this storage backend".to_string(),
-            ),
-        )))
-    }
-
-    /// List a plan's rates.
-    async fn list_rates(
-        &self,
-        tenant_id: &crate::TenantId,
-        plan_id: uuid::Uuid,
-    ) -> Result<Vec<crate::billing::Rate>> {
-        let _ = (tenant_id, plan_id);
-        Err(anyhow::Error::new(crate::Error::Storage(
-            crate::error::StorageError::Database(
-                "rate plans are not supported by this storage backend".to_string(),
-            ),
-        )))
-    }
-
-    /// Delete one rate from a plan.
-    async fn delete_rate(
-        &self,
-        tenant_id: &crate::TenantId,
-        plan_id: uuid::Uuid,
-        rate_id: uuid::Uuid,
-    ) -> Result<()> {
-        let _ = (tenant_id, plan_id, rate_id);
-        Err(anyhow::Error::new(crate::Error::Storage(
-            crate::error::StorageError::Database(
-                "rate plans are not supported by this storage backend".to_string(),
-            ),
-        )))
-    }
-
-    /// The tenant's enabled default rate plan with its rates, if any — the
-    /// single lookup the CDR rating path performs at call end.
-    async fn get_default_rate_plan_with_rates(
-        &self,
-        tenant_id: &crate::TenantId,
-    ) -> Result<Option<(crate::billing::RatePlan, Vec<crate::billing::Rate>)>> {
-        // Default: billing not configured — rating is skipped silently.
-        let _ = tenant_id;
-        Ok(None)
-    }
-
-    // ── Balances (billing follow-up) ─────────────────────────────────────
-
-    /// The tenant's balance row, if one has been created. `None` means no
-    /// balance is tracked for the tenant: settlement skips the debit and
-    /// admission never blocks.
-    async fn get_balance(
-        &self,
-        tenant_id: &crate::TenantId,
-    ) -> Result<Option<crate::billing::TenantBalance>> {
-        let _ = tenant_id;
-        Ok(None)
-    }
-
-    /// Create or replace the balance *settings* (currency, credit limit,
-    /// enforcement, low-balance threshold). The stored `balance` amount is
-    /// preserved for an existing row and taken from `balance.balance` only
-    /// when the row is created.
-    async fn upsert_balance(&self, balance: crate::billing::TenantBalance) -> Result<()> {
-        let _ = balance;
-        Err(anyhow::Error::new(crate::Error::Storage(
-            crate::error::StorageError::Database(
-                "balances are not supported by this storage backend".to_string(),
-            ),
-        )))
-    }
-
-    /// Atomically apply a signed amount to the tenant's balance and append
-    /// the ledger entry, returning that entry (with `balance_after`). When
-    /// the tenant has no balance row yet, one is created with default
-    /// settings (enforcement off) in the request's currency.
-    async fn apply_balance_transaction(
-        &self,
-        request: crate::billing::BalanceTransactionRequest,
-    ) -> Result<crate::billing::BalanceTransaction> {
-        let _ = request;
-        Err(anyhow::Error::new(crate::Error::Storage(
-            crate::error::StorageError::Database(
-                "balances are not supported by this storage backend".to_string(),
-            ),
-        )))
-    }
-
-    /// The tenant's ledger, newest first.
-    async fn list_balance_transactions(
-        &self,
-        tenant_id: &crate::TenantId,
-        limit: usize,
-        offset: usize,
-    ) -> Result<Vec<crate::billing::BalanceTransaction>> {
-        let _ = (tenant_id, limit, offset);
-        Err(anyhow::Error::new(crate::Error::Storage(
-            crate::error::StorageError::Database(
-                "balances are not supported by this storage backend".to_string(),
-            ),
-        )))
     }
 }
 
@@ -2741,6 +2586,7 @@ pub struct DynStorage {
     credential_store: Arc<dyn CredentialStore>,
     registration_store: Arc<dyn RegistrationStore>,
     cdr_store: Arc<dyn CdrStore>,
+    billing_store: Arc<dyn crate::billing::BillingStore>,
     phone_number_store: Arc<dyn PhoneNumberStore>,
     line_binding_store: Arc<dyn LineBindingStore>,
     extension_store: Arc<dyn ExtensionStore>,
@@ -2780,6 +2626,7 @@ impl DynStorage {
         credential_store: Arc<dyn CredentialStore>,
         registration_store: Arc<dyn RegistrationStore>,
         cdr_store: Arc<dyn CdrStore>,
+        billing_store: Arc<dyn crate::billing::BillingStore>,
         phone_number_store: Arc<dyn PhoneNumberStore>,
         line_binding_store: Arc<dyn LineBindingStore>,
         extension_store: Arc<dyn ExtensionStore>,
@@ -2802,6 +2649,7 @@ impl DynStorage {
             credential_store,
             registration_store,
             cdr_store,
+            billing_store,
             phone_number_store,
             line_binding_store,
             extension_store,
@@ -2841,6 +2689,7 @@ impl DynStorage {
         T: CredentialStore
             + RegistrationStore
             + CdrStore
+            + crate::billing::BillingStore
             + PhoneNumberStore
             + LineBindingStore
             + ExtensionStore
@@ -2865,6 +2714,7 @@ impl DynStorage {
             credential_store: storage.clone(),
             registration_store: storage.clone(),
             cdr_store: storage.clone(),
+            billing_store: storage.clone(),
             phone_number_store: storage.clone(),
             line_binding_store: storage.clone(),
             extension_store: storage.clone(),
@@ -3195,6 +3045,10 @@ impl CdrStore for DynStorage {
         self.cdr_store.insert_cdr(cdr).await
     }
 
+    async fn insert_cdrs(&self, cdrs: Vec<CallDetailRecord>) -> Result<Vec<uuid::Uuid>> {
+        self.cdr_store.insert_cdrs(cdrs).await
+    }
+
     async fn get_cdr(&self, call_id: &crate::CallId) -> Result<Option<CallDetailRecord>> {
         self.cdr_store.get_cdr(call_id).await
     }
@@ -3248,9 +3102,12 @@ impl CdrStore for DynStorage {
             .aggregate_usage_by_number(tenant_id, from, to)
             .await
     }
+}
 
+#[async_trait]
+impl crate::billing::BillingStore for DynStorage {
     async fn create_rate_plan(&self, plan: crate::billing::RatePlan) -> Result<()> {
-        self.cdr_store.create_rate_plan(plan).await
+        self.billing_store.create_rate_plan(plan).await
     }
 
     async fn get_rate_plan(
@@ -3258,18 +3115,18 @@ impl CdrStore for DynStorage {
         tenant_id: &crate::TenantId,
         plan_id: uuid::Uuid,
     ) -> Result<Option<crate::billing::RatePlan>> {
-        self.cdr_store.get_rate_plan(tenant_id, plan_id).await
+        self.billing_store.get_rate_plan(tenant_id, plan_id).await
     }
 
     async fn list_rate_plans(
         &self,
         tenant_id: &crate::TenantId,
     ) -> Result<Vec<crate::billing::RatePlan>> {
-        self.cdr_store.list_rate_plans(tenant_id).await
+        self.billing_store.list_rate_plans(tenant_id).await
     }
 
     async fn update_rate_plan(&self, plan: crate::billing::RatePlan) -> Result<()> {
-        self.cdr_store.update_rate_plan(plan).await
+        self.billing_store.update_rate_plan(plan).await
     }
 
     async fn delete_rate_plan(
@@ -3277,7 +3134,9 @@ impl CdrStore for DynStorage {
         tenant_id: &crate::TenantId,
         plan_id: uuid::Uuid,
     ) -> Result<()> {
-        self.cdr_store.delete_rate_plan(tenant_id, plan_id).await
+        self.billing_store
+            .delete_rate_plan(tenant_id, plan_id)
+            .await
     }
 
     async fn upsert_rate(
@@ -3285,7 +3144,7 @@ impl CdrStore for DynStorage {
         tenant_id: &crate::TenantId,
         rate: crate::billing::Rate,
     ) -> Result<()> {
-        self.cdr_store.upsert_rate(tenant_id, rate).await
+        self.billing_store.upsert_rate(tenant_id, rate).await
     }
 
     async fn list_rates(
@@ -3293,7 +3152,7 @@ impl CdrStore for DynStorage {
         tenant_id: &crate::TenantId,
         plan_id: uuid::Uuid,
     ) -> Result<Vec<crate::billing::Rate>> {
-        self.cdr_store.list_rates(tenant_id, plan_id).await
+        self.billing_store.list_rates(tenant_id, plan_id).await
     }
 
     async fn delete_rate(
@@ -3302,7 +3161,7 @@ impl CdrStore for DynStorage {
         plan_id: uuid::Uuid,
         rate_id: uuid::Uuid,
     ) -> Result<()> {
-        self.cdr_store
+        self.billing_store
             .delete_rate(tenant_id, plan_id, rate_id)
             .await
     }
@@ -3311,7 +3170,7 @@ impl CdrStore for DynStorage {
         &self,
         tenant_id: &crate::TenantId,
     ) -> Result<Option<(crate::billing::RatePlan, Vec<crate::billing::Rate>)>> {
-        self.cdr_store
+        self.billing_store
             .get_default_rate_plan_with_rates(tenant_id)
             .await
     }
@@ -3320,18 +3179,18 @@ impl CdrStore for DynStorage {
         &self,
         tenant_id: &crate::TenantId,
     ) -> Result<Option<crate::billing::TenantBalance>> {
-        self.cdr_store.get_balance(tenant_id).await
+        self.billing_store.get_balance(tenant_id).await
     }
 
     async fn upsert_balance(&self, balance: crate::billing::TenantBalance) -> Result<()> {
-        self.cdr_store.upsert_balance(balance).await
+        self.billing_store.upsert_balance(balance).await
     }
 
     async fn apply_balance_transaction(
         &self,
         request: crate::billing::BalanceTransactionRequest,
     ) -> Result<crate::billing::BalanceTransaction> {
-        self.cdr_store.apply_balance_transaction(request).await
+        self.billing_store.apply_balance_transaction(request).await
     }
 
     async fn list_balance_transactions(
@@ -3340,7 +3199,7 @@ impl CdrStore for DynStorage {
         limit: usize,
         offset: usize,
     ) -> Result<Vec<crate::billing::BalanceTransaction>> {
-        self.cdr_store
+        self.billing_store
             .list_balance_transactions(tenant_id, limit, offset)
             .await
     }

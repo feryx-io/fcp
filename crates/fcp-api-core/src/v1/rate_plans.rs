@@ -12,8 +12,7 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use fcp_core::billing::{Rate, RatePlan};
-use fcp_core::storage::CdrStore;
+use fcp_core::billing::{BillingStore, Decimal, Rate, RatePlan};
 use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
 use tracing::info;
@@ -35,8 +34,8 @@ pub struct RatePlanResponse {
     pub tenant_id: String,
     pub name: String,
     pub currency: String,
-    pub default_rate_per_minute: f64,
-    pub connect_fee: f64,
+    pub default_rate_per_minute: Decimal,
+    pub connect_fee: Decimal,
     pub billing_increment_secs: u32,
     pub is_default: bool,
     pub enabled: bool,
@@ -64,8 +63,8 @@ pub struct RateResponse {
     pub id: String,
     pub rate_plan_id: String,
     pub prefix: String,
-    pub rate_per_minute: f64,
-    pub connect_fee: Option<f64>,
+    pub rate_per_minute: Decimal,
+    pub connect_fee: Option<Decimal>,
     pub description: Option<String>,
 }
 
@@ -89,9 +88,9 @@ pub struct CreateRatePlanRequest {
     #[serde(default = "default_currency")]
     pub currency: String,
     #[serde(default)]
-    pub default_rate_per_minute: f64,
+    pub default_rate_per_minute: Decimal,
     #[serde(default)]
-    pub connect_fee: f64,
+    pub connect_fee: Decimal,
     #[serde(default = "default_increment")]
     pub billing_increment_secs: u32,
     #[serde(default)]
@@ -115,8 +114,8 @@ fn default_true() -> bool {
 pub struct UpdateRatePlanRequest {
     pub name: Option<String>,
     pub currency: Option<String>,
-    pub default_rate_per_minute: Option<f64>,
-    pub connect_fee: Option<f64>,
+    pub default_rate_per_minute: Option<Decimal>,
+    pub connect_fee: Option<Decimal>,
     pub billing_increment_secs: Option<u32>,
     pub is_default: Option<bool>,
     pub enabled: Option<bool>,
@@ -126,16 +125,30 @@ pub struct UpdateRatePlanRequest {
 #[derive(Debug, Deserialize)]
 pub struct UpsertRateRequest {
     pub prefix: String,
-    pub rate_per_minute: f64,
-    pub connect_fee: Option<f64>,
+    pub rate_per_minute: Decimal,
+    pub connect_fee: Option<Decimal>,
     pub description: Option<String>,
 }
 
-fn validate_money(value: f64, field: &str) -> Result<(), ApiError> {
-    if !value.is_finite() || value < 0.0 {
+fn validate_money(value: Decimal, field: &str) -> Result<(), ApiError> {
+    if value < Decimal::ZERO {
         return Err(ApiError::BadRequest(format!(
             "{field} must be a non-negative number"
         )));
+    }
+    validate_money_precision(value, field)
+}
+
+/// Money is stored as NUMERIC(18,6): at most six decimal places and twelve
+/// whole digits. Refused rather than rounded by the database.
+pub(crate) fn validate_money_precision(value: Decimal, field: &str) -> Result<(), ApiError> {
+    if value.normalize().scale() > 6 {
+        return Err(ApiError::BadRequest(format!(
+            "{field} has more than 6 decimal places"
+        )));
+    }
+    if value.abs() >= Decimal::from(1_000_000_000_000i64) {
+        return Err(ApiError::BadRequest(format!("{field} is too large")));
     }
     Ok(())
 }

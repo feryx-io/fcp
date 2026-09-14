@@ -1,13 +1,14 @@
 //! Call rating: longest-prefix rate selection, billing increments, connect
 //! fees. Pure functions over the `fcp_core::billing` model.
 
-use fcp_core::billing::{Rate, RatePlan};
+use fcp_core::billing::{Decimal, Rate, RatePlan};
+use rust_decimal::RoundingStrategy;
 
 /// Outcome of rating one call.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RatedCall {
     /// Total cost in the plan's currency, rounded to 4 decimal places.
-    pub cost: f64,
+    pub cost: Decimal,
     pub currency: String,
     /// The rate prefix that matched, or `None` when the default rate applied.
     pub matched_prefix: Option<String>,
@@ -18,8 +19,8 @@ pub struct RatedCall {
 /// The rate that applies to one destination under a plan.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SelectedRate {
-    pub rate_per_minute: f64,
-    pub connect_fee: f64,
+    pub rate_per_minute: Decimal,
+    pub connect_fee: Decimal,
     pub matched_prefix: Option<String>,
 }
 
@@ -94,7 +95,7 @@ pub fn rate_call(
 ) -> RatedCall {
     if duration_ms == 0 {
         return RatedCall {
-            cost: 0.0,
+            cost: Decimal::ZERO,
             currency: plan.currency.clone(),
             matched_prefix: None,
             billable_secs: 0,
@@ -103,7 +104,8 @@ pub fn rate_call(
 
     let selected = select_rate(plan, rates, dialed_digits);
     let billable_secs = billable_seconds(plan, duration_ms);
-    let cost = selected.connect_fee + selected.rate_per_minute * (billable_secs as f64) / 60.0;
+    let cost = selected.connect_fee
+        + selected.rate_per_minute * Decimal::from(billable_secs) / Decimal::from(60);
     RatedCall {
         cost: round_money(cost),
         currency: plan.currency.clone(),
@@ -112,14 +114,16 @@ pub fn rate_call(
     }
 }
 
-/// Round to 4 decimal places (the ledger's precision).
-pub fn round_money(amount: f64) -> f64 {
-    (amount * 10_000.0).round() / 10_000.0
+/// Round to 4 decimal places (the ledger's precision), halves away from
+/// zero.
+pub fn round_money(amount: Decimal) -> Decimal {
+    amount.round_dp_with_strategy(4, RoundingStrategy::MidpointAwayFromZero)
 }
 
 #[cfg(test)]
 pub(crate) mod test_support {
     use super::*;
+    use rust_decimal_macros::dec;
     use std::time::SystemTime;
     use uuid::Uuid;
 
@@ -129,8 +133,8 @@ pub(crate) mod test_support {
             tenant_id: fcp_core::TenantId::new(),
             name: "default".into(),
             currency: "USD".into(),
-            default_rate_per_minute: 0.02,
-            connect_fee: 0.0,
+            default_rate_per_minute: dec!(0.02),
+            connect_fee: Decimal::ZERO,
             billing_increment_secs: 60,
             is_default: true,
             enabled: true,
@@ -139,7 +143,7 @@ pub(crate) mod test_support {
         }
     }
 
-    pub fn rate(plan_id: Uuid, prefix: &str, per_minute: f64) -> Rate {
+    pub fn rate(plan_id: Uuid, prefix: &str, per_minute: Decimal) -> Rate {
         Rate {
             id: Uuid::new_v4(),
             rate_plan_id: plan_id,
@@ -155,6 +159,7 @@ pub(crate) mod test_support {
 mod tests {
     use super::test_support::{plan, rate};
     use super::*;
+    use rust_decimal_macros::dec;
 
     #[test]
     fn test_dialed_digits_from_uri() {
@@ -179,22 +184,22 @@ mod tests {
     fn test_longest_prefix_wins() {
         let p = plan();
         let rates = vec![
-            rate(p.id, "1", 0.01),
-            rate(p.id, "1415", 0.005),
-            rate(p.id, "44", 0.03),
+            rate(p.id, "1", dec!(0.01)),
+            rate(p.id, "1415", dec!(0.005)),
+            rate(p.id, "44", dec!(0.03)),
         ];
         let rated = rate_call(&p, &rates, "14155550100", 60_000);
         assert_eq!(rated.matched_prefix.as_deref(), Some("1415"));
-        assert!((rated.cost - 0.005).abs() < 1e-9);
+        assert_eq!(rated.cost, dec!(0.005));
     }
 
     #[test]
     fn test_default_rate_when_no_prefix_matches() {
         let p = plan();
-        let rates = vec![rate(p.id, "44", 0.03)];
+        let rates = vec![rate(p.id, "44", dec!(0.03))];
         let rated = rate_call(&p, &rates, "3312345678", 120_000);
         assert_eq!(rated.matched_prefix, None);
-        assert!((rated.cost - 0.04).abs() < 1e-9); // 2 min * 0.02
+        assert_eq!(rated.cost, dec!(0.04)); // 2 min * 0.02
     }
 
     #[test]
@@ -203,40 +208,59 @@ mod tests {
         p.billing_increment_secs = 60;
         let rated = rate_call(&p, &[], "15550100", 61_000); // 61s → 120s billed
         assert_eq!(rated.billable_secs, 120);
-        assert!((rated.cost - 0.04).abs() < 1e-9);
+        assert_eq!(rated.cost, dec!(0.04));
 
         p.billing_increment_secs = 1; // per-second billing
         let rated = rate_call(&p, &[], "15550100", 61_000);
         assert_eq!(rated.billable_secs, 61);
-        assert!((rated.cost - 0.0203).abs() < 1e-9); // rounded to 4 dp
+        assert_eq!(rated.cost, dec!(0.0203)); // rounded to 4 dp
     }
 
     #[test]
     fn test_connect_fee_and_override() {
         let mut p = plan();
-        p.connect_fee = 0.01;
-        let mut r = rate(p.id, "44", 0.03);
+        p.connect_fee = dec!(0.01);
+        let mut r = rate(p.id, "44", dec!(0.03));
         let rated = rate_call(&p, std::slice::from_ref(&r), "442079460000", 60_000);
-        assert!((rated.cost - 0.04).abs() < 1e-9); // 0.01 + 0.03
+        assert_eq!(rated.cost, dec!(0.04)); // 0.01 + 0.03
 
-        r.connect_fee = Some(0.05);
+        r.connect_fee = Some(dec!(0.05));
         let rated = rate_call(&p, &[r], "442079460000", 60_000);
-        assert!((rated.cost - 0.08).abs() < 1e-9); // 0.05 + 0.03
+        assert_eq!(rated.cost, dec!(0.08)); // 0.05 + 0.03
     }
 
     #[test]
     fn test_unanswered_call_costs_nothing() {
         let p = plan();
         let rated = rate_call(&p, &[], "15550100", 0);
-        assert_eq!(rated.cost, 0.0);
+        assert_eq!(rated.cost, Decimal::ZERO);
         assert_eq!(rated.billable_secs, 0);
     }
 
     #[test]
     fn test_plus_prefix_in_rate_matches_bare_digits() {
         let p = plan();
-        let rates = vec![rate(p.id, "+44", 0.03)];
+        let rates = vec![rate(p.id, "+44", dec!(0.03))];
         let rated = rate_call(&p, &rates, "442079460000", 60_000);
         assert_eq!(rated.matched_prefix.as_deref(), Some("+44"));
+    }
+}
+
+#[cfg(test)]
+mod decimal_tests {
+    use super::*;
+    use rust_decimal_macros::dec;
+
+    #[test]
+    fn money_rounds_half_away_from_zero_at_four_places() {
+        assert_eq!(round_money(dec!(0.02035)), dec!(0.0204));
+        assert_eq!(round_money(dec!(-0.02035)), dec!(-0.0204));
+        assert_eq!(round_money(dec!(0.020349)), dec!(0.0203));
+    }
+
+    #[test]
+    fn a_million_charges_sum_exactly() {
+        let total: Decimal = (0..1_000_000).map(|_| dec!(0.0001)).sum();
+        assert_eq!(total, dec!(100));
     }
 }

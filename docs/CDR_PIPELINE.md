@@ -1,7 +1,7 @@
 # The CDR Pipeline — Design
 
-Status: **phase 1 done** (2026-09-14, v0.25.159); design agreed the same
-day with every recommendation in §14 taken. This document is the
+Status: **phases 1 and 2 done** (2026-09-14, v0.25.159 and v0.25.160);
+design agreed the same day with every recommendation in §14 taken. This document is the
 plan of record for the dedicated CDR pipeline that `STATUS.md` kept on
 the Phase 5 roadmap on 2026-09-02 ("inline CDR creation plus `fcp-jobs`
 post-processing is sufficient until carrier call volumes"). It describes
@@ -200,13 +200,22 @@ health route.
 
 `fcp_cdr::Sink` has two implementations.
 
-`StreamSink` does `XADD fcp:cdrs * …` per record, pipelined per batch,
-against the Redis the node already has for clustering
-(`storage.redis_url`). The stream is **never trimmed by count**. The
-processor trims it by `XTRIM MINID` to the oldest unacknowledged entry
-less a day, so a record stays until it is stored and a replay window
-remains. Stream length is a metric; a Redis outage leaves the records in
-the spool.
+The stream sink (`fcp_storage_redis::cdr_stream::RedisCdrStream`, behind
+that crate's `cdr` feature) does `XADD fcp:cdrs * record <json>` per
+record, one `MULTI` per batch, against the Redis the node already has
+for clustering (`storage.redis_url`). The stream is **never trimmed by
+count**. The processor trims it by `XTRIM MINID` to the earlier of the
+group's oldest unfinished entry (pending, or the last delivered) and the
+replay window (`retain_hours`, default a day), so a record stays until it
+is stored. Stream length is a metric; a Redis outage leaves the records
+in the spool.
+
+A node ships to the stream only with `[cdr] sink = "stream"`; `local` is
+the default even when the node has Redis. Nothing reads the stream
+unless an `fcp-jobs` runs with `[cdr] enabled = true`, and records a
+node sends where nobody reads would sit in Redis unstored, so the choice
+is explicit rather than implied by `redis_url` (as the first draft of
+this section had it).
 
 `LocalSink` runs the processor (§4.3) in the shipper's task against the
 node's own Postgres. This is the single-node deployment: no Redis, the
@@ -219,10 +228,11 @@ broker that is not in the tree — is §14.2.
 ### 4.3 The processor
 
 `fcp_cdr::Processor` is the same struct in both deployments. In
-`fcp-jobs` it reads `fcp:cdrs` through the existing
-`RedisStreamConsumer` (`fcp-storage-redis/src/event_bus.rs`: consumer
-group, `claim_stale`, `ack`) in batches of up to `batch` (default 500)
-or `batch_wait` (default 200 ms), whichever first. Per batch:
+`fcp-jobs` it reads `fcp:cdrs` through `fcp_cdr::consumer::Consumer`, a
+loop over the `RecordSource` trait that `RedisCdrStream` implements
+(consumer group `cdr-processor`, `XREADGROUP`, `XAUTOCLAIM`, `XACK`), in
+batches of up to `batch` (default 500) or `batch_wait` (default 200 ms),
+whichever first. Per batch:
 
 1. **Normalize.** Decode by schema version, validate (tenant, times in
    order, a URI each side), derive what is derived: durations, the
@@ -241,16 +251,19 @@ or `batch_wait` (default 200 ms), whichever first. Per batch:
 4. **Store.** One transaction per batch: `INSERT … ON CONFLICT (cdr_id)
    DO NOTHING RETURNING cdr_id`, so the processor learns which records
    were new.
-5. **Settle.** For each new record with a cost, the ledger transaction
-   the engine makes today (`BillingEngine::charge`), still protected by
-   the `idx_balance_transactions_call_charge` index, so a replay of a
-   batch whose transaction committed but whose acknowledgement did not
-   charges nothing twice.
+5. **Settle.** For every rated record in the stored batch, new or a
+   replay, the ledger transaction (`BillingEngine::settle_rated`),
+   protected by the `idx_balance_transactions_call_charge` index, so a
+   call is charged once however often its record is processed. Settling
+   only new records, as the first draft said, would lose the charge of a
+   batch stored just before the processor died: its replay finds every
+   record already there.
 6. **Announce.** `PlatformEvent::Cdr(CdrEvent::Written { cdr_id,
-   call_id, tenant_id, kind, cost, … })` per new record, on the bus, so
-   the events server streams it and the webhook dispatcher delivers it
-   as `cdr.written`. The `billing.call_rated` event keeps firing from
-   the settle step.
+   call_id, tenant_id, kind, cost, … })` per record, replays included for
+   the same reason, on the bus, so the events server streams it and the
+   webhook dispatcher delivers it as `cdr.written`; consumers skip a
+   `cdr_id` they have seen. The `billing.call_rated` event keeps firing
+   from the settle step.
 7. **Acknowledge.** `XACK` the batch. A failure in steps 4 or 5 (the
    database is away) acknowledges nothing; the batch is retried with
    backoff and a stale consumer's pending entries are claimed by another
@@ -430,13 +443,18 @@ the host's health route:
 
 | Metric | Where | Meaning |
 |---|---|---|
-| `cdr_spool_depth`, `cdr_spool_oldest_age_seconds` | node | Records not yet shipped, and how long the oldest has waited |
-| `cdr_shipped_total`, `cdr_ship_errors_total` | node | Shipper progress and failures |
-| `cdr_stream_length`, `cdr_stream_pending` | processor | Redis stream size and the consumer group's unacknowledged count |
-| `cdr_processed_total{outcome}` | processor | `stored`, `duplicate`, `dead_letter` |
-| `cdr_batch_seconds` | processor | Batch latency histogram |
-| `cdr_end_to_write_seconds` | processor | `created_at - end_time`, the pipeline's lag as a billing system sees it |
-| `cdr_rollup_age_seconds` | processor host | How stale the rollups are |
+| `cdr_spool_pending_bytes`, `cdr_spool_segments`, `cdr_spool_oldest_age_seconds` | node | Bytes not yet shipped, segment files, and how long the oldest has waited |
+| `cdr_stream_length`, `cdr_stream_pending`, `cdr_stream_dead_letters` | processor | Redis stream size, the consumer group's unacknowledged count, dead letters kept |
+| `cdr_processed_total{outcome}` | both | `stored`, `duplicate`, `dead_letter` |
+| `cdr_batches_total`, `cdr_batch_errors_total` | both | Batches, and batches the store failed |
+| `cdr_batch_seconds` | both | How long the last batch took |
+| `cdr_end_to_write_seconds` | both | `created_at - end_time` of the last record, the pipeline's lag as a billing system sees it |
+| `cdr_rollup_age_seconds` | processor host | How stale the rollups are (phase 4) |
+
+The call manager serves these on `/metrics` and as JSON on `/cdr/status`
+(spool and in-process processor); `fcp-jobs` on `/metrics` and under
+`cdr` in `/status` (stream and processor). Every sample carries
+`node="…"`.
 
 Logs at `info` per batch, at `warn` for backoff, at `error` for a
 dead letter with the record's ids. A record's journey is traceable by
@@ -537,6 +555,65 @@ per-tenant cache; `cost` and the ledger go `NUMERIC` with `rust_decimal`
 `cdr.written` on the bus and through webhooks. `JobType::CdrProcessing`
 is removed. Metrics and the health route. `IMPLEMENTATION_DOCS.md` §2 is
 rewritten to describe what exists.
+
+*Phase 2 shipped 2026-09-14 (v0.25.160).* The processor is a role in
+`fcp-jobs` (`[cdr] enabled`, `database_url`, `batch`, `batch_wait_ms`,
+`claim_idle_secs`, `retain_hours`, `cache_secs`, `key_prefix`), consuming
+`fcp:cdrs` through `fcp_cdr::consumer` over `RedisCdrStream`, which is
+also the node's stream sink (`[cdr] sink = "stream"`, §4.2). The
+processor now normalizes (refusing a record from a newer schema),
+enriches the direction through `DirectionEnricher` (the tenant's numbers
+under the cache: to a tenant number inbound, from one or over a trunk
+outbound, else internal — the per-row SQL counted a trunk call from an
+extension as neither), rates with `BillingEngine::rate` under
+`with_plan_cache`, stores the batch with `CdrStore::insert_cdrs` (one
+statement per thousand rows, one transaction, `RETURNING cdr_id`),
+settles and announces. A record the store refuses for what it is — a
+second call record for a call, a value out of range: SQLSTATE classes 23
+and 22 — comes back as `CdrRejected`; the processor then stores the batch
+one record at a time, keeps the refused one as a dead letter
+(`fcp:cdrs:dead` with the reason, or the spool's `dead.jsonl` with the
+reason on a node) and stores the rest, so one bad record cannot hold a
+batch forever. An error of any other kind is the store being away: the
+batch is retried with backoff and acknowledged only once it lands. The
+same processor, with the enricher and the event publisher, runs behind
+the spool on a node with `sink = "local"`, so a single-node install gets
+directions and `cdr.written` without `fcp-jobs`.
+
+Money is `rust_decimal::Decimal` everywhere it is held — rates, fees,
+balances, credit limits, thresholds, ledger amounts, costs, usage totals,
+billing events — and `NUMERIC(18,6)` in every money column (migration
+058), wider than §14.3 said because rates and fees drift the same way
+costs do. The `serde-float` feature keeps each one a JSON number on every
+surface, and the API refuses an amount with more than six places or
+twelve whole digits rather than letting the column round it. Rating gives
+the same results: every billing test kept its numbers. The rate
+plan and balance methods left `CdrStore` for `fcp_core::billing::BillingStore`;
+`fcp-billing`'s narrow view of it is `LedgerStore`. `PlatformEvent::Cdr`
+is new, and `EventType::Cdr` (`event_types=cdr` on the WebSocket).
+`JobType::CdrProcessing`, which nothing ever produced, is gone. The usage
+totals count a record's stored direction when it has one.
+
+Tests: the processor, enricher, consumer and metrics in `fcp-cdr` (an
+in-memory source with Redis's delivery rules: a store outage holds a
+batch unacknowledged, a dead consumer's entries are claimed and stored
+once, an undecodable entry and a refused record are dead-lettered);
+`fcp-storage-redis/tests/cdr_stream.rs` against Redis (round trip, claim,
+dead letters, trimming that keeps pending and undelivered entries);
+Postgres (batch insert reporting new ids, a refused record rolling back
+its batch, ten charges of 0.1 summing to exactly 1, the stored direction
+in the totals, decimal balances after 058); and
+`fcp-jobs/tests/cdr_pipeline.rs` against the running binaries — a call
+through a call manager shipping to the stream is stored by `fcp-jobs`
+rated at the plan's rate, internal, charged exactly once and announced
+on the event stream; then `fcp-jobs` is killed, a second call's record
+waits in the stream, and lands, charged once, when a new `fcp-jobs`
+starts. The call scenarios read the call manager's `/cdr/status`.
+
+What the plan said and phase 2 did not do: the enricher fills the
+direction only (trunk and region were already stamped by the node in
+phase 1); the webhook dispatcher needed nothing, since it forwards every
+event by name.
 
 **Phase 3 — every leg a record.** The conference server writes a
 `conference` record per leg (direct, through the call manager, over a

@@ -620,14 +620,30 @@ async fn main() -> Result<()> {
 
     // 15b. The CDR pipeline's node side (docs/CDR_PIPELINE.md §4.1): every
     // finished call's record spools locally, and ships to the in-process
-    // processor that rates and stores it.
+    // processor that rates and stores it, or with `[cdr] sink = "stream"`
+    // to the Redis stream the processor in fcp-jobs consumes.
     let cdr_writer = {
         let billing = call_manager_inner
             .billing()
             .cloned()
             .context("call manager has no billing engine")?;
-        let processor = Arc::new(fcp_sip::CallManager::processor(&dyn_storage, &billing));
-        fcp_cdr::start_node(&config.cdr, processor).context("Failed to start the CDR spool")?
+        let processor = Arc::new(fcp_sip::CallManager::processor(
+            &dyn_storage,
+            &billing,
+            Some(Arc::clone(&event_publisher)),
+        ));
+        #[cfg(feature = "storage-redis")]
+        let stream: Option<Arc<dyn fcp_cdr::sink::Sink>> = redis_storage.as_ref().map(|redis| {
+            Arc::new(fcp_storage_redis::cdr_stream::RedisCdrStream::new(
+                redis.clone(),
+                config.service.node_id.clone(),
+                Duration::from_secs(24 * 3600),
+            )) as Arc<dyn fcp_cdr::sink::Sink>
+        });
+        #[cfg(not(feature = "storage-redis"))]
+        let stream: Option<Arc<dyn fcp_cdr::sink::Sink>> = None;
+        fcp_cdr::start_node(&config.cdr, processor, stream)
+            .context("Failed to start the CDR spool")?
     };
     call_manager_inner.set_cdr_writer(cdr_writer.clone());
     let call_manager = Arc::new(call_manager_inner);

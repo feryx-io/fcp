@@ -177,9 +177,6 @@ impl Job {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum JobType {
-    /// Process CDR (Call Detail Record)
-    CdrProcessing,
-
     /// Process recording file
     RecordingProcessing,
 
@@ -196,7 +193,6 @@ pub enum JobType {
 impl fmt::Display for JobType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            JobType::CdrProcessing => write!(f, "cdr_processing"),
             JobType::RecordingProcessing => write!(f, "recording_processing"),
             JobType::WebhookDelivery => write!(f, "webhook_delivery"),
             JobType::CleanupTask => write!(f, "cleanup_task"),
@@ -239,10 +235,10 @@ mod tests {
     #[test]
     fn test_job_creation() {
         let payload = serde_json::json!({"call_id": "call-123"});
-        let job = Job::new(JobType::CdrProcessing, payload.clone());
+        let job = Job::new(JobType::RecordingProcessing, payload.clone());
 
         assert_eq!(job.status, JobStatus::Pending);
-        assert_eq!(job.job_type, JobType::CdrProcessing);
+        assert_eq!(job.job_type, JobType::RecordingProcessing);
         assert_eq!(job.priority, JobPriority::Normal);
         assert_eq!(job.retry_count, 0);
         assert_eq!(job.payload, payload);
@@ -258,7 +254,7 @@ mod tests {
 
     #[test]
     fn test_job_lifecycle() {
-        let mut job = Job::new(JobType::CdrProcessing, serde_json::json!({}));
+        let mut job = Job::new(JobType::RecordingProcessing, serde_json::json!({}));
 
         // Start job
         job.mark_running();

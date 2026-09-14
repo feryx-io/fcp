@@ -68,6 +68,7 @@ pub async fn run_http_server(bind_addr: SocketAddr, state: Arc<AppState>) -> any
         .route("/calls", get(calls_handler))
         .route("/registrations", get(registrations_handler))
         .route("/cdrs", get(cdrs_handler))
+        .route("/cdr/status", get(cdr_status_handler))
         .route("/media-sessions", get(media_sessions_handler))
         .route("/transcoding", get(transcoding_handler))
         // Queue/Agent management endpoints
@@ -626,18 +627,34 @@ async fn transcoding_handler(State(state): State<Arc<AppState>>) -> Json<serde_j
 /// are included.
 ///
 /// GET /metrics
-async fn metrics_handler() -> impl IntoResponse {
+async fn metrics_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     use prometheus::Encoder;
     let encoder = prometheus::TextEncoder::new();
     let families = prometheus::default_registry().gather();
     let mut buffer = Vec::new();
     encoder.encode(&families, &mut buffer).unwrap_or_default();
-    let body = String::from_utf8(buffer).unwrap_or_default();
+    let mut body = String::from_utf8(buffer).unwrap_or_default();
+    // The CDR pipeline's node side (docs/CDR_PIPELINE.md §11).
+    if let Some(writer) = state.call_manager.cdr_writer() {
+        let node = state.call_manager.node_id().unwrap_or("").replace('"', "");
+        body.push_str(&writer.prometheus(&format!("node=\"{node}\"")));
+    }
     (
         StatusCode::OK,
         [("content-type", "text/plain; version=0.0.4; charset=utf-8")],
         body,
     )
+}
+
+/// The CDR pipeline's node side: what the spool holds and what the
+/// in-process processor has done (`docs/CDR_PIPELINE.md` §11).
+///
+/// GET /cdr/status
+async fn cdr_status_handler(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    Json(match state.call_manager.cdr_writer() {
+        Some(writer) => writer.status(),
+        None => serde_json::json!({ "spool": null, "processor": null }),
+    })
 }
 
 // ---- Queue/Agent Management Endpoints ----

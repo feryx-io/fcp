@@ -10,12 +10,15 @@ description = "Redis storage backend for FCP — registrations, event bus, parki
 [features]
 default = []
 event-bus = ["dep:futures-util"]
+# The CDR stream: the nodes' sink and fcp-jobs' source (docs/CDR_PIPELINE.md).
+cdr = ["dep:fcp-cdr"]
 metrics = ["dep:prometheus", "dep:lazy_static"]
 
 [dependencies]
 # FCP crates
 fcp-core = { path = "../fcp-core" }
 fcp-events = { path = "../fcp-events" }
+fcp-cdr = { path = "../fcp-cdr", optional = true }
 
 # Redis
 redis = { version = "0.27", features = ["tokio-comp", "connection-manager", "cluster-async"] }
@@ -43,5 +46,6 @@ prometheus = { version = "0.13", default-features = false, optional = true }
 lazy_static = { version = "1", optional = true }
 
 [dev-dependencies]
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
 tokio = { workspace = true, features = ["full"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
