@@ -74,6 +74,18 @@ pub trait SipTraceStore: Send + Sync {
     ) -> anyhow::Result<u64> {
         Ok(0)
     }
+
+    /// Give traces captured before their call's tenant was known
+    /// (`_system`) the tenant of the call's record. Returns how many.
+    async fn adopt_system_traces(&self) -> anyhow::Result<u64> {
+        Ok(0)
+    }
+
+    /// Delete `_system` traces older than `before`: messages that belong to
+    /// no tenant's call (registrations, options, calls never recorded).
+    async fn delete_system_traces_before(&self, _before: SystemTime) -> anyhow::Result<u64> {
+        Ok(0)
+    }
 }
 
 /// Serde module for SystemTime serialization as epoch seconds.

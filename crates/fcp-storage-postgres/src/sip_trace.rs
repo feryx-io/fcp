@@ -138,13 +138,43 @@ impl SipTraceStore for PostgresSipTraceStore {
         tenant_id: &str,
         before: SystemTime,
     ) -> anyhow::Result<u64> {
-        let result =
-            sqlx::query("DELETE FROM sip_trace_messages WHERE tenant_id = $1 AND timestamp < $2")
-                .bind(tenant_id)
-                .bind(system_time_to_datetime(before))
-                .execute(&self.pool)
-                .await?;
+        Ok(crate::deletion::execute(
+            &self.pool,
+            sqlx::query(
+                "DELETE FROM sip_trace_messages
+                 WHERE timestamp < $2
+                   AND (tenant_id = $1
+                        OR (tenant_id = '_system'
+                            AND call_id IN (SELECT call_id FROM cdrs WHERE tenant_id = $1)))",
+            )
+            .bind(tenant_id)
+            .bind(system_time_to_datetime(before)),
+        )
+        .await?)
+    }
+
+    async fn adopt_system_traces(&self) -> anyhow::Result<u64> {
+        // A call's messages are captured as they cross the wire, before
+        // anything knows the call's tenant; its stored record does.
+        let result = sqlx::query(
+            "UPDATE sip_trace_messages t SET tenant_id = c.tenant_id
+             FROM cdrs c
+             WHERE t.tenant_id = '_system' AND c.call_id = t.call_id",
+        )
+        .execute(&self.pool)
+        .await?;
         Ok(result.rows_affected())
+    }
+
+    async fn delete_system_traces_before(&self, before: SystemTime) -> anyhow::Result<u64> {
+        Ok(crate::deletion::execute(
+            &self.pool,
+            sqlx::query(
+                "DELETE FROM sip_trace_messages WHERE tenant_id = '_system' AND timestamp < $1",
+            )
+            .bind(system_time_to_datetime(before)),
+        )
+        .await?)
     }
 
     async fn delete_sip_traces_older_than(&self, days: u32) -> anyhow::Result<u64> {

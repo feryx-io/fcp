@@ -46,8 +46,8 @@ impl FlowTraceStore for PostgresFlowTraceStore {
         sqlx::query(
             "INSERT INTO flow_execution_traces (
                 call_id, flow_id, flow_name, node_id, event_type,
-                timestamp, detail, flow_version, elapsed_ms
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+                timestamp, detail, flow_version, elapsed_ms, tenant_id
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
         )
         .bind(&entry.call_id)
         .bind(&entry.flow_id)
@@ -58,6 +58,7 @@ impl FlowTraceStore for PostgresFlowTraceStore {
         .bind(&entry.detail)
         .bind(entry.flow_version.map(|v| v as i32))
         .bind(entry.elapsed_ms)
+        .bind(&entry.tenant_id)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -174,13 +175,29 @@ impl FlowTraceStore for PostgresFlowTraceStore {
         tenant_id: &str,
         before: SystemTime,
     ) -> anyhow::Result<u64> {
-        let result = sqlx::query(
-            "DELETE FROM flow_execution_traces
-             WHERE timestamp < $2
-               AND call_id IN (SELECT call_id FROM cdrs WHERE tenant_id = $1)",
+        Ok(crate::deletion::execute(
+            &self.pool,
+            // Traces not yet given their tenant are found through their
+            // call's record, as before tenancy.
+            sqlx::query(
+                "DELETE FROM flow_execution_traces
+                 WHERE timestamp < $2
+                   AND (tenant_id = $1
+                        OR (tenant_id IS NULL
+                            AND call_id IN (SELECT call_id FROM cdrs WHERE tenant_id = $1)))",
+            )
+            .bind(tenant_id)
+            .bind(system_time_to_datetime(before)),
         )
-        .bind(tenant_id)
-        .bind(system_time_to_datetime(before))
+        .await?)
+    }
+
+    async fn adopt_untenanted_traces(&self) -> anyhow::Result<u64> {
+        let result = sqlx::query(
+            "UPDATE flow_execution_traces t SET tenant_id = c.tenant_id
+             FROM cdrs c
+             WHERE t.tenant_id IS NULL AND c.call_id = t.call_id",
+        )
         .execute(&self.pool)
         .await?;
         Ok(result.rows_affected())
@@ -202,6 +219,7 @@ fn row_to_flow_trace(row: &sqlx::postgres::PgRow) -> FlowTraceEntry {
     FlowTraceEntry {
         id: row.get("id"),
         call_id: row.get("call_id"),
+        tenant_id: row.try_get("tenant_id").unwrap_or(None),
         flow_id: row.get("flow_id"),
         flow_name: row.get("flow_name"),
         node_id: row.get("node_id"),

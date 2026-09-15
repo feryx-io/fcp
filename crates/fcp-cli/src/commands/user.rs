@@ -513,39 +513,12 @@ fn parse_role(role_str: &str) -> Result<UserRole> {
 
 /// Parse a permission string to Permission enum
 fn parse_permission(perm_str: &str) -> Result<Permission> {
-    match perm_str.to_lowercase().as_str() {
-        "system_config" => Ok(Permission::SystemConfig),
-        "system_view_logs" => Ok(Permission::SystemViewLogs),
-        "user_create" => Ok(Permission::UserCreate),
-        "user_read" => Ok(Permission::UserRead),
-        "user_update" => Ok(Permission::UserUpdate),
-        "user_delete" => Ok(Permission::UserDelete),
-        "user_set_password" => Ok(Permission::UserSetPassword),
-        "phone_number_create" => Ok(Permission::PhoneNumberCreate),
-        "phone_number_read" => Ok(Permission::PhoneNumberRead),
-        "phone_number_update" => Ok(Permission::PhoneNumberUpdate),
-        "phone_number_delete" => Ok(Permission::PhoneNumberDelete),
-        "phone_number_view_carrier_data" => Ok(Permission::PhoneNumberViewCarrierData),
-        "device_create" => Ok(Permission::DeviceCreate),
-        "device_read" => Ok(Permission::DeviceRead),
-        "device_update" => Ok(Permission::DeviceUpdate),
-        "device_delete" => Ok(Permission::DeviceDelete),
-        "call_view" => Ok(Permission::CallView),
-        "call_control" => Ok(Permission::CallControl),
-        "call_recording_access" => Ok(Permission::CallRecordingAccess),
-        "registration_view" => Ok(Permission::RegistrationView),
-        "registration_manage" => Ok(Permission::RegistrationManage),
-        "trunk_create" => Ok(Permission::TrunkCreate),
-        "trunk_read" => Ok(Permission::TrunkRead),
-        "trunk_update" => Ok(Permission::TrunkUpdate),
-        "trunk_delete" => Ok(Permission::TrunkDelete),
-        "tenant_create" => Ok(Permission::TenantCreate),
-        "tenant_read" => Ok(Permission::TenantRead),
-        "tenant_update" => Ok(Permission::TenantUpdate),
-        "tenant_delete" => Ok(Permission::TenantDelete),
-        "debug_view" => Ok(Permission::DebugView),
-        _ => anyhow::bail!("Invalid permission '{}'. See 'fcp users list-permissions <username>' for valid permissions", perm_str),
-    }
+    perm_str.to_lowercase().parse::<Permission>().map_err(|_| {
+        anyhow::anyhow!(
+            "Invalid permission '{}'. See 'fcp users list-permissions <username>' for valid permissions",
+            perm_str
+        )
+    })
 }
 
 /// Prompt for password from stdin

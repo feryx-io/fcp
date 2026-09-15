@@ -13,6 +13,7 @@ use fcp_core::compliance::{
     run_retention, AuditEvent, AuditQuery, CompliancePolicy, ComplianceStore, RecordingConsentMode,
     RetentionReport,
 };
+use fcp_core::permissions::Permission;
 use fcp_core::TenantId;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -25,6 +26,23 @@ fn require_store(state: &ApiState) -> Result<&Arc<dyn ComplianceStore>, ApiError
         .as_ref()
         .and_then(|s| s.compliance_store())
         .ok_or_else(|| ApiError::Internal("Compliance store not configured".to_string()))
+}
+
+/// The compliance routes take their own permissions rather than any
+/// admin's (`docs/COMPLIANCE_FOLLOWUPS.md` §4). A request with no
+/// identity reached a router without authentication and is let through, as
+/// on every other route.
+fn permit(
+    state: &ApiState,
+    identity: &Option<Extension<AuthIdentity>>,
+    permission: Permission,
+) -> Result<(), ApiError> {
+    match identity {
+        Some(Extension(identity)) => {
+            crate::auth::check_permission(identity, permission, state.deployment_mode)
+        }
+        None => Ok(()),
+    }
 }
 
 fn unix_secs(t: SystemTime) -> u64 {
@@ -41,6 +59,7 @@ pub struct PolicyResponse {
     pub flow_trace_retention_days: Option<u32>,
     pub recording_retention_days: Option<u32>,
     pub audit_retention_days: Option<u32>,
+    pub voicemail_retention_days: Option<u32>,
     pub recording_consent: String,
     pub recording_consent_prompt_id: Option<String>,
     /// CDRs are deleted only once the archive has confirmed them.
@@ -66,6 +85,7 @@ impl PolicyResponse {
             flow_trace_retention_days: p.flow_trace_retention_days,
             recording_retention_days: p.recording_retention_days,
             audit_retention_days: p.audit_retention_days,
+            voicemail_retention_days: p.voicemail_retention_days,
             recording_consent: p.recording_consent.to_string(),
             recording_consent_prompt_id: p.recording_consent_prompt_id,
             cdr_archive_required: p.cdr_archive_required,
@@ -89,6 +109,8 @@ pub struct UpdatePolicyRequest {
     pub recording_retention_days: Option<Option<u32>>,
     #[serde(default, deserialize_with = "deserialize_double_option")]
     pub audit_retention_days: Option<Option<u32>>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub voicemail_retention_days: Option<Option<u32>>,
     pub recording_consent: Option<String>,
     #[serde(default, deserialize_with = "deserialize_double_option")]
     pub recording_consent_prompt_id: Option<Option<String>>,
@@ -132,7 +154,9 @@ fn check_days(name: &str, days: Option<u32>) -> Result<(), ApiError> {
 pub async fn get_policy(
     State(state): State<ApiState>,
     tenant: TenantContext,
+    identity: Option<Extension<AuthIdentity>>,
 ) -> Result<impl IntoResponse, ApiError> {
+    permit(&state, &identity, Permission::ComplianceManage)?;
     let store = require_store(&state)?;
     let stored = store
         .get_compliance_policy(&tenant.0)
@@ -149,8 +173,10 @@ pub async fn get_policy(
 pub async fn update_policy(
     State(state): State<ApiState>,
     tenant: TenantContext,
+    identity: Option<Extension<AuthIdentity>>,
     Json(req): Json<UpdatePolicyRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
+    permit(&state, &identity, Permission::ComplianceManage)?;
     let store = require_store(&state)?;
     let mut policy = store
         .get_compliance_policy(&tenant.0)
@@ -177,6 +203,10 @@ pub async fn update_policy(
     if let Some(v) = req.audit_retention_days {
         check_days("audit_retention_days", v)?;
         policy.audit_retention_days = v;
+    }
+    if let Some(v) = req.voicemail_retention_days {
+        check_days("voicemail_retention_days", v)?;
+        policy.voicemail_retention_days = v;
     }
     if let Some(required) = req.cdr_archive_required {
         policy.cdr_archive_required = required;
@@ -240,6 +270,7 @@ pub struct RetentionRunResponse {
     pub recordings_deleted: u64,
     /// Conference recordings whose registry row the run removed.
     pub conference_recordings_deleted: u64,
+    pub voicemail_messages_deleted: u64,
     pub audit_events_deleted: u64,
     pub total_deleted: u64,
     pub errors: Vec<String>,
@@ -256,6 +287,7 @@ impl From<RetentionReport> for RetentionRunResponse {
             flow_traces_deleted: r.flow_traces_deleted,
             recordings_deleted: r.recordings_deleted,
             conference_recordings_deleted: r.conference_recordings_deleted,
+            voicemail_messages_deleted: r.voicemail_messages_deleted,
             audit_events_deleted: r.audit_events_deleted,
             errors: r.errors,
         }
@@ -266,7 +298,9 @@ impl From<RetentionReport> for RetentionRunResponse {
 pub async fn run_retention_now(
     State(state): State<ApiState>,
     tenant: TenantContext,
+    identity: Option<Extension<AuthIdentity>>,
 ) -> Result<impl IntoResponse, ApiError> {
+    permit(&state, &identity, Permission::ComplianceManage)?;
     let storage = state
         .storage
         .as_ref()
@@ -277,7 +311,11 @@ pub async fn run_retention_now(
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .unwrap_or_else(|| CompliancePolicy::defaults(tenant.0));
-    let report = run_retention(storage, &policy, state.call_recordings_dir.as_deref()).await;
+    let actor = identity
+        .as_ref()
+        .map(|Extension(i)| i.actor())
+        .unwrap_or_else(|| "anonymous".to_string());
+    let report = run_retention(storage, &policy, &actor).await;
     store
         .record_retention_run(&report)
         .await
@@ -304,8 +342,10 @@ fn default_limit() -> usize {
 pub async fn list_retention_runs(
     State(state): State<ApiState>,
     tenant: TenantContext,
+    identity: Option<Extension<AuthIdentity>>,
     Query(q): Query<LimitQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
+    permit(&state, &identity, Permission::ComplianceManage)?;
     let store = require_store(&state)?;
     let runs = store
         .list_retention_runs(&tenant.0, q.limit)
@@ -374,6 +414,7 @@ pub async fn list_audit_log(
     headers: HeaderMap,
     Query(q): Query<AuditLogQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
+    permit(&state, &identity, Permission::AuditView)?;
     let store = require_store(&state)?;
     let platform_wide = can_access_all_tenants(identity.as_ref().map(|ext| &ext.0))
         && !headers.contains_key(PLATFORM_TENANT_HEADER);
@@ -391,5 +432,72 @@ pub async fn list_audit_log(
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     let out: Vec<AuditEventResponse> = events.into_iter().map(Into::into).collect();
+    Ok(Json(out))
+}
+
+// ─── Deletion log ────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct DeletionLogQuery {
+    /// `cdr`, `call_recording`, `conference_recording`, `voicemail`,
+    /// `sip_trace`, `flow_trace`, `audit_event`, `orphan_file`.
+    pub class: Option<String>,
+    /// Unix seconds.
+    pub since: Option<u64>,
+    #[serde(default = "default_audit_limit")]
+    pub limit: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DeletionResponse {
+    pub id: i64,
+    pub tenant_id: Option<String>,
+    pub class: String,
+    pub item: String,
+    pub detail: Option<serde_json::Value>,
+    pub cause: String,
+    pub actor: String,
+    pub deleted_at: u64,
+}
+
+/// `GET /compliance/deletions`: what was deleted, when, why and by whom
+/// (`docs/COMPLIANCE_FOLLOWUPS.md` §7). Tenant admins see their tenant; the
+/// platform token sees every tenant, platform upkeep included, unless it
+/// selected one.
+pub async fn list_deletions(
+    State(state): State<ApiState>,
+    tenant: TenantContext,
+    identity: Option<Extension<AuthIdentity>>,
+    headers: HeaderMap,
+    Query(q): Query<DeletionLogQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    permit(&state, &identity, Permission::AuditView)?;
+    let store = require_store(&state)?;
+    let platform_wide = can_access_all_tenants(identity.as_ref().map(|ext| &ext.0))
+        && !headers.contains_key(PLATFORM_TENANT_HEADER);
+    let records = store
+        .list_deletions(&fcp_core::compliance::DeletionQuery {
+            tenant_id: (!platform_wide).then_some(tenant.0),
+            class: q.class,
+            since: q
+                .since
+                .map(|s| UNIX_EPOCH + std::time::Duration::from_secs(s)),
+            limit: q.limit,
+        })
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let out: Vec<DeletionResponse> = records
+        .into_iter()
+        .map(|r| DeletionResponse {
+            id: r.id,
+            tenant_id: r.tenant_id.map(|t| t.to_string()),
+            class: r.class,
+            item: r.item,
+            detail: r.detail,
+            cause: r.cause,
+            actor: r.actor,
+            deleted_at: unix_secs(r.deleted_at),
+        })
+        .collect();
     Ok(Json(out))
 }

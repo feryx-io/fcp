@@ -251,9 +251,17 @@ impl FlowCallHandler {
         elapsed_ms: Option<i64>,
     ) {
         if let Some(ref store) = self.flow_trace_store {
+            // The call's tenant, so retention and erasure can find the
+            // trace without its record.
+            let tenant_id = self
+                .call_manager
+                .as_ref()
+                .and_then(|cm| cm.get_call(call_id))
+                .map(|call| call.tenant_id.to_string());
             let entry = fcp_core::flow_trace::FlowTraceEntry {
                 id: 0,
                 call_id: call_id.to_string(),
+                tenant_id,
                 flow_id: flow_id.to_string(),
                 flow_name: flow_name.map(|s| s.to_string()),
                 node_id: node_id.map(|s| s.to_string()),
@@ -2195,12 +2203,23 @@ impl FlowCallHandler {
             fcp_flow::schema::RecordingFormat::Mp3 => "mp3",
         };
 
-        let recording_filename = format!(
-            "{}/{}.{}",
-            chrono::Utc::now().format("%Y/%m/%d"),
-            call_id,
-            extension
-        );
+        // Under the tenant and the day, named for the call: no party's
+        // number in the path (docs/COMPLIANCE_FOLLOWUPS.md §4).
+        let tenant_id = self
+            .call_manager
+            .as_ref()
+            .and_then(|cm| cm.get_call(&call_id))
+            .map(|call| call.tenant_id);
+        let dir = match tenant_id {
+            Some(tenant) => {
+                fcp_core::recording::dated_recording_dir(&tenant, std::time::SystemTime::now())
+            }
+            None => std::path::PathBuf::from(chrono::Utc::now().format("%Y/%m/%d").to_string()),
+        };
+        let recording_filename = dir
+            .join(format!("{}.{}", call_id, extension))
+            .to_string_lossy()
+            .into_owned();
 
         info!(
             call_id = %call_id,
@@ -2223,11 +2242,26 @@ impl FlowCallHandler {
                 .unwrap_or_else(|| fcp_core::CallId::from_uuid(*call_id.as_uuid()))
         };
 
-        match media_manager
+        let started = match media_manager
             .start_recording(&session_id, recording_filename.clone())
             .await
         {
             Ok(()) => {
+                let file = media_manager.recording_file(&recording_filename);
+                match self.register_recording(&call_id, tenant_id, &file).await {
+                    Ok(()) => Ok(file),
+                    Err(e) => {
+                        // Ungovernable, so not kept.
+                        let _ = media_manager.stop_recording(&session_id).await;
+                        let _ = tokio::fs::remove_file(&file).await;
+                        Err(format!("recording not registered: {e}"))
+                    }
+                }
+            }
+            Err(e) => Err(e.to_string()),
+        };
+        match started {
+            Ok(recording_filename) => {
                 info!(
                     call_id = %call_id,
                     recording_path = %recording_filename,
@@ -2277,6 +2311,31 @@ impl FlowCallHandler {
         Box::pin(self.execute_next_node(call_id)).await
     }
 
+    /// The row that makes a flow's recording governable. A store that is not
+    /// configured records nothing and is not an error.
+    async fn register_recording(
+        &self,
+        call_id: &CallId,
+        tenant_id: Option<fcp_core::TenantId>,
+        file: &str,
+    ) -> anyhow::Result<()> {
+        let (Some(store), Some(tenant)) = (
+            self.storage
+                .as_ref()
+                .and_then(|s| s.call_recording_store().cloned()),
+            tenant_id,
+        ) else {
+            return Ok(());
+        };
+        let recording = fcp_core::recording::CallRecording::starting(
+            tenant,
+            fcp_core::CallId::from_uuid(*call_id.as_uuid()).to_string(),
+            fcp_core::recording::CallRecordingSource::Flow,
+            file,
+        );
+        store.create_call_recording(&recording).await
+    }
+
     /// Handle a StopRecording node by stopping recording via the MediaManager.
     async fn handle_stop_recording(
         &self,
@@ -2301,6 +2360,22 @@ impl FlowCallHandler {
             match media_manager.stop_recording(&session_id).await {
                 Ok(()) => {
                     info!(call_id = %call_id, "Recording stopped successfully");
+                    if let Some(store) = self
+                        .storage
+                        .as_ref()
+                        .and_then(|s| s.call_recording_store().cloned())
+                    {
+                        let key = fcp_core::CallId::from_uuid(*call_id.as_uuid()).to_string();
+                        if let Err(e) = fcp_core::recording::finish_call_recordings(
+                            store.as_ref(),
+                            &key,
+                            std::time::SystemTime::now(),
+                        )
+                        .await
+                        {
+                            warn!(call_id = %call_id, error = %e, "Could not close the recording's row");
+                        }
+                    }
                 }
                 Err(e) => {
                     warn!(

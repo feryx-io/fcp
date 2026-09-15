@@ -22,7 +22,7 @@ import type {
   FlowResponse, CreateFlowRequest, UpdateFlowRequest, ListFlowsResponse, ListFlowsQuery,
   SystemStatus,
   PortRequest, CreatePortRequest,
-  AuditEntry, AuditQueryParams, ListAuditResponse,
+  AuditEntry, AuditQueryParams, DeletionEntry, DeletionQueryParams,
   ConferenceRecording, RecordingQueryParams, ListRecordingsResponse,
   ApiToken, CreateApiTokenRequest, CreateApiTokenResponse,
   ClusterNodesResponse, ClusterStatsResponse,
@@ -269,12 +269,12 @@ export const voicemail = {
   getMailboxStats: (id: string) => apiClient.get<MailboxStats>(`/voicemail/mailboxes/${encodeURIComponent(id)}/stats`),
   listMessages: (mailboxId: string) =>
     apiClient.get<VoicemailMessage[]>(`/voicemail/mailboxes/${encodeURIComponent(mailboxId)}/messages`),
-  getMessage: (mailboxId: string, messageId: string) =>
-    apiClient.get<VoicemailMessage>(`/voicemail/mailboxes/${encodeURIComponent(mailboxId)}/messages/${encodeURIComponent(messageId)}`),
-  deleteMessage: (mailboxId: string, messageId: string) =>
-    apiClient.delete<void>(`/voicemail/mailboxes/${encodeURIComponent(mailboxId)}/messages/${encodeURIComponent(messageId)}`),
-  markHeard: (mailboxId: string, messageId: string) =>
-    apiClient.post<void>(`/voicemail/mailboxes/${encodeURIComponent(mailboxId)}/messages/${encodeURIComponent(messageId)}/heard`),
+  getMessage: (messageId: string) =>
+    apiClient.get<VoicemailMessage>(`/voicemail/messages/${encodeURIComponent(messageId)}`),
+  deleteMessage: (messageId: string) =>
+    apiClient.delete<void>(`/voicemail/messages/${encodeURIComponent(messageId)}`),
+  markHeard: (messageId: string) =>
+    apiClient.put<void>(`/voicemail/messages/${encodeURIComponent(messageId)}`, { status: 'heard' }),
   createMailbox: (data: CreateMailboxRequest) =>
     apiClient.post<MailboxResponse>('/voicemail/mailboxes', data),
   updateMailbox: (id: string, data: UpdateMailboxRequest) =>
@@ -478,20 +478,21 @@ export const recordings = {
     apiClient.fetchBlobUrl(`/recordings/${encodeURIComponent(id)}/download`),
 }
 
-export const auditLog = {
-  list: (params?: AuditQueryParams) => {
-    const searchParams = new URLSearchParams()
-    if (params) {
-      Object.entries(params).forEach(([key, value]) => {
-        if (value !== undefined && value !== null && value !== '') {
-          searchParams.set(key, String(value))
-        }
-      })
+function query(params?: object): string {
+  const searchParams = new URLSearchParams()
+  Object.entries(params ?? {}).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== '') {
+      searchParams.set(key, String(value))
     }
-    const query = searchParams.toString()
-    return apiClient.get<ListAuditResponse>(`/audit-logs${query ? `?${query}` : ''}`)
-  },
-  get: (id: string) => apiClient.get<AuditEntry>(`/audit-logs/${encodeURIComponent(id)}`),
+  })
+  const text = searchParams.toString()
+  return text ? `?${text}` : ''
+}
+
+export const auditLog = {
+  list: (params?: AuditQueryParams) => apiClient.get<AuditEntry[]>(`/audit-log${query(params)}`),
+  deletions: (params?: DeletionQueryParams) =>
+    apiClient.get<DeletionEntry[]>(`/compliance/deletions${query(params)}`),
 }
 
 // API Tokens

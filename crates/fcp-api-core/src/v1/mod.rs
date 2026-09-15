@@ -298,6 +298,7 @@ pub fn router() -> Router<ApiState> {
             get(compliance::list_retention_runs),
         )
         .route("/audit-log", get(compliance::list_audit_log))
+        .route("/compliance/deletions", get(compliance::list_deletions))
         // Conference recordings: the registry, and the file behind each row
         .route("/recordings", get(recordings::list_recordings))
         .route(

@@ -149,14 +149,38 @@ async fn main() -> Result<()> {
         fcp_cdr::MaintenanceConfig::default(),
     );
 
-    // Retention sweep: apply every tenant's compliance policy once an hour.
+    // Retention sweep: apply every tenant's compliance policy once an hour,
+    // then the platform's upkeep (docs/COMPLIANCE_FOLLOWUPS.md §4).
     // Tenants without a policy (or with no retention windows) are skipped.
     {
         let sweep_storage = Arc::clone(&storage);
-        let recordings_dir = config
-            .call_recordings_dir
-            .as_deref()
-            .map(std::path::PathBuf::from);
+        let actor = format!("fcp-admin:{}", config.service.node_id);
+        let upkeep = fcp_core::compliance::UpkeepConfig {
+            file_roots: [
+                config.call_recordings_dir.as_deref(),
+                config.voicemail_recordings_dir.as_deref(),
+                config.voicemail_greetings_dir.as_deref(),
+                config.profile_pictures_dir.as_deref(),
+            ]
+            .into_iter()
+            .flatten()
+            .map(String::from)
+            .chain(config.retention.extra_file_roots.iter().cloned())
+            .map(std::path::PathBuf::from)
+            .collect(),
+            orphan_files_after: config
+                .retention
+                .orphan_files_days
+                .map(|d| std::time::Duration::from_secs(u64::from(d) * 86_400)),
+            system_traces_after: config
+                .retention
+                .system_trace_days
+                .map(|d| std::time::Duration::from_secs(u64::from(d) * 86_400)),
+            deleted_voicemail_grace: std::time::Duration::from_secs(
+                u64::from(config.retention.deleted_voicemail_grace_days) * 86_400,
+            ),
+            ..Default::default()
+        };
         tokio::spawn(async move {
             use fcp_core::TenantStore;
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
@@ -220,12 +244,8 @@ async fn main() -> Result<()> {
                         (Some(c), Some(t)) => Some(c.min(t)),
                         _ => None,
                     };
-                    let report = fcp_core::compliance::run_retention(
-                        &sweep_storage,
-                        &policy,
-                        recordings_dir.as_deref(),
-                    )
-                    .await;
+                    let report =
+                        fcp_core::compliance::run_retention(&sweep_storage, &policy, &actor).await;
                     if report.total_deleted() > 0 || !report.errors.is_empty() {
                         info!(
                             tenant_id = %tenant.id,
@@ -237,6 +257,11 @@ async fn main() -> Result<()> {
                     if let Err(e) = store.record_retention_run(&report).await {
                         warn!(tenant_id = %tenant.id, error = %e, "Retention sweep: failed to record run");
                     }
+                }
+                let upkept =
+                    fcp_core::compliance::run_upkeep(&sweep_storage, &upkeep, &actor).await;
+                if upkept != fcp_core::compliance::UpkeepReport::default() {
+                    info!(report = ?upkept, "Platform upkeep completed");
                 }
                 if let Some(cutoff) = partition_cutoff {
                     use fcp_core::storage::CdrStore;

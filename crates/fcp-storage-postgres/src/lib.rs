@@ -32,6 +32,7 @@ mod cdr_archive;
 mod cdr_volume;
 pub mod compliance;
 pub mod config;
+mod deletion;
 pub mod emergency;
 pub mod encryption;
 pub mod flow_trace;
@@ -1571,57 +1572,25 @@ impl CdrStore for PostgresStorage {
         const BATCH: i64 = 10_000;
         let mut deleted = 0;
         loop {
-            let batch = sqlx::query(
-                "DELETE FROM cdrs WHERE (cdr_id, start_time) IN (
-                     SELECT cdr_id, start_time FROM cdrs
-                     WHERE tenant_id = $1 AND start_time < $2
-                     LIMIT $3)",
+            let batch = deletion::execute(
+                self.writes(),
+                sqlx::query(
+                    "DELETE FROM cdrs WHERE (cdr_id, start_time) IN (
+                         SELECT cdr_id, start_time FROM cdrs
+                         WHERE tenant_id = $1 AND start_time < $2
+                         LIMIT $3)",
+                )
+                .bind(tenant_id.to_string())
+                .bind(system_time_to_datetime(before))
+                .bind(BATCH),
             )
-            .bind(tenant_id.to_string())
-            .bind(system_time_to_datetime(before))
-            .bind(BATCH)
-            .execute(self.writes())
-            .await?
-            .rows_affected();
+            .await?;
             deleted += batch;
             if batch < BATCH as u64 {
                 break;
             }
         }
         Ok(deleted)
-    }
-
-    async fn list_recordings_before(
-        &self,
-        tenant_id: &TenantId,
-        before: SystemTime,
-    ) -> Result<Vec<(fcp_core::CallId, String)>> {
-        let rows = sqlx::query(
-            "SELECT call_id, recording_url FROM cdrs
-             WHERE tenant_id = $1 AND start_time < $2 AND recording_url IS NOT NULL
-             LIMIT 1000",
-        )
-        .bind(tenant_id.to_string())
-        .bind(system_time_to_datetime(before))
-        .fetch_all(&self.pool)
-        .await?;
-        let mut out = Vec::with_capacity(rows.len());
-        for row in rows {
-            let call_id: String = row.try_get("call_id")?;
-            let url: String = row.try_get("recording_url")?;
-            if let Ok(id) = call_id.parse::<fcp_core::CallId>() {
-                out.push((id, url));
-            }
-        }
-        Ok(out)
-    }
-
-    async fn clear_recording_url(&self, call_id: &fcp_core::CallId) -> Result<()> {
-        sqlx::query("UPDATE cdrs SET recording_url = NULL WHERE call_id = $1")
-            .bind(call_id.to_string())
-            .execute(self.writes())
-            .await?;
-        Ok(())
     }
 
     async fn aggregate_usage(
@@ -3133,10 +3102,13 @@ impl PhoneNumberStore for PostgresStorage {
     }
 
     async fn delete_phone_number(&self, id: &PhoneNumberId) -> Result<()> {
-        sqlx::query("DELETE FROM phone_numbers WHERE id = $1")
-            .bind(id.to_string())
-            .execute(self.writes())
-            .await?;
+        // Cascades to line bindings, mailboxes and messages: attributed, so
+        // the messages' deletion is logged and their audio queued.
+        deletion::execute(
+            self.writes(),
+            sqlx::query("DELETE FROM phone_numbers WHERE id = $1").bind(id.to_string()),
+        )
+        .await?;
 
         debug!(id = %id, "Phone number deleted");
         Ok(())
@@ -3395,10 +3367,11 @@ impl LineBindingStore for PostgresStorage {
     }
 
     async fn delete_line_binding(&self, id: &LineBindingId) -> Result<()> {
-        sqlx::query("DELETE FROM line_bindings WHERE id = $1")
-            .bind(id.to_string())
-            .execute(self.writes())
-            .await?;
+        deletion::execute(
+            self.writes(),
+            sqlx::query("DELETE FROM line_bindings WHERE id = $1").bind(id.to_string()),
+        )
+        .await?;
 
         debug!(id = %id, "Line binding deleted");
         Ok(())
@@ -6595,10 +6568,11 @@ impl VoicemailStore for PostgresStorage {
     }
 
     async fn delete_mailbox(&self, id: &str) -> Result<()> {
-        sqlx::query("DELETE FROM voicemail_mailboxes WHERE id = $1")
-            .bind(id)
-            .execute(self.writes())
-            .await?;
+        deletion::execute(
+            self.writes(),
+            sqlx::query("DELETE FROM voicemail_mailboxes WHERE id = $1").bind(id),
+        )
+        .await?;
         Ok(())
     }
 
@@ -6678,11 +6652,48 @@ impl VoicemailStore for PostgresStorage {
     }
 
     async fn delete_message(&self, id: &str) -> Result<()> {
-        sqlx::query("DELETE FROM voicemail_messages WHERE id = $1")
-            .bind(id)
-            .execute(self.writes())
-            .await?;
+        deletion::execute(
+            self.writes(),
+            sqlx::query("DELETE FROM voicemail_messages WHERE id = $1").bind(id),
+        )
+        .await?;
         Ok(())
+    }
+
+    async fn delete_messages_before(
+        &self,
+        tenant_id: &TenantId,
+        before: SystemTime,
+    ) -> Result<u64> {
+        Ok(deletion::execute(
+            self.writes(),
+            sqlx::query("DELETE FROM voicemail_messages WHERE tenant_id = $1 AND created_at < $2")
+                .bind(tenant_id.to_string())
+                .bind(system_time_to_datetime(before)),
+        )
+        .await?)
+    }
+
+    async fn apply_mailbox_retention(&self) -> Result<u64> {
+        Ok(deletion::execute(
+            self.writes(),
+            sqlx::query(
+                "DELETE FROM voicemail_messages m USING voicemail_mailboxes mb
+                 WHERE mb.id = m.mailbox_id AND mb.retention_days IS NOT NULL
+                   AND mb.retention_days > 0
+                   AND m.created_at < now() - make_interval(days => mb.retention_days)",
+            ),
+        )
+        .await?)
+    }
+
+    async fn purge_deleted_messages(&self, before: SystemTime) -> Result<u64> {
+        Ok(deletion::execute(
+            self.writes(),
+            sqlx::query("DELETE FROM voicemail_messages WHERE deleted_at < $1")
+                .bind(system_time_to_datetime(before)),
+        )
+        .await?)
     }
 
     async fn list_messages_by_status(

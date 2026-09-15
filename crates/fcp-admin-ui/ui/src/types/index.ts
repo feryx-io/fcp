@@ -1022,34 +1022,52 @@ export interface CreatePortRequest {
 }
 
 // Audit Log
+/** One audited admin request (`GET /audit-log`). */
 export interface AuditEntry {
-  id: string
-  tenant_id: string
-  actor_id: string
-  actor_type: string
+  id: number
+  tenant_id: string | null
+  /** A username, an API token's id, `static_token` or `anonymous`. */
+  actor: string
+  actor_kind: 'session' | 'api_token' | 'static_token' | 'anonymous' | string
+  method: string
+  path: string
+  status: number
+  /** Method and route template, e.g. `DELETE /api/v1/users/:username`. */
   action: string
-  resource_type: string
-  resource_id: string
-  changes: Record<string, unknown> | null
-  ip_address: string | null
-  timestamp: string
+  /** A deletion's route parameters, `{ params: { … } }`. */
+  detail: Record<string, unknown> | null
+  source_ip: string | null
+  /** Unix seconds. */
+  occurred_at: number
 }
 
 export interface AuditQueryParams {
-  actor_id?: string
-  resource_type?: string
+  actor?: string
+  /** Route-template prefix, e.g. `DELETE /api/v1/users`. */
   action?: string
-  start_time?: string
-  end_time?: string
+  /** Unix seconds. */
+  since?: number
   limit?: number
-  offset?: number
 }
 
-export interface ListAuditResponse {
-  entries: AuditEntry[]
-  total: number
-  limit: number
-  offset: number
+/** One entry of the deletion log (`GET /compliance/deletions`). */
+export interface DeletionEntry {
+  id: number
+  tenant_id: string | null
+  class: string
+  /** The item's id, or a time range for a batch. */
+  item: string
+  detail: Record<string, unknown> | null
+  cause: 'retention' | 'manual' | 'node_sweep' | 'upkeep' | 'cascade' | 'unattributed' | string
+  actor: string
+  /** Unix seconds. */
+  deleted_at: number
+}
+
+export interface DeletionQueryParams {
+  class?: string
+  since?: number
+  limit?: number
 }
 
 // Conference Recordings

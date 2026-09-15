@@ -29,3 +29,13 @@ server_url = "http://fcp-events-server:8081/ingest"
 # (conference.join_secret), and the WebRTC gateway the join links open.
 # join_secret = "change-me-in-production"
 # gateway_url = "https://meet.example.com"
+
+# Platform upkeep beside the tenants' retention (docs/COMPLIANCE.md). The
+# reaper removes files of deleted recordings and voicemail only from the
+# directories this service mounts (call_recordings_dir, the voicemail
+# directories, profile_pictures_dir, and these).
+# [retention]
+# orphan_files_days = 30        # files no row names; unset leaves them
+# system_trace_days = 7         # SIP traces of no tenant's call
+# deleted_voicemail_grace_days = 7
+# extra_file_roots = ["/var/lib/fcp/queue-recordings"]

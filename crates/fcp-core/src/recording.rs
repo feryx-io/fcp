@@ -138,6 +138,47 @@ impl RecordingConsent {
 }
 
 /// One conference recording.
+/// What a conference recording captures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RecordingKind {
+    /// The room's mix.
+    #[default]
+    Room,
+    /// One participant's own audio.
+    Participant,
+}
+
+impl RecordingKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            RecordingKind::Room => "room",
+            RecordingKind::Participant => "participant",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "room" => Some(RecordingKind::Room),
+            "participant" => Some(RecordingKind::Participant),
+            _ => None,
+        }
+    }
+}
+
+/// Someone who was in the room while it was recorded, so a subject's voice
+/// can be found (`docs/COMPLIANCE_FOLLOWUPS.md` §4).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecordingParticipant {
+    pub participant_id: String,
+    /// The caller's address, or `webrtc:<session>` for a browser.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uri: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    pub joined_at: SystemTime,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Recording {
     pub id: RecordingId,
@@ -165,6 +206,14 @@ pub struct Recording {
     /// Participants in the room when it started.
     #[serde(default)]
     pub participants: u32,
+    #[serde(default)]
+    pub kind: RecordingKind,
+    /// The participant a `participant` recording is of.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub participant_id: Option<String>,
+    /// Everyone heard in the recording.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub participant_list: Vec<RecordingParticipant>,
 }
 
 impl Recording {
@@ -192,6 +241,9 @@ impl Recording {
             duration_secs: None,
             size_bytes: None,
             participants: 0,
+            kind: RecordingKind::Room,
+            participant_id: None,
+            participant_list: Vec::new(),
         }
     }
 
@@ -283,6 +335,157 @@ pub trait RecordingStore: Send + Sync {
     /// one. The sweep asks before deleting a file by age, so a file that
     /// is a row's is left to the row's own retention.
     async fn recording_at(&self, node_id: &str, path: &str) -> anyhow::Result<Option<Recording>>;
+
+    /// Add people heard in a recording that is running.
+    async fn add_recording_participants(
+        &self,
+        id: &RecordingId,
+        participants: &[RecordingParticipant],
+    ) -> anyhow::Result<()>;
+}
+
+// ── Call recordings (docs/COMPLIANCE_FOLLOWUPS.md §4) ───────────────────
+
+/// Why a call is being recorded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CallRecordingSource {
+    /// `POST /calls/:id/recording/start`.
+    Api,
+    /// A flow's `StartRecording` node.
+    Flow,
+    /// A queue with `record_calls`.
+    Queue,
+    /// A recording a record named before recordings had rows.
+    Legacy,
+}
+
+impl CallRecordingSource {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            CallRecordingSource::Api => "api",
+            CallRecordingSource::Flow => "flow",
+            CallRecordingSource::Queue => "queue",
+            CallRecordingSource::Legacy => "legacy",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "api" => Some(CallRecordingSource::Api),
+            "flow" => Some(CallRecordingSource::Flow),
+            "queue" => Some(CallRecordingSource::Queue),
+            "legacy" => Some(CallRecordingSource::Legacy),
+            _ => None,
+        }
+    }
+}
+
+/// A recording of a call, registered when it starts so it can be governed
+/// before the call's record is stored.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CallRecording {
+    pub id: RecordingId,
+    pub tenant_id: TenantId,
+    /// The call's id as its record carries it (`call-…`).
+    pub call_id: String,
+    pub source: CallRecordingSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_id: Option<String>,
+    /// Where the file is, as the recording host wrote it.
+    pub path: String,
+    /// The file's extension (`wav`, `opus`, `mp3`).
+    pub format: String,
+    pub consent: RecordingConsent,
+    pub started_at: SystemTime,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended_at: Option<SystemTime>,
+}
+
+impl CallRecording {
+    pub fn starting(
+        tenant_id: TenantId,
+        call_id: impl Into<String>,
+        source: CallRecordingSource,
+        path: impl Into<String>,
+    ) -> Self {
+        let path = path.into();
+        let format = std::path::Path::new(&path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_ascii_lowercase)
+            .unwrap_or_else(|| "wav".to_string());
+        Self {
+            id: RecordingId::new(),
+            tenant_id,
+            call_id: call_id.into(),
+            source,
+            node_id: None,
+            path,
+            format,
+            consent: RecordingConsent::NotRequired,
+            started_at: SystemTime::now(),
+            ended_at: None,
+        }
+    }
+}
+
+/// The directory a new recording goes in: the tenant, then the UTC date,
+/// so neither a caller's number nor a queue's name is in a file's path.
+pub fn dated_recording_dir(tenant_id: &TenantId, at: SystemTime) -> std::path::PathBuf {
+    let day = chrono::DateTime::<chrono::Utc>::from(at);
+    std::path::PathBuf::from(tenant_id.to_string()).join(day.format("%Y/%m/%d").to_string())
+}
+
+/// A relative recording path a caller supplied, placed under the tenant's
+/// directory. `None` for an absolute path or one that climbs out.
+pub fn tenant_recording_path(tenant_id: &TenantId, supplied: &str) -> Option<std::path::PathBuf> {
+    let relative = std::path::Path::new(supplied);
+    let plain = !supplied.is_empty()
+        && relative
+            .components()
+            .all(|c| matches!(c, std::path::Component::Normal(_)));
+    plain.then(|| std::path::PathBuf::from(tenant_id.to_string()).join(relative))
+}
+
+/// Close a call's recordings still open, when its recording stops.
+pub async fn finish_call_recordings(
+    store: &dyn CallRecordingStore,
+    call_id: &str,
+    at: SystemTime,
+) -> anyhow::Result<usize> {
+    let mut finished = 0;
+    for recording in store.call_recordings_for(call_id).await? {
+        if recording.ended_at.is_none() {
+            store.finish_call_recording(&recording.id, at).await?;
+            finished += 1;
+        }
+    }
+    Ok(finished)
+}
+
+#[async_trait::async_trait]
+pub trait CallRecordingStore: Send + Sync {
+    async fn create_call_recording(&self, recording: &CallRecording) -> anyhow::Result<()>;
+
+    async fn finish_call_recording(
+        &self,
+        id: &RecordingId,
+        ended_at: SystemTime,
+    ) -> anyhow::Result<()>;
+
+    async fn get_call_recording(&self, id: &RecordingId) -> anyhow::Result<Option<CallRecording>>;
+
+    /// A call's recordings, oldest first.
+    async fn call_recordings_for(&self, call_id: &str) -> anyhow::Result<Vec<CallRecording>>;
+
+    /// Delete a tenant's recordings that started before `before`; their
+    /// files are queued for removal with them. Returns how many.
+    async fn delete_call_recordings_before(
+        &self,
+        tenant_id: &TenantId,
+        before: SystemTime,
+    ) -> anyhow::Result<u64>;
 }
 
 #[cfg(test)]
@@ -344,6 +547,31 @@ mod tests {
             ..r
         };
         assert_eq!(bare.file_name(), "room.wav");
+    }
+
+    #[test]
+    fn new_recordings_go_under_the_tenant_and_the_day() {
+        let tenant: TenantId = "00000000-0000-0000-0000-000000000009".parse().unwrap();
+        let at = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_789_430_400);
+        assert_eq!(
+            dated_recording_dir(&tenant, at),
+            std::path::PathBuf::from("tenant-00000000-0000-0000-0000-000000000009/2026/09/15")
+        );
+        assert_eq!(
+            tenant_recording_path(&tenant, "calls/a.wav"),
+            Some(std::path::PathBuf::from(
+                "tenant-00000000-0000-0000-0000-000000000009/calls/a.wav"
+            ))
+        );
+        for bad in ["", "/etc/passwd", "../other/a.wav", "calls/../../a.wav"] {
+            assert_eq!(tenant_recording_path(&tenant, bad), None, "{bad:?}");
+        }
+        let r = CallRecording::starting(tenant, "call-1", CallRecordingSource::Flow, "x/y.OPUS");
+        assert_eq!(r.format, "opus");
+        assert_eq!(
+            CallRecordingSource::parse(r.source.as_str()),
+            Some(CallRecordingSource::Flow)
+        );
     }
 
     #[test]

@@ -1268,21 +1268,6 @@ pub trait CdrStore: Send + Sync {
         Ok(0)
     }
 
-    /// `(call_id, recording_url)` for a tenant's CDRs that started before
-    /// `before` and still reference a recording.
-    async fn list_recordings_before(
-        &self,
-        _tenant_id: &crate::TenantId,
-        _before: SystemTime,
-    ) -> Result<Vec<(crate::CallId, String)>> {
-        Ok(Vec::new())
-    }
-
-    /// Forget a CDR's recording after the file has been removed.
-    async fn clear_recording_url(&self, _call_id: &crate::CallId) -> Result<()> {
-        Ok(())
-    }
-
     /// Aggregate CDR usage statistics for a tenant within a time range.
     async fn aggregate_usage(
         &self,
@@ -1751,6 +1736,28 @@ pub trait VoicemailStore: Send + Sync {
 
     /// Delete a message
     async fn delete_message(&self, id: &str) -> Result<()>;
+
+    /// Delete a tenant's messages received before `before`, audio queued
+    /// with them (retention). Returns how many.
+    async fn delete_messages_before(
+        &self,
+        tenant_id: &crate::TenantId,
+        before: SystemTime,
+    ) -> Result<u64> {
+        let _ = (tenant_id, before);
+        Ok(0)
+    }
+
+    /// Delete the messages older than their own mailbox's `retention_days`.
+    async fn apply_mailbox_retention(&self) -> Result<u64> {
+        Ok(0)
+    }
+
+    /// Delete the messages marked deleted before `before`.
+    async fn purge_deleted_messages(&self, before: SystemTime) -> Result<u64> {
+        let _ = before;
+        Ok(0)
+    }
 
     /// Get MWI status for a mailbox
     async fn get_mwi_status(&self, mailbox_id: &str) -> Result<crate::MwiStatus>;
@@ -2843,6 +2850,7 @@ pub struct DynStorage {
     emergency_store: Option<Arc<dyn crate::e911::EmergencyStore>>,
     compliance_store: Option<Arc<dyn crate::compliance::ComplianceStore>>,
     recording_store: Option<Arc<dyn crate::recording::RecordingStore>>,
+    call_recording_store: Option<Arc<dyn crate::recording::CallRecordingStore>>,
 }
 
 impl DynStorage {
@@ -2906,6 +2914,7 @@ impl DynStorage {
             emergency_store: None,
             compliance_store: None,
             recording_store: None,
+            call_recording_store: None,
         }
     }
 
@@ -2971,6 +2980,7 @@ impl DynStorage {
             emergency_store: None,
             compliance_store: None,
             recording_store: None,
+            call_recording_store: None,
         }
     }
 
@@ -3138,6 +3148,22 @@ impl DynStorage {
         self.recording_store.as_ref()
     }
 
+    /// Attach the call recording registry (`docs/COMPLIANCE_FOLLOWUPS.md`
+    /// §4). Without it a call is still recorded, but no retention, hold or
+    /// erasure can find the file.
+    pub fn with_call_recording_store(
+        mut self,
+        store: Arc<dyn crate::recording::CallRecordingStore>,
+    ) -> Self {
+        self.call_recording_store = Some(store);
+        self
+    }
+
+    /// The call recording registry, when one is attached.
+    pub fn call_recording_store(&self) -> Option<&Arc<dyn crate::recording::CallRecordingStore>> {
+        self.call_recording_store.as_ref()
+    }
+
     pub fn compliance_store(&self) -> Option<&Arc<dyn crate::compliance::ComplianceStore>> {
         self.compliance_store.as_ref()
     }
@@ -3296,20 +3322,6 @@ impl CdrStore for DynStorage {
         before: SystemTime,
     ) -> Result<u64> {
         self.cdr_store.delete_cdrs_before(tenant_id, before).await
-    }
-
-    async fn list_recordings_before(
-        &self,
-        tenant_id: &crate::TenantId,
-        before: SystemTime,
-    ) -> Result<Vec<(crate::CallId, String)>> {
-        self.cdr_store
-            .list_recordings_before(tenant_id, before)
-            .await
-    }
-
-    async fn clear_recording_url(&self, call_id: &crate::CallId) -> Result<()> {
-        self.cdr_store.clear_recording_url(call_id).await
     }
 
     async fn aggregate_usage(
@@ -3839,6 +3851,24 @@ impl VoicemailStore for DynStorage {
 
     async fn put_message(&self, message: crate::VoicemailMessage) -> Result<()> {
         self.voicemail_store.put_message(message).await
+    }
+
+    async fn delete_messages_before(
+        &self,
+        tenant_id: &crate::TenantId,
+        before: SystemTime,
+    ) -> Result<u64> {
+        self.voicemail_store
+            .delete_messages_before(tenant_id, before)
+            .await
+    }
+
+    async fn apply_mailbox_retention(&self) -> Result<u64> {
+        self.voicemail_store.apply_mailbox_retention().await
+    }
+
+    async fn purge_deleted_messages(&self, before: SystemTime) -> Result<u64> {
+        self.voicemail_store.purge_deleted_messages(before).await
     }
 
     async fn delete_message(&self, id: &str) -> Result<()> {

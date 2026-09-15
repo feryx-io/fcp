@@ -191,6 +191,15 @@ impl MediaManager {
             .await
     }
 
+    /// Where a recording started with the relative `path` is written: the
+    /// path its row and its call's record name.
+    pub fn recording_file(&self, path: &str) -> String {
+        Path::new(&self.config.recording_dir)
+            .join(path)
+            .to_string_lossy()
+            .into_owned()
+    }
+
     /// Stop recording a call
     pub async fn stop_recording(&self, call_id: &CallId) -> Result<()> {
         self.backend.stop_recording(call_id).await

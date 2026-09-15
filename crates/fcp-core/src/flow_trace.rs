@@ -42,6 +42,9 @@ pub struct FlowTraceEntry {
     pub id: i64,
     /// FCP internal Call ID (e.g., "call-uuid")
     pub call_id: String,
+    /// The flow's tenant, when the flow has one.
+    #[serde(default)]
+    pub tenant_id: Option<String>,
     /// Flow definition ID (e.g., "flow-uuid")
     pub flow_id: String,
     /// Flow name (denormalized for easy display)
@@ -98,13 +101,18 @@ pub trait FlowTraceStore: Send + Sync {
     /// Delete traces older than the specified number of days. Returns rows deleted.
     async fn delete_flow_traces_older_than(&self, days: u32) -> anyhow::Result<u64>;
 
-    /// Delete traces older than `before` for calls that belong to a tenant
-    /// (traces carry no tenant themselves; the backend joins on CDRs).
+    /// Delete a tenant's traces older than `before`.
     async fn delete_flow_traces_for_tenant_before(
         &self,
         _tenant_id: &str,
         _before: SystemTime,
     ) -> anyhow::Result<u64> {
+        Ok(0)
+    }
+
+    /// Give traces written without a tenant the tenant of their call's
+    /// record. Returns how many.
+    async fn adopt_untenanted_traces(&self) -> anyhow::Result<u64> {
         Ok(0)
     }
 }

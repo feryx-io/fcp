@@ -4,7 +4,9 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use fcp_core::recording::{
-    Recording, RecordingConsent, RecordingFilter, RecordingFormat, RecordingStore, RecordingTrigger,
+    CallRecording, CallRecordingSource, CallRecordingStore, Recording, RecordingConsent,
+    RecordingFilter, RecordingFormat, RecordingKind, RecordingParticipant, RecordingStore,
+    RecordingTrigger,
 };
 use fcp_core::{MeetingId, RecordingId, TenantId};
 use sqlx::{Pool, Postgres, Row};
@@ -13,7 +15,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const COLUMNS: &str = "id, tenant_id, meeting_id, room_number, node_id, path, format, \
                        trigger, consent, started_at, ended_at, duration_secs, size_bytes, \
-                       participants";
+                       participants, kind, participant_id, participant_list";
 
 fn to_datetime(st: SystemTime) -> DateTime<Utc> {
     let d = st.duration_since(UNIX_EPOCH).unwrap_or_default();
@@ -64,6 +66,10 @@ impl PostgresRecordingStore {
             duration_secs: duration_secs.map(|d| d.max(0) as u64),
             size_bytes: size_bytes.map(|b| b.max(0) as u64),
             participants: participants.max(0) as u32,
+            kind: RecordingKind::parse(&row.try_get::<String, _>("kind")?).unwrap_or_default(),
+            participant_id: row.try_get("participant_id")?,
+            participant_list: serde_json::from_value(row.try_get("participant_list")?)
+                .unwrap_or_default(),
         })
     }
 }
@@ -74,13 +80,15 @@ impl RecordingStore for PostgresRecordingStore {
         sqlx::query(
             "INSERT INTO conference_recordings (
                 id, tenant_id, meeting_id, room_number, node_id, path, format,
-                trigger, consent, started_at, ended_at, duration_secs, size_bytes, participants
-             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                trigger, consent, started_at, ended_at, duration_secs, size_bytes, participants,
+                kind, participant_id, participant_list
+             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
              ON CONFLICT (id) DO UPDATE SET
                 path = EXCLUDED.path,
                 format = EXCLUDED.format,
                 consent = EXCLUDED.consent,
-                participants = EXCLUDED.participants",
+                participants = EXCLUDED.participants,
+                participant_list = EXCLUDED.participant_list",
         )
         .bind(recording.id.to_string())
         .bind(recording.tenant_id.to_string())
@@ -96,6 +104,9 @@ impl RecordingStore for PostgresRecordingStore {
         .bind(recording.duration_secs.map(|d| d as i64))
         .bind(recording.size_bytes.map(|b| b as i64))
         .bind(recording.participants as i32)
+        .bind(recording.kind.as_str())
+        .bind(&recording.participant_id)
+        .bind(serde_json::to_value(&recording.participant_list)?)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -188,11 +199,12 @@ impl RecordingStore for PostgresRecordingStore {
     }
 
     async fn delete_recording(&self, id: &RecordingId) -> anyhow::Result<bool> {
-        let result = sqlx::query("DELETE FROM conference_recordings WHERE id = $1")
-            .bind(id.to_string())
-            .execute(&self.pool)
-            .await?;
-        Ok(result.rows_affected() > 0)
+        let deleted = crate::deletion::execute(
+            &self.pool,
+            sqlx::query("DELETE FROM conference_recordings WHERE id = $1").bind(id.to_string()),
+        )
+        .await?;
+        Ok(deleted > 0)
     }
 
     async fn expired_recordings(
@@ -250,5 +262,138 @@ impl RecordingStore for PostgresRecordingStore {
         .fetch_optional(&self.pool)
         .await?;
         row.map(Self::row_to_recording).transpose()
+    }
+
+    async fn add_recording_participants(
+        &self,
+        id: &RecordingId,
+        participants: &[RecordingParticipant],
+    ) -> anyhow::Result<()> {
+        if participants.is_empty() {
+            return Ok(());
+        }
+        sqlx::query(
+            "UPDATE conference_recordings
+             SET participant_list = participant_list || $2::jsonb
+             WHERE id = $1",
+        )
+        .bind(id.to_string())
+        .bind(serde_json::to_value(participants)?)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+}
+
+fn row_to_call_recording(row: sqlx::postgres::PgRow) -> anyhow::Result<CallRecording> {
+    let id: String = row.try_get("id")?;
+    let tenant_id: String = row.try_get("tenant_id")?;
+    let source: String = row.try_get("source")?;
+    let consent: String = row.try_get("consent")?;
+    let started_at: DateTime<Utc> = row.try_get("started_at")?;
+    let ended_at: Option<DateTime<Utc>> = row.try_get("ended_at")?;
+    Ok(CallRecording {
+        id: RecordingId::from_str(&id)?,
+        tenant_id: TenantId::from_str(&tenant_id)?,
+        call_id: row.try_get("call_id")?,
+        source: CallRecordingSource::parse(&source).unwrap_or(CallRecordingSource::Legacy),
+        node_id: row.try_get("node_id")?,
+        path: row.try_get("path")?,
+        format: row.try_get("format")?,
+        consent: RecordingConsent::parse(&consent).unwrap_or_default(),
+        started_at: to_system_time(started_at),
+        ended_at: ended_at.map(to_system_time),
+    })
+}
+
+const CALL_COLUMNS: &str =
+    "id, tenant_id, call_id, source, node_id, path, format, consent, started_at, ended_at";
+
+#[async_trait]
+impl CallRecordingStore for PostgresRecordingStore {
+    async fn create_call_recording(&self, recording: &CallRecording) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO call_recordings
+                (id, tenant_id, call_id, source, node_id, path, format, consent, started_at, ended_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+             ON CONFLICT (id) DO UPDATE SET consent = EXCLUDED.consent",
+        )
+        .bind(recording.id.to_string())
+        .bind(recording.tenant_id.to_string())
+        .bind(&recording.call_id)
+        .bind(recording.source.as_str())
+        .bind(&recording.node_id)
+        .bind(&recording.path)
+        .bind(&recording.format)
+        .bind(recording.consent.as_str())
+        .bind(to_datetime(recording.started_at))
+        .bind(recording.ended_at.map(to_datetime))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn finish_call_recording(
+        &self,
+        id: &RecordingId,
+        ended_at: SystemTime,
+    ) -> anyhow::Result<()> {
+        sqlx::query("UPDATE call_recordings SET ended_at = $2 WHERE id = $1 AND ended_at IS NULL")
+            .bind(id.to_string())
+            .bind(to_datetime(ended_at))
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn get_call_recording(&self, id: &RecordingId) -> anyhow::Result<Option<CallRecording>> {
+        sqlx::query(&format!(
+            "SELECT {CALL_COLUMNS} FROM call_recordings WHERE id = $1"
+        ))
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await?
+        .map(row_to_call_recording)
+        .transpose()
+    }
+
+    async fn call_recordings_for(&self, call_id: &str) -> anyhow::Result<Vec<CallRecording>> {
+        sqlx::query(&format!(
+            "SELECT {CALL_COLUMNS} FROM call_recordings WHERE call_id = $1 ORDER BY started_at, id"
+        ))
+        .bind(call_id)
+        .fetch_all(&self.pool)
+        .await?
+        .into_iter()
+        .map(row_to_call_recording)
+        .collect()
+    }
+
+    async fn delete_call_recordings_before(
+        &self,
+        tenant_id: &TenantId,
+        before: SystemTime,
+    ) -> anyhow::Result<u64> {
+        // Batches, each its own transaction, so a large backlog does not
+        // hold one lock set for the whole run.
+        let mut total = 0;
+        loop {
+            let deleted = crate::deletion::execute(
+                &self.pool,
+                sqlx::query(
+                    "DELETE FROM call_recordings WHERE id IN (
+                         SELECT id FROM call_recordings
+                         WHERE tenant_id = $1 AND started_at < $2
+                         LIMIT 1000)",
+                )
+                .bind(tenant_id.to_string())
+                .bind(to_datetime(before)),
+            )
+            .await?;
+            total += deleted;
+            if deleted < 1000 {
+                return Ok(total);
+            }
+        }
     }
 }

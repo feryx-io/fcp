@@ -121,6 +121,58 @@ struct QueueSession {
     b2bua_call_id: Option<fcp_sip::CallId>,
 }
 
+/// Where a queue's recordings go and where they are registered
+/// (`docs/COMPLIANCE_FOLLOWUPS.md` §4).
+#[derive(Clone)]
+struct QueueRecordings {
+    dir: String,
+    store: Option<Arc<dyn fcp_core::recording::CallRecordingStore>>,
+}
+
+impl QueueRecordings {
+    /// The file for a new recording of `call_id`, its row written. Under
+    /// the tenant and the day, named for the recording — never for the
+    /// queue or a dialled number. `None` when the row cannot be written:
+    /// a recording nothing can find is not made.
+    async fn begin(&self, tenant_id: TenantId, call_id: String, format: &str) -> Option<String> {
+        let id = fcp_core::RecordingId::new();
+        let dir = std::path::Path::new(&self.dir).join(fcp_core::recording::dated_recording_dir(
+            &tenant_id,
+            std::time::SystemTime::now(),
+        ));
+        if let Err(e) = tokio::fs::create_dir_all(&dir).await {
+            warn!(dir = %dir.display(), error = %e, "Queue recording directory not created; not recording");
+            return None;
+        }
+        let path = dir
+            .join(format!("{id}.{format}"))
+            .to_string_lossy()
+            .into_owned();
+        if let Some(store) = &self.store {
+            let mut recording = fcp_core::recording::CallRecording::starting(
+                tenant_id,
+                call_id,
+                fcp_core::recording::CallRecordingSource::Queue,
+                path.clone(),
+            );
+            recording.id = id;
+            if let Err(e) = store.create_call_recording(&recording).await {
+                warn!(error = %e, "Queue recording not registered; not recording");
+                return None;
+            }
+        }
+        Some(path)
+    }
+}
+
+/// The call id a queue segment's record and recording carry.
+fn queue_record_call_id(b2bua_call_id: Option<fcp_sip::CallId>) -> String {
+    b2bua_call_id
+        .map(|id| fcp_core::CallId::from_uuid(*id.as_uuid()))
+        .unwrap_or_default()
+        .to_string()
+}
+
 /// State machine for a queue call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum QueueCallState {
@@ -699,7 +751,14 @@ impl QueueCallHandler {
         let event_bus = Arc::clone(&self.event_bus);
         let announce_config = self.build_announce_config(&queue_name);
         let prompt_cache = self.prompt_cache.clone();
-        let recording_dir = self.config.recording_dir.clone();
+        let recording_dir = self
+            .config
+            .recording_dir
+            .clone()
+            .map(|dir| QueueRecordings {
+                dir,
+                store: self.storage.call_recording_store().cloned(),
+            });
         let campaign_call_id_map = Arc::clone(&self.campaign_call_id_map);
 
         tokio::spawn(async move {
@@ -1006,7 +1065,7 @@ impl QueueCallHandler {
         announce_config: Option<AnnounceConfig>,
         cancel_rx: tokio::sync::oneshot::Receiver<()>,
         prompt_cache: Option<Arc<PromptCache>>,
-        recording_dir: Option<String>,
+        recording_dir: Option<QueueRecordings>,
     ) -> JoinHandle<()> {
         tokio::spawn(async move {
             let agent_id = plan.agent_id.clone();
@@ -1181,16 +1240,28 @@ impl QueueCallHandler {
                                 .map(|c| c.record_calls)
                                 .unwrap_or(false);
 
-                        if should_record {
-                            let rec_dir = recording_dir.as_deref().unwrap();
-                            let queue_rec_dir = format!("{}/{}", rec_dir, session.queue_name);
-                            let _ = std::fs::create_dir_all(&queue_rec_dir);
+                        let rec_path = if should_record {
                             let rec_format = queue_manager
                                 .get_queue_config(&session.queue_name)
                                 .map(|c| c.recording_format.clone())
                                 .unwrap_or_else(|| "wav".to_string());
-                            let rec_path = format!("{}/{}.{}", queue_rec_dir, call_id, rec_format);
+                            match &recording_dir {
+                                Some(recordings) => {
+                                    recordings
+                                        .begin(
+                                            session.tenant_id,
+                                            queue_record_call_id(session.b2bua_call_id),
+                                            &rec_format,
+                                        )
+                                        .await
+                                }
+                                None => None,
+                            }
+                        } else {
+                            None
+                        };
 
+                        if let Some(rec_path) = rec_path {
                             let (a_tx, a_rx) = tokio::sync::broadcast::channel::<bytes::Bytes>(256);
                             let (b_tx, b_rx) = tokio::sync::broadcast::channel::<bytes::Bytes>(256);
 
@@ -1435,6 +1506,27 @@ impl QueueCallHandler {
                 rec_handle.abort();
                 if let Some(ref path) = session.recording_path {
                     info!(call_id = %call_id, path = %path, "Recording stopped");
+                }
+                // Its row closes when the segment's record is stored; close it
+                // now, so a record that never arrives leaves no open row.
+                // The file is named for its row.
+                let id = session.recording_path.as_deref().and_then(|path| {
+                    std::path::Path::new(path)
+                        .file_stem()?
+                        .to_str()?
+                        .parse::<fcp_core::RecordingId>()
+                        .ok()
+                });
+                if let (Some(store), Some(id)) = (self.storage.call_recording_store().cloned(), id)
+                {
+                    tokio::spawn(async move {
+                        if let Err(e) = store
+                            .finish_call_recording(&id, std::time::SystemTime::now())
+                            .await
+                        {
+                            warn!(error = %e, "Could not close a queue recording's row");
+                        }
+                    });
                 }
             }
 
@@ -3964,7 +4056,7 @@ async fn campaign_dial_task(
     abandon_timeout_secs: u32,
     _announce_config: Option<AnnounceConfig>,
     _prompt_cache: Option<Arc<PromptCache>>,
-    recording_dir: Option<String>,
+    recording_dir: Option<QueueRecordings>,
     tenant_id: TenantId,
     campaign_call_id_map: Arc<DashMap<String, String>>,
 ) {
@@ -4190,24 +4282,32 @@ async fn campaign_dial_task(
                                             .map(|c| c.record_calls)
                                             .unwrap_or(false);
 
+                                    let rec_path = if should_record {
+                                        let rec_format = queue_manager
+                                            .get_queue_config(&queue_name)
+                                            .map(|c| c.recording_format.clone())
+                                            .unwrap_or_else(|| "wav".to_string());
+                                        match &recording_dir {
+                                            Some(recordings) => {
+                                                recordings
+                                                    .begin(
+                                                        tenant_id,
+                                                        queue_record_call_id(None),
+                                                        &rec_format,
+                                                    )
+                                                    .await
+                                            }
+                                            None => None,
+                                        }
+                                    } else {
+                                        None
+                                    };
                                     let (
                                         bridge_a_to_b,
                                         bridge_b_to_a,
                                         recording_handle,
                                         recording_path,
-                                    ) = if should_record {
-                                        let rec_dir = recording_dir.as_deref().unwrap();
-                                        let queue_rec_dir = format!("{}/{}", rec_dir, queue_name);
-                                        let _ = std::fs::create_dir_all(&queue_rec_dir);
-                                        let rec_format = queue_manager
-                                            .get_queue_config(&queue_name)
-                                            .map(|c| c.recording_format.clone())
-                                            .unwrap_or_else(|| "wav".to_string());
-                                        let rec_path = format!(
-                                            "{}/{}.{}",
-                                            queue_rec_dir, destination, rec_format
-                                        );
-
+                                    ) = if let Some(rec_path) = rec_path {
                                         let (a_tx, a_rx) =
                                             tokio::sync::broadcast::channel::<bytes::Bytes>(256);
                                         let (b_tx, b_rx) =

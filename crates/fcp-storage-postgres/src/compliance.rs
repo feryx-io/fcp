@@ -4,8 +4,8 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use fcp_core::compliance::{
-    AuditEvent, AuditQuery, CompliancePolicy, ComplianceStore, RecordingConsentMode,
-    RetentionReport,
+    AuditEvent, AuditQuery, CompliancePolicy, ComplianceStore, DeletionQuery, DeletionRecord,
+    PendingFileDeletion, RecordingConsentMode, RetentionReport,
 };
 use fcp_core::TenantId;
 use sqlx::{Pool, Postgres, Row};
@@ -19,6 +19,20 @@ fn to_datetime(st: SystemTime) -> DateTime<Utc> {
 
 fn to_system_time(dt: DateTime<Utc>) -> SystemTime {
     UNIX_EPOCH + Duration::from_secs(dt.timestamp().max(0) as u64)
+}
+
+/// Whether a live row names the file at `path` (an SQL expression): a call
+/// or conference recording, a voicemail message or greeting, a prompt, a
+/// profile picture.
+fn referenced_sql(path: &str) -> String {
+    format!(
+        "EXISTS (SELECT 1 FROM call_recordings WHERE path = {path})
+         OR EXISTS (SELECT 1 FROM conference_recordings WHERE path = {path})
+         OR EXISTS (SELECT 1 FROM voicemail_messages WHERE recording_path = {path})
+         OR EXISTS (SELECT 1 FROM voicemail_greetings WHERE audio_path = {path})
+         OR EXISTS (SELECT 1 FROM prompts WHERE audio_path = {path})
+         OR EXISTS (SELECT 1 FROM users WHERE profile_picture IN ({path}, regexp_replace({path}, '^.*/', '')))"
+    )
 }
 
 #[derive(Clone)]
@@ -59,7 +73,8 @@ impl ComplianceStore for PostgresComplianceStore {
     ) -> anyhow::Result<Option<CompliancePolicy>> {
         let row = sqlx::query(
             "SELECT cdr_retention_days, sip_trace_retention_days, flow_trace_retention_days,
-                    recording_retention_days, audit_retention_days, cdr_archive_required,
+                    recording_retention_days, audit_retention_days, voicemail_retention_days,
+                    cdr_archive_required,
                     recording_consent, recording_consent_prompt_id, updated_at
              FROM compliance_policies WHERE tenant_id = $1",
         )
@@ -82,6 +97,7 @@ impl ComplianceStore for PostgresComplianceStore {
             flow_trace_retention_days: days("flow_trace_retention_days")?,
             recording_retention_days: days("recording_retention_days")?,
             audit_retention_days: days("audit_retention_days")?,
+            voicemail_retention_days: days("voicemail_retention_days")?,
             cdr_archive_required: row.try_get("cdr_archive_required")?,
             recording_consent: if consent == "announce" {
                 RecordingConsentMode::Announce
@@ -99,8 +115,9 @@ impl ComplianceStore for PostgresComplianceStore {
             "INSERT INTO compliance_policies
                 (tenant_id, cdr_retention_days, sip_trace_retention_days,
                  flow_trace_retention_days, recording_retention_days, audit_retention_days,
-                 recording_consent, recording_consent_prompt_id, updated_at, cdr_archive_required)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                 recording_consent, recording_consent_prompt_id, updated_at, cdr_archive_required,
+                 voicemail_retention_days)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
              ON CONFLICT (tenant_id) DO UPDATE SET
                 cdr_retention_days = EXCLUDED.cdr_retention_days,
                 sip_trace_retention_days = EXCLUDED.sip_trace_retention_days,
@@ -110,7 +127,8 @@ impl ComplianceStore for PostgresComplianceStore {
                 recording_consent = EXCLUDED.recording_consent,
                 recording_consent_prompt_id = EXCLUDED.recording_consent_prompt_id,
                 updated_at = EXCLUDED.updated_at,
-                cdr_archive_required = EXCLUDED.cdr_archive_required",
+                cdr_archive_required = EXCLUDED.cdr_archive_required,
+                voicemail_retention_days = EXCLUDED.voicemail_retention_days",
         )
         .bind(policy.tenant_id.to_string())
         .bind(days(policy.cdr_retention_days))
@@ -122,6 +140,7 @@ impl ComplianceStore for PostgresComplianceStore {
         .bind(&policy.recording_consent_prompt_id)
         .bind(to_datetime(policy.updated_at))
         .bind(policy.cdr_archive_required)
+        .bind(days(policy.voicemail_retention_days))
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -194,13 +213,13 @@ impl ComplianceStore for PostgresComplianceStore {
         tenant_id: &TenantId,
         before: SystemTime,
     ) -> anyhow::Result<u64> {
-        let result =
+        Ok(crate::deletion::execute(
+            &self.pool,
             sqlx::query("DELETE FROM admin_audit_log WHERE tenant_id = $1 AND occurred_at < $2")
                 .bind(tenant_id.to_string())
-                .bind(to_datetime(before))
-                .execute(&self.pool)
-                .await?;
-        Ok(result.rows_affected())
+                .bind(to_datetime(before)),
+        )
+        .await?)
     }
 
     async fn record_retention_run(&self, report: &RetentionReport) -> anyhow::Result<()> {
@@ -208,8 +227,8 @@ impl ComplianceStore for PostgresComplianceStore {
             "INSERT INTO retention_runs
                 (tenant_id, ran_at, cdrs_deleted, sip_traces_deleted, flow_traces_deleted,
                  recordings_deleted, conference_recordings_deleted, audit_events_deleted,
-                 errors)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+                 errors, voicemail_messages_deleted)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
         )
         .bind(report.tenant_id.to_string())
         .bind(to_datetime(report.ran_at))
@@ -220,9 +239,151 @@ impl ComplianceStore for PostgresComplianceStore {
         .bind(report.conference_recordings_deleted as i64)
         .bind(report.audit_events_deleted as i64)
         .bind(&report.errors)
+        .bind(report.voicemail_messages_deleted as i64)
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    async fn list_deletions(&self, query: &DeletionQuery) -> anyhow::Result<Vec<DeletionRecord>> {
+        let mut sql = String::from(
+            "SELECT id, tenant_id, class, item, detail, cause, actor, deleted_at
+             FROM deletion_log WHERE 1=1",
+        );
+        let mut n = 0;
+        let mut next = || {
+            n += 1;
+            n
+        };
+        if query.tenant_id.is_some() {
+            sql.push_str(&format!(" AND tenant_id = ${}", next()));
+        }
+        if query.class.is_some() {
+            sql.push_str(&format!(" AND class = ${}", next()));
+        }
+        if query.since.is_some() {
+            sql.push_str(&format!(" AND deleted_at >= ${}", next()));
+        }
+        sql.push_str(&format!(
+            " ORDER BY deleted_at DESC, id DESC LIMIT ${}",
+            next()
+        ));
+        let mut q = sqlx::query(&sql);
+        if let Some(t) = &query.tenant_id {
+            q = q.bind(t.to_string());
+        }
+        if let Some(c) = &query.class {
+            q = q.bind(c);
+        }
+        if let Some(since) = query.since {
+            q = q.bind(to_datetime(since));
+        }
+        q = q.bind(query.limit.clamp(1, 1000) as i64);
+        q.fetch_all(&self.pool)
+            .await?
+            .into_iter()
+            .map(|row| {
+                let tenant: Option<String> = row.try_get("tenant_id")?;
+                let at: DateTime<Utc> = row.try_get("deleted_at")?;
+                Ok(DeletionRecord {
+                    id: row.try_get("id")?,
+                    tenant_id: tenant.and_then(|t| TenantId::from_str(&t).ok()),
+                    class: row.try_get("class")?,
+                    item: row.try_get("item")?,
+                    detail: row.try_get("detail")?,
+                    cause: row.try_get("cause")?,
+                    actor: row.try_get("actor")?,
+                    deleted_at: to_system_time(at),
+                })
+            })
+            .collect()
+    }
+
+    async fn record_deletion(&self, record: &DeletionRecord) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO deletion_log (tenant_id, class, item, detail, cause, actor, deleted_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        )
+        .bind(record.tenant_id.map(|t| t.to_string()))
+        .bind(&record.class)
+        .bind(&record.item)
+        .bind(&record.detail)
+        .bind(&record.cause)
+        .bind(&record.actor)
+        .bind(to_datetime(record.deleted_at))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn due_file_deletions(&self, limit: usize) -> anyhow::Result<Vec<PendingFileDeletion>> {
+        let rows = sqlx::query(&format!(
+            "SELECT p.id, p.tenant_id, p.class, p.path, p.attempts,
+                    ({REFERENCED}) AS still_referenced
+             FROM pending_file_deletions p
+             WHERE p.next_attempt_at <= now()
+             ORDER BY p.next_attempt_at, p.id
+             LIMIT $1",
+            REFERENCED = referenced_sql("p.path")
+        ))
+        .bind(limit.clamp(1, 10_000) as i64)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                let tenant: Option<String> = row.try_get("tenant_id")?;
+                let attempts: i32 = row.try_get("attempts")?;
+                Ok(PendingFileDeletion {
+                    id: row.try_get("id")?,
+                    tenant_id: tenant.and_then(|t| TenantId::from_str(&t).ok()),
+                    class: row.try_get("class")?,
+                    path: row.try_get("path")?,
+                    attempts: attempts.max(0) as u32,
+                    still_referenced: row.try_get("still_referenced")?,
+                })
+            })
+            .collect()
+    }
+
+    async fn file_deletion_done(&self, id: i64) -> anyhow::Result<()> {
+        sqlx::query("DELETE FROM pending_file_deletions WHERE id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn file_deletion_failed(
+        &self,
+        id: i64,
+        error: &str,
+        retry_in: Duration,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "UPDATE pending_file_deletions
+             SET attempts = attempts + 1, last_error = $2,
+                 next_attempt_at = now() + make_interval(secs => $3)
+             WHERE id = $1",
+        )
+        .bind(id)
+        .bind(error)
+        .bind(retry_in.as_secs_f64())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn referenced_paths(&self, paths: &[String]) -> anyhow::Result<Vec<String>> {
+        if paths.is_empty() {
+            return Ok(Vec::new());
+        }
+        Ok(sqlx::query_scalar(&format!(
+            "SELECT p FROM unnest($1::text[]) AS p WHERE {}",
+            referenced_sql("p")
+        ))
+        .bind(paths)
+        .fetch_all(&self.pool)
+        .await?)
     }
 
     async fn list_retention_runs(
@@ -233,7 +394,7 @@ impl ComplianceStore for PostgresComplianceStore {
         let rows = sqlx::query(
             "SELECT ran_at, cdrs_deleted, sip_traces_deleted, flow_traces_deleted,
                     recordings_deleted, conference_recordings_deleted, audit_events_deleted,
-                    errors
+                    errors, voicemail_messages_deleted
              FROM retention_runs WHERE tenant_id = $1
              ORDER BY ran_at DESC, id DESC LIMIT $2",
         )
@@ -256,6 +417,7 @@ impl ComplianceStore for PostgresComplianceStore {
                     flow_traces_deleted: n("flow_traces_deleted")?,
                     recordings_deleted: n("recordings_deleted")?,
                     conference_recordings_deleted: n("conference_recordings_deleted")?,
+                    voicemail_messages_deleted: n("voicemail_messages_deleted")?,
                     audit_events_deleted: n("audit_events_deleted")?,
                     errors: row.try_get("errors")?,
                 })

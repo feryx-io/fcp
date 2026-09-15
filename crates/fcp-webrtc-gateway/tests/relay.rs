@@ -16,8 +16,7 @@ use fcp_webrtc_gateway::relay::{
 use fcp_webrtc_gateway::session::browser_audio_codecs;
 use forge_rtp::rtcp::{PayloadFeedback, PsFeedback, RtpFeedback, TransportFeedback};
 use forge_rtp::{
-    LatchPolicy, PortPair, RemoteEndpoint, RtcpPacket, RtpPacket, RtpSocketConfig, RtpSocketPair,
-    SrtpContext,
+    LatchPolicy, RemoteEndpoint, RtcpPacket, RtpPacket, RtpSocketConfig, RtpSocketPair, SrtpContext,
 };
 use forge_webrtc::{
     ConnectionState, Direction, PeerConfig, PeerConnection, PeerEvent, VideoCodec, VideoConfig,
@@ -106,23 +105,30 @@ async fn connected_pair() -> (
     (gateway, browser, gw_events, br_events)
 }
 
+/// A socket pair bound on a free loopback port. Ports are probed and then
+/// bound, so another socket can take one in between; that is retried
+/// rather than failed (a fixed range here collided with other tests'
+/// sockets on CI).
+async fn bound_pair(cfg: &RtpSocketConfig) -> (RtpSocketPair, u16) {
+    for _ in 0..20 {
+        let ports = fcp_testkit::media::allocate_port_pair();
+        let port = ports.rtp_port;
+        if let Ok(pair) = RtpSocketPair::new(ports, cfg.clone()).await {
+            return (pair, port);
+        }
+    }
+    panic!("no loopback socket pair after 20 attempts");
+}
+
 /// Two socket pairs on loopback pointed at each other.
-async fn socket_pair(
-    a_port: u16,
-    b_port: u16,
-    tos: u8,
-) -> (Arc<RtpSocketPair>, Arc<RtpSocketPair>) {
+async fn socket_pair(tos: u8) -> (Arc<RtpSocketPair>, Arc<RtpSocketPair>) {
     let cfg = RtpSocketConfig {
         bind_addr: "127.0.0.1".parse().unwrap(),
         tos,
         ..RtpSocketConfig::default()
     };
-    let a = RtpSocketPair::new(PortPair::new(a_port).unwrap(), cfg.clone())
-        .await
-        .unwrap();
-    let b = RtpSocketPair::new(PortPair::new(b_port).unwrap(), cfg)
-        .await
-        .unwrap();
+    let (a, a_port) = bound_pair(&cfg).await;
+    let (b, b_port) = bound_pair(&cfg).await;
     for (s, peer) in [(&a, b_port), (&b, a_port)] {
         s.set_remote_endpoint(RemoteEndpoint {
             rtp_addr: format!("127.0.0.1:{peer}").parse().unwrap(),
@@ -195,7 +201,7 @@ async fn next_event(
     }
 }
 
-async fn relay_case(srtp: bool, base_port: u16) {
+async fn relay_case(srtp: bool) {
     init_tracing();
     let (gateway, browser, gw_events, mut br_events) = connected_pair().await;
     let (codec, browser_audio_pt) = gateway.negotiated_codec();
@@ -216,9 +222,9 @@ async fn relay_case(srtp: bool, base_port: u16) {
 
     // The SIP side: the relay's sockets and the far end's, plain or SRTP,
     // one pair per section.
-    let (relay_audio, far_audio) = socket_pair(base_port, base_port + 2, 0xB8).await;
-    let (relay_video, far_video) = socket_pair(base_port + 4, base_port + 6, 0xA0).await;
-    let (relay_content, far_content) = socket_pair(base_port + 8, base_port + 10, 0xA0).await;
+    let (relay_audio, far_audio) = socket_pair(0xB8).await;
+    let (relay_video, far_video) = socket_pair(0xA0).await;
+    let (relay_content, far_content) = socket_pair(0xA0).await;
     let pair = || {
         if srtp {
             let (a, b) = srtp_pair();
@@ -564,19 +570,19 @@ async fn relay_case(srtp: bool, base_port: u16) {
 
 #[tokio::test]
 async fn relays_audio_video_and_feedback_both_ways_plain() {
-    relay_case(false, 40100).await;
+    relay_case(false).await;
 }
 
 #[tokio::test]
 async fn relays_audio_video_and_feedback_both_ways_srtp() {
-    relay_case(true, 40200).await;
+    relay_case(true).await;
 }
 
 #[tokio::test]
 async fn relay_ends_when_the_browser_closes() {
     init_tracing();
     let (gateway, mut browser, gw_events, _br_events) = connected_pair().await;
-    let (relay_audio, _far_audio) = socket_pair(40300, 40302, 0xB8).await;
+    let (relay_audio, _far_audio) = socket_pair(0xB8).await;
     let sip = SipLeg {
         audio: SipAudioLeg {
             socket: relay_audio,
@@ -634,7 +640,7 @@ async fn the_sip_leg_can_be_swapped_under_the_browser() {
     init_tracing();
     let (gateway, browser, gw_events, mut br_events) = connected_pair().await;
     let (_, browser_audio_pt) = gateway.negotiated_codec();
-    let (relay_audio, far_audio) = socket_pair(40400, 40402, 0xB8).await;
+    let (relay_audio, far_audio) = socket_pair(0xB8).await;
     let sip = SipLeg {
         audio: SipAudioLeg {
             socket: relay_audio,
@@ -676,7 +682,7 @@ async fn the_sip_leg_can_be_swapped_under_the_browser() {
 
     // A new far end, SRTP this time, with a different payload type: the
     // relay takes the new leg between packets.
-    let (relay_audio2, far_audio2) = socket_pair(40404, 40406, 0xB8).await;
+    let (relay_audio2, far_audio2) = socket_pair(0xB8).await;
     let (audio_srtp, far_audio_srtp) = srtp_pair();
     let far_audio_srtp = Some(far_audio_srtp);
     swap_tx

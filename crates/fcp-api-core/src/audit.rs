@@ -42,6 +42,43 @@ fn source_ip(headers: &HeaderMap) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// What a deletion named: the route's parameters (`{"params": {"id":
+/// "…"}}`), matched from the end of the path so a nested router's prefix
+/// does not shift them. Other requests carry no detail.
+pub fn route_detail(method: &Method, template: &str, path: &str) -> Option<serde_json::Value> {
+    if *method != Method::DELETE {
+        return None;
+    }
+    let names = template.trim_end_matches('/').rsplit('/');
+    let values = path.trim_end_matches('/').rsplit('/');
+    let mut params = serde_json::Map::new();
+    for (name, value) in names.zip(values) {
+        if let Some(name) = name.strip_prefix(':') {
+            let value = percent_decode(value);
+            params.insert(name.to_string(), serde_json::Value::String(value));
+        }
+    }
+    (!params.is_empty()).then(|| serde_json::json!({ "params": params }))
+}
+
+fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(b) = u8::from_str_radix(&text[i + 1..i + 3], 16) {
+                out.push(b);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 /// Middleware: record the request after it completes.
 pub async fn audit_requests(State(state): State<ApiState>, req: Request, next: Next) -> Response {
     let method = req.method().clone();
@@ -65,7 +102,16 @@ pub async fn audit_requests(State(state): State<ApiState>, req: Request, next: N
     let ip = source_ip(req.headers());
     let identity = req.extensions().get::<AuthIdentity>().cloned();
 
-    let response = next.run(req).await;
+    // Whatever the request deletes is the caller's doing, in the deletion
+    // log as well as here.
+    let deleter = fcp_core::compliance::Deleter::new(
+        fcp_core::compliance::DeletionCause::Manual,
+        identity
+            .as_ref()
+            .map(AuthIdentity::actor)
+            .unwrap_or_else(|| "anonymous".to_string()),
+    );
+    let response = fcp_core::compliance::deleting_as(deleter, next.run(req)).await;
 
     if !should_audit(&method, &path) {
         return response;
@@ -79,11 +125,15 @@ pub async fn audit_requests(State(state): State<ApiState>, req: Request, next: N
         return response;
     };
 
-    let (actor, actor_kind) = match &identity {
-        Some(AuthIdentity::StaticToken) => ("static_token".to_string(), "static_token"),
-        Some(AuthIdentity::ApiToken { .. }) => ("api_token".to_string(), "api_token"),
-        Some(AuthIdentity::Session { username, .. }) => (username.clone(), "session"),
-        None => ("anonymous".to_string(), "anonymous"),
+    let actor = identity
+        .as_ref()
+        .map(AuthIdentity::actor)
+        .unwrap_or_else(|| "anonymous".to_string());
+    let actor_kind = match &identity {
+        Some(AuthIdentity::StaticToken) => "static_token",
+        Some(AuthIdentity::ApiToken { .. }) => "api_token",
+        Some(AuthIdentity::Session { .. }) => "session",
+        None => "anonymous",
     };
     let tenant_id = identity
         .as_ref()
@@ -91,6 +141,7 @@ pub async fn audit_requests(State(state): State<ApiState>, req: Request, next: N
         .or(header_tenant)
         .or_else(|| identity.as_ref().map(|_| state.default_tenant_id));
 
+    let detail = route_detail(&method, &template, &path);
     let event = AuditEvent {
         id: 0,
         tenant_id,
@@ -100,7 +151,7 @@ pub async fn audit_requests(State(state): State<ApiState>, req: Request, next: N
         path,
         status: response.status().as_u16(),
         action: format!("{method} {template}"),
-        detail: None,
+        detail,
         source_ip: ip,
         occurred_at: SystemTime::now(),
     };
@@ -123,5 +174,31 @@ mod tests {
         assert!(should_audit(&Method::GET, "/api/v1/cdrs/export"));
         assert!(!should_audit(&Method::GET, "/api/v1/cdrs"));
         assert!(!should_audit(&Method::OPTIONS, "/api/v1/users"));
+    }
+
+    #[test]
+    fn a_deletion_names_what_it_deleted() {
+        assert_eq!(
+            route_detail(
+                &Method::DELETE,
+                "/api/v1/voicemail/mailboxes/:id/greetings/:greeting_type",
+                "/api/v1/voicemail/mailboxes/mbx-1/greetings/busy",
+            ),
+            Some(serde_json::json!({ "params": { "id": "mbx-1", "greeting_type": "busy" } }))
+        );
+        // A template without the nest's prefix still lines up.
+        assert_eq!(
+            route_detail(&Method::DELETE, "/users/:username", "/api/v1/users/j%20doe"),
+            Some(serde_json::json!({ "params": { "username": "j doe" } }))
+        );
+        assert_eq!(
+            route_detail(&Method::PUT, "/users/:username", "/api/v1/users/alice"),
+            None
+        );
+        assert_eq!(
+            route_detail(&Method::DELETE, "/cache", "/api/v1/cache"),
+            None
+        );
+        assert_eq!(percent_decode("100%"), "100%");
     }
 }
