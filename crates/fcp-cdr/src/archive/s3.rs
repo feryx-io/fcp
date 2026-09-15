@@ -476,6 +476,21 @@ impl S3Target {
     }
 }
 
+/// The body of a `PutObjectLegalHold` request.
+fn legal_hold_body(on: bool) -> String {
+    format!(
+        "<LegalHold xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><Status>{}</Status></LegalHold>",
+        if on { "ON" } else { "OFF" }
+    )
+}
+
+/// The `Content-MD5` of a body: base64 of its MD5.
+fn content_md5(body: &[u8]) -> String {
+    use base64::Engine;
+    use md5::{Digest, Md5};
+    base64::engine::general_purpose::STANDARD.encode(Md5::digest(body))
+}
+
 /// The text of the first `<name>` element.
 fn xml_value<'a>(xml: &'a str, name: &str) -> Option<&'a str> {
     let open = format!("<{name}>");
@@ -507,6 +522,33 @@ impl ArchiveTarget for S3Target {
         } else {
             self.put_whole(key, file, object).await
         }
+    }
+
+    async fn set_legal_hold(&self, key: &str, on: bool) -> Result<bool, ArchiveError> {
+        // S3 Object Lock's legal hold: the bucket must have Object Lock
+        // enabled, and the request must carry the body's MD5.
+        let body = legal_hold_body(on);
+        let hash = sigv4::sha256_hex(body.as_bytes());
+        let md5 = content_md5(body.as_bytes());
+        let query = vec![("legal-hold".to_string(), String::new())];
+        self.retrying("PutObjectLegalHold", || async {
+            let response = self
+                .request(
+                    Method::PUT,
+                    key,
+                    &query,
+                    vec![
+                        ("content-md5".into(), md5.clone()),
+                        ("content-type".into(), "application/xml".into()),
+                    ],
+                    &hash,
+                )?
+                .body(body.clone())
+                .send()
+                .await?;
+            Self::check(response).await.map(|_| true)
+        })
+        .await
     }
 
     async fn confirm(&self, key: &str, object: &ObjectInfo) -> Result<bool, ArchiveError> {
@@ -606,6 +648,76 @@ mod tests {
             ..S3Config::new("records")
         })
         .is_err());
+    }
+
+    #[tokio::test]
+    async fn a_legal_hold_is_a_signed_put_with_the_bodys_md5() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut seen = Vec::new();
+            let mut buf = [0u8; 4096];
+            loop {
+                let n = socket.read(&mut buf).await.unwrap();
+                seen.extend_from_slice(&buf[..n]);
+                let text = String::from_utf8_lossy(&seen);
+                if let Some(end) = text.find("\r\n\r\n") {
+                    let length = text
+                        .lines()
+                        .find_map(|l| {
+                            l.to_ascii_lowercase()
+                                .strip_prefix("content-length:")
+                                .map(|v| v.trim().parse::<usize>().unwrap())
+                        })
+                        .unwrap_or(0);
+                    if seen.len() >= end + 4 + length {
+                        break;
+                    }
+                }
+            }
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n")
+                .await
+                .unwrap();
+            String::from_utf8(seen).unwrap()
+        });
+        let target = target(S3Config {
+            endpoint: Some(format!("http://{addr}")),
+            path_style: true,
+            ..S3Config::new("records")
+        });
+        assert!(target
+            .set_legal_hold("t/2026/09/13.jsonl.gz", true)
+            .await
+            .unwrap());
+        let request = server.await.unwrap();
+        let lower = request.to_ascii_lowercase();
+        assert!(
+            request.starts_with("PUT /records/t/2026/09/13.jsonl.gz?legal-hold HTTP/1.1"),
+            "{request}"
+        );
+        let body = legal_hold_body(true);
+        assert!(request.ends_with(&body), "{request}");
+        assert!(lower.contains(&format!(
+            "content-md5: {}",
+            content_md5(body.as_bytes()).to_ascii_lowercase()
+        )));
+        assert!(lower.contains(&format!(
+            "x-amz-content-sha256: {}",
+            sigv4::sha256_hex(body.as_bytes())
+        )));
+        assert!(
+            lower.contains(
+                "signedheaders=content-md5;content-type;host;x-amz-content-sha256;x-amz-date"
+            ),
+            "{request}"
+        );
+        assert!(body.contains("<Status>ON</Status>"));
+        assert!(legal_hold_body(false).contains("<Status>OFF</Status>"));
+        // The MD5 of the empty body, as S3's reference gives it.
+        assert_eq!(content_md5(b""), "1B2M2Y8AsgTpgAmY7PhCfg==");
     }
 
     #[test]

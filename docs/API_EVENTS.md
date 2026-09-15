@@ -360,6 +360,29 @@ again under the same key, announced with a higher `generation`.
 }
 ```
 
+### Compliance Events
+
+Emitted by the admin API when a legal hold is placed or released
+(`docs/COMPLIANCE.md`, legal holds): `compliance.hold_placed` and
+`compliance.hold_released`, for an eDiscovery or records system to follow.
+Subscribe with the `compliance` event type. The event's fields sit beside
+its `event_type`:
+
+```json
+{
+  "event_type": "compliance",
+  "type": "hold_released",
+  "hold_id": "hold-7c9e6679-7425-40de-944b-e07fc1f90ae7",
+  "tenant_id": "tenant-123e4567-e89b-12d3-a456-426614174000",
+  "matter": "Smith v. Example",
+  "actor": "counsel",
+  "reason": "settled",
+  "timestamp": 1705633200
+}
+```
+
+`hold_placed` carries the same fields without `reason`.
+
 ## Client Handling
 
 ### Receiving Events

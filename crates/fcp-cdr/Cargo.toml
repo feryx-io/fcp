@@ -16,9 +16,12 @@ bytes.workspace = true
 chrono = "0.4"
 # The archive (docs/CDR_PIPELINE.md §13, phase 5): gzipped JSON Lines to a
 # directory or an S3-compatible bucket, signed with SigV4.
+base64 = "0.22"
 flate2 = "1"
 hex = "0.4"
 hmac = "0.12"
+# S3 asks a legal hold request for its Content-MD5.
+md-5 = "0.10"
 sha2 = "0.10"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
 tokio-util = { version = "0.7", features = ["io"] }

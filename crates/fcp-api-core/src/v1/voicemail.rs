@@ -487,7 +487,7 @@ pub async fn delete_mailbox(
     storage
         .delete_mailbox(&id)
         .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
+        .map_err(ApiError::storage)?;
 
     info!(mailbox_id = %id, "Deleted voicemail mailbox");
 
@@ -586,7 +586,7 @@ pub async fn delete_message(
     storage
         .delete_message(&id)
         .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
+        .map_err(ApiError::storage)?;
 
     info!(message_id = %id, "Deleted voicemail message");
 

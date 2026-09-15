@@ -427,7 +427,7 @@ pub async fn delete_phone_number(
     storage
         .delete_phone_number(&number.id)
         .await
-        .map_err(|e| ApiError::Internal(format!("Failed to delete phone number: {}", e)))?;
+        .map_err(ApiError::storage)?;
 
     info!("Deleted phone number {}", id);
     Ok(StatusCode::NO_CONTENT)

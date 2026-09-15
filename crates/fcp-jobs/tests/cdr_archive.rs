@@ -173,7 +173,8 @@ async fn every_closed_day_is_written_once_confirmed_and_written_again_when_it_ga
             objects: 4,
             records: 5,
             bytes: run.bytes,
-            failures: 0
+            failures: 0,
+            ..ArchiveRun::default()
         }
     );
 
@@ -302,6 +303,133 @@ async fn every_closed_day_is_written_once_confirmed_and_written_again_when_it_ga
     );
     let stats = archiver.stats().snapshot();
     assert_eq!((stats.objects, stats.failures), (6, 1));
+
+    drop(archiver);
+    drop(store);
+    pg.close().await;
+    db.drop_db().await;
+}
+
+/// A directory target that records the object locks it is asked for.
+struct Locking {
+    inner: DirectoryTarget,
+    locks: Mutex<Vec<(String, bool)>>,
+}
+
+#[async_trait]
+impl ArchiveTarget for Locking {
+    fn location(&self) -> String {
+        self.inner.location()
+    }
+    async fn put(&self, key: &str, file: &Path, object: &ObjectInfo) -> Result<(), ArchiveError> {
+        self.inner.put(key, file, object).await
+    }
+    async fn confirm(&self, key: &str, object: &ObjectInfo) -> Result<bool, ArchiveError> {
+        self.inner.confirm(key, object).await
+    }
+    async fn set_legal_hold(&self, key: &str, on: bool) -> Result<bool, ArchiveError> {
+        self.locks.lock().unwrap().push((key.to_string(), on));
+        Ok(true)
+    }
+}
+
+#[tokio::test]
+async fn a_legal_hold_locks_its_archived_days_until_it_is_released() {
+    use fcp_core::compliance::ComplianceStore;
+    use fcp_core::legal_hold::{HoldRelease, HoldScope, LegalHold};
+    let Some(db) = TestDatabase::create().await else {
+        eprintln!("FCP_TEST_DATABASE_URL not set; skipping");
+        return;
+    };
+    let pg = storage(db.url()).await;
+    let store: Arc<dyn CdrStore> = pg.clone();
+    let compliance =
+        fcp_storage_postgres::compliance::PostgresComplianceStore::new(pg.pool().clone());
+    let archive = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let tenant = TenantId::new();
+    let today = Utc::now().date_naive();
+    let day = |n: i64| today - Days::days(n);
+    store
+        .insert_cdrs(vec![
+            record(tenant, day_start(day(3)) + Duration::from_secs(60)),
+            record(tenant, day_start(day(2)) + Duration::from_secs(60)),
+        ])
+        .await
+        .unwrap();
+
+    // Held from the start of day 2 onwards.
+    let hold = LegalHold {
+        id: fcp_core::LegalHoldId::new(),
+        tenant_id: tenant,
+        matter: "Case 7".into(),
+        reason: None,
+        scope: HoldScope {
+            from: Some(day_start(day(2))),
+            ..Default::default()
+        },
+        subject_keys: Vec::new(),
+        created_by: "counsel".into(),
+        created_at: SystemTime::now(),
+        released: None,
+    };
+    compliance.place_hold(&hold).await.unwrap();
+
+    let target = Arc::new(Locking {
+        inner: DirectoryTarget::new(archive.path()),
+        locks: Mutex::new(Vec::new()),
+    });
+    let archiver = Archiver::new(
+        Arc::clone(&store),
+        target.clone(),
+        ArchiveConfig {
+            grace: Duration::ZERO,
+            work_dir: work.path().to_path_buf(),
+            object_lock: true,
+            ..ArchiveConfig::default()
+        },
+    );
+    let key2 = object_key("", &tenant, day(2));
+    let run = archiver.run_once().await.unwrap().unwrap();
+    assert_eq!(
+        (run.objects, run.locked, run.unlocked),
+        (2, 1, 0),
+        "{run:?}"
+    );
+    assert_eq!(*target.locks.lock().unwrap(), vec![(key2.clone(), true)]);
+    assert_eq!(
+        archiver.run_once().await.unwrap().unwrap().locked,
+        0,
+        "once"
+    );
+
+    // A late record rewrites the day: a new object, locked again.
+    store
+        .insert_cdrs(vec![record(
+            tenant,
+            day_start(day(2)) + Duration::from_secs(120),
+        )])
+        .await
+        .unwrap();
+    let run = archiver.run_once().await.unwrap().unwrap();
+    assert_eq!((run.objects, run.locked), (1, 1), "{run:?}");
+
+    // Released: unlocked.
+    compliance
+        .release_hold(
+            &tenant,
+            &hold.id,
+            &HoldRelease {
+                by: "counsel".into(),
+                at: SystemTime::now(),
+                reason: "closed".into(),
+            },
+        )
+        .await
+        .unwrap();
+    let run = archiver.run_once().await.unwrap().unwrap();
+    assert_eq!((run.locked, run.unlocked), (0, 1), "{run:?}");
+    assert_eq!(target.locks.lock().unwrap().last(), Some(&(key2, false)));
 
     drop(archiver);
     drop(store);

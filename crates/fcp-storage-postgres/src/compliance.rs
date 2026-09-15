@@ -215,9 +215,13 @@ impl ComplianceStore for PostgresComplianceStore {
     ) -> anyhow::Result<u64> {
         Ok(crate::deletion::execute(
             &self.pool,
-            sqlx::query("DELETE FROM admin_audit_log WHERE tenant_id = $1 AND occurred_at < $2")
-                .bind(tenant_id.to_string())
-                .bind(to_datetime(before)),
+            sqlx::query(
+                "DELETE FROM admin_audit_log
+                 WHERE tenant_id = $1 AND occurred_at < $2
+                   AND fcp_audit_event_hold(tenant_id, occurred_at, actor) IS NULL",
+            )
+            .bind(tenant_id.to_string())
+            .bind(to_datetime(before)),
         )
         .await?)
     }
@@ -227,8 +231,8 @@ impl ComplianceStore for PostgresComplianceStore {
             "INSERT INTO retention_runs
                 (tenant_id, ran_at, cdrs_deleted, sip_traces_deleted, flow_traces_deleted,
                  recordings_deleted, conference_recordings_deleted, audit_events_deleted,
-                 errors, voicemail_messages_deleted)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+                 errors, voicemail_messages_deleted, held)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
         )
         .bind(report.tenant_id.to_string())
         .bind(to_datetime(report.ran_at))
@@ -240,6 +244,7 @@ impl ComplianceStore for PostgresComplianceStore {
         .bind(report.audit_events_deleted as i64)
         .bind(&report.errors)
         .bind(report.voicemail_messages_deleted as i64)
+        .bind(serde_json::to_value(&report.held)?)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -386,6 +391,61 @@ impl ComplianceStore for PostgresComplianceStore {
         .await?)
     }
 
+    async fn place_hold(&self, hold: &fcp_core::legal_hold::LegalHold) -> anyhow::Result<()> {
+        crate::holds::place(&self.pool, hold).await
+    }
+
+    async fn get_hold(
+        &self,
+        tenant_id: &TenantId,
+        id: &fcp_core::LegalHoldId,
+    ) -> anyhow::Result<Option<fcp_core::legal_hold::LegalHold>> {
+        crate::holds::get(&self.pool, tenant_id, id).await
+    }
+
+    async fn list_holds(
+        &self,
+        tenant_id: &TenantId,
+        include_released: bool,
+    ) -> anyhow::Result<Vec<fcp_core::legal_hold::LegalHold>> {
+        crate::holds::list(&self.pool, tenant_id, include_released).await
+    }
+
+    async fn release_hold(
+        &self,
+        tenant_id: &TenantId,
+        id: &fcp_core::LegalHoldId,
+        release: &fcp_core::legal_hold::HoldRelease,
+    ) -> anyhow::Result<bool> {
+        crate::holds::release(&self.pool, tenant_id, id, release).await
+    }
+
+    async fn held_counts(
+        &self,
+        tenant_id: &TenantId,
+        id: &fcp_core::LegalHoldId,
+    ) -> anyhow::Result<Vec<(fcp_core::legal_hold::DataClass, Option<u64>)>> {
+        crate::holds::counts(&self.pool, tenant_id, id).await
+    }
+
+    async fn hold_on(
+        &self,
+        tenant_id: &TenantId,
+        class: fcp_core::legal_hold::DataClass,
+        item: &str,
+    ) -> anyhow::Result<Option<fcp_core::LegalHoldId>> {
+        crate::holds::hold_on(&self.pool, tenant_id, class, item).await
+    }
+
+    async fn held_before(
+        &self,
+        tenant_id: &TenantId,
+        class: fcp_core::legal_hold::DataClass,
+        before: SystemTime,
+    ) -> anyhow::Result<u64> {
+        crate::holds::held_before(&self.pool, tenant_id, class, before).await
+    }
+
     async fn list_retention_runs(
         &self,
         tenant_id: &TenantId,
@@ -394,7 +454,7 @@ impl ComplianceStore for PostgresComplianceStore {
         let rows = sqlx::query(
             "SELECT ran_at, cdrs_deleted, sip_traces_deleted, flow_traces_deleted,
                     recordings_deleted, conference_recordings_deleted, audit_events_deleted,
-                    errors, voicemail_messages_deleted
+                    errors, voicemail_messages_deleted, held
              FROM retention_runs WHERE tenant_id = $1
              ORDER BY ran_at DESC, id DESC LIMIT $2",
         )
@@ -418,6 +478,7 @@ impl ComplianceStore for PostgresComplianceStore {
                     recordings_deleted: n("recordings_deleted")?,
                     conference_recordings_deleted: n("conference_recordings_deleted")?,
                     voicemail_messages_deleted: n("voicemail_messages_deleted")?,
+                    held: serde_json::from_value(row.try_get("held")?).unwrap_or_default(),
                     audit_events_deleted: n("audit_events_deleted")?,
                     errors: row.try_get("errors")?,
                 })

@@ -78,6 +78,7 @@ define_id!(ApiTokenId, "token");
 define_id!(LocationId, "loc");
 define_id!(PromptId, "prompt");
 define_id!(ConfigTemplateId, "tmpl");
+define_id!(LegalHoldId, "hold");
 
 /// SIP Call-ID header value (not our internal CallId).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

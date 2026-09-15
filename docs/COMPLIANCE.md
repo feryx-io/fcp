@@ -122,6 +122,87 @@ first, through the node holding it, then the row. The response's
 `file_deleted` is `false` when that node could not be reached — the row is
 gone and the file waits for the node's own sweep.
 
+## Legal holds
+
+A legal hold stops the deletion of what it covers until it is released —
+by retention, the API, a phone's voicemail menu, a conference node's sweep,
+a cascade from a number, line binding or mailbox, or the tenant's own
+deletion. Released holds stay, with who released them, when and why.
+
+`POST /api/v1/compliance/holds` places one:
+
+```json
+{
+  "matter": "Smith v. Example",
+  "reason": "litigation",
+  "from": 1704067200,
+  "to": 1706745600,
+  "subjects": [
+    { "type": "user", "username": "alice" },
+    { "type": "number", "number": "+14155550100" },
+    { "type": "aor", "aor": "bob@carrier.example" },
+    { "type": "email", "address": "carol@example.com" }
+  ],
+  "call_ids": ["call-…"],
+  "classes": ["cdr", "call_recording", "voicemail"]
+}
+```
+
+Every part but `matter` narrows the hold, and an empty part covers
+everything: no window holds all time, no subjects or calls hold everyone,
+no classes hold every class (`cdr`, `call_recording`,
+`conference_recording`, `voicemail`, `sip_trace`, `flow_trace`,
+`audit_event`). Data is dated by a record's start, a recording's start, a
+message's receipt, a trace's capture or an audit event's time, and `to` is
+exclusive. An item is covered by the subjects or the calls, either one.
+
+Subjects are matched in a canonical form, so `+1 (415) 555-0100`,
+`tel:+1-415-555-0100` and `sip:4155550100@pbx.example` are the same
+subject (a number also matches by its last ten digits — a hold errs
+towards holding). A user is expanded when the hold is placed to their
+username, extension, numbers (their own and their line bindings'),
+addresses on the tenant's SIP domains, email and mailbox; a number bound
+to them later is not in the hold. Records match by their `from`/`to`;
+call recordings and flow traces by their call's record (one whose call has
+no stored record yet is held by any hold with subjects); conference
+recordings by the people they name; voicemail by the caller and the
+mailbox; audit events by the actor.
+
+| Route | |
+|---|---|
+| `POST /compliance/holds` | Place a hold. `201` with the hold and its expanded `subject_keys` |
+| `GET /compliance/holds?all=true` | The tenant's holds; active ones unless `all` |
+| `GET /compliance/holds/:id` | One hold, with `held`: how many items of each class it holds now (`null` for a class too large to count in two seconds) |
+| `POST /compliance/holds/:id/release` | `{"reason": "…"}`, required. `409` when already released |
+
+All take the `legal_hold_manage` permission (`super_admin`, `tenant_admin`).
+Placing and releasing publish `compliance.hold_placed` and
+`compliance.hold_released` (`docs/API_EVENTS.md`) and are in the audit log.
+
+What a hold does to each way of deleting:
+
+- **Retention** leaves held items where they are and says so in the run's
+  report: `held`, a count per class. The records of a month the hold
+  reaches keep that month's partition from being dropped.
+- **API deletes** of a held item — a voicemail message, a conference
+  recording, a mailbox, number or line binding with a held message beneath
+  it, the tenant — answer `409 Conflict` naming the hold. A conference
+  recording's hold is asked before its file is touched.
+- **A phone's voicemail menu** takes a held message out of the mailbox
+  (marked deleted) and keeps it; the purge of deleted messages passes it by.
+- **A conference node's sweep** does not see held recordings.
+- **The database refuses** any other delete of a held row, however it is
+  made: every governed table has a trigger that checks the holds.
+- **The CDR archive** keeps writing held days (a rewrite adds records and
+  removes none). With `[cdr_archive] object_lock = true` and a bucket that
+  has S3 Object Lock enabled, the object of every day a hold on records
+  reaches into gets an Object Lock legal hold, and loses it when no hold
+  covers the day; the lock covers the whole day whatever the hold's
+  subjects.
+
+A hold cannot bring back what was deleted before it was placed; the
+deletion log says when that was.
+
 ## Recording consent
 
 `recording_consent` on the policy is `none` (default) or `announce`. With
@@ -147,9 +228,9 @@ B2BUA-level announcement lands.
 
 The compliance routes take their own permissions, held by `super_admin`
 and `tenant_admin` (and the static token, and API tokens that carry them):
-`compliance_manage` for the policy and retention runs, `audit_view` for the
-audit and deletion logs. Other admin roles, `read_only` included, are
-refused.
+`compliance_manage` for the policy and retention runs, `legal_hold_manage`
+for holds, `audit_view` for the audit and deletion logs. Other admin roles,
+`read_only` included, are refused.
 
 ## Admin audit log
 

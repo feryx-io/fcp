@@ -36,6 +36,7 @@ pub enum EventType {
     Sip,
     Billing,
     Cdr,
+    Compliance,
 }
 
 impl EventFilter {
@@ -102,6 +103,7 @@ impl EventFilter {
                 PlatformEvent::Sip(_) => EventType::Sip,
                 PlatformEvent::Billing(_) => EventType::Billing,
                 PlatformEvent::Cdr(_) => EventType::Cdr,
+                PlatformEvent::Compliance(_) => EventType::Compliance,
             };
 
             if !types.contains(&event_type) {

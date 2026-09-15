@@ -1,6 +1,6 @@
 # Compliance Follow-ups — Design
 
-Status: **phase 1 of 5 done** (2026-09-14, v0.25.166); design agreed the
+Status: **phases 1–2 of 5 done** (2026-09-15, v0.25.166 and v0.25.170); design agreed the
 same day with every recommendation in §12 taken. This document is the
 plan for the three compliance items `STATUS.md` left unscheduled when the
 basics shipped on 2026-09-02: **legal hold**, **per-subject export and
@@ -590,6 +590,65 @@ One PR per phase, reviewed before the next starts.
 2. **Legal hold.** The model, API and events; enforcement in every path
    of §5.2; tenant deletion refused under a hold; S3 Object Lock on held
    archive days.
+
+   *Phase 2 shipped 2026-09-15 (v0.25.170).* Migration 063, `fcp_core::legal_hold`
+   and `fcp_core::subject`, with these decisions made on the way:
+
+   - **The rules are written twice and tested once.** `LegalHold::covers`
+     in Rust and `fcp_hold_matches` in SQL apply the same scope; the
+     canonical subject form is `fcp_core::subject::keys` and
+     `fcp_subject_keys`, tested against one list of spellings in both.
+     Subjects meet on shared keys: `num:` digits, `tail:` the last ten
+     digits, `user:` a name, `aor:` user and host. The tail makes a
+     national spelling meet its international one, and makes a hold err
+     towards holding; erasure (phase 5) will narrow it.
+   - **Two layers.** Retention's deletes carry the hold filter, so a run
+     deletes what is free and leaves what is held, reporting counts per
+     class. Under them, a statement-level `AFTER DELETE` trigger on each
+     governed table raises `HLD01` if the statement removed a held row,
+     rolling it back — the API's deletes, cascades from numbers, line
+     bindings and mailboxes, the tenant's deletion (a row trigger on
+     `tenants`) and hand-typed SQL alike. The backend turns `HLD01` into a
+     `LegalHoldViolation`, the API into `409`. The trigger costs one
+     lookup of the (small) holds table per statement while nothing is
+     held.
+   - **File-first paths ask first.** The conference recording route removes
+     the file before the row, so it asks `hold_on` before the file; a
+     node's sweep lists expired recordings through the hold filter.
+   - **Keys a row does not have.** A trace captured under `_system` is
+     judged by its call's tenant; a call recording or flow trace takes its
+     subjects from its call's stored record, and one with no record yet is
+     held by any hold with subjects. Conference recordings match by the
+     participants phase 1 put on the row; voicemail by caller and
+     `mailbox:<id>`; audit events by actor.
+   - **A user is expanded when the hold is placed**, and the keys are
+     stored on the hold; a number bound to them later is not in it.
+   - **The phone's voicemail menu** marks a held message deleted instead of
+     failing, and the purge of deleted messages passes held ones by.
+   - **Object Lock** is per archived day, conservative: any active hold on
+     records whose window reaches into a day locks that day's object,
+     whatever its subjects; `cdr_archives.locked` tracks it, a rewrite
+     clears it so the new object version is locked again, and release
+     unlocks. `[cdr_archive] object_lock` turns it on; the directory target
+     cannot lock. The S3 request is tested for its shape (a signed `PUT
+     ?legal-hold` with `Content-MD5`); Garage, the S3 store the tests use,
+     has no Object Lock.
+   - **Counts** of what a hold holds are computed per class under a
+     two-second budget, `null` when a class is too large.
+   - **Voicemail greetings** are not a held class: they are the mailbox
+     owner's own recordings, rewritten on every save.
+
+   Tests: the Postgres suite (SQL and Rust keys agree; a subject hold on a
+   national spelling keeps a record, a recording and a message through
+   retention while their neighbours go, the counts, `hold_on`, refusals of
+   a direct delete, a number's cascade, raw SQL and the tenant, release;
+   a tenant-wide windowed hold on traces and rooms, a `_system` trace
+   refused through its call, the node's expired list), the API suite
+   (validation, placement with expanded keys, list and counts, another
+   tenant's 404, `409` on message, mailbox, number and tenant deletes,
+   release with a reason and once only, the permission), the archive
+   (locked on placement, again after a rewrite, unlocked on release), the
+   voicemail menu under a hold, the S3 request, and the event's shape.
 3. **Consent.** `start_call_recording`, the REST route's fix, automatic
    recording by user, number and platform, the flow node, the queue's
    prompt and mixed recording, per-participant consent, the CDR field,

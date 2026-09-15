@@ -53,6 +53,9 @@ pub enum PlatformEvent {
 
     /// Call detail record event (`docs/CDR_PIPELINE.md` §10)
     Cdr(CdrEvent),
+
+    /// Compliance event: legal holds (`docs/COMPLIANCE_FOLLOWUPS.md` §5)
+    Compliance(ComplianceEvent),
 }
 
 /// Call lifecycle events.
@@ -1381,6 +1384,10 @@ impl PlatformEvent {
                 CdrEvent::Written { .. } => "cdr.written",
                 CdrEvent::Archived { .. } => "cdr.archived",
             },
+            PlatformEvent::Compliance(e) => match e {
+                ComplianceEvent::HoldPlaced { .. } => "compliance.hold_placed",
+                ComplianceEvent::HoldReleased { .. } => "compliance.hold_released",
+            },
         }
     }
 
@@ -1473,6 +1480,10 @@ impl PlatformEvent {
             PlatformEvent::Cdr(
                 CdrEvent::Written { tenant_id, .. } | CdrEvent::Archived { tenant_id, .. },
             ) => Some(tenant_id),
+            PlatformEvent::Compliance(
+                ComplianceEvent::HoldPlaced { tenant_id, .. }
+                | ComplianceEvent::HoldReleased { tenant_id, .. },
+            ) => Some(tenant_id),
             PlatformEvent::Media(_)
             | PlatformEvent::Ivr(_)
             | PlatformEvent::Recording(_)
@@ -1501,6 +1512,7 @@ impl PlatformEvent {
             PlatformEvent::Billing(event) => event.call_id(),
             PlatformEvent::Cdr(CdrEvent::Written { call_id, .. }) => Some(call_id),
             PlatformEvent::Cdr(CdrEvent::Archived { .. }) => None,
+            PlatformEvent::Compliance(_) => None,
         }
     }
 
@@ -1523,6 +1535,10 @@ impl PlatformEvent {
             PlatformEvent::Billing(event) => event.timestamp(),
             PlatformEvent::Cdr(
                 CdrEvent::Written { timestamp, .. } | CdrEvent::Archived { timestamp, .. },
+            ) => *timestamp,
+            PlatformEvent::Compliance(
+                ComplianceEvent::HoldPlaced { timestamp, .. }
+                | ComplianceEvent::HoldReleased { timestamp, .. },
             ) => *timestamp,
         }
     }
@@ -2002,5 +2018,54 @@ mod content_event_tests {
         assert!(text.contains("\"reason\":\"idle\""));
         let back: PlatformEvent = serde_json::from_str(&text).unwrap();
         assert_eq!(back.event_type_name(), "conference.content_stopped");
+    }
+}
+
+/// Compliance events. A legal hold placed or released
+/// (`compliance.hold_placed`, `compliance.hold_released`): what an eDiscovery
+/// or records system subscribes to.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ComplianceEvent {
+    HoldPlaced {
+        hold_id: String,
+        tenant_id: TenantId,
+        matter: String,
+        /// Who placed it.
+        actor: String,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+    HoldReleased {
+        hold_id: String,
+        tenant_id: TenantId,
+        matter: String,
+        actor: String,
+        reason: String,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+}
+
+#[cfg(test)]
+mod compliance_event_tests {
+    use super::*;
+
+    #[test]
+    fn a_hold_event_is_named_and_shaped_as_documented() {
+        let event = PlatformEvent::Compliance(ComplianceEvent::HoldPlaced {
+            hold_id: "hold-1".into(),
+            tenant_id: TenantId::nil(),
+            matter: "Case 42".into(),
+            actor: "counsel".into(),
+            timestamp: SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_705_584_000),
+        });
+        assert_eq!(event.event_type_name(), "compliance.hold_placed");
+        assert_eq!(event.tenant_id(), Some(&TenantId::nil()));
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["event_type"], "compliance");
+        assert_eq!(json["type"], "hold_placed");
+        assert_eq!(json["hold_id"], "hold-1");
+        assert_eq!(json["timestamp"], 1_705_584_000);
     }
 }

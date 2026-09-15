@@ -299,6 +299,15 @@ pub fn router() -> Router<ApiState> {
         )
         .route("/audit-log", get(compliance::list_audit_log))
         .route("/compliance/deletions", get(compliance::list_deletions))
+        .route(
+            "/compliance/holds",
+            get(compliance::list_holds).post(compliance::place_hold),
+        )
+        .route("/compliance/holds/:id", get(compliance::get_hold))
+        .route(
+            "/compliance/holds/:id/release",
+            post(compliance::release_hold),
+        )
         // Conference recordings: the registry, and the file behind each row
         .route("/recordings", get(recordings::list_recordings))
         .route(

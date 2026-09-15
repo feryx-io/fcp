@@ -203,6 +203,25 @@ pub async fn delete_recording(
         ));
     }
     let store = require_store(&state)?;
+    // The file goes before the row, so a hold is asked first: a held
+    // recording keeps its file too (docs/COMPLIANCE_FOLLOWUPS.md §5).
+    if let Some(compliance) = state.storage.as_ref().and_then(|s| s.compliance_store()) {
+        if let Some(hold) = compliance
+            .hold_on(
+                &recording.tenant_id,
+                fcp_core::legal_hold::DataClass::ConferenceRecording,
+                &recording.id.to_string(),
+            )
+            .await
+            .map_err(ApiError::storage)?
+        {
+            return Err(ApiError::storage(anyhow::Error::new(
+                fcp_core::legal_hold::LegalHoldViolation {
+                    hold_id: hold.to_string(),
+                },
+            )));
+        }
+    }
 
     let file_deleted = match upstream(&state) {
         Ok((base, token)) => {
@@ -243,7 +262,7 @@ pub async fn delete_recording(
     store
         .delete_recording(&recording.id)
         .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
+        .map_err(ApiError::storage)?;
     info!(recording = %recording.id, room = %recording.room_number, file_deleted, "AUDIT: conference recording deleted");
     Ok(Json(serde_json::json!({
         "status": "deleted",

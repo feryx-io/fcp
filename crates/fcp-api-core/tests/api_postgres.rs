@@ -2238,6 +2238,209 @@ async fn voicemail_mailboxes_crud() {
     app.finish().await;
 }
 
+#[tokio::test]
+async fn legal_holds_are_placed_block_deletion_and_are_released() {
+    let app = require_app!();
+    let owner = app.create_user("held-owner", None).await;
+    let number = app
+        .admin(
+            Method::POST,
+            "/api/v1/phone-numbers",
+            Some(json!({ "e164": "+15550004444", "tenant_id": app.tenant_a })),
+        )
+        .await;
+    let number_id = number.json["id"].as_str().unwrap().to_string();
+    let binding = app
+        .admin(
+            Method::POST,
+            "/api/v1/line-bindings",
+            Some(json!({
+                "phone_number_id": number_id,
+                "owner_user_id": owner,
+                "binding_type": "user",
+                "tenant_id": app.tenant_a,
+            })),
+        )
+        .await;
+    let binding_id = binding.json["id"].as_str().unwrap().to_string();
+    let mailbox = app
+        .admin(
+            Method::POST,
+            "/api/v1/voicemail/mailboxes",
+            Some(json!({
+                "tenant_id": app.tenant_a,
+                "user_id": owner,
+                "line_binding_id": binding_id,
+                "pin": "4321",
+            })),
+        )
+        .await;
+    assert_eq!(mailbox.status, StatusCode::CREATED, "{}", mailbox.text);
+    let mailbox_id = mailbox.json["id"].as_str().unwrap().to_string();
+    let message = fcp_core::VoicemailMessage::new(
+        mailbox_id.clone(),
+        "+1 415 555 0100".into(),
+        3,
+        "/vm/held.wav".into(),
+    );
+    {
+        use fcp_core::storage::VoicemailStore;
+        app.storage.put_message(message.clone()).await.unwrap();
+    }
+
+    // Validation: a matter, a real user, a window that is one.
+    for bad in [
+        json!({ "matter": " " }),
+        json!({ "matter": "x", "subjects": [{ "type": "user", "username": "nobody" }] }),
+        json!({ "matter": "x", "from": 20, "to": 10 }),
+    ] {
+        let refused = app
+            .admin(Method::POST, "/api/v1/compliance/holds", Some(bad.clone()))
+            .await;
+        assert_eq!(
+            refused.status,
+            StatusCode::BAD_REQUEST,
+            "{bad}: {}",
+            refused.text
+        );
+    }
+
+    // A hold on the caller, by another spelling of their number.
+    let placed = app
+        .admin(
+            Method::POST,
+            "/api/v1/compliance/holds",
+            Some(json!({
+                "matter": "Smith v. Example",
+                "reason": "litigation",
+                "subjects": [{ "type": "number", "number": "tel:+1-415-555-0100" }],
+                "classes": ["voicemail", "cdr"],
+            })),
+        )
+        .await;
+    assert_eq!(placed.status, StatusCode::CREATED, "{}", placed.text);
+    let hold_id = placed.json["id"].as_str().unwrap().to_string();
+    assert!(hold_id.starts_with("hold-"));
+    assert_eq!(placed.json["active"], true);
+    assert!(placed.json["subject_keys"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("tail:4155550100")));
+    let listed = app
+        .admin(Method::GET, "/api/v1/compliance/holds", None)
+        .await;
+    assert_eq!(
+        listed.json.as_array().map(Vec::len),
+        Some(1),
+        "{}",
+        listed.text
+    );
+    let one = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/compliance/holds/{hold_id}"),
+            None,
+        )
+        .await;
+    assert_eq!(one.json["held"]["voicemail"], 1, "{}", one.text);
+    assert_eq!(one.json["held"]["cdr"], 0, "{}", one.text);
+    let other = app
+        .admin_in(
+            app.tenant_b,
+            Method::GET,
+            &format!("/api/v1/compliance/holds/{hold_id}"),
+            None,
+        )
+        .await;
+    assert_eq!(other.status, StatusCode::NOT_FOUND, "another tenant's hold");
+
+    // Deleting the message, its mailbox or its number is refused.
+    for path in [
+        format!("/api/v1/voicemail/messages/{}", message.id),
+        format!("/api/v1/voicemail/mailboxes/{mailbox_id}"),
+        format!("/api/v1/phone-numbers/{number_id}"),
+    ] {
+        let refused = app.admin(Method::DELETE, &path, None).await;
+        assert_eq!(
+            refused.status,
+            StatusCode::CONFLICT,
+            "{path}: {}",
+            refused.text
+        );
+        assert!(refused.text.contains(&hold_id), "{}", refused.text);
+    }
+    let tenant_gone = app
+        .admin(
+            Method::DELETE,
+            &format!("/api/v1/tenants/{}", app.tenant_a),
+            None,
+        )
+        .await;
+    assert_eq!(
+        tenant_gone.status,
+        StatusCode::CONFLICT,
+        "{}",
+        tenant_gone.text
+    );
+
+    // Released with a reason; the message can go.
+    let no_reason = app
+        .admin(
+            Method::POST,
+            &format!("/api/v1/compliance/holds/{hold_id}/release"),
+            Some(json!({ "reason": "" })),
+        )
+        .await;
+    assert_eq!(no_reason.status, StatusCode::BAD_REQUEST);
+    let released = app
+        .admin(
+            Method::POST,
+            &format!("/api/v1/compliance/holds/{hold_id}/release"),
+            Some(json!({ "reason": "settled" })),
+        )
+        .await;
+    assert_eq!(released.status, StatusCode::OK, "{}", released.text);
+    assert_eq!(released.json["active"], false);
+    assert_eq!(released.json["released_by"], "static_token");
+    let again = app
+        .admin(
+            Method::POST,
+            &format!("/api/v1/compliance/holds/{hold_id}/release"),
+            Some(json!({ "reason": "settled" })),
+        )
+        .await;
+    assert_eq!(again.status, StatusCode::CONFLICT);
+    let gone = app
+        .admin(
+            Method::DELETE,
+            &format!("/api/v1/voicemail/messages/{}", message.id),
+            None,
+        )
+        .await;
+    assert!(gone.status.is_success(), "{} {}", gone.status, gone.text);
+    let all = app
+        .admin(Method::GET, "/api/v1/compliance/holds?all=true", None)
+        .await;
+    assert_eq!(all.json[0]["release_reason"], "settled", "{}", all.text);
+    let active = app
+        .admin(Method::GET, "/api/v1/compliance/holds", None)
+        .await;
+    assert_eq!(active.json.as_array().map(Vec::len), Some(0));
+
+    // Holds take their own permission.
+    app.create_user_with_role("clerk", "user_admin").await;
+    let clerk = app.login("clerk", PASSWORD).await.json["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let refused = app
+        .send_as(&clerk, Method::GET, "/api/v1/compliance/holds", None)
+        .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+
+    app.finish().await;
+}
+
 // ─── Flows and flow traces ───────────────────────────────────────────────
 
 fn hangup_flow(id: &str, name: &str) -> Value {

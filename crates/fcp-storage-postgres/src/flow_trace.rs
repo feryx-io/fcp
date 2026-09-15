@@ -184,7 +184,8 @@ impl FlowTraceStore for PostgresFlowTraceStore {
                  WHERE timestamp < $2
                    AND (tenant_id = $1
                         OR (tenant_id IS NULL
-                            AND call_id IN (SELECT call_id FROM cdrs WHERE tenant_id = $1)))",
+                            AND call_id IN (SELECT call_id FROM cdrs WHERE tenant_id = $1)))
+                   AND fcp_flow_trace_hold($1, timestamp, call_id) IS NULL",
             )
             .bind(tenant_id)
             .bind(system_time_to_datetime(before)),
