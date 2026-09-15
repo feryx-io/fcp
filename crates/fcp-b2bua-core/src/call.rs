@@ -153,11 +153,8 @@ impl CallLeg {
         let (remote_uri, remote_display_name) = parse_name_addr(from);
 
         // Extract SDP body if present
-        let sdp = if !request.body().is_empty() {
-            Some(String::from_utf8_lossy(request.body()).to_string())
-        } else {
-            None
-        };
+        // The SDP alone or the SDP part of a multipart body.
+        let sdp = crate::body::request_sdp(request);
 
         Self {
             direction: CallDirection::Inbound,
@@ -198,6 +195,28 @@ pub struct EmergencyCallInfo {
     pub kind: fcp_core::e911::EmergencyKind,
     pub callback_number: Option<String>,
     pub location: Option<fcp_core::e911::DispatchableLocation>,
+    /// The emergency leg's outcome, set by a path that places that leg
+    /// itself rather than as the call's B-leg (a flow's `Dial` node, whose
+    /// call was answered before it dialed).
+    #[serde(default)]
+    pub leg: Option<EmergencyLeg>,
+}
+
+/// What became of an emergency leg placed apart from the call's B-leg.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct EmergencyLeg {
+    /// `answered`, `busy`, `no_answer`, `failed`, `error`.
+    pub outcome: String,
+    pub sip_status: Option<u16>,
+    pub answered_at: Option<SystemTime>,
+}
+
+impl EmergencyCallInfo {
+    /// How the location travels with the call: `elin` when there is a
+    /// callback number for the carrier to map to an address.
+    pub fn delivery(&self) -> Option<&'static str> {
+        self.callback_number.as_ref().map(|_| "elin")
+    }
 }
 
 /// A B2BUA call with two legs.

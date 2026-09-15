@@ -89,6 +89,29 @@ pub struct SessionConfig {
     pub srtp: bool,
     /// ICE servers handed to browsers with the offer.
     pub browser_ice_servers: Vec<IceServer>,
+    /// The call manager calls go through (`[sip] outbound_proxy`).
+    pub outbound_proxy: Option<String>,
+    /// Which destinations are emergency numbers (`[e911]`).
+    pub emergency: fcp_core::e911::EmergencyConfig,
+}
+
+/// The tenant user a call is placed for, named by the operator that asks
+/// for it; the call manager believes it from this gateway when the gateway
+/// is one of its trusted edges.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CallerIdentity {
+    /// `tenant-<uuid>` or the bare UUID.
+    #[serde(deserialize_with = "tenant_id_either_form")]
+    pub tenant_id: fcp_core::TenantId,
+    pub username: String,
+}
+
+fn tenant_id_either_form<'de, D>(deserializer: D) -> Result<fcp_core::TenantId, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = String::deserialize(deserializer)?;
+    raw.parse().map_err(serde::de::Error::custom)
 }
 
 /// What a session is for.
@@ -96,7 +119,15 @@ pub struct SessionConfig {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SessionKind {
     /// A call to a SIP destination.
-    Call { destination: String },
+    Call {
+        destination: String,
+        /// Who the call is placed for, when the operator named them.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        caller: Option<CallerIdentity>,
+        /// Set when the destination is an emergency number.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        emergency: Option<fcp_core::e911::EmergencyKind>,
+    },
     /// A join of a conference room.
     Room {
         room_number: String,
@@ -413,6 +444,10 @@ pub enum SessionError {
     Conflict(String),
     #[error("{0}")]
     Internal(String),
+    #[error("{0}")]
+    Forbidden(String),
+    #[error("{0}")]
+    Unavailable(String),
 }
 
 /// Room numbers as the conference server accepts them.
@@ -422,6 +457,32 @@ pub fn valid_room_number(room: &str) -> bool {
         && room
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || "-_.+*#".contains(c))
+}
+
+/// Where a call to `destination` goes: a URI as given, `user@host` as a SIP
+/// URI, and a bare number through the call manager when there is one.
+pub fn route_destination(destination: &str, outbound_proxy: Option<&str>) -> String {
+    let d = destination.trim();
+    match outbound_proxy {
+        Some(proxy)
+            if !d.contains('@')
+                && !d.starts_with("sip:")
+                && !d.starts_with("sips:")
+                && !d.starts_with("tel:") =>
+        {
+            format!("sip:{d}@{proxy}")
+        }
+        _ => normalize_destination(d),
+    }
+}
+
+/// A username fit for a SIP header value.
+fn valid_username(username: &str) -> bool {
+    !username.is_empty()
+        && username.len() <= 128
+        && username
+            .chars()
+            .all(|c| c.is_ascii_graphic() && !"<>\"\\;,".contains(c))
 }
 
 /// A destination as `IntegratedUAC` wants it: a `sip:`/`sips:`/`tel:` URI.
@@ -559,16 +620,56 @@ impl SessionManager {
     /// connection (from `POST /v1/webrtc/connections`) is used, and its
     /// negotiated codec must be one the SIP side carries; without it a new
     /// connection is created and its offer returned.
+    ///
+    /// An emergency number is placed only for a named caller and only
+    /// through the call manager, which locates the caller and routes the
+    /// call; otherwise it is refused with the reason, never sent unlocated
+    /// (`docs/E911_BLOCK_2.md` §4).
     pub async fn call(
         self: &Arc<Self>,
         destination: &str,
         connection_id: Option<&str>,
+        caller: Option<CallerIdentity>,
     ) -> Result<CreatedSession, SessionError> {
         if destination.trim().is_empty() {
             return Err(SessionError::BadRequest("destination is required".into()));
         }
+        if let Some(caller) = &caller {
+            if !valid_username(&caller.username) {
+                return Err(SessionError::BadRequest(
+                    "caller.username is not a valid username".into(),
+                ));
+            }
+        }
+        let emergency = self.cfg.emergency.classify(destination);
+        let target = match emergency {
+            Some(kind) => {
+                if caller.is_none() {
+                    warn!(destination = %destination, "refusing an emergency call with no caller");
+                    return Err(SessionError::Forbidden(
+                        "emergency calls need the caller's tenant and user, so the call can be \
+                         located; this session has neither"
+                            .into(),
+                    ));
+                }
+                let Some(proxy) = self.cfg.outbound_proxy.as_deref() else {
+                    warn!(destination = %destination, "refusing an emergency call: no outbound_proxy");
+                    return Err(SessionError::Unavailable(
+                        "emergency calls are not available here: the gateway has no call manager \
+                         ([sip] outbound_proxy) to locate and route them"
+                            .into(),
+                    ));
+                };
+                let dialed = fcp_core::e911::dialed_user_part(destination);
+                info!(dialed = %dialed, kind = %kind, "emergency call from a browser");
+                format!("sip:{dialed}@{proxy}")
+            }
+            None => route_destination(destination, self.cfg.outbound_proxy.as_deref()),
+        };
         let kind = SessionKind::Call {
-            destination: normalize_destination(destination),
+            destination: target,
+            caller,
+            emergency,
         };
         let conn = match connection_id.filter(|id| !id.is_empty()) {
             Some(id) => {
@@ -1440,7 +1541,21 @@ impl SessionManager {
         let kind = session.read().await.kind.clone();
         let mut headers = Headers::new();
         match kind {
-            SessionKind::Call { destination } => Ok((destination, headers)),
+            SessionKind::Call {
+                destination,
+                caller,
+                ..
+            } => {
+                if let Some(caller) = caller {
+                    headers
+                        .push(fcp_core::CALLER_TENANT_HEADER, caller.tenant_id.to_string())
+                        .map_err(|e| format!("header: {e}"))?;
+                    headers
+                        .push(fcp_core::CALLER_USER_HEADER, caller.username)
+                        .map_err(|e| format!("header: {e}"))?;
+                }
+                Ok((destination, headers))
+            }
             SessionKind::Room {
                 room_number,
                 display_name,
@@ -1608,7 +1723,15 @@ impl SessionManager {
             return;
         };
         let (to_uri, display_name, tenant) = match &s.kind {
-            SessionKind::Call { destination } => (destination.clone(), None, None),
+            SessionKind::Call {
+                destination,
+                caller,
+                ..
+            } => (
+                destination.clone(),
+                None,
+                caller.as_ref().map(|c| c.tenant_id),
+            ),
             SessionKind::Room {
                 room_number,
                 display_name,
@@ -1961,6 +2084,31 @@ mod tests {
             normalize_destination("tel:+15551234567"),
             "tel:+15551234567"
         );
+    }
+
+    #[test]
+    fn bare_numbers_go_through_the_call_manager() {
+        let proxy = Some("10.0.0.2:5060");
+        assert_eq!(route_destination("1001", proxy), "sip:1001@10.0.0.2:5060");
+        assert_eq!(
+            route_destination(" 1001@10.0.0.7", proxy),
+            "sip:1001@10.0.0.7"
+        );
+        assert_eq!(
+            route_destination("sip:alice@example.com", proxy),
+            "sip:alice@example.com"
+        );
+        assert_eq!(route_destination("1001", None), "sip:1001");
+    }
+
+    #[test]
+    fn caller_usernames_are_header_safe() {
+        assert!(valid_username("alice"));
+        assert!(valid_username("alice.smith+desk"));
+        assert!(!valid_username(""));
+        assert!(!valid_username("alice smith"));
+        assert!(!valid_username("alice\r\nVia: x"));
+        assert!(!valid_username("<alice>"));
     }
 
     #[test]

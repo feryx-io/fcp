@@ -543,9 +543,11 @@ async fn main() -> Result<()> {
 
     // 13b. Trunk infrastructure (session-manager mode)
     let trunk_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>;
+    let mut trunk_health: Option<Arc<TrunkHealthMonitor>> = None;
     let outbound_route_provider: Option<Arc<dyn fcp_sip::OutboundRouteProvider>> =
         if !config.trunks.is_empty() {
             let health = Arc::new(TrunkHealthMonitor::new(&config.trunks));
+            trunk_health = Some(Arc::clone(&health));
             let cps: Arc<dyn CpsChecker> = Arc::new(NoCpsLimit);
             let router = Arc::new(TrunkRouter::new(
                 config.trunks.clone(),
@@ -579,9 +581,21 @@ async fn main() -> Result<()> {
             }
 
             info!(count = config.trunks.len(), "Trunk routing enabled");
+            if !config
+                .trunks
+                .iter()
+                .any(|t| t.enabled && t.emergency_capable)
+            {
+                warn!(
+                    "No enabled [[trunks]] entry is emergency_capable: emergency calls take the \
+                     ordinary route. The admin API's trunk flag does not route calls \
+                     (docs/E911.md)"
+                );
+            }
             Some(router as Arc<dyn fcp_sip::OutboundRouteProvider>)
         } else {
             trunk_shutdown_tx = None;
+            warn!("No [[trunks]] configured: emergency calls from this node have no route");
             None
         };
 
@@ -896,6 +910,7 @@ async fn main() -> Result<()> {
         config.media.rtp_port_start,
     )
     .with_voicemail_service(Arc::clone(&voicemail_service))
+    .with_outbound_route_provider(outbound_route_provider.clone())
     .with_dispatcher(dispatcher_for_flow as Arc<dyn sip_transaction::TransportDispatcher>);
 
     // Wire registrar for Dial node extension resolution (direct to device, bypassing B2BUA loop)
@@ -1033,6 +1048,9 @@ async fn main() -> Result<()> {
         config.service.node_id.clone(),
     )?
     .with_default_tenant_id(default_tenant_id)
+    .with_trusted_edges(fcp_sip::emergency::TrustedEdges::parse(
+        &config.e911.trusted_edges,
+    )?)
     .with_call_recorder(Arc::clone(&call_recorder));
     #[cfg(feature = "storage-redis")]
     if let Some((_, _, selector)) = &_cluster_manager {
@@ -1239,6 +1257,8 @@ async fn main() -> Result<()> {
         pbx_handler: pbx_handler.clone(),
         cluster_parking: cluster_parking.clone(),
         call_recorder: Arc::clone(&call_recorder),
+        trunks: config.trunks.clone(),
+        trunk_health,
     });
     let http_bind = config.http.bind_address;
     tokio::spawn(async move {

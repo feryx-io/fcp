@@ -48,6 +48,67 @@ pub struct GatewayConfig {
 
     #[serde(default)]
     pub conference: ConferenceSection,
+
+    #[serde(default)]
+    pub e911: E911Section,
+}
+
+/// Emergency numbers dialled from a browser (`docs/WEBRTC.md`,
+/// `docs/E911_BLOCK_2.md` §4). The gateway only decides whether a call is
+/// one — the call manager it goes through classifies it again against the
+/// tenant's own numbers, locates the caller and routes it — so these should
+/// cover every tenant's numbers.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct E911Section {
+    #[serde(default = "default_emergency_numbers")]
+    pub emergency_numbers: Vec<String>,
+    #[serde(default = "default_test_numbers")]
+    pub test_numbers: Vec<String>,
+    #[serde(default = "default_dial_prefixes")]
+    pub dial_prefixes: Vec<String>,
+}
+
+fn default_emergency_numbers() -> Vec<String> {
+    fcp_core::e911::DEFAULT_EMERGENCY_NUMBERS
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
+fn default_test_numbers() -> Vec<String> {
+    fcp_core::e911::DEFAULT_TEST_NUMBERS
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
+fn default_dial_prefixes() -> Vec<String> {
+    fcp_core::e911::DEFAULT_DIAL_PREFIXES
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
+impl Default for E911Section {
+    fn default() -> Self {
+        Self {
+            emergency_numbers: default_emergency_numbers(),
+            test_numbers: default_test_numbers(),
+            dial_prefixes: default_dial_prefixes(),
+        }
+    }
+}
+
+impl E911Section {
+    /// The classifier these numbers make.
+    pub fn classifier(&self) -> fcp_core::e911::EmergencyConfig {
+        fcp_core::e911::EmergencyConfig {
+            emergency_numbers: self.emergency_numbers.clone(),
+            test_numbers: self.test_numbers.clone(),
+            dial_prefixes: self.dial_prefixes.clone(),
+            ..fcp_core::e911::EmergencyConfig::defaults(fcp_core::TenantId::nil())
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -180,7 +241,10 @@ pub struct SipSection {
     /// Local IP override for NAT
     pub local_ip: Option<String>,
 
-    /// Outbound SIP proxy
+    /// The call manager calls go through (`host:port`). A bare destination
+    /// (`1001`, `911`) is sent as `sip:<destination>@<outbound_proxy>`, and
+    /// an emergency call always is; without it the gateway refuses
+    /// emergency calls.
     pub outbound_proxy: Option<String>,
 }
 

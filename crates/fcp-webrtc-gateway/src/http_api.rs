@@ -40,8 +40,13 @@ pub struct InitiateCallRequest {
     /// to use; without it the call creates its own and returns the offer.
     #[serde(default)]
     pub connection_id: Option<String>,
-    /// SIP destination (`sip:alice@example.com`, `1001@10.0.0.7`, `tel:…`).
+    /// SIP destination (`sip:alice@example.com`, `1001@10.0.0.7`, `tel:…`),
+    /// or a bare number sent through `[sip] outbound_proxy`.
     pub destination: String,
+    /// The tenant user the call is placed for. Required for an emergency
+    /// number, which is refused without it.
+    #[serde(default)]
+    pub caller: Option<crate::session::CallerIdentity>,
 }
 
 /// `POST /v1/{rooms|calls}/{id}/answer` body.
@@ -80,6 +85,8 @@ impl IntoResponse for ApiError {
             SessionError::NotFound(_) => StatusCode::NOT_FOUND,
             SessionError::Conflict(_) => StatusCode::CONFLICT,
             SessionError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            SessionError::Forbidden(_) => StatusCode::FORBIDDEN,
+            SessionError::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
         };
         let body = serde_json::json!({ "error": self.0.to_string() });
         (status, Json(body)).into_response()
@@ -241,7 +248,11 @@ async fn initiate_call(
 ) -> Result<(StatusCode, Json<CreatedSession>), ApiError> {
     let created = state
         .sessions
-        .call(&request.destination, request.connection_id.as_deref())
+        .call(
+            &request.destination,
+            request.connection_id.as_deref(),
+            request.caller,
+        )
         .await?;
     Ok((StatusCode::CREATED, Json(created)))
 }

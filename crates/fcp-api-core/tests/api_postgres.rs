@@ -4260,6 +4260,10 @@ async fn e911_config_readiness_validation_and_audit() {
         outcome: "placed".to_string(),
         placed_at: SystemTime::now(),
         notified: false,
+        sip_status: None,
+        answered_at: None,
+        ended_at: None,
+        delivery: Some("elin".to_string()),
     };
     let id = app.emergency.insert_emergency_call(&record).await.unwrap();
     assert!(id > 0);
@@ -4288,6 +4292,36 @@ async fn e911_config_readiness_validation_and_audit() {
         .admin(Method::GET, "/api/v1/emergency/calls", None)
         .await;
     assert_eq!(calls.json[0]["notified"], true, "{}", calls.text);
+    assert_eq!(calls.json[0]["delivery"], "elin", "{}", calls.text);
+    assert_eq!(calls.json[0]["outcome"], "placed", "{}", calls.text);
+    assert!(calls.json[0]["ended_at"].is_null(), "{}", calls.text);
+
+    // Completed when the call ends: the answering trunk, the status, the
+    // times.
+    let answered = SystemTime::now();
+    app.emergency
+        .complete_emergency_call(
+            id,
+            &fcp_core::e911::EmergencyCompletion {
+                trunk_name: Some("e911-backup".to_string()),
+                outcome: "answered".to_string(),
+                sip_status: Some(200),
+                answered_at: Some(answered),
+                ended_at: answered + std::time::Duration::from_secs(42),
+                delivery: Some("elin".to_string()),
+            },
+        )
+        .await
+        .unwrap();
+    let calls = app
+        .admin(Method::GET, "/api/v1/emergency/calls", None)
+        .await;
+    assert_eq!(calls.json[0]["outcome"], "answered", "{}", calls.text);
+    assert_eq!(calls.json[0]["sip_status"], 200, "{}", calls.text);
+    assert_eq!(calls.json[0]["trunk_name"], "e911-backup", "{}", calls.text);
+    assert!(!calls.json[0]["answered_at"].is_null(), "{}", calls.text);
+    assert!(!calls.json[0]["ended_at"].is_null(), "{}", calls.text);
+    assert_eq!(calls.json[0]["duration_secs"], 42, "{}", calls.text);
 
     app.finish().await;
 }

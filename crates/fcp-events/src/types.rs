@@ -103,6 +103,31 @@ pub enum CallEvent {
         node_id: Option<String>,
     },
 
+    /// An emergency call ended: what became of it, for the record and for
+    /// whoever followed `call.emergency` (`docs/E911_BLOCK_2.md` §4).
+    EmergencyCompleted {
+        call_id: CallId,
+        tenant_id: TenantId,
+        dialed: String,
+        /// `live` or `test`.
+        kind: String,
+        /// `answered`, `busy`, `no_answer`, `failed`, `cancelled`, …
+        outcome: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sip_status: Option<u16>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trunk_name: Option<String>,
+        /// How the location travelled: `elin`, or none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        delivery: Option<String>,
+        #[serde(default)]
+        duration_ms: u64,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        node_id: Option<String>,
+    },
+
     /// Call is ringing (180/183 received)
     Ringing {
         call_id: CallId,
@@ -1270,6 +1295,7 @@ impl PlatformEvent {
                 CallEvent::Ended { .. } => "call.ended",
                 CallEvent::Failed { .. } => "call.failed",
                 CallEvent::Emergency { .. } => "call.emergency",
+                CallEvent::EmergencyCompleted { .. } => "call.emergency_completed",
                 CallEvent::Parked { .. } => "call.parked",
                 CallEvent::Unparked { .. } => "call.unparked",
             },
@@ -1624,6 +1650,7 @@ impl CallEvent {
             | CallEvent::Ended { call_id, .. }
             | CallEvent::Failed { call_id, .. }
             | CallEvent::Emergency { call_id, .. }
+            | CallEvent::EmergencyCompleted { call_id, .. }
             | CallEvent::Parked { call_id, .. }
             | CallEvent::Unparked { call_id, .. } => Some(call_id),
         }
@@ -1636,6 +1663,7 @@ impl CallEvent {
             | CallEvent::Progress { timestamp, .. }
             | CallEvent::Failed { timestamp, .. }
             | CallEvent::Emergency { timestamp, .. }
+            | CallEvent::EmergencyCompleted { timestamp, .. }
             | CallEvent::Parked { timestamp, .. }
             | CallEvent::Unparked { timestamp, .. } => *timestamp,
             CallEvent::Answered { answer_time, .. } => *answer_time,
