@@ -449,6 +449,16 @@ pub struct MediaSection {
     /// Directory for pre-generated prompt audio files
     #[serde(default = "default_prompts_dir")]
     pub prompts_dir: String,
+
+    /// Record every call this node anchors, through the tenant's consent
+    /// step: the `platform` source (`docs/COMPLIANCE_FOLLOWUPS.md` §8.1).
+    #[serde(default)]
+    pub enable_recording: bool,
+
+    /// Where call recordings are written: under it, each tenant's calls by
+    /// day.
+    #[serde(default = "default_recording_dir")]
+    pub recording_dir: String,
 }
 
 fn default_rtp_port_start() -> u16 {
@@ -465,6 +475,10 @@ fn default_codecs() -> Vec<String> {
 
 fn default_tts_cache_dir() -> String {
     "/tmp/fcp/tts_cache".to_string()
+}
+
+fn default_recording_dir() -> String {
+    "./recordings".to_string()
 }
 
 fn default_prompts_dir() -> String {
@@ -485,6 +499,8 @@ impl Default for MediaSection {
             tts_remote_url: None,
             tts_remote_token: None,
             prompts_dir: default_prompts_dir(),
+            enable_recording: false,
+            recording_dir: default_recording_dir(),
         }
     }
 }

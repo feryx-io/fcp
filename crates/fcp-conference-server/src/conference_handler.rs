@@ -224,6 +224,30 @@ pub trait RoomRegistry: Send + Sync {
 /// and names no prompt of its own.
 const RECORDING_CONSENT_TEXT: &str = "This conference is being recorded.";
 
+/// The notice beep at `sample_rate` as a WAV file, written once per rate
+/// under the temporary directory: what a room's announcement player takes.
+fn notice_tone_file(sample_rate: u32) -> Result<String> {
+    let path = std::env::temp_dir().join(format!("fcp-notice-tone-{sample_rate}.wav"));
+    if !path.is_file() {
+        let partial = path.with_extension(format!("{}.part", std::process::id()));
+        let mut writer = hound::WavWriter::create(
+            &partial,
+            hound::WavSpec {
+                channels: 1,
+                sample_rate,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            },
+        )?;
+        for sample in fcp_core::compliance::notice_tone_samples(sample_rate) {
+            writer.write_sample(sample)?;
+        }
+        writer.finalize()?;
+        std::fs::rename(&partial, &path)?;
+    }
+    Ok(path.to_string_lossy().into_owned())
+}
+
 /// Handles SIP INVITEs for conference rooms.
 ///
 /// When a SIP INVITE arrives targeting a conference room number:
@@ -332,6 +356,8 @@ pub struct ActiveRecording {
     /// The consent announcement, when the tenant's policy asks for one.
     consent_audio: Option<Arc<Vec<i16>>>,
     writer: RecordingWriter,
+    /// The continuing notice tone, when the tenant's policy asks for one.
+    notice: Option<JoinHandle<()>>,
 }
 
 /// What is writing a recording.
@@ -1919,15 +1945,29 @@ impl ConferenceCallHandler {
             timestamp
         );
 
+        // The room is told, as for a room recording: the participant is
+        // heard with everyone they speak to (docs/COMPLIANCE_FOLLOWUPS.md
+        // §8.3).
+        let tenant_id = self
+            .tenant_for_room(room_number)
+            .unwrap_or(self.default_tenant_id);
+        let sample_rate = self.conference_config.read().sample_rate;
+        let (consent, _, _) = self
+            .announce_recording_consent(room_number, &tenant_id, sample_rate)
+            .await;
+        if consent == fcp_core::RecordingConsent::Refused {
+            anyhow::bail!(
+                "participant {participant_id} not recorded: the recording announcement could \
+                 not be played and the tenant's policy does not record without one"
+            );
+        }
+
         room.start_participant_recording(participant_id, &path)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to start recording: {}", e))?;
 
         // A row like a room recording's, so retention, holds and erasure
         // can find it.
-        let tenant_id = self
-            .tenant_for_room(room_number)
-            .unwrap_or(self.default_tenant_id);
         let mut record = fcp_core::Recording::starting(
             tenant_id,
             room_number,
@@ -1937,6 +1977,7 @@ impl ConferenceCallHandler {
             fcp_core::RecordingTrigger::Api,
         );
         record.kind = fcp_core::RecordingKind::Participant;
+        record.consent = consent;
         record.participant_id = Some(participant_id.to_string());
         record.participants = 1;
         record.participant_list = self.recording_participants(room_number, Some(participant_id));
@@ -2147,9 +2188,15 @@ impl ConferenceCallHandler {
 
         // The room hears the tenant's announcement before the first
         // sample, and so does everyone who joins while this runs.
-        let (consent, consent_audio) = self
+        let (consent, consent_audio, plan) = self
             .announce_recording_consent(room_number, &tenant_id, conf.sample_rate)
             .await;
+        if consent == fcp_core::RecordingConsent::Refused {
+            anyhow::bail!(
+                "room {room_number} not recorded: the recording announcement could not be \
+                 played and the tenant's policy does not record without one"
+            );
+        }
         record.consent = consent;
 
         let writer = match format {
@@ -2218,6 +2265,11 @@ impl ConferenceCallHandler {
                 record: record.clone(),
                 consent_audio,
                 writer,
+                notice: self.spawn_recording_notice(
+                    room_number,
+                    plan.notice_interval,
+                    conf.sample_rate,
+                ),
             },
         );
         info!(
@@ -2233,6 +2285,7 @@ impl ConferenceCallHandler {
             format: record.format.as_str().to_string(),
             node_id: self.node_id.clone(),
             tenant_id,
+            consent: Some(record.consent.as_str().to_string()),
             timestamp: SystemTime::now(),
         });
         Ok(record)
@@ -2254,6 +2307,9 @@ impl ConferenceCallHandler {
             }
             anyhow::bail!("room {room_number} is not being recorded");
         };
+        if let Some(notice) = &active.notice {
+            notice.abort();
+        }
         let mut record = active.record;
         let (duration_secs, size_bytes) = match active.writer {
             RecordingWriter::Wav => {
@@ -2338,55 +2394,35 @@ impl ConferenceCallHandler {
     }
 
     /// Tell the room it is being recorded, if the tenant's policy says to
-    /// (`docs/COMPLIANCE.md`). Returns what happened, for the row, and the
-    /// audio to play to anyone who joins later.
+    /// (`docs/COMPLIANCE_FOLLOWUPS.md` §8). Returns what happened, for the
+    /// row — `refused` when the announcement failed and the policy says not
+    /// to record without one — the audio to play to anyone who joins later,
+    /// and the plan, whose notice interval the recording keeps.
     async fn announce_recording_consent(
         &self,
         room_number: &str,
         tenant_id: &TenantId,
         sample_rate: u32,
-    ) -> (fcp_core::RecordingConsent, Option<Arc<Vec<i16>>>) {
-        use fcp_core::compliance::RecordingConsentMode;
-        use fcp_core::RecordingConsent;
-
-        let Some(store) = self.storage.compliance_store() else {
-            return (RecordingConsent::NotRequired, None);
-        };
-        let policy = match store.get_compliance_policy(tenant_id).await {
-            Ok(Some(policy)) => policy,
-            Ok(None) => return (RecordingConsent::NotRequired, None),
-            Err(e) => {
-                warn!(room = %room_number, error = %e, "Could not read the recording-consent policy");
-                return (RecordingConsent::Failed, None);
-            }
-        };
-        if policy.recording_consent != RecordingConsentMode::Announce {
-            return (RecordingConsent::NotRequired, None);
+    ) -> (
+        fcp_core::RecordingConsent,
+        Option<Arc<Vec<i16>>>,
+        fcp_core::compliance::ConsentPlan,
+    ) {
+        let plan = fcp_core::compliance::ConsentPlan::resolve(
+            self.storage.compliance_store().map(|s| s.as_ref()),
+            self.storage.prompt_store().map(|s| s.as_ref()),
+            tenant_id,
+        )
+        .await;
+        if !plan.announce {
+            return (plan.outcome(false), None, plan);
         }
 
-        // The tenant's prompt when it names one, else synthesised speech.
-        let mut audio_path: Option<String> = None;
-        if let (Some(prompt_id), Some(prompts)) = (
-            policy.recording_consent_prompt_id.as_deref(),
-            self.storage.prompt_store(),
-        ) {
-            match prompt_id.parse::<fcp_core::PromptId>() {
-                Ok(id) => match prompts.get_prompt(&id).await {
-                    Ok(Some(prompt)) => {
-                        audio_path = prompt.audio_path.map(|p| p.to_string_lossy().into_owned())
-                    }
-                    Ok(None) => {
-                        warn!(room = %room_number, prompt = %prompt_id, "Recording-consent prompt not found")
-                    }
-                    Err(e) => {
-                        warn!(room = %room_number, error = %e, "Could not read the recording-consent prompt")
-                    }
-                },
-                Err(e) => {
-                    warn!(prompt = %prompt_id, error = %e, "Invalid recording-consent prompt id")
-                }
-            }
-        }
+        // The tenant's prompt when it has audio, else synthesised speech.
+        let mut audio_path = plan
+            .prompt_audio
+            .as_ref()
+            .map(|p| p.to_string_lossy().into_owned());
         if audio_path.is_none() {
             if let Some(tts) = &self.tts_service {
                 match tokio::time::timeout(
@@ -2407,9 +2443,9 @@ impl ConferenceCallHandler {
             warn!(
                 room = %room_number,
                 "The tenant asks for a recording announcement but neither a prompt nor TTS is \
-                 available; recording without one"
+                 available"
             );
-            return (RecordingConsent::Failed, None);
+            return (plan.outcome(false), None, plan);
         };
 
         // Keep the samples so later joiners hear it too.
@@ -2420,13 +2456,42 @@ impl ConferenceCallHandler {
         match self.play_announcement(room_number, &audio_path).await {
             Ok(()) => {
                 info!(room = %room_number, "Recording announcement played");
-                (RecordingConsent::Announced, samples)
+                (plan.outcome(true), samples, plan)
             }
             Err(e) => {
                 warn!(room = %room_number, error = %e, "Recording announcement failed");
-                (RecordingConsent::Failed, samples)
+                (plan.outcome(false), samples, plan)
             }
         }
+    }
+
+    /// Beep into the room every `interval` while its recording runs, for
+    /// tenants whose regime asks for a continuing notice.
+    fn spawn_recording_notice(
+        &self,
+        room_number: &str,
+        interval: Option<Duration>,
+        sample_rate: u32,
+    ) -> Option<JoinHandle<()>> {
+        let interval = interval?;
+        let me = self.me()?;
+        let room_number = room_number.to_string();
+        Some(tokio::spawn(async move {
+            let tone = match notice_tone_file(sample_rate) {
+                Ok(path) => path,
+                Err(e) => {
+                    warn!(room = %room_number, error = %e, "No notice tone to play");
+                    return;
+                }
+            };
+            loop {
+                tokio::time::sleep(interval).await;
+                if let Err(e) = me.play_announcement(&room_number, &tone).await {
+                    debug!(room = %room_number, error = %e, "Recording notice not played; stopping it");
+                    return;
+                }
+            }
+        }))
     }
 
     pub async fn play_announcement(&self, room_number: &str, audio_path: &str) -> Result<()> {

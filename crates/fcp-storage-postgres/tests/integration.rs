@@ -218,6 +218,7 @@ fn cdr(
         rtp_bytes_sent: None,
         rtp_bytes_received: None,
         recording_url: None,
+        recording_consent: None,
         cost,
         currency: cost.map(|_| "USD".to_string()),
         direction: None,

@@ -490,6 +490,7 @@ impl App {
             rtp_bytes_sent: None,
             rtp_bytes_received: None,
             recording_url: None,
+            recording_consent: None,
             cost,
             currency: cost.map(|_| "USD".to_string()),
             direction: None,
@@ -4395,6 +4396,48 @@ async fn compliance_policy_audit_log_export_and_retention() {
         "untouched stays forever"
     );
     assert_eq!(saved.json["recording_consent"], "announce");
+    assert_eq!(saved.json["recording_consent_on_failure"], "record");
+    assert!(saved.json["recording_notice_interval_secs"].is_null());
+
+    // What a failed announcement does, and the continuing notice.
+    for bad in [
+        json!({ "recording_consent_on_failure": "maybe" }),
+        json!({ "recording_notice_interval_secs": 2 }),
+    ] {
+        let refused = app
+            .admin(Method::PUT, "/api/v1/compliance/policy", Some(bad.clone()))
+            .await;
+        assert_eq!(
+            refused.status,
+            StatusCode::BAD_REQUEST,
+            "{bad}: {}",
+            refused.text
+        );
+    }
+    let strict = app
+        .admin(
+            Method::PUT,
+            "/api/v1/compliance/policy",
+            Some(json!({
+                "recording_consent_on_failure": "skip",
+                "recording_notice_interval_secs": 15
+            })),
+        )
+        .await;
+    assert_eq!(strict.status, StatusCode::OK, "{}", strict.text);
+    assert_eq!(strict.json["recording_consent_on_failure"], "skip");
+    assert_eq!(strict.json["recording_notice_interval_secs"], 15);
+    assert_eq!(strict.json["recording_consent"], "announce", "untouched");
+    let no_notice = app
+        .admin(
+            Method::PUT,
+            "/api/v1/compliance/policy",
+            Some(json!({ "recording_notice_interval_secs": null })),
+        )
+        .await;
+    assert!(no_notice.json["recording_notice_interval_secs"].is_null());
+    assert_eq!(no_notice.json["recording_consent_on_failure"], "skip");
+
     // Clearing a window with null, keeping the rest.
     let cleared = app
         .admin(

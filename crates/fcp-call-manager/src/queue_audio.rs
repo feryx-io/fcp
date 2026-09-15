@@ -328,6 +328,17 @@ fn load_wav_pcm(path: &Path) -> Option<Vec<i16>> {
     None
 }
 
+/// 8 kHz samples as 20 ms RTP payloads in `codec` (`PCMU`, `PCMA` or
+/// `G722`); `None` for a codec the queue cannot encode.
+pub(crate) fn encode_frames(codec: &str, pcm: &[i16]) -> Option<Vec<Vec<u8>>> {
+    match codec {
+        "PCMU" => Some(encode_pcmu_frames(pcm)),
+        "PCMA" => Some(encode_pcma_frames(pcm)),
+        "G722" => Some(encode_g722_frames(pcm)),
+        _ => None,
+    }
+}
+
 /// Encode PCM samples into PCMU RTP-payload frames (160 samples each).
 fn encode_pcmu_frames(pcm: &[i16]) -> Vec<Vec<u8>> {
     pcm.chunks(NB_FRAME_SAMPLES)

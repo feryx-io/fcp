@@ -41,6 +41,38 @@ impl std::fmt::Display for RecordingConsentMode {
     }
 }
 
+/// What to do when the consent announcement cannot be played.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ConsentFailureAction {
+    /// Record anyway; the recording and the record say `failed`.
+    #[default]
+    Record,
+    /// Do not record; the record says `refused`.
+    Skip,
+}
+
+impl ConsentFailureAction {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ConsentFailureAction::Record => "record",
+            ConsentFailureAction::Skip => "skip",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "record" => Some(ConsentFailureAction::Record),
+            "skip" => Some(ConsentFailureAction::Skip),
+            _ => None,
+        }
+    }
+}
+
+/// The shortest notice-tone interval a policy may set: a tone every few
+/// seconds would drown the conversation it is a notice about.
+pub const MIN_NOTICE_INTERVAL_SECS: u32 = 5;
+
 /// Per-tenant retention and consent settings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompliancePolicy {
@@ -67,6 +99,13 @@ pub struct CompliancePolicy {
     pub recording_consent: RecordingConsentMode,
     /// Prompt played when `recording_consent` is `announce`.
     pub recording_consent_prompt_id: Option<String>,
+    /// Whether a recording goes ahead when its announcement fails.
+    #[serde(default)]
+    pub recording_consent_on_failure: ConsentFailureAction,
+    /// A tone played to the parties every this many seconds while a call
+    /// is recorded, for regimes that require a continuing notice.
+    #[serde(default)]
+    pub recording_notice_interval_secs: Option<u32>,
     pub updated_at: SystemTime,
 }
 
@@ -84,6 +123,8 @@ impl CompliancePolicy {
             cdr_archive_required: false,
             recording_consent: RecordingConsentMode::None,
             recording_consent_prompt_id: None,
+            recording_consent_on_failure: ConsentFailureAction::Record,
+            recording_notice_interval_secs: None,
             updated_at: SystemTime::now(),
         }
     }
@@ -96,6 +137,191 @@ impl CompliancePolicy {
             || self.recording_retention_days.is_some()
             || self.audit_retention_days.is_some()
             || self.voicemail_retention_days.is_some()
+    }
+}
+
+// ── Recording consent (docs/COMPLIANCE_FOLLOWUPS.md §8) ───────────────
+
+/// The words a synthesised announcement says when the tenant's prompt has
+/// no audio to play.
+pub const RECORDING_CONSENT_TEXT: &str = "This call is being recorded.";
+
+/// The continuing notice: a short 1400 Hz beep, the tone the US regulator
+/// describes for recorded lines (1260–1540 Hz, about 175 ms).
+pub const NOTICE_TONE_HZ: f32 = 1400.0;
+pub const NOTICE_TONE_MS: u32 = 175;
+
+/// The notice beep as 16-bit samples at `sample_rate`, a quarter of full
+/// scale, with 5 ms ramps so it does not click.
+pub fn notice_tone_samples(sample_rate: u32) -> Vec<i16> {
+    let n = (sample_rate as usize * NOTICE_TONE_MS as usize) / 1000;
+    let ramp = (sample_rate as usize * 5 / 1000).max(1);
+    (0..n)
+        .map(|i| {
+            let t = i as f32 / sample_rate as f32;
+            let edge = (i.min(n - 1 - i) as f32 / ramp as f32).min(1.0);
+            let v = (2.0 * std::f32::consts::PI * NOTICE_TONE_HZ * t).sin() * 0.25 * edge;
+            (v * i16::MAX as f32) as i16
+        })
+        .collect()
+}
+
+/// What a recording host must do about consent before it records a call
+/// of a tenant: resolved once from the policy and the prompt, then applied
+/// by whoever plays audio to the parties (the B2BUA's media session, the
+/// queue's RTP legs).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConsentPlan {
+    /// The parties must hear an announcement before the first sample.
+    pub announce: bool,
+    /// The tenant's prompt, when it names one with audio. With `announce`
+    /// and no file, the host synthesises [`RECORDING_CONSENT_TEXT`] if it
+    /// can.
+    pub prompt_audio: Option<std::path::PathBuf>,
+    pub on_failure: ConsentFailureAction,
+    /// A notice tone every this long while the recording runs.
+    pub notice_interval: Option<Duration>,
+}
+
+impl ConsentPlan {
+    /// No announcement, no notice.
+    pub fn not_required() -> Self {
+        Self {
+            announce: false,
+            prompt_audio: None,
+            on_failure: ConsentFailureAction::Record,
+            notice_interval: None,
+        }
+    }
+
+    /// The plan for `tenant`. A policy that cannot be read is treated as
+    /// one asking for an announcement that cannot be made: the recording
+    /// goes ahead marked `failed`, as the conference server has always done.
+    pub async fn resolve(
+        compliance: Option<&dyn ComplianceStore>,
+        prompts: Option<&dyn crate::prompt::PromptStore>,
+        tenant: &TenantId,
+    ) -> Self {
+        let Some(compliance) = compliance else {
+            return Self::not_required();
+        };
+        let policy = match compliance.get_compliance_policy(tenant).await {
+            Ok(Some(policy)) => policy,
+            Ok(None) => return Self::not_required(),
+            Err(e) => {
+                tracing::warn!(tenant_id = %tenant, error = %e, "Could not read the recording-consent policy");
+                return Self {
+                    announce: true,
+                    ..Self::not_required()
+                };
+            }
+        };
+        let notice_interval = policy
+            .recording_notice_interval_secs
+            .map(|s| Duration::from_secs(u64::from(s.max(MIN_NOTICE_INTERVAL_SECS))));
+        if policy.recording_consent != RecordingConsentMode::Announce {
+            return Self {
+                notice_interval,
+                ..Self::not_required()
+            };
+        }
+        let mut prompt_audio = None;
+        if let (Some(id), Some(prompts)) = (policy.recording_consent_prompt_id.as_deref(), prompts)
+        {
+            match id.parse::<crate::PromptId>() {
+                Ok(prompt_id) => match prompts.get_prompt(&prompt_id).await {
+                    Ok(Some(prompt)) if prompt.tenant_id == *tenant => {
+                        prompt_audio = prompt.audio_path.filter(|p| p.is_file());
+                        if prompt_audio.is_none() {
+                            tracing::warn!(tenant_id = %tenant, prompt = %id, "Recording-consent prompt has no audio file");
+                        }
+                    }
+                    Ok(_) => {
+                        tracing::warn!(tenant_id = %tenant, prompt = %id, "Recording-consent prompt not found")
+                    }
+                    Err(e) => {
+                        tracing::warn!(tenant_id = %tenant, error = %e, "Could not read the recording-consent prompt")
+                    }
+                },
+                Err(e) => {
+                    tracing::warn!(tenant_id = %tenant, prompt = %id, error = %e, "Invalid recording-consent prompt id")
+                }
+            }
+        }
+        Self {
+            announce: true,
+            prompt_audio,
+            on_failure: policy.recording_consent_on_failure,
+            notice_interval,
+        }
+    }
+
+    /// What the record says, given whether the announcement was heard to
+    /// the end.
+    pub fn outcome(&self, announced: bool) -> crate::recording::RecordingConsent {
+        use crate::recording::RecordingConsent;
+        match (self.announce, announced, self.on_failure) {
+            (false, _, _) => RecordingConsent::NotRequired,
+            (true, true, _) => RecordingConsent::Announced,
+            (true, false, ConsentFailureAction::Record) => RecordingConsent::Failed,
+            (true, false, ConsentFailureAction::Skip) => RecordingConsent::Refused,
+        }
+    }
+}
+
+/// Counts of call recordings by why they started and what the parties
+/// were told, for a node's `/metrics` (`docs/COMPLIANCE_FOLLOWUPS.md` §9).
+#[derive(Debug, Default)]
+pub struct RecordingCounters {
+    outcomes: std::sync::Mutex<std::collections::BTreeMap<(String, &'static str), u64>>,
+}
+
+impl RecordingCounters {
+    /// The process's counters.
+    pub fn global() -> &'static RecordingCounters {
+        static COUNTERS: std::sync::OnceLock<RecordingCounters> = std::sync::OnceLock::new();
+        COUNTERS.get_or_init(RecordingCounters::default)
+    }
+
+    /// A recording of `source` reached its consent step's `outcome`.
+    pub fn note(&self, source: &str, outcome: crate::recording::RecordingConsent) {
+        if let Ok(mut map) = self.outcomes.lock() {
+            *map.entry((source.to_string(), outcome.as_str()))
+                .or_insert(0) += 1;
+        }
+    }
+
+    /// Prometheus text: attempts by source and consent outcome, and those
+    /// that started (every outcome but `refused`). `labels` is prepended to
+    /// each series' labels (`node="…"`), or empty.
+    pub fn prometheus(&self, labels: &str) -> String {
+        let Ok(map) = self.outcomes.lock() else {
+            return String::new();
+        };
+        let sep = if labels.is_empty() { "" } else { "," };
+        let mut out = String::from(
+            "# HELP fcp_call_recording_consent_total Call recordings by source and consent outcome.\n\
+             # TYPE fcp_call_recording_consent_total counter\n",
+        );
+        let mut started = std::collections::BTreeMap::<&str, u64>::new();
+        for ((source, outcome), n) in map.iter() {
+            out.push_str(&format!(
+                "fcp_call_recording_consent_total{{{labels}{sep}source=\"{source}\",consent=\"{outcome}\"}} {n}\n"
+            ));
+            if *outcome != "refused" {
+                *started.entry(source.as_str()).or_insert(0) += n;
+            }
+        }
+        out.push_str(
+            "# HELP fcp_call_recordings_started_total Call recordings started, by source.\n\
+             # TYPE fcp_call_recordings_started_total counter\n",
+        );
+        for (source, n) in started {
+            out.push_str(&format!(
+                "fcp_call_recordings_started_total{{{labels}{sep}source=\"{source}\"}} {n}\n"
+            ));
+        }
+        out
     }
 }
 
@@ -860,6 +1086,73 @@ pub async fn files_older_than(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_consent_outcome_follows_the_plan_and_the_failure_rule() {
+        use crate::recording::RecordingConsent;
+        let none = ConsentPlan::not_required();
+        assert_eq!(none.outcome(false), RecordingConsent::NotRequired);
+        assert_eq!(none.outcome(true), RecordingConsent::NotRequired);
+
+        let record = ConsentPlan {
+            announce: true,
+            ..ConsentPlan::not_required()
+        };
+        assert_eq!(record.outcome(true), RecordingConsent::Announced);
+        assert_eq!(record.outcome(false), RecordingConsent::Failed);
+
+        let skip = ConsentPlan {
+            announce: true,
+            on_failure: ConsentFailureAction::Skip,
+            ..ConsentPlan::not_required()
+        };
+        assert_eq!(skip.outcome(true), RecordingConsent::Announced);
+        assert_eq!(skip.outcome(false), RecordingConsent::Refused);
+
+        assert_eq!(
+            ConsentFailureAction::default(),
+            ConsentFailureAction::Record
+        );
+        for a in [ConsentFailureAction::Record, ConsentFailureAction::Skip] {
+            assert_eq!(ConsentFailureAction::parse(a.as_str()), Some(a));
+        }
+        assert_eq!(ConsentFailureAction::parse("maybe"), None);
+    }
+
+    #[test]
+    fn the_notice_tone_is_a_short_quiet_beep() {
+        let tone = notice_tone_samples(8000);
+        assert_eq!(tone.len(), 8000 * NOTICE_TONE_MS as usize / 1000);
+        let peak = tone.iter().map(|s| s.unsigned_abs()).max().unwrap();
+        assert!(
+            (7000..=8300).contains(&peak),
+            "a quarter of full scale: {peak}"
+        );
+        assert!(tone[0].unsigned_abs() < 100 && tone[tone.len() - 1].unsigned_abs() < 500);
+        assert_eq!(notice_tone_samples(48000).len(), 48000 * 175 / 1000);
+    }
+
+    #[test]
+    fn recording_counters_render_attempts_and_starts() {
+        use crate::recording::RecordingConsent;
+        let counters = RecordingCounters::default();
+        counters.note("user", RecordingConsent::Announced);
+        counters.note("user", RecordingConsent::Announced);
+        counters.note("user", RecordingConsent::Refused);
+        counters.note("queue", RecordingConsent::NotRequired);
+        let text = counters.prometheus("node=\"n1\"");
+        assert!(text.contains(
+            "fcp_call_recording_consent_total{node=\"n1\",source=\"user\",consent=\"announced\"} 2"
+        ));
+        assert!(text.contains(
+            "fcp_call_recording_consent_total{node=\"n1\",source=\"user\",consent=\"refused\"} 1"
+        ));
+        assert!(text.contains("fcp_call_recordings_started_total{node=\"n1\",source=\"user\"} 2"));
+        assert!(text.contains("fcp_call_recordings_started_total{node=\"n1\",source=\"queue\"} 1"));
+        assert!(RecordingCounters::default()
+            .prometheus("")
+            .contains("# TYPE fcp_call_recordings_started_total counter"));
+    }
 
     #[test]
     fn defaults_keep_everything() {

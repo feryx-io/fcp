@@ -25,6 +25,7 @@ pub mod phone;
 pub mod seed;
 pub mod service;
 pub mod smoke;
+pub mod wav;
 
 pub use db::TestDatabase;
 pub use phone::{Call, IncomingCall, Phone, PhoneEvent};

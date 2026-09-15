@@ -139,6 +139,11 @@ impl CallManager {
         self.billing = Some(billing);
     }
 
+    /// Where platform events go, when a bus is attached.
+    pub fn events(&self) -> Option<&Arc<dyn EventPublisher>> {
+        self.events.as_ref()
+    }
+
     /// The billing engine used for settlement, shared with the SIP handler
     /// for admission control.
     pub fn billing(&self) -> Option<&Arc<fcp_billing::BillingEngine>> {
@@ -527,6 +532,7 @@ impl CallManager {
         .rtp(call.rtp_stats)
         .correlation(call.correlation_id)
         .recording(call.recording_path.clone())
+        .recording_consent(call.recording_consent)
         .trunk(call.trunk_name.clone())
         .node(self.node_id.clone(), self.region.clone())
         .custom_data(call.custom_data.clone());

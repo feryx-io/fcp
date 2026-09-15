@@ -1,6 +1,6 @@
 # Compliance Follow-ups — Design
 
-Status: **phases 1–2 of 5 done** (2026-09-15, v0.25.166 and v0.25.170); design agreed the
+Status: **phases 1–3 of 5 done** (2026-09-15, v0.25.166, v0.25.170 and v0.25.171); design agreed the
 same day with every recommendation in §12 taken. This document is the
 plan for the three compliance items `STATUS.md` left unscheduled when the
 basics shipped on 2026-09-02: **legal hold**, **per-subject export and
@@ -653,6 +653,71 @@ One PR per phase, reviewed before the next starts.
    recording by user, number and platform, the flow node, the queue's
    prompt and mixed recording, per-participant consent, the CDR field,
    `on_failure` and the notice tone; the test floor scenarios.
+   *Phase 3 shipped 2026-09-15 (v0.25.171).* Migration 064 (the policy's
+   `recording_consent_on_failure` and `recording_notice_interval_secs`, the
+   record's `recording_consent`), with these decisions made on the way:
+
+   - **One recorder per node.** `fcp_sip::recording::CallRecorder` is what
+     §8.1 calls `start_call_recording`: the SIP handler, flows and the
+     node's HTTP API share one, so a call is recorded once whoever asks, and
+     a second start while one runs — or is still announcing — is refused.
+     The consent plan (`fcp_core::compliance::ConsentPlan`: announce or not,
+     the prompt's file, the failure rule, the notice) is resolved the same
+     way by the recorder, the queue and the conference server.
+   - **The recording starts after the announcement, and the announcement is
+     not in it.** The recorder awaits the playback before the recorder
+     starts; forge writes injected audio to the sockets, not the recording
+     tap. The test floor checks both parties hear the prompt and the file
+     does not contain it.
+   - **A refusal leaves no row.** A row names a file; a `refused` recording
+     has none. The record says `refused`, a `recording.failed` event carries
+     `reason = consent_refused`, and the metrics count it.
+   - **Automatic recording is decided at the INVITE** — the call must be
+     anchored for it — and starts once the 200 OK has gone to the caller
+     (and when a pickup answers). User before number before platform; the
+     callee is the user or number dialled, by name, extension (its user, its
+     device's owner, its number) or DID (the line binding's owner), not a
+     later forwarding target. `media.enable_recording` stops gating the
+     other sources, which it did while nothing recorded, and becomes the
+     platform source; the call manager reads it and `recording_dir` from
+     `[media]`.
+   - **The recording stops when the call does.** The media session of a
+     call ended by BYE lives until its idle timeout, and so did its
+     recorder, leaving an unfinished WAV and an open row: the recorder now
+     stops on every ending, and closes the row.
+   - **The REST route reaches the calls where they are.** The API's route
+     runs through the recorder with the media session fixed, but an
+     `fcp-admin` process holds no calls; the call manager's own HTTP API
+     gains `POST /calls/{id}/recording/start` and `/stop`. Its
+     parameterised routes were written in axum 0.8's `{id}` form on axum
+     0.7, which reads them literally, so none of them — agents, queues,
+     campaigns, supervisors, these — ever matched; they now use `:id`.
+   - **The queue** plays the prompt, decoded to 8 kHz and encoded per leg,
+     to the caller's and the agent's sockets together before the bridge
+     starts, and campaign calls do the same. Its recorder decodes each
+     direction in its own leg's codec (G.722 included; telephone events,
+     CSRCs, extensions and padding skipped) and mixes frame by frame,
+     writing one side against silence once the other is 100 ms behind. The
+     notice is written over the audio the bridge forwards, in each
+     direction's codec.
+   - **Conferences** refuse a room or participant recording under `skip`,
+     announce a participant's recording to the room, beep the notice into
+     the room, and put the outcome on `conference.recording_started`.
+
+   Tests: the test floor (a user who records every call — both parties hear
+   the prompt, then the notice, the file has both parties and not the
+   prompt, the record and row say `announced` and `user`; the node's
+   `enable_recording` with a missing prompt under `skip` — the call goes on,
+   nothing is recorded, `refused` on the record and in the metrics; a
+   number's `recording_enabled` with no announcement asked; the node's route
+   — returns after both hear the prompt, once only, `404`, `400` for a path
+   out of the tenant's directory, stop closes the row; a recorded queue call
+   — both hear the prompt, and the file has caller and agent overlapping),
+   the Postgres suite (the plan from a stored policy and prompt, another
+   tenant's prompt, a missing file, the record's field), the API suite (the
+   new policy fields and their validation), and unit tests for the outcome
+   rule, the notice tone, the counters, the RTP payload parser, the decoders,
+   the mix, the notice schedule and overwrite, and prompt loading.
 4. **Subject export.** The canonical form, identifiers and expansion,
    requests, the worker, the bundle and its download.
 5. **Subject erasure.** Preview and confirm, the per-store actions of

@@ -206,23 +206,63 @@ deletion log says when that was.
 ## Recording consent
 
 `recording_consent` on the policy is `none` (default) or `announce`. With
-`announce` and a `recording_consent_prompt_id`, starting a recording
-through `POST /api/v1/calls/:id/recording/start` first plays that prompt to
-both parties; the response reports `consent_announced`. The prompt must
-belong to the tenant and have audio.
+`announce`, every recording the platform makes of a call or a room is
+announced first, whoever starts it, and the announcement ends before the
+first sample is written (`docs/COMPLIANCE_FOLLOWUPS.md` §8):
+
+| Field | Meaning |
+|---|---|
+| `recording_consent` | `none` or `announce` |
+| `recording_consent_prompt_id` | The tenant's prompt. When its audio is missing, a node with TTS says "This call is being recorded." instead |
+| `recording_consent_on_failure` | `record` (default): an announcement that cannot be played does not stop the recording, which says `failed`. `skip`: nothing is recorded, and the record says `refused` |
+| `recording_notice_interval_secs` | A 175 ms 1400 Hz beep to the parties every this many seconds while a call or room is recorded (at least 5), for regimes that require a continuing notice. `null`: none |
+
+**What records a call.** All of these go through the same step on the call
+manager — the prompt played to both parties and awaited, then the recorder,
+its row and the call's record:
+
+- `POST /calls/{id}/recording/start` (and `/stop`) on the call manager node's
+  HTTP API, and `POST /api/v1/calls/:id/recording/start` where the API runs
+  in the same process as the calls. The body is optional: `{"path": …}`
+  places the file under the tenant's directory, otherwise it is
+  `<tenant>/<yyyy>/<mm>/<dd>/<call-id>.wav`. The answer names the consent
+  outcome; `409` when the call is not anchored, already recorded, or the
+  announcement failed under `skip`.
+- A flow's `StartRecording` node, which sets `recording_consent` among the
+  flow's variables. The node cannot skip the step: a flow that plays its own
+  notice is the tenant's reason to set the policy to `none`.
+- **Automatic recording**, decided when the call arrives and started once it
+  is answered, so both parties are on the line to hear the announcement:
+  `record_all_calls` on the calling or the dialled user, `recording_enabled`
+  on the dialled or calling number, or `[media] enable_recording = true` on
+  the call manager (every call it anchors). A call wanted for several
+  reasons is recorded once. A call to be recorded is anchored, and with
+  media anchoring forced off (`Never`) it cannot be.
+- **Queues** with `record_calls`: the caller and the agent hear the
+  announcement together before they are connected, and the recording mixes
+  both directions into one track.
+
+The call's record carries `recording_consent` — `announced`, `failed`,
+`not_required` or `refused` — when a recording was to start, and nothing
+otherwise; so does the recording's row. `recording.started` events name the
+source and the outcome, and a refusal publishes `recording.failed` with
+`reason = consent_refused`. A node's `/metrics` counts
+`fcp_call_recording_consent_total{source, consent}` and
+`fcp_call_recordings_started_total{source}`. Call recordings go under
+`[media] recording_dir` (default `./recordings`).
 
 **Conference recordings announce too.** With `announce`, a conference
-server plays the tenant's prompt to the whole room before the first sample
-is written, and to each participant who joins while the recording runs.
-The recording's row records what happened: `announced`, `failed` (the
-prompt could not be played and the recording went ahead anyway) or
-`not_required`. Refusing to be recorded means leaving the room, as it does
-on a call.
+server plays the tenant's prompt to the whole room before a room or a
+participant's recording starts, and to each participant who joins while a
+room recording runs; `skip` refuses a recording whose announcement failed,
+and the notice beeps into the room. The recording's row and
+`conference.recording_started` record what happened. Refusing to be
+recorded means leaving the room, as it does on a call.
 
-Not yet: calls the B2BUA records automatically (`media.enable_recording`,
-per-user `record_all_calls`, queue `record_calls`) do not play the prompt
-— announce consent from the IVR or flow that answers them until the
-B2BUA-level announcement lands.
+Not announced: voicemail (the greeting is the notice, and the caller chooses
+to leave a message), the SBC's local capture and SIPREC (the recorder's
+duty), and forge's own recording routes on the WebRTC gateway and media
+server, which record operator bridges that belong to no tenant.
 
 ## Who may do this
 
@@ -290,7 +330,10 @@ recorded. The admin UI's **Recordings** page lists them with a player.
 1. Decide the windows your regime requires (many US rules: CDRs 18 months
    or more, recordings per industry) and set them on the policy.
 2. If you must announce recording, upload a prompt and set
-   `recording_consent` to `announce` with its id.
+   `recording_consent` to `announce` with its id; set
+   `recording_consent_on_failure = skip` if a recording without the
+   announcement must not exist, and `recording_notice_interval_secs` if
+   the notice must continue.
 3. If records must outlive the table, have the operator enable the CDR
    archive, then set `cdr_archive_required` so retention waits for it.
 4. Run `POST /compliance/retention/run` once and read the report.

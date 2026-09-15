@@ -1451,7 +1451,8 @@ impl CdrStore for PostgresStorage {
                     recording_url, cost, currency, custom_data,
                     cdr_id, kind, schema_version, direction, node_id, region,
                     correlation_id, trunk_name, rtp_packets_lost, rtp_jitter_ms,
-                    rate_plan_id, matched_prefix, billable_seconds, rated_at, created_at
+                    rate_plan_id, matched_prefix, billable_seconds, rated_at, created_at,
+                    recording_consent
                  ) ",
             );
             query.push_values(chunk, |mut b, row| {
@@ -1500,7 +1501,8 @@ impl CdrStore for PostgresStorage {
                     .push_bind(&row.r.matched_prefix)
                     .push_bind(row.r.billable_seconds.map(|s| s as i32))
                     .push_bind(row.rated_at)
-                    .push_bind(row.created_at);
+                    .push_bind(row.created_at)
+                    .push_bind(row.r.recording_consent.map(|c| c.as_str()));
             });
             query.push(" ON CONFLICT (cdr_id, start_time) DO NOTHING RETURNING cdr_id");
             let returned = query
@@ -2916,6 +2918,9 @@ fn row_to_cdr(row: sqlx::postgres::PgRow) -> Result<CallDetailRecord> {
             .map(|p| p as u64),
         rtp_jitter_ms: row.get("rtp_jitter_ms"),
         recording_url: row.get("recording_url"),
+        recording_consent: row
+            .get::<Option<String>, _>("recording_consent")
+            .and_then(|c| fcp_core::RecordingConsent::parse(&c)),
         cost: row.get("cost"),
         currency: row.get("currency"),
         rate_plan_id: row.get("rate_plan_id"),

@@ -4,8 +4,8 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use fcp_core::compliance::{
-    AuditEvent, AuditQuery, CompliancePolicy, ComplianceStore, DeletionQuery, DeletionRecord,
-    PendingFileDeletion, RecordingConsentMode, RetentionReport,
+    AuditEvent, AuditQuery, CompliancePolicy, ComplianceStore, ConsentFailureAction, DeletionQuery,
+    DeletionRecord, PendingFileDeletion, RecordingConsentMode, RetentionReport,
 };
 use fcp_core::TenantId;
 use sqlx::{Pool, Postgres, Row};
@@ -75,7 +75,8 @@ impl ComplianceStore for PostgresComplianceStore {
             "SELECT cdr_retention_days, sip_trace_retention_days, flow_trace_retention_days,
                     recording_retention_days, audit_retention_days, voicemail_retention_days,
                     cdr_archive_required,
-                    recording_consent, recording_consent_prompt_id, updated_at
+                    recording_consent, recording_consent_prompt_id, updated_at,
+                    recording_consent_on_failure, recording_notice_interval_secs
              FROM compliance_policies WHERE tenant_id = $1",
         )
         .bind(tenant_id.to_string())
@@ -105,6 +106,11 @@ impl ComplianceStore for PostgresComplianceStore {
                 RecordingConsentMode::None
             },
             recording_consent_prompt_id: row.try_get("recording_consent_prompt_id")?,
+            recording_consent_on_failure: ConsentFailureAction::parse(
+                &row.try_get::<String, _>("recording_consent_on_failure")?,
+            )
+            .unwrap_or_default(),
+            recording_notice_interval_secs: days("recording_notice_interval_secs")?,
             updated_at: to_system_time(updated_at),
         }))
     }
@@ -116,8 +122,9 @@ impl ComplianceStore for PostgresComplianceStore {
                 (tenant_id, cdr_retention_days, sip_trace_retention_days,
                  flow_trace_retention_days, recording_retention_days, audit_retention_days,
                  recording_consent, recording_consent_prompt_id, updated_at, cdr_archive_required,
-                 voicemail_retention_days)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                 voicemail_retention_days, recording_consent_on_failure,
+                 recording_notice_interval_secs)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
              ON CONFLICT (tenant_id) DO UPDATE SET
                 cdr_retention_days = EXCLUDED.cdr_retention_days,
                 sip_trace_retention_days = EXCLUDED.sip_trace_retention_days,
@@ -128,7 +135,9 @@ impl ComplianceStore for PostgresComplianceStore {
                 recording_consent_prompt_id = EXCLUDED.recording_consent_prompt_id,
                 updated_at = EXCLUDED.updated_at,
                 cdr_archive_required = EXCLUDED.cdr_archive_required,
-                voicemail_retention_days = EXCLUDED.voicemail_retention_days",
+                voicemail_retention_days = EXCLUDED.voicemail_retention_days,
+                recording_consent_on_failure = EXCLUDED.recording_consent_on_failure,
+                recording_notice_interval_secs = EXCLUDED.recording_notice_interval_secs",
         )
         .bind(policy.tenant_id.to_string())
         .bind(days(policy.cdr_retention_days))
@@ -141,6 +150,8 @@ impl ComplianceStore for PostgresComplianceStore {
         .bind(to_datetime(policy.updated_at))
         .bind(policy.cdr_archive_required)
         .bind(days(policy.voicemail_retention_days))
+        .bind(policy.recording_consent_on_failure.as_str())
+        .bind(days(policy.recording_notice_interval_secs))
         .execute(&self.pool)
         .await?;
         Ok(())

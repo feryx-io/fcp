@@ -827,3 +827,101 @@ async fn a_tenant_wide_hold_covers_traces_audit_and_rooms_and_only_its_window() 
 
     db.finish().await;
 }
+
+// ── Recording consent (docs/COMPLIANCE_FOLLOWUPS.md §8) ────────────────
+
+#[tokio::test]
+async fn the_consent_policy_resolves_to_a_plan_and_the_outcome_reaches_the_record() {
+    use fcp_core::compliance::{ConsentFailureAction, ConsentPlan, RecordingConsentMode};
+    use fcp_core::prompt::{Prompt, PromptCategory, PromptStore};
+    use fcp_core::RecordingConsent;
+    use fcp_storage_postgres::prompt::PostgresPromptStore;
+
+    let db = require_db!();
+    let prompts = PostgresPromptStore::new(db.pg.pool().clone());
+    let dir = tempfile::tempdir().unwrap();
+    let tenant = TenantId::new();
+    let other = TenantId::new();
+
+    // Nothing configured: nothing to announce.
+    let plan = ConsentPlan::resolve(Some(db.compliance.as_ref()), Some(&prompts), &tenant).await;
+    assert_eq!(plan, ConsentPlan::not_required());
+
+    let audio = dir.path().join("consent.wav");
+    std::fs::write(&audio, b"RIFF").unwrap();
+    let prompt = Prompt::new_file(
+        tenant,
+        "consent",
+        PromptCategory::Custom,
+        "en-US",
+        audio.clone(),
+    );
+    prompts.put_prompt(prompt.clone()).await.unwrap();
+    let foreign = Prompt::new_file(
+        other,
+        "consent",
+        PromptCategory::Custom,
+        "en-US",
+        audio.clone(),
+    );
+    prompts.put_prompt(foreign.clone()).await.unwrap();
+
+    let mut policy = CompliancePolicy::defaults(tenant);
+    policy.recording_consent = RecordingConsentMode::Announce;
+    policy.recording_consent_prompt_id = Some(prompt.id.to_string());
+    policy.recording_consent_on_failure = ConsentFailureAction::Skip;
+    policy.recording_notice_interval_secs = Some(20);
+    db.compliance.put_compliance_policy(&policy).await.unwrap();
+    let stored = db
+        .compliance
+        .get_compliance_policy(&tenant)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        stored.recording_consent_on_failure,
+        ConsentFailureAction::Skip
+    );
+    assert_eq!(stored.recording_notice_interval_secs, Some(20));
+
+    let plan = ConsentPlan::resolve(Some(db.compliance.as_ref()), Some(&prompts), &tenant).await;
+    assert!(plan.announce);
+    assert_eq!(plan.prompt_audio.as_deref(), Some(audio.as_path()));
+    assert_eq!(plan.on_failure, ConsentFailureAction::Skip);
+    assert_eq!(plan.notice_interval, Some(Duration::from_secs(20)));
+    assert_eq!(plan.outcome(false), RecordingConsent::Refused);
+
+    // A prompt of another tenant's plays nothing, nor does one whose file
+    // is gone: the announcement is still owed, so it is made some other
+    // way or fails.
+    policy.recording_consent_prompt_id = Some(foreign.id.to_string());
+    db.compliance.put_compliance_policy(&policy).await.unwrap();
+    let plan = ConsentPlan::resolve(Some(db.compliance.as_ref()), Some(&prompts), &tenant).await;
+    assert!(plan.announce && plan.prompt_audio.is_none());
+
+    policy.recording_consent_prompt_id = Some(prompt.id.to_string());
+    policy.recording_consent_on_failure = ConsentFailureAction::Record;
+    policy.recording_notice_interval_secs = None;
+    db.compliance.put_compliance_policy(&policy).await.unwrap();
+    std::fs::remove_file(&audio).unwrap();
+    let plan = ConsentPlan::resolve(Some(db.compliance.as_ref()), Some(&prompts), &tenant).await;
+    assert!(plan.announce && plan.prompt_audio.is_none());
+    assert_eq!(plan.notice_interval, None);
+    assert_eq!(plan.outcome(false), RecordingConsent::Failed);
+
+    // The record carries what the parties were told, and nothing when
+    // nothing was to be recorded.
+    let told = CallId::new();
+    let untold = CallId::new();
+    let mut with = record(tenant, told, "/rec/a.wav", days_ago(1));
+    with.recording_consent = Some(RecordingConsent::Announced);
+    let mut without = record(tenant, untold, "/rec/b.wav", days_ago(1));
+    without.recording_url = None;
+    db.storage.insert_cdrs(vec![with, without]).await.unwrap();
+    let got = db.storage.get_cdr(&told).await.unwrap().unwrap();
+    assert_eq!(got.recording_consent, Some(RecordingConsent::Announced));
+    let got = db.storage.get_cdr(&untold).await.unwrap().unwrap();
+    assert_eq!(got.recording_consent, None);
+
+    db.finish().await;
+}

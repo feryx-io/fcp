@@ -42,6 +42,8 @@ pub struct AppState {
     pub pbx_handler: Option<Arc<fcp_pbx::PbxHandler>>,
     /// Cluster parking store for cross-node park/pickup.
     pub cluster_parking: Option<Arc<dyn fcp_core::ClusterParkingStore>>,
+    /// What call recordings start through, with the tenant's consent step.
+    pub call_recorder: Arc<fcp_sip::recording::CallRecorder>,
 }
 
 fn queue_visible_to_service_tenant(
@@ -66,6 +68,14 @@ pub async fn run_http_server(bind_addr: SocketAddr, state: Arc<AppState>) -> any
     let protected = Router::new()
         .route("/status", get(status_handler))
         .route("/calls", get(calls_handler))
+        .route(
+            "/calls/:id/recording/start",
+            post(start_call_recording_handler),
+        )
+        .route(
+            "/calls/:id/recording/stop",
+            post(stop_call_recording_handler),
+        )
         .route("/registrations", get(registrations_handler))
         .route("/cdrs", get(cdrs_handler))
         .route("/cdr/status", get(cdr_status_handler))
@@ -77,53 +87,53 @@ pub async fn run_http_server(bind_addr: SocketAddr, state: Arc<AppState>) -> any
             get(list_queues_handler).post(create_queue_handler),
         )
         .route(
-            "/queues/{name}",
+            "/queues/:name",
             get(get_queue_handler)
                 .put(update_queue_handler)
                 .delete(delete_queue_handler),
         )
         .route(
-            "/queues/{name}/drain",
+            "/queues/:name/drain",
             post(drain_queue_handler).delete(undrain_queue_handler),
         )
         .route("/queues/reload", post(reload_queues_handler))
-        .route("/queues/{name}/history", get(queue_history_handler))
+        .route("/queues/:name/history", get(queue_history_handler))
         .route("/agents", get(list_agents_handler))
-        .route("/agents/{id}", get(get_agent_handler))
-        .route("/agents/{id}/pause", post(pause_agent_handler))
-        .route("/agents/{id}/unpause", post(unpause_agent_handler))
-        .route("/agents/{id}/kick", post(kick_agent_handler))
-        .route("/agents/{id}/login", post(login_agent_handler))
-        .route("/agents/{id}/logout", post(logout_agent_handler))
-        .route("/agents/{id}/extend-wrapup", post(extend_wrapup_handler))
+        .route("/agents/:id", get(get_agent_handler))
+        .route("/agents/:id/pause", post(pause_agent_handler))
+        .route("/agents/:id/unpause", post(unpause_agent_handler))
+        .route("/agents/:id/kick", post(kick_agent_handler))
+        .route("/agents/:id/login", post(login_agent_handler))
+        .route("/agents/:id/logout", post(logout_agent_handler))
+        .route("/agents/:id/extend-wrapup", post(extend_wrapup_handler))
         // Callback endpoints
         .route("/callbacks", get(list_callbacks_handler))
-        .route("/callbacks/{call_id}", delete(cancel_callback_handler))
+        .route("/callbacks/:call_id", delete(cancel_callback_handler))
         // Campaign / predictive dialer endpoints
         .route(
-            "/campaigns/{queue}/numbers",
+            "/campaigns/:queue/numbers",
             post(campaign_load_numbers_handler),
         )
-        .route("/campaigns/{queue}/stats", get(campaign_stats_handler))
-        .route("/campaigns/{queue}/start", post(campaign_start_handler))
-        .route("/campaigns/{queue}/stop", post(campaign_stop_handler))
+        .route("/campaigns/:queue/stats", get(campaign_stats_handler))
+        .route("/campaigns/:queue/start", post(campaign_start_handler))
+        .route("/campaigns/:queue/stop", post(campaign_stop_handler))
         // Queue transfer endpoint
         .route(
-            "/queues/{from}/transfer/{call_id}",
+            "/queues/:from/transfer/:call_id",
             post(transfer_call_handler),
         )
         // Supervisor endpoints
-        .route("/calls/{id}/monitor", post(monitor_call_handler))
-        .route("/calls/{id}/whisper", post(whisper_call_handler))
-        .route("/calls/{id}/barge", post(barge_call_handler))
+        .route("/calls/:id/monitor", post(monitor_call_handler))
+        .route("/calls/:id/whisper", post(whisper_call_handler))
+        .route("/calls/:id/barge", post(barge_call_handler))
         .route(
-            "/calls/{id}/supervisor/leave",
+            "/calls/:id/supervisor/leave",
             post(supervisor_leave_handler),
         )
         // Presence endpoints
         .route("/presence", get(list_presence_handler))
         .route(
-            "/presence/{aor}",
+            "/presence/:aor",
             get(get_presence_handler).put(update_presence_handler),
         )
         // Prometheus metrics endpoint
@@ -223,6 +233,109 @@ async fn calls_handler(State(state): State<Arc<AppState>>) -> Json<serde_json::V
         .collect();
 
     Json(serde_json::json!({ "calls": call_list }))
+}
+
+#[derive(Deserialize, Default)]
+struct StartRecordingBody {
+    /// Under the tenant's directory; absent, a dated file named for the call.
+    #[serde(default)]
+    path: Option<String>,
+}
+
+/// The service tenant's call `id`, if there is one.
+fn service_call(state: &AppState, id: &str) -> Option<fcp_b2bua_core::CallId> {
+    let call_id = id.parse::<fcp_b2bua_core::CallId>().ok()?;
+    let call = state.call_manager.get_call(&call_id)?;
+    (call.tenant_id == state.default_tenant_id).then_some(call_id)
+}
+
+fn call_not_found(id: &str) -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        Json(serde_json::json!({"error": format!("Call not found: {id}")})),
+    )
+        .into_response()
+}
+
+fn recording_error_response(e: fcp_sip::recording::RecordingError) -> Response {
+    use fcp_sip::recording::RecordingError as E;
+    let status = match e {
+        E::CallNotFound => StatusCode::NOT_FOUND,
+        E::InvalidPath => StatusCode::BAD_REQUEST,
+        E::NoMedia => StatusCode::SERVICE_UNAVAILABLE,
+        E::CallEnded
+        | E::NotAnchored
+        | E::AlreadyRecording
+        | E::NotRecording
+        | E::ConsentRefused => StatusCode::CONFLICT,
+        E::Media(_) | E::NotRegistered(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    (status, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+}
+
+/// Record a call through the tenant's consent step
+/// (`docs/COMPLIANCE_FOLLOWUPS.md` §8.1); returns once the announcement has
+/// played and the recorder runs.
+///
+/// POST /calls/{id}/recording/start
+async fn start_call_recording_handler(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    body: axum::body::Bytes,
+) -> Response {
+    let Some(call_id) = service_call(&state, &id) else {
+        return call_not_found(&id);
+    };
+    let req: StartRecordingBody = if body.iter().all(u8::is_ascii_whitespace) {
+        StartRecordingBody::default()
+    } else {
+        match serde_json::from_slice(&body) {
+            Ok(req) => req,
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": format!("Invalid request body: {e}")})),
+                )
+                    .into_response()
+            }
+        }
+    };
+    let path = match req.path {
+        Some(p) => fcp_sip::recording::RecordingPath::Supplied(p),
+        None => fcp_sip::recording::RecordingPath::wav(),
+    };
+    match state
+        .call_recorder
+        .start(
+            &call_id,
+            fcp_core::recording::CallRecordingSource::Api,
+            path,
+        )
+        .await
+    {
+        Ok(started) => Json(serde_json::json!({
+            "call_id": id,
+            "recording_id": started.recording_id.to_string(),
+            "path": started.file,
+            "consent": started.consent.as_str(),
+        }))
+        .into_response(),
+        Err(e) => recording_error_response(e),
+    }
+}
+
+/// POST /calls/{id}/recording/stop
+async fn stop_call_recording_handler(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Response {
+    let Some(call_id) = service_call(&state, &id) else {
+        return call_not_found(&id);
+    };
+    match state.call_recorder.stop(&call_id).await {
+        Ok(()) => Json(serde_json::json!({"call_id": id, "status": "stopped"})).into_response(),
+        Err(e) => recording_error_response(e),
+    }
 }
 
 #[derive(Deserialize)]
@@ -461,6 +574,7 @@ async fn cdrs_handler(
                         "rate_plan_id": cdr.rate_plan_id,
                         "billable_seconds": cdr.billable_seconds,
                         "recording_url": cdr.recording_url,
+                        "recording_consent": cdr.recording_consent.map(|c| c.as_str()),
                         "from_uri": cdr.from_uri,
                         "from_display_name": cdr.from_display_name,
                         "to_uri": cdr.to_uri,
@@ -643,11 +757,16 @@ async fn metrics_handler(State(state): State<Arc<AppState>>) -> impl IntoRespons
     let mut buffer = Vec::new();
     encoder.encode(&families, &mut buffer).unwrap_or_default();
     let mut body = String::from_utf8(buffer).unwrap_or_default();
+    let node = state.call_manager.node_id().unwrap_or("").replace('"', "");
     // The CDR pipeline's node side (docs/CDR_PIPELINE.md §11).
     if let Some(writer) = state.call_manager.cdr_writer() {
-        let node = state.call_manager.node_id().unwrap_or("").replace('"', "");
         body.push_str(&writer.prometheus(&format!("node=\"{node}\"")));
     }
+    // Call recordings by source and consent outcome
+    // (docs/COMPLIANCE_FOLLOWUPS.md §9).
+    body.push_str(
+        &fcp_core::compliance::RecordingCounters::global().prometheus(&format!("node=\"{node}\"")),
+    );
     (
         StatusCode::OK,
         [("content-type", "text/plain; version=0.0.4; charset=utf-8")],

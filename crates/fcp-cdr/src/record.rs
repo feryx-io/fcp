@@ -318,6 +318,7 @@ pub struct RecordBuilder {
     region: Option<String>,
     correlation_id: Option<CallId>,
     recording_url: Option<String>,
+    recording_consent: Option<fcp_core::RecordingConsent>,
     custom_data: Option<serde_json::Value>,
 }
 
@@ -349,6 +350,7 @@ impl RecordBuilder {
             region: None,
             correlation_id: None,
             recording_url: None,
+            recording_consent: None,
             custom_data: None,
         }
     }
@@ -453,6 +455,12 @@ impl RecordBuilder {
         self
     }
 
+    /// What the parties were told about the call's recording.
+    pub fn recording_consent(mut self, consent: Option<fcp_core::RecordingConsent>) -> Self {
+        self.recording_consent = consent;
+        self
+    }
+
     pub fn custom_data(mut self, data: Option<serde_json::Value>) -> Self {
         self.custom_data = data;
         self
@@ -519,6 +527,7 @@ impl RecordBuilder {
             rtp_packets_lost: self.rtp.map(|s| s.packets_lost),
             rtp_jitter_ms: self.rtp.and_then(|s| s.jitter_ms),
             recording_url: self.recording_url,
+            recording_consent: self.recording_consent,
             cost: None,
             currency: None,
             rate_plan_id: None,

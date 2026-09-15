@@ -39,6 +39,7 @@ mod config;
 mod health;
 mod queue_audio;
 mod queue_handler;
+mod queue_recording;
 mod queue_runtime_config;
 mod storage;
 
@@ -782,7 +783,8 @@ async fn main() -> Result<()> {
             cdr_writer.clone(),
             config.service.node_id.clone(),
             Arc::clone(&call_manager),
-        );
+        )
+        .with_tts_service(media_manager.tts_service().cloned());
         info!(
             queues = config.queue.queues.len(),
             "Queue/ACD handler enabled"
@@ -989,7 +991,15 @@ async fn main() -> Result<()> {
         flow_handler
     };
 
-    let flow_handler = Arc::new(flow_handler);
+    // One recorder for the SIP handler, flows and the API: a call is recorded
+    // once, through the tenant's consent step, whoever asks
+    // (docs/COMPLIANCE_FOLLOWUPS.md §8.1).
+    let call_recorder = Arc::new(fcp_sip::recording::CallRecorder::new(
+        Arc::clone(&call_manager),
+        Some(Arc::clone(&media_manager)),
+        Some(Arc::clone(&dyn_storage)),
+    ));
+    let flow_handler = Arc::new(flow_handler.with_call_recorder(Arc::clone(&call_recorder)));
 
     let mut handler = SipMessageHandler::new(
         Arc::clone(&transaction_manager_ref),
@@ -1009,6 +1019,7 @@ async fn main() -> Result<()> {
             rtp_port_start: config.media.rtp_port_start,
             rtp_port_end: config.media.rtp_port_end,
             public_ip: config.media.public_ip.clone(),
+            enable_recording: config.media.enable_recording,
             ..Default::default()
         }),
         Some(Arc::clone(&flow_handler)),
@@ -1021,7 +1032,8 @@ async fn main() -> Result<()> {
         cluster_parking.clone(),
         config.service.node_id.clone(),
     )?
-    .with_default_tenant_id(default_tenant_id);
+    .with_default_tenant_id(default_tenant_id)
+    .with_call_recorder(Arc::clone(&call_recorder));
     #[cfg(feature = "storage-redis")]
     if let Some((_, _, selector)) = &_cluster_manager {
         handler = handler.with_conference_node_selector(Arc::clone(selector));
@@ -1226,6 +1238,7 @@ async fn main() -> Result<()> {
         api_token: config.http.api_token.clone(),
         pbx_handler: pbx_handler.clone(),
         cluster_parking: cluster_parking.clone(),
+        call_recorder: Arc::clone(&call_recorder),
     });
     let http_bind = config.http.bind_address;
     tokio::spawn(async move {
@@ -1926,6 +1939,7 @@ async fn create_media_manager(config: &CallManagerConfig) -> Result<Arc<fcp_medi
         rtp_port_start: config.media.rtp_port_start,
         rtp_port_end: config.media.rtp_port_end,
         public_ip: config.media.public_ip.clone(),
+        recording_dir: config.media.recording_dir.clone(),
         tts: None, // TTS config not needed — injecting shared service directly
         tts_service,
         ..Default::default()

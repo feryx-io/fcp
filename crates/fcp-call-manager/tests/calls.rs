@@ -35,6 +35,12 @@ impl Stack {
     /// As [`Stack::start`], with `extra` TOML appended to the config and
     /// `rtp_ports` in the media range (a queue wants at least 100).
     async fn start_with(extra: &str, rtp_ports: u16) -> Option<Self> {
+        Self::start_configured("", extra, rtp_ports).await
+    }
+
+    /// As [`Stack::start_with`], with `media` added to the `[media]`
+    /// section. `{dir}` in either names the stack's own directory.
+    async fn start_configured(media: &str, extra: &str, rtp_ports: u16) -> Option<Self> {
         let db = TestDatabase::create().await?;
         let seed = Seed::new(db.url(), REALM).await;
         let sip_port = free_port();
@@ -75,6 +81,8 @@ rtp_port_start = {rtp_start}
 rtp_port_end = {rtp_end}
 prompts_dir = "{dir}/prompts"
 tts_cache_dir = "{dir}/tts-cache"
+recording_dir = "{dir}/recordings"
+{media}
 
 [logging]
 level = "info"
@@ -85,6 +93,8 @@ format = "compact"
             db = db.url(),
             rtp_end = rtp_start + rtp_ports,
             dir = dir.path().display(),
+            media = media.replace("{dir}", &dir.path().display().to_string()),
+            extra = extra.replace("{dir}", &dir.path().display().to_string()),
         );
         let service =
             Service::start("call-manager", BIN, &config, &loopback(http, "/health")).await;
@@ -125,6 +135,20 @@ format = "compact"
             );
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
+    }
+
+    /// The stack's own directory: recordings go under `recordings/`.
+    fn dir(&self) -> &std::path::Path {
+        self._dir.path()
+    }
+
+    /// POST `body` to `path`: the status and the JSON answer.
+    async fn post(&self, path: &str, body: &str) -> (u16, serde_json::Value) {
+        let (code, text) = fcp_testkit::smoke::http_post(&loopback(self.http, path), body)
+            .await
+            .unwrap_or_else(|e| panic!("POST {path}: {e}"));
+        let json = serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text));
+        (code, json)
     }
 
     async fn get(&self, path: &str) -> serde_json::Value {
@@ -691,5 +715,473 @@ extension = "7000"
     // And the call is gone from the live calls.
     let live = stack.get("/calls").await;
     assert_eq!(live["count"].as_u64().unwrap_or(0), 0, "{live}");
+    stack.finish().await;
+}
+
+// ── Recording consent (docs/COMPLIANCE_FOLLOWUPS.md §8, §10) ───────────
+
+/// The prompt's tone: neither phone plays it, so hearing it is hearing the
+/// announcement.
+const PROMPT_HZ: u32 = 1000;
+/// The continuing notice (`fcp_core::compliance::NOTICE_TONE_HZ`).
+const NOTICE_HZ: u32 = 1400;
+
+/// The tenant announces recordings with a prompt at `audio` (a file that
+/// need not exist), doing `on_failure` when it cannot, with a notice every
+/// `notice` seconds.
+async fn announce_recordings(
+    stack: &Stack,
+    audio: &std::path::Path,
+    on_failure: fcp_core::compliance::ConsentFailureAction,
+    notice: Option<u32>,
+) {
+    use fcp_core::compliance::{CompliancePolicy, ComplianceStore, RecordingConsentMode};
+    use fcp_core::prompt::{Prompt, PromptCategory, PromptStore};
+
+    let pool = stack.seed.storage().pool().clone();
+    let prompt = Prompt::new_file(
+        stack.seed.tenant_id,
+        "recording-consent",
+        PromptCategory::Custom,
+        "en-US",
+        audio.to_path_buf(),
+    );
+    fcp_storage_postgres::prompt::PostgresPromptStore::new(pool.clone())
+        .put_prompt(prompt.clone())
+        .await
+        .unwrap();
+    let mut policy = CompliancePolicy::defaults(stack.seed.tenant_id);
+    policy.recording_consent = RecordingConsentMode::Announce;
+    policy.recording_consent_prompt_id = Some(prompt.id.to_string());
+    policy.recording_consent_on_failure = on_failure;
+    policy.recording_notice_interval_secs = notice;
+    fcp_storage_postgres::compliance::PostgresComplianceStore::new(pool)
+        .put_compliance_policy(&policy)
+        .await
+        .unwrap();
+}
+
+/// A prompt that is a 1.5 s tone at [`PROMPT_HZ`], under the stack's
+/// directory.
+fn tone_prompt(stack: &Stack) -> std::path::PathBuf {
+    let path = stack.dir().join("consent.wav");
+    fcp_testkit::wav::write_tone(&path, PROMPT_HZ as f32, 1500).unwrap();
+    path
+}
+
+/// Every WAV file under `dir`.
+fn wav_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut found = Vec::new();
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(d) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&d) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.extension().is_some_and(|e| e == "wav") {
+                found.push(path);
+            }
+        }
+    }
+    found
+}
+
+/// The file of the first recording of a live call, once its row is written
+/// — which is once its recorder runs.
+async fn recording_started(stack: &Stack, within: Duration) -> Option<std::path::PathBuf> {
+    use fcp_core::recording::CallRecordingStore;
+    let store = fcp_storage_postgres::recording::PostgresRecordingStore::new(
+        stack.seed.storage().pool().clone(),
+    );
+    let deadline = tokio::time::Instant::now() + within;
+    loop {
+        let calls = stack.get("/calls").await;
+        for call in calls["calls"].as_array().cloned().unwrap_or_default() {
+            let Some(id) = call["call_id"]
+                .as_str()
+                .and_then(|id| id.parse::<fcp_core::CallId>().ok())
+            else {
+                continue;
+            };
+            if let Some(row) = store
+                .call_recordings_for(&id.to_string())
+                .await
+                .unwrap()
+                .pop()
+            {
+                return Some(row.path.into());
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return None;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// The call recordings rows of the record `cdr`.
+async fn recording_rows(
+    stack: &Stack,
+    cdr: &serde_json::Value,
+) -> Vec<fcp_core::recording::CallRecording> {
+    use fcp_core::recording::CallRecordingStore;
+    fcp_storage_postgres::recording::PostgresRecordingStore::new(
+        stack.seed.storage().pool().clone(),
+    )
+    .call_recordings_for(cdr["call_id"].as_str().unwrap())
+    .await
+    .unwrap()
+}
+
+/// Alice (1001) and Bob (1002), their phones registered.
+async fn two_phones(stack: &Stack) -> (SeededUser, Phone, SeededUser, Phone) {
+    two_phones_after(stack, "SELECT 1").await
+}
+
+/// As [`two_phones`], running `sql` once the users exist and before their
+/// phones register.
+async fn two_phones_after(stack: &Stack, sql: &str) -> (SeededUser, Phone, SeededUser, Phone) {
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let bob = stack.seed.user("bob", "bob-pw", "1002").await;
+    stack.seed.execute(sql).await;
+    let alice_phone = stack.phone(&alice).await;
+    let bob_phone = stack.phone(&bob).await;
+    assert_eq!(alice_phone.register().await.unwrap(), 200);
+    assert_eq!(bob_phone.register().await.unwrap(), 200);
+    (alice, alice_phone, bob, bob_phone)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_user_who_records_every_call_hears_the_announcement_before_the_recording() {
+    use fcp_core::compliance::ConsentFailureAction;
+
+    let stack = stack_or_skip!();
+    let prompt = tone_prompt(&stack);
+    announce_recordings(&stack, &prompt, ConsentFailureAction::Record, Some(5)).await;
+    // Before the phones register: the node caches the users it has seen.
+    let (_alice, alice_phone, bob, bob_phone) = two_phones_after(
+        &stack,
+        "UPDATE users SET media_preferences = jsonb_set(media_preferences, \
+         '{record_all_calls}', 'true') WHERE username = 'alice'",
+    )
+    .await;
+
+    let alice_call = alice_phone.call(&bob.extension).await.unwrap();
+    let Some(incoming) = bob_phone.incoming(SOON).await else {
+        stack.fail("Bob's phone did not ring", &alice_phone).await;
+    };
+    let bob_call = incoming.answer().await.unwrap();
+    alice_call.answered(SOON).await.unwrap();
+
+    // Both parties hear the announcement once the call is answered.
+    let (alice_heard, bob_heard) = tokio::join!(
+        alice_call.media().heard(PROMPT_HZ, SOON),
+        bob_call.media().heard(PROMPT_HZ, SOON)
+    );
+    if !(alice_heard && bob_heard) {
+        let why = format!("announcement heard by Alice {alice_heard}, by Bob {bob_heard}");
+        stack.fail(&why, &alice_phone).await;
+    }
+
+    // The recording starts after it, and hears both of them.
+    let Some(file) = recording_started(&stack, SOON).await else {
+        stack.fail("no recording was started", &alice_phone).await;
+    };
+    // One after the other, so each is plain in the recording.
+    alice_call.media().play_tone(440.0, 1000);
+    assert!(bob_call.media().heard(440, SOON).await);
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    bob_call.media().play_tone(880.0, 1000);
+    assert!(alice_call.media().heard(880, SOON).await);
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+
+    // While it runs, both hear the notice.
+    let (alice_notice, bob_notice) = tokio::join!(
+        alice_call.media().heard(NOTICE_HZ, Duration::from_secs(8)),
+        bob_call.media().heard(NOTICE_HZ, Duration::from_secs(8))
+    );
+    assert!(
+        alice_notice && bob_notice,
+        "notice heard by Alice {alice_notice}, by Bob {bob_notice}"
+    );
+
+    assert_eq!(alice_call.hangup().await.unwrap(), 200);
+    assert!(bob_call.ended(SOON).await);
+
+    let cdr = stack.cdrs(1, SOON).await.remove(0);
+    assert_eq!(cdr["recording_consent"], "announced", "{cdr}");
+    assert_eq!(cdr["recording_url"], file.display().to_string(), "{cdr}");
+    let rows = recording_rows(&stack, &cdr).await;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(
+        rows[0].source,
+        fcp_core::recording::CallRecordingSource::User
+    );
+    assert_eq!(rows[0].consent, fcp_core::RecordingConsent::Announced);
+
+    let (rate, samples) = fcp_testkit::wav::read_pcm(&file).unwrap();
+    assert_eq!(rate, 8000);
+    assert!(
+        fcp_testkit::wav::contains_tone(&samples, 440),
+        "Alice is in the recording"
+    );
+    assert!(
+        fcp_testkit::wav::contains_tone(&samples, 880),
+        "Bob is in the recording"
+    );
+    assert!(
+        !fcp_testkit::wav::contains_tone(&samples, PROMPT_HZ),
+        "the announcement is not in the recording"
+    );
+    stack.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_node_that_records_every_call_records_nothing_when_the_announcement_fails_under_skip() {
+    use fcp_core::compliance::ConsentFailureAction;
+
+    let Some(stack) = Stack::start_configured("enable_recording = true", "", 40).await else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    // The prompt names a file that is not there, and the node has no TTS.
+    let missing = stack.dir().join("no-such-prompt.wav");
+    announce_recordings(&stack, &missing, ConsentFailureAction::Skip, None).await;
+    let (_alice, alice_phone, bob, bob_phone) = two_phones(&stack).await;
+
+    let alice_call = alice_phone.call(&bob.extension).await.unwrap();
+    let Some(incoming) = bob_phone.incoming(SOON).await else {
+        stack.fail("Bob's phone did not ring", &alice_phone).await;
+    };
+    let bob_call = incoming.answer().await.unwrap();
+    alice_call.answered(SOON).await.unwrap();
+
+    // The call itself goes on.
+    alice_call.media().play_tone(440.0, 1500);
+    assert!(bob_call.media().heard(440, SOON).await);
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(alice_call.hangup().await.unwrap(), 200);
+    assert!(bob_call.ended(SOON).await);
+
+    let cdr = stack.cdrs(1, SOON).await.remove(0);
+    assert_eq!(cdr["recording_consent"], "refused", "{cdr}");
+    assert!(cdr["recording_url"].is_null(), "{cdr}");
+    assert!(recording_rows(&stack, &cdr).await.is_empty());
+    assert!(wav_files(&stack.dir().join("recordings")).is_empty());
+    let metrics = http_get(&loopback(stack.http, "/metrics")).await.unwrap().1;
+    assert!(
+        metrics.contains("source=\"platform\",consent=\"refused\"} 1"),
+        "{metrics}"
+    );
+    stack.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_api_records_an_anchored_call_once_its_announcement_has_played() {
+    use fcp_core::compliance::ConsentFailureAction;
+
+    let stack = stack_or_skip!();
+    let prompt = tone_prompt(&stack);
+    announce_recordings(&stack, &prompt, ConsentFailureAction::Record, None).await;
+    let (_alice, alice_phone, bob, bob_phone) = two_phones(&stack).await;
+
+    let alice_call = alice_phone.call(&bob.extension).await.unwrap();
+    let Some(incoming) = bob_phone.incoming(SOON).await else {
+        stack.fail("Bob's phone did not ring", &alice_phone).await;
+    };
+    let bob_call = incoming.answer().await.unwrap();
+    alice_call.answered(SOON).await.unwrap();
+    // Nothing records this call on its own.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(wav_files(&stack.dir().join("recordings")).is_empty());
+
+    let calls = stack.get("/calls").await;
+    let call_id = calls["calls"][0]["call_id"].as_str().unwrap().to_string();
+    let start = format!("/calls/{call_id}/recording/start");
+
+    // The route returns once the parties have heard the announcement.
+    let (started, alice_heard, bob_heard) = tokio::join!(
+        stack.post(&start, ""),
+        alice_call.media().heard(PROMPT_HZ, SOON),
+        bob_call.media().heard(PROMPT_HZ, SOON)
+    );
+    assert_eq!(started.0, 200, "{}", started.1);
+    assert_eq!(started.1["consent"], "announced", "{}", started.1);
+    assert!(
+        alice_heard && bob_heard,
+        "Alice {alice_heard}, Bob {bob_heard}"
+    );
+    let file = started.1["path"].as_str().unwrap().to_string();
+    assert!(std::path::Path::new(&file).exists(), "{file}");
+
+    // Once only; a path outside the tenant's directory is refused.
+    let again = stack.post(&start, "").await;
+    assert_eq!(again.0, 409, "{}", again.1);
+    let (code, _) = stack
+        .post(&format!("/calls/call-{}/recording/start", uuid_like()), "")
+        .await;
+    assert_eq!(code, 404);
+
+    let stop = format!("/calls/{call_id}/recording/stop");
+    assert_eq!(stack.post(&stop, "").await.0, 200);
+    assert_eq!(stack.post(&stop, "").await.0, 409, "stopped already");
+    let escape = stack.post(&start, r#"{"path": "../escape.wav"}"#).await;
+    assert_eq!(escape.0, 400, "{}", escape.1);
+
+    assert_eq!(alice_call.hangup().await.unwrap(), 200);
+    assert!(bob_call.ended(SOON).await);
+    let cdr = stack.cdrs(1, SOON).await.remove(0);
+    assert_eq!(cdr["recording_consent"], "announced", "{cdr}");
+    let rows = recording_rows(&stack, &cdr).await;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(
+        rows[0].source,
+        fcp_core::recording::CallRecordingSource::Api
+    );
+    assert!(rows[0].ended_at.is_some(), "the stop closed its row");
+    stack.finish().await;
+}
+
+fn uuid_like() -> &'static str {
+    "00000000-0000-4000-8000-000000000000"
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_recorded_queue_call_is_announced_to_both_parties_and_mixes_both_directions() {
+    use fcp_core::compliance::ConsentFailureAction;
+
+    let Some(stack) = Stack::start_with(
+        r#"
+[queue]
+enabled = true
+recording_dir = "{dir}/queue-recordings"
+
+[queue.queues.support]
+name = "support"
+extension = "7000"
+agents = ["1002"]
+record_calls = true
+"#,
+        200,
+    )
+    .await
+    else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let prompt = tone_prompt(&stack);
+    announce_recordings(&stack, &prompt, ConsentFailureAction::Record, None).await;
+    let (_alice, alice_phone, _bob, bob_phone) = two_phones(&stack).await;
+    let (code, login) = stack.post("/agents/1002/login", "{}").await;
+    assert_eq!(code, 200, "{login}");
+    assert_eq!(login["status"], "logged_in", "{login}");
+
+    // Alice calls the queue; Bob, its agent, takes the call.
+    let alice_call = alice_phone.call("7000").await.unwrap();
+    alice_call.answered(SOON).await.unwrap();
+    let Some(incoming) = bob_phone.incoming(Duration::from_secs(10)).await else {
+        stack.fail("the agent was not rung", &alice_phone).await;
+    };
+    let bob_call = incoming.answer().await.unwrap();
+
+    let (alice_heard, bob_heard) = tokio::join!(
+        alice_call.media().heard(PROMPT_HZ, SOON),
+        bob_call.media().heard(PROMPT_HZ, SOON)
+    );
+    if !(alice_heard && bob_heard) {
+        let why =
+            format!("announcement heard by the caller {alice_heard}, by the agent {bob_heard}");
+        stack.fail(&why, &alice_phone).await;
+    }
+    let Some(file) = recording_started(&stack, SOON).await else {
+        stack.fail("the queue did not record", &alice_phone).await;
+    };
+
+    // They talk over each other: the recording has both at once.
+    alice_call.media().play_tone(440.0, 2000);
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    bob_call.media().play_tone(880.0, 1000);
+    assert!(bob_call.media().heard(440, SOON).await);
+    assert!(alice_call.media().heard(880, SOON).await);
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(alice_call.hangup().await.unwrap(), 200);
+    assert!(bob_call.ended(SOON).await);
+
+    let records = stack.cdrs_at("/cdrs?kind=all", 2, SOON).await;
+    let queue_record = records
+        .iter()
+        .find(|r| r["kind"] == "queue")
+        .expect("queue record");
+    assert_eq!(
+        queue_record["recording_consent"], "announced",
+        "{queue_record}"
+    );
+    assert_eq!(queue_record["recording_url"], file.display().to_string());
+
+    let (_, samples) = fcp_testkit::wav::read_pcm(&file).unwrap();
+    assert!(!fcp_testkit::wav::contains_tone(&samples, PROMPT_HZ));
+    let together = samples
+        .chunks(160)
+        .filter(|frame| {
+            let low = fcp_testkit::media::goertzel_ratio(frame, 440);
+            let high = fcp_testkit::media::goertzel_ratio(frame, 880);
+            low > 0.2 && high > 0.2 && low + high > 0.7
+        })
+        .count();
+    assert!(
+        together >= 10,
+        "the caller and the agent overlap in {together} frames of {}",
+        samples.len() / 160
+    );
+    stack.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_number_that_records_its_calls_records_them_without_an_announcement_when_none_is_asked() {
+    use fcp_core::storage::PhoneNumberStore;
+
+    let stack = stack_or_skip!();
+    // The caller's own number records its calls; the tenant asks for no
+    // announcement.
+    let caller = stack.seed.user("+15550001001", "caller-pw", "1001").await;
+    let bob = stack.seed.user("bob", "bob-pw", "1002").await;
+    let mut number =
+        fcp_core::PhoneNumber::new("+15550001001".to_string(), stack.seed.tenant_id).unwrap();
+    number.recording_enabled = true;
+    stack.seed.storage().put_phone_number(number).await.unwrap();
+    let caller_phone = stack.phone(&caller).await;
+    let bob_phone = stack.phone(&bob).await;
+    assert_eq!(caller_phone.register().await.unwrap(), 200);
+    assert_eq!(bob_phone.register().await.unwrap(), 200);
+
+    let call = caller_phone.call(&bob.extension).await.unwrap();
+    let Some(incoming) = bob_phone.incoming(SOON).await else {
+        stack.fail("Bob's phone did not ring", &caller_phone).await;
+    };
+    let bob_call = incoming.answer().await.unwrap();
+    call.answered(SOON).await.unwrap();
+    let Some(file) = recording_started(&stack, SOON).await else {
+        stack
+            .fail("the number's call was not recorded", &caller_phone)
+            .await;
+    };
+    call.media().play_tone(440.0, 1000);
+    assert!(bob_call.media().heard(440, SOON).await);
+    assert_eq!(call.hangup().await.unwrap(), 200);
+    assert!(bob_call.ended(SOON).await);
+
+    let cdr = stack.cdrs(1, SOON).await.remove(0);
+    assert_eq!(cdr["recording_consent"], "not_required", "{cdr}");
+    assert_eq!(cdr["recording_url"], file.display().to_string());
+    let rows = recording_rows(&stack, &cdr).await;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(
+        rows[0].source,
+        fcp_core::recording::CallRecordingSource::Number
+    );
+    assert_eq!(rows[0].consent, fcp_core::RecordingConsent::NotRequired);
     stack.finish().await;
 }

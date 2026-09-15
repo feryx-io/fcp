@@ -268,6 +268,17 @@ pub struct Call {
     /// Where the call's recording is being written, when it is recorded.
     pub recording_path: Option<String>,
 
+    /// What the parties were told about the call's recording, once a
+    /// recording was to start; on the record
+    /// (`docs/COMPLIANCE_FOLLOWUPS.md` §8).
+    pub recording_consent: Option<fcp_core::RecordingConsent>,
+
+    /// Why the call is to be recorded without anyone asking — a user's
+    /// `record_all_calls`, a number's `recording_enabled`, the node's
+    /// `enable_recording` — decided when the INVITE arrives, started once
+    /// the call is answered.
+    pub auto_recording: Option<fcp_core::recording::CallRecordingSource>,
+
     /// Each outbound route's target and trunk, primary first, so the trunk
     /// that answered can be named on the record rather than the primary.
     pub route_trunks: Vec<(String, String)>,
@@ -393,6 +404,8 @@ impl Call {
             rtp_stats: None,
             correlation_id: None,
             recording_path: None,
+            recording_consent: None,
+            auto_recording: None,
             route_trunks: Vec::new(),
             flow_id: None,
             flow_current_node: None,
@@ -490,6 +503,8 @@ impl Call {
             rtp_stats: None,
             correlation_id: None,
             recording_path: None,
+            recording_consent: None,
+            auto_recording: None,
             route_trunks: Vec::new(),
             flow_id: None,
             flow_current_node: None,
