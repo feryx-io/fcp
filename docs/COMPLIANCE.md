@@ -264,12 +264,71 @@ to leave a message), the SBC's local capture and SIPREC (the recorder's
 duty), and forge's own recording routes on the WebRTC gateway and media
 server, which record operator bridges that belong to no tenant.
 
+## Subject export
+
+A person may ask what a tenant holds about them. The tenant, having checked
+who is asking, files an export request; `fcp-admin` gathers everything the
+platform holds about that person into one bundle, and the tenant downloads
+it (`docs/COMPLIANCE_FOLLOWUPS.md` §6).
+
+| Route | What it does |
+|---|---|
+| `POST /compliance/subject-requests` | File a request: `{"kind": "export", "subjects": [...], "reference": "DSAR-17"}`. Subjects are `{"type": "user", "username"}`, `{"type": "number", "number"}`, `{"type": "aor", "aor"}` or `{"type": "email", "address"}`; a user the tenant does not have is refused. `201` with the request |
+| `GET /compliance/subject-requests` | The tenant's requests, newest first; `?status=received\|running\|completed\|failed` |
+| `GET /compliance/subject-requests/{id}` | One request: its expansion, report, bundle and deadline |
+| `GET /compliance/subject-requests/{id}/bundle` | The bundle, `application/gzip`, with `x-content-sha256`. `409` until it is ready, `410` once it has expired. Every download is in the audit log |
+
+The routes take `subject_request_manage`. A request is due
+`subject_request_days` after it is received (30 by default, set on the
+policy); `fcp_subject_requests_open{kind}` and
+`fcp_subject_requests_overdue{kind}` are on `/metrics`, and
+`compliance.subject_request_completed` fires when one finishes.
+
+**Who the subject is.** When the request runs, a user is expanded to their
+username, extension, addresses on the tenant's SIP domains, numbers (their
+own and their lines'), email and mailbox; the expansion is kept on the
+request. Data is the subject's when one of those identifiers is in it,
+matched narrowly: a number by its digits or its national form, an address
+by user and host (so the tenant's `alice` is not `alice@elsewhere.example`),
+a name by the same name.
+
+**What the bundle holds.** A gzipped tar with `manifest.json` (the request,
+the expansion, counts per class, every file's SHA-256, what is not exported
+and why), `data/<class>.jsonl` and `media/<class>/<id>.<ext>`:
+
+- the profile without secrets, API tokens (name and prefix), devices, lines,
+  extensions, queue memberships and meetings owned;
+- mailboxes, greetings, messages in them and messages the subject left
+  elsewhere, with their audio;
+- call records naming the subject, the recordings, SIP traces and flow traces
+  of those calls, and the conference recordings they were in;
+- registrations, presence and its history, subscriptions, authorisation
+  policies and resource lists;
+- emergency calls, the subject's actions in the admin and configuration audit
+  logs, port requests naming them as the contact, webhook deliveries whose
+  payload names them, and the allow and block list entries naming them.
+
+A recording or message in which other people are heard is listed under
+`review` in the report and the manifest: redact or withhold before handing
+the bundle over. Items under a legal hold are exported and counted, with the
+hold's matter. A file this host cannot read is listed with why. Call
+recordings and voicemail audio are read from the directories `fcp-admin`
+mounts, conference recordings through the conference server.
+
+**Operating it.** `[compliance] exports_dir` in `fcp-admin` is where bundles
+are written and served from, so every admin replica mounts the same
+directory; `export_ttl_days` (7) is how long one can be downloaded, after
+which it is removed. The worker runs on one replica at a time under the lock
+`fcp:subject-requests`, and puts back in the queue any request a stopped
+replica left running.
+
 ## Who may do this
 
 The compliance routes take their own permissions, held by `super_admin`
 and `tenant_admin` (and the static token, and API tokens that carry them):
 `compliance_manage` for the policy and retention runs, `legal_hold_manage`
-for holds, `audit_view` for the audit and deletion logs. Other admin roles,
+for holds, `subject_request_manage` for subject requests, `audit_view` for
+the audit and deletion logs. Other admin roles,
 `read_only` included, are refused.
 
 ## Admin audit log
@@ -337,7 +396,9 @@ recorded. The admin UI's **Recordings** page lists them with a player.
 3. If records must outlive the table, have the operator enable the CDR
    archive, then set `cdr_archive_required` so retention waits for it.
 4. Run `POST /compliance/retention/run` once and read the report.
-5. Give your compliance officer `GET /audit-log` and `GET /cdrs/export`.
+5. Give your compliance officer `GET /audit-log` and `GET /cdrs/export`, and
+   `subject_request_manage` for the requests people make; set
+   `subject_request_days` to your regime's deadline.
 6. For conferences, decide `recording_format` on each node (`auto` records
    video meetings to MP4 where the node encodes H.264 and to WebM where it
    encodes VP8 or VP9, audio-only ones to WAV) and let

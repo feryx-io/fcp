@@ -68,6 +68,111 @@ pub fn keys(identifier: &str) -> Vec<String> {
     out
 }
 
+/// An identifier's parts, as [`keys`] reads them.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct Parts {
+    /// The digits of a numeric user part.
+    digits: Option<String>,
+    /// A non-numeric user part, lower-cased.
+    name: Option<String>,
+    /// `user@host`, when there is a host.
+    aor: Option<String>,
+}
+
+fn parts(identifier: &str) -> Parts {
+    let mut p = Parts::default();
+    for key in keys(identifier) {
+        if let Some(d) = key.strip_prefix("num:") {
+            p.digits = Some(d.to_string());
+        } else if let Some(n) = key.strip_prefix("user:") {
+            p.name = Some(n.to_string());
+        } else if let Some(a) = key.strip_prefix("aor:") {
+            p.aor = Some(a.to_string());
+        }
+    }
+    p
+}
+
+/// Whether two digit strings are the same number: equal, or one the other
+/// with a country code before it — the shorter at least ten digits, so a
+/// seven-digit local number or an extension never meets a longer one.
+fn same_number(a: &str, b: &str) -> bool {
+    let (short, long) = if a.len() <= b.len() { (a, b) } else { (b, a) };
+    short == long || (short.len() >= 10 && long.ends_with(short))
+}
+
+/// Decides whether an identifier found in data is the subject's, narrowly
+/// enough to act on: what an export hands over or an erasure removes
+/// (`docs/COMPLIANCE_FOLLOWUPS.md` §6.1). Where [`keys`] lean towards
+/// matching, this does not:
+///
+/// - a number matches the same digits, or its national form (at least ten
+///   digits) against its international one — not a different country's
+///   number that ends alike;
+/// - an address with a host matches only the same user at the same host,
+///   so the tenant's `alice` is not `alice@elsewhere.example`;
+/// - a bare name matches only the same bare name.
+#[derive(Debug, Clone, Default)]
+pub struct SubjectMatcher {
+    numbers: Vec<String>,
+    names: Vec<String>,
+    aors: Vec<String>,
+}
+
+impl SubjectMatcher {
+    /// A matcher for a subject known by `identifiers` (an expansion).
+    pub fn new<I, S>(identifiers: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let mut m = Self::default();
+        for identifier in identifiers {
+            let p = parts(identifier.as_ref());
+            if let Some(d) = p.digits {
+                push_unique(&mut m.numbers, d);
+            }
+            if let Some(n) = p.name {
+                push_unique(&mut m.names, n);
+            }
+            if let Some(a) = p.aor {
+                push_unique(&mut m.aors, a);
+            }
+        }
+        m
+    }
+
+    /// Whether the matcher knows no identifier at all.
+    pub fn is_empty(&self) -> bool {
+        self.numbers.is_empty() && self.names.is_empty() && self.aors.is_empty()
+    }
+
+    /// Whether `identifier` — a URI, a name-addr, a number, a name — is the
+    /// subject's.
+    pub fn matches(&self, identifier: &str) -> bool {
+        let p = parts(identifier);
+        if let Some(d) = &p.digits {
+            return self.numbers.iter().any(|n| same_number(n, d));
+        }
+        match (&p.aor, &p.name) {
+            (Some(aor), _) => self.aors.contains(aor),
+            (None, Some(name)) => self.names.contains(name),
+            (None, None) => false,
+        }
+    }
+
+    /// Whether any of `identifiers` is the subject's.
+    pub fn matches_any<'a>(&self, identifiers: impl IntoIterator<Item = &'a str>) -> bool {
+        identifiers.into_iter().any(|i| self.matches(i))
+    }
+}
+
+fn push_unique(v: &mut Vec<String>, s: String) {
+    if !v.contains(&s) {
+        v.push(s);
+    }
+}
+
 /// Spellings and the keys they must reduce to: the Rust and SQL
 /// implementations are both tested against these.
 pub const KEY_VECTORS: &[(&str, &[&str])] = &[
@@ -112,6 +217,44 @@ mod tests {
         for (spelling, expected) in KEY_VECTORS {
             assert_eq!(keys(spelling), *expected, "{spelling:?}");
         }
+    }
+
+    #[test]
+    fn the_matcher_takes_the_subject_and_nobody_who_looks_like_them() {
+        let m = SubjectMatcher::new([
+            "alice",
+            "1001",
+            "alice@pbx.example",
+            "1001@pbx.example",
+            "+14155550100",
+            "alice@mail.example",
+        ]);
+        for theirs in [
+            "sip:alice@pbx.example",
+            "\"Alice\" <sips:Alice@PBX.example:5061;transport=tls>",
+            "sip:1001@pbx.example",
+            "sip:1001@10.0.0.5",
+            "tel:+1-415-555-0100",
+            "sip:4155550100@carrier.example",
+            "alice",
+            "alice@mail.example",
+        ] {
+            assert!(m.matches(theirs), "{theirs:?} is the subject's");
+        }
+        for not_theirs in [
+            "sip:alice@elsewhere.example",
+            "sip:bob@pbx.example",
+            "sip:10011@pbx.example",
+            "sip:+444155550100@carrier.example",
+            "5550100",
+            "bob",
+            "",
+        ] {
+            assert!(!m.matches(not_theirs), "{not_theirs:?} is not");
+        }
+        assert!(m.matches_any(["sip:bob@pbx.example", "sip:alice@pbx.example"]));
+        assert!(SubjectMatcher::new(Vec::<String>::new()).is_empty());
+        assert!(!SubjectMatcher::new(["", "   "]).matches("alice"));
     }
 
     #[test]

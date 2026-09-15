@@ -1,6 +1,6 @@
 # Compliance Follow-ups — Design
 
-Status: **phases 1–3 of 5 done** (2026-09-15, v0.25.166, v0.25.170 and v0.25.171); design agreed the
+Status: **phases 1–4 of 5 done** (2026-09-15, v0.25.166, v0.25.170, v0.25.171 and v0.25.172); design agreed the
 same day with every recommendation in §12 taken. This document is the
 plan for the three compliance items `STATUS.md` left unscheduled when the
 basics shipped on 2026-09-02: **legal hold**, **per-subject export and
@@ -720,6 +720,67 @@ One PR per phase, reviewed before the next starts.
    the mix, the notice schedule and overwrite, and prompt loading.
 4. **Subject export.** The canonical form, identifiers and expansion,
    requests, the worker, the bundle and its download.
+   *Phase 4 shipped 2026-09-15 (v0.25.172).* Migration 065 (`subject_requests`,
+   the policy's `subject_request_days`), `fcp_core::subject_request` and the
+   Postgres `SubjectDataStore`, with these decisions made on the way:
+
+   - **Two matchers.** A hold's keys lean towards matching (§5); an export
+     must not hand one person someone else's data, so it decides with
+     `fcp_core::subject::SubjectMatcher`: digits, or a national form of ten
+     or more digits against its international one; an address by user and
+     host; a bare name by the same name. Erasure (phase 5) acts by the same
+     matcher. The canonical keys still narrow candidates in SQL, so a store
+     returns a superset and the matcher decides.
+   - **The expansion keeps more than keys.** `legal_hold::expand` returns the
+     identifiers, the user ids and the mailboxes, kept on the request; a
+     user's own rows (tokens, devices, lines, extensions, memberships,
+     meetings, mailboxes, greetings) are found by ownership, everything else
+     by identifiers, and what hangs off a call (its recordings and traces)
+     by the calls whose records matched.
+   - **The record table is walked, not indexed.** Oldest first by
+     `(start_time, cdr_id)` in pages, filtered by the subject's keys, on the
+     primary: an export does not miss what a replica has yet to see.
+   - **Payloads no column names a party in** — webhook deliveries — are
+     narrowed by `LIKE` on the subject's names and number tails and matched
+     on every string in the JSON, including JSON held as a string.
+   - **Holds do not narrow an export.** Held items are exported and counted,
+     and the report names the holds' matters.
+   - **Review before handing over.** A call recording (two parties), a
+     message in the subject's mailbox left by someone else, and a room with
+     more than one participant are listed under `review`.
+   - **Files come from where they are.** Call recordings, voicemail audio
+     and the profile picture from the directories `fcp-admin` mounts (the
+     reaper's roots), conference recordings through the conference server;
+     a file that cannot be read is reported with why, and the rest of the
+     export goes on.
+   - **The bundle is a file on a shared directory**, `[compliance]
+     exports_dir`, not an `ArchiveTarget`, which cannot be read back.
+     Downloads are repeatable until `export_ttl_days` rather than once: an
+     interrupted download can be retried, and every one is in the audit log
+     (the audit middleware now audits `GET …/bundle`). Expired bundles are
+     removed and the request says so (`410`).
+   - **The worker** runs under `fcp:subject-requests`; holding the lock and
+     idle, it takes any request marked running as left by a stopped replica
+     and queues it again. Erasure requests are refused at filing until
+     phase 5.
+   - **Not exported, and said so in the manifest:** the event and CDR
+     streams (in transit), the CDR archive (copies of the table), dead
+     letters on nodes and in Redis (failed records the operator holds;
+     erasure reaches them), live call state, caches, logs and backups.
+
+   Tests: the Postgres suite (a subject seeded across every store — profile
+   without secrets, her call and not Bob's with Carol nor a namesake's
+   elsewhere, the recordings and traces of her call, a recording on a host
+   this one does not mount, messages in her box and left in another, not a
+   foreign number that ends like hers, a room she was in, registrations,
+   emergency calls, audit events, a webhook delivery, a block list entry;
+   a hold counted with its matter; the review list; every manifest file in
+   the bundle; the bundle removed on expiry), the API suite (validation,
+   the policy's deadline, list and scope, `409` before it runs, the worker,
+   the report, the download with its checksum, the audit entry, a read-only
+   session refused, `410` once removed), and unit tests for the matcher,
+   the request model, media names, local file roots, packing, the payload
+   patterns and JSON leaves, the event and the metrics.
 5. **Subject erasure.** Preview and confirm, the per-store actions of
    §6.3, pseudonymisation, the archive rewrite, dead letters, the report;
    tenant deletion as a job on the same machinery.

@@ -27,7 +27,11 @@ use tracing::warn;
 /// Which requests are worth an audit row.
 pub fn should_audit(method: &Method, path: &str) -> bool {
     match *method {
-        Method::GET | Method::HEAD | Method::OPTIONS => path.ends_with("/cdrs/export"),
+        Method::GET => {
+            path.ends_with("/cdrs/export")
+                || (path.contains("/compliance/subject-requests/") && path.ends_with("/bundle"))
+        }
+        Method::HEAD | Method::OPTIONS => false,
         _ => true,
     }
 }
@@ -172,6 +176,14 @@ mod tests {
         assert!(should_audit(&Method::POST, "/api/v1/users"));
         assert!(should_audit(&Method::DELETE, "/api/v1/users/alice"));
         assert!(should_audit(&Method::GET, "/api/v1/cdrs/export"));
+        assert!(should_audit(
+            &Method::GET,
+            "/api/v1/compliance/subject-requests/sreq-1/bundle"
+        ));
+        assert!(!should_audit(
+            &Method::GET,
+            "/api/v1/compliance/subject-requests/sreq-1"
+        ));
         assert!(!should_audit(&Method::GET, "/api/v1/cdrs"));
         assert!(!should_audit(&Method::OPTIONS, "/api/v1/users"));
     }

@@ -1319,7 +1319,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "117725a109d387c937a1533ce01b450cbde6b88abceea8473c4d7a85853cda3c"
 dependencies = [
  "lazy_static",
- "windows-sys 0.48.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2211,7 +2211,7 @@ checksum = "9f1f227452a390804cdb637b74a86990f2a7d7ba4b7d5693aac9b4dd6defd8d6"
 
 [[package]]
 name = "fcp-admin"
-version = "0.25.171"
+version = "0.25.172"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2244,12 +2244,13 @@ dependencies = [
  "tower-http 0.6.8",
  "tracing",
  "tracing-subscriber",
+ "urlencoding",
  "uuid",
 ]
 
 [[package]]
 name = "fcp-admin-ui"
-version = "0.25.171"
+version = "0.25.172"
 dependencies = [
  "axum 0.7.9",
  "include_dir",
@@ -2258,7 +2259,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-api-core"
-version = "0.25.171"
+version = "0.25.172"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2300,7 +2301,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-api-gateway"
-version = "0.25.171"
+version = "0.25.172"
 dependencies = [
  "anyhow",
  "axum 0.7.9",
@@ -2330,7 +2331,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-b2bua-core"
-version = "0.25.171"
+version = "0.25.172"
 dependencies = [
  "anyhow",
  "bytes",
@@ -2354,7 +2355,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-billing"
-version = "0.25.171"
+version = "0.25.172"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2370,7 +2371,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-call-manager"
-version = "0.25.171"
+version = "0.25.172"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2432,7 +2433,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-cdr"
-version = "0.25.171"
+version = "0.25.172"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2463,7 +2464,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-cli"
-version = "0.25.171"
+version = "0.25.172"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2496,7 +2497,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-cluster"
-version = "0.25.171"
+version = "0.25.172"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2515,7 +2516,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-conference-server"
-version = "0.25.171"
+version = "0.25.172"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -2590,12 +2591,14 @@ dependencies = [
  "bytes",
  "chrono",
  "dashmap 6.1.0",
+ "flate2",
  "hmac 0.12.1",
  "md5",
  "rust_decimal",
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "tar",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
@@ -2605,7 +2608,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-crypto"
-version = "0.25.171"
+version = "0.25.172"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -2623,7 +2626,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-events"
-version = "0.25.171"
+version = "0.25.172"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2641,7 +2644,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-events-server"
-version = "0.25.171"
+version = "0.25.172"
 dependencies = [
  "anyhow",
  "axum 0.7.9",
@@ -2698,7 +2701,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-ivr"
-version = "0.25.171"
+version = "0.25.172"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2739,7 +2742,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-jobs"
-version = "0.25.171"
+version = "0.25.172"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2809,7 +2812,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-media-server"
-version = "0.25.171"
+version = "0.25.172"
 dependencies = [
  "anyhow",
  "clap",
@@ -2832,7 +2835,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-pbx"
-version = "0.25.171"
+version = "0.25.172"
 dependencies = [
  "dashmap 6.1.0",
  "fcp-b2bua-core",
@@ -2871,7 +2874,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-presence"
-version = "0.25.171"
+version = "0.25.172"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -2898,7 +2901,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-presence-server"
-version = "0.25.171"
+version = "0.25.172"
 dependencies = [
  "anyhow",
  "axum 0.7.9",
@@ -2929,7 +2932,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-queue"
-version = "0.25.171"
+version = "0.25.172"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2951,7 +2954,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-registrar"
-version = "0.25.171"
+version = "0.25.172"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2997,7 +3000,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-sbc"
-version = "0.25.171"
+version = "0.25.172"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3049,7 +3052,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-sbc-core"
-version = "0.25.171"
+version = "0.25.172"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -3129,7 +3132,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-storage-postgres"
-version = "0.25.171"
+version = "0.25.172"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3139,11 +3142,13 @@ dependencies = [
  "fcp-core",
  "fcp-crypto",
  "fcp-flow",
+ "flate2",
  "rust_decimal",
  "rust_decimal_macros",
  "serde",
  "serde_json",
  "sqlx",
+ "tar",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
@@ -3154,7 +3159,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-storage-redis"
-version = "0.25.171"
+version = "0.25.172"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3175,7 +3180,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-testkit"
-version = "0.25.171"
+version = "0.25.172"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3208,7 +3213,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-tts-server"
-version = "0.25.171"
+version = "0.25.172"
 dependencies = [
  "anyhow",
  "axum 0.7.9",
@@ -3246,7 +3251,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-voicemail-server"
-version = "0.25.171"
+version = "0.25.172"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3290,7 +3295,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-webhooks"
-version = "0.25.171"
+version = "0.25.172"
 dependencies = [
  "fcp-core",
  "fcp-events",
@@ -3308,7 +3313,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-webrtc-gateway"
-version = "0.25.171"
+version = "0.25.172"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3386,6 +3391,16 @@ dependencies = [
  "libc",
  "thiserror 1.0.69",
  "winapi",
+]
+
+[[package]]
+name = "filetime"
+version = "0.2.29"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c287a33c7f0a620c38e641e7f60827713987b3c0f26e8ddc9462cc69cf75759"
+dependencies = [
+ "cfg-if",
+ "libc",
 ]
 
 [[package]]
@@ -8132,6 +8147,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7b2093cf4c8eb1e67749a6762251bc9cd836b6fc171623bd0a9d324d37af2417"
 
 [[package]]
+name = "tar"
+version = "0.4.46"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f6221d9a6003c78398e3b239969f352578258df48c8eb051caadae0015bc840"
+dependencies = [
+ "filetime",
+ "libc",
+ "xattr",
+]
+
+[[package]]
 name = "target-lexicon"
 version = "0.13.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9876,6 +9902,16 @@ dependencies = [
  "rusticata-macros",
  "thiserror 2.0.18",
  "time",
+]
+
+[[package]]
+name = "xattr"
+version = "1.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32e45ad4206f6d2479085147f02bc2ef834ac85886624a23575ae137c8aa8156"
+dependencies = [
+ "libc",
+ "rustix 1.1.4",
 ]
 
 [[package]]

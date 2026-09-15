@@ -27,6 +27,8 @@ pub enum ApiError {
     /// A backing service this endpoint proxies to is not configured or
     /// not reachable.
     ServiceUnavailable(String),
+    /// What was asked for existed and is gone for good.
+    Gone(String),
 }
 
 impl IntoResponse for ApiError {
@@ -50,6 +52,7 @@ impl IntoResponse for ApiError {
                 Some(msg),
             ),
             ApiError::Conflict(msg) => (StatusCode::CONFLICT, "Conflict".to_string(), Some(msg)),
+            ApiError::Gone(msg) => (StatusCode::GONE, "Gone".to_string(), Some(msg)),
             ApiError::ServiceUnavailable(msg) => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 "Service Unavailable".to_string(),

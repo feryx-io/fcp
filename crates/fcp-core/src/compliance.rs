@@ -106,7 +106,14 @@ pub struct CompliancePolicy {
     /// is recorded, for regimes that require a continuing notice.
     #[serde(default)]
     pub recording_notice_interval_secs: Option<u32>,
+    /// Days a subject request may take from receipt to answer.
+    #[serde(default = "default_subject_request_days")]
+    pub subject_request_days: u32,
     pub updated_at: SystemTime,
+}
+
+fn default_subject_request_days() -> u32 {
+    crate::subject_request::DEFAULT_REQUEST_DAYS
 }
 
 impl CompliancePolicy {
@@ -125,6 +132,7 @@ impl CompliancePolicy {
             recording_consent_prompt_id: None,
             recording_consent_on_failure: ConsentFailureAction::Record,
             recording_notice_interval_secs: None,
+            subject_request_days: crate::subject_request::DEFAULT_REQUEST_DAYS,
             updated_at: SystemTime::now(),
         }
     }
@@ -670,6 +678,71 @@ pub trait ComplianceStore: Send + Sync {
         tenant_id: &TenantId,
         limit: usize,
     ) -> anyhow::Result<Vec<RetentionReport>>;
+
+    // ── Subject requests (docs/COMPLIANCE_FOLLOWUPS.md §6.2) ──────────
+
+    async fn create_subject_request(
+        &self,
+        _request: &crate::subject_request::SubjectRequest,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("subject requests are not supported by this store")
+    }
+
+    async fn get_subject_request(
+        &self,
+        _tenant_id: &TenantId,
+        _id: &crate::SubjectRequestId,
+    ) -> anyhow::Result<Option<crate::subject_request::SubjectRequest>> {
+        Ok(None)
+    }
+
+    /// A tenant's requests, newest first, optionally of one status.
+    async fn list_subject_requests(
+        &self,
+        _tenant_id: &TenantId,
+        _status: Option<crate::subject_request::SubjectRequestStatus>,
+        _limit: usize,
+    ) -> anyhow::Result<Vec<crate::subject_request::SubjectRequest>> {
+        Ok(Vec::new())
+    }
+
+    /// The oldest received request of any tenant, marked running.
+    async fn claim_subject_request(
+        &self,
+    ) -> anyhow::Result<Option<crate::subject_request::SubjectRequest>> {
+        Ok(None)
+    }
+
+    /// Store a request's progress: status, expansion, times, report,
+    /// bundle, error.
+    async fn update_subject_request(
+        &self,
+        _request: &crate::subject_request::SubjectRequest,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Put requests left running by a worker that stopped back in the
+    /// queue. Returns how many.
+    async fn requeue_running_subject_requests(&self) -> anyhow::Result<u64> {
+        Ok(0)
+    }
+
+    /// Completed requests whose bundle is past `now` and not yet removed.
+    async fn expired_subject_bundles(
+        &self,
+        _now: SystemTime,
+    ) -> anyhow::Result<Vec<crate::subject_request::SubjectRequest>> {
+        Ok(Vec::new())
+    }
+
+    /// Open requests by kind: `(kind, open, past due at now)`.
+    async fn subject_request_counts(
+        &self,
+        _now: SystemTime,
+    ) -> anyhow::Result<Vec<(String, u64, u64)>> {
+        Ok(Vec::new())
+    }
 }
 
 /// Apply `policy` to `storage`, every deletion attributed to `actor` in

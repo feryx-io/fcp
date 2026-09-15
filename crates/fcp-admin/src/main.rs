@@ -45,6 +45,7 @@ mod cli;
 mod cluster_api;
 mod config;
 mod storage;
+mod subject_requests;
 
 use cli::Cli;
 use config::load_config;
@@ -522,6 +523,12 @@ async fn main() -> Result<()> {
     } else {
         api_state
     };
+
+    // Subject requests: exports run here, beside retention
+    // (docs/COMPLIANCE_FOLLOWUPS.md §6.2).
+    if let Some(storage) = api_state.storage.clone() {
+        subject_requests::spawn(storage, &config, api_state.clone());
+    }
 
     // Initialize cluster reader (optional — only when Redis is configured)
     let cluster_reader = if let Some(ref redis_url) = config.cluster.redis_url {

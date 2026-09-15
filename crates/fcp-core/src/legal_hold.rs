@@ -177,33 +177,73 @@ pub struct LegalHoldViolation {
     pub hold_id: String,
 }
 
-/// The canonical keys of `subjects` in `tenant_id`, a user expanded to
-/// everything that identifies them: username, extension, numbers (their
-/// own and their line bindings'), addresses on the tenant's SIP domains,
-/// email, and `mailbox:<id>` for their mailbox.
-pub async fn expand_subjects(
-    storage: &DynStorage,
-    tenant_id: &TenantId,
-    subjects: &[SubjectIdentifier],
-) -> anyhow::Result<Vec<String>> {
-    use crate::storage::{
-        CredentialStore, LineBindingStore, PhoneNumberStore, TenantStore, VoicemailStore,
-    };
-    let mut keys: Vec<String> = Vec::new();
-    // Keys that are not an identifier's (a mailbox), added after.
-    let mut extra: Vec<String> = Vec::new();
-    let mut add = |identifier: &str| {
-        for k in crate::subject::keys(identifier) {
+/// A subject as the tenant knows them: every spelling that identifies them,
+/// and the platform objects that are theirs (`docs/COMPLIANCE_FOLLOWUPS.md`
+/// §6.1). Taken once, when a hold is placed or a request starts, and kept
+/// with it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubjectExpansion {
+    /// Usernames, extensions, their addresses on the tenant's SIP domains,
+    /// numbers and email addresses.
+    pub identifiers: Vec<String>,
+    /// The platform users among the subjects.
+    #[serde(default)]
+    pub user_ids: Vec<crate::UserId>,
+    /// Their mailboxes.
+    #[serde(default)]
+    pub mailbox_ids: Vec<String>,
+}
+
+impl SubjectExpansion {
+    /// The canonical keys a hold matches data against, `mailbox:<id>` last.
+    pub fn keys(&self) -> Vec<String> {
+        let mut keys: Vec<String> = Vec::new();
+        for identifier in &self.identifiers {
+            for k in crate::subject::keys(identifier) {
+                if !keys.contains(&k) {
+                    keys.push(k);
+                }
+            }
+        }
+        for mailbox in &self.mailbox_ids {
+            let k = format!("mailbox:{mailbox}");
             if !keys.contains(&k) {
                 keys.push(k);
             }
         }
+        keys
+    }
+
+    /// The matcher an export or an erasure acts by.
+    pub fn matcher(&self) -> crate::subject::SubjectMatcher {
+        crate::subject::SubjectMatcher::new(&self.identifiers)
+    }
+}
+
+/// `subjects` in `tenant_id`, a user expanded to everything that identifies
+/// them: username, extension, numbers (their own and their line bindings'),
+/// addresses on the tenant's SIP domains, email, and their mailbox. A user
+/// the tenant does not have is an error.
+pub async fn expand(
+    storage: &DynStorage,
+    tenant_id: &TenantId,
+    subjects: &[SubjectIdentifier],
+) -> anyhow::Result<SubjectExpansion> {
+    use crate::storage::{
+        CredentialStore, LineBindingStore, PhoneNumberStore, TenantStore, VoicemailStore,
+    };
+    let mut out = SubjectExpansion::default();
+    let add = |identifiers: &mut Vec<String>, identifier: &str| {
+        let identifier = identifier.trim();
+        if !identifier.is_empty() && !identifiers.iter().any(|i| i == identifier) {
+            identifiers.push(identifier.to_string());
+        }
     };
     for subject in subjects {
         match subject {
-            SubjectIdentifier::Number { number } => add(number),
-            SubjectIdentifier::Aor { aor } => add(aor),
-            SubjectIdentifier::Email { address } => add(address),
+            SubjectIdentifier::Number { number } => add(&mut out.identifiers, number),
+            SubjectIdentifier::Aor { aor } => add(&mut out.identifiers, aor),
+            SubjectIdentifier::Email { address } => add(&mut out.identifiers, address),
             SubjectIdentifier::User { username } => {
                 let user = storage
                     .get_user_in_tenant(username, tenant_id)
@@ -217,35 +257,46 @@ pub async fn expand_subjects(
                 let mut names = vec![user.username.clone()];
                 names.extend(user.extension.clone());
                 for name in &names {
-                    add(name);
+                    add(&mut out.identifiers, name);
                     for domain in &domains {
-                        add(&format!("{name}@{domain}"));
+                        add(&mut out.identifiers, &format!("{name}@{domain}"));
                     }
                 }
-                for number in [&user.phone_number, &user.mobile_number, &user.email]
+                for identifier in [&user.phone_number, &user.mobile_number, &user.email]
                     .into_iter()
                     .flatten()
                 {
-                    add(number);
+                    add(&mut out.identifiers, identifier);
                 }
                 for binding in storage.list_line_bindings_by_user(&user.id).await? {
                     if let Some(number) = storage.get_phone_number(&binding.phone_number_id).await?
                     {
-                        add(&number.e164);
+                        add(&mut out.identifiers, &number.e164);
                     }
                 }
                 if let Some(mailbox) = storage.get_mailbox_by_user(&user.id).await? {
-                    extra.push(format!("mailbox:{}", mailbox.id));
+                    let id = mailbox.id.to_string();
+                    if !out.mailbox_ids.contains(&id) {
+                        out.mailbox_ids.push(id);
+                    }
+                }
+                if !out.user_ids.contains(&user.id) {
+                    out.user_ids.push(user.id);
                 }
             }
         }
     }
-    for key in extra {
-        if !keys.contains(&key) {
-            keys.push(key);
-        }
-    }
-    Ok(keys)
+    Ok(out)
+}
+
+/// The canonical keys of `subjects` in `tenant_id` ([`expand`], then
+/// [`SubjectExpansion::keys`]).
+pub async fn expand_subjects(
+    storage: &DynStorage,
+    tenant_id: &TenantId,
+    subjects: &[SubjectIdentifier],
+) -> anyhow::Result<Vec<String>> {
+    Ok(expand(storage, tenant_id, subjects).await?.keys())
 }
 
 #[cfg(test)]

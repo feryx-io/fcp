@@ -39,3 +39,11 @@ server_url = "http://fcp-events-server:8081/ingest"
 # system_trace_days = 7         # SIP traces of no tenant's call
 # deleted_voicemail_grace_days = 7
 # extra_file_roots = ["/var/lib/fcp/queue-recordings"]
+
+# Subject requests (docs/COMPLIANCE.md): export bundles are written here and
+# served by the API from here, so every admin replica mounts the same
+# directory. A bundle can be downloaded for export_ttl_days.
+[compliance]
+exports_dir = "/app/data/exports"
+# export_ttl_days = 7
+# poll_secs = 30
