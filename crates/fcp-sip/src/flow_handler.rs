@@ -105,6 +105,36 @@ pub struct FlowCallHandler {
     /// The recorder a flow's recordings start through, shared with the SIP
     /// handler so a call is recorded once whoever asks.
     call_recorder: std::sync::OnceLock<Arc<crate::recording::CallRecorder>>,
+
+    /// The routes emergency calls take, shared with the SIP handler, so a
+    /// `Dial` to an emergency number goes where the B2BUA would send it.
+    outbound_route_provider: Option<Arc<dyn crate::handler::OutboundRouteProvider>>,
+}
+
+/// How a `Dial` node places an emergency call: the emergency routes in
+/// order, and the identity every attempt carries.
+struct EmergencyDialPlan {
+    targets: Vec<(sip_core::SipUri, Option<String>)>,
+    from: Option<sip_core::SipUri>,
+    headers: sip_core::Headers,
+}
+
+/// The outcome of one B-leg INVITE.
+#[derive(Debug, Default)]
+struct DialAttempt {
+    /// `answered`, `busy`, `no_answer`, `failed` or `error`.
+    status: String,
+    sip_code: Option<u16>,
+    sip_reason: Option<String>,
+    answered_at: Option<std::time::SystemTime>,
+}
+
+impl DialAttempt {
+    /// Whether an emergency call moves on to its next route after this
+    /// attempt: after anything but an answer or the caller's cancel.
+    fn emergency_fails_over(&self) -> bool {
+        self.status != "answered" && self.sip_code != Some(487)
+    }
 }
 
 impl FlowCallHandler {
@@ -136,6 +166,7 @@ impl FlowCallHandler {
             storage: None,
             dispatcher: None,
             call_recorder: std::sync::OnceLock::new(),
+            outbound_route_provider: None,
         }
     }
 
@@ -216,6 +247,16 @@ impl FlowCallHandler {
     /// Set the registrar for resolving extensions to registered contacts.
     pub fn with_registrar(mut self, registrar: Arc<FcpRegistrar>) -> Self {
         self.registrar = Some(registrar);
+        self
+    }
+
+    /// Route a `Dial` to an emergency number the way the SIP handler routes
+    /// emergency calls.
+    pub fn with_outbound_route_provider(
+        mut self,
+        provider: Option<Arc<dyn crate::handler::OutboundRouteProvider>>,
+    ) -> Self {
+        self.outbound_route_provider = provider;
         self
     }
 
@@ -674,245 +715,283 @@ impl FlowCallHandler {
                 .await;
         }
 
-        let transaction_manager = self.transaction_manager.as_ref().unwrap();
-        let local_uri = self.local_uri.as_ref().unwrap();
-        let contact_uri = self.contact_uri.as_ref().unwrap();
+        // A destination that is an emergency number is an emergency call:
+        // classified, located and recorded as the B2BUA's are, and placed on
+        // each emergency route in turn with the callback number as caller
+        // (`docs/E911_BLOCK_2.md` §4).
+        let emergency = match self.emergency_dial_plan(a_leg_call_id, &destination).await {
+            Some(Ok(plan)) => Some(plan),
+            Some(Err(error_msg)) => {
+                return self
+                    .transition_to_error(a_leg_call_id, &error_msg, on_error, next)
+                    .await;
+            }
+            None => None,
+        };
+        let targets: Vec<(sip_core::SipUri, Option<String>)> = match &emergency {
+            Some(plan) => plan.targets.clone(),
+            None => {
+                // Parse destination URI. For bare extensions, resolve via registrar or
+                // extension → phone number → device chain to get the actual device contact
+                // (e.g., "1234" → "polycom@192.168.1.12") so we INVITE the device directly
+                // instead of looping through the local B2BUA.
+                let dest_uri = match sip_core::SipUri::parse(&destination) {
+                    Ok(uri) => uri,
+                    Err(_) => {
+                        // Bare extension — try registrar lookup first
+                        let mut resolved = None;
 
-        // Parse destination URI. For bare extensions, resolve via registrar or
-        // extension → phone number → device chain to get the actual device contact
-        // (e.g., "1234" → "polycom@192.168.1.12") so we INVITE the device directly
-        // instead of looping through the local B2BUA.
-        let dest_uri = match sip_core::SipUri::parse(&destination) {
-            Ok(uri) => uri,
-            Err(_) => {
-                // Bare extension — try registrar lookup first
-                let mut resolved = None;
-
-                if let Some(ref registrar) = self.registrar {
-                    let aor = if let Some(ref local) = self.local_uri {
-                        format!("sip:{}@{}", destination, local.host())
-                    } else {
-                        format!("sip:{}@localhost", destination)
-                    };
-                    match registrar.get_registrations(&aor).await {
-                        Ok(bindings) if !bindings.is_empty() => {
-                            // Use highest q-value binding
-                            let contact = bindings[0].contact();
-                            if let Ok(uri) = sip_core::SipUri::parse(contact) {
-                                info!(
-                                    a_leg_call_id = %a_leg_call_id,
-                                    destination = %destination,
-                                    contact = %contact,
-                                    "Resolved extension via registrar to device contact"
-                                );
-                                resolved = Some(uri);
+                        if let Some(ref registrar) = self.registrar {
+                            let aor = if let Some(ref local) = self.local_uri {
+                                format!("sip:{}@{}", destination, local.host())
+                            } else {
+                                format!("sip:{}@localhost", destination)
+                            };
+                            match registrar.get_registrations(&aor).await {
+                                Ok(bindings) if !bindings.is_empty() => {
+                                    // Use highest q-value binding
+                                    let contact = bindings[0].contact();
+                                    if let Ok(uri) = sip_core::SipUri::parse(contact) {
+                                        info!(
+                                            a_leg_call_id = %a_leg_call_id,
+                                            destination = %destination,
+                                            contact = %contact,
+                                            "Resolved extension via registrar to device contact"
+                                        );
+                                        resolved = Some(uri);
+                                    }
+                                }
+                                Ok(_) => {
+                                    debug!(a_leg_call_id = %a_leg_call_id, destination = %destination, "No registrations found for extension");
+                                }
+                                Err(e) => {
+                                    debug!(a_leg_call_id = %a_leg_call_id, error = %e, "Registrar lookup failed for extension");
+                                }
                             }
                         }
-                        Ok(_) => {
-                            debug!(a_leg_call_id = %a_leg_call_id, destination = %destination, "No registrations found for extension");
-                        }
-                        Err(e) => {
-                            debug!(a_leg_call_id = %a_leg_call_id, error = %e, "Registrar lookup failed for extension");
-                        }
-                    }
-                }
 
-                // If registrar lookup failed, try extension → phone number → device chain
-                if resolved.is_none() {
-                    if let (Some(ref storage), Some(ref registrar)) =
-                        (&self.storage, &self.registrar)
-                    {
-                        if let Some(tenant_id) = self
-                            .call_manager
-                            .as_ref()
-                            .and_then(|cm| cm.get_call(&a_leg_call_id).map(|c| c.tenant_id))
-                        {
-                            debug!(
-                                a_leg_call_id = %a_leg_call_id,
-                                destination = %destination,
-                                tenant_id = %tenant_id,
-                                "Looking up extension via storage (extension → device chain)"
-                            );
-
-                            if let Ok(Some(extension)) = storage
-                                .get_extension_by_number(&tenant_id, &destination)
-                                .await
+                        // If registrar lookup failed, try extension → phone number → device chain
+                        if resolved.is_none() {
+                            if let (Some(ref storage), Some(ref registrar)) =
+                                (&self.storage, &self.registrar)
                             {
-                                info!(
-                                    a_leg_call_id = %a_leg_call_id,
-                                    destination = %destination,
-                                    target = %extension.target,
-                                    "Found extension in storage"
-                                );
+                                if let Some(tenant_id) = self
+                                    .call_manager
+                                    .as_ref()
+                                    .and_then(|cm| cm.get_call(&a_leg_call_id).map(|c| c.tenant_id))
+                                {
+                                    debug!(
+                                        a_leg_call_id = %a_leg_call_id,
+                                        destination = %destination,
+                                        tenant_id = %tenant_id,
+                                        "Looking up extension via storage (extension → device chain)"
+                                    );
 
-                                match &extension.target {
-                                    fcp_core::ExtensionTarget::PhoneNumber(phone_number_id) => {
-                                        match storage.get_phone_number(phone_number_id).await {
-                                            Ok(Some(phone_number)) => {
-                                                info!(
-                                                    a_leg_call_id = %a_leg_call_id,
-                                                    phone_number_id = %phone_number.id,
-                                                    number = %phone_number.e164,
-                                                    "Resolved phone_number from extension target"
-                                                );
+                                    if let Ok(Some(extension)) = storage
+                                        .get_extension_by_number(&tenant_id, &destination)
+                                        .await
+                                    {
+                                        info!(
+                                            a_leg_call_id = %a_leg_call_id,
+                                            destination = %destination,
+                                            target = %extension.target,
+                                            "Found extension in storage"
+                                        );
+
+                                        match &extension.target {
+                                            fcp_core::ExtensionTarget::PhoneNumber(
+                                                phone_number_id,
+                                            ) => {
                                                 match storage
-                                                    .get_line_binding_by_phone_number(
-                                                        &phone_number.id,
-                                                    )
+                                                    .get_phone_number(phone_number_id)
                                                     .await
                                                 {
-                                                    Ok(Some(line_binding)) => {
-                                                        let devices =
-                                                            line_binding.enabled_devices();
+                                                    Ok(Some(phone_number)) => {
                                                         info!(
                                                             a_leg_call_id = %a_leg_call_id,
-                                                            enabled_device_count = devices.len(),
-                                                            "Found line binding with enabled devices"
+                                                            phone_number_id = %phone_number.id,
+                                                            number = %phone_number.e164,
+                                                            "Resolved phone_number from extension target"
                                                         );
-                                                        for device_binding in devices {
-                                                            if resolved.is_some() {
-                                                                break;
-                                                            }
-                                                            match storage
-                                                                .get_device(
-                                                                    &device_binding.device_id,
-                                                                )
-                                                                .await
-                                                            {
-                                                                Ok(Some(device)) => {
-                                                                    info!(
-                                                                        a_leg_call_id = %a_leg_call_id,
-                                                                        device_name = %device.name,
-                                                                        device_sip_uri = ?device.sip_uri,
-                                                                        "Found device in chain"
-                                                                    );
-                                                                    if let Some(sip_uri) =
-                                                                        &device.sip_uri
+                                                        match storage
+                                                            .get_line_binding_by_phone_number(
+                                                                &phone_number.id,
+                                                            )
+                                                            .await
+                                                        {
+                                                            Ok(Some(line_binding)) => {
+                                                                let devices =
+                                                                    line_binding.enabled_devices();
+                                                                info!(
+                                                                    a_leg_call_id = %a_leg_call_id,
+                                                                    enabled_device_count = devices.len(),
+                                                                    "Found line binding with enabled devices"
+                                                                );
+                                                                for device_binding in devices {
+                                                                    if resolved.is_some() {
+                                                                        break;
+                                                                    }
+                                                                    match storage
+                                                                        .get_device(
+                                                                            &device_binding
+                                                                                .device_id,
+                                                                        )
+                                                                        .await
                                                                     {
-                                                                        match registrar.get_registrations(sip_uri).await {
-                                                                        Ok(bindings) if !bindings.is_empty() => {
-                                                                            if let Ok(uri) = sip_core::SipUri::parse(bindings[0].contact()) {
-                                                                                info!(
-                                                                                    a_leg_call_id = %a_leg_call_id,
-                                                                                    destination = %destination,
-                                                                                    device = %device.name,
-                                                                                    contact = %bindings[0].contact(),
-                                                                                    "Resolved extension via device registrations"
-                                                                                );
-                                                                                resolved = Some(uri);
-                                                                            }
-                                                                        }
-                                                                        Ok(_) => {
+                                                                        Ok(Some(device)) => {
                                                                             info!(
                                                                                 a_leg_call_id = %a_leg_call_id,
-                                                                                sip_uri = %sip_uri,
-                                                                                "No registrations found for device SIP URI"
+                                                                                device_name = %device.name,
+                                                                                device_sip_uri = ?device.sip_uri,
+                                                                                "Found device in chain"
                                                                             );
+                                                                            if let Some(sip_uri) =
+                                                                                &device.sip_uri
+                                                                            {
+                                                                                match registrar.get_registrations(sip_uri).await {
+                                                                                    Ok(bindings) if !bindings.is_empty() => {
+                                                                                        if let Ok(uri) = sip_core::SipUri::parse(bindings[0].contact()) {
+                                                                                            info!(
+                                                                                                a_leg_call_id = %a_leg_call_id,
+                                                                                                destination = %destination,
+                                                                                                device = %device.name,
+                                                                                                contact = %bindings[0].contact(),
+                                                                                                "Resolved extension via device registrations"
+                                                                                            );
+                                                                                            resolved = Some(uri);
+                                                                                        }
+                                                                                    }
+                                                                                    Ok(_) => {
+                                                                                        info!(
+                                                                                            a_leg_call_id = %a_leg_call_id,
+                                                                                            sip_uri = %sip_uri,
+                                                                                            "No registrations found for device SIP URI"
+                                                                                        );
+                                                                                    }
+                                                                                    Err(e) => {
+                                                                                        warn!(
+                                                                                            a_leg_call_id = %a_leg_call_id,
+                                                                                            sip_uri = %sip_uri,
+                                                                                            error = %e,
+                                                                                            "Registrar lookup failed for device SIP URI"
+                                                                                        );
+                                                                                    }
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                        Ok(None) => {
+                                                                            warn!(a_leg_call_id = %a_leg_call_id, device_id = %device_binding.device_id, "Device not found in storage");
                                                                         }
                                                                         Err(e) => {
-                                                                            warn!(
-                                                                                a_leg_call_id = %a_leg_call_id,
-                                                                                sip_uri = %sip_uri,
-                                                                                error = %e,
-                                                                                "Registrar lookup failed for device SIP URI"
-                                                                            );
+                                                                            warn!(a_leg_call_id = %a_leg_call_id, error = %e, "Failed to get device from storage");
                                                                         }
                                                                     }
-                                                                    }
                                                                 }
-                                                                Ok(None) => {
-                                                                    warn!(a_leg_call_id = %a_leg_call_id, device_id = %device_binding.device_id, "Device not found in storage");
-                                                                }
-                                                                Err(e) => {
-                                                                    warn!(a_leg_call_id = %a_leg_call_id, error = %e, "Failed to get device from storage");
-                                                                }
+                                                            }
+                                                            Ok(None) => {
+                                                                info!(a_leg_call_id = %a_leg_call_id, phone_number_id = %phone_number.id, "No line binding found for phone number");
+                                                            }
+                                                            Err(e) => {
+                                                                warn!(a_leg_call_id = %a_leg_call_id, error = %e, "Failed to get line binding");
                                                             }
                                                         }
                                                     }
                                                     Ok(None) => {
-                                                        info!(a_leg_call_id = %a_leg_call_id, phone_number_id = %phone_number.id, "No line binding found for phone number");
+                                                        warn!(a_leg_call_id = %a_leg_call_id, phone_number_id = %phone_number_id, "Phone number not found in storage");
                                                     }
                                                     Err(e) => {
-                                                        warn!(a_leg_call_id = %a_leg_call_id, error = %e, "Failed to get line binding");
+                                                        warn!(a_leg_call_id = %a_leg_call_id, error = %e, "Failed to get phone number from storage");
                                                     }
                                                 }
                                             }
-                                            Ok(None) => {
-                                                warn!(a_leg_call_id = %a_leg_call_id, phone_number_id = %phone_number_id, "Phone number not found in storage");
-                                            }
-                                            Err(e) => {
-                                                warn!(a_leg_call_id = %a_leg_call_id, error = %e, "Failed to get phone number from storage");
-                                            }
-                                        }
-                                    }
-                                    fcp_core::ExtensionTarget::Device(device_id) => {
-                                        if let Ok(Some(device)) =
-                                            storage.get_device(device_id).await
-                                        {
-                                            if let Some(sip_uri) = &device.sip_uri {
-                                                if let Ok(bindings) =
-                                                    registrar.get_registrations(sip_uri).await
+                                            fcp_core::ExtensionTarget::Device(device_id) => {
+                                                if let Ok(Some(device)) =
+                                                    storage.get_device(device_id).await
                                                 {
-                                                    if let Some(binding) = bindings.first() {
-                                                        if let Ok(uri) = sip_core::SipUri::parse(
-                                                            binding.contact(),
-                                                        ) {
-                                                            info!(
-                                                                a_leg_call_id = %a_leg_call_id,
-                                                                destination = %destination,
-                                                                device = %device.name,
-                                                                contact = %binding.contact(),
-                                                                "Resolved extension via direct device target"
-                                                            );
-                                                            resolved = Some(uri);
+                                                    if let Some(sip_uri) = &device.sip_uri {
+                                                        if let Ok(bindings) = registrar
+                                                            .get_registrations(sip_uri)
+                                                            .await
+                                                        {
+                                                            if let Some(binding) = bindings.first()
+                                                            {
+                                                                if let Ok(uri) =
+                                                                    sip_core::SipUri::parse(
+                                                                        binding.contact(),
+                                                                    )
+                                                                {
+                                                                    info!(
+                                                                        a_leg_call_id = %a_leg_call_id,
+                                                                        destination = %destination,
+                                                                        device = %device.name,
+                                                                        contact = %binding.contact(),
+                                                                        "Resolved extension via direct device target"
+                                                                    );
+                                                                    resolved = Some(uri);
+                                                                }
+                                                            }
                                                         }
                                                     }
                                                 }
                                             }
+                                            other => {
+                                                debug!(
+                                                    a_leg_call_id = %a_leg_call_id,
+                                                    target = %other,
+                                                    "Extension target type not supported for Dial resolution"
+                                                );
+                                            }
                                         }
                                     }
-                                    other => {
-                                        debug!(
-                                            a_leg_call_id = %a_leg_call_id,
-                                            target = %other,
-                                            "Extension target type not supported for Dial resolution"
-                                        );
-                                    }
+                                } else {
+                                    warn!(
+                                        a_leg_call_id = %a_leg_call_id,
+                                        destination = %destination,
+                                        "Skipping tenant-scoped extension lookup: no tenant context available"
+                                    );
                                 }
                             }
-                        } else {
-                            warn!(
-                                a_leg_call_id = %a_leg_call_id,
-                                destination = %destination,
-                                "Skipping tenant-scoped extension lookup: no tenant context available"
-                            );
                         }
-                    }
-                }
 
-                match resolved {
-                    Some(uri) => uri,
-                    None => {
-                        // Last resort: construct sip:ext@host (no port) so the
-                        // request routes to the call-manager on port 5060 via
-                        // standard SIP DNS.  We intentionally omit the port to
-                        // avoid looping back to sidecar services (IVR, voicemail)
-                        // that listen on non-standard ports.
-                        if let Some(ref local) = self.local_uri {
-                            let host = local.host().to_string();
-                            let full_uri = format!("sip:{}@{}", destination, host);
-                            warn!(
-                                a_leg_call_id = %a_leg_call_id,
-                                destination = %destination,
-                                resolved_uri = %full_uri,
-                                "Extension not found in registrar or storage — falling back to local B2BUA routing"
-                            );
-                            match sip_core::SipUri::parse(&full_uri) {
-                                Ok(uri) => uri,
-                                Err(e2) => {
-                                    let error_msg =
-                                        format!("Failed to parse fallback URI: {:?}", e2);
-                                    error!(a_leg_call_id = %a_leg_call_id, %error_msg);
+                        match resolved {
+                            Some(uri) => uri,
+                            None => {
+                                // Last resort: construct sip:ext@host (no port) so the
+                                // request routes to the call-manager on port 5060 via
+                                // standard SIP DNS.  We intentionally omit the port to
+                                // avoid looping back to sidecar services (IVR, voicemail)
+                                // that listen on non-standard ports.
+                                if let Some(ref local) = self.local_uri {
+                                    let host = local.host().to_string();
+                                    let full_uri = format!("sip:{}@{}", destination, host);
+                                    warn!(
+                                        a_leg_call_id = %a_leg_call_id,
+                                        destination = %destination,
+                                        resolved_uri = %full_uri,
+                                        "Extension not found in registrar or storage — falling back to local B2BUA routing"
+                                    );
+                                    match sip_core::SipUri::parse(&full_uri) {
+                                        Ok(uri) => uri,
+                                        Err(e2) => {
+                                            let error_msg =
+                                                format!("Failed to parse fallback URI: {:?}", e2);
+                                            error!(a_leg_call_id = %a_leg_call_id, %error_msg);
+                                            return self
+                                                .transition_to_error(
+                                                    a_leg_call_id,
+                                                    &error_msg,
+                                                    on_error,
+                                                    next,
+                                                )
+                                                .await;
+                                        }
+                                    }
+                                } else {
+                                    let error_msg = format!(
+                                            "Extension '{}' not found — no registrar entry, device mapping, or local URI",
+                                            destination
+                                        );
+                                    warn!(a_leg_call_id = %a_leg_call_id, %error_msg);
                                     return self
                                         .transition_to_error(
                                             a_leg_call_id,
@@ -923,36 +1002,19 @@ impl FlowCallHandler {
                                         .await;
                                 }
                             }
-                        } else {
-                            let error_msg = format!(
-                                "Extension '{}' not found — no registrar entry, device mapping, or local URI",
-                                destination
-                            );
-                            warn!(a_leg_call_id = %a_leg_call_id, %error_msg);
-                            return self
-                                .transition_to_error(a_leg_call_id, &error_msg, on_error, next)
-                                .await;
                         }
                     }
-                }
+                };
+
+                info!(
+                    a_leg_call_id = %a_leg_call_id,
+                    dest_uri = %dest_uri.as_str(),
+                    "Resolved destination URI for B-leg"
+                );
+
+                vec![(dest_uri, None)]
             }
         };
-
-        info!(
-            a_leg_call_id = %a_leg_call_id,
-            dest_uri = %dest_uri.as_str(),
-            "Resolved destination URI for B-leg"
-        );
-
-        // Create UserAgentClient for B-leg
-        let mut uac = UserAgentClient::new(local_uri.clone(), contact_uri.clone());
-        if let Some(ref cid) = caller_id {
-            if let Ok(cid_uri) = sip_core::SipUri::parse(cid) {
-                uac.from_uri_override = Some(cid_uri);
-            } else if let Ok(()) = uac.set_display_name(cid) {
-                // Use caller_id as display name with local_uri as From URI
-            }
-        }
 
         // Generate SDP offer for B-leg using the A-leg media session's port.
         // This sends RTP directly to our existing session — no intermediate hop.
@@ -991,8 +1053,258 @@ impl FlowCallHandler {
             "Generated SDP offer for B-leg INVITE"
         );
 
+        let mut attempt = DialAttempt::default();
+        let mut answering_trunk = None;
+        for (i, (dest_uri, trunk)) in targets.iter().enumerate() {
+            attempt = self
+                .dial_attempt(
+                    a_leg_call_id,
+                    dest_uri,
+                    caller_id.as_deref(),
+                    emergency.as_ref(),
+                    &sdp_offer,
+                    session_key,
+                    timeout_secs,
+                )
+                .await?;
+            answering_trunk = trunk.clone();
+            let more = i + 1 < targets.len();
+            if emergency.is_none() || !more || !attempt.emergency_fails_over() {
+                break;
+            }
+            warn!(
+                a_leg_call_id = %a_leg_call_id,
+                trunk = ?trunk,
+                status = %attempt.status,
+                sip_code = ?attempt.sip_code,
+                "Emergency route failed; trying the next emergency route"
+            );
+        }
+        if let (Some(_), Some(call_mgr)) = (&emergency, &self.call_manager) {
+            let leg = fcp_b2bua_core::EmergencyLeg {
+                outcome: attempt.status.clone(),
+                sip_status: attempt.sip_code,
+                answered_at: attempt.answered_at,
+            };
+            let _ = call_mgr.update_call(&a_leg_call_id, |call| {
+                if let Some(em) = call.emergency.as_mut() {
+                    em.leg = Some(leg);
+                }
+                if answering_trunk.is_some() {
+                    call.trunk_name = answering_trunk.clone();
+                }
+            });
+        }
+        let dial_status = attempt.status;
+        let dial_sip_code = attempt.sip_code;
+        let dial_sip_reason = attempt.sip_reason;
+        let next_node = match dial_status.as_str() {
+            "answered" => next,
+            "busy" => on_busy.unwrap_or(next),
+            "no_answer" => on_no_answer.unwrap_or(next),
+            _ => on_error.unwrap_or(next),
+        };
+
+        // When the call is answered and bridged, the flow should park —
+        // BYE propagation in handler.rs handles call teardown when either side hangs up.
+        // Only transition to the next flow node for non-answered outcomes (busy, no_answer, error).
+        if dial_status == "answered" {
+            info!(
+                a_leg_call_id = %a_leg_call_id,
+                "Dial answered — call bridged, flow execution parked"
+            );
+            return Ok(());
+        }
+
+        // Set flow variables with dial results (non-answered cases only)
+        let context_entry = self
+            .contexts
+            .get(&a_leg_call_id)
+            .ok_or_else(|| anyhow::anyhow!("Flow context not found after dial"))?;
+        let context = Arc::clone(context_entry.value());
+        drop(context_entry);
+
+        let mut context_guard = context.write().await;
+        context_guard.set_variable("dial_status".to_string(), dial_status.clone());
+        context_guard.set_variable("dial_destination".to_string(), destination);
+
+        if let Some(code) = dial_sip_code {
+            context_guard.set_variable("dial_sip_code".to_string(), code.to_string());
+        }
+
+        if let Some(reason) = dial_sip_reason {
+            context_guard.set_variable("dial_sip_reason".to_string(), reason);
+        }
+
+        context_guard.current_node = next_node;
+        drop(context_guard);
+
+        info!(
+            a_leg_call_id = %a_leg_call_id,
+            dial_status = %dial_status,
+            "Dial node complete, transitioning to next node"
+        );
+
+        Box::pin(self.execute_next_node(a_leg_call_id)).await
+    }
+
+    /// The emergency plan for a `Dial` to `destination`, when it is an
+    /// emergency number for the call's tenant: the call is marked, its
+    /// record written and `call.emergency` published before any attempt.
+    /// `Some(Err)` when there is no route to place it on.
+    async fn emergency_dial_plan(
+        &self,
+        a_leg_call_id: CallId,
+        destination: &str,
+    ) -> Option<std::result::Result<EmergencyDialPlan, String>> {
+        let call_mgr = self.call_manager.as_ref()?;
+        let call = call_mgr.get_call(&a_leg_call_id)?;
+        let caller = call
+            .original_invite
+            .as_ref()
+            .and_then(|r| sip_parse::header(r.headers(), "From"))
+            .and_then(|from| {
+                let from = from.as_str();
+                let uri = match (from.find('<'), from.find('>')) {
+                    (Some(start), Some(end)) if start < end => &from[start + 1..end],
+                    _ => from.split(';').next().unwrap_or(from),
+                };
+                sip_core::SipUri::parse(uri.trim()).ok()
+            });
+        let username = caller.as_ref().and_then(|u| u.user().map(str::to_string));
+        let aor = caller
+            .as_ref()
+            .map(|u| format!("{}@{}", u.user().unwrap_or_default(), u.host()));
+        let info = crate::emergency::detect(
+            self.storage.as_ref(),
+            &call.tenant_id,
+            destination,
+            username.as_deref(),
+            aor.as_deref(),
+        )
+        .await?;
+
+        let local_host = self
+            .local_uri
+            .as_ref()
+            .map(|u| u.host().to_string())
+            .unwrap_or_else(|| "localhost".to_string());
+        info!(
+            a_leg_call_id = %a_leg_call_id,
+            dialed = %info.dialed,
+            kind = %info.kind,
+            callback = ?info.callback_number,
+            "Flow dialing an emergency number"
+        );
+        let routes = match &self.outbound_route_provider {
+            Some(provider) => {
+                provider
+                    .resolve_emergency_ordered(&format!("sip:{}@{}", info.dialed, local_host))
+                    .await
+            }
+            None => Vec::new(),
+        };
+        let (from, headers) =
+            crate::emergency::outbound_identity(&info, caller.clone(), &local_host);
+        let trunks = crate::handler::route_trunks(&routes);
+        let first_trunk = routes.first().and_then(|r| r.trunk_name.clone());
+        let marked = info.clone();
+        let _ = call_mgr.update_call(&a_leg_call_id, |c| {
+            c.emergency = Some(marked);
+            c.route_trunks = trunks;
+            c.trunk_name = first_trunk;
+        });
+        let record = crate::emergency::placement_record(
+            a_leg_call_id,
+            call.tenant_id,
+            call.original_invite
+                .as_ref()
+                .and_then(|r| sip_parse::header(r.headers(), "Call-ID"))
+                .map(|h| h.as_str().to_string()),
+            aor.map(|a| format!("sip:{a}")).unwrap_or_default(),
+            username,
+            &info,
+        );
+        crate::emergency::announce(call_mgr, a_leg_call_id, record).await;
+
+        let targets: Vec<(sip_core::SipUri, Option<String>)> = routes
+            .iter()
+            .filter_map(|r| {
+                sip_core::SipUri::parse(&r.target_uri)
+                    .ok()
+                    .map(|u| (u, r.trunk_name.clone()))
+            })
+            .collect();
+        if targets.is_empty() {
+            error!(
+                a_leg_call_id = %a_leg_call_id,
+                dialed = %info.dialed,
+                "EMERGENCY CALL COULD NOT BE ROUTED: no upstream trunk available"
+            );
+            let _ = call_mgr.update_call(&a_leg_call_id, |c| {
+                if let Some(em) = c.emergency.as_mut() {
+                    em.leg = Some(fcp_b2bua_core::EmergencyLeg {
+                        outcome: "failed".to_string(),
+                        sip_status: Some(503),
+                        answered_at: None,
+                    });
+                }
+            });
+            return Some(Err("No trunk available for emergency call".to_string()));
+        }
+        Some(Ok(EmergencyDialPlan {
+            targets,
+            from,
+            headers,
+        }))
+    }
+
+    /// Place one B-leg INVITE for a `Dial` node and wait for its outcome;
+    /// an answered leg is bridged onto the A-leg's media session and its
+    /// dialog registered. An emergency plan's identity replaces the caller.
+    #[allow(clippy::too_many_arguments)]
+    async fn dial_attempt(
+        &self,
+        a_leg_call_id: CallId,
+        dest_uri: &sip_core::SipUri,
+        caller_id: Option<&str>,
+        emergency: Option<&EmergencyDialPlan>,
+        sdp_offer: &str,
+        session_key: fcp_core::CallId,
+        timeout_secs: u32,
+    ) -> Result<DialAttempt> {
+        let transaction_manager = self
+            .transaction_manager
+            .as_ref()
+            .context("TransactionManager not configured")?;
+        let local_uri = self.local_uri.as_ref().context("SIP URIs not configured")?;
+        let contact_uri = self
+            .contact_uri
+            .as_ref()
+            .context("SIP URIs not configured")?;
+
+        // Create UserAgentClient for B-leg
+        let mut uac = UserAgentClient::new(local_uri.clone(), contact_uri.clone());
+        if let Some(plan) = emergency {
+            // The callback number, or the caller when there is none.
+            uac.from_uri_override = plan.from.clone();
+        } else if let Some(cid) = caller_id {
+            if let Ok(cid_uri) = sip_core::SipUri::parse(cid) {
+                uac.from_uri_override = Some(cid_uri);
+            } else if let Ok(()) = uac.set_display_name(cid) {
+                // Use caller_id as display name with local_uri as From URI
+            }
+        }
+
         // Create INVITE request with SDP
-        let invite = uac.create_invite(&dest_uri, Some(&sdp_offer));
+        let mut invite = uac.create_invite(dest_uri, Some(sdp_offer));
+        if let Some(plan) = emergency {
+            for header in plan.headers.iter() {
+                let _ = invite
+                    .headers_mut()
+                    .push(header.name_smol().clone(), header.value_smol().clone());
+            }
+        }
 
         info!(
             a_leg_call_id = %a_leg_call_id,
@@ -1026,9 +1338,11 @@ impl FlowCallHandler {
                     error = %e,
                     "DNS resolution failed for B-leg destination"
                 );
-                return self
-                    .transition_to_error(a_leg_call_id, &error_msg, on_error, next)
-                    .await;
+                return Ok(DialAttempt {
+                    status: "error".to_string(),
+                    sip_reason: Some(error_msg),
+                    ..Default::default()
+                });
             }
         };
 
@@ -1094,14 +1408,14 @@ impl FlowCallHandler {
         let mut dial_status = String::from("no_answer");
         let mut dial_sip_code: Option<u16> = None;
         let mut dial_sip_reason: Option<String> = None;
-        let mut next_node = on_no_answer
-            .as_ref()
-            .or(on_error.as_ref())
-            .unwrap_or(&next)
-            .clone();
+        let mut answered_at = None;
 
         // Response event loop
+        // Biased: a transaction that ends reports its final response
+        // first and its termination after, and both can be ready at once.
         tokio::select! {
+            biased;
+
             // Handle provisional responses
             _ = async {
                 while let Some(response) = prov_rx.recv().await {
@@ -1115,9 +1429,11 @@ impl FlowCallHandler {
                     // 180 Ringing, 183 Session Progress, etc. - just log for now
                     // Phase 5: Forward 180/183 to A-leg for ringback/early media
                 }
-            } => {
-                // All provisionals received, waiting for final
-            }
+                // The provisional channel closes when the transaction ends,
+                // which can be just after its final response: the final
+                // response, termination or timeout decides, never this.
+                std::future::pending::<()>().await
+            } => {}
 
             // Handle final response
             result = final_rx => {
@@ -1138,7 +1454,7 @@ impl FlowCallHandler {
                         if (200..300).contains(&code) {
                             // 2xx Success - call answered
                             dial_status = String::from("answered");
-                            next_node = next;
+                            answered_at = Some(std::time::SystemTime::now());
 
                             info!(
                                 a_leg_call_id = %a_leg_call_id,
@@ -1202,15 +1518,12 @@ impl FlowCallHandler {
                         } else if code == 486 || code == 600 {
                             // 486 Busy Here, 600 Busy Everywhere
                             dial_status = String::from("busy");
-                            next_node = on_busy.unwrap_or_else(|| next.clone());
                         } else if code == 408 || code == 480 || code == 487 {
                             // 408 Request Timeout, 480 Temporarily Unavailable, 487 Request Terminated
                             dial_status = String::from("no_answer");
-                            next_node = on_no_answer.unwrap_or_else(|| next.clone());
                         } else {
                             // Other 4xx/5xx/6xx - generic failure
                             dial_status = String::from("failed");
-                            next_node = on_error.unwrap_or_else(|| next.clone());
                         }
                     }
                     Err(_) => {
@@ -1219,7 +1532,6 @@ impl FlowCallHandler {
                             "Final response channel closed unexpectedly"
                         );
                         dial_status = String::from("error");
-                        next_node = on_error.unwrap_or_else(|| next.clone());
                     }
                 }
             }
@@ -1235,7 +1547,6 @@ impl FlowCallHandler {
                         );
                         dial_status = String::from("failed");
                         dial_sip_reason = Some(reason);
-                        next_node = on_error.unwrap_or_else(|| next.clone());
                     }
                     Err(_) => {
                         warn!(
@@ -1243,7 +1554,6 @@ impl FlowCallHandler {
                             "Termination channel closed unexpectedly"
                         );
                         dial_status = String::from("error");
-                        next_node = on_error.unwrap_or_else(|| next.clone());
                     }
                 }
             }
@@ -1256,7 +1566,6 @@ impl FlowCallHandler {
                     "B-leg INVITE timeout"
                 );
                 dial_status = String::from("no_answer");
-                next_node = on_no_answer.unwrap_or_else(|| next.clone());
 
                 // Send CANCEL to terminate the INVITE transaction
                 let cancel_tm = Arc::clone(transaction_manager);
@@ -1270,47 +1579,12 @@ impl FlowCallHandler {
             }
         }
 
-        // When the call is answered and bridged, the flow should park —
-        // BYE propagation in handler.rs handles call teardown when either side hangs up.
-        // Only transition to the next flow node for non-answered outcomes (busy, no_answer, error).
-        if dial_status == "answered" {
-            info!(
-                a_leg_call_id = %a_leg_call_id,
-                "Dial answered — call bridged, flow execution parked"
-            );
-            return Ok(());
-        }
-
-        // Set flow variables with dial results (non-answered cases only)
-        let context_entry = self
-            .contexts
-            .get(&a_leg_call_id)
-            .ok_or_else(|| anyhow::anyhow!("Flow context not found after dial"))?;
-        let context = Arc::clone(context_entry.value());
-        drop(context_entry);
-
-        let mut context_guard = context.write().await;
-        context_guard.set_variable("dial_status".to_string(), dial_status.clone());
-        context_guard.set_variable("dial_destination".to_string(), destination);
-
-        if let Some(code) = dial_sip_code {
-            context_guard.set_variable("dial_sip_code".to_string(), code.to_string());
-        }
-
-        if let Some(reason) = dial_sip_reason {
-            context_guard.set_variable("dial_sip_reason".to_string(), reason);
-        }
-
-        context_guard.current_node = next_node;
-        drop(context_guard);
-
-        info!(
-            a_leg_call_id = %a_leg_call_id,
-            dial_status = %dial_status,
-            "Dial node complete, transitioning to next node"
-        );
-
-        Box::pin(self.execute_next_node(a_leg_call_id)).await
+        Ok(DialAttempt {
+            status: dial_status,
+            sip_code: dial_sip_code,
+            sip_reason: dial_sip_reason,
+            answered_at,
+        })
     }
 
     /// Helper: Generate SDP offer for B-leg INVITE.

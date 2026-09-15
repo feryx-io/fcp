@@ -48,6 +48,7 @@ bytes = { workspace = true }
 dashmap = "6.0"
 serde = { workspace = true }
 smol_str = "0.3"
+ipnetwork = "0.20"
 socket2 = "0.5"
 thiserror = { workspace = true }
 tokio = { version = "1", features = ["full"] }

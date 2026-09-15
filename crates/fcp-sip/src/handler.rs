@@ -314,6 +314,17 @@ struct TargetContact {
     flow_token: Option<String>,
 }
 
+/// The emergency routes a call has not tried yet, and what each attempt
+/// carries: an emergency call goes to its routes one at a time, in order,
+/// never to two carriers at once (`docs/E911.md`).
+struct EmergencyFallback {
+    targets: std::collections::VecDeque<String>,
+    sdp: Option<String>,
+    from: Option<sip_core::SipUri>,
+    display_name: Option<String>,
+    headers: Option<sip_core::Headers>,
+}
+
 /// Routes inbound SIP messages to the transaction manager.
 #[derive(Clone)]
 pub struct SipMessageHandler {
@@ -357,6 +368,8 @@ pub struct SipMessageHandler {
     /// Explicit default tenant for deployments without tenant-specific SIP domains.
     /// When unset, inbound requests must derive a tenant from SIP addressing.
     default_tenant_id: Option<fcp_core::TenantId>,
+    /// Edges whose caller headers are believed (`[e911] trusted_edges`).
+    trusted_edges: crate::emergency::TrustedEdges,
 
     /// Media manager for RTP handling
     media_manager: Option<Arc<fcp_media::MediaManager>>,
@@ -449,6 +462,8 @@ pub struct SipMessageHandler {
     /// Map SIP Call-ID header values → FCP internal CallId for trace correlation.
     /// Populated at call creation (A-leg) and B-leg INVITE (B-leg).
     sip_call_id_map: Arc<dashmap::DashMap<String, String>>,
+    /// Emergency calls' untried routes (see [`EmergencyFallback`]).
+    emergency_fallbacks: Arc<dashmap::DashMap<fcp_b2bua_core::CallId, EmergencyFallback>>,
     /// Conference calls whose B-leg is being moved to another conference
     /// node (phase 5b), so a second REFER while one is in flight is refused.
     conference_migrations: Arc<dashmap::DashMap<fcp_b2bua_core::CallId, ()>>,
@@ -760,6 +775,7 @@ impl SipMessageHandler {
             uac,
             storage,
             default_tenant_id: None,
+            trusted_edges: Default::default(),
             media_manager,
             media_config,
             call_recorder,
@@ -792,6 +808,7 @@ impl SipMessageHandler {
             flow_registry: Arc::new(crate::flow::FlowRegistry::new()),
             sip_trace_tx: None,
             sip_call_id_map: Arc::new(dashmap::DashMap::new()),
+            emergency_fallbacks: Arc::new(dashmap::DashMap::new()),
             conference_migrations: Arc::new(dashmap::DashMap::new()),
         };
 
@@ -861,6 +878,13 @@ impl SipMessageHandler {
     /// The recorder every call recording starts through.
     pub fn call_recorder(&self) -> &Arc<crate::recording::CallRecorder> {
         &self.call_recorder
+    }
+
+    /// Believe the caller a trusted edge names for its INVITEs
+    /// (`docs/E911_BLOCK_2.md` §4, [`crate::emergency`]).
+    pub fn with_trusted_edges(mut self, edges: crate::emergency::TrustedEdges) -> Self {
+        self.trusted_edges = edges;
+        self
     }
 
     pub fn with_default_tenant_id(mut self, tenant_id: fcp_core::TenantId) -> Self {
@@ -1446,7 +1470,18 @@ impl SipMessageHandler {
         //   3. IP / localhost → default tenant only when the edge is effectively single-tenant
         //   4. No domain → default tenant only when the edge is effectively single-tenant
         // A real hostname that matches nothing still fails closed with 403.
-        let tenant_id = if let Some(domain) = extract_tenant_from_invite(request) {
+        // A trusted edge placing a call for one of a tenant's users names
+        // them; that is the call's tenant and caller.
+        let edge_caller = self.trusted_edges.caller(request, peer.ip());
+        let tenant_id = if let Some(edge) = &edge_caller {
+            debug!(
+                source = %peer,
+                tenant_id = %edge.tenant_id,
+                caller = %edge.username,
+                "INVITE placed by a trusted edge for a tenant user"
+            );
+            edge.tenant_id
+        } else if let Some(domain) = extract_tenant_from_invite(request) {
             if fcp_core::is_host_literal(&domain) {
                 // IP literal or localhost — use the default tenant directly.
                 // Internal service-to-service INVITEs (e.g. call-manager →
@@ -1571,7 +1606,7 @@ impl SipMessageHandler {
                 .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
             let is_local = peer_ip == local_ip || peer_ip.is_loopback();
 
-            if !is_local {
+            if !is_local && edge_caller.is_none() {
                 // Check if the source is a registered device by matching source IP
                 // against registered contacts
                 let is_registered_device = if let Some(registrar) = &self.registrar {
@@ -1688,7 +1723,9 @@ impl SipMessageHandler {
         // Emergency calls (911 and the tenant's emergency/test numbers) are
         // detected before any admission control: they are never rejected for
         // balance, and they carry the caller's dispatchable location.
-        let emergency = self.detect_emergency(&tenant_id, request).await;
+        let emergency = self
+            .detect_emergency(&tenant_id, request, edge_caller.as_ref())
+            .await;
         if let Some(em) = &emergency {
             info!(
                 tenant_id = %tenant_id,
@@ -1754,7 +1791,7 @@ impl SipMessageHandler {
             self.spawn_balance_watchdog(call_id, tenant_id, max_duration);
         }
         if let Some(em) = &emergency {
-            self.record_emergency_call(call_id, tenant_id, request, em)
+            self.record_emergency_call(call_id, tenant_id, request, em, edge_caller.as_ref())
                 .await;
         }
 
@@ -1932,10 +1969,9 @@ impl SipMessageHandler {
                                         .await
                                     {
                                         Ok(_session) => {
-                                            if !request.body().is_empty() {
-                                                let a_leg_sdp =
-                                                    String::from_utf8_lossy(request.body())
-                                                        .to_string();
+                                            if let Some(a_leg_sdp) =
+                                                crate::body::request_sdp(request)
+                                            {
                                                 if let Err(e) = media_manager
                                                     .update_session(&fcp_call_id, a_leg_sdp)
                                                     .await
@@ -2024,11 +2060,9 @@ impl SipMessageHandler {
                                         // If we have a media session, negotiate SDP
                                         if let Some(ref media_session_id) = call.media_session_id {
                                             // Extract remote SDP from INVITE body
-                                            if !request.body().is_empty() {
-                                                let remote_sdp =
-                                                    String::from_utf8_lossy(request.body())
-                                                        .to_string();
-
+                                            if let Some(remote_sdp) =
+                                                crate::body::request_sdp(&request)
+                                            {
                                                 // Update media session with remote SDP and get local SDP
                                                 match media_mgr
                                                     .update_session(media_session_id, remote_sdp)
@@ -2295,8 +2329,7 @@ impl SipMessageHandler {
                 {
                     Ok(_session) => {
                         // Set A-leg remote endpoint from INVITE SDP
-                        if !request.body().is_empty() {
-                            let a_leg_sdp = String::from_utf8_lossy(request.body()).to_string();
+                        if let Some(a_leg_sdp) = crate::body::request_sdp(request) {
                             if let Err(e) =
                                 media_manager.update_session(&fcp_call_id, a_leg_sdp).await
                             {
@@ -2348,8 +2381,7 @@ impl SipMessageHandler {
         };
 
         // Extract codecs from A-leg SDP
-        let a_leg_codecs = if !request.body().is_empty() {
-            let sdp = String::from_utf8_lossy(request.body());
+        let a_leg_codecs = if let Some(sdp) = crate::body::request_sdp(request) {
             fcp_media::extract_codecs_from_sdp(&sdp)
         } else {
             Vec::new()
@@ -2421,8 +2453,7 @@ impl SipMessageHandler {
                         );
 
                         // Set A-leg remote endpoint from INVITE SDP
-                        if !request.body().is_empty() {
-                            let a_leg_sdp = String::from_utf8_lossy(request.body()).to_string();
+                        if let Some(a_leg_sdp) = crate::body::request_sdp(request) {
                             if let Err(e) =
                                 media_manager.update_session(&fcp_call_id, a_leg_sdp).await
                             {
@@ -2786,11 +2817,7 @@ impl SipMessageHandler {
 
         let mut leg = fcp_b2bua_core::CallLeg::new_outbound(remote_uri, remote_display_name);
         leg.dialog = Some(dialog);
-        leg.sdp = if !request.body().is_empty() {
-            Some(String::from_utf8_lossy(request.body()).to_string())
-        } else {
-            None
-        };
+        leg.sdp = crate::body::request_sdp(request);
         leg
     }
 
@@ -3091,9 +3118,11 @@ impl SipMessageHandler {
                 );
                 let trunk_name = route.trunk_name.clone();
                 let allowed_codecs = route.allowed_codecs.clone();
+                let trunks = route_trunks(&routes);
                 let _ = self.call_manager.update_call(&call_id, |call| {
                     call.trunk_name = trunk_name;
                     call.outbound_allowed_codecs = allowed_codecs;
+                    call.route_trunks = trunks;
                 });
             }
             let mut bindings = Vec::with_capacity(routes.len());
@@ -3304,12 +3333,11 @@ impl SipMessageHandler {
                                                             .await
                                                         {
                                                             Ok(_session) => {
-                                                                if !request.body().is_empty() {
-                                                                    let a_leg_sdp =
-                                                                        String::from_utf8_lossy(
-                                                                            request.body(),
-                                                                        )
-                                                                        .to_string();
+                                                                if let Some(a_leg_sdp) =
+                                                                    crate::body::request_sdp(
+                                                                        request,
+                                                                    )
+                                                                {
                                                                     if let Err(e) = media_manager
                                                                         .update_session(
                                                                             &fcp_call_id,
@@ -3420,8 +3448,11 @@ impl SipMessageHandler {
                                                                 if let Some(ref media_session_id) =
                                                                     call.media_session_id
                                                                 {
-                                                                    if !request.body().is_empty() {
-                                                                        let remote_sdp = String::from_utf8_lossy(request.body()).to_string();
+                                                                    if let Some(remote_sdp) =
+                                                                        crate::body::request_sdp(
+                                                                            &request,
+                                                                        )
+                                                                    {
                                                                         match media_mgr
                                                                             .update_session(
                                                                                 media_session_id,
@@ -5127,11 +5158,7 @@ impl SipMessageHandler {
         });
 
         // Extract SDP from A-leg INVITE to forward to B-leg
-        let mut a_leg_sdp = if !request.body().is_empty() {
-            Some(String::from_utf8_lossy(request.body()).to_string())
-        } else {
-            None
-        };
+        let mut a_leg_sdp = crate::body::request_sdp(request);
 
         // Rewrite SDP if media is anchored on server
         if let Some(ref original_sdp) = a_leg_sdp {
@@ -5266,25 +5293,9 @@ impl SipMessageHandler {
         // carry P-Asserted-Identity + Priority: emergency for the trunk.
         let (caller_from_uri, emergency_headers) = match &emergency_ctx {
             Some(em) => {
-                let host = caller_from_uri
-                    .as_ref()
-                    .map(|u| u.host().to_string())
-                    .unwrap_or_else(|| self.local_addr.clone());
-                let from_uri = match &em.callback_number {
-                    Some(cb) => sip_core::SipUri::parse(&format!("sip:{cb}@{host}"))
-                        .ok()
-                        .or(caller_from_uri),
-                    None => caller_from_uri,
-                };
-                let mut headers = sip_core::Headers::new();
-                if let Some(cb) = &em.callback_number {
-                    let _ = headers.push(
-                        SmolStr::new("P-Asserted-Identity"),
-                        SmolStr::new(format!("<sip:{cb}@{host}>")),
-                    );
-                }
-                let _ = headers.push(SmolStr::new("Priority"), SmolStr::new("emergency"));
-                (from_uri, Some(headers))
+                let (from, headers) =
+                    crate::emergency::outbound_identity(em, caller_from_uri, &self.local_addr);
+                (from, Some(headers))
             }
             None => (caller_from_uri, None),
         };
@@ -5328,6 +5339,26 @@ impl SipMessageHandler {
                 "Capping parallel forking targets to configured maximum"
             );
             target_contacts.truncate(max_legs);
+        }
+
+        // An emergency call tries its routes one at a time: the first now,
+        // the rest only as each attempt fails.
+        if emergency_ctx.is_some() && target_contacts.len() > 1 {
+            let rest: std::collections::VecDeque<String> = target_contacts
+                .split_off(1)
+                .into_iter()
+                .map(|t| t.uri)
+                .collect();
+            self.emergency_fallbacks.insert(
+                call_id,
+                EmergencyFallback {
+                    targets: rest,
+                    sdp: a_leg_sdp.clone(),
+                    from: caller_from_uri.clone(),
+                    display_name: caller_display_name.clone(),
+                    headers: emergency_headers.clone(),
+                },
+            );
         }
 
         // Create cancel_notify BEFORE sending B-leg INVITEs so CANCEL handler can
@@ -5812,9 +5843,9 @@ impl SipMessageHandler {
                                 .get_call(&call_id)
                                 .and_then(|c| c.original_invite.clone())
                             {
-                                if !original_invite.body().is_empty() {
-                                    let a_leg_offer =
-                                        String::from_utf8_lossy(original_invite.body());
+                                if let Some(a_leg_offer) =
+                                    crate::body::request_sdp(&original_invite)
+                                {
                                     let a_leg_codecs =
                                         fcp_media::sdp::parse_sdp_codecs(&a_leg_offer);
                                     if let Some(preferred) = a_leg_codecs.first() {
@@ -6390,7 +6421,12 @@ impl SipMessageHandler {
                 )
                 .await;
             }
+            self.emergency_fallbacks.remove(&call_id);
             return Ok(());
+        }
+
+        if winning_index.is_some() || cancelled_by_caller {
+            self.emergency_fallbacks.remove(&call_id);
         }
 
         // CANCEL all non-winning B-legs
@@ -6494,9 +6530,9 @@ impl SipMessageHandler {
                                 .get_call(&call_id)
                                 .and_then(|c| c.original_invite.clone())
                             {
-                                if !original_invite.body().is_empty() {
-                                    let a_leg_offer =
-                                        String::from_utf8_lossy(original_invite.body());
+                                if let Some(a_leg_offer) =
+                                    crate::body::request_sdp(&original_invite)
+                                {
                                     let a_leg_codecs =
                                         fcp_media::sdp::parse_sdp_codecs(&a_leg_offer);
                                     if let Some(preferred) = a_leg_codecs.first() {
@@ -6696,6 +6732,19 @@ impl SipMessageHandler {
             // Just clean up; don't send another response to A-leg.
             info!(call_id = %call_id, "Forking task exiting after caller cancellation");
         } else {
+            // An emergency call with routes left tries the next one
+            // before the caller hears anything.
+            if let Some((target, outbound)) = self.next_emergency_leg(call_id).await {
+                return Box::pin(self.handle_parallel_forking(
+                    request,
+                    a_leg_handle,
+                    vec![(target, outbound, None)],
+                    call_id,
+                    cancel_notify,
+                ))
+                .await;
+            }
+
             // All B-legs failed (not due to cancellation) — check CFNA
             let call = self.call_manager.get_call(&call_id);
             let cfna_dest = if let Some(ref call) = call {
@@ -6813,6 +6862,58 @@ impl SipMessageHandler {
         }
 
         Ok(())
+    }
+
+    /// The next emergency route for a call whose attempt failed, dialled
+    /// with the call's SDP and emergency identity; `None` when none is
+    /// left (or none could be sent).
+    async fn next_emergency_leg(
+        &self,
+        call_id: fcp_b2bua_core::CallId,
+    ) -> Option<(String, Arc<crate::uac::OutboundCall>)> {
+        let uac = self.uac.as_ref()?;
+        loop {
+            let (target, sdp, from, display_name, headers) = {
+                let mut fallback = self.emergency_fallbacks.get_mut(&call_id)?;
+                match fallback.targets.pop_front() {
+                    Some(target) => (
+                        target,
+                        fallback.sdp.clone(),
+                        fallback.from.clone(),
+                        fallback.display_name.clone(),
+                        fallback.headers.clone(),
+                    ),
+                    None => {
+                        drop(fallback);
+                        self.emergency_fallbacks.remove(&call_id);
+                        return None;
+                    }
+                }
+            };
+            warn!(
+                call_id = %call_id,
+                target = %target,
+                "Emergency route failed; trying the next emergency route"
+            );
+            uac.inner().set_display_name(display_name).await;
+            uac.inner().set_from_uri(from).await;
+            let sent = tokio::time::timeout(
+                Duration::from_secs(5),
+                uac.invite_with_optional_headers(&target, sdp.as_deref(), headers),
+            )
+            .await;
+            uac.inner().set_display_name(None).await;
+            uac.inner().set_from_uri(None).await;
+            match sent {
+                Ok(Ok(call)) => return Some((target, Arc::new(call))),
+                Ok(Err(e)) => {
+                    error!(call_id = %call_id, target = %target, error = %e, "Failed to send the emergency INVITE");
+                }
+                Err(_) => {
+                    error!(call_id = %call_id, target = %target, "Emergency INVITE timed out (5s)");
+                }
+            }
+        }
     }
 
     /// Handle INVITE in UAS mode (without B-leg forwarding).
@@ -7455,9 +7556,8 @@ impl SipMessageHandler {
                             let rewritten_sdp = if let Some(original_invite) =
                                 call.original_invite.as_ref()
                             {
-                                if !original_invite.body().is_empty() {
-                                    let a_leg_offer =
-                                        String::from_utf8_lossy(original_invite.body());
+                                if let Some(a_leg_offer) = crate::body::request_sdp(original_invite)
+                                {
                                     let a_leg_codecs =
                                         fcp_media::sdp::parse_sdp_codecs(&a_leg_offer);
                                     if let Some(preferred) = a_leg_codecs.first() {
@@ -8648,9 +8748,8 @@ impl SipMessageHandler {
         &self,
         tenant_id: &fcp_core::TenantId,
         request: &sip_core::Request,
+        edge_caller: Option<&crate::emergency::EdgeCaller>,
     ) -> Option<fcp_b2bua_core::EmergencyCallInfo> {
-        use fcp_core::e911::{dialed_user_part, resolve_for_user, EmergencyConfig};
-
         let destination = sip_parse::header(request.headers(), "To")
             .map(|to| {
                 let to = to.as_str();
@@ -8662,65 +8761,33 @@ impl SipMessageHandler {
                     .to_string()
             })
             .unwrap_or_default();
+        let (username, aor) = self.emergency_caller(request, edge_caller);
+        crate::emergency::detect(
+            self.storage.as_ref(),
+            tenant_id,
+            &destination,
+            username.as_deref(),
+            aor.as_deref(),
+        )
+        .await
+    }
 
-        let stored = match self.storage.as_ref().and_then(|s| s.emergency_store()) {
-            Some(store) => store
-                .get_emergency_config(tenant_id)
-                .await
-                .unwrap_or_else(|e| {
-                    warn!(error = %e, "Failed to load emergency config; using defaults");
-                    None
-                }),
-            None => None,
-        };
-        let config = stored.unwrap_or_else(|| EmergencyConfig::defaults(*tenant_id));
-        let kind = config.classify(&destination)?;
-        let dialed = dialed_user_part(&destination).to_string();
-
-        let mut info = fcp_b2bua_core::EmergencyCallInfo {
-            dialed,
-            kind,
-            callback_number: None,
-            location: None,
-        };
-
-        let Some(storage) = &self.storage else {
-            return Some(info);
-        };
-        let caller = extract_from_uri(request).ok();
-        let username = caller
-            .as_ref()
-            .and_then(|u| u.user().map(str::to_string))
-            .unwrap_or_default();
-        let user = if username.is_empty() {
-            None
-        } else {
-            storage
-                .get_user_in_tenant(&username, tenant_id)
-                .await
-                .ok()
-                .flatten()
-        };
-
-        let caller_aor = caller
-            .as_ref()
-            .map(|u| format!("{}@{}", u.user().unwrap_or_default(), u.host()));
-        if let Some(user) = &user {
-            info.location = resolve_for_user(storage.as_ref(), user, caller_aor.as_deref()).await;
+    /// Who an emergency call is from: the user a trusted edge named, else
+    /// the From URI's user; with the `user@host` that picks their device.
+    fn emergency_caller(
+        &self,
+        request: &sip_core::Request,
+        edge_caller: Option<&crate::emergency::EdgeCaller>,
+    ) -> (Option<String>, Option<String>) {
+        let from = extract_from_uri(request).ok();
+        match edge_caller {
+            Some(edge) => (Some(edge.username.clone()), None),
+            None => (
+                from.as_ref().and_then(|u| u.user().map(str::to_string)),
+                from.as_ref()
+                    .map(|u| format!("{}@{}", u.user().unwrap_or_default(), u.host())),
+            ),
         }
-        info.callback_number = info
-            .location
-            .as_ref()
-            .and_then(|l| l.callback_number.clone());
-        if info.location.is_none() {
-            warn!(
-                tenant_id = %tenant_id,
-                caller = %username,
-                dialed = %info.dialed,
-                "Emergency call without a dispatchable location"
-            );
-        }
-        Some(info)
     }
 
     /// Write the audit record and publish `call.emergency` (both best-effort).
@@ -8730,57 +8797,24 @@ impl SipMessageHandler {
         tenant_id: fcp_core::TenantId,
         request: &sip_core::Request,
         info: &fcp_b2bua_core::EmergencyCallInfo,
+        edge_caller: Option<&crate::emergency::EdgeCaller>,
     ) {
-        let notify_contacts = match self.storage.as_ref().and_then(|s| s.emergency_store()) {
-            Some(store) => store
-                .get_emergency_config(&tenant_id)
-                .await
-                .ok()
-                .flatten()
-                .map(|c| c.notify_contacts)
+        let (caller_username, _) = self.emergency_caller(request, edge_caller);
+        let caller_uri = match edge_caller {
+            Some(edge) => format!("sip:{}@{}", edge.username, self.local_addr),
+            None => extract_from_uri(request)
+                .map(|u| format!("sip:{}@{}", u.user().unwrap_or_default(), u.host()))
                 .unwrap_or_default(),
-            None => Vec::new(),
         };
-        if let Some(call) = self.call_manager.get_call(&call_id) {
-            self.call_manager.publish_emergency(&call, notify_contacts);
-        }
-
-        let Some(store) = self
-            .storage
-            .as_ref()
-            .and_then(|s| s.emergency_store())
-            .cloned()
-        else {
-            return;
-        };
-        let caller_uri = extract_from_uri(request)
-            .map(|u| format!("sip:{}@{}", u.user().unwrap_or_default(), u.host()))
-            .unwrap_or_default();
-        let caller_username = extract_from_uri(request)
-            .ok()
-            .and_then(|u| u.user().map(str::to_string));
-        let record = fcp_core::e911::EmergencyCallRecord {
-            id: 0,
+        let record = crate::emergency::placement_record(
+            call_id,
             tenant_id,
-            call_id: call_id.to_string(),
-            sip_call_id: sip_parse::header(request.headers(), "Call-ID")
-                .map(|h| h.as_str().to_string()),
+            sip_parse::header(request.headers(), "Call-ID").map(|h| h.as_str().to_string()),
             caller_uri,
             caller_username,
-            dialed_number: info.dialed.clone(),
-            kind: info.kind,
-            callback_number: info.callback_number.clone(),
-            location: info.location.clone(),
-            trunk_name: None,
-            outcome: "placed".to_string(),
-            placed_at: std::time::SystemTime::now(),
-            notified: false,
-        };
-        tokio::spawn(async move {
-            if let Err(e) = store.insert_emergency_call(&record).await {
-                error!(error = %e, call_id = %record.call_id, "Failed to write emergency call record");
-            }
-        });
+            info,
+        );
+        crate::emergency::announce(&self.call_manager, call_id, record).await;
     }
 
     fn create_simple_response(
@@ -10146,11 +10180,7 @@ impl SipMessageHandler {
         // while we concurrently send 200 OK from this function.
         let cancel_notify = ringing_call.cancel_notify.clone();
 
-        let picker_offer = if !request.body().is_empty() {
-            Some(String::from_utf8_lossy(request.body()).to_string())
-        } else {
-            None
-        };
+        let picker_offer = crate::body::request_sdp(request);
         let original_offer = ringing_call.a_leg.sdp.clone();
 
         let mut pickup_media_session_id = ringing_call.media_session_id;
@@ -11260,8 +11290,7 @@ impl SipMessageHandler {
                         if let Ok(session) = mm.get_session(existing_msid).await {
                             actual_rtp_port = session.ports().0;
                         }
-                        if !request.body().is_empty() {
-                            let remote_sdp = String::from_utf8_lossy(request.body()).to_string();
+                        if let Some(remote_sdp) = crate::body::request_sdp(&request) {
                             let _ = mm.update_session(existing_msid, remote_sdp).await;
                         }
                     } else {
@@ -11272,9 +11301,7 @@ impl SipMessageHandler {
                             mm.create_session_default(core_call_id, fcp_dialog_id).await
                         {
                             actual_rtp_port = session.ports().0;
-                            if !request.body().is_empty() {
-                                let remote_sdp =
-                                    String::from_utf8_lossy(request.body()).to_string();
+                            if let Some(remote_sdp) = crate::body::request_sdp(&request) {
                                 let _ = mm.update_session(&core_call_id, remote_sdp).await;
                             }
                             let _ = call_manager.update_call(&call_id, |c| {
@@ -11697,8 +11724,9 @@ impl SipMessageHandler {
 
             // Rewrite SDP for media anchoring so the CFNA B-leg goes through
             // call-manager's media session (not directly to the caller).
-            let sdp_override = if !original_request.body().is_empty() {
-                let original_sdp = String::from_utf8_lossy(original_request.body()).to_string();
+            let sdp_override = if let Some(original_sdp) =
+                crate::body::request_sdp(original_request)
+            {
                 let media_session_id = self.call_manager.get_call(&call_id).and_then(|call| {
                     if call.media_anchored {
                         call.media_session_id
@@ -11800,13 +11828,7 @@ impl SipMessageHandler {
         sdp_override: Option<String>,
     ) -> Result<Arc<crate::uac::OutboundCall>> {
         // Use SDP override if provided, otherwise extract from A-leg request
-        let mut a_leg_sdp = sdp_override.or_else(|| {
-            if !request.body().is_empty() {
-                Some(String::from_utf8_lossy(request.body()).to_string())
-            } else {
-                None
-            }
-        });
+        let mut a_leg_sdp = sdp_override.or_else(|| crate::body::request_sdp(request));
 
         if Self::is_oneway_intercom_request(request) {
             a_leg_sdp = Some(generate_hold_sdp(
@@ -12708,13 +12730,9 @@ fn validate_sdp_body_static(
         }
     }
 
-    let ctype = sip_parse::header(request.headers(), "Content-Type")
-        .ok_or_else(|| anyhow::anyhow!("Missing Content-Type"))?;
-    if ctype.to_lowercase() != "application/sdp" {
-        return Err(anyhow::anyhow!("Unsupported Content-Type"));
-    }
-
-    let body_str = String::from_utf8_lossy(request.body()).to_string();
+    // The SDP alone or as the SDP part of a multipart body.
+    let body_str = crate::body::request_sdp(request)
+        .ok_or_else(|| anyhow::anyhow!("Unsupported Content-Type"))?;
     let sdp = parse_sdp(&body_str).map_err(|e| anyhow::anyhow!("Invalid SDP: {}", e))?;
 
     if sdp.media.is_empty() {
@@ -12928,7 +12946,7 @@ fn terminate_dialog(
 }
 
 /// Each route's target and trunk, for naming the trunk that answered.
-fn route_trunks(routes: &[OutboundRoute]) -> Vec<(String, String)> {
+pub(crate) fn route_trunks(routes: &[OutboundRoute]) -> Vec<(String, String)> {
     routes
         .iter()
         .filter_map(|r| r.trunk_name.clone().map(|t| (r.target_uri.clone(), t)))
@@ -13468,8 +13486,7 @@ impl ConferenceMigration {
             .or_else(|| {
                 call.original_invite
                     .as_ref()
-                    .filter(|r| !r.body().is_empty())
-                    .map(|r| String::from_utf8_lossy(r.body()).to_string())
+                    .and_then(crate::body::request_sdp)
             })
             .ok_or_else(|| {
                 (

@@ -38,6 +38,11 @@ pub struct CallManager {
 
     /// The region this node advertises, stamped on every record.
     region: Option<String>,
+
+    /// Emergency calls' audit records as their inserts land: the record id
+    /// once written, so the call's ending completes the right row however
+    /// short the call was.
+    emergency_records: Arc<DashMap<CallId, tokio::sync::watch::Receiver<Option<i64>>>>,
 }
 
 impl CallManager {
@@ -51,6 +56,7 @@ impl CallManager {
             billing: None,
             cdr: None,
             region: None,
+            emergency_records: Arc::new(DashMap::new()),
         }
     }
 
@@ -66,6 +72,7 @@ impl CallManager {
             billing: Some(billing),
             cdr: Some(cdr),
             region: None,
+            emergency_records: Arc::new(DashMap::new()),
         }
     }
 
@@ -118,6 +125,7 @@ impl CallManager {
             billing: Some(billing),
             cdr: Some(cdr),
             region: None,
+            emergency_records: Arc::new(DashMap::new()),
         }
     }
 
@@ -131,6 +139,7 @@ impl CallManager {
             cdr: None,
             region: None,
             billing: None,
+            emergency_records: Arc::new(DashMap::new()),
         }
     }
 
@@ -232,6 +241,144 @@ impl CallManager {
         tokio::spawn(async move {
             if let Err(e) = events.publish(event).await {
                 tracing::warn!(error = %e, "Failed to publish call.emergency event");
+            }
+        });
+    }
+
+    /// Write an emergency call's audit record (best-effort, off the call
+    /// path) and remember it, so the call's ending completes it.
+    pub fn record_emergency(&self, call_id: CallId, record: fcp_core::e911::EmergencyCallRecord) {
+        let Some(store) = self
+            .storage
+            .as_ref()
+            .and_then(|s| s.emergency_store())
+            .cloned()
+        else {
+            return;
+        };
+        let (tx, rx) = tokio::sync::watch::channel(None);
+        self.emergency_records.insert(call_id, rx);
+        tokio::spawn(async move {
+            match store.insert_emergency_call(&record).await {
+                Ok(id) => {
+                    let _ = tx.send(Some(id));
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, call_id = %record.call_id, "Failed to write emergency call record");
+                }
+            }
+        });
+    }
+
+    /// Complete an ended emergency call's record and publish
+    /// `call.emergency_completed`.
+    fn complete_emergency(&self, call: &Call) {
+        let Some(em) = &call.emergency else {
+            return;
+        };
+        let answered = call.established_at.is_some();
+        let reason = call
+            .termination
+            .clone()
+            .unwrap_or(fcp_cdr::TerminationReason::Hangup { by: None });
+        let outcome = reason.outcome(answered);
+        let sip_status = if answered {
+            Some(200)
+        } else {
+            outcome.status.or_else(|| {
+                call.failure_reason
+                    .as_deref()
+                    .and_then(extract_sip_status_code)
+            })
+        };
+        let disposition = serde_json::to_value(outcome.disposition)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_else(|| "failed".to_string());
+        let ended_at = call.ended_at.unwrap_or_else(std::time::SystemTime::now);
+        let completion = match &em.leg {
+            // A leg placed apart from the call (a flow's Dial node) has its
+            // own outcome; the call's answer was the flow's.
+            Some(leg) => fcp_core::e911::EmergencyCompletion {
+                trunk_name: call.trunk_name.clone(),
+                outcome: leg.outcome.clone(),
+                sip_status: leg.sip_status,
+                answered_at: leg.answered_at,
+                ended_at,
+                delivery: em.delivery().map(str::to_string),
+            },
+            None => fcp_core::e911::EmergencyCompletion {
+                trunk_name: call.trunk_name.clone(),
+                outcome: disposition,
+                sip_status,
+                answered_at: call.established_at,
+                ended_at,
+                delivery: em.delivery().map(str::to_string),
+            },
+        };
+        info!(
+            call_id = %call.id,
+            outcome = %completion.outcome,
+            sip_status = ?completion.sip_status,
+            trunk = ?completion.trunk_name,
+            "Emergency call completed"
+        );
+
+        if let Some(events) = &self.events {
+            let event = PlatformEvent::Call(CallEvent::EmergencyCompleted {
+                call_id: fcp_core::CallId::from_uuid(*call.id.as_uuid()),
+                tenant_id: call.tenant_id,
+                dialed: em.dialed.clone(),
+                kind: em.kind.to_string(),
+                outcome: completion.outcome.clone(),
+                sip_status: completion.sip_status,
+                trunk_name: completion.trunk_name.clone(),
+                delivery: completion.delivery.clone(),
+                duration_ms: completion
+                    .answered_at
+                    .and_then(|a| ended_at.duration_since(a).ok())
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0),
+                timestamp: ended_at,
+                node_id: self.node_id.clone(),
+            });
+            let events = Arc::clone(events);
+            tokio::spawn(async move {
+                if let Err(e) = events.publish(event).await {
+                    tracing::warn!(error = %e, "Failed to publish call.emergency_completed event");
+                }
+            });
+        }
+
+        let Some((_, mut written)) = self.emergency_records.remove(&call.id) else {
+            return;
+        };
+        let Some(store) = self
+            .storage
+            .as_ref()
+            .and_then(|s| s.emergency_store())
+            .cloned()
+        else {
+            return;
+        };
+        let call_id = call.id;
+        tokio::spawn(async move {
+            // The insert may still be on its way; a failed one drops its
+            // sender and there is nothing to complete.
+            let id = match tokio::time::timeout(
+                std::time::Duration::from_secs(30),
+                written.wait_for(Option::is_some),
+            )
+            .await
+            {
+                Ok(Ok(id)) => id.unwrap_or_default(),
+                _ => {
+                    tracing::error!(call_id = %call_id, "Emergency call record never written; not completed");
+                    return;
+                }
+            };
+            if let Err(e) = store.complete_emergency_call(id, &completion).await {
+                tracing::error!(error = %e, call_id = %call_id, "Failed to complete emergency call record");
             }
         });
     }
@@ -473,6 +620,8 @@ impl CallManager {
                 }
             });
         }
+
+        self.complete_emergency(&call);
 
         // The call's record, off the call path through the writer.
         if let Some(writer) = &self.cdr {

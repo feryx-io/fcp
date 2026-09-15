@@ -4,13 +4,16 @@
 //! Storage rather than HTTP because the call manager has no route that
 //! creates a user.
 
+use fcp_core::e911::{EmergencyCallRecord, EmergencyStore};
 use fcp_core::storage::{
     password::compute_ha1, ConferenceStore, CredentialStore, DeviceStore, ExtensionStore,
-    TenantStore, User,
+    SiteLocationStore, TenantStore, User,
 };
 use fcp_core::{
-    Device, DeviceType, Extension, ExtensionTarget, Meeting, MeetingId, Tenant, TenantId,
+    Device, DeviceType, Extension, ExtensionTarget, LocationId, Meeting, MeetingId, SiteLocation,
+    Tenant, TenantId,
 };
+use fcp_storage_postgres::emergency::PostgresEmergencyStore;
 use fcp_storage_postgres::{PostgresConfig, PostgresStorage};
 use std::time::{Duration, SystemTime};
 
@@ -133,6 +136,58 @@ impl Seed {
             .put_meeting(meeting)
             .await
             .expect("seed meeting");
+    }
+
+    /// A site with a complete civic address and `elin` as its E911
+    /// callback number, with `username` placed at it: the dispatchable
+    /// location of that user's emergency calls (`docs/E911.md`).
+    pub async fn site_for(&self, username: &str, elin: &str) -> LocationId {
+        let mut site = SiteLocation::new(format!("{username}'s office"), self.tenant_id);
+        site.address_line1 = Some("100 State St".to_string());
+        site.city = Some("Albany".to_string());
+        site.state = Some("NY".to_string());
+        site.postal_code = Some("12207".to_string());
+        site.country = Some("US".to_string());
+        site.floor = Some("3".to_string());
+        site.e911_callback_number = Some(elin.to_string());
+        let id = site.id;
+        self.storage.put_location(site).await.expect("seed site");
+        let mut user = self
+            .storage
+            .get_user_in_tenant(username, &self.tenant_id)
+            .await
+            .expect("load user")
+            .expect("user was seeded");
+        user.location_id = Some(id);
+        self.storage.put_user(user).await.expect("place user");
+        id
+    }
+
+    /// The emergency call records, newest first, once at least `n` are
+    /// there and `ready` holds for every one. Panics after `within`.
+    pub async fn emergency_calls(
+        &self,
+        n: usize,
+        within: std::time::Duration,
+        ready: impl Fn(&EmergencyCallRecord) -> bool,
+    ) -> Vec<EmergencyCallRecord> {
+        let store = PostgresEmergencyStore::new(self.storage.pool().clone());
+        let deadline = tokio::time::Instant::now() + within;
+        loop {
+            let records = store
+                .list_emergency_calls(&self.tenant_id, 100)
+                .await
+                .expect("list emergency calls");
+            if records.len() >= n && records.iter().all(&ready) {
+                return records;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "{} of {n} emergency call records ready after {within:?}: {records:#?}",
+                records.len()
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
     }
 
     /// The storage, for fixtures this helper has no shorthand for.

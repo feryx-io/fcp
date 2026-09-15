@@ -318,6 +318,14 @@ pub struct EmergencyCallResponse {
     pub outcome: String,
     pub placed_at: u64,
     pub notified: bool,
+    /// The final SIP status, once the call has ended.
+    pub sip_status: Option<u16>,
+    pub answered_at: Option<u64>,
+    pub ended_at: Option<u64>,
+    /// Seconds from answer to end, for an answered call.
+    pub duration_secs: Option<u64>,
+    /// How the location travelled: `elin`, or none.
+    pub delivery: Option<String>,
 }
 
 impl From<EmergencyCallRecord> for EmergencyCallResponse {
@@ -337,6 +345,15 @@ impl From<EmergencyCallRecord> for EmergencyCallResponse {
             outcome: r.outcome,
             placed_at: unix_secs(r.placed_at),
             notified: r.notified,
+            sip_status: r.sip_status,
+            answered_at: r.answered_at.map(unix_secs),
+            ended_at: r.ended_at.map(unix_secs),
+            duration_secs: r
+                .answered_at
+                .zip(r.ended_at)
+                .and_then(|(a, e)| e.duration_since(a).ok())
+                .map(|d| d.as_secs()),
+            delivery: r.delivery,
         }
     }
 }

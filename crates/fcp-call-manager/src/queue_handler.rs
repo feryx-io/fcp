@@ -2071,14 +2071,14 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
         }
 
         // 2. Extract and parse SDP offer
-        let body = request.body();
-        if body.is_empty() {
+        // The SDP alone or the SDP part of a multipart body.
+        let Some(sdp_offer) = fcp_sip::body::request_sdp(request) else {
             let reject = UserAgentServer::create_response(request, 400, "Missing SDP");
             handle.send_final(reject.clone()).await;
             self.refuse_call(b2bua_call_id, &reject);
             return Ok(());
-        }
-        let sdp_offer = std::str::from_utf8(&body[..]).context("SDP body is not valid UTF-8")?;
+        };
+        let sdp_offer = sdp_offer.as_str();
 
         // 3. Parse codecs and pick first supported one
         let offered_codecs = parse_sdp_codecs(sdp_offer);

@@ -190,11 +190,61 @@ NAT.
 
 ## Calls
 
-`POST /v1/calls` `{destination, connection_id?}` calls a SIP destination
-the same way, audio only: without `connection_id` the gateway creates the
-connection and returns the offer; with one (from forge-api's
+`POST /v1/calls` `{destination, connection_id?, caller?}` calls a SIP
+destination the same way, audio only: without `connection_id` the gateway
+creates the connection and returns the offer; with one (from forge-api's
 `POST /v1/webrtc/connections`) the existing connection is used, and its
 browser must have picked G.722 or G.711.
+
+A destination that is a URI or `user@host` is called as given. A bare
+number (`1001`) goes through the call manager named by `[sip]
+outbound_proxy` (`host:port`), as `sip:1001@<outbound_proxy>`.
+
+`caller` `{tenant_id, username}` names the tenant user the call is placed
+for. The gateway sends it as `X-FCP-Caller-Tenant` and
+`X-FCP-Caller-User`, and a call manager that lists the gateway's address
+in `[e911] trusted_edges` treats the call as that user's: their tenant,
+their location on an emergency call, their name on the record. From any
+other address those headers are ignored.
+
+### Emergency numbers
+
+A browser can dial 911, and the call is placed only when it can be located
+(`docs/E911_BLOCK_2.md` §4):
+
+- The destination is classified against `[e911] emergency_numbers`,
+  `test_numbers` and `dial_prefixes` (by default `911`, `933` and `9`).
+  These should cover every tenant's numbers. The call manager classifies
+  the call again against the tenant's own configuration.
+- Without `caller`, the call is refused with 403 and a reason the browser
+  can show. An unlocated emergency call is never sent.
+- Without `[sip] outbound_proxy`, it is refused with 503: only the call
+  manager can locate and route it.
+- Otherwise it always goes to the call manager, as
+  `sip:<dialled>@<outbound_proxy>`, even when the destination named
+  another host. The call manager resolves the user's dispatchable
+  location and sends the call to its emergency trunks with the callback
+  number.
+
+The session shows `"emergency": "live"` (or `"test"`) and `caller`. Its
+record carries the caller's tenant.
+
+```toml
+[sip]
+outbound_proxy = "10.0.0.2:5060"   # the call manager
+
+[e911]
+emergency_numbers = ["911"]
+test_numbers = ["933"]
+dial_prefixes = ["9"]
+```
+
+On the call manager:
+
+```toml
+[e911]
+trusted_edges = ["10.0.0.7"]       # the gateway's SIP address
+```
 
 ## Ports and firewalls
 

@@ -490,7 +490,7 @@ pub struct EmergencyCallRecord {
     /// Database id; 0 before insertion.
     pub id: i64,
     pub tenant_id: TenantId,
-    /// FCP call id (`call-…`).
+    /// The call's id, a bare UUID as on its CDR.
     pub call_id: String,
     pub sip_call_id: Option<String>,
     pub caller_uri: String,
@@ -500,12 +500,38 @@ pub struct EmergencyCallRecord {
     /// The caller ID the call went out with.
     pub callback_number: Option<String>,
     pub location: Option<DispatchableLocation>,
+    /// The trunk the call went out on: the first chosen at placement, the
+    /// one that answered once the call completes.
     pub trunk_name: Option<String>,
-    /// `routed`, `no_route`, `failed`, … — what happened at placement time.
+    /// `placed` until the call ends, then its disposition: `answered`,
+    /// `busy`, `no_answer`, `failed`, `cancelled`.
     pub outcome: String,
     pub placed_at: SystemTime,
     /// Set once on-site notification has been delivered.
     pub notified: bool,
+    /// The final SIP status of the emergency leg, once the call ends.
+    #[serde(default)]
+    pub sip_status: Option<u16>,
+    #[serde(default)]
+    pub answered_at: Option<SystemTime>,
+    #[serde(default)]
+    pub ended_at: Option<SystemTime>,
+    /// How the location travelled with the call: `elin` (the callback
+    /// number the carrier maps to an address), or none.
+    #[serde(default)]
+    pub delivery: Option<String>,
+}
+
+/// What became of an emergency call, written onto its record when the call
+/// ends (`docs/E911_BLOCK_2.md` §4).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EmergencyCompletion {
+    pub trunk_name: Option<String>,
+    pub outcome: String,
+    pub sip_status: Option<u16>,
+    pub answered_at: Option<SystemTime>,
+    pub ended_at: SystemTime,
+    pub delivery: Option<String>,
 }
 
 /// Persistence for emergency configuration and the call audit trail.
@@ -524,6 +550,12 @@ pub trait EmergencyStore: Send + Sync {
         limit: usize,
     ) -> anyhow::Result<Vec<EmergencyCallRecord>>;
     async fn mark_emergency_call_notified(&self, id: i64) -> anyhow::Result<()>;
+    /// Complete the record `id` with what became of the call.
+    async fn complete_emergency_call(
+        &self,
+        id: i64,
+        completion: &EmergencyCompletion,
+    ) -> anyhow::Result<()>;
 }
 
 #[cfg(test)]
