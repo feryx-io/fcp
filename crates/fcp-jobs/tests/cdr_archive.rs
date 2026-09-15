@@ -565,3 +565,73 @@ format = "compact"
     pg.close().await;
     db.drop_db().await;
 }
+
+#[tokio::test]
+async fn an_erased_record_leaves_the_archive_on_the_next_run() {
+    use fcp_core::subject_erasure::{RowUpdate, SubjectEraseStore};
+    use fcp_core::subject_request::ExportClass;
+
+    let Some(db) = TestDatabase::create().await else {
+        eprintln!("FCP_TEST_DATABASE_URL not set; skipping");
+        return;
+    };
+    let pg = storage(db.url()).await;
+    let store: Arc<dyn CdrStore> = pg.clone();
+    let archive = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let tenant = TenantId::new();
+    let yesterday = Utc::now().date_naive() - Days::days(1);
+    let seeded = record(tenant, day_start(yesterday) + Duration::from_secs(600));
+    store.insert_cdrs(vec![seeded.clone()]).await.unwrap();
+    let archiver = Archiver::new(
+        Arc::clone(&store),
+        Arc::new(DirectoryTarget::new(archive.path())),
+        ArchiveConfig {
+            grace: Duration::ZERO,
+            prefix: "cdrs/".into(),
+            work_dir: work.path().to_path_buf(),
+            ..ArchiveConfig::default()
+        },
+    );
+    let object = archive.path().join(object_key("cdrs/", &tenant, yesterday));
+    archiver.run_once().await.unwrap().unwrap();
+    assert_eq!(
+        read_object(&object)[0].from_uri,
+        "sip:alice@archive.example"
+    );
+
+    // Pseudonymised: the day is written again without her address.
+    let mut fields = serde_json::Map::new();
+    fields.insert("from_uri".into(), "sip:erased-00@archive.example".into());
+    let id = seeded.cdr_id.to_string();
+    pg.update_subject_rows(
+        &tenant,
+        ExportClass::Cdrs,
+        &[RowUpdate {
+            id: id.clone(),
+            fields,
+        }],
+    )
+    .await
+    .unwrap();
+    archiver.run_once().await.unwrap().unwrap();
+    assert_eq!(
+        read_object(&object)[0].from_uri,
+        "sip:erased-00@archive.example"
+    );
+
+    // Deleted: the object is replaced by an empty one, not left holding it.
+    pg.delete_subject_rows(&tenant, ExportClass::Cdrs, &[id])
+        .await
+        .unwrap();
+    archiver.run_once().await.unwrap().unwrap();
+    assert!(read_object(&object).is_empty());
+    let entry = store
+        .get_cdr_archive(&tenant, yesterday)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(entry.records, 0);
+    assert!(entry.archived_at.is_some());
+    db.drop_db().await;
+}

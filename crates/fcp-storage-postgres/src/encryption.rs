@@ -67,6 +67,11 @@ pub(crate) const SEALED_COLUMNS: &[SealedColumn] = &[
         column: "endpoint_json",
         json_field: Some("secret"),
     },
+    SealedColumn {
+        table: "subject_pseudonym_keys",
+        column: "secret",
+        json_field: None,
+    },
 ];
 
 /// Live encryption state for one backend instance.

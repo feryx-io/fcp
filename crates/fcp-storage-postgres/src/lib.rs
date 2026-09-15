@@ -40,6 +40,7 @@ mod holds;
 pub mod prompt;
 pub mod recording;
 pub mod sip_trace;
+mod subject_erase;
 mod subject_export;
 mod subject_requests;
 

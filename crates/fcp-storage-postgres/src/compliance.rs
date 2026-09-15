@@ -77,7 +77,7 @@ impl ComplianceStore for PostgresComplianceStore {
                     cdr_archive_required,
                     recording_consent, recording_consent_prompt_id, updated_at,
                     recording_consent_on_failure, recording_notice_interval_secs,
-                    subject_request_days
+                    subject_request_days, cdr_erasure
              FROM compliance_policies WHERE tenant_id = $1",
         )
         .bind(tenant_id.to_string())
@@ -114,6 +114,10 @@ impl ComplianceStore for PostgresComplianceStore {
             recording_notice_interval_secs: days("recording_notice_interval_secs")?,
             subject_request_days: days("subject_request_days")?
                 .unwrap_or(fcp_core::subject_request::DEFAULT_REQUEST_DAYS),
+            cdr_erasure: fcp_core::compliance::CdrErasure::parse(
+                &row.try_get::<String, _>("cdr_erasure")?,
+            )
+            .unwrap_or_default(),
             updated_at: to_system_time(updated_at),
         }))
     }
@@ -126,8 +130,8 @@ impl ComplianceStore for PostgresComplianceStore {
                  flow_trace_retention_days, recording_retention_days, audit_retention_days,
                  recording_consent, recording_consent_prompt_id, updated_at, cdr_archive_required,
                  voicemail_retention_days, recording_consent_on_failure,
-                 recording_notice_interval_secs, subject_request_days)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                 recording_notice_interval_secs, subject_request_days, cdr_erasure)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
              ON CONFLICT (tenant_id) DO UPDATE SET
                 cdr_retention_days = EXCLUDED.cdr_retention_days,
                 sip_trace_retention_days = EXCLUDED.sip_trace_retention_days,
@@ -141,7 +145,8 @@ impl ComplianceStore for PostgresComplianceStore {
                 voicemail_retention_days = EXCLUDED.voicemail_retention_days,
                 recording_consent_on_failure = EXCLUDED.recording_consent_on_failure,
                 recording_notice_interval_secs = EXCLUDED.recording_notice_interval_secs,
-                subject_request_days = EXCLUDED.subject_request_days",
+                subject_request_days = EXCLUDED.subject_request_days,
+                cdr_erasure = EXCLUDED.cdr_erasure",
         )
         .bind(policy.tenant_id.to_string())
         .bind(days(policy.cdr_retention_days))
@@ -157,6 +162,7 @@ impl ComplianceStore for PostgresComplianceStore {
         .bind(policy.recording_consent_on_failure.as_str())
         .bind(days(policy.recording_notice_interval_secs))
         .bind(policy.subject_request_days as i32)
+        .bind(policy.cdr_erasure.as_str())
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -268,7 +274,7 @@ impl ComplianceStore for PostgresComplianceStore {
 
     async fn list_deletions(&self, query: &DeletionQuery) -> anyhow::Result<Vec<DeletionRecord>> {
         let mut sql = String::from(
-            "SELECT id, tenant_id, class, item, detail, cause, actor, deleted_at
+            "SELECT id, tenant_id, class, item, detail, cause, actor, request_id, deleted_at
              FROM deletion_log WHERE 1=1",
         );
         let mut n = 0;
@@ -285,6 +291,9 @@ impl ComplianceStore for PostgresComplianceStore {
         if query.since.is_some() {
             sql.push_str(&format!(" AND deleted_at >= ${}", next()));
         }
+        if query.request_id.is_some() {
+            sql.push_str(&format!(" AND request_id = ${}", next()));
+        }
         sql.push_str(&format!(
             " ORDER BY deleted_at DESC, id DESC LIMIT ${}",
             next()
@@ -298,6 +307,9 @@ impl ComplianceStore for PostgresComplianceStore {
         }
         if let Some(since) = query.since {
             q = q.bind(to_datetime(since));
+        }
+        if let Some(request) = &query.request_id {
+            q = q.bind(request);
         }
         q = q.bind(query.limit.clamp(1, 1000) as i64);
         q.fetch_all(&self.pool)
@@ -314,6 +326,7 @@ impl ComplianceStore for PostgresComplianceStore {
                     detail: row.try_get("detail")?,
                     cause: row.try_get("cause")?,
                     actor: row.try_get("actor")?,
+                    request_id: row.try_get("request_id")?,
                     deleted_at: to_system_time(at),
                 })
             })
@@ -322,8 +335,8 @@ impl ComplianceStore for PostgresComplianceStore {
 
     async fn record_deletion(&self, record: &DeletionRecord) -> anyhow::Result<()> {
         sqlx::query(
-            "INSERT INTO deletion_log (tenant_id, class, item, detail, cause, actor, deleted_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            "INSERT INTO deletion_log (tenant_id, class, item, detail, cause, actor, deleted_at, request_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
         )
         .bind(record.tenant_id.map(|t| t.to_string()))
         .bind(&record.class)
@@ -332,6 +345,7 @@ impl ComplianceStore for PostgresComplianceStore {
         .bind(&record.cause)
         .bind(&record.actor)
         .bind(to_datetime(record.deleted_at))
+        .bind(&record.request_id)
         .execute(&self.pool)
         .await?;
         Ok(())

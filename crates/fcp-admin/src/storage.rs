@@ -81,6 +81,9 @@ pub async fn initialize_storage(config: &StorageConfig) -> Result<StorageResult>
         )
         .with_subject_data_store(
             storage.clone() as Arc<dyn fcp_core::subject_request::SubjectDataStore>
+        )
+        .with_subject_erase_store(
+            storage.clone() as Arc<dyn fcp_core::subject_erasure::SubjectEraseStore>
         );
 
     info!("PostgreSQL storage initialized successfully (with SIP trace, API token, prompt, flow trace, and config template stores)");

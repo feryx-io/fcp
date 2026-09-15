@@ -241,6 +241,7 @@ pub fn router() -> Router<ApiState> {
                 .put(tenants::update_tenant)
                 .delete(tenants::delete_tenant),
         )
+        .route("/tenants/:id/deletion", get(tenants::get_tenant_deletion))
         // User management
         .route("/users", get(users::list_users).post(users::create_user))
         .route(
@@ -320,6 +321,10 @@ pub fn router() -> Router<ApiState> {
         .route(
             "/compliance/subject-requests/:id/bundle",
             get(compliance::download_subject_bundle),
+        )
+        .route(
+            "/compliance/subject-requests/:id/confirm",
+            post(compliance::confirm_subject_request),
         )
         // Conference recordings: the registry, and the file behind each row
         .route("/recordings", get(recordings::list_recordings))

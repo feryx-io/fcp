@@ -10,7 +10,8 @@ use std::str::FromStr;
 use std::time::SystemTime;
 
 const COLUMNS: &str = "id, tenant_id, kind, subjects, expansion, status, received_at, due_at, \
-                       requested_by, reference, started_at, completed_at, report, bundle, error";
+                       requested_by, reference, started_at, completed_at, report, bundle, error, \
+                       confirmed_at, confirmed_by, preview, erasure";
 
 fn at(t: SystemTime) -> DateTime<Utc> {
     DateTime::<Utc>::from(t)
@@ -49,13 +50,18 @@ fn row_to_request(row: sqlx::postgres::PgRow) -> Result<SubjectRequest> {
         report: optional(row.try_get("report")?)?,
         bundle: optional(row.try_get("bundle")?)?,
         error: row.try_get("error")?,
+        confirmed_at: when("confirmed_at")?,
+        confirmed_by: row.try_get("confirmed_by")?,
+        preview: optional(row.try_get("preview")?)?,
+        erasure: optional(row.try_get("erasure")?)?,
     })
 }
 
 pub(crate) async fn create(pool: &Pool<Postgres>, r: &SubjectRequest) -> Result<()> {
     sqlx::query(&format!(
         "INSERT INTO subject_requests ({COLUMNS})
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)"
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
+                 $16, $17, $18, $19)"
     ))
     .bind(r.id.to_string())
     .bind(r.tenant_id.to_string())
@@ -72,6 +78,10 @@ pub(crate) async fn create(pool: &Pool<Postgres>, r: &SubjectRequest) -> Result<
     .bind(serde_json::to_value(&r.report)?)
     .bind(serde_json::to_value(&r.bundle)?)
     .bind(&r.error)
+    .bind(r.confirmed_at.map(at))
+    .bind(&r.confirmed_by)
+    .bind(serde_json::to_value(&r.preview)?)
+    .bind(serde_json::to_value(&r.erasure)?)
     .execute(pool)
     .await?;
     Ok(())
@@ -117,7 +127,7 @@ pub(crate) async fn list(
 pub(crate) async fn claim(pool: &Pool<Postgres>) -> Result<Option<SubjectRequest>> {
     sqlx::query(&format!(
         "UPDATE subject_requests SET status = 'running', started_at = now()
-         WHERE id = (SELECT id FROM subject_requests WHERE status = 'received'
+         WHERE id = (SELECT id FROM subject_requests WHERE status IN ('received', 'confirmed')
                      ORDER BY received_at, id LIMIT 1 FOR UPDATE SKIP LOCKED)
          RETURNING {COLUMNS}"
     ))
@@ -131,7 +141,8 @@ pub(crate) async fn update(pool: &Pool<Postgres>, r: &SubjectRequest) -> Result<
     sqlx::query(
         "UPDATE subject_requests
          SET expansion = $3, status = $4, started_at = $5, completed_at = $6,
-             report = $7, bundle = $8, error = $9
+             report = $7, bundle = $8, error = $9, confirmed_at = $10, confirmed_by = $11,
+             preview = $12, erasure = $13
          WHERE tenant_id = $1 AND id = $2",
     )
     .bind(r.tenant_id.to_string())
@@ -143,6 +154,10 @@ pub(crate) async fn update(pool: &Pool<Postgres>, r: &SubjectRequest) -> Result<
     .bind(serde_json::to_value(&r.report)?)
     .bind(serde_json::to_value(&r.bundle)?)
     .bind(&r.error)
+    .bind(r.confirmed_at.map(at))
+    .bind(&r.confirmed_by)
+    .bind(serde_json::to_value(&r.preview)?)
+    .bind(serde_json::to_value(&r.erasure)?)
     .execute(pool)
     .await?;
     Ok(())
@@ -150,7 +165,9 @@ pub(crate) async fn update(pool: &Pool<Postgres>, r: &SubjectRequest) -> Result<
 
 pub(crate) async fn requeue_running(pool: &Pool<Postgres>) -> Result<u64> {
     Ok(sqlx::query(
-        "UPDATE subject_requests SET status = 'received', started_at = NULL
+        "UPDATE subject_requests
+         SET status = CASE WHEN confirmed_at IS NULL THEN 'received' ELSE 'confirmed' END,
+             started_at = NULL
          WHERE status = 'running'",
     )
     .execute(pool)
@@ -187,7 +204,7 @@ pub(crate) async fn counts(
 ) -> Result<Vec<(String, u64, u64)>> {
     let rows = sqlx::query(
         "SELECT kind, count(*) AS open, count(*) FILTER (WHERE due_at < $1) AS overdue
-         FROM subject_requests WHERE status IN ('received', 'running')
+         FROM subject_requests WHERE status IN ('received', 'running', 'preview', 'confirmed')
          GROUP BY kind ORDER BY kind",
     )
     .bind(at(now))

@@ -16,10 +16,12 @@ pub(crate) async fn attributed(
     if let Some(deleter) = fcp_core::compliance::current_deleter() {
         sqlx::query(
             "SELECT set_config('fcp.deletion_cause', $1, true),
-                    set_config('fcp.deletion_actor', $2, true)",
+                    set_config('fcp.deletion_actor', $2, true),
+                    set_config('fcp.deletion_request', $3, true)",
         )
         .bind(deleter.cause.as_str())
         .bind(&deleter.actor)
+        .bind(deleter.request_id.as_deref().unwrap_or(""))
         .execute(&mut *tx)
         .await?;
     }

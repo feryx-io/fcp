@@ -4,8 +4,9 @@
 //! each request it finishes.
 
 use crate::config::{AdminConfig, ComplianceConfig};
+use fcp_core::subject_erasure::{DeadLetterStore, MediaRemover};
 use fcp_core::subject_request::{
-    ExportClass, ExportSettings, LocalMedia, MediaFetcher, SubjectRow,
+    ExportClass, ExportSettings, LocalMedia, MediaFetcher, SubjectRow, WorkerAccess,
 };
 use fcp_core::{DynStorage, TenantId};
 use std::path::{Path, PathBuf};
@@ -119,12 +120,83 @@ impl MediaFetcher for AdminMedia {
     }
 }
 
+#[async_trait::async_trait]
+impl MediaRemover for AdminMedia {
+    async fn remove(
+        &self,
+        tenant: &TenantId,
+        class: ExportClass,
+        row: &SubjectRow,
+    ) -> Result<(), String> {
+        if class != ExportClass::ConferenceRecordings {
+            return self.local.remove(tenant, class, row).await;
+        }
+        // Through the conference server, which deletes the file on the node
+        // holding it.
+        let (base, token) = self
+            .conference
+            .as_ref()
+            .ok_or("no conference server configured on this host")?;
+        let path = row.file.as_deref().ok_or("no file")?;
+        let name = path.rsplit('/').next().unwrap_or(path);
+        let node = row.data["node_id"].as_str().unwrap_or_default();
+        let url = format!(
+            "{}/recordings/{}?node={}",
+            base.trim_end_matches('/'),
+            urlencoding::encode(name),
+            urlencoding::encode(node)
+        );
+        let mut request = self.http.delete(&url).header(
+            fcp_api_core::auth::PLATFORM_TENANT_HEADER,
+            tenant.to_string(),
+        );
+        if let Some(token) = token {
+            request = request.bearer_auth(token);
+        }
+        let response = request.send().await.map_err(|e| e.to_string())?;
+        match response.status() {
+            s if s.is_success() || s == reqwest::StatusCode::NOT_FOUND => Ok(()),
+            s => Err(format!("the conference server answered {s}")),
+        }
+    }
+}
+
+/// The CDR stream's dead letters, when this host is given Redis.
+async fn dead_letters(
+    config: &AdminConfig,
+) -> Option<fcp_storage_redis::cdr_stream::RedisCdrStream> {
+    let url = config.cluster.redis_url.clone()?;
+    match fcp_storage_redis::RedisStorage::new(fcp_storage_redis::RedisConfig {
+        url,
+        key_prefix: config.cluster.key_prefix.clone(),
+    })
+    .await
+    {
+        Ok(storage) => Some(fcp_storage_redis::cdr_stream::RedisCdrStream::new(
+            storage,
+            format!("fcp-admin-{}", config.service.node_id),
+            Duration::from_secs(24 * 3600),
+        )),
+        Err(e) => {
+            warn!(error = %e, "Subject requests: Redis unreachable; dead letters will not be searched");
+            None
+        }
+    }
+}
+
 /// Run the worker until the process ends.
 pub fn spawn(storage: Arc<DynStorage>, config: &AdminConfig, api_state: fcp_api_core::ApiState) {
     let settings = settings(&config.compliance);
     let media = AdminMedia::new(config);
     let every = Duration::from_secs(config.compliance.poll_secs.max(5));
+    let config = config.clone();
     tokio::spawn(async move {
+        let dead = dead_letters(&config).await;
+        let access = WorkerAccess {
+            media: &media,
+            remover: &media,
+            dead_letters: dead.as_ref().map(|d| d as &dyn DeadLetterStore),
+        };
         let mut interval = tokio::time::interval(every);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
@@ -140,7 +212,7 @@ pub fn spawn(storage: Arc<DynStorage>, config: &AdminConfig, api_state: fcp_api_
                     }
                 }
             };
-            match fcp_core::subject_request::run_subject_requests(&storage, &media, &settings).await
+            match fcp_core::subject_request::run_subject_requests(&storage, access, &settings).await
             {
                 Ok(finished) => {
                     for request in finished {
