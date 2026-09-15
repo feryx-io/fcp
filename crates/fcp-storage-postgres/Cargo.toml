@@ -37,6 +37,8 @@ rust_decimal.workspace = true
 fcp-cdr = { path = "../fcp-cdr" }
 rust_decimal_macros.workspace = true
 tempfile = "3"
+flate2 = "1"
+tar = "0.4"
 tokio-test = "0.4"
 base64 = "0.22"
 

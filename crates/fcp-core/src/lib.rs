@@ -44,6 +44,7 @@ pub mod sip_trace;
 pub mod site_location;
 pub mod storage;
 pub mod subject;
+pub mod subject_request;
 pub mod tenant;
 pub mod time;
 pub mod transport;

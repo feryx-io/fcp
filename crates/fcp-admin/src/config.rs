@@ -65,6 +65,11 @@ pub struct AdminConfig {
     #[serde(default)]
     pub retention: RetentionConfig,
 
+    /// Subject requests: where export bundles go and how long they stay
+    /// (`docs/COMPLIANCE_FOLLOWUPS.md` §6).
+    #[serde(default)]
+    pub compliance: ComplianceConfig,
+
     /// Security policy configuration (account lockout, password expiration)
     #[serde(default)]
     pub security: SecurityConfig,
@@ -72,6 +77,43 @@ pub struct AdminConfig {
     /// TTS configuration for prompt audio synthesis
     #[serde(default)]
     pub tts: Option<TtsSection>,
+}
+
+/// The `[compliance]` section.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ComplianceConfig {
+    /// Where subject export bundles are written; the API serves them from
+    /// here, so every admin replica mounts the same directory.
+    #[serde(default = "default_exports_dir")]
+    pub exports_dir: String,
+    /// Days a finished export's bundle can be downloaded.
+    #[serde(default = "default_export_ttl_days")]
+    pub export_ttl_days: u32,
+    /// How often the worker looks for requests.
+    #[serde(default = "default_subject_poll_secs")]
+    pub poll_secs: u64,
+}
+
+fn default_exports_dir() -> String {
+    "/var/lib/fcp/exports".to_string()
+}
+
+fn default_export_ttl_days() -> u32 {
+    fcp_core::subject_request::DEFAULT_EXPORT_TTL_DAYS
+}
+
+fn default_subject_poll_secs() -> u64 {
+    30
+}
+
+impl Default for ComplianceConfig {
+    fn default() -> Self {
+        Self {
+            exports_dir: default_exports_dir(),
+            export_ttl_days: default_export_ttl_days(),
+            poll_secs: default_subject_poll_secs(),
+        }
+    }
 }
 
 /// The `[retention]` section: what the platform tidies whatever the

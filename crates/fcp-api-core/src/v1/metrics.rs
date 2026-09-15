@@ -86,6 +86,18 @@ pub async fn prometheus_metrics(
         active_registrations
     ));
 
+    // Subject requests still owed, and those past their day
+    // (docs/COMPLIANCE_FOLLOWUPS.md §9).
+    if let Some(store) = state.storage.as_ref().and_then(|s| s.compliance_store()) {
+        match store
+            .subject_request_counts(std::time::SystemTime::now())
+            .await
+        {
+            Ok(counts) => buffer.push_str(&subject_request_metrics(&counts)),
+            Err(e) => tracing::warn!(error = %e, "Subject request counts unavailable"),
+        }
+    }
+
     // Call statistics
     let call_stats = state.call_manager.stats();
     buffer.push_str("# HELP fcp_calls_established Total established calls\n");
@@ -107,4 +119,37 @@ pub async fn prometheus_metrics(
         [(header::CONTENT_TYPE, "text/plain; version=0.0.4")],
         buffer,
     ))
+}
+
+/// Prometheus text for `(kind, open, overdue)` counts.
+fn subject_request_metrics(counts: &[(String, u64, u64)]) -> String {
+    let mut out = String::from(
+        "# HELP fcp_subject_requests_open Subject requests not yet answered, by kind\n\
+         # TYPE fcp_subject_requests_open gauge\n",
+    );
+    for (kind, open, _) in counts {
+        out.push_str(&format!(
+            "fcp_subject_requests_open{{kind=\"{kind}\"}} {open}\n"
+        ));
+    }
+    out.push_str(
+        "# HELP fcp_subject_requests_overdue Subject requests past the day they were due, by kind\n\
+         # TYPE fcp_subject_requests_overdue gauge\n",
+    );
+    for (kind, _, overdue) in counts {
+        out.push_str(&format!(
+            "fcp_subject_requests_overdue{{kind=\"{kind}\"}} {overdue}\n"
+        ));
+    }
+    out
+}
+
+#[cfg(test)]
+mod subject_request_metric_tests {
+    #[test]
+    fn open_and_overdue_requests_are_gauges_by_kind() {
+        let text = super::subject_request_metrics(&[("export".into(), 3, 1)]);
+        assert!(text.contains("fcp_subject_requests_open{kind=\"export\"} 3"));
+        assert!(text.contains("fcp_subject_requests_overdue{kind=\"export\"} 1"));
+    }
 }

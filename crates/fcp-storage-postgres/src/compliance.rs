@@ -76,7 +76,8 @@ impl ComplianceStore for PostgresComplianceStore {
                     recording_retention_days, audit_retention_days, voicemail_retention_days,
                     cdr_archive_required,
                     recording_consent, recording_consent_prompt_id, updated_at,
-                    recording_consent_on_failure, recording_notice_interval_secs
+                    recording_consent_on_failure, recording_notice_interval_secs,
+                    subject_request_days
              FROM compliance_policies WHERE tenant_id = $1",
         )
         .bind(tenant_id.to_string())
@@ -111,6 +112,8 @@ impl ComplianceStore for PostgresComplianceStore {
             )
             .unwrap_or_default(),
             recording_notice_interval_secs: days("recording_notice_interval_secs")?,
+            subject_request_days: days("subject_request_days")?
+                .unwrap_or(fcp_core::subject_request::DEFAULT_REQUEST_DAYS),
             updated_at: to_system_time(updated_at),
         }))
     }
@@ -123,8 +126,8 @@ impl ComplianceStore for PostgresComplianceStore {
                  flow_trace_retention_days, recording_retention_days, audit_retention_days,
                  recording_consent, recording_consent_prompt_id, updated_at, cdr_archive_required,
                  voicemail_retention_days, recording_consent_on_failure,
-                 recording_notice_interval_secs)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                 recording_notice_interval_secs, subject_request_days)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
              ON CONFLICT (tenant_id) DO UPDATE SET
                 cdr_retention_days = EXCLUDED.cdr_retention_days,
                 sip_trace_retention_days = EXCLUDED.sip_trace_retention_days,
@@ -137,7 +140,8 @@ impl ComplianceStore for PostgresComplianceStore {
                 cdr_archive_required = EXCLUDED.cdr_archive_required,
                 voicemail_retention_days = EXCLUDED.voicemail_retention_days,
                 recording_consent_on_failure = EXCLUDED.recording_consent_on_failure,
-                recording_notice_interval_secs = EXCLUDED.recording_notice_interval_secs",
+                recording_notice_interval_secs = EXCLUDED.recording_notice_interval_secs,
+                subject_request_days = EXCLUDED.subject_request_days",
         )
         .bind(policy.tenant_id.to_string())
         .bind(days(policy.cdr_retention_days))
@@ -152,6 +156,7 @@ impl ComplianceStore for PostgresComplianceStore {
         .bind(days(policy.voicemail_retention_days))
         .bind(policy.recording_consent_on_failure.as_str())
         .bind(days(policy.recording_notice_interval_secs))
+        .bind(policy.subject_request_days as i32)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -400,6 +405,61 @@ impl ComplianceStore for PostgresComplianceStore {
         .bind(paths)
         .fetch_all(&self.pool)
         .await?)
+    }
+
+    async fn create_subject_request(
+        &self,
+        request: &fcp_core::subject_request::SubjectRequest,
+    ) -> anyhow::Result<()> {
+        crate::subject_requests::create(&self.pool, request).await
+    }
+
+    async fn get_subject_request(
+        &self,
+        tenant_id: &TenantId,
+        id: &fcp_core::SubjectRequestId,
+    ) -> anyhow::Result<Option<fcp_core::subject_request::SubjectRequest>> {
+        crate::subject_requests::get(&self.pool, tenant_id, id).await
+    }
+
+    async fn list_subject_requests(
+        &self,
+        tenant_id: &TenantId,
+        status: Option<fcp_core::subject_request::SubjectRequestStatus>,
+        limit: usize,
+    ) -> anyhow::Result<Vec<fcp_core::subject_request::SubjectRequest>> {
+        crate::subject_requests::list(&self.pool, tenant_id, status, limit).await
+    }
+
+    async fn claim_subject_request(
+        &self,
+    ) -> anyhow::Result<Option<fcp_core::subject_request::SubjectRequest>> {
+        crate::subject_requests::claim(&self.pool).await
+    }
+
+    async fn update_subject_request(
+        &self,
+        request: &fcp_core::subject_request::SubjectRequest,
+    ) -> anyhow::Result<()> {
+        crate::subject_requests::update(&self.pool, request).await
+    }
+
+    async fn requeue_running_subject_requests(&self) -> anyhow::Result<u64> {
+        crate::subject_requests::requeue_running(&self.pool).await
+    }
+
+    async fn expired_subject_bundles(
+        &self,
+        now: SystemTime,
+    ) -> anyhow::Result<Vec<fcp_core::subject_request::SubjectRequest>> {
+        crate::subject_requests::expired_bundles(&self.pool, now).await
+    }
+
+    async fn subject_request_counts(
+        &self,
+        now: SystemTime,
+    ) -> anyhow::Result<Vec<(String, u64, u64)>> {
+        crate::subject_requests::counts(&self.pool, now).await
     }
 
     async fn place_hold(&self, hold: &fcp_core::legal_hold::LegalHold) -> anyhow::Result<()> {

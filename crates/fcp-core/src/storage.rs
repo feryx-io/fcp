@@ -2877,6 +2877,7 @@ pub struct DynStorage {
     compliance_store: Option<Arc<dyn crate::compliance::ComplianceStore>>,
     recording_store: Option<Arc<dyn crate::recording::RecordingStore>>,
     call_recording_store: Option<Arc<dyn crate::recording::CallRecordingStore>>,
+    subject_data_store: Option<Arc<dyn crate::subject_request::SubjectDataStore>>,
 }
 
 impl DynStorage {
@@ -2939,6 +2940,7 @@ impl DynStorage {
             encryption_store: None,
             emergency_store: None,
             compliance_store: None,
+            subject_data_store: None,
             recording_store: None,
             call_recording_store: None,
         }
@@ -3005,6 +3007,7 @@ impl DynStorage {
             encryption_store: None,
             emergency_store: None,
             compliance_store: None,
+            subject_data_store: None,
             recording_store: None,
             call_recording_store: None,
         }
@@ -3192,6 +3195,20 @@ impl DynStorage {
 
     pub fn compliance_store(&self) -> Option<&Arc<dyn crate::compliance::ComplianceStore>> {
         self.compliance_store.as_ref()
+    }
+
+    /// Attach what subject exports read (`docs/COMPLIANCE_FOLLOWUPS.md` §6.3).
+    pub fn with_subject_data_store(
+        mut self,
+        store: Arc<dyn crate::subject_request::SubjectDataStore>,
+    ) -> Self {
+        self.subject_data_store = Some(store);
+        self
+    }
+
+    /// What subject exports read, when attached.
+    pub fn subject_data_store(&self) -> Option<&Arc<dyn crate::subject_request::SubjectDataStore>> {
+        self.subject_data_store.as_ref()
     }
 
     /// Get the config template store, if one has been set.

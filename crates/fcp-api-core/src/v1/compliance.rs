@@ -67,6 +67,8 @@ pub struct PolicyResponse {
     pub recording_consent_on_failure: String,
     /// A notice tone every this many seconds while a call is recorded.
     pub recording_notice_interval_secs: Option<u32>,
+    /// Days the tenant gives itself to answer a subject request.
+    pub subject_request_days: u32,
     /// CDRs are deleted only once the archive has confirmed them.
     pub cdr_archive_required: bool,
     /// Unix seconds: every one of the tenant's CDRs that started before
@@ -95,6 +97,7 @@ impl PolicyResponse {
             recording_consent_prompt_id: p.recording_consent_prompt_id,
             recording_consent_on_failure: p.recording_consent_on_failure.as_str().to_string(),
             recording_notice_interval_secs: p.recording_notice_interval_secs,
+            subject_request_days: p.subject_request_days,
             cdr_archive_required: p.cdr_archive_required,
             cdr_archived_before: archived_before.map(unix_secs),
             configured,
@@ -124,6 +127,7 @@ pub struct UpdatePolicyRequest {
     pub recording_consent_on_failure: Option<String>,
     #[serde(default, deserialize_with = "deserialize_double_option")]
     pub recording_notice_interval_secs: Option<Option<u32>>,
+    pub subject_request_days: Option<u32>,
     pub cdr_archive_required: Option<bool>,
 }
 
@@ -258,6 +262,14 @@ pub async fn update_policy(
                     "recording_consent_on_failure must be 'record' or 'skip', got '{action}'"
                 ))
             })?;
+    }
+    if let Some(days) = req.subject_request_days {
+        if !(1..=365).contains(&days) {
+            return Err(ApiError::BadRequest(
+                "subject_request_days must be between 1 and 365".to_string(),
+            ));
+        }
+        policy.subject_request_days = days;
     }
     if let Some(interval) = req.recording_notice_interval_secs {
         if let Some(secs) = interval {
@@ -793,4 +805,264 @@ pub async fn release_hold(
     let mut released = hold;
     released.released = Some(release);
     Ok(Json(HoldResponse::from(released)))
+}
+
+// ─── Subject requests (docs/COMPLIANCE_FOLLOWUPS.md §6) ─────────────────
+
+use fcp_core::subject_request::{SubjectRequest, SubjectRequestKind, SubjectRequestStatus};
+
+#[derive(Debug, Deserialize)]
+pub struct FileSubjectRequest {
+    /// `export` (erasure arrives with phase 5).
+    pub kind: String,
+    pub subjects: Vec<SubjectIdentifier>,
+    /// The tenant's own reference: a ticket, a letter.
+    #[serde(default)]
+    pub reference: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ListSubjectRequestsQuery {
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BundleResponse {
+    pub size_bytes: u64,
+    pub sha256: String,
+    pub expires_at: u64,
+    pub removed: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SubjectRequestResponse {
+    pub id: String,
+    pub tenant_id: String,
+    pub kind: String,
+    pub status: String,
+    pub subjects: Vec<SubjectIdentifier>,
+    /// The subjects as the request found them when it started.
+    pub expansion: Option<fcp_core::legal_hold::SubjectExpansion>,
+    pub reference: Option<String>,
+    pub requested_by: String,
+    pub received_at: u64,
+    pub due_at: u64,
+    /// Open and past `due_at`.
+    pub overdue: bool,
+    pub started_at: Option<u64>,
+    pub completed_at: Option<u64>,
+    pub report: Option<fcp_core::subject_request::ExportReport>,
+    pub bundle: Option<BundleResponse>,
+    pub error: Option<String>,
+}
+
+impl From<SubjectRequest> for SubjectRequestResponse {
+    fn from(r: SubjectRequest) -> Self {
+        Self {
+            overdue: r.is_overdue(SystemTime::now()),
+            id: r.id.to_string(),
+            tenant_id: r.tenant_id.to_string(),
+            kind: r.kind.as_str().to_string(),
+            status: r.status.as_str().to_string(),
+            subjects: r.subjects,
+            expansion: r.expansion,
+            reference: r.reference,
+            requested_by: r.requested_by,
+            received_at: unix_secs(r.received_at),
+            due_at: unix_secs(r.due_at),
+            started_at: r.started_at.map(unix_secs),
+            completed_at: r.completed_at.map(unix_secs),
+            report: r.report,
+            bundle: r.bundle.map(|b| BundleResponse {
+                size_bytes: b.size_bytes,
+                sha256: b.sha256,
+                expires_at: unix_secs(b.expires_at),
+                removed: b.removed,
+            }),
+            error: r.error,
+        }
+    }
+}
+
+fn parse_request_id(id: &str) -> Result<fcp_core::SubjectRequestId, ApiError> {
+    id.parse()
+        .map_err(|_| ApiError::BadRequest(format!("Invalid subject request id: {id}")))
+}
+
+/// `POST /compliance/subject-requests`: file a request. The subjects are
+/// checked now (a user the tenant does not have is refused) and expanded
+/// again when the request runs.
+pub async fn file_subject_request(
+    State(state): State<ApiState>,
+    tenant: TenantContext,
+    identity: Option<Extension<AuthIdentity>>,
+    Json(req): Json<FileSubjectRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    permit(&state, &identity, Permission::SubjectRequestManage)?;
+    let store = require_store(&state)?;
+    let storage = state
+        .storage
+        .as_ref()
+        .ok_or_else(|| ApiError::Internal("Storage not configured".to_string()))?;
+    let kind = match SubjectRequestKind::parse(&req.kind) {
+        Some(SubjectRequestKind::Export) => SubjectRequestKind::Export,
+        Some(SubjectRequestKind::Erasure) => {
+            return Err(ApiError::BadRequest(
+                "erasure requests are not available yet".to_string(),
+            ))
+        }
+        None => {
+            return Err(ApiError::BadRequest(format!(
+                "kind must be 'export', got '{}'",
+                req.kind
+            )))
+        }
+    };
+    if req.subjects.is_empty() {
+        return Err(ApiError::BadRequest(
+            "at least one subject is required".to_string(),
+        ));
+    }
+    let reference = req
+        .reference
+        .map(|r| r.trim().to_string())
+        .filter(|r| !r.is_empty());
+    if let Some(r) = &reference {
+        crate::validation::reject_crlf("reference", r)?;
+    }
+    let expansion = fcp_core::legal_hold::expand(storage, &tenant.0, &req.subjects)
+        .await
+        .map_err(|e| ApiError::BadRequest(format!("subjects: {e}")))?;
+    if expansion.identifiers.is_empty() {
+        return Err(ApiError::BadRequest(
+            "subjects: nothing to identify the subject by".to_string(),
+        ));
+    }
+    let days = store
+        .get_compliance_policy(&tenant.0)
+        .await
+        .map_err(ApiError::storage)?
+        .map(|p| p.subject_request_days)
+        .unwrap_or(fcp_core::subject_request::DEFAULT_REQUEST_DAYS);
+    let mut request =
+        SubjectRequest::received(tenant.0, kind, req.subjects, actor_of(&identity), days);
+    request.reference = reference;
+    store
+        .create_subject_request(&request)
+        .await
+        .map_err(ApiError::storage)?;
+    info!(tenant_id = %tenant.0, request = %request.id, kind = kind.as_str(), "Subject request filed");
+    Ok((
+        axum::http::StatusCode::CREATED,
+        Json(SubjectRequestResponse::from(request)),
+    ))
+}
+
+/// `GET /compliance/subject-requests`: the tenant's requests, newest first.
+pub async fn list_subject_requests(
+    State(state): State<ApiState>,
+    tenant: TenantContext,
+    identity: Option<Extension<AuthIdentity>>,
+    Query(q): Query<ListSubjectRequestsQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    permit(&state, &identity, Permission::SubjectRequestManage)?;
+    let store = require_store(&state)?;
+    let status = match q.status.as_deref() {
+        None => None,
+        Some(s) => Some(
+            SubjectRequestStatus::parse(s)
+                .ok_or_else(|| ApiError::BadRequest(format!("unknown status '{s}'")))?,
+        ),
+    };
+    let requests = store
+        .list_subject_requests(&tenant.0, status, q.limit.unwrap_or(100).clamp(1, 1000))
+        .await
+        .map_err(ApiError::storage)?;
+    let requests: Vec<SubjectRequestResponse> = requests.into_iter().map(Into::into).collect();
+    Ok(Json(
+        serde_json::json!({ "count": requests.len(), "requests": requests }),
+    ))
+}
+
+async fn scoped_subject_request(
+    state: &ApiState,
+    tenant: &TenantId,
+    id: &str,
+) -> Result<SubjectRequest, ApiError> {
+    let id = parse_request_id(id)?;
+    require_store(state)?
+        .get_subject_request(tenant, &id)
+        .await
+        .map_err(ApiError::storage)?
+        .ok_or_else(|| ApiError::NotFound(format!("Subject request {id} not found")))
+}
+
+/// `GET /compliance/subject-requests/:id`: one request, with its report.
+pub async fn get_subject_request(
+    State(state): State<ApiState>,
+    tenant: TenantContext,
+    identity: Option<Extension<AuthIdentity>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    permit(&state, &identity, Permission::SubjectRequestManage)?;
+    let request = scoped_subject_request(&state, &tenant.0, &id).await?;
+    Ok(Json(SubjectRequestResponse::from(request)))
+}
+
+/// `GET /compliance/subject-requests/:id/bundle`: the export's bundle, a
+/// gzipped tar. Every download is in the audit log. `409` until the export
+/// has completed, `410` once the bundle has expired.
+pub async fn download_subject_bundle(
+    State(state): State<ApiState>,
+    tenant: TenantContext,
+    identity: Option<Extension<AuthIdentity>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<axum::response::Response, ApiError> {
+    permit(&state, &identity, Permission::SubjectRequestManage)?;
+    let request = scoped_subject_request(&state, &tenant.0, &id).await?;
+    let Some(bundle) = request.bundle.as_ref() else {
+        return Err(ApiError::Conflict(format!(
+            "Subject request {} is {}; it has no bundle",
+            request.id,
+            request.status.as_str()
+        )));
+    };
+    if bundle.removed || bundle.expires_at <= SystemTime::now() {
+        return Err(ApiError::Gone(format!(
+            "The bundle of {} expired; file a new request",
+            request.id
+        )));
+    }
+    let file = tokio::fs::File::open(&bundle.path).await.map_err(|e| {
+        ApiError::ServiceUnavailable(format!(
+            "The bundle is not readable on this host ({e}); download it from the host that ran the export"
+        ))
+    })?;
+    let stream = futures_util::stream::unfold(file, |mut file| async move {
+        use tokio::io::AsyncReadExt;
+        let mut buf = vec![0u8; 64 * 1024];
+        match file.read(&mut buf).await {
+            Ok(0) => None,
+            Ok(n) => {
+                buf.truncate(n);
+                Some((Ok::<_, std::io::Error>(axum::body::Bytes::from(buf)), file))
+            }
+            Err(e) => Some((Err(e), file)),
+        }
+    });
+    info!(tenant_id = %tenant.0, request = %request.id, actor = %actor_of(&identity), "Subject export bundle downloaded");
+    axum::response::Response::builder()
+        .status(axum::http::StatusCode::OK)
+        .header("content-type", "application/gzip")
+        .header("content-length", bundle.size_bytes.to_string())
+        .header(
+            "content-disposition",
+            format!("attachment; filename=\"{}.tar.gz\"", request.id),
+        )
+        .header("x-content-sha256", bundle.sha256.clone())
+        .body(axum::body::Body::from_stream(stream))
+        .map_err(|e| ApiError::Internal(e.to_string()))
 }

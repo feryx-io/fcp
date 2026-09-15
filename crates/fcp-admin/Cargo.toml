@@ -29,6 +29,7 @@ fcp-flow = { path = "../fcp-flow" }
 
 # For NoopDispatcher
 async-trait = "0.1"
+urlencoding = "2"
 bytes = { workspace = true }
 
 # Storage backend

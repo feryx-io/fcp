@@ -925,3 +925,407 @@ async fn the_consent_policy_resolves_to_a_plan_and_the_outcome_reaches_the_recor
 
     db.finish().await;
 }
+
+// ── Subject export (docs/COMPLIANCE_FOLLOWUPS.md §6) ───────────────────
+
+/// The bundle's files, by name.
+fn unpack(bundle: &Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+    use std::io::Read;
+    let file = std::fs::File::open(bundle).unwrap();
+    let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(file));
+    let mut out = std::collections::BTreeMap::new();
+    for entry in archive.entries().unwrap() {
+        let mut entry = entry.unwrap();
+        if entry.header().entry_type().is_dir() {
+            continue;
+        }
+        let name = entry.path().unwrap().to_string_lossy().into_owned();
+        let mut bytes = Vec::new();
+        entry.read_to_end(&mut bytes).unwrap();
+        out.insert(name, bytes);
+    }
+    out
+}
+
+fn jsonl(
+    files: &std::collections::BTreeMap<String, Vec<u8>>,
+    class: &str,
+) -> Vec<serde_json::Value> {
+    files
+        .get(&format!("data/{class}.jsonl"))
+        .map(|b| {
+            String::from_utf8_lossy(b)
+                .lines()
+                .map(|l| serde_json::from_str(l).unwrap())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[tokio::test]
+async fn an_export_gathers_the_subject_from_every_store_and_nobody_else() {
+    use fcp_core::legal_hold::{HoldScope, LegalHold, SubjectIdentifier};
+    use fcp_core::storage::{CredentialStore, TenantStore};
+    use fcp_core::subject_request::{
+        run_subject_requests, ExportSettings, LocalMedia, SubjectRequest, SubjectRequestKind,
+        SubjectRequestStatus,
+    };
+
+    let db = require_db!();
+    let root = tempfile::tempdir().unwrap();
+    let pool = db.pg.pool().clone();
+    let storage = db.storage.clone().with_subject_data_store(
+        db.pg.clone() as Arc<dyn fcp_core::subject_request::SubjectDataStore>
+    );
+
+    let mut tenant = fcp_core::Tenant::new("export".into());
+    tenant.sip_domains = vec!["pbx.example".into()];
+    db.pg.put_tenant(tenant.clone()).await.unwrap();
+    let t = tenant.id;
+    let ts = t.to_string();
+    let user = |name: &str, ext: &str, phone: Option<&str>| -> fcp_core::storage::User {
+        let mut v = serde_json::json!({
+            "username": name, "password": "x", "tenant_id": t, "display_name": name,
+            "extension": ext, "enabled": true, "created_at": 1_789_000_000u64,
+            "updated_at": 1_789_000_000u64, "email": format!("{name}@mail.example"),
+            "sip_ha1_hash": "secret-ha1",
+        });
+        if let Some(p) = phone {
+            v["phone_number"] = p.into();
+        }
+        serde_json::from_value(v).unwrap()
+    };
+    let alice = user("alice", "1001", Some("+14155550100"));
+    db.pg.put_user(alice.clone()).await.unwrap();
+    db.pg.put_user(user("bob", "1002", None)).await.unwrap();
+
+    // Alice's mailbox: a greeting, a message Bob left her; one she left Bob.
+    let (_, mut hers) = mailbox(&db, t, "+14155550111").await;
+    hers.user_id = alice.id;
+    let greeting = file(&root.path().join("vm/greetings/alice-name.wav"), 1);
+    hers.greetings = vec![VoicemailGreeting::new(
+        GreetingType::Name,
+        PathBuf::from(&greeting),
+    )];
+    db.pg.put_mailbox(hers.clone()).await.unwrap();
+    let from_bob = file(&root.path().join("vm/msgs/from-bob.wav"), 1);
+    let m = VoicemailMessage::new(
+        hers.id.clone(),
+        "+14155550199".into(),
+        5,
+        PathBuf::from(&from_bob),
+    );
+    db.pg.put_message(m).await.unwrap();
+    let (_, bobs) = mailbox(&db, t, "+14155550122").await;
+    let to_bob = file(&root.path().join("vm/msgs/from-alice.wav"), 1);
+    let left = VoicemailMessage::new(
+        bobs.id.clone(),
+        "4155550100".into(),
+        7,
+        PathBuf::from(&to_bob),
+    );
+    db.pg.put_message(left).await.unwrap();
+    let not_hers = VoicemailMessage::new(
+        bobs.id.clone(),
+        "+444155550100".into(),
+        7,
+        PathBuf::from(&to_bob),
+    );
+    db.pg.put_message(not_hers).await.unwrap();
+
+    // Calls: hers with Bob (recorded, traced), Bob's with Carol, and a
+    // stranger who shares her name elsewhere.
+    let hers_call = CallId::new();
+    let bob_carol = CallId::new();
+    let stranger = CallId::new();
+    let rec = |from: &str, to: &str, call: CallId| {
+        fcp_cdr::RecordBuilder::new(fcp_cdr::CdrKind::Call, call, t)
+            .from(from, Some("Someone".into()))
+            .to(to, None)
+            .started_at(days_ago(3))
+            .ended_at(Some(days_ago(3) + Duration::from_secs(60)))
+            .build()
+    };
+    db.storage
+        .insert_cdrs(vec![
+            rec("sip:alice@pbx.example", "sip:bob@pbx.example", hers_call),
+            rec("sip:bob@pbx.example", "sip:carol@pbx.example", bob_carol),
+            rec(
+                "sip:alice@elsewhere.example",
+                "sip:bob@pbx.example",
+                stranger,
+            ),
+        ])
+        .await
+        .unwrap();
+    let recordings = db.storage.call_recording_store().unwrap();
+    let her_audio = file(&root.path().join("calls/hers.wav"), 1);
+    recordings
+        .create_call_recording(&CallRecording::starting(
+            t,
+            hers_call.to_string(),
+            CallRecordingSource::Api,
+            her_audio,
+        ))
+        .await
+        .unwrap();
+    let their_audio = file(&root.path().join("calls/theirs.wav"), 1);
+    recordings
+        .create_call_recording(&CallRecording::starting(
+            t,
+            bob_carol.to_string(),
+            CallRecordingSource::Api,
+            their_audio,
+        ))
+        .await
+        .unwrap();
+    // Her call's recording file is on a host this one does not mount.
+    recordings
+        .create_call_recording(&CallRecording::starting(
+            t,
+            hers_call.to_string(),
+            CallRecordingSource::Api,
+            "/elsewhere/hers-2.wav",
+        ))
+        .await
+        .unwrap();
+    for (call, from) in [
+        (hers_call, "sip:alice@pbx.example"),
+        (bob_carol, "sip:bob@pbx.example"),
+    ] {
+        db.storage
+            .sip_trace_store()
+            .unwrap()
+            .insert_sip_trace(&SipTraceMessage {
+                id: 0,
+                call_id: call.to_string(),
+                sip_call_id: "x@y".into(),
+                tenant_id: ts.clone(),
+                timestamp: days_ago(3),
+                direction: "inbound".into(),
+                method_or_status: "INVITE".into(),
+                cseq: "1 INVITE".into(),
+                from_uri: from.into(),
+                to_uri: "sip:bob@pbx.example".into(),
+                source_addr: String::new(),
+                dest_addr: String::new(),
+                transport: "udp".into(),
+                raw_message: "INVITE sip:bob@pbx.example SIP/2.0".into(),
+                node_id: None,
+            })
+            .await
+            .unwrap();
+    }
+
+    // A room she was recorded in.
+    let mut room = Recording::starting(
+        t,
+        "8001",
+        "node-1",
+        "/conf/8001.wav",
+        RecordingFormat::Wav,
+        RecordingTrigger::Api,
+    );
+    room.participant_list = vec![
+        RecordingParticipant {
+            participant_id: "p1".into(),
+            uri: Some("sip:1001@pbx.example".into()),
+            display_name: None,
+            joined_at: days_ago(2),
+        },
+        RecordingParticipant {
+            participant_id: "p2".into(),
+            uri: Some("sip:bob@pbx.example".into()),
+            display_name: None,
+            joined_at: days_ago(2),
+        },
+    ];
+    db.storage
+        .recording_store()
+        .unwrap()
+        .create_recording(&room)
+        .await
+        .unwrap();
+
+    // What else names her.
+    for sql in [
+        format!("INSERT INTO registrations (tenant_id, aor, contact, expires_at, call_id, cseq, registered_at) VALUES ('{ts}', 'alice@pbx.example', 'sip:alice@10.0.0.5:5060', now() + interval '1 hour', 'c1', 1, now())"),
+        format!("INSERT INTO registrations (tenant_id, aor, contact, expires_at, call_id, cseq, registered_at) VALUES ('{ts}', 'bob@pbx.example', 'sip:bob@10.0.0.6:5060', now() + interval '1 hour', 'c2', 1, now())"),
+        format!("INSERT INTO emergency_calls (tenant_id, call_id, sip_call_id, caller_uri, caller_username, dialed_number, kind, outcome, placed_at) VALUES ('{ts}', 'call-e', 'e@x', 'sip:alice@pbx.example', 'alice', '911', 'test', 'answered', now())"),
+        format!("INSERT INTO admin_audit_log (tenant_id, actor, actor_kind, method, path, status, action, occurred_at) VALUES ('{ts}', 'alice', 'session', 'PUT', '/api/v1/users/alice', 200, 'PUT /api/v1/users/:username', now())"),
+        format!("INSERT INTO admin_audit_log (tenant_id, actor, actor_kind, method, path, status, action, occurred_at) VALUES ('{ts}', 'bob', 'session', 'PUT', '/api/v1/users/bob', 200, 'PUT /api/v1/users/:username', now())"),
+        format!("INSERT INTO webhook_endpoints (id, tenant_id, endpoint_json, created_at, updated_at) VALUES ('wh-1', '{ts}', '{{}}', now(), now())"),
+        "INSERT INTO webhook_delivery_logs (id, endpoint_id, delivery_json, delivered, created_at) VALUES ('d-1', 'wh-1', '{\"event_type\":\"call.started\",\"payload\":\"{\\\"from\\\":\\\"sip:alice@pbx.example\\\"}\"}', true, now())".to_string(),
+        "INSERT INTO webhook_delivery_logs (id, endpoint_id, delivery_json, delivered, created_at) VALUES ('d-2', 'wh-1', '{\"event_type\":\"call.started\",\"payload\":\"{\\\"from\\\":\\\"sip:alice@elsewhere.example\\\"}\"}', true, now())".to_string(),
+    ] {
+        sqlx::query(&sql).execute(&pool).await.unwrap_or_else(|e| panic!("{sql}: {e}"));
+    }
+    let mut blocked = PhoneNumber::new("+14155550177".into(), t).unwrap();
+    blocked.block_list = vec!["+14155550100".into(), "+14155550999".into()];
+    db.pg.put_phone_number(blocked).await.unwrap();
+
+    // A hold on her call: exported all the same, and counted.
+    db.compliance
+        .place_hold(&LegalHold {
+            id: fcp_core::LegalHoldId::new(),
+            tenant_id: t,
+            matter: "Matter 7".into(),
+            reason: None,
+            scope: HoldScope {
+                call_ids: vec![hers_call.to_string()],
+                ..Default::default()
+            },
+            subject_keys: Vec::new(),
+            created_by: "legal".into(),
+            created_at: SystemTime::now(),
+            released: None,
+        })
+        .await
+        .unwrap();
+
+    let request = SubjectRequest::received(
+        t,
+        SubjectRequestKind::Export,
+        vec![SubjectIdentifier::User {
+            username: "alice".into(),
+        }],
+        "dpo",
+        30,
+    );
+    db.compliance
+        .create_subject_request(&request)
+        .await
+        .unwrap();
+    let exports = tempfile::tempdir().unwrap();
+    let settings = ExportSettings {
+        exports_dir: exports.path().to_path_buf(),
+        bundle_ttl: Duration::from_secs(7 * 86_400),
+    };
+    let media = LocalMedia {
+        roots: vec![root.path().to_path_buf()],
+        profile_pictures_dir: None,
+    };
+    let finished = run_subject_requests(&storage, &media, &settings)
+        .await
+        .unwrap();
+    assert_eq!(finished.len(), 1);
+    let done = db
+        .compliance
+        .get_subject_request(&t, &request.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        done.status,
+        SubjectRequestStatus::Completed,
+        "{:?}",
+        done.error
+    );
+    let expansion = done.expansion.clone().unwrap();
+    assert!(
+        expansion
+            .identifiers
+            .contains(&"1001@pbx.example".to_string()),
+        "{expansion:?}"
+    );
+    let bundle = done.bundle.clone().unwrap();
+    let (size, sha) = fcp_core::subject_request::sha256_file(Path::new(&bundle.path))
+        .await
+        .unwrap();
+    assert_eq!((size, sha), (bundle.size_bytes, bundle.sha256.clone()));
+    assert!(!exports
+        .path()
+        .join(format!(".staging-{}", request.id))
+        .exists());
+
+    let files = unpack(Path::new(&bundle.path));
+    let manifest: serde_json::Value = serde_json::from_slice(&files["manifest.json"]).unwrap();
+    let report = done.report.clone().unwrap();
+    let count = |class: &str| report.classes.get(class).map(|c| c.items).unwrap_or(0);
+
+    let profile = jsonl(&files, "profile");
+    assert_eq!(profile.len(), 1);
+    assert_eq!(profile[0]["username"], "alice");
+    assert!(
+        !files["data/profile.jsonl"]
+            .windows(10)
+            .any(|w| w == b"secret-ha1"),
+        "no secrets"
+    );
+
+    let cdrs = jsonl(&files, "cdrs");
+    assert_eq!(cdrs.len(), 1, "only her call: {cdrs:#?}");
+    assert_eq!(cdrs[0]["call_id"], serde_json::to_value(hers_call).unwrap());
+    assert_eq!(report.classes["cdrs"].held, 1);
+    assert_eq!(
+        report.held_by.values().collect::<Vec<_>>(),
+        vec!["Matter 7"]
+    );
+
+    assert_eq!(count("call_recordings"), 2);
+    assert_eq!(report.classes["call_recordings"].files, 1);
+    assert_eq!(report.classes["call_recordings"].missing_files.len(), 1);
+    assert_eq!(count("sip_traces"), 1);
+    assert_eq!(
+        count("voicemail_messages"),
+        2,
+        "the one in her box and the one she left"
+    );
+    assert_eq!(count("voicemail_greetings"), 1);
+    assert_eq!(count("mailboxes"), 1);
+    assert!(!files["data/mailboxes.jsonl"]
+        .windows(4)
+        .any(|w| w == b"\"pin"));
+    assert_eq!(count("conference_recordings"), 1);
+    assert_eq!(
+        report.classes["conference_recordings"].missing_files.len(),
+        1,
+        "on its node"
+    );
+    assert_eq!(count("registrations"), 1);
+    assert_eq!(count("emergency_calls"), 1);
+    assert_eq!(count("audit_events"), 1);
+    assert_eq!(count("webhook_deliveries"), 1);
+    assert_eq!(count("number_lists"), 1);
+    assert_eq!(jsonl(&files, "number_lists")[0]["entry"], "+14155550100");
+
+    // Every file the manifest names is in the bundle with its checksum, and
+    // the recordings with others in them are marked for review.
+    for f in manifest["files"].as_array().unwrap() {
+        let name = f["path"].as_str().unwrap();
+        let bytes = files
+            .get(name)
+            .unwrap_or_else(|| panic!("{name} in the bundle"));
+        assert_eq!(f["bytes"], bytes.len());
+    }
+    assert!(manifest["not_exported"]["backups"].is_string());
+    assert!(report
+        .review
+        .iter()
+        .any(|r| r.starts_with("media/call_recordings/")));
+    assert!(report
+        .review
+        .iter()
+        .any(|r| r.starts_with("media/voicemail_messages/")));
+    assert_eq!(report.review.len(), 2, "{:?}", report.review);
+
+    // Removed once it expires.
+    assert_eq!(
+        fcp_core::subject_request::remove_expired_bundles(
+            &storage,
+            SystemTime::now() + Duration::from_secs(8 * 86_400)
+        )
+        .await
+        .unwrap(),
+        1
+    );
+    assert!(!Path::new(&bundle.path).exists());
+    let removed = db
+        .compliance
+        .get_subject_request(&t, &request.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(removed.bundle.unwrap().removed);
+    db.finish().await;
+}

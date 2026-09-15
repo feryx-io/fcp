@@ -308,6 +308,19 @@ pub fn router() -> Router<ApiState> {
             "/compliance/holds/:id/release",
             post(compliance::release_hold),
         )
+        // Subject requests: export (and, next, erasure) of one person's data
+        .route(
+            "/compliance/subject-requests",
+            get(compliance::list_subject_requests).post(compliance::file_subject_request),
+        )
+        .route(
+            "/compliance/subject-requests/:id",
+            get(compliance::get_subject_request),
+        )
+        .route(
+            "/compliance/subject-requests/:id/bundle",
+            get(compliance::download_subject_bundle),
+        )
         // Conference recordings: the registry, and the file behind each row
         .route("/recordings", get(recordings::list_recordings))
         .route(

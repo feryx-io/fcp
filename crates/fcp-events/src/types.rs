@@ -1402,6 +1402,9 @@ impl PlatformEvent {
             PlatformEvent::Compliance(e) => match e {
                 ComplianceEvent::HoldPlaced { .. } => "compliance.hold_placed",
                 ComplianceEvent::HoldReleased { .. } => "compliance.hold_released",
+                ComplianceEvent::SubjectRequestCompleted { .. } => {
+                    "compliance.subject_request_completed"
+                }
             },
         }
     }
@@ -1497,7 +1500,8 @@ impl PlatformEvent {
             ) => Some(tenant_id),
             PlatformEvent::Compliance(
                 ComplianceEvent::HoldPlaced { tenant_id, .. }
-                | ComplianceEvent::HoldReleased { tenant_id, .. },
+                | ComplianceEvent::HoldReleased { tenant_id, .. }
+                | ComplianceEvent::SubjectRequestCompleted { tenant_id, .. },
             ) => Some(tenant_id),
             PlatformEvent::Recording(
                 RecordingEvent::Started { tenant_id, .. }
@@ -1557,7 +1561,8 @@ impl PlatformEvent {
             ) => *timestamp,
             PlatformEvent::Compliance(
                 ComplianceEvent::HoldPlaced { timestamp, .. }
-                | ComplianceEvent::HoldReleased { timestamp, .. },
+                | ComplianceEvent::HoldReleased { timestamp, .. }
+                | ComplianceEvent::SubjectRequestCompleted { timestamp, .. },
             ) => *timestamp,
         }
     }
@@ -2041,8 +2046,9 @@ mod content_event_tests {
 }
 
 /// Compliance events. A legal hold placed or released
-/// (`compliance.hold_placed`, `compliance.hold_released`): what an eDiscovery
-/// or records system subscribes to.
+/// (`compliance.hold_placed`, `compliance.hold_released`) and a subject
+/// request finished (`compliance.subject_request_completed`): what an
+/// eDiscovery or records system subscribes to.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ComplianceEvent {
@@ -2061,6 +2067,19 @@ pub enum ComplianceEvent {
         matter: String,
         actor: String,
         reason: String,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+    /// A subject request finished (`docs/COMPLIANCE_FOLLOWUPS.md` §6.2).
+    SubjectRequestCompleted {
+        request_id: String,
+        tenant_id: TenantId,
+        /// `export` or `erasure`.
+        kind: String,
+        /// `completed` or `failed`.
+        status: String,
+        /// Whether it finished after the day it was due.
+        overdue: bool,
         #[serde(with = "system_time_serde")]
         timestamp: SystemTime,
     },
@@ -2086,5 +2105,25 @@ mod compliance_event_tests {
         assert_eq!(json["type"], "hold_placed");
         assert_eq!(json["hold_id"], "hold-1");
         assert_eq!(json["timestamp"], 1_705_584_000);
+    }
+
+    #[test]
+    fn a_finished_subject_request_is_named_for_its_tenant() {
+        let event = PlatformEvent::Compliance(ComplianceEvent::SubjectRequestCompleted {
+            request_id: "sreq-1".into(),
+            tenant_id: TenantId::nil(),
+            kind: "export".into(),
+            status: "completed".into(),
+            overdue: false,
+            timestamp: SystemTime::UNIX_EPOCH,
+        });
+        assert_eq!(
+            event.event_type_name(),
+            "compliance.subject_request_completed"
+        );
+        assert_eq!(event.tenant_id(), Some(&TenantId::nil()));
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["type"], "subject_request_completed");
+        assert_eq!(json["kind"], "export");
     }
 }

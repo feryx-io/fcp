@@ -79,6 +79,7 @@ define_id!(LocationId, "loc");
 define_id!(PromptId, "prompt");
 define_id!(ConfigTemplateId, "tmpl");
 define_id!(LegalHoldId, "hold");
+define_id!(SubjectRequestId, "sreq");
 
 /// SIP Call-ID header value (not our internal CallId).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

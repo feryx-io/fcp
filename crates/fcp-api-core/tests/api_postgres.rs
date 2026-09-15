@@ -93,6 +93,8 @@ struct App {
     sip_traces: Arc<PostgresSipTraceStore>,
     emergency: Arc<PostgresEmergencyStore>,
     compliance: Arc<PostgresComplianceStore>,
+    /// The storage the API runs on, for a test to run a worker against.
+    dyn_storage: Arc<DynStorage>,
     event_bus: Arc<InMemoryEventBus>,
     dialog_manager: Arc<DialogManager>,
     subscription_manager: Arc<SubscriptionManager>,
@@ -162,7 +164,10 @@ impl App {
                 .with_call_recording_store(Arc::new(PostgresRecordingStore::new(
                     storage.pool().clone(),
                 ))
-                    as Arc<dyn fcp_core::recording::CallRecordingStore>),
+                    as Arc<dyn fcp_core::recording::CallRecordingStore>)
+                .with_subject_data_store(
+                    Arc::clone(&storage) as Arc<dyn fcp_core::subject_request::SubjectDataStore>
+                ),
         );
         let dir = tempfile::Builder::new()
             .prefix("fcp-api-test-")
@@ -218,7 +223,7 @@ impl App {
         .with_default_tenant_id(tenant_a);
 
         let state = ApiState::new(
-            Some(dyn_storage),
+            Some(Arc::clone(&dyn_storage)),
             Some(Arc::clone(&storage) as Arc<dyn FlowStore>),
             Arc::clone(&dialog_manager),
             Arc::clone(&subscription_manager),
@@ -253,6 +258,7 @@ impl App {
             sip_traces,
             emergency,
             compliance,
+            dyn_storage,
             event_bus,
             dialog_manager,
             subscription_manager,
@@ -5435,4 +5441,182 @@ async fn owners_dial_out_of_their_own_conferences() {
         .await;
     assert_eq!(res.status, StatusCode::NOT_FOUND, "{}", res.text);
     assert_eq!(seen.lock().unwrap().len(), before);
+}
+
+#[tokio::test]
+async fn a_subject_export_is_filed_run_downloaded_and_audited() {
+    use fcp_core::subject_request::{run_subject_requests, ExportSettings, LocalMedia};
+
+    let app = require_app!();
+    app.create_user("dana", None).await;
+
+    // Validation: a kind that exists now, a subject, a user the tenant has.
+    for bad in [
+        json!({ "kind": "erasure", "subjects": [{ "type": "user", "username": "dana" }] }),
+        json!({ "kind": "copy", "subjects": [{ "type": "user", "username": "dana" }] }),
+        json!({ "kind": "export", "subjects": [] }),
+        json!({ "kind": "export", "subjects": [{ "type": "user", "username": "nobody" }] }),
+        json!({ "kind": "export", "subjects": [{ "type": "number", "number": "+15550001" }], "reference": "a\r\nb" }),
+    ] {
+        let refused = app
+            .admin(
+                Method::POST,
+                "/api/v1/compliance/subject-requests",
+                Some(bad.clone()),
+            )
+            .await;
+        assert_eq!(
+            refused.status,
+            StatusCode::BAD_REQUEST,
+            "{bad}: {}",
+            refused.text
+        );
+    }
+
+    // The tenant answers within its own window.
+    let policy = app
+        .admin(
+            Method::PUT,
+            "/api/v1/compliance/policy",
+            Some(json!({ "subject_request_days": 10 })),
+        )
+        .await;
+    assert_eq!(policy.status, StatusCode::OK, "{}", policy.text);
+    assert_eq!(policy.json["subject_request_days"], 10);
+
+    let filed = app
+        .admin(
+            Method::POST,
+            "/api/v1/compliance/subject-requests",
+            Some(json!({
+                "kind": "export",
+                "subjects": [{ "type": "user", "username": "dana" }],
+                "reference": "DSAR-2026-17"
+            })),
+        )
+        .await;
+    assert_eq!(filed.status, StatusCode::CREATED, "{}", filed.text);
+    assert_eq!(filed.json["status"], "received");
+    let due = filed.json["due_at"].as_u64().unwrap() - filed.json["received_at"].as_u64().unwrap();
+    assert_eq!(due, 10 * 86_400);
+    let id = filed.json["id"].as_str().unwrap().to_string();
+
+    let list = app
+        .admin(
+            Method::GET,
+            "/api/v1/compliance/subject-requests?status=received",
+            None,
+        )
+        .await;
+    assert_eq!(list.json["count"], 1, "{}", list.text);
+    let other = app
+        .admin_in(
+            app.tenant_b,
+            Method::GET,
+            &format!("/api/v1/compliance/subject-requests/{id}"),
+            None,
+        )
+        .await;
+    assert_eq!(other.status, StatusCode::NOT_FOUND);
+    let early = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/compliance/subject-requests/{id}/bundle"),
+            None,
+        )
+        .await;
+    assert_eq!(early.status, StatusCode::CONFLICT, "{}", early.text);
+
+    // The worker runs it.
+    let exports = tempfile::tempdir().unwrap();
+    let settings = ExportSettings {
+        exports_dir: exports.path().to_path_buf(),
+        bundle_ttl: Duration::from_secs(86_400),
+    };
+    let finished = run_subject_requests(&app.dyn_storage, &LocalMedia::default(), &settings)
+        .await
+        .unwrap();
+    assert_eq!(finished.len(), 1);
+
+    let done = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/compliance/subject-requests/{id}"),
+            None,
+        )
+        .await;
+    assert_eq!(done.json["status"], "completed", "{}", done.text);
+    assert_eq!(
+        done.json["report"]["classes"]["profile"]["items"], 1,
+        "{}",
+        done.text
+    );
+    assert!(done.json["expansion"]["identifiers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|i| i == "dana"));
+    let sha = done.json["bundle"]["sha256"].as_str().unwrap().to_string();
+
+    let bundle = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/compliance/subject-requests/{id}/bundle"),
+            None,
+        )
+        .await;
+    assert_eq!(bundle.status, StatusCode::OK, "{}", bundle.text);
+    assert_eq!(bundle.headers["content-type"], "application/gzip");
+    assert_eq!(bundle.headers["x-content-sha256"], sha.as_str());
+    assert_eq!(&bundle.bytes[..2], &[0x1f, 0x8b], "gzip");
+    let audited = wait_for_audit(&app, "/api/v1/audit-log?limit=50", |e| {
+        e["action"] == "GET /api/v1/compliance/subject-requests/:id/bundle" && e["status"] == 200
+    })
+    .await;
+    assert_eq!(audited["actor"], "static_token", "{audited}");
+
+    // A read-only session may do none of it.
+    app.create_user_with_role("onlooker", "read_only").await;
+    let onlooker = app.login("onlooker", PASSWORD).await.json["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    for (method, path) in [
+        (
+            Method::GET,
+            "/api/v1/compliance/subject-requests".to_string(),
+        ),
+        (
+            Method::GET,
+            format!("/api/v1/compliance/subject-requests/{id}/bundle"),
+        ),
+    ] {
+        let refused = app.send_as(&onlooker, method.clone(), &path, None).await;
+        assert_eq!(
+            refused.status,
+            StatusCode::FORBIDDEN,
+            "{method} {path}: {}",
+            refused.text
+        );
+    }
+
+    // Once the bundle is removed it is gone.
+    assert_eq!(
+        fcp_core::subject_request::remove_expired_bundles(
+            &app.dyn_storage,
+            SystemTime::now() + Duration::from_secs(2 * 86_400)
+        )
+        .await
+        .unwrap(),
+        1
+    );
+    let gone = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/compliance/subject-requests/{id}/bundle"),
+            None,
+        )
+        .await;
+    assert_eq!(gone.status, StatusCode::GONE, "{}", gone.text);
+    app.finish().await;
 }
