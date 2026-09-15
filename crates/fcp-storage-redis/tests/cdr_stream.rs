@@ -149,3 +149,35 @@ async fn trimming_drops_only_finished_entries_older_than_the_window() {
     jobs.ack(&[rest[0].id.clone()]).await.unwrap();
     assert_eq!(patient.trim().await.unwrap(), 0);
 }
+
+#[tokio::test]
+async fn dead_letters_are_read_in_pages_and_deleted_by_id() {
+    use fcp_core::subject_erasure::DeadLetterStore;
+
+    let Some(storage) = storage().await else {
+        return;
+    };
+    let stream = RedisCdrStream::new(storage, "jobs", Duration::from_secs(3600));
+    let records: Vec<_> = (0..5).map(|_| record()).collect();
+    for (n, r) in records.iter().enumerate() {
+        let raw = serde_json::to_string(r).unwrap();
+        stream
+            .dead_letter(&format!("{n}-0"), &raw, "refused")
+            .await
+            .unwrap();
+    }
+    let (first, next) = stream.dead_letter_page(None, 3).await.unwrap();
+    assert_eq!(first.len(), 3);
+    let next = next.expect("a second page");
+    let (second, last) = stream.dead_letter_page(Some(&next), 3).await.unwrap();
+    assert_eq!(second.len(), 2);
+    assert!(last.is_none());
+    let found: CallDetailRecord = serde_json::from_str(&first[0].1).unwrap();
+    assert_eq!(found.cdr_id, records[0].cdr_id);
+
+    let ids: Vec<String> = first.iter().map(|(id, _)| id.clone()).collect();
+    assert_eq!(stream.delete_dead_letters(&ids).await.unwrap(), 3);
+    let (left, _) = stream.dead_letter_page(None, 10).await.unwrap();
+    assert_eq!(left.len(), 2);
+    assert_eq!(stream.status().await.unwrap().dead_letters, 2);
+}

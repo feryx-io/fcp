@@ -432,24 +432,112 @@ pub async fn update_tenant(
     Ok(Json(tenant.into()))
 }
 
-/// Delete a tenant (platform admin only)
+/// Delete a tenant (platform admin only). A request, not a statement
+/// (`docs/COMPLIANCE_FOLLOWUPS.md` §4): refused with `409` while a legal
+/// hold is active; otherwise the tenant is closed and `202` returns the
+/// tenant deletion request, which `fcp-admin` runs — every row of the
+/// tenant removed, the tenant last. Its progress is at
+/// `/compliance/subject-requests/:id` in the tenant.
 pub async fn delete_tenant(
     State(state): State<ApiState>,
     identity: Option<Extension<AuthIdentity>>,
     Path(id): Path<String>,
-) -> Result<StatusCode, ApiError> {
+) -> Result<axum::response::Response, ApiError> {
+    use axum::response::IntoResponse;
+    use fcp_core::subject_request::{SubjectRequest, SubjectRequestKind, SubjectRequestStatus};
+
     require_platform(identity.as_ref().map(|ext| &ext.0))?;
 
     let storage = require_storage!(state);
     let tenant_id = TenantId::from_str(&id)
         .map_err(|_| ApiError::BadRequest("Invalid tenant ID format".to_string()))?;
 
-    // Check if tenant exists
-    if storage.get_tenant(&tenant_id).await?.is_none() {
+    let Some(mut tenant) = storage.get_tenant(&tenant_id).await? else {
         return Err(ApiError::NotFound(format!("Tenant {} not found", id)));
+    };
+
+    // Without the compliance store there is no worker to hand it to.
+    let Some(compliance) = storage.compliance_store() else {
+        storage.delete_tenant(&tenant_id).await?;
+        return Ok(StatusCode::NO_CONTENT.into_response());
+    };
+    let holds = compliance
+        .list_holds(&tenant_id, false)
+        .await
+        .map_err(ApiError::storage)?;
+    if let Some(hold) = holds.first() {
+        return Err(ApiError::Conflict(format!(
+            "Tenant {id} is under legal hold {} ({}); release it first",
+            hold.id, hold.matter
+        )));
+    }
+    let open = compliance
+        .list_subject_requests(&tenant_id, None, 1000)
+        .await
+        .map_err(ApiError::storage)?
+        .into_iter()
+        .find(|r| r.kind == SubjectRequestKind::TenantDeletion && r.status.is_open());
+    if let Some(request) = open {
+        return Ok((
+            StatusCode::ACCEPTED,
+            Json(super::compliance::SubjectRequestResponse::from(request)),
+        )
+            .into_response());
     }
 
-    storage.delete_tenant(&tenant_id).await?;
+    let actor = identity
+        .as_ref()
+        .map(|Extension(i)| i.actor())
+        .unwrap_or_else(|| "anonymous".to_string());
+    let mut request = SubjectRequest::received(
+        tenant_id,
+        SubjectRequestKind::TenantDeletion,
+        Vec::new(),
+        actor.clone(),
+        fcp_core::subject_request::DEFAULT_REQUEST_DAYS,
+    );
+    request.status = SubjectRequestStatus::Confirmed;
+    request.confirmed_at = Some(std::time::SystemTime::now());
+    request.confirmed_by = Some(actor);
+    compliance
+        .create_subject_request(&request)
+        .await
+        .map_err(ApiError::storage)?;
+    tenant.status = fcp_core::tenant::TenantStatus::Closed;
+    storage.put_tenant(tenant).await?;
+    tracing::info!(tenant_id = %tenant_id, request = %request.id, "Tenant deletion requested");
 
-    Ok(StatusCode::NO_CONTENT)
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(super::compliance::SubjectRequestResponse::from(request)),
+    )
+        .into_response())
+}
+
+/// The tenant's latest deletion request (platform admin only), readable once
+/// the tenant is gone.
+///
+/// GET /api/v1/tenants/:id/deletion
+pub async fn get_tenant_deletion(
+    State(state): State<ApiState>,
+    identity: Option<Extension<AuthIdentity>>,
+    Path(id): Path<String>,
+) -> Result<Json<super::compliance::SubjectRequestResponse>, ApiError> {
+    use fcp_core::subject_request::SubjectRequestKind;
+
+    require_platform(identity.as_ref().map(|ext| &ext.0))?;
+    let storage = require_storage!(state);
+    let tenant_id = TenantId::from_str(&id)
+        .map_err(|_| ApiError::BadRequest("Invalid tenant ID format".to_string()))?;
+    let compliance = storage
+        .compliance_store()
+        .ok_or_else(|| ApiError::NotFound("No tenant deletion requests here".to_string()))?;
+    compliance
+        .list_subject_requests(&tenant_id, None, 1000)
+        .await
+        .map_err(ApiError::storage)?
+        .into_iter()
+        .find(|r| r.kind == SubjectRequestKind::TenantDeletion)
+        .map(|r| Json(super::compliance::SubjectRequestResponse::from(r)))
+        .ok_or_else(|| ApiError::NotFound(format!("Tenant {id} has no deletion request")))
 }

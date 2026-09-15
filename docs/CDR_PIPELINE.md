@@ -185,6 +185,7 @@ spool_dir = "/var/lib/fcp/cdr-spool"   # required when storage is on
 fsync_interval_ms = 100
 segment_bytes = 16777216
 ship_batch = 200
+dead_letter_days = 30                  # dead letters kept by day, then removed
 ```
 
 The `Shipper` reads sealed segments and the tail of the open one, ships
@@ -572,8 +573,9 @@ settles and announces. A record the store refuses for what it is — a
 second call record for a call, a value out of range: SQLSTATE classes 23
 and 22 — comes back as `CdrRejected`; the processor then stores the batch
 one record at a time, keeps the refused one as a dead letter
-(`fcp:cdrs:dead` with the reason, or the spool's `dead.jsonl` with the
-reason on a node) and stores the rest, so one bad record cannot hold a
+(`fcp:cdrs:dead` with the reason, or the spool's `dead-<day>.jsonl` with
+the reason on a node, removed after `[cdr] dead_letter_days`, since a
+record can name someone an erasure has to reach) and stores the rest, so one bad record cannot hold a
 batch forever. An error of any other kind is the store being away: the
 batch is retried with backoff and acknowledged only once it lands. The
 same processor, with the enricher and the event publisher, runs behind

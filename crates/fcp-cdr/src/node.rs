@@ -55,6 +55,15 @@ pub struct NodeConfig {
     /// Records per shipped batch.
     #[serde(default = "default_ship_batch")]
     pub ship_batch: usize,
+
+    /// Days the spool keeps records nothing could store before removing
+    /// them, since they may name people an erasure has to reach.
+    #[serde(default = "default_dead_letter_days")]
+    pub dead_letter_days: u32,
+}
+
+fn default_dead_letter_days() -> u32 {
+    30
 }
 
 fn default_fsync_interval_ms() -> u64 {
@@ -77,6 +86,7 @@ impl Default for NodeConfig {
             fsync_interval_ms: default_fsync_interval_ms(),
             segment_bytes: default_segment_bytes(),
             ship_batch: default_ship_batch(),
+            dead_letter_days: default_dead_letter_days(),
         }
     }
 }
@@ -122,6 +132,9 @@ pub fn start_node(
         "CDR spool open"
     );
     spool.start_fsync();
+    spool.start_dead_letter_pruning(Duration::from_secs(
+        u64::from(config.dead_letter_days.max(1)) * 86_400,
+    ));
     let sink: Arc<dyn Sink> = match config.sink {
         SinkKind::Local => Arc::new(
             LocalSink::new(Arc::clone(processor.as_ref().ok_or_else(needs_processor)?))

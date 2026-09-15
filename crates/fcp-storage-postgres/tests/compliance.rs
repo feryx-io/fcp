@@ -1205,7 +1205,12 @@ async fn an_export_gathers_the_subject_from_every_store_and_nobody_else() {
         roots: vec![root.path().to_path_buf()],
         profile_pictures_dir: None,
     };
-    let finished = run_subject_requests(&storage, &media, &settings)
+    let access = fcp_core::subject_request::WorkerAccess {
+        media: &media,
+        remover: &media,
+        dead_letters: None,
+    };
+    let finished = run_subject_requests(&storage, access, &settings)
         .await
         .unwrap();
     assert_eq!(finished.len(), 1);
@@ -1327,5 +1332,797 @@ async fn an_export_gathers_the_subject_from_every_store_and_nobody_else() {
         .unwrap()
         .unwrap();
     assert!(removed.bundle.unwrap().removed);
+    db.finish().await;
+}
+
+// ── Subject erasure (docs/COMPLIANCE_FOLLOWUPS.md §6.3-6.6) ────────────
+
+/// Dead letters in memory.
+#[derive(Default)]
+struct Dead(std::sync::Mutex<Vec<(String, String)>>);
+
+#[async_trait::async_trait]
+impl fcp_core::subject_erasure::DeadLetterStore for Dead {
+    async fn dead_letter_page(
+        &self,
+        after: Option<&str>,
+        _limit: usize,
+    ) -> anyhow::Result<(Vec<(String, String)>, Option<String>)> {
+        let all = self.0.lock().unwrap().clone();
+        Ok((
+            all.into_iter()
+                .filter(|(id, _)| after.is_none_or(|a| id.as_str() > a))
+                .collect(),
+            None,
+        ))
+    }
+
+    async fn delete_dead_letters(&self, ids: &[String]) -> anyhow::Result<u64> {
+        let mut all = self.0.lock().unwrap();
+        let before = all.len();
+        all.retain(|(id, _)| !ids.contains(id));
+        Ok((before - all.len()) as u64)
+    }
+}
+
+/// Removes conference recordings' files as a node would, noting which.
+#[derive(Default)]
+struct Nodes(std::sync::Mutex<Vec<String>>);
+
+#[async_trait::async_trait]
+impl fcp_core::subject_erasure::MediaRemover for Nodes {
+    async fn remove(
+        &self,
+        _tenant: &TenantId,
+        _class: fcp_core::subject_request::ExportClass,
+        row: &fcp_core::subject_request::SubjectRow,
+    ) -> Result<(), String> {
+        self.0
+            .lock()
+            .unwrap()
+            .push(row.file.clone().unwrap_or_default());
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn an_erasure_previews_then_deletes_pseudonymises_and_keeps_what_it_must() {
+    use fcp_core::legal_hold::{HoldScope, LegalHold, SubjectIdentifier};
+    use fcp_core::storage::{CredentialStore, TenantStore};
+    use fcp_core::subject_request::{
+        run_subject_requests, ExportSettings, LocalMedia, SubjectRequest, SubjectRequestKind,
+        SubjectRequestStatus, WorkerAccess,
+    };
+
+    let db = require_db!();
+    let root = tempfile::tempdir().unwrap();
+    let pool = db.pg.pool().clone();
+    let storage = db
+        .storage
+        .clone()
+        .with_subject_data_store(
+            db.pg.clone() as Arc<dyn fcp_core::subject_request::SubjectDataStore>
+        )
+        .with_subject_erase_store(
+            db.pg.clone() as Arc<dyn fcp_core::subject_erasure::SubjectEraseStore>
+        );
+    let scalar = |sql: String| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>(&sql)
+                .fetch_one(&pool)
+                .await
+                .unwrap_or_else(|e| panic!("{sql}: {e}"))
+        }
+    };
+    let text = |sql: String| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_scalar::<_, Option<String>>(&sql)
+                .fetch_one(&pool)
+                .await
+                .unwrap_or_else(|e| panic!("{sql}: {e}"))
+        }
+    };
+    let exec = |sql: String| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query(&sql)
+                .execute(&pool)
+                .await
+                .unwrap_or_else(|e| panic!("{sql}: {e}"));
+        }
+    };
+
+    let mut tenant = fcp_core::Tenant::new("erasure".into());
+    tenant.sip_domains = vec!["pbx.example".into()];
+    db.pg.put_tenant(tenant.clone()).await.unwrap();
+    let t = tenant.id;
+    let ts = t.to_string();
+    let user = |name: &str, ext: &str| -> fcp_core::storage::User {
+        serde_json::from_value(serde_json::json!({
+            "username": name, "password": "x", "tenant_id": t, "display_name": name,
+            "extension": ext, "enabled": true, "created_at": 1_789_000_000u64,
+            "updated_at": 1_789_000_000u64, "email": format!("{name}@mail.example"),
+            "phone_number": if name == "alice" { "+14155550100" } else { "+14155550200" },
+        }))
+        .unwrap()
+    };
+    let alice = user("alice", "1001");
+    db.pg.put_user(alice.clone()).await.unwrap();
+    db.pg.put_user(user("bob", "1002")).await.unwrap();
+    exec("UPDATE cdr_archive_state SET next_day = current_date + 1".into()).await;
+
+    // Her mailbox with a greeting and a message; one she left Bob.
+    let (_, mut hers) = mailbox(&db, t, "+14155550111").await;
+    hers.user_id = alice.id;
+    let greeting = file(&root.path().join("vm/alice-name.wav"), 1);
+    hers.greetings = vec![VoicemailGreeting::new(
+        GreetingType::Name,
+        PathBuf::from(&greeting),
+    )];
+    db.pg.put_mailbox(hers.clone()).await.unwrap();
+    db.pg
+        .put_message(VoicemailMessage::new(
+            hers.id.clone(),
+            "+14155550199".into(),
+            5,
+            file(&root.path().join("vm/in-hers.wav"), 1).into(),
+        ))
+        .await
+        .unwrap();
+    let (_, bobs) = mailbox(&db, t, "+14155550122").await;
+    let left = VoicemailMessage::new(
+        bobs.id.clone(),
+        "4155550100".into(),
+        7,
+        file(&root.path().join("vm/left.wav"), 1).into(),
+    );
+    db.pg.put_message(left.clone()).await.unwrap();
+    let bobs_own = VoicemailMessage::new(
+        bobs.id.clone(),
+        "+14155550188".into(),
+        7,
+        file(&root.path().join("vm/other.wav"), 1).into(),
+    );
+    db.pg.put_message(bobs_own.clone()).await.unwrap();
+
+    // Calls: two of hers (one held), Bob's with Carol.
+    let hers_call = CallId::new();
+    let held_call = CallId::new();
+    let theirs = CallId::new();
+    let rec = |from: &str, to: &str, call: CallId| {
+        let mut r = fcp_cdr::RecordBuilder::new(fcp_cdr::CdrKind::Call, call, t)
+            .from(from, Some("Alice Smith".into()))
+            .to(to, Some("Bob".into()))
+            .started_at(SystemTime::now() - Duration::from_secs(3600))
+            .build();
+        r.custom_data = Some(serde_json::json!({ "account": "A-1", "callback": "+14155550100" }));
+        r
+    };
+    db.storage
+        .insert_cdrs(vec![
+            rec(
+                "\"Alice\" <sip:alice@pbx.example>",
+                "sip:bob@pbx.example",
+                hers_call,
+            ),
+            rec("sip:alice@pbx.example", "sip:bob@pbx.example", held_call),
+            rec("sip:bob@pbx.example", "sip:carol@pbx.example", theirs),
+        ])
+        .await
+        .unwrap();
+    exec("DELETE FROM cdr_archive_late".into()).await;
+    let audio = file(&root.path().join("calls/hers.wav"), 1);
+    db.storage
+        .call_recording_store()
+        .unwrap()
+        .create_call_recording(&CallRecording::starting(
+            t,
+            hers_call.to_string(),
+            CallRecordingSource::Api,
+            audio.clone(),
+        ))
+        .await
+        .unwrap();
+    let mut room = Recording::starting(
+        t,
+        "8001",
+        "node-1",
+        "/conf/8001.wav",
+        RecordingFormat::Wav,
+        RecordingTrigger::Api,
+    );
+    room.participant_list = vec![RecordingParticipant {
+        participant_id: "p1".into(),
+        uri: Some("sip:alice@pbx.example".into()),
+        display_name: None,
+        joined_at: SystemTime::now(),
+    }];
+    db.storage
+        .recording_store()
+        .unwrap()
+        .create_recording(&room)
+        .await
+        .unwrap();
+    for sql in [
+        format!("INSERT INTO api_tokens (id, name, token_hash, prefix, user_id, tenant_id, permissions, created_at) VALUES ('token-a', 'cli', 'h1', 'fcp_abcd', '{}', '{ts}', '[]', now())", alice.id),
+        format!("INSERT INTO registrations (tenant_id, aor, contact, expires_at, call_id, cseq, registered_at) VALUES ('{ts}', 'alice@pbx.example', 'sip:alice@10.0.0.5', now() + interval '1 hour', 'c1', 1, now())"),
+        format!("INSERT INTO registrations (tenant_id, aor, contact, expires_at, call_id, cseq, registered_at) VALUES ('{ts}', 'bob@pbx.example', 'sip:bob@10.0.0.6', now() + interval '1 hour', 'c2', 1, now())"),
+        format!("INSERT INTO emergency_calls (tenant_id, call_id, sip_call_id, caller_uri, caller_username, dialed_number, kind, outcome, placed_at) VALUES ('{ts}', 'call-e', 'e@x', 'sip:alice@pbx.example', 'alice', '911', 'test', 'answered', now())"),
+        format!("INSERT INTO admin_audit_log (tenant_id, actor, actor_kind, method, path, status, action, occurred_at) VALUES ('{ts}', 'alice', 'session', 'PUT', '/api/v1/users/alice', 200, 'PUT /api/v1/users/:username', now())"),
+        format!("INSERT INTO webhook_endpoints (id, tenant_id, endpoint_json, created_at, updated_at) VALUES ('wh-e', '{ts}', '{{}}', now(), now())"),
+        "INSERT INTO webhook_delivery_logs (id, endpoint_id, delivery_json, delivered, created_at) VALUES ('d-a', 'wh-e', '{\"payload\":\"{\\\"from\\\":\\\"sip:alice@pbx.example\\\"}\"}', true, now())".to_string(),
+        format!("INSERT INTO port_requests (id, tenant_id, status, created_at, updated_at, request_json) VALUES ('port-1', '{ts}', 'submitted', now(), now(), '{{\"authorized_contact_email\": \"alice@mail.example\", \"pin\": \"9999\"}}')"),
+    ] {
+        exec(sql).await;
+    }
+    let mut blocked = PhoneNumber::new("+14155550177".into(), t).unwrap();
+    blocked.block_list = vec!["+14155550100".into(), "+14155550999".into()];
+    db.pg.put_phone_number(blocked.clone()).await.unwrap();
+
+    db.compliance
+        .place_hold(&LegalHold {
+            id: fcp_core::LegalHoldId::new(),
+            tenant_id: t,
+            matter: "Matter 9".into(),
+            reason: None,
+            scope: HoldScope {
+                call_ids: vec![held_call.to_string()],
+                ..Default::default()
+            },
+            subject_keys: Vec::new(),
+            created_by: "legal".into(),
+            created_at: SystemTime::now(),
+            released: None,
+        })
+        .await
+        .unwrap();
+
+    let dead = Dead::default();
+    let tenant_json = serde_json::to_string(&t).unwrap();
+    dead.0.lock().unwrap().extend([
+        (
+            "1-0".to_string(),
+            format!("{{\"tenant_id\":{tenant_json},\"from_uri\":\"sip:alice@pbx.example\"}}"),
+        ),
+        (
+            "2-0".to_string(),
+            format!("{{\"tenant_id\":{tenant_json},\"from_uri\":\"sip:bob@pbx.example\"}}"),
+        ),
+    ]);
+    let nodes = Nodes::default();
+    let media = LocalMedia {
+        roots: vec![root.path().to_path_buf()],
+        profile_pictures_dir: None,
+    };
+    let access = WorkerAccess {
+        media: &media,
+        remover: &nodes,
+        dead_letters: Some(&dead),
+    };
+    let settings = ExportSettings {
+        exports_dir: root.path().join("exports"),
+        bundle_ttl: Duration::from_secs(86_400),
+    };
+
+    let request = SubjectRequest::received(
+        t,
+        SubjectRequestKind::Erasure,
+        vec![SubjectIdentifier::User {
+            username: "alice".into(),
+        }],
+        "dpo",
+        30,
+    );
+    db.compliance
+        .create_subject_request(&request)
+        .await
+        .unwrap();
+
+    // ── The preview: a report, and nothing changed.
+    run_subject_requests(&storage, access, &settings)
+        .await
+        .unwrap();
+    let previewed = db
+        .compliance
+        .get_subject_request(&t, &request.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        previewed.status,
+        SubjectRequestStatus::Preview,
+        "{:?}",
+        previewed.error
+    );
+    let preview = previewed.preview.clone().unwrap();
+    assert!(preview.preview);
+    assert_eq!(preview.classes["cdrs"].items, 1, "{preview:#?}");
+    assert_eq!(preview.classes["cdrs"].held, 1);
+    assert_eq!(preview.classes["cdrs"].treatment, "pseudonymise");
+    assert_eq!(preview.classes["voicemail_messages"].items, 2);
+    assert_eq!(
+        preview.kept["port_requests"],
+        "a carrier's record of a number port"
+    );
+    assert_eq!(preview.dead_letters.as_ref().unwrap().items, 1);
+    assert_eq!(
+        scalar(format!(
+            "SELECT count(*) FROM users WHERE tenant_id = '{ts}'"
+        ))
+        .await,
+        2
+    );
+    assert_eq!(
+        scalar(format!(
+            "SELECT count(*) FROM cdrs WHERE tenant_id = '{ts}' AND from_uri LIKE '%alice%'"
+        ))
+        .await,
+        2
+    );
+    assert_eq!(dead.0.lock().unwrap().len(), 2);
+    assert!(nodes.0.lock().unwrap().is_empty());
+
+    // ── Confirmed, it runs against the data as it is.
+    let mut confirmed = previewed;
+    confirmed.status = SubjectRequestStatus::Confirmed;
+    confirmed.confirmed_at = Some(SystemTime::now());
+    confirmed.confirmed_by = Some("dpo-2".into());
+    db.compliance
+        .update_subject_request(&confirmed)
+        .await
+        .unwrap();
+    run_subject_requests(&storage, access, &settings)
+        .await
+        .unwrap();
+    let done = db
+        .compliance
+        .get_subject_request(&t, &request.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        done.status,
+        SubjectRequestStatus::Completed,
+        "{:?}",
+        done.error
+    );
+    let report = done.erasure.clone().unwrap();
+    assert!(!report.preview);
+    assert!(
+        report.classes.values().all(|c| c.errors.is_empty()),
+        "{report:#?}"
+    );
+
+    // Deleted.
+    assert_eq!(
+        scalar(format!(
+            "SELECT count(*) FROM users WHERE tenant_id = '{ts}'"
+        ))
+        .await,
+        1,
+        "Bob stays"
+    );
+    assert_eq!(
+        scalar("SELECT count(*) FROM api_tokens WHERE id = 'token-a'".into()).await,
+        0
+    );
+    assert_eq!(
+        scalar(format!(
+            "SELECT count(*) FROM voicemail_mailboxes WHERE id = '{}'",
+            hers.id
+        ))
+        .await,
+        0
+    );
+    assert_eq!(
+        scalar(format!(
+            "SELECT count(*) FROM voicemail_messages WHERE id = '{}'",
+            left.id
+        ))
+        .await,
+        0
+    );
+    assert_eq!(
+        scalar(format!(
+            "SELECT count(*) FROM voicemail_messages WHERE id = '{}'",
+            bobs_own.id
+        ))
+        .await,
+        1
+    );
+    assert_eq!(
+        scalar(format!(
+            "SELECT count(*) FROM call_recordings WHERE tenant_id = '{ts}'"
+        ))
+        .await,
+        0
+    );
+    assert_eq!(
+        scalar(format!(
+            "SELECT count(*) FROM pending_file_deletions WHERE path = '{audio}'"
+        ))
+        .await,
+        1,
+        "its file is queued"
+    );
+    assert_eq!(
+        scalar(format!(
+            "SELECT count(*) FROM conference_recordings WHERE tenant_id = '{ts}'"
+        ))
+        .await,
+        0
+    );
+    assert_eq!(nodes.0.lock().unwrap().as_slice(), ["/conf/8001.wav"]);
+    assert_eq!(
+        scalar(format!(
+            "SELECT count(*) FROM registrations WHERE tenant_id = '{ts}'"
+        ))
+        .await,
+        1,
+        "Bob's stays"
+    );
+    assert_eq!(
+        scalar("SELECT count(*) FROM webhook_delivery_logs WHERE id = 'd-a'".into()).await,
+        0
+    );
+    let list = text(format!(
+        "SELECT block_list::text FROM phone_numbers WHERE id = '{}'",
+        blocked.id
+    ))
+    .await
+    .unwrap();
+    assert_eq!(list, "[\"+14155550999\"]");
+    assert_eq!(dead.0.lock().unwrap().len(), 1);
+
+    // Pseudonymised: her side only, one token everywhere, the form kept.
+    let from = text(format!(
+        "SELECT from_uri FROM cdrs WHERE call_id = '{hers_call}'"
+    ))
+    .await
+    .unwrap();
+    assert!(
+        from.starts_with("<sip:erased-") && from.ends_with("@pbx.example>"),
+        "{from}"
+    );
+    let token = from
+        .trim_start_matches("<sip:")
+        .split('@')
+        .next()
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        text(format!(
+            "SELECT to_uri FROM cdrs WHERE call_id = '{hers_call}'"
+        ))
+        .await
+        .unwrap(),
+        "sip:bob@pbx.example"
+    );
+    assert!(text(format!(
+        "SELECT from_display_name FROM cdrs WHERE call_id = '{hers_call}'"
+    ))
+    .await
+    .is_none());
+    assert_eq!(
+        text(format!(
+            "SELECT to_display_name FROM cdrs WHERE call_id = '{hers_call}'"
+        ))
+        .await
+        .unwrap(),
+        "Bob"
+    );
+    assert_eq!(
+        text(format!(
+            "SELECT sip_call_id FROM cdrs WHERE call_id = '{hers_call}'"
+        ))
+        .await
+        .unwrap(),
+        "erased"
+    );
+    assert_eq!(
+        text(format!(
+            "SELECT custom_data::text FROM cdrs WHERE call_id = '{hers_call}'"
+        ))
+        .await
+        .unwrap(),
+        "{\"account\": \"A-1\"}"
+    );
+    assert_eq!(
+        text(format!(
+            "SELECT caller_uri FROM emergency_calls WHERE tenant_id = '{ts}'"
+        ))
+        .await
+        .unwrap(),
+        format!("sip:{token}@pbx.example")
+    );
+    assert_eq!(
+        text(format!(
+            "SELECT caller_username FROM emergency_calls WHERE tenant_id = '{ts}'"
+        ))
+        .await
+        .unwrap(),
+        token
+    );
+    assert_eq!(
+        text(format!(
+            "SELECT actor FROM admin_audit_log WHERE tenant_id = '{ts}' AND method = 'PUT'"
+        ))
+        .await
+        .unwrap(),
+        token
+    );
+    assert_eq!(
+        text(format!(
+            "SELECT path FROM admin_audit_log WHERE tenant_id = '{ts}' AND method = 'PUT'"
+        ))
+        .await
+        .unwrap(),
+        format!("/api/v1/users/{token}")
+    );
+    // Its day is written again by the archive.
+    assert_eq!(
+        scalar(format!(
+            "SELECT count(*) FROM cdr_archive_late WHERE tenant_id = '{ts}'"
+        ))
+        .await,
+        1
+    );
+
+    // Kept: the held call as it was, the port request, Bob's call.
+    assert_eq!(
+        text(format!(
+            "SELECT from_uri FROM cdrs WHERE call_id = '{held_call}'"
+        ))
+        .await
+        .unwrap(),
+        "sip:alice@pbx.example"
+    );
+    assert_eq!(report.classes["cdrs"].held, 1);
+    assert_eq!(
+        report.held_by.values().collect::<Vec<_>>(),
+        vec!["Matter 9"]
+    );
+    assert_eq!(
+        scalar("SELECT count(*) FROM port_requests WHERE id = 'port-1'".into()).await,
+        1
+    );
+    assert_eq!(
+        text(format!(
+            "SELECT from_uri FROM cdrs WHERE call_id = '{theirs}'"
+        ))
+        .await
+        .unwrap(),
+        "sip:bob@pbx.example"
+    );
+    assert!(report.not_reached.contains_key("backups"));
+
+    // Every deletion is logged under the request, as an erasure by the person
+    // who confirmed it.
+    let logged = db
+        .compliance
+        .list_deletions(&DeletionQuery {
+            request_id: Some(request.id.to_string()),
+            limit: 200,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(
+        logged
+            .iter()
+            .all(|r| r.cause == "erasure" && r.actor == "dpo-2"),
+        "{logged:#?}"
+    );
+    for class in [
+        "call_recording",
+        "voicemail",
+        "profile",
+        "registrations",
+        "cdrs",
+    ] {
+        assert!(
+            logged.iter().any(|r| r.class == class),
+            "{class} logged: {logged:#?}"
+        );
+    }
+
+    // A later request for her gets the same pseudonym.
+    let again = fcp_core::subject_erasure::SubjectEraseStore::pseudonym_secret(db.pg.as_ref(), &t)
+        .await
+        .unwrap();
+    assert_eq!(
+        fcp_core::subject_erasure::pseudonym(&again, "user:alice"),
+        token
+    );
+    db.finish().await;
+}
+
+#[tokio::test]
+async fn a_tenants_deletion_removes_every_row_and_then_the_tenant() {
+    use fcp_core::storage::{CredentialStore, TenantStore};
+    use fcp_core::subject_request::{
+        run_subject_requests, ExportSettings, LocalMedia, SubjectRequest, SubjectRequestKind,
+        SubjectRequestStatus, WorkerAccess,
+    };
+
+    let db = require_db!();
+    let root = tempfile::tempdir().unwrap();
+    let pool = db.pg.pool().clone();
+    let storage = db
+        .storage
+        .clone()
+        .with_subject_data_store(
+            db.pg.clone() as Arc<dyn fcp_core::subject_request::SubjectDataStore>
+        )
+        .with_subject_erase_store(
+            db.pg.clone() as Arc<dyn fcp_core::subject_erasure::SubjectEraseStore>
+        );
+    let count = |sql: String| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>(&sql)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+        }
+    };
+
+    let gone = fcp_core::Tenant::new("leaving".into());
+    let stays = fcp_core::Tenant::new("staying".into());
+    db.pg.put_tenant(gone.clone()).await.unwrap();
+    db.pg.put_tenant(stays.clone()).await.unwrap();
+    for tenant in [gone.id, stays.id] {
+        let user: fcp_core::storage::User = serde_json::from_value(serde_json::json!({
+            "username": "u", "password": "x", "tenant_id": tenant, "enabled": true,
+            "created_at": 1_789_000_000u64, "updated_at": 1_789_000_000u64,
+        }))
+        .unwrap();
+        db.pg.put_user(user).await.unwrap();
+        let (_, mb) = mailbox(
+            &db,
+            tenant,
+            if tenant == gone.id {
+                "+14155551001"
+            } else {
+                "+14155552001"
+            },
+        )
+        .await;
+        db.pg
+            .put_message(VoicemailMessage::new(
+                mb.id.clone(),
+                "+1".into(),
+                1,
+                file(&root.path().join(format!("{tenant}.wav")), 1).into(),
+            ))
+            .await
+            .unwrap();
+        let call = CallId::new();
+        db.storage
+            .insert_cdrs(vec![record(tenant, call, "", days_ago(1))])
+            .await
+            .unwrap();
+        let ts = tenant.to_string();
+        sqlx::query(&format!(
+            "INSERT INTO sip_trace_messages (call_id, sip_call_id, tenant_id, timestamp, direction, method_or_status, cseq, from_uri, to_uri, source_addr, dest_addr, transport, raw_message)
+             VALUES ('{call}', 'x', '_system', now(), 'in', 'INVITE', '1', 'a', 'b', '', '', 'udp', '')"
+        ))
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(&format!("INSERT INTO admin_audit_log (tenant_id, actor, actor_kind, method, path, status, action, occurred_at) VALUES ('{ts}', 'u', 'session', 'PUT', '/x', 200, 'PUT /x', now())"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        let mut room = Recording::starting(
+            tenant,
+            "8001",
+            "node-1",
+            format!("/conf/{ts}.wav"),
+            RecordingFormat::Wav,
+            RecordingTrigger::Api,
+        );
+        room.participants = 1;
+        db.storage
+            .recording_store()
+            .unwrap()
+            .create_recording(&room)
+            .await
+            .unwrap();
+    }
+
+    let mut request = SubjectRequest::received(
+        gone.id,
+        SubjectRequestKind::TenantDeletion,
+        Vec::new(),
+        "platform",
+        30,
+    );
+    request.status = SubjectRequestStatus::Confirmed;
+    request.confirmed_at = Some(SystemTime::now());
+    db.compliance
+        .create_subject_request(&request)
+        .await
+        .unwrap();
+    let nodes = Nodes::default();
+    let media = LocalMedia::default();
+    let access = WorkerAccess {
+        media: &media,
+        remover: &nodes,
+        dead_letters: None,
+    };
+    let settings = ExportSettings {
+        exports_dir: root.path().join("exports"),
+        bundle_ttl: Duration::from_secs(60),
+    };
+    run_subject_requests(&storage, access, &settings)
+        .await
+        .unwrap();
+
+    let done = db
+        .compliance
+        .get_subject_request(&gone.id, &request.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        done.status,
+        SubjectRequestStatus::Completed,
+        "{:?}",
+        done.error
+    );
+    let report = done.erasure.unwrap();
+    assert!(db.pg.get_tenant(&gone.id).await.unwrap().is_none());
+    assert!(db.pg.get_tenant(&stays.id).await.unwrap().is_some());
+    assert_eq!(report.tables["tenants"], 1);
+    assert_eq!(
+        nodes.0.lock().unwrap().as_slice(),
+        [format!("/conf/{}.wav", gone.id)]
+    );
+    for (table, column) in [
+        ("users", "tenant_id"),
+        ("cdrs", "tenant_id"),
+        ("voicemail_mailboxes", "tenant_id"),
+        ("voicemail_messages", "tenant_id"),
+        ("phone_numbers", "tenant_id"),
+        ("admin_audit_log", "tenant_id"),
+        ("conference_recordings", "tenant_id"),
+    ] {
+        assert_eq!(
+            count(format!(
+                "SELECT count(*) FROM {table} WHERE {column} = '{}'",
+                gone.id
+            ))
+            .await,
+            0,
+            "{table} emptied"
+        );
+        assert_eq!(
+            count(format!(
+                "SELECT count(*) FROM {table} WHERE {column} = '{}'",
+                stays.id
+            ))
+            .await,
+            1,
+            "{table} of another tenant kept"
+        );
+    }
+    assert_eq!(
+        count("SELECT count(*) FROM sip_trace_messages".into()).await,
+        1,
+        "the other tenant's call's trace stays"
+    );
+    assert!(count(format!("SELECT count(*) FROM deletion_log WHERE cause = 'tenant_deletion' AND request_id = '{}'", request.id)).await > 0);
+    assert_eq!(
+        count(format!(
+            "SELECT count(*) FROM subject_requests WHERE id = '{}'",
+            request.id
+        ))
+        .await,
+        1,
+        "the request itself stays"
+    );
     db.finish().await;
 }

@@ -27,8 +27,11 @@ pub const DEFAULT_EXPORT_TTL_DAYS: u32 = 7;
 pub enum SubjectRequestKind {
     /// Everything held about the subject, as a bundle.
     Export,
-    /// The subject's data removed or pseudonymised (phase 5).
+    /// The subject's data removed or pseudonymised, after a preview a
+    /// person confirms.
     Erasure,
+    /// Every piece of a tenant's data removed, then the tenant.
+    TenantDeletion,
 }
 
 impl SubjectRequestKind {
@@ -36,6 +39,7 @@ impl SubjectRequestKind {
         match self {
             SubjectRequestKind::Export => "export",
             SubjectRequestKind::Erasure => "erasure",
+            SubjectRequestKind::TenantDeletion => "tenant_deletion",
         }
     }
 
@@ -43,6 +47,7 @@ impl SubjectRequestKind {
         match s {
             "export" => Some(SubjectRequestKind::Export),
             "erasure" => Some(SubjectRequestKind::Erasure),
+            "tenant_deletion" => Some(SubjectRequestKind::TenantDeletion),
             _ => None,
         }
     }
@@ -55,6 +60,10 @@ pub enum SubjectRequestStatus {
     Received,
     /// The worker is on it.
     Running,
+    /// An erasure's preview is ready, waiting for a person to confirm it.
+    Preview,
+    /// Confirmed, waiting for the worker to erase.
+    Confirmed,
     Completed,
     Failed,
 }
@@ -64,6 +73,8 @@ impl SubjectRequestStatus {
         match self {
             SubjectRequestStatus::Received => "received",
             SubjectRequestStatus::Running => "running",
+            SubjectRequestStatus::Preview => "preview",
+            SubjectRequestStatus::Confirmed => "confirmed",
             SubjectRequestStatus::Completed => "completed",
             SubjectRequestStatus::Failed => "failed",
         }
@@ -73,6 +84,8 @@ impl SubjectRequestStatus {
         match s {
             "received" => Some(SubjectRequestStatus::Received),
             "running" => Some(SubjectRequestStatus::Running),
+            "preview" => Some(SubjectRequestStatus::Preview),
+            "confirmed" => Some(SubjectRequestStatus::Confirmed),
             "completed" => Some(SubjectRequestStatus::Completed),
             "failed" => Some(SubjectRequestStatus::Failed),
             _ => None,
@@ -83,7 +96,10 @@ impl SubjectRequestStatus {
     pub fn is_open(&self) -> bool {
         matches!(
             self,
-            SubjectRequestStatus::Received | SubjectRequestStatus::Running
+            SubjectRequestStatus::Received
+                | SubjectRequestStatus::Running
+                | SubjectRequestStatus::Preview
+                | SubjectRequestStatus::Confirmed
         )
     }
 }
@@ -168,6 +184,17 @@ pub struct SubjectRequest {
     pub bundle: Option<BundleRef>,
     #[serde(default)]
     pub error: Option<String>,
+    /// When a person confirmed an erasure's preview, and who.
+    #[serde(default)]
+    pub confirmed_at: Option<SystemTime>,
+    #[serde(default)]
+    pub confirmed_by: Option<String>,
+    /// What an erasure would do, as the preview found it.
+    #[serde(default)]
+    pub preview: Option<crate::subject_erasure::ErasureReport>,
+    /// What an erasure or a tenant's deletion did.
+    #[serde(default)]
+    pub erasure: Option<crate::subject_erasure::ErasureReport>,
 }
 
 impl SubjectRequest {
@@ -196,6 +223,10 @@ impl SubjectRequest {
             report: None,
             bundle: None,
             error: None,
+            confirmed_at: None,
+            confirmed_by: None,
+            preview: None,
+            erasure: None,
         }
     }
 
@@ -582,14 +613,7 @@ pub async fn run_export(
                     )
                     .await?;
                 for row in &page.rows {
-                    let theirs = match &row.link {
-                        RowLink::Owned => true,
-                        RowLink::Call(call) => calls.contains(call),
-                        RowLink::Identifiers(ids) => {
-                            matcher.matches_any(ids.iter().map(String::as_str))
-                        }
-                    };
-                    if !theirs {
+                    if !is_theirs(row, &matcher, &calls) {
                         continue;
                     }
                     if class == ExportClass::Cdrs {
@@ -599,25 +623,9 @@ pub async fn run_export(
                     }
                     class_report.items += 1;
 
-                    if let (Some(hold_class), Some(at)) = (class.hold_class(), row.at) {
-                        let keys = match &row.link {
-                            RowLink::Identifiers(ids) => Some(
-                                ids.iter()
-                                    .flat_map(|i| crate::subject::keys(i))
-                                    .collect::<Vec<_>>(),
-                            ),
-                            _ => None,
-                        };
-                        let item = crate::legal_hold::DataRef {
-                            class: hold_class,
-                            at,
-                            keys,
-                            call_id: row.call_id.clone(),
-                        };
-                        if let Some(hold) = holds.iter().find(|h| h.covers(&item)) {
-                            class_report.held += 1;
-                            held_by.insert(hold.id.to_string(), hold.matter.clone());
-                        }
+                    if let Some(hold) = hold_over(holds, class, row) {
+                        class_report.held += 1;
+                        held_by.insert(hold.id.to_string(), hold.matter.clone());
                     }
 
                     let mut line = row.data.clone();
@@ -724,6 +732,44 @@ pub async fn run_export(
     )
     .await?;
     Ok(ExportOutcome { report })
+}
+
+/// Whether a candidate row is the subject's: owned by them, of one of their
+/// calls, or naming them.
+pub(crate) fn is_theirs(
+    row: &SubjectRow,
+    matcher: &crate::subject::SubjectMatcher,
+    calls: &std::collections::BTreeSet<String>,
+) -> bool {
+    match &row.link {
+        RowLink::Owned => true,
+        RowLink::Call(call) => calls.contains(call),
+        RowLink::Identifiers(ids) => matcher.matches_any(ids.iter().map(String::as_str)),
+    }
+}
+
+/// The first of `holds` covering a row of `class`, if any.
+pub(crate) fn hold_over<'h>(
+    holds: &'h [crate::legal_hold::LegalHold],
+    class: ExportClass,
+    row: &SubjectRow,
+) -> Option<&'h crate::legal_hold::LegalHold> {
+    let (hold_class, at) = (class.hold_class()?, row.at?);
+    let keys = match &row.link {
+        RowLink::Identifiers(ids) => Some(
+            ids.iter()
+                .flat_map(|i| crate::subject::keys(i))
+                .collect::<Vec<_>>(),
+        ),
+        _ => None,
+    };
+    let item = crate::legal_hold::DataRef {
+        class: hold_class,
+        at,
+        keys,
+        call_id: row.call_id.clone(),
+    };
+    holds.iter().find(|h| h.covers(&item))
 }
 
 /// A file named in the manifest.
@@ -840,73 +886,49 @@ impl ExportSettings {
     }
 }
 
-/// Run a claimed request to its end and store the outcome: `completed` with
-/// its report and bundle, or `failed` with why.
+/// What the worker reaches beyond the database: the files an export copies
+/// and an erasure removes, and the CDR pipeline's dead letters.
+#[derive(Clone, Copy)]
+pub struct WorkerAccess<'a> {
+    pub media: &'a dyn MediaFetcher,
+    pub remover: &'a dyn crate::subject_erasure::MediaRemover,
+    pub dead_letters: Option<&'a dyn crate::subject_erasure::DeadLetterStore>,
+}
+
+/// Run a claimed request to its end and store the outcome: an export
+/// `completed` with its report and bundle; an erasure's first run
+/// `preview`, its confirmed run `completed`; a tenant's deletion
+/// `completed`; or `failed` with why.
 pub async fn run_request(
     storage: &crate::storage::DynStorage,
-    media: &dyn MediaFetcher,
+    access: WorkerAccess<'_>,
     settings: &ExportSettings,
     mut request: SubjectRequest,
 ) -> SubjectRequest {
-    let staging = settings
-        .exports_dir
-        .join(format!(".staging-{}", request.id));
-    let outcome: anyhow::Result<(ExportReport, BundleRef)> = async {
-        let store = storage
-            .compliance_store()
-            .ok_or_else(|| anyhow::anyhow!("no compliance store"))?;
-        let data = storage
-            .subject_data_store()
-            .ok_or_else(|| anyhow::anyhow!("no subject data store"))?;
-        let expansion =
-            crate::legal_hold::expand(storage, &request.tenant_id, &request.subjects).await?;
-        request.expansion = Some(expansion.clone());
-        store.update_subject_request(&request).await?;
-        if request.kind != SubjectRequestKind::Export {
-            anyhow::bail!("{} requests are not available yet", request.kind.as_str());
+    let outcome = match request.kind {
+        SubjectRequestKind::Export => run_export_request(storage, access, settings, &mut request)
+            .await
+            .map(|(report, bundle)| {
+                request.report = Some(report);
+                request.bundle = Some(bundle);
+                SubjectRequestStatus::Completed
+            }),
+        SubjectRequestKind::Erasure | SubjectRequestKind::TenantDeletion => {
+            run_erasure_request(storage, access, &mut request).await
         }
-        let holds = store.list_holds(&request.tenant_id, false).await?;
-        let _ = tokio::fs::remove_dir_all(&staging).await;
-        let exported =
-            run_export(data.as_ref(), media, &holds, &request, &expansion, &staging).await;
-        let packed = match exported {
-            Ok(outcome) => {
-                let path = settings.bundle_path(&request.tenant_id, &request.id);
-                pack_bundle(&staging, &path)
-                    .await
-                    .map(|(size_bytes, sha256)| {
-                        (
-                            outcome.report,
-                            BundleRef {
-                                path: path.to_string_lossy().into_owned(),
-                                size_bytes,
-                                sha256,
-                                expires_at: SystemTime::now() + settings.bundle_ttl,
-                                removed: false,
-                            },
-                        )
-                    })
-            }
-            Err(e) => Err(e),
-        };
-        let _ = tokio::fs::remove_dir_all(&staging).await;
-        packed
-    }
-    .await;
+    };
 
     request.completed_at = Some(SystemTime::now());
     match outcome {
-        Ok((report, bundle)) => {
+        Ok(status) => {
             tracing::info!(
                 request = %request.id,
                 tenant_id = %request.tenant_id,
-                classes = report.classes.len(),
-                bytes = bundle.size_bytes,
-                "Subject export completed"
+                kind = request.kind.as_str(),
+                status = status.as_str(),
+                "Subject request finished"
             );
-            request.status = SubjectRequestStatus::Completed;
-            request.report = Some(report);
-            request.bundle = Some(bundle);
+            request.status = status;
             request.error = None;
         }
         Err(e) => {
@@ -923,12 +945,128 @@ pub async fn run_request(
     request
 }
 
+async fn run_export_request(
+    storage: &crate::storage::DynStorage,
+    access: WorkerAccess<'_>,
+    settings: &ExportSettings,
+    request: &mut SubjectRequest,
+) -> anyhow::Result<(ExportReport, BundleRef)> {
+    let staging = settings
+        .exports_dir
+        .join(format!(".staging-{}", request.id));
+    let store = storage
+        .compliance_store()
+        .ok_or_else(|| anyhow::anyhow!("no compliance store"))?;
+    let data = storage
+        .subject_data_store()
+        .ok_or_else(|| anyhow::anyhow!("no subject data store"))?;
+    let expansion =
+        crate::legal_hold::expand(storage, &request.tenant_id, &request.subjects).await?;
+    request.expansion = Some(expansion.clone());
+    store.update_subject_request(request).await?;
+    let holds = store.list_holds(&request.tenant_id, false).await?;
+    let _ = tokio::fs::remove_dir_all(&staging).await;
+    let exported = run_export(
+        data.as_ref(),
+        access.media,
+        &holds,
+        request,
+        &expansion,
+        &staging,
+    )
+    .await;
+    let packed = match exported {
+        Ok(outcome) => {
+            let path = settings.bundle_path(&request.tenant_id, &request.id);
+            pack_bundle(&staging, &path)
+                .await
+                .map(|(size_bytes, sha256)| {
+                    (
+                        outcome.report,
+                        BundleRef {
+                            path: path.to_string_lossy().into_owned(),
+                            size_bytes,
+                            sha256,
+                            expires_at: SystemTime::now() + settings.bundle_ttl,
+                            removed: false,
+                        },
+                    )
+                })
+        }
+        Err(e) => Err(e),
+    };
+    let _ = tokio::fs::remove_dir_all(&staging).await;
+    packed
+}
+
+/// An erasure's preview or its confirmed run, or a tenant's deletion, every
+/// deletion attributed to the request.
+async fn run_erasure_request(
+    storage: &crate::storage::DynStorage,
+    access: WorkerAccess<'_>,
+    request: &mut SubjectRequest,
+) -> anyhow::Result<SubjectRequestStatus> {
+    use crate::compliance::{deleting_as, Deleter, DeletionCause};
+    use crate::subject_erasure::{run_erasure, run_tenant_deletion, ErasureContext};
+
+    let store = storage
+        .compliance_store()
+        .ok_or_else(|| anyhow::anyhow!("no compliance store"))?;
+    let data = storage
+        .subject_data_store()
+        .ok_or_else(|| anyhow::anyhow!("no subject data store"))?;
+    let erase = storage
+        .subject_erase_store()
+        .ok_or_else(|| anyhow::anyhow!("no subject erase store"))?;
+    let policy = store.get_compliance_policy(&request.tenant_id).await?;
+    let holds = store.list_holds(&request.tenant_id, false).await?;
+    let ctx = ErasureContext {
+        storage,
+        data: data.as_ref(),
+        erase: erase.as_ref(),
+        media: access.remover,
+        dead_letters: access.dead_letters,
+        holds: &holds,
+        cdr_erasure: policy.map(|p| p.cdr_erasure).unwrap_or_default(),
+    };
+    if request.kind == SubjectRequestKind::TenantDeletion {
+        let actor = request.requested_by.clone();
+        let deleter =
+            Deleter::new(DeletionCause::TenantDeletion, actor).for_request(request.id.to_string());
+        let report = deleting_as(deleter, run_tenant_deletion(&ctx, request)).await?;
+        request.erasure = Some(report);
+        return Ok(SubjectRequestStatus::Completed);
+    }
+
+    let expansion =
+        crate::legal_hold::expand(storage, &request.tenant_id, &request.subjects).await?;
+    request.expansion = Some(expansion);
+    store.update_subject_request(request).await?;
+    match request.confirmed_at {
+        None => {
+            request.preview = Some(run_erasure(&ctx, request, true).await?);
+            Ok(SubjectRequestStatus::Preview)
+        }
+        Some(_) => {
+            let actor = request
+                .confirmed_by
+                .clone()
+                .unwrap_or_else(|| request.requested_by.clone());
+            let deleter =
+                Deleter::new(DeletionCause::Erasure, actor).for_request(request.id.to_string());
+            let report = deleting_as(deleter, run_erasure(&ctx, request, false)).await?;
+            request.erasure = Some(report);
+            Ok(SubjectRequestStatus::Completed)
+        }
+    }
+}
+
 /// Run every waiting request, oldest first; the finished ones. The caller
 /// holds the worker lock, so requests still marked running were left by a
 /// worker that stopped, and go back in the queue first.
 pub async fn run_subject_requests(
     storage: &crate::storage::DynStorage,
-    media: &dyn MediaFetcher,
+    access: WorkerAccess<'_>,
     settings: &ExportSettings,
 ) -> anyhow::Result<Vec<SubjectRequest>> {
     let store = storage
@@ -940,7 +1078,7 @@ pub async fn run_subject_requests(
     }
     let mut finished = Vec::new();
     while let Some(request) = store.claim_subject_request().await? {
-        finished.push(run_request(storage, media, settings, request).await);
+        finished.push(run_request(storage, access, settings, request).await);
     }
     Ok(finished)
 }
@@ -979,12 +1117,18 @@ mod tests {
 
     #[test]
     fn kinds_statuses_and_classes_read_as_their_names() {
-        for k in [SubjectRequestKind::Export, SubjectRequestKind::Erasure] {
+        for k in [
+            SubjectRequestKind::Export,
+            SubjectRequestKind::Erasure,
+            SubjectRequestKind::TenantDeletion,
+        ] {
             assert_eq!(SubjectRequestKind::parse(k.as_str()), Some(k));
         }
         for s in [
             SubjectRequestStatus::Received,
             SubjectRequestStatus::Running,
+            SubjectRequestStatus::Preview,
+            SubjectRequestStatus::Confirmed,
             SubjectRequestStatus::Completed,
             SubjectRequestStatus::Failed,
         ] {

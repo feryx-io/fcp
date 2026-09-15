@@ -69,6 +69,35 @@ impl ConsentFailureAction {
     }
 }
 
+/// What an erasure does to the subject's call records.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CdrErasure {
+    /// Replace the subject's identifiers with their pseudonym: counts and
+    /// billing still add up.
+    #[default]
+    Pseudonymise,
+    /// Delete the records.
+    Delete,
+}
+
+impl CdrErasure {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            CdrErasure::Pseudonymise => "pseudonymise",
+            CdrErasure::Delete => "delete",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "pseudonymise" => Some(CdrErasure::Pseudonymise),
+            "delete" => Some(CdrErasure::Delete),
+            _ => None,
+        }
+    }
+}
+
 /// The shortest notice-tone interval a policy may set: a tone every few
 /// seconds would drown the conversation it is a notice about.
 pub const MIN_NOTICE_INTERVAL_SECS: u32 = 5;
@@ -109,6 +138,9 @@ pub struct CompliancePolicy {
     /// Days a subject request may take from receipt to answer.
     #[serde(default = "default_subject_request_days")]
     pub subject_request_days: u32,
+    /// Whether an erasure pseudonymises or deletes the subject's records.
+    #[serde(default)]
+    pub cdr_erasure: CdrErasure,
     pub updated_at: SystemTime,
 }
 
@@ -133,6 +165,7 @@ impl CompliancePolicy {
             recording_consent_on_failure: ConsentFailureAction::Record,
             recording_notice_interval_secs: None,
             subject_request_days: crate::subject_request::DEFAULT_REQUEST_DAYS,
+            cdr_erasure: CdrErasure::Pseudonymise,
             updated_at: SystemTime::now(),
         }
     }
@@ -347,6 +380,10 @@ pub enum DeletionCause {
     NodeSweep,
     /// Platform upkeep: files no row names, messages users deleted.
     Upkeep,
+    /// A subject erasure request.
+    Erasure,
+    /// A tenant's deletion.
+    TenantDeletion,
 }
 
 impl DeletionCause {
@@ -356,6 +393,8 @@ impl DeletionCause {
             DeletionCause::Manual => "manual",
             DeletionCause::NodeSweep => "node_sweep",
             DeletionCause::Upkeep => "upkeep",
+            DeletionCause::Erasure => "erasure",
+            DeletionCause::TenantDeletion => "tenant_deletion",
         }
     }
 }
@@ -367,6 +406,8 @@ pub struct Deleter {
     /// A username, `token-…`, `static_token`, or a host (`fcp-admin`, a
     /// conference node's id).
     pub actor: String,
+    /// The subject request the deletions serve, when one does.
+    pub request_id: Option<String>,
 }
 
 impl Deleter {
@@ -374,7 +415,14 @@ impl Deleter {
         Self {
             cause,
             actor: actor.into(),
+            request_id: None,
         }
+    }
+
+    /// The deletions serve request `id`.
+    pub fn for_request(mut self, id: impl Into<String>) -> Self {
+        self.request_id = Some(id.into());
+        self
     }
 }
 
@@ -405,10 +453,13 @@ pub struct DeletionRecord {
     /// The item's id, or a time range for a batch.
     pub item: String,
     pub detail: Option<serde_json::Value>,
-    /// `retention`, `manual`, `node_sweep`, `upkeep`, `cascade` or
-    /// `unattributed`.
+    /// `retention`, `manual`, `node_sweep`, `upkeep`, `erasure`,
+    /// `tenant_deletion`, `cascade` or `unattributed`.
     pub cause: String,
     pub actor: String,
+    /// The subject request the deletion served.
+    #[serde(default)]
+    pub request_id: Option<String>,
     pub deleted_at: SystemTime,
 }
 
@@ -419,6 +470,8 @@ pub struct DeletionQuery {
     pub tenant_id: Option<TenantId>,
     pub class: Option<String>,
     pub since: Option<SystemTime>,
+    /// Only what this subject request deleted.
+    pub request_id: Option<String>,
     pub limit: usize,
 }
 
@@ -1116,6 +1169,7 @@ async fn remove_orphan_files(
                             detail: None,
                             cause: DeletionCause::Upkeep.as_str().to_string(),
                             actor: actor.to_string(),
+                            request_id: None,
                             deleted_at: SystemTime::now(),
                         };
                         if let Err(e) = store.record_deletion(&record).await {

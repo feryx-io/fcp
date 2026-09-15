@@ -144,31 +144,33 @@ impl App {
         let sip_traces = Arc::new(PostgresSipTraceStore::new(storage.pool().clone()));
         let emergency = Arc::new(PostgresEmergencyStore::new(storage.pool().clone()));
         let compliance = Arc::new(PostgresComplianceStore::new(storage.pool().clone()));
-        let dyn_storage = Arc::new(
-            DynStorage::from_all_in_one(Arc::clone(&storage))
-                .with_api_token_store(api_tokens)
-                .with_flow_trace_store(Arc::clone(&traces) as Arc<dyn FlowTraceStore>)
-                .with_sip_trace_store(Arc::clone(&sip_traces) as Arc<dyn SipTraceStore>)
-                .with_emergency_store(
-                    Arc::clone(&emergency) as Arc<dyn fcp_core::e911::EmergencyStore>
-                )
-                .with_compliance_store(
-                    Arc::clone(&compliance) as Arc<dyn fcp_core::compliance::ComplianceStore>
-                )
-                .with_prompt_store(Arc::new(PostgresPromptStore::new(storage.pool().clone()))
-                    as Arc<dyn fcp_core::prompt::PromptStore>)
-                .with_recording_store(
-                    Arc::new(PostgresRecordingStore::new(storage.pool().clone()))
-                        as Arc<dyn fcp_core::recording::RecordingStore>,
-                )
-                .with_call_recording_store(Arc::new(PostgresRecordingStore::new(
-                    storage.pool().clone(),
-                ))
-                    as Arc<dyn fcp_core::recording::CallRecordingStore>)
-                .with_subject_data_store(
-                    Arc::clone(&storage) as Arc<dyn fcp_core::subject_request::SubjectDataStore>
-                ),
-        );
+        let dyn_storage =
+            Arc::new(
+                DynStorage::from_all_in_one(Arc::clone(&storage))
+                    .with_api_token_store(api_tokens)
+                    .with_flow_trace_store(Arc::clone(&traces) as Arc<dyn FlowTraceStore>)
+                    .with_sip_trace_store(Arc::clone(&sip_traces) as Arc<dyn SipTraceStore>)
+                    .with_emergency_store(
+                        Arc::clone(&emergency) as Arc<dyn fcp_core::e911::EmergencyStore>
+                    )
+                    .with_compliance_store(
+                        Arc::clone(&compliance) as Arc<dyn fcp_core::compliance::ComplianceStore>
+                    )
+                    .with_prompt_store(Arc::new(PostgresPromptStore::new(storage.pool().clone()))
+                        as Arc<dyn fcp_core::prompt::PromptStore>)
+                    .with_recording_store(Arc::new(PostgresRecordingStore::new(
+                        storage.pool().clone(),
+                    ))
+                        as Arc<dyn fcp_core::recording::RecordingStore>)
+                    .with_call_recording_store(Arc::new(PostgresRecordingStore::new(
+                        storage.pool().clone(),
+                    ))
+                        as Arc<dyn fcp_core::recording::CallRecordingStore>)
+                    .with_subject_data_store(Arc::clone(&storage)
+                        as Arc<dyn fcp_core::subject_request::SubjectDataStore>)
+                    .with_subject_erase_store(Arc::clone(&storage)
+                        as Arc<dyn fcp_core::subject_erasure::SubjectEraseStore>),
+            );
         let dir = tempfile::Builder::new()
             .prefix("fcp-api-test-")
             .tempdir()
@@ -5452,7 +5454,7 @@ async fn a_subject_export_is_filed_run_downloaded_and_audited() {
 
     // Validation: a kind that exists now, a subject, a user the tenant has.
     for bad in [
-        json!({ "kind": "erasure", "subjects": [{ "type": "user", "username": "dana" }] }),
+        json!({ "kind": "tenant_deletion", "subjects": [{ "type": "user", "username": "dana" }] }),
         json!({ "kind": "copy", "subjects": [{ "type": "user", "username": "dana" }] }),
         json!({ "kind": "export", "subjects": [] }),
         json!({ "kind": "export", "subjects": [{ "type": "user", "username": "nobody" }] }),
@@ -5533,7 +5535,13 @@ async fn a_subject_export_is_filed_run_downloaded_and_audited() {
         exports_dir: exports.path().to_path_buf(),
         bundle_ttl: Duration::from_secs(86_400),
     };
-    let finished = run_subject_requests(&app.dyn_storage, &LocalMedia::default(), &settings)
+    let media = LocalMedia::default();
+    let access = fcp_core::subject_request::WorkerAccess {
+        media: &media,
+        remover: &media,
+        dead_letters: None,
+    };
+    let finished = run_subject_requests(&app.dyn_storage, access, &settings)
         .await
         .unwrap();
     assert_eq!(finished.len(), 1);
@@ -5618,5 +5626,186 @@ async fn a_subject_export_is_filed_run_downloaded_and_audited() {
         )
         .await;
     assert_eq!(gone.status, StatusCode::GONE, "{}", gone.text);
+    app.finish().await;
+}
+
+/// Run the subject request worker once, with this host's files only.
+async fn run_worker(app: &App) -> Vec<fcp_core::subject_request::SubjectRequest> {
+    let media = fcp_core::subject_request::LocalMedia::default();
+    let exports = tempfile::tempdir().unwrap();
+    fcp_core::subject_request::run_subject_requests(
+        &app.dyn_storage,
+        fcp_core::subject_request::WorkerAccess {
+            media: &media,
+            remover: &media,
+            dead_letters: None,
+        },
+        &fcp_core::subject_request::ExportSettings {
+            exports_dir: exports.path().to_path_buf(),
+            bundle_ttl: Duration::from_secs(60),
+        },
+    )
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn an_erasure_is_previewed_confirmed_by_a_person_and_logged_under_its_request() {
+    let app = require_app!();
+    app.create_user("erin", None).await;
+    app.create_user("frank", None).await;
+
+    let policy = app
+        .admin(
+            Method::PUT,
+            "/api/v1/compliance/policy",
+            Some(json!({ "cdr_erasure": "sometimes" })),
+        )
+        .await;
+    assert_eq!(policy.status, StatusCode::BAD_REQUEST, "{}", policy.text);
+    let policy = app
+        .admin(
+            Method::PUT,
+            "/api/v1/compliance/policy",
+            Some(json!({ "cdr_erasure": "delete" })),
+        )
+        .await;
+    assert_eq!(policy.json["cdr_erasure"], "delete", "{}", policy.text);
+
+    let filed = app
+        .admin(
+            Method::POST,
+            "/api/v1/compliance/subject-requests",
+            Some(
+                json!({ "kind": "erasure", "subjects": [{ "type": "user", "username": "erin" }] }),
+            ),
+        )
+        .await;
+    assert_eq!(filed.status, StatusCode::CREATED, "{}", filed.text);
+    let id = filed.json["id"].as_str().unwrap().to_string();
+    let confirm = format!("/api/v1/compliance/subject-requests/{id}/confirm");
+    let early = app.admin(Method::POST, &confirm, None).await;
+    assert_eq!(
+        early.status,
+        StatusCode::CONFLICT,
+        "nothing to confirm yet: {}",
+        early.text
+    );
+
+    // The preview, and nothing gone.
+    run_worker(&app).await;
+    let previewed = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/compliance/subject-requests/{id}"),
+            None,
+        )
+        .await;
+    assert_eq!(previewed.json["status"], "preview", "{}", previewed.text);
+    assert_eq!(
+        previewed.json["preview"]["classes"]["profile"]["items"], 1,
+        "{}",
+        previewed.text
+    );
+    assert!(previewed.json["erasure"].is_null());
+    let erin = app.admin(Method::GET, "/api/v1/users/erin", None).await;
+    assert_eq!(erin.status, StatusCode::OK, "still there after the preview");
+
+    let confirmed = app.admin(Method::POST, &confirm, None).await;
+    assert_eq!(confirmed.status, StatusCode::OK, "{}", confirmed.text);
+    assert_eq!(confirmed.json["status"], "confirmed");
+    assert_eq!(confirmed.json["confirmed_by"], "static_token");
+    let twice = app.admin(Method::POST, &confirm, None).await;
+    assert_eq!(twice.status, StatusCode::CONFLICT);
+
+    run_worker(&app).await;
+    let done = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/compliance/subject-requests/{id}"),
+            None,
+        )
+        .await;
+    assert_eq!(done.json["status"], "completed", "{}", done.text);
+    assert_eq!(
+        done.json["erasure"]["classes"]["profile"]["items"], 1,
+        "{}",
+        done.text
+    );
+    let erin = app.admin(Method::GET, "/api/v1/users/erin", None).await;
+    assert_eq!(erin.status, StatusCode::NOT_FOUND);
+    let frank = app.admin(Method::GET, "/api/v1/users/frank", None).await;
+    assert_eq!(frank.status, StatusCode::OK, "only the subject");
+    let logged = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/compliance/deletions?request_id={id}"),
+            None,
+        )
+        .await;
+    let entries = logged.json.as_array().unwrap();
+    assert!(!entries.is_empty(), "{}", logged.text);
+    assert!(
+        entries
+            .iter()
+            .all(|e| e["cause"] == "erasure" && e["request_id"] == id.as_str()),
+        "{}",
+        logged.text
+    );
+    app.finish().await;
+}
+
+#[tokio::test]
+async fn deleting_a_tenant_is_a_request_refused_under_a_hold() {
+    let app = require_app!();
+    let b = app.tenant_b.to_string();
+    let path = format!("/api/v1/tenants/{b}");
+
+    // Under a hold: refused, and the tenant untouched.
+    let hold = app
+        .admin_in(
+            app.tenant_b,
+            Method::POST,
+            "/api/v1/compliance/holds",
+            Some(json!({ "matter": "Audit 3" })),
+        )
+        .await;
+    assert_eq!(hold.status, StatusCode::CREATED, "{}", hold.text);
+    let refused = app.admin(Method::DELETE, &path, None).await;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.text);
+    let hold_id = hold.json["id"].as_str().unwrap();
+    let released = app
+        .admin_in(
+            app.tenant_b,
+            Method::POST,
+            &format!("/api/v1/compliance/holds/{hold_id}/release"),
+            Some(json!({ "reason": "closed" })),
+        )
+        .await;
+    assert_eq!(released.status, StatusCode::OK, "{}", released.text);
+
+    let accepted = app.admin(Method::DELETE, &path, None).await;
+    assert_eq!(accepted.status, StatusCode::ACCEPTED, "{}", accepted.text);
+    assert_eq!(accepted.json["kind"], "tenant_deletion");
+    assert_eq!(accepted.json["status"], "confirmed");
+    let request = accepted.json["id"].as_str().unwrap().to_string();
+    let again = app.admin(Method::DELETE, &path, None).await;
+    assert_eq!(again.json["id"], request.as_str(), "one request, not two");
+    let closed = app.admin(Method::GET, &path, None).await;
+    assert_eq!(closed.json["status"], "closed", "{}", closed.text);
+
+    run_worker(&app).await;
+    let gone = app.admin(Method::GET, &path, None).await;
+    assert_eq!(gone.status, StatusCode::NOT_FOUND, "{}", gone.text);
+    let done = app
+        .admin(Method::GET, &format!("{path}/deletion"), None)
+        .await;
+    assert_eq!(done.json["id"], request.as_str(), "{}", done.text);
+    assert_eq!(done.json["status"], "completed", "{}", done.text);
+    assert_eq!(
+        done.json["erasure"]["tables"]["tenants"], 1,
+        "{}",
+        done.text
+    );
     app.finish().await;
 }

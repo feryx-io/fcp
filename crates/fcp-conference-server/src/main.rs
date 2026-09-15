@@ -225,7 +225,10 @@ async fn main() -> Result<()> {
                 Ok(Some(entry)) => {
                     match section {
                         "media" => {
-                            if let Ok(v) = serde_json::from_value(entry.value) {
+                            if let Ok(mut v) =
+                                serde_json::from_value::<config::MediaSection>(entry.value)
+                            {
+                                v.keep_host_settings(&config.media);
                                 config.media = v;
                             }
                         }
@@ -244,8 +247,9 @@ async fn main() -> Result<()> {
                             if let Ok(mut v) =
                                 serde_json::from_value::<config::ConferenceSection>(entry.value)
                             {
-                                // The join secret is never stored; keep TOML's.
-                                v.join_secret = config.conference.join_secret.clone();
+                                // The join secret and the host's own settings
+                                // come from its TOML.
+                                v.keep_host_settings(&config.conference);
                                 config.conference = v;
                             }
                         }
@@ -260,7 +264,10 @@ async fn main() -> Result<()> {
                             }
                         }
                         "cluster" => {
-                            if let Ok(v) = serde_json::from_value(entry.value) {
+                            if let Ok(mut v) =
+                                serde_json::from_value::<config::ClusterSection>(entry.value)
+                            {
+                                v.keep_host_settings(&config.cluster);
                                 config.cluster = v;
                             }
                         }

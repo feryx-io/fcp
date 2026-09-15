@@ -542,7 +542,17 @@ impl Archiver {
             bytes: 0,
             sha256: None,
         };
-        if records == 0 {
+        // A day with no records is left undescribed — unless an earlier
+        // write stored an object for it: then its records were deleted or
+        // erased since, and the object is replaced by an empty one rather
+        // than left holding them (docs/COMPLIANCE_FOLLOWUPS.md §6.5).
+        if records == 0
+            && !self
+                .store
+                .get_cdr_archive(tenant, day)
+                .await?
+                .is_some_and(|entry| entry.object_key.is_some())
+        {
             drop(build);
             self.complete(&write).await?;
             return Ok(write);

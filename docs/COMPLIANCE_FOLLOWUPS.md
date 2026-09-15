@@ -1,6 +1,6 @@
 # Compliance Follow-ups — Design
 
-Status: **phases 1–4 of 5 done** (2026-09-15, v0.25.166, v0.25.170, v0.25.171 and v0.25.172); design agreed the
+Status: **all five phases done** (2026-09-15, v0.25.166, v0.25.170, v0.25.171, v0.25.172 and v0.25.173); design agreed the
 same day with every recommendation in §12 taken. This document is the
 plan for the three compliance items `STATUS.md` left unscheduled when the
 basics shipped on 2026-09-02: **legal hold**, **per-subject export and
@@ -784,6 +784,82 @@ One PR per phase, reviewed before the next starts.
 5. **Subject erasure.** Preview and confirm, the per-store actions of
    §6.3, pseudonymisation, the archive rewrite, dead letters, the report;
    tenant deletion as a job on the same machinery.
+
+   *Phase 5 shipped 2026-09-15 (v0.25.173).* Migration 066 (the request's
+   confirmation, preview and erasure reports; `deletion_log.request_id`;
+   `subject_pseudonym_keys`; the policy's `cdr_erasure`),
+   `fcp_core::subject_erasure` and the Postgres `SubjectEraseStore`, with
+   these decisions made on the way:
+
+   - **One walk, three uses.** The erasure walks the classes the export
+     walks, with the same candidates and the same narrow matcher, in an
+     order that acts on records before what hangs off their calls, a
+     mailbox's contents before the mailbox, and the user last. A preview
+     counts and samples; a confirmed run acts page by page, so memory stays
+     flat however many records a subject has.
+   - **The request is the state.** Filed as `received`, its first run leaves
+     it `preview`; `POST …/confirm` records who and when and makes it
+     `confirmed`; the worker's next run erases against the data as it is
+     then. A worker that stops mid-run leaves it for the next to take up
+     where the status says.
+   - **One pseudonym per subject as filed.** The token is keyed per tenant
+     and made from the subject's canonical identifier (`user:<name>`,
+     `num:<digits>`, `aor:<user@host>`); each subject of a request has its
+     own matcher, so a record naming two of them gets two tokens. The key is
+     sealed like the other secrets and in the re-encryption pass.
+   - **Holds are checked before acting, and enforced after.** Updates are not
+     guarded by the hold triggers, so the engine skips held items itself;
+     deletes still meet the triggers, and a batch a hold refuses is retried
+     item by item so only the held ones stay.
+   - **Every change is in the deletion log under its request.** The
+     request id is set with the cause and actor and filled in by a column
+     default, so the existing triggers log it without being rewritten;
+     classes with no trigger, and pseudonymisation, are logged per batch by
+     the store.
+   - **The archive follows by the note it already reads.** Rewriting or
+     deleting a record notes its archived day as late; a day left with no
+     records now gets an empty object instead of keeping the old one.
+   - **Dead letters.** The CDR stream's are read and deleted by id when
+     `fcp-admin` is given Redis. A node's spool is out of reach, so its dead
+     letters are kept in files by day and removed after `[cdr]
+     dead_letter_days` (30), which the report states. Redis presence keys
+     turned out to have no writer (`RedisPresenceStore` is not wired), so
+     there is nothing there to erase; the API gateway's cache expires by TTL.
+   - **Files where no row deletion reaches.** A conference recording is
+     deleted through the conference server before its row, and its row kept
+     when the node cannot be reached, so the file stays findable; a profile
+     picture is removed from the directory `fcp-admin` mounts.
+   - **A tenant's deletion is a request without a preview** — a platform
+     admin names the tenant by id, which is not ambiguous. It is refused
+     while a hold is active, closes the tenant, and runs by the catalogue:
+     every table with a `tenant_id` column but the records the deletion
+     itself needs (the request, the deletion log, legal holds, pending file
+     deletions, the archive's bookkeeping), the `_system` traces of its
+     calls, and the tenant last. `GET /tenants/:id/deletion` reads it once
+     the tenant is gone.
+   - **Emergency calls keep their location.** It is the site's dispatchable
+     address, not the person's; their identifiers are pseudonymised.
+
+   Tests: the Postgres suite (an erasure's preview changing nothing, then the
+   confirmed run: the user and what they own deleted or cleared, her
+   messages and those she left while Bob's own stays, recordings with their
+   files queued and a conference file removed through its node, her
+   registration not Bob's, a webhook delivery, a block list entry; her side
+   of a record pseudonymised with its display name, `sip_call_id` and
+   `custom_data` field, the same token in the emergency call and the audit
+   log's actor and path, the day noted for the archive; a held record, a port
+   request and Bob's call kept; a dead letter of hers removed and Bob's
+   kept; every deletion logged under the request as an erasure by the person
+   who confirmed; the pseudonym stable; a tenant's deletion emptying every
+   class while another tenant's rows and its call's trace stay), the API
+   suite (the policy's `cdr_erasure`, confirm refused before a preview and
+   twice, the preview, the erasure, the deletion log by request; a tenant's
+   deletion refused under a hold, accepted once, closed, run, readable after
+   the tenant is gone), the archive (a pseudonymised record rewritten, a
+   deleted one leaving an empty object), the Redis dead letters (pages and
+   deletion by id), the spool's dated dead letters and their age limit, and
+   unit tests for the pseudonym, the anchors, the order and treatments, a
+   record's and an audit event's rewriting, and the identifier forms.
 
 ## 12. Open questions
 

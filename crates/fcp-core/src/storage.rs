@@ -2878,6 +2878,7 @@ pub struct DynStorage {
     recording_store: Option<Arc<dyn crate::recording::RecordingStore>>,
     call_recording_store: Option<Arc<dyn crate::recording::CallRecordingStore>>,
     subject_data_store: Option<Arc<dyn crate::subject_request::SubjectDataStore>>,
+    subject_erase_store: Option<Arc<dyn crate::subject_erasure::SubjectEraseStore>>,
 }
 
 impl DynStorage {
@@ -2941,6 +2942,7 @@ impl DynStorage {
             emergency_store: None,
             compliance_store: None,
             subject_data_store: None,
+            subject_erase_store: None,
             recording_store: None,
             call_recording_store: None,
         }
@@ -3008,6 +3010,7 @@ impl DynStorage {
             emergency_store: None,
             compliance_store: None,
             subject_data_store: None,
+            subject_erase_store: None,
             recording_store: None,
             call_recording_store: None,
         }
@@ -3204,6 +3207,22 @@ impl DynStorage {
     ) -> Self {
         self.subject_data_store = Some(store);
         self
+    }
+
+    /// Attach where erasures act (`docs/COMPLIANCE_FOLLOWUPS.md` §6.3).
+    pub fn with_subject_erase_store(
+        mut self,
+        store: Arc<dyn crate::subject_erasure::SubjectEraseStore>,
+    ) -> Self {
+        self.subject_erase_store = Some(store);
+        self
+    }
+
+    /// Where erasures act, when attached.
+    pub fn subject_erase_store(
+        &self,
+    ) -> Option<&Arc<dyn crate::subject_erasure::SubjectEraseStore>> {
+        self.subject_erase_store.as_ref()
     }
 
     /// What subject exports read, when attached.

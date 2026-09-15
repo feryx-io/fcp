@@ -1311,8 +1311,95 @@ fn load_config_from_file(path: &Path) -> Result<ConferenceServerConfig> {
     Ok(config)
 }
 
+/// The settings that belong to a host rather than to the service: a node
+/// keeps its own from its TOML when it loads a section every conference
+/// node shares from the database. Two nodes on one host — or on hosts with
+/// different ranges, directories or devices — would otherwise run on the
+/// first node's RTP ports and recordings directory.
+impl MediaSection {
+    pub fn keep_host_settings(&mut self, own: &MediaSection) {
+        self.rtp_port_start = own.rtp_port_start;
+        self.rtp_port_end = own.rtp_port_end;
+        self.public_ip = own.public_ip.clone();
+    }
+}
+
+impl ConferenceSection {
+    pub fn keep_host_settings(&mut self, own: &ConferenceSection) {
+        self.recordings_dir = own.recordings_dir.clone();
+        self.announcements_dir = own.announcements_dir.clone();
+        self.video_device = own.video_device.clone();
+        self.video_codec_threads = own.video_codec_threads;
+        self.bfcp_bind = own.bfcp_bind;
+        // The join secret is never stored.
+        self.join_secret = own.join_secret.clone();
+    }
+}
+
+impl ClusterSection {
+    pub fn keep_host_settings(&mut self, own: &ClusterSection) {
+        self.region = own.region.clone();
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_node_keeps_its_own_host_settings_over_the_shared_section() {
+        let mut shared: super::ConferenceServerConfig = toml::from_str(
+            r#"
+[media]
+rtp_port_start = 20000
+rtp_port_end = 20100
+codecs = ["PCMA"]
+
+[conference]
+recordings_dir = "/var/lib/fcp/recordings-a"
+recording_format = "wav"
+
+[cluster]
+region = "us-east"
+trunk_srtp = false
+"#,
+        )
+        .unwrap();
+        let own: super::ConferenceServerConfig = toml::from_str(
+            r#"
+[media]
+rtp_port_start = 30000
+rtp_port_end = 30100
+
+[conference]
+recordings_dir = "/var/lib/fcp/recordings-b"
+join_secret = "s3cret"
+
+[cluster]
+region = "eu-west"
+"#,
+        )
+        .unwrap();
+        shared.media.keep_host_settings(&own.media);
+        shared.conference.keep_host_settings(&own.conference);
+        shared.cluster.keep_host_settings(&own.cluster);
+        assert_eq!(
+            (shared.media.rtp_port_start, shared.media.rtp_port_end),
+            (30000, 30100)
+        );
+        assert_eq!(
+            shared.media.codecs,
+            vec!["PCMA"],
+            "service settings stay shared"
+        );
+        assert_eq!(
+            shared.conference.recordings_dir,
+            "/var/lib/fcp/recordings-b"
+        );
+        assert_eq!(shared.conference.recording_format, "wav");
+        assert_eq!(shared.conference.join_secret.as_deref(), Some("s3cret"));
+        assert_eq!(shared.cluster.region.as_deref(), Some("eu-west"));
+        assert!(!shared.cluster.trunk_srtp);
+    }
+
     use super::*;
 
     #[test]

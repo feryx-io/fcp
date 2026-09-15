@@ -15,7 +15,9 @@
 //! 00000000000000000000.jsonl   segments, one record per line
 //! 00000000000000000001.jsonl
 //! cursor                       "<segment> <byte offset>"
-//! dead.jsonl                   lines that did not decode, kept for a human
+//! dead-2026-09-15.jsonl        lines that did not decode and records the
+//!                              processor refused, by UTC day, kept for a
+//!                              human for `[cdr] dead_letter_days`
 //! ```
 
 use std::fs::{self, File, OpenOptions};
@@ -33,7 +35,14 @@ use crate::Result;
 
 const SEGMENT_SUFFIX: &str = ".jsonl";
 const CURSOR_FILE: &str = "cursor";
-const DEAD_FILE: &str = "dead.jsonl";
+/// Where dead letters went before they were kept by day.
+const LEGACY_DEAD_FILE: &str = "dead.jsonl";
+
+/// Today's dead-letter file.
+fn dead_file(at: SystemTime) -> String {
+    let day = chrono::DateTime::<chrono::Utc>::from(at).format("%Y-%m-%d");
+    format!("dead-{day}.jsonl")
+}
 
 /// How the spool writes.
 #[derive(Debug, Clone)]
@@ -261,7 +270,7 @@ impl Spool {
                 match serde_json::from_slice::<CallDetailRecord>(&line) {
                     Ok(record) => out.push(record),
                     Err(e) => {
-                        error!(error = %e, segment = at.segment, "Spool line did not decode; kept in dead.jsonl");
+                        error!(error = %e, segment = at.segment, "Spool line did not decode; kept with the dead letters");
                         self.dead_letter(&line)?;
                     }
                 }
@@ -281,7 +290,7 @@ impl Spool {
         Ok((out, at))
     }
 
-    /// Keep a record the processor refused in `dead.jsonl`, with the
+    /// Keep a record the processor refused with the dead letters, with the
     /// reason, for a person to look at.
     pub fn dead_letter_record(&self, record: &CallDetailRecord, reason: &str) -> Result<()> {
         let mut line = serde_json::to_vec(&serde_json::json!({
@@ -296,9 +305,61 @@ impl Spool {
         let mut dead = OpenOptions::new()
             .create(true)
             .append(true)
-            .open(self.inner.dir.join(DEAD_FILE))?;
+            .open(self.inner.dir.join(dead_file(SystemTime::now())))?;
         dead.write_all(line)?;
         Ok(())
+    }
+
+    /// Remove dead letters older than `max_age`: the days' files past it,
+    /// and the undated file of an older version once it was last written
+    /// before it (`docs/COMPLIANCE_FOLLOWUPS.md` §6.3). Returns how many
+    /// files went.
+    pub fn prune_dead_letters(&self, max_age: Duration) -> Result<usize> {
+        let now = SystemTime::now();
+        let cutoff = now.checked_sub(max_age).unwrap_or(SystemTime::UNIX_EPOCH);
+        let cutoff_day = chrono::DateTime::<chrono::Utc>::from(cutoff).date_naive();
+        let mut removed = 0;
+        for entry in fs::read_dir(&self.inner.dir)?.filter_map(|e| e.ok()) {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            let expired = if name == LEGACY_DEAD_FILE {
+                entry
+                    .metadata()
+                    .and_then(|m| m.modified())
+                    .is_ok_and(|modified| modified < cutoff)
+            } else if let Some(day) = name
+                .strip_prefix("dead-")
+                .and_then(|rest| rest.strip_suffix(SEGMENT_SUFFIX))
+            {
+                chrono::NaiveDate::parse_from_str(day, "%Y-%m-%d").is_ok_and(|day| day < cutoff_day)
+            } else {
+                false
+            };
+            if expired {
+                fs::remove_file(entry.path())?;
+                removed += 1;
+            }
+        }
+        Ok(removed)
+    }
+
+    /// Prune the dead letters now and every hour.
+    pub fn start_dead_letter_pruning(&self, max_age: Duration) -> tokio::task::JoinHandle<()> {
+        let spool = self.clone();
+        tokio::spawn(async move {
+            loop {
+                let s = spool.clone();
+                match tokio::task::spawn_blocking(move || s.prune_dead_letters(max_age)).await {
+                    Ok(Ok(0)) => {}
+                    Ok(Ok(n)) => debug!(files = n, "Old CDR dead letters removed"),
+                    Ok(Err(e)) => warn!(error = %e, "CDR dead letters not pruned"),
+                    Err(e) => error!(error = %e, "CDR dead-letter pruning panicked"),
+                }
+                tokio::time::sleep(Duration::from_secs(3600)).await;
+            }
+        })
     }
 
     /// Record that everything before `cursor` has been shipped, and delete
@@ -534,8 +595,40 @@ mod tests {
             batch.iter().map(|r| r.cdr_id).collect::<Vec<_>>(),
             vec![a.cdr_id, b.cdr_id]
         );
-        let dead = fs::read_to_string(dir.path().join(DEAD_FILE)).unwrap();
+        let dead = fs::read_to_string(dir.path().join(dead_file(SystemTime::now()))).unwrap();
         assert_eq!(dead, "{\"not\":\"a record\"}\n");
+    }
+
+    #[test]
+    fn dead_letters_are_removed_once_past_their_age() {
+        let dir = tempfile::tempdir().unwrap();
+        let spool = Spool::open(dir.path(), SpoolConfig::default()).unwrap();
+        let day = |days_ago: u64| {
+            dir.path().join(dead_file(
+                SystemTime::now() - Duration::from_secs(days_ago * 86_400),
+            ))
+        };
+        fs::write(day(0), "{}\n").unwrap();
+        fs::write(day(10), "{}\n").unwrap();
+        fs::write(day(40), "{}\n").unwrap();
+        let legacy = dir.path().join(LEGACY_DEAD_FILE);
+        fs::write(&legacy, "{}\n").unwrap();
+        File::options()
+            .write(true)
+            .open(&legacy)
+            .unwrap()
+            .set_modified(SystemTime::now() - Duration::from_secs(60 * 86_400))
+            .unwrap();
+        let removed = spool
+            .prune_dead_letters(Duration::from_secs(30 * 86_400))
+            .unwrap();
+        assert_eq!(removed, 2);
+        assert!(day(0).exists() && day(10).exists());
+        assert!(!day(40).exists() && !legacy.exists());
+        assert!(
+            list_segments(dir.path()).unwrap().len() <= 1,
+            "dead letters are not read as segments"
+        );
     }
 
     #[test]

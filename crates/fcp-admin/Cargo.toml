@@ -34,7 +34,7 @@ bytes = { workspace = true }
 
 # Storage backend
 fcp-storage-postgres = { path = "../fcp-storage-postgres" }
-fcp-storage-redis = { path = "../fcp-storage-redis" }
+fcp-storage-redis = { path = "../fcp-storage-redis", features = ["cdr"] }
 
 # Presence (read-only, for admin UI)
 fcp-presence = { path = "../fcp-presence" }

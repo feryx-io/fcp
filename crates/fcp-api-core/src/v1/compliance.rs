@@ -69,6 +69,8 @@ pub struct PolicyResponse {
     pub recording_notice_interval_secs: Option<u32>,
     /// Days the tenant gives itself to answer a subject request.
     pub subject_request_days: u32,
+    /// `pseudonymise` or `delete`: what an erasure does to call records.
+    pub cdr_erasure: String,
     /// CDRs are deleted only once the archive has confirmed them.
     pub cdr_archive_required: bool,
     /// Unix seconds: every one of the tenant's CDRs that started before
@@ -98,6 +100,7 @@ impl PolicyResponse {
             recording_consent_on_failure: p.recording_consent_on_failure.as_str().to_string(),
             recording_notice_interval_secs: p.recording_notice_interval_secs,
             subject_request_days: p.subject_request_days,
+            cdr_erasure: p.cdr_erasure.as_str().to_string(),
             cdr_archive_required: p.cdr_archive_required,
             cdr_archived_before: archived_before.map(unix_secs),
             configured,
@@ -128,6 +131,7 @@ pub struct UpdatePolicyRequest {
     #[serde(default, deserialize_with = "deserialize_double_option")]
     pub recording_notice_interval_secs: Option<Option<u32>>,
     pub subject_request_days: Option<u32>,
+    pub cdr_erasure: Option<String>,
     pub cdr_archive_required: Option<bool>,
 }
 
@@ -262,6 +266,13 @@ pub async fn update_policy(
                     "recording_consent_on_failure must be 'record' or 'skip', got '{action}'"
                 ))
             })?;
+    }
+    if let Some(how) = req.cdr_erasure {
+        policy.cdr_erasure = fcp_core::compliance::CdrErasure::parse(&how).ok_or_else(|| {
+            ApiError::BadRequest(format!(
+                "cdr_erasure must be 'pseudonymise' or 'delete', got '{how}'"
+            ))
+        })?;
     }
     if let Some(days) = req.subject_request_days {
         if !(1..=365).contains(&days) {
@@ -484,6 +495,8 @@ pub struct DeletionLogQuery {
     pub class: Option<String>,
     /// Unix seconds.
     pub since: Option<u64>,
+    /// What one subject request deleted.
+    pub request_id: Option<String>,
     #[serde(default = "default_audit_limit")]
     pub limit: usize,
 }
@@ -497,6 +510,7 @@ pub struct DeletionResponse {
     pub detail: Option<serde_json::Value>,
     pub cause: String,
     pub actor: String,
+    pub request_id: Option<String>,
     pub deleted_at: u64,
 }
 
@@ -522,6 +536,7 @@ pub async fn list_deletions(
             since: q
                 .since
                 .map(|s| UNIX_EPOCH + std::time::Duration::from_secs(s)),
+            request_id: q.request_id,
             limit: q.limit,
         })
         .await
@@ -536,6 +551,7 @@ pub async fn list_deletions(
             detail: r.detail,
             cause: r.cause,
             actor: r.actor,
+            request_id: r.request_id,
             deleted_at: unix_secs(r.deleted_at),
         })
         .collect();
@@ -813,7 +829,7 @@ use fcp_core::subject_request::{SubjectRequest, SubjectRequestKind, SubjectReque
 
 #[derive(Debug, Deserialize)]
 pub struct FileSubjectRequest {
-    /// `export` (erasure arrives with phase 5).
+    /// `export` or `erasure`.
     pub kind: String,
     pub subjects: Vec<SubjectIdentifier>,
     /// The tenant's own reference: a ticket, a letter.
@@ -857,6 +873,12 @@ pub struct SubjectRequestResponse {
     pub report: Option<fcp_core::subject_request::ExportReport>,
     pub bundle: Option<BundleResponse>,
     pub error: Option<String>,
+    pub confirmed_at: Option<u64>,
+    pub confirmed_by: Option<String>,
+    /// What an erasure would do, for a person to confirm.
+    pub preview: Option<fcp_core::subject_erasure::ErasureReport>,
+    /// What an erasure or a tenant's deletion did.
+    pub erasure: Option<fcp_core::subject_erasure::ErasureReport>,
 }
 
 impl From<SubjectRequest> for SubjectRequestResponse {
@@ -883,6 +905,10 @@ impl From<SubjectRequest> for SubjectRequestResponse {
                 removed: b.removed,
             }),
             error: r.error,
+            confirmed_at: r.confirmed_at.map(unix_secs),
+            confirmed_by: r.confirmed_by,
+            preview: r.preview,
+            erasure: r.erasure,
         }
     }
 }
@@ -908,15 +934,15 @@ pub async fn file_subject_request(
         .as_ref()
         .ok_or_else(|| ApiError::Internal("Storage not configured".to_string()))?;
     let kind = match SubjectRequestKind::parse(&req.kind) {
-        Some(SubjectRequestKind::Export) => SubjectRequestKind::Export,
-        Some(SubjectRequestKind::Erasure) => {
+        Some(kind @ (SubjectRequestKind::Export | SubjectRequestKind::Erasure)) => kind,
+        Some(SubjectRequestKind::TenantDeletion) => {
             return Err(ApiError::BadRequest(
-                "erasure requests are not available yet".to_string(),
+                "a tenant is deleted with DELETE /tenants/:id".to_string(),
             ))
         }
         None => {
             return Err(ApiError::BadRequest(format!(
-                "kind must be 'export', got '{}'",
+                "kind must be 'export' or 'erasure', got '{}'",
                 req.kind
             )))
         }
@@ -1009,6 +1035,39 @@ pub async fn get_subject_request(
 ) -> Result<impl IntoResponse, ApiError> {
     permit(&state, &identity, Permission::SubjectRequestManage)?;
     let request = scoped_subject_request(&state, &tenant.0, &id).await?;
+    Ok(Json(SubjectRequestResponse::from(request)))
+}
+
+/// `POST /compliance/subject-requests/:id/confirm`: confirm an erasure's
+/// preview. The erasure then runs against the data as it is, not as the
+/// preview found it, and cannot be undone. `409` unless a preview is waiting.
+pub async fn confirm_subject_request(
+    State(state): State<ApiState>,
+    tenant: TenantContext,
+    identity: Option<Extension<AuthIdentity>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    permit(&state, &identity, Permission::SubjectRequestManage)?;
+    let store = require_store(&state)?;
+    let mut request = scoped_subject_request(&state, &tenant.0, &id).await?;
+    if request.kind != SubjectRequestKind::Erasure
+        || request.status != SubjectRequestStatus::Preview
+    {
+        return Err(ApiError::Conflict(format!(
+            "Subject request {} is a {} request {}; only an erasure's preview is confirmed",
+            request.id,
+            request.kind.as_str(),
+            request.status.as_str()
+        )));
+    }
+    request.status = SubjectRequestStatus::Confirmed;
+    request.confirmed_at = Some(SystemTime::now());
+    request.confirmed_by = Some(actor_of(&identity));
+    store
+        .update_subject_request(&request)
+        .await
+        .map_err(ApiError::storage)?;
+    info!(tenant_id = %tenant.0, request = %request.id, by = ?request.confirmed_by, "Subject erasure confirmed");
     Ok(Json(SubjectRequestResponse::from(request)))
 }
 

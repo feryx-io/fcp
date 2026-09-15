@@ -81,14 +81,15 @@ Since the compliance foundations (`docs/COMPLIANCE_FOLLOWUPS.md` §4, §7):
   Retention never walks a directory, so one tenant's window cannot reach
   another tenant's files. Mount the recording hosts' directories on the
   admin host at the paths they write under.
-- **The deletion log** (`GET /api/v1/compliance/deletions?class=&since=&limit=`)
+- **The deletion log** (`GET /api/v1/compliance/deletions?class=&since=&request_id=&limit=`)
   has an entry for every deleted recording and voicemail message, and one
   per tenant per statement for records, traces and audit events: what,
   when, the cause (`retention`, `manual`, `cascade`, `node_sweep`,
-  `upkeep`, or `unattributed` for a delete nothing named) and the actor (a
-  username, an API token's id, `static_token`, `fcp-admin:<node>`, a
-  conference node, `phone:<mailbox>`). It is written by the database in
-  the transaction that deletes.
+  `upkeep`, `erasure`, `tenant_deletion`, or `unattributed` for a delete
+  nothing named), the actor (a username, an API token's id,
+  `static_token`, `fcp-admin:<node>`, a conference node,
+  `phone:<mailbox>`) and, for an erasure or a tenant's deletion, the
+  request. It is written by the database in the transaction that deletes.
 - **Platform upkeep**, hourly after the tenants' runs: SIP and flow traces
   are given the tenant of their call's stored record; each mailbox's own
   `retention_days` is applied; messages users deleted are purged after
@@ -273,8 +274,8 @@ it (`docs/COMPLIANCE_FOLLOWUPS.md` §6).
 
 | Route | What it does |
 |---|---|
-| `POST /compliance/subject-requests` | File a request: `{"kind": "export", "subjects": [...], "reference": "DSAR-17"}`. Subjects are `{"type": "user", "username"}`, `{"type": "number", "number"}`, `{"type": "aor", "aor"}` or `{"type": "email", "address"}`; a user the tenant does not have is refused. `201` with the request |
-| `GET /compliance/subject-requests` | The tenant's requests, newest first; `?status=received\|running\|completed\|failed` |
+| `POST /compliance/subject-requests` | File a request: `{"kind": "export", "subjects": [...], "reference": "DSAR-17"}` (or `"kind": "erasure"`, below). Subjects are `{"type": "user", "username"}`, `{"type": "number", "number"}`, `{"type": "aor", "aor"}` or `{"type": "email", "address"}`; a user the tenant does not have is refused. `201` with the request |
+| `GET /compliance/subject-requests` | The tenant's requests, newest first; `?status=received\|running\|preview\|confirmed\|completed\|failed` |
 | `GET /compliance/subject-requests/{id}` | One request: its expansion, report, bundle and deadline |
 | `GET /compliance/subject-requests/{id}/bundle` | The bundle, `application/gzip`, with `x-content-sha256`. `409` until it is ready, `410` once it has expired. Every download is in the audit log |
 
@@ -321,6 +322,70 @@ directory; `export_ttl_days` (7) is how long one can be downloaded, after
 which it is removed. The worker runs on one replica at a time under the lock
 `fcp:subject-requests`, and puts back in the queue any request a stopped
 replica left running.
+
+## Subject erasure
+
+A person may ask to be forgotten. The tenant files an erasure request like
+an export (`"kind": "erasure"`); it runs in two steps, because it cannot be
+undone and a wrong identifier would erase someone else
+(`docs/COMPLIANCE_FOLLOWUPS.md` §6.3–6.6):
+
+1. **The preview.** `fcp-admin` finds everything that is the subject's, as an
+   export does, and reports what it would do with each item — without
+   changing anything. The request's status becomes `preview`, and
+   `compliance.subject_request_completed` fires with that status.
+2. **The confirmation.** A person reads the preview and calls
+   `POST /compliance/subject-requests/{id}/confirm` (`409` unless a preview is
+   waiting). The erasure then runs against the data as it is at that moment
+   and reports what it did under `erasure`.
+
+| What | Done |
+|---|---|
+| The user, their API tokens, profile picture, extensions, queue memberships | Deleted |
+| Their mailboxes, greetings, messages in them and messages they left elsewhere, with the audio | Deleted |
+| Call and conference recordings of their calls and rooms, SIP and flow traces of their calls | Deleted (conference recording files through their nodes) |
+| Registrations, presence and its history, subscriptions, authorisation policies, resource lists | Deleted |
+| Webhook deliveries naming them, allow and block list entries naming them | Deleted, entries removed |
+| Devices, lines and meetings they owned | Kept, the owner cleared |
+| Call records | Pseudonymised: their side's URI keeps its form and host (`sip:erased-3f…@pbx.example`), its display name and the record's `sip_call_id` are cleared, `custom_data` fields naming them are removed. With `cdr_erasure = "delete"` on the policy, deleted |
+| Emergency calls, the admin and configuration audit logs | Kept, pseudonymised (actor, and their name in the path) |
+| Port requests naming them as the contact | Kept (a carrier record), reported |
+| Dead letters in the CDR stream naming them | Deleted, when `fcp-admin` has `[cluster] redis_url` |
+| Items under a legal hold | Left as they are, reported with the hold's matter |
+
+**The pseudonym** is `erased-` and twenty hex digits of an HMAC-SHA-256 over
+the subject's canonical identifier, keyed by a secret of the tenant's own,
+sealed with encryption at rest (`subject_pseudonym_keys`). The same person
+gets the same token in every record and in every later request, so counts
+and bills still add up, and it cannot be reversed without the key.
+
+**The archive** writes the days of pseudonymised or deleted records again on
+its next run; a day left with no records gets an empty object. A bucket
+with versioning keeps the old version until its lifecycle rule expires it:
+set a non-current-version expiry on the archive bucket.
+
+**What it cannot reach**, and the report says so: database backups and
+bucket versions (the operator's retention), dead letters in each node's
+spool (removed after `[cdr] dead_letter_days`, 30 by default), records and
+events in transit on the Redis streams (trimmed after `fcp-jobs`' `[cdr]
+retain_hours`), the API gateway's response cache (its TTL) and service logs.
+
+Every deletion an erasure makes is in the deletion log with cause
+`erasure`, the person who confirmed it as the actor, and the request
+(`?request_id=`).
+
+## Deleting a tenant
+
+`DELETE /api/v1/tenants/{id}` (platform admins) is a request too: refused
+with `409` while any legal hold on the tenant is active; otherwise the
+tenant is closed and `202` returns the tenant deletion request, which
+`fcp-admin` runs. It removes the tenant's conference recording files through
+their nodes and its CDR stream dead letters, notes its archived days to be
+written empty, deletes every row of every table that has a tenant — the
+traces of its calls kept under `_system` included — and the tenant last.
+The request, the deletion log (cause `tenant_deletion`), released legal holds
+and the archive's bookkeeping stay. `GET /api/v1/tenants/{id}/deletion`
+reports it, including once the tenant is gone: the rows removed, by table.
 
 ## Who may do this
 
@@ -398,7 +463,8 @@ recorded. The admin UI's **Recordings** page lists them with a player.
 4. Run `POST /compliance/retention/run` once and read the report.
 5. Give your compliance officer `GET /audit-log` and `GET /cdrs/export`, and
    `subject_request_manage` for the requests people make; set
-   `subject_request_days` to your regime's deadline.
+   `subject_request_days` to your regime's deadline, and `cdr_erasure` to
+   `delete` if your records need not outlive an erasure.
 6. For conferences, decide `recording_format` on each node (`auto` records
    video meetings to MP4 where the node encodes H.264 and to WebM where it
    encodes VP8 or VP9, audio-only ones to WAV) and let

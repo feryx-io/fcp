@@ -337,6 +337,71 @@ impl RecordSource for RedisCdrStream {
     }
 }
 
+/// The dead letters, for an erasure or a tenant's deletion to find what
+/// names a subject (`docs/COMPLIANCE_FOLLOWUPS.md` §6.3).
+#[async_trait]
+impl fcp_core::subject_erasure::DeadLetterStore for RedisCdrStream {
+    async fn dead_letter_page(
+        &self,
+        after: Option<&str>,
+        limit: usize,
+    ) -> anyhow::Result<(Vec<(String, String)>, Option<String>)> {
+        let mut conn = self.storage.connection();
+        let start = match after {
+            Some(id) => format!("({id}"),
+            None => "-".to_string(),
+        };
+        let reply: redis::Value = redis::cmd("XRANGE")
+            .arg(&self.dead_key)
+            .arg(start)
+            .arg("+")
+            .arg("COUNT")
+            .arg(limit.max(1))
+            .query_async(&mut conn)
+            .await
+            .map_err(|e| anyhow::anyhow!("XRANGE on {} failed: {e}", self.dead_key))?;
+        let redis::Value::Array(entries) = reply else {
+            return Ok((Vec::new(), None));
+        };
+        let mut out = Vec::with_capacity(entries.len());
+        for entry in &entries {
+            let redis::Value::Array(parts) = entry else {
+                continue;
+            };
+            let Some(id) = parts.first().and_then(text) else {
+                continue;
+            };
+            let record = parts
+                .get(1)
+                .map(fields_of)
+                .and_then(|mut fields| fields.remove("record"))
+                .unwrap_or_default();
+            out.push((id, record));
+        }
+        let next = (entries.len() >= limit.max(1))
+            .then(|| out.last().map(|(id, _)| id.clone()))
+            .flatten();
+        Ok((out, next))
+    }
+
+    async fn delete_dead_letters(&self, ids: &[String]) -> anyhow::Result<u64> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let mut conn = self.storage.connection();
+        let mut cmd = redis::cmd("XDEL");
+        cmd.arg(&self.dead_key);
+        for id in ids {
+            cmd.arg(id);
+        }
+        let removed: u64 = cmd
+            .query_async(&mut conn)
+            .await
+            .map_err(|e| anyhow::anyhow!("XDEL on {} failed: {e}", self.dead_key))?;
+        Ok(removed)
+    }
+}
+
 /// `[[id, [field, value, ...]], ...]` as records, by their `record` field.
 fn entries_of(entries: &[redis::Value]) -> Vec<SourcedRecord> {
     let mut out = Vec::new();

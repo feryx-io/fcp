@@ -167,6 +167,28 @@ impl SubjectMatcher {
     }
 }
 
+/// `identifier` with its user part replaced by `token`, keeping its form: a
+/// URI keeps its scheme, host and parameters, a name-addr loses its display
+/// name, a bare number or name becomes the token
+/// (`docs/COMPLIANCE_FOLLOWUPS.md` §6.4).
+pub fn pseudonymise_identifier(identifier: &str, token: &str) -> String {
+    let trimmed = identifier.trim();
+    // A name-addr: keep the address and what follows it, drop the name.
+    if let (Some(open), Some(close)) = (trimmed.find('<'), trimmed.rfind('>')) {
+        if open < close {
+            let inner = pseudonymise_identifier(&trimmed[open + 1..close], token);
+            return format!("<{inner}>{}", &trimmed[close + 1..]);
+        }
+    }
+    let (scheme, rest) = ["sips:", "sip:", "tel:"]
+        .iter()
+        .find(|p| trimmed.len() >= p.len() && trimmed[..p.len()].eq_ignore_ascii_case(p))
+        .map(|p| (&trimmed[..p.len()], &trimmed[p.len()..]))
+        .unwrap_or(("", trimmed));
+    let user_end = rest.find(['@', ';', '?']).unwrap_or(rest.len());
+    format!("{scheme}{token}{}", &rest[user_end..])
+}
+
 fn push_unique(v: &mut Vec<String>, s: String) {
     if !v.contains(&s) {
         v.push(s);
@@ -255,6 +277,33 @@ mod tests {
         assert!(m.matches_any(["sip:bob@pbx.example", "sip:alice@pbx.example"]));
         assert!(SubjectMatcher::new(Vec::<String>::new()).is_empty());
         assert!(!SubjectMatcher::new(["", "   "]).matches("alice"));
+    }
+
+    #[test]
+    fn a_pseudonym_keeps_the_identifiers_form_and_host() {
+        let t = "erased-0123456789abcdef0123";
+        for (given, expected) in [
+            (
+                "sip:alice@pbx.example",
+                "sip:erased-0123456789abcdef0123@pbx.example",
+            ),
+            (
+                "\"Alice\" <sips:alice@pbx.example;transport=tls>;tag=1",
+                "<sips:erased-0123456789abcdef0123@pbx.example;transport=tls>;tag=1",
+            ),
+            (
+                "tel:+1-415-555-0100;ext=2",
+                "tel:erased-0123456789abcdef0123;ext=2",
+            ),
+            (
+                "alice@mail.example",
+                "erased-0123456789abcdef0123@mail.example",
+            ),
+            ("+14155550100", "erased-0123456789abcdef0123"),
+            ("alice", "erased-0123456789abcdef0123"),
+        ] {
+            assert_eq!(pseudonymise_identifier(given, t), expected, "{given:?}");
+        }
     }
 
     #[test]
