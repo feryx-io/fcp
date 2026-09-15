@@ -67,6 +67,8 @@ impl PostgresEmergencyStore {
                 .try_get::<Option<DateTime<Utc>>, _>("ended_at")?
                 .map(to_system_time),
             delivery: row.try_get("delivery")?,
+            location_structured: row.try_get("location_structured")?,
+            geolocation_error: row.try_get("geolocation_error")?,
         })
     }
 }
@@ -136,8 +138,8 @@ impl EmergencyStore for PostgresEmergencyStore {
             "INSERT INTO emergency_calls
                 (tenant_id, call_id, sip_call_id, caller_uri, caller_username, dialed_number,
                  kind, callback_number, location, location_source, trunk_name, outcome,
-                 placed_at, notified, delivery)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+                 placed_at, notified, delivery, location_structured)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
              RETURNING id",
         )
         .bind(record.tenant_id.to_string())
@@ -155,6 +157,7 @@ impl EmergencyStore for PostgresEmergencyStore {
         .bind(to_datetime(record.placed_at))
         .bind(record.notified)
         .bind(&record.delivery)
+        .bind(record.location_structured)
         .fetch_one(&self.pool)
         .await?;
         Ok(id)
@@ -168,7 +171,8 @@ impl EmergencyStore for PostgresEmergencyStore {
         let rows = sqlx::query(
             "SELECT id, tenant_id, call_id, sip_call_id, caller_uri, caller_username,
                     dialed_number, kind, callback_number, location, trunk_name, outcome,
-                    placed_at, notified, sip_status, answered_at, ended_at, delivery
+                    placed_at, notified, sip_status, answered_at, ended_at, delivery,
+                    location_structured, geolocation_error
              FROM emergency_calls WHERE tenant_id = $1
              ORDER BY placed_at DESC, id DESC LIMIT $2",
         )
@@ -195,7 +199,8 @@ impl EmergencyStore for PostgresEmergencyStore {
         sqlx::query(
             "UPDATE emergency_calls
              SET trunk_name = COALESCE($2, trunk_name), outcome = $3, sip_status = $4,
-                 answered_at = $5, ended_at = $6, delivery = $7
+                 answered_at = $5, ended_at = $6, delivery = $7,
+                 geolocation_error = COALESCE($8, geolocation_error)
              WHERE id = $1",
         )
         .bind(id)
@@ -205,6 +210,7 @@ impl EmergencyStore for PostgresEmergencyStore {
         .bind(completion.answered_at.map(to_datetime))
         .bind(to_datetime(completion.ended_at))
         .bind(&completion.delivery)
+        .bind(&completion.geolocation_error)
         .execute(&self.pool)
         .await?;
         Ok(())

@@ -324,8 +324,12 @@ pub struct EmergencyCallResponse {
     pub ended_at: Option<u64>,
     /// Seconds from answer to end, for an answered call.
     pub duration_secs: Option<u64>,
-    /// How the location travelled: `elin`, or none.
+    /// How the location travelled: `elin`, `pidf_lo`, `elin+pidf_lo`, or none.
     pub delivery: Option<String>,
+    /// Whether the location's street went out in civic elements.
+    pub location_structured: Option<bool>,
+    /// The `Geolocation-Error` a trunk answered the location with.
+    pub geolocation_error: Option<String>,
 }
 
 impl From<EmergencyCallRecord> for EmergencyCallResponse {
@@ -354,6 +358,8 @@ impl From<EmergencyCallRecord> for EmergencyCallResponse {
                 .and_then(|(a, e)| e.duration_since(a).ok())
                 .map(|d| d.as_secs()),
             delivery: r.delivery,
+            location_structured: r.location_structured,
+            geolocation_error: r.geolocation_error,
         }
     }
 }

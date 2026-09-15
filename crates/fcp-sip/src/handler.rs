@@ -209,6 +209,9 @@ pub struct OutboundRoute {
     pub trunk_name: Option<String>,
     /// Allowed codecs for this trunk in preference order (empty = no restriction).
     pub allowed_codecs: Option<Vec<String>>,
+    /// How an emergency call's location travels on this route
+    /// (`[[trunks]] emergency_location`); ELIN alone when empty.
+    pub emergency_location: Vec<fcp_core::e911::LocationDelivery>,
 }
 
 /// Outcome of classified route resolution (the reachability stage).
@@ -318,7 +321,13 @@ struct TargetContact {
 /// carries: an emergency call goes to its routes one at a time, in order,
 /// never to two carriers at once (`docs/E911.md`).
 struct EmergencyFallback {
-    targets: std::collections::VecDeque<String>,
+    /// The routes not tried yet, in order.
+    attempts: std::collections::VecDeque<crate::emergency::EmergencyAttempt>,
+    /// The route the call is on now.
+    current: Option<crate::emergency::EmergencyAttempt>,
+    /// Whether the current route's trunk refused the location
+    /// (`Geolocation-Error` or 424).
+    location_refused: bool,
     sdp: Option<String>,
     from: Option<sip_core::SipUri>,
     display_name: Option<String>,
@@ -3103,7 +3112,7 @@ impl SipMessageHandler {
             .call_manager
             .get_call(&call_id)
             .and_then(|call| call.emergency.clone());
-        let emergency_bindings = if emergency_ctx.is_some() {
+        let (emergency_bindings, emergency_routes) = if emergency_ctx.is_some() {
             let routes = match &self.outbound_route_provider {
                 Some(provider) => provider.resolve_emergency_ordered(destination_aor).await,
                 None => Vec::new(),
@@ -3152,9 +3161,9 @@ impl SipMessageHandler {
                 );
                 return Ok(());
             }
-            Some(bindings)
+            (Some(bindings), routes)
         } else {
-            None
+            (None, Vec::new())
         };
 
         let destination_contacts = if let Some(bindings) = emergency_bindings {
@@ -5341,26 +5350,6 @@ impl SipMessageHandler {
             target_contacts.truncate(max_legs);
         }
 
-        // An emergency call tries its routes one at a time: the first now,
-        // the rest only as each attempt fails.
-        if emergency_ctx.is_some() && target_contacts.len() > 1 {
-            let rest: std::collections::VecDeque<String> = target_contacts
-                .split_off(1)
-                .into_iter()
-                .map(|t| t.uri)
-                .collect();
-            self.emergency_fallbacks.insert(
-                call_id,
-                EmergencyFallback {
-                    targets: rest,
-                    sdp: a_leg_sdp.clone(),
-                    from: caller_from_uri.clone(),
-                    display_name: caller_display_name.clone(),
-                    headers: emergency_headers.clone(),
-                },
-            );
-        }
-
         // Create cancel_notify BEFORE sending B-leg INVITEs so CANCEL handler can
         // signal the forking task even if CANCEL arrives while INVITEs are being sent.
         // This fixes a race condition where CANCEL could arrive during the INVITE loop.
@@ -5382,6 +5371,63 @@ impl SipMessageHandler {
                     "Failed to store cancel_notify - CANCELs may not be delivered"
                 );
             }
+        }
+
+        // An emergency call tries its routes one at a time, never two
+        // carriers at once, each with the location its trunk takes: the
+        // first now, the rest as attempts fail (see handle_parallel_forking).
+        if emergency_ctx.is_some() {
+            self.emergency_fallbacks.insert(
+                call_id,
+                EmergencyFallback {
+                    attempts: emergency_routes
+                        .iter()
+                        .map(crate::emergency::EmergencyAttempt::from_route)
+                        .collect(),
+                    current: None,
+                    location_refused: false,
+                    sdp: a_leg_sdp.clone(),
+                    from: caller_from_uri.clone(),
+                    display_name: caller_display_name.clone(),
+                    headers: emergency_headers.clone(),
+                },
+            );
+            uac.inner().set_display_name(None).await;
+            uac.inner().set_from_uri(None).await;
+            let Some((target, outbound)) = self.next_emergency_leg(call_id).await else {
+                error!(
+                    call_id = %call_id,
+                    "EMERGENCY CALL COULD NOT BE PLACED: no emergency INVITE could be sent"
+                );
+                let response = self.create_simple_response(request, 503, "Service Unavailable");
+                a_leg_handle.send_final(response).await;
+                let _ = self.call_manager.terminate_call(
+                    &call_id,
+                    Some("503 No emergency INVITE could be sent".to_string()),
+                );
+                return Ok(());
+            };
+            let _ = self.call_manager.update_call(&call_id, |call| {
+                call.state = fcp_b2bua_core::CallState::Proceeding;
+            });
+            let handler = self.clone();
+            let request_clone = request.clone();
+            let a_leg_handle_arc = Arc::new(a_leg_handle.clone());
+            tokio::spawn(async move {
+                if let Err(e) = handler
+                    .handle_parallel_forking(
+                        request_clone,
+                        a_leg_handle_arc,
+                        vec![(target, outbound, None)],
+                        call_id,
+                        cancel_notify,
+                    )
+                    .await
+                {
+                    error!(call_id = %call_id, error = %e, "Error handling emergency call attempts");
+                }
+            });
+            return Ok(());
         }
 
         // Create outbound INVITEs to all target contacts in PARALLEL
@@ -5421,11 +5467,17 @@ impl SipMessageHandler {
                             peer_addr = %flow_info.peer_addr,
                             "Using RFC 5626 flow for TLS INVITE"
                         );
+                        // The headers a routed target gets, a flow target
+                        // gets too (the conference call-id, …).
+                        let options = sip_uac::InviteOptions {
+                            extra_headers: emergency_headers_clone.clone().unwrap_or_default(),
+                            ..sip_uac::InviteOptions::with_sdp(a_leg_sdp_clone.as_deref())
+                        };
                         tokio::time::timeout(
                             std::time::Duration::from_secs(5),
-                            uac_clone.invite_via_flow(
+                            uac_clone.invite_via_flow_with_options(
                                 &target_uri_clone,
-                                a_leg_sdp_clone.as_deref(),
+                                options,
                                 flow_info.stream,
                                 flow_info.peer_addr,
                             ),
@@ -6293,6 +6345,7 @@ impl SipMessageHandler {
                             "B-leg {} completed with code {}", i, code
                         );
 
+                        self.note_geolocation_error(call_id, &response);
                         if (200..300).contains(&code) {
                             info!(
                                 call_id = %call_id,
@@ -6864,25 +6917,68 @@ impl SipMessageHandler {
         Ok(())
     }
 
-    /// The next emergency route for a call whose attempt failed, dialled
-    /// with the call's SDP and emergency identity; `None` when none is
-    /// left (or none could be sent).
+    /// Record a trunk's answer to the location an emergency call carried:
+    /// its `Geolocation-Error`, or a 424, on the call (and so its record),
+    /// and on the attempt, which decides what is tried next.
+    fn note_geolocation_error(
+        &self,
+        call_id: fcp_b2bua_core::CallId,
+        response: &sip_core::Response,
+    ) {
+        let Some(mut fallback) = self.emergency_fallbacks.get_mut(&call_id) else {
+            return;
+        };
+        let Some(error) = crate::emergency::geolocation_error_of(response) else {
+            return;
+        };
+        let refused = !(200..300).contains(&response.start_line().code());
+        fallback.location_refused |= refused;
+        let trunk = fallback.current.as_ref().and_then(|a| a.trunk.clone());
+        drop(fallback);
+        warn!(
+            call_id = %call_id,
+            trunk = ?trunk,
+            code = response.start_line().code(),
+            geolocation_error = %error,
+            "Emergency trunk answered the location with an error"
+        );
+        let _ = self.call_manager.update_call(&call_id, |call| {
+            if let Some(em) = call.emergency.as_mut() {
+                em.geolocation_error = Some(error);
+            }
+        });
+    }
+
+    /// The next emergency attempt for a call whose last one failed (or its
+    /// first): the same route without the location by value when the trunk
+    /// refused the location and also takes ELIN, else the next route. Sent
+    /// with the call's SDP, the callback number as caller and the location
+    /// the route's trunk takes. `None` when nothing is left to try.
     async fn next_emergency_leg(
         &self,
         call_id: fcp_b2bua_core::CallId,
     ) -> Option<(String, Arc<crate::uac::OutboundCall>)> {
         let uac = self.uac.as_ref()?;
         loop {
-            let (target, sdp, from, display_name, headers) = {
+            let (attempt, sdp, from, display_name, headers) = {
                 let mut fallback = self.emergency_fallbacks.get_mut(&call_id)?;
-                match fallback.targets.pop_front() {
-                    Some(target) => (
-                        target,
-                        fallback.sdp.clone(),
-                        fallback.from.clone(),
-                        fallback.display_name.clone(),
-                        fallback.headers.clone(),
-                    ),
+                let retry = fallback
+                    .current
+                    .take()
+                    .filter(|_| fallback.location_refused)
+                    .and_then(|a| a.without_pidf_lo());
+                fallback.location_refused = false;
+                match retry.or_else(|| fallback.attempts.pop_front()) {
+                    Some(attempt) => {
+                        fallback.current = Some(attempt.clone());
+                        (
+                            attempt,
+                            fallback.sdp.clone(),
+                            fallback.from.clone(),
+                            fallback.display_name.clone(),
+                            fallback.headers.clone(),
+                        )
+                    }
                     None => {
                         drop(fallback);
                         self.emergency_fallbacks.remove(&call_id);
@@ -6890,27 +6986,51 @@ impl SipMessageHandler {
                     }
                 }
             };
-            warn!(
-                call_id = %call_id,
-                target = %target,
-                "Emergency route failed; trying the next emergency route"
+            let info = self.call_manager.get_call(&call_id)?.emergency?;
+            let (options, delivered) = crate::emergency::attempt_invite(
+                &info,
+                &attempt,
+                call_id,
+                sdp.as_deref(),
+                from,
+                headers.as_ref(),
+                &self.local_addr,
             );
+            info!(
+                call_id = %call_id,
+                target = %attempt.target,
+                trunk = ?attempt.trunk,
+                delivery = ?delivered,
+                "Placing emergency call attempt"
+            );
+            let trunk = attempt.trunk.clone();
+            let _ = self.call_manager.update_call(&call_id, |call| {
+                call.trunk_name = trunk;
+                if let Some(em) = call.emergency.as_mut() {
+                    em.delivered = delivered;
+                }
+            });
             uac.inner().set_display_name(display_name).await;
-            uac.inner().set_from_uri(from).await;
             let sent = tokio::time::timeout(
                 Duration::from_secs(5),
-                uac.invite_with_optional_headers(&target, sdp.as_deref(), headers),
+                uac.invite_with_options(&attempt.target, options),
             )
             .await;
             uac.inner().set_display_name(None).await;
-            uac.inner().set_from_uri(None).await;
             match sent {
-                Ok(Ok(call)) => return Some((target, Arc::new(call))),
+                Ok(Ok(call)) => {
+                    let b_leg_invite = call.invite_request().await;
+                    if let Some(b_leg_cid) = sip_parse::header(b_leg_invite.headers(), "Call-ID") {
+                        self.sip_call_id_map
+                            .insert(b_leg_cid.as_str().to_string(), call_id.to_string());
+                    }
+                    return Some((attempt.target, Arc::new(call)));
+                }
                 Ok(Err(e)) => {
-                    error!(call_id = %call_id, target = %target, error = %e, "Failed to send the emergency INVITE");
+                    error!(call_id = %call_id, target = %attempt.target, error = %e, "Failed to send the emergency INVITE");
                 }
                 Err(_) => {
-                    error!(call_id = %call_id, target = %target, "Emergency INVITE timed out (5s)");
+                    error!(call_id = %call_id, target = %attempt.target, "Emergency INVITE timed out (5s)");
                 }
             }
         }

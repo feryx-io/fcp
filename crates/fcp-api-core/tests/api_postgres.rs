@@ -4108,13 +4108,45 @@ async fn e911_config_readiness_validation_and_audit() {
                 "postal_code": "12207",
                 "country": "US",
                 "floor": "3",
-                "e911_callback_number": "+15185550100"
+                "e911_callback_number": "+15185550100",
+                "civic": { "house_number": "1", "street_name": "State", "street_suffix": "St" }
             })),
         )
         .await;
     assert_eq!(site.status, StatusCode::CREATED, "{}", site.text);
     let site_id = site.json["id"].as_str().unwrap().to_string();
     assert_eq!(site.json["e911_callback_number"], "+15185550100");
+    assert_eq!(site.json["civic"]["street_name"], "State", "{}", site.text);
+
+    // Civic elements are replaced on update and stored; bad ones are refused.
+    let restructured = app
+        .admin(
+            Method::PATCH,
+            &format!("/api/v1/locations/{site_id}"),
+            Some(
+                json!({ "civic": { "house_number": "1", "street_name": "State",
+                                    "street_suffix": "St", "unit": "300" } }),
+            ),
+        )
+        .await;
+    assert_eq!(restructured.status, StatusCode::OK, "{}", restructured.text);
+    let fetched = app
+        .admin(Method::GET, &format!("/api/v1/locations/{site_id}"), None)
+        .await;
+    assert_eq!(fetched.json["civic"]["unit"], "300", "{}", fetched.text);
+    assert_eq!(
+        fetched.json["civic"]["house_number"], "1",
+        "{}",
+        fetched.text
+    );
+    let refused = app
+        .admin(
+            Method::PATCH,
+            &format!("/api/v1/locations/{site_id}"),
+            Some(json!({ "civic": { "street_name": "State\nX-Injected: 1" } })),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.text);
 
     let ready_user = app.create_user("ready", None).await;
     let placed = app
@@ -4264,6 +4296,8 @@ async fn e911_config_readiness_validation_and_audit() {
         answered_at: None,
         ended_at: None,
         delivery: Some("elin".to_string()),
+        location_structured: Some(false),
+        geolocation_error: None,
     };
     let id = app.emergency.insert_emergency_call(&record).await.unwrap();
     assert!(id > 0);
@@ -4309,6 +4343,9 @@ async fn e911_config_readiness_validation_and_audit() {
                 answered_at: Some(answered),
                 ended_at: answered + std::time::Duration::from_secs(42),
                 delivery: Some("elin".to_string()),
+                geolocation_error: Some(
+                    "300;code=\"Insufficient Location Information\"".to_string(),
+                ),
             },
         )
         .await
@@ -4322,6 +4359,16 @@ async fn e911_config_readiness_validation_and_audit() {
     assert!(!calls.json[0]["answered_at"].is_null(), "{}", calls.text);
     assert!(!calls.json[0]["ended_at"].is_null(), "{}", calls.text);
     assert_eq!(calls.json[0]["duration_secs"], 42, "{}", calls.text);
+    assert_eq!(
+        calls.json[0]["location_structured"], false,
+        "{}",
+        calls.text
+    );
+    assert_eq!(
+        calls.json[0]["geolocation_error"], "300;code=\"Insufficient Location Information\"",
+        "{}",
+        calls.text
+    );
 
     app.finish().await;
 }

@@ -1,7 +1,7 @@
 # Emergency Calling, Block 2 — Design
 
 Status: **agreed** (2026-09-15), every recommendation in §12 taken.
-Phase 1 is done (v0.25.176, see §11). This
+Phases 1 and 2 are done (v0.25.176 and v0.25.177, see §11). This
 document is the plan for the four items `docs/E911.md` left for later — **location by value** (PIDF-LO) for
 NG911 trunks, **network-based location** for softphones and roaming
 devices, **provider-backed address validation**, and **notification
@@ -433,6 +433,43 @@ by release tag first.
    geolocation additions and headers and bodies on the flow path,
    `emergency_location` per trunk, the multipart INVITE,
    `Geolocation-Error` handling, the test floor's `pidf_lo` trunk.
+
+   *Done (v0.25.177, siphon-rs v2026.09.15).* What shipped:
+
+   - **The SIP stack.**
+     - sip-core has `MultipartBody` (build and parse) and writes the
+       geolocation headers.
+     - sip-parse reads `Geolocation-Routing`'s `yes`/`no` and RFC 6442's
+       `code="…"`.
+     - sip-uac's `InviteOptions` sends an INVITE with a body, extra
+       headers and a per-call From together, also over a flow.
+       `fcp_b2bua_core::body` now parses with sip-core.
+   - **The address.**
+     - `CivicElements` sits flattened in `E911Address`, as a site's `civic`
+       column (migration 068) and `/v1/locations` field.
+     - A site's floor and building fill `FLR` and `BLD`, and its
+       coordinates are the point.
+   - **The document.** `fcp_core::pidf_lo`, with quick-xml. One change
+     from §5.2: the civic and geodetic locations are two `gp:geopriv`
+     elements in one `dm:device`, not two devices, since one device with
+     two device IDs describes nothing real.
+   - **Checking the document.** It is checked against the RFC 5139, 4119
+     and 4479 schemas' sequences and required elements, as tests copied
+     from the RFCs, rather than by an XSD validator (none builds here).
+   - **The INVITE.**
+     - `fcp_sip::emergency::attempt_invite` builds each attempt from its
+       trunk's `emergency_location`. Emergency calls in the B2BUA and the
+       flow `Dial` node go through it.
+     - The per-call From replaces the shared UAC override for them.
+     - A refused location (`Geolocation-Error` or 424) is recorded. A trunk
+       that also takes `elin` is retried without the body (§12.9); a
+       `pidf_lo`-only trunk gives way to the next route.
+   - **The flow path.** Flow INVITEs now carry the extra headers: the
+     latent gap from §2 is closed.
+   - **The record.** `location_structured` and `geolocation_error` are
+     added, and `delivery` is the last attempt's methods.
+   - **Tests.** The test floor has a `pidf_lo` trunk, the refusal paths
+     and a flow carrying the location.
 3. **Where the device is.** Registration source addresses, trusted edge
    addresses from the SBC and the gateway, `emergency_networks` and its
    API, device-supplied locations, declared locations, the new precedence,

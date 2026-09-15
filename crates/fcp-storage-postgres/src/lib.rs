@@ -4461,6 +4461,12 @@ fn row_to_site_location(row: sqlx::postgres::PgRow) -> Result<SiteLocation> {
         emergency_contact_name: row.get("emergency_contact_name"),
         emergency_contact_phone: row.get("emergency_contact_phone"),
         e911_callback_number: row.try_get("e911_callback_number").unwrap_or(None),
+        civic: row
+            .try_get::<Option<serde_json::Value>, _>("civic")
+            .ok()
+            .flatten()
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default(),
         created_at,
         updated_at,
     })
@@ -5049,7 +5055,7 @@ impl SiteLocationStore for PostgresStorage {
                     city, state, postal_code, country, floor, building,
                     latitude, longitude, phone_number, timezone,
                     emergency_contact_name, emergency_contact_phone,
-                    created_at, updated_at, e911_callback_number
+                    created_at, updated_at, e911_callback_number, civic
              FROM locations
              WHERE id = $1",
         )
@@ -5069,7 +5075,7 @@ impl SiteLocationStore for PostgresStorage {
                     city, state, postal_code, country, floor, building,
                     latitude, longitude, phone_number, timezone,
                     emergency_contact_name, emergency_contact_phone,
-                    created_at, updated_at, e911_callback_number
+                    created_at, updated_at, e911_callback_number, civic
              FROM locations
              WHERE tenant_id = $1
              ORDER BY name",
@@ -5098,9 +5104,9 @@ impl SiteLocationStore for PostgresStorage {
                 city, state, postal_code, country, floor, building,
                 latitude, longitude, phone_number, timezone,
                 emergency_contact_name, emergency_contact_phone,
-                created_at, updated_at, e911_callback_number
+                created_at, updated_at, e911_callback_number, civic
              )
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
              ON CONFLICT(id) DO UPDATE SET
                  name = EXCLUDED.name,
                  description = EXCLUDED.description,
@@ -5119,6 +5125,7 @@ impl SiteLocationStore for PostgresStorage {
                  emergency_contact_name = EXCLUDED.emergency_contact_name,
                  emergency_contact_phone = EXCLUDED.emergency_contact_phone,
                  e911_callback_number = EXCLUDED.e911_callback_number,
+                 civic = EXCLUDED.civic,
                  updated_at = EXCLUDED.updated_at",
         )
         .bind(&id)
@@ -5142,6 +5149,11 @@ impl SiteLocationStore for PostgresStorage {
         .bind(created_at)
         .bind(updated_at)
         .bind(&location.e911_callback_number)
+        .bind(
+            (location.civic != fcp_core::phone_number::CivicElements::default())
+                .then(|| serde_json::to_value(&location.civic))
+                .transpose()?,
+        )
         .execute(self.writes())
         .await?;
 

@@ -127,6 +127,31 @@ impl SipUserAgentClient {
             .await
     }
 
+    /// An INVITE carrying what `options` names — any body with its content
+    /// type, extra headers and a per-call From together (an emergency call's
+    /// SDP and PIDF-LO, `Geolocation`, the callback number as caller).
+    pub async fn invite_with_options(
+        &self,
+        target: &str,
+        options: sip_uac::InviteOptions,
+    ) -> Result<CallHandle> {
+        self.inner.invite_with_options(target, options).await
+    }
+
+    /// [`Self::invite_with_options`] through an existing connection
+    /// ([`Self::invite_via_flow`]).
+    pub async fn invite_via_flow_with_options(
+        &self,
+        target: &str,
+        options: sip_uac::InviteOptions,
+        flow_stream: tokio::sync::mpsc::Sender<bytes::Bytes>,
+        peer_addr: std::net::SocketAddr,
+    ) -> Result<CallHandle> {
+        self.inner
+            .invite_via_flow_with_options(target, options, Flow::new(flow_stream, peer_addr))
+            .await
+    }
+
     /// Send an INVITE using an existing connection (RFC 5626 flow support).
     ///
     /// This method allows sending INVITEs to TLS/TCP clients that registered

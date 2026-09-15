@@ -114,7 +114,7 @@ pub struct FlowCallHandler {
 /// How a `Dial` node places an emergency call: the emergency routes in
 /// order, and the identity every attempt carries.
 struct EmergencyDialPlan {
-    targets: Vec<(sip_core::SipUri, Option<String>)>,
+    targets: Vec<(sip_core::SipUri, crate::emergency::EmergencyAttempt)>,
     from: Option<sip_core::SipUri>,
     headers: sip_core::Headers,
 }
@@ -127,6 +127,9 @@ struct DialAttempt {
     sip_code: Option<u16>,
     sip_reason: Option<String>,
     answered_at: Option<std::time::SystemTime>,
+    /// The trunk refused the location the attempt carried
+    /// (`Geolocation-Error` or 424 on a failure).
+    location_refused: bool,
 }
 
 impl DialAttempt {
@@ -728,127 +731,134 @@ impl FlowCallHandler {
             }
             None => None,
         };
-        let targets: Vec<(sip_core::SipUri, Option<String>)> = match &emergency {
-            Some(plan) => plan.targets.clone(),
-            None => {
-                // Parse destination URI. For bare extensions, resolve via registrar or
-                // extension → phone number → device chain to get the actual device contact
-                // (e.g., "1234" → "polycom@192.168.1.12") so we INVITE the device directly
-                // instead of looping through the local B2BUA.
-                let dest_uri = match sip_core::SipUri::parse(&destination) {
-                    Ok(uri) => uri,
-                    Err(_) => {
-                        // Bare extension — try registrar lookup first
-                        let mut resolved = None;
+        let targets: Vec<(sip_core::SipUri, Option<crate::emergency::EmergencyAttempt>)> =
+            match &emergency {
+                Some(plan) => plan
+                    .targets
+                    .iter()
+                    .map(|(uri, attempt)| (uri.clone(), Some(attempt.clone())))
+                    .collect(),
+                None => {
+                    // Parse destination URI. For bare extensions, resolve via registrar or
+                    // extension → phone number → device chain to get the actual device contact
+                    // (e.g., "1234" → "polycom@192.168.1.12") so we INVITE the device directly
+                    // instead of looping through the local B2BUA.
+                    let dest_uri = match sip_core::SipUri::parse(&destination) {
+                        Ok(uri) => uri,
+                        Err(_) => {
+                            // Bare extension — try registrar lookup first
+                            let mut resolved = None;
 
-                        if let Some(ref registrar) = self.registrar {
-                            let aor = if let Some(ref local) = self.local_uri {
-                                format!("sip:{}@{}", destination, local.host())
-                            } else {
-                                format!("sip:{}@localhost", destination)
-                            };
-                            match registrar.get_registrations(&aor).await {
-                                Ok(bindings) if !bindings.is_empty() => {
-                                    // Use highest q-value binding
-                                    let contact = bindings[0].contact();
-                                    if let Ok(uri) = sip_core::SipUri::parse(contact) {
-                                        info!(
-                                            a_leg_call_id = %a_leg_call_id,
-                                            destination = %destination,
-                                            contact = %contact,
-                                            "Resolved extension via registrar to device contact"
-                                        );
-                                        resolved = Some(uri);
+                            if let Some(ref registrar) = self.registrar {
+                                let aor = if let Some(ref local) = self.local_uri {
+                                    format!("sip:{}@{}", destination, local.host())
+                                } else {
+                                    format!("sip:{}@localhost", destination)
+                                };
+                                match registrar.get_registrations(&aor).await {
+                                    Ok(bindings) if !bindings.is_empty() => {
+                                        // Use highest q-value binding
+                                        let contact = bindings[0].contact();
+                                        if let Ok(uri) = sip_core::SipUri::parse(contact) {
+                                            info!(
+                                                a_leg_call_id = %a_leg_call_id,
+                                                destination = %destination,
+                                                contact = %contact,
+                                                "Resolved extension via registrar to device contact"
+                                            );
+                                            resolved = Some(uri);
+                                        }
+                                    }
+                                    Ok(_) => {
+                                        debug!(a_leg_call_id = %a_leg_call_id, destination = %destination, "No registrations found for extension");
+                                    }
+                                    Err(e) => {
+                                        debug!(a_leg_call_id = %a_leg_call_id, error = %e, "Registrar lookup failed for extension");
                                     }
                                 }
-                                Ok(_) => {
-                                    debug!(a_leg_call_id = %a_leg_call_id, destination = %destination, "No registrations found for extension");
-                                }
-                                Err(e) => {
-                                    debug!(a_leg_call_id = %a_leg_call_id, error = %e, "Registrar lookup failed for extension");
-                                }
                             }
-                        }
 
-                        // If registrar lookup failed, try extension → phone number → device chain
-                        if resolved.is_none() {
-                            if let (Some(ref storage), Some(ref registrar)) =
-                                (&self.storage, &self.registrar)
-                            {
-                                if let Some(tenant_id) = self
-                                    .call_manager
-                                    .as_ref()
-                                    .and_then(|cm| cm.get_call(&a_leg_call_id).map(|c| c.tenant_id))
+                            // If registrar lookup failed, try extension → phone number → device chain
+                            if resolved.is_none() {
+                                if let (Some(ref storage), Some(ref registrar)) =
+                                    (&self.storage, &self.registrar)
                                 {
-                                    debug!(
-                                        a_leg_call_id = %a_leg_call_id,
-                                        destination = %destination,
-                                        tenant_id = %tenant_id,
-                                        "Looking up extension via storage (extension → device chain)"
-                                    );
-
-                                    if let Ok(Some(extension)) = storage
-                                        .get_extension_by_number(&tenant_id, &destination)
-                                        .await
+                                    if let Some(tenant_id) =
+                                        self.call_manager.as_ref().and_then(|cm| {
+                                            cm.get_call(&a_leg_call_id).map(|c| c.tenant_id)
+                                        })
                                     {
-                                        info!(
+                                        debug!(
                                             a_leg_call_id = %a_leg_call_id,
                                             destination = %destination,
-                                            target = %extension.target,
-                                            "Found extension in storage"
+                                            tenant_id = %tenant_id,
+                                            "Looking up extension via storage (extension → device chain)"
                                         );
 
-                                        match &extension.target {
-                                            fcp_core::ExtensionTarget::PhoneNumber(
-                                                phone_number_id,
-                                            ) => {
-                                                match storage
-                                                    .get_phone_number(phone_number_id)
-                                                    .await
-                                                {
-                                                    Ok(Some(phone_number)) => {
-                                                        info!(
-                                                            a_leg_call_id = %a_leg_call_id,
-                                                            phone_number_id = %phone_number.id,
-                                                            number = %phone_number.e164,
-                                                            "Resolved phone_number from extension target"
-                                                        );
-                                                        match storage
-                                                            .get_line_binding_by_phone_number(
-                                                                &phone_number.id,
-                                                            )
-                                                            .await
-                                                        {
-                                                            Ok(Some(line_binding)) => {
-                                                                let devices =
-                                                                    line_binding.enabled_devices();
-                                                                info!(
-                                                                    a_leg_call_id = %a_leg_call_id,
-                                                                    enabled_device_count = devices.len(),
-                                                                    "Found line binding with enabled devices"
-                                                                );
-                                                                for device_binding in devices {
-                                                                    if resolved.is_some() {
-                                                                        break;
-                                                                    }
-                                                                    match storage
-                                                                        .get_device(
-                                                                            &device_binding
-                                                                                .device_id,
-                                                                        )
-                                                                        .await
-                                                                    {
-                                                                        Ok(Some(device)) => {
-                                                                            info!(
-                                                                                a_leg_call_id = %a_leg_call_id,
-                                                                                device_name = %device.name,
-                                                                                device_sip_uri = ?device.sip_uri,
-                                                                                "Found device in chain"
-                                                                            );
-                                                                            if let Some(sip_uri) =
-                                                                                &device.sip_uri
-                                                                            {
-                                                                                match registrar.get_registrations(sip_uri).await {
+                                        if let Ok(Some(extension)) = storage
+                                            .get_extension_by_number(&tenant_id, &destination)
+                                            .await
+                                        {
+                                            info!(
+                                                a_leg_call_id = %a_leg_call_id,
+                                                destination = %destination,
+                                                target = %extension.target,
+                                                "Found extension in storage"
+                                            );
+
+                                            match &extension.target {
+                                                fcp_core::ExtensionTarget::PhoneNumber(
+                                                    phone_number_id,
+                                                ) => {
+                                                    match storage
+                                                        .get_phone_number(phone_number_id)
+                                                        .await
+                                                    {
+                                                        Ok(Some(phone_number)) => {
+                                                            info!(
+                                                                a_leg_call_id = %a_leg_call_id,
+                                                                phone_number_id = %phone_number.id,
+                                                                number = %phone_number.e164,
+                                                                "Resolved phone_number from extension target"
+                                                            );
+                                                            match storage
+                                                                .get_line_binding_by_phone_number(
+                                                                    &phone_number.id,
+                                                                )
+                                                                .await
+                                                            {
+                                                                Ok(Some(line_binding)) => {
+                                                                    let devices = line_binding
+                                                                        .enabled_devices();
+                                                                    info!(
+                                                                        a_leg_call_id = %a_leg_call_id,
+                                                                        enabled_device_count = devices.len(),
+                                                                        "Found line binding with enabled devices"
+                                                                    );
+                                                                    for device_binding in devices {
+                                                                        if resolved.is_some() {
+                                                                            break;
+                                                                        }
+                                                                        match storage
+                                                                            .get_device(
+                                                                                &device_binding
+                                                                                    .device_id,
+                                                                            )
+                                                                            .await
+                                                                        {
+                                                                            Ok(Some(device)) => {
+                                                                                info!(
+                                                                                    a_leg_call_id = %a_leg_call_id,
+                                                                                    device_name = %device.name,
+                                                                                    device_sip_uri = ?device.sip_uri,
+                                                                                    "Found device in chain"
+                                                                                );
+                                                                                if let Some(
+                                                                                    sip_uri,
+                                                                                ) =
+                                                                                    &device.sip_uri
+                                                                                {
+                                                                                    match registrar.get_registrations(sip_uri).await {
                                                                                     Ok(bindings) if !bindings.is_empty() => {
                                                                                         if let Ok(uri) = sip_core::SipUri::parse(bindings[0].contact()) {
                                                                                             info!(
@@ -877,144 +887,147 @@ impl FlowCallHandler {
                                                                                         );
                                                                                     }
                                                                                 }
+                                                                                }
                                                                             }
-                                                                        }
-                                                                        Ok(None) => {
-                                                                            warn!(a_leg_call_id = %a_leg_call_id, device_id = %device_binding.device_id, "Device not found in storage");
-                                                                        }
-                                                                        Err(e) => {
-                                                                            warn!(a_leg_call_id = %a_leg_call_id, error = %e, "Failed to get device from storage");
+                                                                            Ok(None) => {
+                                                                                warn!(a_leg_call_id = %a_leg_call_id, device_id = %device_binding.device_id, "Device not found in storage");
+                                                                            }
+                                                                            Err(e) => {
+                                                                                warn!(a_leg_call_id = %a_leg_call_id, error = %e, "Failed to get device from storage");
+                                                                            }
                                                                         }
                                                                     }
                                                                 }
-                                                            }
-                                                            Ok(None) => {
-                                                                info!(a_leg_call_id = %a_leg_call_id, phone_number_id = %phone_number.id, "No line binding found for phone number");
-                                                            }
-                                                            Err(e) => {
-                                                                warn!(a_leg_call_id = %a_leg_call_id, error = %e, "Failed to get line binding");
+                                                                Ok(None) => {
+                                                                    info!(a_leg_call_id = %a_leg_call_id, phone_number_id = %phone_number.id, "No line binding found for phone number");
+                                                                }
+                                                                Err(e) => {
+                                                                    warn!(a_leg_call_id = %a_leg_call_id, error = %e, "Failed to get line binding");
+                                                                }
                                                             }
                                                         }
-                                                    }
-                                                    Ok(None) => {
-                                                        warn!(a_leg_call_id = %a_leg_call_id, phone_number_id = %phone_number_id, "Phone number not found in storage");
-                                                    }
-                                                    Err(e) => {
-                                                        warn!(a_leg_call_id = %a_leg_call_id, error = %e, "Failed to get phone number from storage");
+                                                        Ok(None) => {
+                                                            warn!(a_leg_call_id = %a_leg_call_id, phone_number_id = %phone_number_id, "Phone number not found in storage");
+                                                        }
+                                                        Err(e) => {
+                                                            warn!(a_leg_call_id = %a_leg_call_id, error = %e, "Failed to get phone number from storage");
+                                                        }
                                                     }
                                                 }
-                                            }
-                                            fcp_core::ExtensionTarget::Device(device_id) => {
-                                                if let Ok(Some(device)) =
-                                                    storage.get_device(device_id).await
-                                                {
-                                                    if let Some(sip_uri) = &device.sip_uri {
-                                                        if let Ok(bindings) = registrar
-                                                            .get_registrations(sip_uri)
-                                                            .await
-                                                        {
-                                                            if let Some(binding) = bindings.first()
+                                                fcp_core::ExtensionTarget::Device(device_id) => {
+                                                    if let Ok(Some(device)) =
+                                                        storage.get_device(device_id).await
+                                                    {
+                                                        if let Some(sip_uri) = &device.sip_uri {
+                                                            if let Ok(bindings) = registrar
+                                                                .get_registrations(sip_uri)
+                                                                .await
                                                             {
-                                                                if let Ok(uri) =
-                                                                    sip_core::SipUri::parse(
-                                                                        binding.contact(),
-                                                                    )
+                                                                if let Some(binding) =
+                                                                    bindings.first()
                                                                 {
-                                                                    info!(
-                                                                        a_leg_call_id = %a_leg_call_id,
-                                                                        destination = %destination,
-                                                                        device = %device.name,
-                                                                        contact = %binding.contact(),
-                                                                        "Resolved extension via direct device target"
-                                                                    );
-                                                                    resolved = Some(uri);
+                                                                    if let Ok(uri) =
+                                                                        sip_core::SipUri::parse(
+                                                                            binding.contact(),
+                                                                        )
+                                                                    {
+                                                                        info!(
+                                                                            a_leg_call_id = %a_leg_call_id,
+                                                                            destination = %destination,
+                                                                            device = %device.name,
+                                                                            contact = %binding.contact(),
+                                                                            "Resolved extension via direct device target"
+                                                                        );
+                                                                        resolved = Some(uri);
+                                                                    }
                                                                 }
                                                             }
                                                         }
                                                     }
                                                 }
-                                            }
-                                            other => {
-                                                debug!(
-                                                    a_leg_call_id = %a_leg_call_id,
-                                                    target = %other,
-                                                    "Extension target type not supported for Dial resolution"
-                                                );
+                                                other => {
+                                                    debug!(
+                                                        a_leg_call_id = %a_leg_call_id,
+                                                        target = %other,
+                                                        "Extension target type not supported for Dial resolution"
+                                                    );
+                                                }
                                             }
                                         }
+                                    } else {
+                                        warn!(
+                                            a_leg_call_id = %a_leg_call_id,
+                                            destination = %destination,
+                                            "Skipping tenant-scoped extension lookup: no tenant context available"
+                                        );
                                     }
-                                } else {
-                                    warn!(
-                                        a_leg_call_id = %a_leg_call_id,
-                                        destination = %destination,
-                                        "Skipping tenant-scoped extension lookup: no tenant context available"
-                                    );
                                 }
                             }
-                        }
 
-                        match resolved {
-                            Some(uri) => uri,
-                            None => {
-                                // Last resort: construct sip:ext@host (no port) so the
-                                // request routes to the call-manager on port 5060 via
-                                // standard SIP DNS.  We intentionally omit the port to
-                                // avoid looping back to sidecar services (IVR, voicemail)
-                                // that listen on non-standard ports.
-                                if let Some(ref local) = self.local_uri {
-                                    let host = local.host().to_string();
-                                    let full_uri = format!("sip:{}@{}", destination, host);
-                                    warn!(
-                                        a_leg_call_id = %a_leg_call_id,
-                                        destination = %destination,
-                                        resolved_uri = %full_uri,
-                                        "Extension not found in registrar or storage — falling back to local B2BUA routing"
-                                    );
-                                    match sip_core::SipUri::parse(&full_uri) {
-                                        Ok(uri) => uri,
-                                        Err(e2) => {
-                                            let error_msg =
-                                                format!("Failed to parse fallback URI: {:?}", e2);
-                                            error!(a_leg_call_id = %a_leg_call_id, %error_msg);
-                                            return self
-                                                .transition_to_error(
-                                                    a_leg_call_id,
-                                                    &error_msg,
-                                                    on_error,
-                                                    next,
-                                                )
-                                                .await;
+                            match resolved {
+                                Some(uri) => uri,
+                                None => {
+                                    // Last resort: construct sip:ext@host (no port) so the
+                                    // request routes to the call-manager on port 5060 via
+                                    // standard SIP DNS.  We intentionally omit the port to
+                                    // avoid looping back to sidecar services (IVR, voicemail)
+                                    // that listen on non-standard ports.
+                                    if let Some(ref local) = self.local_uri {
+                                        let host = local.host().to_string();
+                                        let full_uri = format!("sip:{}@{}", destination, host);
+                                        warn!(
+                                            a_leg_call_id = %a_leg_call_id,
+                                            destination = %destination,
+                                            resolved_uri = %full_uri,
+                                            "Extension not found in registrar or storage — falling back to local B2BUA routing"
+                                        );
+                                        match sip_core::SipUri::parse(&full_uri) {
+                                            Ok(uri) => uri,
+                                            Err(e2) => {
+                                                let error_msg = format!(
+                                                    "Failed to parse fallback URI: {:?}",
+                                                    e2
+                                                );
+                                                error!(a_leg_call_id = %a_leg_call_id, %error_msg);
+                                                return self
+                                                    .transition_to_error(
+                                                        a_leg_call_id,
+                                                        &error_msg,
+                                                        on_error,
+                                                        next,
+                                                    )
+                                                    .await;
+                                            }
                                         }
-                                    }
-                                } else {
-                                    let error_msg = format!(
+                                    } else {
+                                        let error_msg = format!(
                                             "Extension '{}' not found — no registrar entry, device mapping, or local URI",
                                             destination
                                         );
-                                    warn!(a_leg_call_id = %a_leg_call_id, %error_msg);
-                                    return self
-                                        .transition_to_error(
-                                            a_leg_call_id,
-                                            &error_msg,
-                                            on_error,
-                                            next,
-                                        )
-                                        .await;
+                                        warn!(a_leg_call_id = %a_leg_call_id, %error_msg);
+                                        return self
+                                            .transition_to_error(
+                                                a_leg_call_id,
+                                                &error_msg,
+                                                on_error,
+                                                next,
+                                            )
+                                            .await;
+                                    }
                                 }
                             }
                         }
-                    }
-                };
+                    };
 
-                info!(
-                    a_leg_call_id = %a_leg_call_id,
-                    dest_uri = %dest_uri.as_str(),
-                    "Resolved destination URI for B-leg"
-                );
+                    info!(
+                        a_leg_call_id = %a_leg_call_id,
+                        dest_uri = %dest_uri.as_str(),
+                        "Resolved destination URI for B-leg"
+                    );
 
-                vec![(dest_uri, None)]
-            }
-        };
+                    vec![(dest_uri, None)]
+                }
+            };
 
         // Generate SDP offer for B-leg using the A-leg media session's port.
         // This sends RTP directly to our existing session — no intermediate hop.
@@ -1055,26 +1068,41 @@ impl FlowCallHandler {
 
         let mut attempt = DialAttempt::default();
         let mut answering_trunk = None;
-        for (i, (dest_uri, trunk)) in targets.iter().enumerate() {
+        let mut pending: std::collections::VecDeque<_> = targets.into_iter().collect();
+        while let Some((dest_uri, route)) = pending.pop_front() {
             attempt = self
                 .dial_attempt(
                     a_leg_call_id,
-                    dest_uri,
+                    &dest_uri,
                     caller_id.as_deref(),
-                    emergency.as_ref(),
+                    emergency.as_ref().zip(route.as_ref()),
                     &sdp_offer,
                     session_key,
                     timeout_secs,
                 )
                 .await?;
-            answering_trunk = trunk.clone();
-            let more = i + 1 < targets.len();
-            if emergency.is_none() || !more || !attempt.emergency_fails_over() {
+            answering_trunk = route.as_ref().and_then(|r| r.trunk.clone());
+            // A trunk that refused the location and also takes ELIN is
+            // tried again without it before the next route (§12.9).
+            if let Some(retry) = route
+                .as_ref()
+                .filter(|_| attempt.location_refused)
+                .and_then(|r| r.without_pidf_lo())
+            {
+                warn!(
+                    a_leg_call_id = %a_leg_call_id,
+                    trunk = ?retry.trunk,
+                    "Emergency trunk refused the location; trying it again with ELIN alone"
+                );
+                pending.push_front((dest_uri, Some(retry)));
+                continue;
+            }
+            if emergency.is_none() || pending.is_empty() || !attempt.emergency_fails_over() {
                 break;
             }
             warn!(
                 a_leg_call_id = %a_leg_call_id,
-                trunk = ?trunk,
+                trunk = ?answering_trunk,
                 status = %attempt.status,
                 sip_code = ?attempt.sip_code,
                 "Emergency route failed; trying the next emergency route"
@@ -1227,12 +1255,12 @@ impl FlowCallHandler {
         );
         crate::emergency::announce(call_mgr, a_leg_call_id, record).await;
 
-        let targets: Vec<(sip_core::SipUri, Option<String>)> = routes
+        let targets: Vec<(sip_core::SipUri, crate::emergency::EmergencyAttempt)> = routes
             .iter()
             .filter_map(|r| {
                 sip_core::SipUri::parse(&r.target_uri)
                     .ok()
-                    .map(|u| (u, r.trunk_name.clone()))
+                    .map(|u| (u, crate::emergency::EmergencyAttempt::from_route(r)))
             })
             .collect();
         if targets.is_empty() {
@@ -1268,7 +1296,7 @@ impl FlowCallHandler {
         a_leg_call_id: CallId,
         dest_uri: &sip_core::SipUri,
         caller_id: Option<&str>,
-        emergency: Option<&EmergencyDialPlan>,
+        emergency: Option<(&EmergencyDialPlan, &crate::emergency::EmergencyAttempt)>,
         sdp_offer: &str,
         session_key: fcp_core::CallId,
         timeout_secs: u32,
@@ -1285,26 +1313,49 @@ impl FlowCallHandler {
 
         // Create UserAgentClient for B-leg
         let mut uac = UserAgentClient::new(local_uri.clone(), contact_uri.clone());
-        if let Some(plan) = emergency {
-            // The callback number, or the caller when there is none.
-            uac.from_uri_override = plan.from.clone();
-        } else if let Some(cid) = caller_id {
-            if let Ok(cid_uri) = sip_core::SipUri::parse(cid) {
-                uac.from_uri_override = Some(cid_uri);
-            } else if let Ok(()) = uac.set_display_name(cid) {
-                // Use caller_id as display name with local_uri as From URI
+        if emergency.is_none() {
+            if let Some(cid) = caller_id {
+                if let Ok(cid_uri) = sip_core::SipUri::parse(cid) {
+                    uac.from_uri_override = Some(cid_uri);
+                } else if let Ok(()) = uac.set_display_name(cid) {
+                    // Use caller_id as display name with local_uri as From URI
+                }
             }
         }
 
-        // Create INVITE request with SDP
-        let mut invite = uac.create_invite(dest_uri, Some(sdp_offer));
-        if let Some(plan) = emergency {
-            for header in plan.headers.iter() {
-                let _ = invite
-                    .headers_mut()
-                    .push(header.name_smol().clone(), header.value_smol().clone());
+        // Create INVITE request with SDP; an emergency attempt carries the
+        // callback number as caller and the location its trunk takes.
+        let invite = match emergency {
+            None => uac.create_invite(dest_uri, Some(sdp_offer)),
+            Some((plan, route)) => {
+                let info = self
+                    .call_manager
+                    .as_ref()
+                    .and_then(|m| m.get_call(&a_leg_call_id))
+                    .and_then(|c| c.emergency)
+                    .context("emergency call is gone")?;
+                let (options, delivered) = crate::emergency::attempt_invite(
+                    &info,
+                    route,
+                    a_leg_call_id,
+                    Some(sdp_offer),
+                    plan.from.clone(),
+                    Some(&plan.headers),
+                    local_uri.host(),
+                );
+                if let Some(call_mgr) = &self.call_manager {
+                    let trunk = route.trunk.clone();
+                    let _ = call_mgr.update_call(&a_leg_call_id, |call| {
+                        call.trunk_name = trunk;
+                        if let Some(em) = call.emergency.as_mut() {
+                            em.delivered = delivered;
+                        }
+                    });
+                }
+                uac.create_invite_with_options(dest_uri, &options)?
             }
-        }
+        };
+        let mut location_refused = false;
 
         info!(
             a_leg_call_id = %a_leg_call_id,
@@ -1442,6 +1493,24 @@ impl FlowCallHandler {
                         let code = response.code();
                         dial_sip_code = Some(code);
                         dial_sip_reason = Some(response.reason().to_string());
+                        if let (Some(error), Some(_)) =
+                            (crate::emergency::geolocation_error_of(&response), emergency)
+                        {
+                            warn!(
+                                a_leg_call_id = %a_leg_call_id,
+                                code = %code,
+                                geolocation_error = %error,
+                                "Emergency trunk answered the location with an error"
+                            );
+                            location_refused = !(200..300).contains(&code);
+                            if let Some(call_mgr) = &self.call_manager {
+                                let _ = call_mgr.update_call(&a_leg_call_id, |call| {
+                                    if let Some(em) = call.emergency.as_mut() {
+                                        em.geolocation_error = Some(error);
+                                    }
+                                });
+                            }
+                        }
 
                         info!(
                             a_leg_call_id = %a_leg_call_id,
@@ -1584,6 +1653,7 @@ impl FlowCallHandler {
             sip_code: dial_sip_code,
             sip_reason: dial_sip_reason,
             answered_at,
+            location_refused,
         })
     }
 

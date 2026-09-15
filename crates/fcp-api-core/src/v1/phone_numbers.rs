@@ -74,6 +74,11 @@ pub struct E911AddressResponse {
     pub country: String,
     pub validated: bool,
     pub validated_at: Option<SystemTime>,
+    /// RFC 5139 civic elements (`house_number`, `street_name`,
+    /// `street_suffix`, `unit`, …), beside the lines above
+    /// (`docs/E911_BLOCK_2.md` §5.1).
+    #[serde(flatten, default)]
+    pub civic: fcp_core::phone_number::CivicElements,
 }
 
 impl From<E911Address> for E911AddressResponse {
@@ -87,6 +92,7 @@ impl From<E911Address> for E911AddressResponse {
             country: addr.country,
             validated: addr.validated,
             validated_at: addr.validated_at,
+            civic: addr.civic,
         }
     }
 }
@@ -102,6 +108,7 @@ impl From<E911AddressResponse> for E911Address {
             country: resp.country,
             validated: resp.validated,
             validated_at: resp.validated_at,
+            civic: resp.civic,
         }
     }
 }
