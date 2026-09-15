@@ -1,7 +1,7 @@
 # Emergency Calling, Block 2 — Design
 
-Status: **proposed** (2026-09-15). This document is the plan for the four
-items `docs/E911.md` left for later — **location by value** (PIDF-LO) for
+Status: **agreed** (2026-09-15), every recommendation in §12 taken. This
+document is the plan for the four items `docs/E911.md` left for later — **location by value** (PIDF-LO) for
 NG911 trunks, **network-based location** for softphones and roaming
 devices, **provider-backed address validation**, and **notification
 delivery** inside the platform — and for the defects the survey behind it
@@ -14,18 +14,18 @@ never deleted, on erasure).
 
 ## 1. Decisions
 
-Proposed 2026-09-15, after surveying the emergency call path end to end
-(detection, routing, the outbound INVITE, the record and event), the SIP
-stack's body and header support, registrations, the WebRTC gateway, and
-what the platform can already deliver (§2). Each is a recommendation until
-agreed; the questions that need a ruling are in §12.
+Proposed and agreed 2026-09-15, after surveying the emergency call path
+end to end (detection, routing, the outbound INVITE, the record and event),
+the SIP stack's body and header support, registrations, the WebRTC gateway,
+and what the platform can already deliver (§2). The rulings on §12 are the
+recommendations.
 
 1. **Every path an emergency call can take is an emergency path.** Block 1
-   detects and marks calls in the B2BUA's ordinary INVITE path. A call that
-   leaves over a reused TLS connection loses its emergency headers, a
-   browser can dial 911 through the WebRTC gateway with no identity and no
-   location, and a flow's dial node builds its own INVITE. Before any
-   location work, every one of these gets the same classification, headers,
+   detects and marks calls in the B2BUA's ordinary INVITE path. A browser
+   can dial 911 through the WebRTC gateway with no identity and no
+   location, a flow's dial node builds its own INVITE, and a request the
+   handler sends over a reused TLS connection loses every header it adds.
+   Before any location work, every one of these gets the same classification, headers,
    location and record — or refuses the call with a reason — and the test
    floor proves it for each.
 2. **The location travels the way the trunk takes it.** A trunk declares
@@ -73,10 +73,13 @@ agreed; the questions that need a ruling are in §12.
 
 **Paths that are not emergency paths.**
 
-- The B2BUA adds `P-Asserted-Identity` and `Priority: emergency` only on
-  the plain INVITE path. When the chosen target has a TLS flow token the
-  INVITE goes out through `invite_via_flow`, which takes no extra headers:
-  the call leaves without its callback identity or priority.
+- The B2BUA's headers for a B-leg — `P-Asserted-Identity` and `Priority:
+  emergency` on an emergency call, the call-id header towards a conference
+  node — are passed only on the plain INVITE path. A target with a TLS flow
+  token goes out through `invite_via_flow`, which takes no extra headers.
+  This is latent today: emergency and conference targets are routes, never
+  flows. It becomes reachable as soon as a location body or header has to
+  reach a flow target, so it is fixed with the SIP stack work of phase 2.
 - The WebRTC gateway's `POST /v1/calls` sends any destination, `911`
   included, with no classification, no tenant, no user and no location.
   It never reads the browser's address.
@@ -162,9 +165,9 @@ international, but only US validation is designed here).
 
 ## 4. Every path
 
-- **The flow path.** `invite_via_flow` gains the extra headers (a
-  siphon-rs change, released by tag), and the B2BUA passes the emergency
-  headers — and, with §5, the location body — on both paths.
+- **The flow path.** `invite_via_flow` gains the extra headers and a body
+  (a siphon-rs change, released by tag with phase 2's), and the B2BUA
+  passes its headers — and, with §5, the location body — on both paths.
 - **The WebRTC gateway.** An emergency number dialled from a browser is a
   call of a tenant's user, not of the gateway: the gateway's call request
   names the tenant and user it acts for (from the session's join or call
@@ -362,7 +365,7 @@ report shows the last successful test per contact.
   `P-Asserted-Identity` and `Priority: emergency`; one standing in for a
   `pidf_lo` trunk receives a multipart body whose PIDF-LO validates and
   carries the site's structured address and a `Geolocation` header naming
-  it; a phone registered over TLS (the flow path) gets the same; a
+  it; a
   softphone on a mapped network is located at that network's site; a
   `933` call is recorded as a test; the record names the trunk and the
   outcome after hangup.
@@ -384,16 +387,16 @@ report shows the last successful test per contact.
 One PR per phase, reviewed before the next starts; siphon-rs changes land
 by release tag first.
 
-1. **Every path and the record.** The flow path's headers, the WebRTC
-   gateway's emergency identity and refusal, flows' `Dial` node, A-leg
-   multipart parsing, `route_trunks` and the completed record with
-   `call.emergency_completed`, the trunk flag made honest (§12), the
-   scripted phone's view of the INVITE, and the first emergency calls on
-   the test floor.
+1. **Every path and the record.** The WebRTC gateway's emergency identity
+   and refusal, flows' `Dial` node, A-leg multipart parsing,
+   `route_trunks` and the completed record with `call.emergency_completed`,
+   the trunk flag made honest (§12.1), the scripted phone's view of the
+   INVITE, and the first emergency calls on the test floor.
 2. **Location by value.** Structured civic addresses (model, API,
    migration), the PIDF-LO builder, the SIP stack's multipart and
-   geolocation additions, `emergency_location` per trunk, the multipart
-   INVITE, `Geolocation-Error` handling, the test floor's `pidf_lo` trunk.
+   geolocation additions and headers and bodies on the flow path,
+   `emergency_location` per trunk, the multipart INVITE,
+   `Geolocation-Error` handling, the test floor's `pidf_lo` trunk.
 3. **Where the device is.** Registration source addresses, trusted edge
    addresses from the SBC and the gateway, `emergency_networks` and its
    API, device-supplied locations, declared locations, the new precedence,
@@ -411,7 +414,7 @@ by release tag first.
 
 ## 12. Open questions
 
-Each with a recommendation.
+Each with a recommendation; every recommendation was taken on 2026-09-15.
 
 1. **Database trunks.** Outbound routing reads only each node's TOML
    trunks, so the API's `emergency_capable` decides nothing, and database
