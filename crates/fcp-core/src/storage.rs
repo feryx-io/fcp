@@ -1060,6 +1060,10 @@ pub struct CallDetailRecord {
 
     /// Recording
     pub recording_url: Option<String>,
+    /// What the parties were told about the call's recording; `None` when
+    /// nothing recorded it (`docs/COMPLIANCE_FOLLOWUPS.md` §8).
+    #[serde(default)]
+    pub recording_consent: Option<crate::recording::RecordingConsent>,
 
     /// Cost (for billing), and what it came from.
     pub cost: Option<crate::billing::Decimal>,

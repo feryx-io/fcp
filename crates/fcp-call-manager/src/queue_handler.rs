@@ -4,6 +4,7 @@
 //! and SIP signaling (UAC/UAS) to handle queue-bound INVITE calls.
 
 use crate::queue_audio::{AnnouncementCache, MohCache, PromptCache};
+use crate::queue_recording::{Leg, NoticeTone, NoticeWriter, QueueRecordings};
 use anyhow::{bail, Context, Result};
 use dashmap::DashMap;
 use fcp_core::storage::CdrKind;
@@ -90,6 +91,8 @@ struct QueueSession {
     // --- Recording (if enabled) ---
     recording_handle: Option<JoinHandle<()>>,
     recording_path: Option<String>,
+    /// What the parties were told, when the queue records the call.
+    recording_consent: Option<fcp_core::RecordingConsent>,
 
     // --- Supervisor (monitor/whisper/barge) ---
     supervisor_port_pair: Option<PortPair>,
@@ -119,50 +122,6 @@ struct QueueSession {
     /// and the queue record's `call_id`. `None` for calls the queue placed
     /// itself (callbacks, campaigns).
     b2bua_call_id: Option<fcp_sip::CallId>,
-}
-
-/// Where a queue's recordings go and where they are registered
-/// (`docs/COMPLIANCE_FOLLOWUPS.md` §4).
-#[derive(Clone)]
-struct QueueRecordings {
-    dir: String,
-    store: Option<Arc<dyn fcp_core::recording::CallRecordingStore>>,
-}
-
-impl QueueRecordings {
-    /// The file for a new recording of `call_id`, its row written. Under
-    /// the tenant and the day, named for the recording — never for the
-    /// queue or a dialled number. `None` when the row cannot be written:
-    /// a recording nothing can find is not made.
-    async fn begin(&self, tenant_id: TenantId, call_id: String, format: &str) -> Option<String> {
-        let id = fcp_core::RecordingId::new();
-        let dir = std::path::Path::new(&self.dir).join(fcp_core::recording::dated_recording_dir(
-            &tenant_id,
-            std::time::SystemTime::now(),
-        ));
-        if let Err(e) = tokio::fs::create_dir_all(&dir).await {
-            warn!(dir = %dir.display(), error = %e, "Queue recording directory not created; not recording");
-            return None;
-        }
-        let path = dir
-            .join(format!("{id}.{format}"))
-            .to_string_lossy()
-            .into_owned();
-        if let Some(store) = &self.store {
-            let mut recording = fcp_core::recording::CallRecording::starting(
-                tenant_id,
-                call_id,
-                fcp_core::recording::CallRecordingSource::Queue,
-                path.clone(),
-            );
-            recording.id = id;
-            if let Err(e) = store.create_call_recording(&recording).await {
-                warn!(error = %e, "Queue recording not registered; not recording");
-                return None;
-            }
-        }
-        Some(path)
-    }
 }
 
 /// The call id a queue segment's record and recording carry.
@@ -226,9 +185,19 @@ pub struct QueueCallHandler {
     call_manager: Arc<fcp_sip::CallManager>,
     /// Maps callee Call-ID ↔ agent Call-ID for campaign calls (reverse BYE lookup).
     campaign_call_id_map: Arc<DashMap<String, String>>,
+    /// Speech for a recording announcement when the tenant's prompt has no
+    /// audio.
+    tts: Option<Arc<fcp_media::TtsService>>,
 }
 
 impl QueueCallHandler {
+    /// Speech for recording announcements when a tenant's prompt has no
+    /// audio (`docs/COMPLIANCE_FOLLOWUPS.md` §8.2).
+    pub fn with_tts_service(mut self, tts: Option<Arc<fcp_media::TtsService>>) -> Self {
+        self.tts = tts;
+        self
+    }
+
     /// Create a new QueueCallHandler.
     ///
     /// Accepts a shared `Arc<QueueManager>` so the same instance can be
@@ -332,6 +301,7 @@ impl QueueCallHandler {
             node_id,
             call_manager,
             campaign_call_id_map: Arc::new(DashMap::new()),
+            tts: None,
         };
 
         // Spawn distribution loops for each configured queue
@@ -758,6 +728,8 @@ impl QueueCallHandler {
             .map(|dir| QueueRecordings {
                 dir,
                 store: self.storage.call_recording_store().cloned(),
+                storage: Arc::clone(&self.storage),
+                tts: self.tts.clone(),
             });
         let campaign_call_id_map = Arc::clone(&self.campaign_call_id_map);
 
@@ -1218,120 +1190,76 @@ impl QueueCallHandler {
                         }
                     }
 
-                    // Start RTP bridge between caller and agent
-                    if let Some(mut session) = sessions.get_mut(&call_id) {
-                        let caller_codec = session.codec_name.clone();
-                        let caller_pt = session.payload_type;
-                        let needs_transcoding = caller_codec != agent_codec_name;
-
-                        if needs_transcoding {
+                    // Connect caller and agent: when the queue records, both
+                    // hear the tenant's announcement before they hear each
+                    // other (docs/COMPLIANCE_FOLLOWUPS.md §8.2).
+                    let caller_side = sessions.get(&call_id).map(|session| {
+                        (
+                            Leg {
+                                socket: Arc::clone(&session.rtp_socket),
+                                codec: session.codec_name.clone(),
+                                payload_type: session.payload_type,
+                            },
+                            session.queue_name.clone(),
+                            session.tenant_id,
+                            session.b2bua_call_id,
+                        )
+                    });
+                    if let Some((caller, queue_name, tenant_id, b2bua_call_id)) = caller_side {
+                        let agent = Leg {
+                            socket: Arc::clone(&agent_rtp_socket),
+                            codec: agent_codec_name.clone(),
+                            payload_type: agent_pt,
+                        };
+                        if caller.codec != agent.codec {
                             info!(
                                 call_id = %call_id,
-                                caller_codec = %caller_codec,
-                                agent_codec = %agent_codec_name,
+                                caller_codec = %caller.codec,
+                                agent_codec = %agent.codec,
                                 "Codecs differ, using transcoding bridge"
                             );
                         }
-
-                        // Check if recording is enabled for this queue
-                        let should_record = recording_dir.is_some()
-                            && queue_manager
-                                .get_queue_config(&session.queue_name)
-                                .map(|c| c.record_calls)
-                                .unwrap_or(false);
-
-                        let rec_path = if should_record {
-                            let rec_format = queue_manager
-                                .get_queue_config(&session.queue_name)
-                                .map(|c| c.recording_format.clone())
-                                .unwrap_or_else(|| "wav".to_string());
-                            match &recording_dir {
-                                Some(recordings) => {
-                                    recordings
-                                        .begin(
-                                            session.tenant_id,
-                                            queue_record_call_id(session.b2bua_call_id),
-                                            &rec_format,
-                                        )
-                                        .await
+                        let recording =
+                            match (&recording_dir, queue_manager.get_queue_config(&queue_name)) {
+                                (Some(recordings), Some(qc)) if qc.record_calls => {
+                                    Some(RecordingPlan {
+                                        recordings,
+                                        tenant_id,
+                                        call_id: queue_record_call_id(b2bua_call_id),
+                                        format: qc.recording_format.clone(),
+                                    })
                                 }
-                                None => None,
+                                _ => None,
+                            };
+                        let still_here = || sessions.contains_key(&call_id);
+                        let bridge = connect_legs(&caller, &agent, recording, still_here).await;
+                        match (bridge, sessions.get_mut(&call_id)) {
+                            (Some(bridge), Some(mut session)) => {
+                                if let Some(path) = &bridge.recording_path {
+                                    info!(call_id = %call_id, path = %path, "Call recording started");
+                                }
+                                session.bridge_a_to_b = Some(bridge.a_to_b);
+                                session.bridge_b_to_a = Some(bridge.b_to_a);
+                                session.recording_handle = bridge.recording;
+                                session.recording_path = bridge.recording_path;
+                                session.recording_consent = bridge.recording_consent;
+                                session.state = QueueCallState::Connected;
+                                session.agent_answered_at = Some(Instant::now());
+                                session.agent_codec_name = Some(agent_codec_name.clone());
+                                session.agent_port_pair = Some(agent_port_pair);
+                                session.agent_rtp_socket = Some(agent_rtp_socket);
+                                session.agent_dialog = Some(agent_dialog);
+                                session.ringing_agent = None;
+                                session.ring_task_handle = None;
                             }
-                        } else {
-                            None
-                        };
-
-                        if let Some(rec_path) = rec_path {
-                            let (a_tx, a_rx) = tokio::sync::broadcast::channel::<bytes::Bytes>(256);
-                            let (b_tx, b_rx) = tokio::sync::broadcast::channel::<bytes::Bytes>(256);
-
-                            if needs_transcoding {
-                                let (bridge_a_to_b, bridge_b_to_a) = spawn_transcoding_rtp_bridge(
-                                    Arc::clone(&session.rtp_socket),
-                                    Arc::clone(&agent_rtp_socket),
-                                    codec_name_to_type(&caller_codec),
-                                    codec_name_to_type(&agent_codec_name),
-                                    caller_pt,
-                                    agent_pt,
-                                    Some(a_tx),
-                                    Some(b_tx),
-                                );
-                                session.bridge_a_to_b = Some(bridge_a_to_b);
-                                session.bridge_b_to_a = Some(bridge_b_to_a);
-                            } else {
-                                let (bridge_a_to_b, bridge_b_to_a) =
-                                    spawn_rtp_bridge_with_recording(
-                                        Arc::clone(&session.rtp_socket),
-                                        Arc::clone(&agent_rtp_socket),
-                                        a_tx,
-                                        b_tx,
-                                    );
-                                session.bridge_a_to_b = Some(bridge_a_to_b);
-                                session.bridge_b_to_a = Some(bridge_b_to_a);
+                            (Some(bridge), None) => {
+                                bridge.abandon(recording_dir.as_ref()).await;
+                                info!(call_id = %call_id, "Caller left while the legs were being connected");
                             }
-
-                            let codec = session.codec_name.clone();
-                            let rec_handle =
-                                spawn_recording_task(a_rx, b_rx, codec, rec_path.clone());
-
-                            info!(
-                                call_id = %call_id,
-                                path = %rec_path,
-                                "Call recording started"
-                            );
-
-                            session.recording_handle = Some(rec_handle);
-                            session.recording_path = Some(rec_path);
-                        } else if needs_transcoding {
-                            let (bridge_a_to_b, bridge_b_to_a) = spawn_transcoding_rtp_bridge(
-                                Arc::clone(&session.rtp_socket),
-                                Arc::clone(&agent_rtp_socket),
-                                codec_name_to_type(&caller_codec),
-                                codec_name_to_type(&agent_codec_name),
-                                caller_pt,
-                                agent_pt,
-                                None,
-                                None,
-                            );
-                            session.bridge_a_to_b = Some(bridge_a_to_b);
-                            session.bridge_b_to_a = Some(bridge_b_to_a);
-                        } else {
-                            let (bridge_a_to_b, bridge_b_to_a) = spawn_rtp_bridge(
-                                Arc::clone(&session.rtp_socket),
-                                Arc::clone(&agent_rtp_socket),
-                            );
-                            session.bridge_a_to_b = Some(bridge_a_to_b);
-                            session.bridge_b_to_a = Some(bridge_b_to_a);
+                            (None, _) => {
+                                info!(call_id = %call_id, "Caller left during the recording announcement");
+                            }
                         }
-
-                        session.state = QueueCallState::Connected;
-                        session.agent_answered_at = Some(Instant::now());
-                        session.agent_codec_name = Some(agent_codec_name.clone());
-                        session.agent_port_pair = Some(agent_port_pair);
-                        session.agent_rtp_socket = Some(agent_rtp_socket);
-                        session.agent_dialog = Some(agent_dialog);
-                        session.ringing_agent = None;
-                        session.ring_task_handle = None;
                     }
                 }
                 Ok(Ok(response)) => {
@@ -1470,6 +1398,7 @@ impl QueueCallHandler {
                 session.state,
                 session.ringing_agent.as_deref(),
                 session.recording_path.as_deref(),
+                session.recording_consent,
                 &self.node_id,
             ));
 
@@ -1510,13 +1439,7 @@ impl QueueCallHandler {
                 // Its row closes when the segment's record is stored; close it
                 // now, so a record that never arrives leaves no open row.
                 // The file is named for its row.
-                let id = session.recording_path.as_deref().and_then(|path| {
-                    std::path::Path::new(path)
-                        .file_stem()?
-                        .to_str()?
-                        .parse::<fcp_core::RecordingId>()
-                        .ok()
-                });
+                let id = session.recording_path.as_deref().and_then(recording_id_of);
                 if let (Some(store), Some(id)) = (self.storage.call_recording_store().cloned(), id)
                 {
                     tokio::spawn(async move {
@@ -2333,6 +2256,7 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
                             bridge_b_to_a: None,
                             recording_handle: None,
                             recording_path: None,
+                            recording_consent: None,
                             supervisor_port_pair: None,
                             supervisor_rtp_socket: None,
                             supervisor_dialog: None,
@@ -2433,6 +2357,7 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
                 bridge_b_to_a: None,
                 recording_handle: None,
                 recording_path: None,
+                recording_consent: None,
                 supervisor_port_pair: None,
                 supervisor_rtp_socket: None,
                 supervisor_dialog: None,
@@ -2533,33 +2458,33 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
 /// Spawn two tokio tasks that forward raw RTP packets between A-leg and B-leg sockets.
 /// If `recording_tx` channels are provided, a copy of each packet's decoded audio
 /// is sent to the recording task.
+/// Spawn two tokio tasks that forward raw RTP packets between A-leg and B-leg sockets.
 fn spawn_rtp_bridge(
     a_socket: Arc<RtpSocketPair>,
     b_socket: Arc<RtpSocketPair>,
 ) -> (JoinHandle<()>, JoinHandle<()>) {
-    spawn_rtp_bridge_inner(a_socket, b_socket, None, None)
+    spawn_rtp_bridge_inner(a_socket, b_socket, None, None, None)
 }
 
-/// Spawn RTP bridge with optional recording broadcast channels.
-fn spawn_rtp_bridge_with_recording(
-    a_socket: Arc<RtpSocketPair>,
-    b_socket: Arc<RtpSocketPair>,
-    a_tx: tokio::sync::broadcast::Sender<bytes::Bytes>,
-    b_tx: tokio::sync::broadcast::Sender<bytes::Bytes>,
-) -> (JoinHandle<()>, JoinHandle<()>) {
-    spawn_rtp_bridge_inner(a_socket, b_socket, Some(a_tx), Some(b_tx))
-}
-
+/// Spawn RTP bridge tasks forwarding packets between two legs in the same
+/// codec. With recording channels, each direction's packets are copied to
+/// the recorder before forwarding; with a notice tone (and the legs' codec),
+/// its beep is written over the audio forwarded while it sounds.
 fn spawn_rtp_bridge_inner(
     a_socket: Arc<RtpSocketPair>,
     b_socket: Arc<RtpSocketPair>,
     a_record_tx: Option<tokio::sync::broadcast::Sender<bytes::Bytes>>,
     b_record_tx: Option<tokio::sync::broadcast::Sender<bytes::Bytes>>,
+    notice: Option<(Arc<NoticeTone>, forge_codecs::AudioCodecType)>,
 ) -> (JoinHandle<()>, JoinHandle<()>) {
     let a_to_b_a = Arc::clone(&a_socket);
     let a_to_b_b = Arc::clone(&b_socket);
     let b_to_a_a = Arc::clone(&a_socket);
     let b_to_a_b = Arc::clone(&b_socket);
+    let mut a_to_b_notice = notice
+        .clone()
+        .map(|(tone, codec)| NoticeWriter::new(tone, codec, None));
+    let mut b_to_a_notice = notice.map(|(tone, codec)| NoticeWriter::new(tone, codec, None));
 
     let a_to_b = tokio::spawn(async move {
         loop {
@@ -2571,7 +2496,9 @@ fn spawn_rtp_bridge_inner(
                     if let Some(ref tx) = a_record_tx {
                         let _ = tx.send(data.clone());
                     }
-                    if let Err(e) = a_to_b_b.send_rtp_raw(&data).await {
+                    let beeped = a_to_b_notice.as_mut().and_then(|n| n.apply(&data));
+                    let out = beeped.as_deref().unwrap_or(&data);
+                    if let Err(e) = a_to_b_b.send_rtp_raw(out).await {
                         debug!(error = %e, "A->B bridge send failed");
                         break;
                     }
@@ -2594,7 +2521,9 @@ fn spawn_rtp_bridge_inner(
                     if let Some(ref tx) = b_record_tx {
                         let _ = tx.send(data.clone());
                     }
-                    if let Err(e) = b_to_a_a.send_rtp_raw(&data).await {
+                    let beeped = b_to_a_notice.as_mut().and_then(|n| n.apply(&data));
+                    let out = beeped.as_deref().unwrap_or(&data);
+                    if let Err(e) = b_to_a_a.send_rtp_raw(out).await {
                         debug!(error = %e, "B->A bridge send failed");
                         break;
                     }
@@ -2615,6 +2544,7 @@ fn spawn_rtp_bridge_inner(
 /// Each direction decodes from the source codec, resamples if needed, and re-encodes
 /// to the destination codec. The RTP payload type byte is rewritten for each direction.
 /// Optional recording broadcast channels can capture raw packets for recording.
+#[allow(clippy::too_many_arguments)]
 fn spawn_transcoding_rtp_bridge(
     a_socket: Arc<RtpSocketPair>,
     b_socket: Arc<RtpSocketPair>,
@@ -2624,10 +2554,15 @@ fn spawn_transcoding_rtp_bridge(
     b_pt: u8,
     a_record_tx: Option<tokio::sync::broadcast::Sender<bytes::Bytes>>,
     b_record_tx: Option<tokio::sync::broadcast::Sender<bytes::Bytes>>,
+    notice: Option<Arc<NoticeTone>>,
 ) -> (JoinHandle<()>, JoinHandle<()>) {
     // A→B direction: decode A's codec, encode to B's codec, rewrite PT to b_pt
     let a_to_b_a = Arc::clone(&a_socket);
     let a_to_b_b = Arc::clone(&b_socket);
+    let mut a_to_b_notice = notice
+        .clone()
+        .map(|tone| NoticeWriter::new(tone, b_codec, Some(b_pt)));
+    let mut b_to_a_notice = notice.map(|tone| NoticeWriter::new(tone, a_codec, Some(a_pt)));
 
     let a_to_b = tokio::spawn(async move {
         let src_format =
@@ -2673,6 +2608,11 @@ fn spawn_transcoding_rtp_bridge(
                             // Rewrite payload type (byte 1, lower 7 bits)
                             out_packet[1] = (data[1] & 0x80) | (b_pt & 0x7F);
                             out_packet.extend_from_slice(&transcoded);
+                            if let Some(beeped) =
+                                a_to_b_notice.as_mut().and_then(|n| n.apply(&out_packet))
+                            {
+                                out_packet = beeped;
+                            }
                             if let Err(e) = a_to_b_b.send_rtp_raw(&out_packet).await {
                                 debug!(error = %e, "A->B transcoding bridge send failed");
                                 break;
@@ -2732,6 +2672,11 @@ fn spawn_transcoding_rtp_bridge(
                             out_packet.extend_from_slice(&data[..12]);
                             out_packet[1] = (data[1] & 0x80) | (a_pt & 0x7F);
                             out_packet.extend_from_slice(&transcoded);
+                            if let Some(beeped) =
+                                b_to_a_notice.as_mut().and_then(|n| n.apply(&out_packet))
+                            {
+                                out_packet = beeped;
+                            }
                             if let Err(e) = b_to_a_a.send_rtp_raw(&out_packet).await {
                                 debug!(error = %e, "B->A transcoding bridge send failed");
                                 break;
@@ -2761,90 +2706,144 @@ fn codec_sample_rate_for_type(codec: forge_codecs::AudioCodecType) -> u32 {
     }
 }
 
-/// Decode RTP payload to PCM i16 samples based on codec.
-fn decode_rtp_payload(data: &[u8], codec: &str) -> Vec<i16> {
-    if data.len() < 12 {
-        return Vec::new();
-    }
-    let payload = &data[12..]; // Skip 12-byte RTP header
+/// A queue recording to make when legs are connected.
+struct RecordingPlan<'a> {
+    recordings: &'a QueueRecordings,
+    tenant_id: TenantId,
+    /// The call id the row and the segment's record carry.
+    call_id: String,
+    format: String,
+}
 
-    match codec {
-        "PCMU" => payload
-            .iter()
-            .map(|&b| forge_codecs::g711::decode_ulaw(b))
-            .collect(),
-        "PCMA" => payload
-            .iter()
-            .map(|&b| forge_codecs::g711::decode_alaw(b))
-            .collect(),
-        _ => Vec::new(), // G.722 recording not yet supported
+/// What connecting a caller and an agent started.
+struct Bridge {
+    a_to_b: JoinHandle<()>,
+    b_to_a: JoinHandle<()>,
+    recording: Option<JoinHandle<()>>,
+    recording_path: Option<String>,
+    /// What the parties were told, when the queue records; on the record.
+    recording_consent: Option<fcp_core::RecordingConsent>,
+}
+
+impl Bridge {
+    /// The caller left before the bridge was stored: stop it, and close the
+    /// recording's row.
+    async fn abandon(self, recordings: Option<&QueueRecordings>) {
+        self.a_to_b.abort();
+        self.b_to_a.abort();
+        if let Some(recording) = self.recording {
+            recording.abort();
+        }
+        let id = self.recording_path.as_deref().and_then(recording_id_of);
+        if let (Some(store), Some(id)) = (recordings.and_then(|r| r.store.as_ref()), id) {
+            if let Err(e) = store
+                .finish_call_recording(&id, std::time::SystemTime::now())
+                .await
+            {
+                warn!(error = %e, "Could not close an abandoned queue recording's row");
+            }
+        }
     }
 }
 
-/// Mix two PCM sample streams, clamping to i16 range.
-// Kept as part of the module's intended API; not currently called from this binary.
-#[allow(dead_code)]
-fn mix_pcm(a: &[i16], b: &[i16]) -> Vec<i16> {
-    let len = a.len().max(b.len());
-    (0..len)
-        .map(|i| {
-            let sa = a.get(i).copied().unwrap_or(0) as i32;
-            let sb = b.get(i).copied().unwrap_or(0) as i32;
-            (sa + sb).clamp(i16::MIN as i32, i16::MAX as i32) as i16
-        })
-        .collect()
+/// The recording id a queue recording's file is named for.
+fn recording_id_of(path: &str) -> Option<fcp_core::RecordingId> {
+    std::path::Path::new(path)
+        .file_stem()?
+        .to_str()?
+        .parse::<fcp_core::RecordingId>()
+        .ok()
 }
 
-/// Spawn a recording task that mixes both RTP directions and writes to an AudioRecorder.
-fn spawn_recording_task(
-    mut a_rx: tokio::sync::broadcast::Receiver<bytes::Bytes>,
-    mut b_rx: tokio::sync::broadcast::Receiver<bytes::Bytes>,
-    codec_name: String,
-    path: String,
-) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        let format = forge_core::AudioFormat {
-            codec: forge_core::AudioCodec::PCM,
-            sample_rate: 8000,
-            channels: 1,
-        };
-
-        let recorder = match forge_recorder::AudioRecorder::new(&path, format).await {
-            Ok(r) => r,
-            Err(e) => {
-                warn!(path = %path, error = %e, "Failed to create audio recorder");
-                return;
-            }
-        };
-
-        if let Err(e) = recorder.start() {
-            warn!(path = %path, error = %e, "Failed to start recording");
-            return;
+/// Connect `caller` and `agent` with an RTP bridge. When the queue records
+/// the call, its consent step comes first — both legs hear the tenant's
+/// announcement before they hear each other, and a refused announcement
+/// records nothing — then the recording's row, the mixed recorder and the
+/// notice tone (`docs/COMPLIANCE_FOLLOWUPS.md` §8.2). `None` when
+/// `still_here` says the call went away during the announcement.
+async fn connect_legs(
+    caller: &Leg,
+    agent: &Leg,
+    recording: Option<RecordingPlan<'_>>,
+    still_here: impl Fn() -> bool,
+) -> Option<Bridge> {
+    let mut consent = None;
+    let mut path = None;
+    let mut notice = None;
+    if let Some(plan) = recording {
+        let step =
+            crate::queue_recording::consent_step(plan.recordings, &plan.tenant_id, caller, agent)
+                .await;
+        if !still_here() {
+            return None;
         }
-
-        info!(path = %path, "Recording started");
-
-        loop {
-            tokio::select! {
-                Ok(data) = a_rx.recv() => {
-                    let a_pcm = decode_rtp_payload(&data, &codec_name);
-                    // For simplicity, write caller audio directly (mono mix-minus).
-                    // A more sophisticated approach would buffer and mix both directions.
-                    let _ = recorder.write_samples(&a_pcm);
-                }
-                Ok(data) = b_rx.recv() => {
-                    let b_pcm = decode_rtp_payload(&data, &codec_name);
-                    let _ = recorder.write_samples(&b_pcm);
-                }
-                else => break,
+        if step.records() {
+            path = plan
+                .recordings
+                .begin(plan.tenant_id, plan.call_id, &plan.format, step.consent)
+                .await;
+            if path.is_some() {
+                consent = Some(step.consent);
+                notice = step.notice;
             }
-        }
-
-        if let Err(e) = recorder.stop() {
-            warn!(path = %path, error = %e, "Failed to stop recording");
         } else {
-            info!(path = %path, duration = recorder.duration_secs(), "Recording completed");
+            consent = Some(step.consent);
         }
+    }
+
+    let channels = path.as_ref().map(|_| {
+        (
+            tokio::sync::broadcast::channel::<bytes::Bytes>(256),
+            tokio::sync::broadcast::channel::<bytes::Bytes>(256),
+        )
+    });
+    let (senders, receivers) = match channels {
+        Some(((a_tx, a_rx), (b_tx, b_rx))) => (Some((a_tx, b_tx)), Some((a_rx, b_rx))),
+        None => (None, None),
+    };
+    let (a_tx, b_tx) = match senders {
+        Some((a, b)) => (Some(a), Some(b)),
+        None => (None, None),
+    };
+    let caller_codec = codec_name_to_type(&caller.codec);
+    let agent_codec = codec_name_to_type(&agent.codec);
+    let (a_to_b, b_to_a) = if caller.codec != agent.codec {
+        spawn_transcoding_rtp_bridge(
+            Arc::clone(&caller.socket),
+            Arc::clone(&agent.socket),
+            caller_codec,
+            agent_codec,
+            caller.payload_type,
+            agent.payload_type,
+            a_tx,
+            b_tx,
+            notice,
+        )
+    } else {
+        spawn_rtp_bridge_inner(
+            Arc::clone(&caller.socket),
+            Arc::clone(&agent.socket),
+            a_tx,
+            b_tx,
+            notice.map(|tone| (tone, caller_codec)),
+        )
+    };
+    let recording = match (receivers, &path) {
+        (Some((a_rx, b_rx)), Some(path)) => Some(crate::queue_recording::spawn_mixed_recording(
+            a_rx,
+            b_rx,
+            caller,
+            agent,
+            path.clone(),
+        )),
+        _ => None,
+    };
+    Some(Bridge {
+        a_to_b,
+        b_to_a,
+        recording,
+        recording_path: path,
+        recording_consent: consent,
     })
 }
 
@@ -3183,7 +3182,7 @@ fn parse_agent_codec(sdp: &str) -> (String, u8) {
 }
 
 /// Map a codec name to forge_codecs::AudioCodecType.
-fn codec_name_to_type(name: &str) -> forge_codecs::AudioCodecType {
+pub(crate) fn codec_name_to_type(name: &str) -> forge_codecs::AudioCodecType {
     match name {
         "PCMU" => forge_codecs::AudioCodecType::PCMU,
         "PCMA" => forge_codecs::AudioCodecType::PCMA,
@@ -3504,6 +3503,7 @@ fn spawn_callback_ring(
                 bridge_b_to_a: Some(bridge_b_to_a),
                 recording_handle: None,
                 recording_path: None,
+                recording_consent: None,
                 supervisor_port_pair: None,
                 supervisor_rtp_socket: None,
                 supervisor_dialog: None,
@@ -3916,7 +3916,11 @@ async fn bye_and_cleanup(
 
 /// Extract domain part from a SIP URI string.
 /// Play pre-encoded prompt frames to an RTP socket at 20ms intervals.
-async fn play_prompt_frames(socket: &RtpSocketPair, frames: &[Vec<u8>], payload_type: u8) {
+pub(crate) async fn play_prompt_frames(
+    socket: &RtpSocketPair,
+    frames: &[Vec<u8>],
+    payload_type: u8,
+) {
     use std::sync::atomic::{AtomicU16, AtomicU32, Ordering};
 
     let seq = AtomicU16::new(0);
@@ -3977,6 +3981,7 @@ fn queue_record(
     state: QueueCallState,
     agent_id: Option<&str>,
     recording_path: Option<&str>,
+    recording_consent: Option<fcp_core::RecordingConsent>,
     node_id: &str,
 ) -> fcp_cdr::Record {
     let now = SystemTime::now();
@@ -4028,6 +4033,7 @@ fn queue_record(
             agent_codec_name.map(|s| s.to_string()),
         )
         .recording(recording_path.map(|s| s.to_string()))
+        .recording_consent(recording_consent)
         .node(Some(node_id.to_string()), None)
         .custom_data(Some(serde_json::json!({
             "queue_name": queue_name,
@@ -4266,100 +4272,61 @@ async fn campaign_dial_task(
                                             .await;
                                     }
 
-                                    let needs_transcoding = callee_codec != agent_codec_name;
-                                    if needs_transcoding {
+                                    let callee = Leg {
+                                        socket: Arc::clone(&callee_rtp_socket),
+                                        codec: callee_codec.clone(),
+                                        payload_type: callee_pt,
+                                    };
+                                    let agent = Leg {
+                                        socket: Arc::clone(&agent_rtp_socket),
+                                        codec: agent_codec_name.clone(),
+                                        payload_type: agent_pt,
+                                    };
+                                    if callee.codec != agent.codec {
                                         info!(
                                             dest = %destination, agent = %agent_id,
-                                            callee_codec = %callee_codec, agent_codec = %agent_codec_name,
+                                            callee_codec = %callee.codec, agent_codec = %agent.codec,
                                             "Campaign: codecs differ, using transcoding bridge"
                                         );
                                     }
 
-                                    // Check if recording is enabled for this queue
-                                    let should_record = recording_dir.is_some()
-                                        && queue_manager
-                                            .get_queue_config(&queue_name)
-                                            .map(|c| c.record_calls)
-                                            .unwrap_or(false);
-
-                                    let rec_path = if should_record {
-                                        let rec_format = queue_manager
-                                            .get_queue_config(&queue_name)
-                                            .map(|c| c.recording_format.clone())
-                                            .unwrap_or_else(|| "wav".to_string());
-                                        match &recording_dir {
-                                            Some(recordings) => {
-                                                recordings
-                                                    .begin(
-                                                        tenant_id,
-                                                        queue_record_call_id(None),
-                                                        &rec_format,
-                                                    )
-                                                    .await
-                                            }
-                                            None => None,
+                                    // When the queue records, both parties hear the
+                                    // tenant's announcement before each other
+                                    // (docs/COMPLIANCE_FOLLOWUPS.md §8.2).
+                                    let recording = match (
+                                        &recording_dir,
+                                        queue_manager.get_queue_config(&queue_name),
+                                    ) {
+                                        (Some(recordings), Some(qc)) if qc.record_calls => {
+                                            Some(RecordingPlan {
+                                                recordings,
+                                                tenant_id,
+                                                call_id: queue_record_call_id(None),
+                                                format: qc.recording_format.clone(),
+                                            })
                                         }
-                                    } else {
-                                        None
+                                        _ => None,
                                     };
+                                    let Some(bridge) =
+                                        connect_legs(&callee, &agent, recording, || true).await
+                                    else {
+                                        return;
+                                    };
+                                    if let Some(path) = &bridge.recording_path {
+                                        info!(dest = %destination, path = %path, "Campaign call recording started");
+                                    }
+                                    let recording_consent = bridge.recording_consent;
                                     let (
                                         bridge_a_to_b,
                                         bridge_b_to_a,
                                         recording_handle,
                                         recording_path,
-                                    ) = if let Some(rec_path) = rec_path {
-                                        let (a_tx, a_rx) =
-                                            tokio::sync::broadcast::channel::<bytes::Bytes>(256);
-                                        let (b_tx, b_rx) =
-                                            tokio::sync::broadcast::channel::<bytes::Bytes>(256);
-
-                                        let (ba, bb) = if needs_transcoding {
-                                            spawn_transcoding_rtp_bridge(
-                                                Arc::clone(&callee_rtp_socket),
-                                                Arc::clone(&agent_rtp_socket),
-                                                codec_name_to_type(&callee_codec),
-                                                codec_name_to_type(&agent_codec_name),
-                                                callee_pt,
-                                                agent_pt,
-                                                Some(a_tx),
-                                                Some(b_tx),
-                                            )
-                                        } else {
-                                            spawn_rtp_bridge_with_recording(
-                                                Arc::clone(&callee_rtp_socket),
-                                                Arc::clone(&agent_rtp_socket),
-                                                a_tx,
-                                                b_tx,
-                                            )
-                                        };
-
-                                        let rec_handle = spawn_recording_task(
-                                            a_rx,
-                                            b_rx,
-                                            callee_codec.clone(),
-                                            rec_path.clone(),
-                                        );
-                                        info!(dest = %destination, path = %rec_path, "Campaign call recording started");
-                                        (ba, bb, Some(rec_handle), Some(rec_path))
-                                    } else if needs_transcoding {
-                                        let (ba, bb) = spawn_transcoding_rtp_bridge(
-                                            Arc::clone(&callee_rtp_socket),
-                                            Arc::clone(&agent_rtp_socket),
-                                            codec_name_to_type(&callee_codec),
-                                            codec_name_to_type(&agent_codec_name),
-                                            callee_pt,
-                                            agent_pt,
-                                            None,
-                                            None,
-                                        );
-                                        (ba, bb, None, None)
-                                    } else {
-                                        let (ba, bb) = spawn_rtp_bridge(
-                                            Arc::clone(&callee_rtp_socket),
-                                            Arc::clone(&agent_rtp_socket),
-                                        );
-                                        (ba, bb, None, None)
-                                    };
+                                    ) = (
+                                        bridge.a_to_b,
+                                        bridge.b_to_a,
+                                        bridge.recording,
+                                        bridge.recording_path,
+                                    );
 
                                     // Get dialogs for both legs
                                     let callee_dialog = call_handle.dialog.read().await.clone();
@@ -4394,6 +4361,7 @@ async fn campaign_dial_task(
                                             bridge_b_to_a: Some(bridge_b_to_a),
                                             recording_handle,
                                             recording_path,
+                                            recording_consent,
                                             supervisor_port_pair: None,
                                             supervisor_rtp_socket: None,
                                             supervisor_dialog: None,

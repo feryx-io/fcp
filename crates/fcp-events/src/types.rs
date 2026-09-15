@@ -262,10 +262,17 @@ pub enum IvrEvent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RecordingEvent {
-    /// Recording started
+    /// A call's recording started, after its consent step.
     Started {
         recording_id: String,
         call_id: CallId,
+        tenant_id: TenantId,
+        /// Why it is recorded: `api`, `flow`, `queue`, `user`, `number` or
+        /// `platform`.
+        source: String,
+        /// What the parties were told: `announced`, `failed` or
+        /// `not_required`.
+        consent: String,
         #[serde(with = "system_time_serde")]
         timestamp: SystemTime,
     },
@@ -274,6 +281,7 @@ pub enum RecordingEvent {
     Completed {
         recording_id: String,
         call_id: CallId,
+        tenant_id: TenantId,
         duration_ms: u64,
         size_bytes: u64,
         url: String,
@@ -281,10 +289,14 @@ pub enum RecordingEvent {
         timestamp: SystemTime,
     },
 
-    /// Recording failed
+    /// A recording that was to start did not. `reason` is `consent_refused`
+    /// when the announcement could not be played and the tenant's policy
+    /// says not to record without one.
     Failed {
         recording_id: String,
         call_id: CallId,
+        tenant_id: TenantId,
+        source: String,
         reason: String,
         #[serde(with = "system_time_serde")]
         timestamp: SystemTime,
@@ -691,6 +703,9 @@ pub enum ConferenceEvent {
         /// The node holding the file.
         node_id: String,
         tenant_id: TenantId,
+        /// What the room was told: `announced`, `failed` or `not_required`.
+        #[serde(default)]
+        consent: Option<String>,
         #[serde(with = "system_time_serde")]
         timestamp: SystemTime,
     },
@@ -1484,9 +1499,13 @@ impl PlatformEvent {
                 ComplianceEvent::HoldPlaced { tenant_id, .. }
                 | ComplianceEvent::HoldReleased { tenant_id, .. },
             ) => Some(tenant_id),
+            PlatformEvent::Recording(
+                RecordingEvent::Started { tenant_id, .. }
+                | RecordingEvent::Completed { tenant_id, .. }
+                | RecordingEvent::Failed { tenant_id, .. },
+            ) => Some(tenant_id),
             PlatformEvent::Media(_)
             | PlatformEvent::Ivr(_)
-            | PlatformEvent::Recording(_)
             | PlatformEvent::Flow(_)
             | PlatformEvent::Voicemail(_)
             | PlatformEvent::Sip(_) => None,

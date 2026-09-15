@@ -30,173 +30,99 @@ fn scoped_call(
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 pub struct StartRecordingRequest {
-    /// Path where recording should be saved
-    /// Extension determines format (.wav or .opus)
-    pub path: String,
-}
-
-/// Play the tenant's recording-consent prompt, if policy asks for one.
-/// Returns whether a prompt was played; failures are logged, not fatal.
-async fn announce_recording_consent(
-    state: &ApiState,
-    tenant: &TenantContext,
-    call_id: &fcp_core::CallId,
-) -> bool {
-    use fcp_core::compliance::RecordingConsentMode;
-
-    let Some(storage) = state.storage.as_ref() else {
-        return false;
-    };
-    let (Some(compliance), Some(prompts), Some(media)) = (
-        storage.compliance_store(),
-        storage.prompt_store(),
-        state.media_manager.as_ref(),
-    ) else {
-        return false;
-    };
-    let policy = match compliance.get_compliance_policy(&tenant.0).await {
-        Ok(Some(p)) => p,
-        Ok(None) => return false,
-        Err(e) => {
-            tracing::warn!(error = %e, "Failed to load compliance policy for consent");
-            return false;
-        }
-    };
-    if policy.recording_consent != RecordingConsentMode::Announce {
-        return false;
-    }
-    let Some(prompt_id) = policy
-        .recording_consent_prompt_id
-        .as_deref()
-        .and_then(|p| p.parse::<fcp_core::PromptId>().ok())
-    else {
-        tracing::warn!(tenant_id = %tenant.0, "Consent announcement configured without a valid prompt");
-        return false;
-    };
-    let audio = match prompts.get_prompt(&prompt_id).await {
-        Ok(Some(p)) => p.audio_path,
-        _ => None,
-    };
-    let Some(path) = audio else {
-        tracing::warn!(tenant_id = %tenant.0, prompt = %prompt_id, "Consent prompt has no audio");
-        return false;
-    };
-    match media
-        .play_file(
-            call_id,
-            path.to_string_lossy().into_owned(),
-            fcp_media::AudioTarget::Both,
-        )
-        .await
-    {
-        Ok(_) => {
-            tracing::info!(call_id = %call_id, prompt = %prompt_id, "Recording consent announced");
-            true
-        }
-        Err(e) => {
-            tracing::warn!(call_id = %call_id, error = %e, "Failed to play recording consent prompt");
-            false
-        }
-    }
+    /// Where the recording is written, under the tenant's directory; the
+    /// extension picks the format (`.wav` or `.opus`). Absent: a WAV file
+    /// under the tenant and the day, named for the call.
+    #[serde(default)]
+    pub path: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct RecordingResponse {
     pub call_id: String,
     pub message: String,
-    /// True when a recording-consent prompt was played first.
+    /// The recording's id, when one started.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recording_id: Option<String>,
+    /// What the parties were told: `announced`, `failed` or `not_required`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub consent: Option<String>,
+    /// True when a recording-consent announcement was played first.
     #[serde(default)]
     pub consent_announced: bool,
 }
 
+fn recording_error(e: fcp_sip::recording::RecordingError) -> ApiError {
+    use fcp_sip::recording::RecordingError as E;
+    match e {
+        E::CallNotFound => ApiError::NotFound("Call not found".to_string()),
+        E::InvalidPath => ApiError::BadRequest(e.to_string()),
+        E::NoMedia => ApiError::ServiceUnavailable(e.to_string()),
+        E::CallEnded
+        | E::NotAnchored
+        | E::AlreadyRecording
+        | E::NotRecording
+        | E::ConsentRefused => ApiError::Conflict(e.to_string()),
+        E::Media(_) | E::NotRegistered(_) => ApiError::Internal(e.to_string()),
+    }
+}
+
 /// POST /v1/calls/:call_id/recording/start
-/// Start recording a call
+///
+/// Record a call, through the tenant's consent step
+/// (`docs/COMPLIANCE_FOLLOWUPS.md` §8.1): the announcement plays to both
+/// parties and ends before the recorder starts, so this returns once the
+/// recording is running. `409` when the call is not anchored, is already
+/// recorded, or the announcement failed under a policy that does not
+/// record without one.
 pub async fn start_recording(
     State(state): State<ApiState>,
     tenant: TenantContext,
     identity: Option<Extension<AuthIdentity>>,
     Path(call_id_str): Path<String>,
-    Json(req): Json<StartRecordingRequest>,
+    body: axum::body::Bytes,
 ) -> Result<impl IntoResponse, ApiError> {
-    // Parse call ID (sip-specific)
     let sip_call_id = CallId::from_str(&call_id_str)
         .map_err(|_| ApiError::BadRequest(format!("Invalid call ID: {}", call_id_str)))?;
-
     scoped_call(
         &state,
         &sip_call_id,
         &tenant,
         identity.as_ref().map(|ext| &ext.0),
     )?;
+    // The body is optional; one that is sent must parse.
+    let req: StartRecordingRequest = if body.iter().all(u8::is_ascii_whitespace) {
+        StartRecordingRequest::default()
+    } else {
+        serde_json::from_slice(&body)
+            .map_err(|e| ApiError::BadRequest(format!("Invalid request body: {e}")))?
+    };
+    let path = match req.path {
+        Some(supplied) => fcp_sip::recording::RecordingPath::Supplied(supplied),
+        None => fcp_sip::recording::RecordingPath::wav(),
+    };
 
-    // Convert to fcp_core::CallId for media manager
-    let core_call_id = fcp_core::CallId::from_uuid(*sip_call_id.as_uuid());
-
-    // Get media manager
-    let media_manager = state
-        .media_manager
-        .as_ref()
-        .ok_or_else(|| ApiError::NotFound("Media manager not available".into()))?;
-
-    // The recording goes under the tenant's directory, so one tenant's
-    // path cannot name another's file (docs/COMPLIANCE_FOLLOWUPS.md §4).
-    let relative = fcp_core::recording::tenant_recording_path(&tenant.0, &req.path)
-        .ok_or_else(|| {
-            ApiError::BadRequest("path must be a relative path without '..'".to_string())
-        })?
-        .to_string_lossy()
-        .into_owned();
-
-    // Start recording
-    // Recording consent: when the tenant policy says "announce", play the
-    // configured prompt to the call before recording starts.
-    let consent_announced = announce_recording_consent(&state, &tenant, &core_call_id).await;
-
-    let result: Result<(), fcp_media::Error> = media_manager
-        .start_recording(&core_call_id, relative.clone())
-        .await;
-
-    result.map_err(|e| ApiError::NotFound(format!("Failed to start recording: {}", e)))?;
-    let file = media_manager.recording_file(&relative);
-
-    // A recording with no row cannot be found by retention, a hold or an
-    // erasure: without one, it does not go ahead.
-    if let Some(store) = state
-        .storage
-        .as_ref()
-        .and_then(|s| s.call_recording_store())
-    {
-        let mut recording = fcp_core::recording::CallRecording::starting(
-            tenant.0,
-            core_call_id.to_string(),
+    let started = state
+        .handler
+        .call_recorder()
+        .start(
+            &sip_call_id,
             fcp_core::recording::CallRecordingSource::Api,
-            file.clone(),
-        );
-        if consent_announced {
-            recording.consent = fcp_core::RecordingConsent::Announced;
-        }
-        if let Err(e) = store.create_call_recording(&recording).await {
-            let _ = media_manager.stop_recording(&core_call_id).await;
-            let _ = tokio::fs::remove_file(&file).await;
-            return Err(ApiError::Internal(format!(
-                "Recording not registered, so not kept: {e}"
-            )));
-        }
-    }
-    // The call's record names its recording.
-    let path = file;
-    let _ = state
-        .call_manager
-        .update_call(&sip_call_id, |call| call.recording_path = Some(path));
+            path,
+        )
+        .await
+        .map_err(recording_error)?;
 
     Ok((
         StatusCode::OK,
         Json(RecordingResponse {
             call_id: call_id_str,
-            message: format!("Recording started to {}", req.path),
-            consent_announced,
+            message: format!("Recording started to {}", started.file),
+            recording_id: Some(started.recording_id.to_string()),
+            consent: Some(started.consent.as_str().to_string()),
+            consent_announced: started.consent == fcp_core::RecordingConsent::Announced,
         }),
     ))
 }
@@ -209,10 +135,8 @@ pub async fn stop_recording(
     identity: Option<Extension<AuthIdentity>>,
     Path(call_id_str): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    // Parse call ID (sip-specific)
     let sip_call_id = CallId::from_str(&call_id_str)
         .map_err(|_| ApiError::BadRequest(format!("Invalid call ID: {}", call_id_str)))?;
-
     scoped_call(
         &state,
         &sip_call_id,
@@ -220,40 +144,20 @@ pub async fn stop_recording(
         identity.as_ref().map(|ext| &ext.0),
     )?;
 
-    // Convert to fcp_core::CallId for media manager
-    let core_call_id = fcp_core::CallId::from_uuid(*sip_call_id.as_uuid());
-
-    // Get media manager
-    let media_manager = state
-        .media_manager
-        .as_ref()
-        .ok_or_else(|| ApiError::NotFound("Media manager not available".into()))?;
-
-    // Stop recording
-    let result: Result<(), fcp_media::Error> = media_manager.stop_recording(&core_call_id).await;
-
-    result.map_err(|e| ApiError::NotFound(format!("Failed to stop recording: {}", e)))?;
-    if let Some(store) = state
-        .storage
-        .as_ref()
-        .and_then(|s| s.call_recording_store())
-    {
-        if let Err(e) = fcp_core::recording::finish_call_recordings(
-            store.as_ref(),
-            &core_call_id.to_string(),
-            std::time::SystemTime::now(),
-        )
+    state
+        .handler
+        .call_recorder()
+        .stop(&sip_call_id)
         .await
-        {
-            tracing::warn!(call_id = %core_call_id, error = %e, "Could not close the call's recording row");
-        }
-    }
+        .map_err(recording_error)?;
 
     Ok((
         StatusCode::OK,
         Json(RecordingResponse {
             call_id: call_id_str,
             message: "Recording stopped".into(),
+            recording_id: None,
+            consent: None,
             consent_announced: false,
         }),
     ))

@@ -364,6 +364,10 @@ pub struct SipMessageHandler {
     /// Media configuration
     media_config: Option<fcp_core::config::MediaConfig>,
 
+    /// What starts, stops and ends call recordings, through the tenant's
+    /// consent step (`docs/COMPLIANCE_FOLLOWUPS.md` §8).
+    call_recorder: Arc<crate::recording::CallRecorder>,
+
     /// Per-dialog lock to serialize mid-dialog requests (re-INVITE/UPDATE) to avoid glare
     mid_dialog_lock: Arc<dashmap::DashMap<sip_dialog::DialogId, Arc<tokio::sync::Mutex<()>>>>,
 
@@ -737,6 +741,11 @@ impl SipMessageHandler {
             None
         };
 
+        let call_recorder = Arc::new(crate::recording::CallRecorder::new(
+            Arc::clone(&call_manager),
+            media_manager.clone(),
+            storage.clone(),
+        ));
         let this = Self {
             transaction_manager,
             dialog_manager,
@@ -753,6 +762,7 @@ impl SipMessageHandler {
             default_tenant_id: None,
             media_manager,
             media_config,
+            call_recorder,
             mid_dialog_lock: Arc::new(dashmap::DashMap::new()),
             subscription_manager,
             subscription_index: Arc::new(dashmap::DashMap::new()),
@@ -839,6 +849,18 @@ impl SipMessageHandler {
             .unwrap_or(&configured)
             .to_string();
         Some(host)
+    }
+
+    /// Share a call recorder with the flow handler and the API, so a call is
+    /// recorded once whoever asks.
+    pub fn with_call_recorder(mut self, recorder: Arc<crate::recording::CallRecorder>) -> Self {
+        self.call_recorder = recorder;
+        self
+    }
+
+    /// The recorder every call recording starts through.
+    pub fn call_recorder(&self) -> &Arc<crate::recording::CallRecorder> {
+        &self.call_recorder
     }
 
     pub fn with_default_tenant_id(mut self, tenant_id: fcp_core::TenantId) -> Self {
@@ -2235,6 +2257,31 @@ impl SipMessageHandler {
         request: &sip_core::Request,
         call_id: &fcp_b2bua_core::CallId,
     ) {
+        // The caller's preferences, and whether the call is to be recorded
+        // without anyone asking: it must be anchored for that, and records
+        // once it is answered (docs/COMPLIANCE_FOLLOWUPS.md §8.1).
+        let user_prefs = if let Some(ref registrar) = self.registrar {
+            let from_aor = sip_parse::header(request.headers(), "From")
+                .and_then(|from| crate::presence::extract_aor(from.as_str()));
+
+            if let Some(aor) = from_aor {
+                registrar.get_user_media_preferences(&aor).await
+            } else {
+                fcp_core::MediaPreferences::default()
+            }
+        } else {
+            fcp_core::MediaPreferences::default()
+        };
+        let auto_recording = self
+            .automatic_recording(request, call_id, &user_prefs)
+            .await;
+        if let Some(source) = auto_recording {
+            info!(call_id = %call_id, source = source.as_str(), "Call to be recorded once answered");
+            let _ = self
+                .call_manager
+                .update_call(call_id, |call| call.auto_recording = Some(source));
+        }
+
         // Policy short-circuit: B2buaConfig media anchoring overrides
         if self.b2bua_config.media_anchoring.force_anchor() {
             info!(call_id = %call_id, "Media anchoring forced by B2BUA policy (Always mode)");
@@ -2280,6 +2327,13 @@ impl SipMessageHandler {
         }
         if self.b2bua_config.media_anchoring.force_passthrough() {
             debug!(call_id = %call_id, "Media pass-through forced by B2BUA policy (Never mode)");
+            if let Some(source) = auto_recording {
+                warn!(
+                    call_id = %call_id,
+                    source = source.as_str(),
+                    "Call not recorded: media anchoring is off (Never mode), so there is nothing to record"
+                );
+            }
             return;
         }
         // Conditional mode — fall through to existing logic
@@ -2307,29 +2361,17 @@ impl SipMessageHandler {
             "Extracted codecs from A-leg SDP"
         );
 
-        // Look up user media preferences
-        let user_prefs = if let Some(ref registrar) = self.registrar {
-            let from_aor = sip_parse::header(request.headers(), "From")
-                .and_then(|from| crate::presence::extract_aor(from.as_str()));
-
-            if let Some(aor) = from_aor {
-                registrar.get_user_media_preferences(&aor).await
-            } else {
-                fcp_core::MediaPreferences::default()
-            }
-        } else {
-            fcp_core::MediaPreferences::default()
-        };
-
-        // Build decision context using user preferences
+        // Build decision context using user preferences. The node's
+        // `enable_recording` is one of the reasons a call is recorded, so
+        // it does not gate the others.
         let ctx = fcp_media::MediaDecisionContext {
             media_enabled: media_config.enabled,
             transcoding_enabled: media_config.enable_transcoding,
-            recording_enabled: media_config.enable_recording,
+            recording_enabled: true,
             dtmf_enabled: media_config.enable_dtmf,
             a_leg_codecs,
             b_leg_codecs: None, // B-leg not known yet
-            recording_requested: user_prefs.record_all_calls,
+            recording_requested: auto_recording.is_some(),
             dtmf_requested: user_prefs.enable_dtmf_detection || user_prefs.force_media_anchoring,
             conference_call: false, // TODO: Detect conference scenarios
         };
@@ -2405,6 +2447,116 @@ impl SipMessageHandler {
                 }
             }
         }
+    }
+
+    /// Why a call is to be recorded without anyone asking
+    /// (`docs/COMPLIANCE_FOLLOWUPS.md` §8.1): `record_all_calls` on either
+    /// party's user, `recording_enabled` on the dialled or calling number,
+    /// or the node's `enable_recording`, in that order. The callee is the
+    /// user or number the INVITE dialled — by name, extension or number —
+    /// not whoever the call is later forwarded to.
+    async fn automatic_recording(
+        &self,
+        request: &sip_core::Request,
+        call_id: &fcp_b2bua_core::CallId,
+        caller_prefs: &fcp_core::MediaPreferences,
+    ) -> Option<fcp_core::recording::CallRecordingSource> {
+        use fcp_core::recording::CallRecordingSource;
+
+        let platform = self
+            .media_config
+            .as_ref()
+            .is_some_and(|m| m.enable_recording);
+        let tenant = self.call_manager.get_call(call_id)?.tenant_id;
+        let header_user = |name: &str| {
+            sip_parse::header(request.headers(), name)
+                .and_then(|h| crate::presence::extract_aor(h.as_str()))
+                .and_then(|aor| aor.split('@').next().map(str::to_string))
+        };
+        if caller_prefs.record_all_calls {
+            return Some(CallRecordingSource::User);
+        }
+        let Some(storage) = &self.storage else {
+            return platform.then_some(CallRecordingSource::Platform);
+        };
+        let max_digits = self.b2bua_config.max_extension_digits;
+        let number_in_tenant =
+            |number: fcp_core::PhoneNumber| (number.tenant_id == tenant).then_some(number);
+        let by_e164 = |user: String| {
+            let storage = Arc::clone(storage);
+            async move {
+                let normalized = normalize_dialed_number(&user, max_digits);
+                if !is_e164_number(&normalized) {
+                    return None;
+                }
+                storage
+                    .get_phone_number_by_e164(&normalized)
+                    .await
+                    .ok()
+                    .flatten()
+            }
+        };
+
+        // The dialled user and number.
+        let mut dialled_user: Option<fcp_core::storage::User> = None;
+        let mut dialled_number: Option<fcp_core::PhoneNumber> = None;
+        if let Some(to_user) = header_user("To") {
+            if let Ok(Some(user)) = storage.get_user_in_tenant(&to_user, &tenant).await {
+                dialled_user = Some(user);
+            } else if let Ok(Some(extension)) =
+                storage.get_extension_by_number(&tenant, &to_user).await
+            {
+                match &extension.target {
+                    fcp_core::ExtensionTarget::User(id) => {
+                        dialled_user = storage.get_user_by_id(id).await.ok().flatten();
+                    }
+                    fcp_core::ExtensionTarget::Device(id) => {
+                        if let Ok(Some(device)) = storage.get_device(id).await {
+                            if let Some(owner) = device.owner_user_id {
+                                dialled_user = storage.get_user_by_id(&owner).await.ok().flatten();
+                            }
+                        }
+                    }
+                    fcp_core::ExtensionTarget::PhoneNumber(id) => {
+                        dialled_number = storage.get_phone_number(id).await.ok().flatten();
+                    }
+                    fcp_core::ExtensionTarget::Service(_) => {}
+                }
+            } else {
+                dialled_number = by_e164(to_user).await;
+            }
+        }
+        let dialled_number = dialled_number.and_then(number_in_tenant);
+        if dialled_user.is_none() {
+            if let Some(number) = &dialled_number {
+                if let Ok(Some(binding)) =
+                    storage.get_line_binding_by_phone_number(&number.id).await
+                {
+                    if let Some(owner) = binding.owner_user_id {
+                        dialled_user = storage.get_user_by_id(&owner).await.ok().flatten();
+                    }
+                }
+            }
+        }
+        if dialled_user
+            .filter(|u| u.tenant_id == tenant)
+            .is_some_and(|u| u.media_preferences.record_all_calls)
+        {
+            return Some(CallRecordingSource::User);
+        }
+        if dialled_number.is_some_and(|n| n.recording_enabled) {
+            return Some(CallRecordingSource::Number);
+        }
+        if let Some(from_user) = header_user("From") {
+            if by_e164(from_user)
+                .await
+                .and_then(number_in_tenant)
+                .is_some_and(|n| n.recording_enabled)
+            {
+                return Some(CallRecordingSource::Number);
+            }
+        }
+        platform.then_some(CallRecordingSource::Platform)
     }
 
     fn ensure_response_hygiene(
@@ -6535,6 +6687,10 @@ impl SipMessageHandler {
                 Some(&raw_ok),
             );
             a_leg_handle.send_final(ok_response).await;
+
+            // A call recorded without anyone asking starts now, with both
+            // parties on the line to hear the announcement.
+            self.start_automatic_recording(&call_id);
         } else if cancelled_by_caller {
             // Caller already cancelled — handle_cancel sent 487 and terminated the call.
             // Just clean up; don't send another response to A-leg.
@@ -8711,6 +8867,7 @@ impl SipMessageHandler {
         let sip_trace_tx = self.sip_trace_tx.clone();
         let local_addr = self.local_addr.clone();
         let node_id = self.node_id.clone();
+        let recorder = Arc::clone(&self.call_recorder);
         tokio::spawn(async move {
             let mut attempts = 0;
             loop {
@@ -8879,6 +9036,7 @@ impl SipMessageHandler {
 
                             if a_done && b_done {
                                 info!(call_id = %call_id, "Both legs terminated after forwarded BYE, terminating call");
+                                recorder.call_ended(&call_id).await;
                                 let _ = call_manager.terminate_call(&call_id, None);
                             }
                         }
@@ -8920,6 +9078,7 @@ impl SipMessageHandler {
 
                                 if a_done && b_done {
                                     info!(call_id = %call_id, "Both legs terminated after BYE failure, terminating call");
+                                    recorder.call_ended(&call_id).await;
                                     let _ = call_manager.terminate_call(&call_id, None);
                                 }
                             }
@@ -10144,6 +10303,7 @@ impl SipMessageHandler {
             .send_final(&original_tx_key, original_response)
             .await;
         handle.send_final(picker_response).await;
+        self.start_automatic_recording(&ringing_call_id);
 
         // The feature call's record points at the call it picked up.
         let _ = self.call_manager.update_call(feature_call_id, |call| {
@@ -11825,6 +11985,34 @@ impl SipMessageHandler {
         Ok(())
     }
 
+    /// Start the recording a call's INVITE decided on
+    /// ([`Self::automatic_recording`]), on a task of its own: the consent
+    /// announcement plays while the call goes on.
+    fn start_automatic_recording(&self, call_id: &fcp_b2bua_core::CallId) {
+        let Some(source) = self
+            .call_manager
+            .get_call(call_id)
+            .and_then(|call| call.auto_recording)
+        else {
+            return;
+        };
+        let recorder = Arc::clone(&self.call_recorder);
+        let call_id = *call_id;
+        tokio::spawn(async move {
+            use crate::recording::{RecordingError, RecordingPath};
+            match recorder.start(&call_id, source, RecordingPath::wav()).await {
+                Ok(_) | Err(RecordingError::AlreadyRecording) => {}
+                Err(RecordingError::ConsentRefused) | Err(RecordingError::CallEnded) => {}
+                Err(e) => warn!(
+                    call_id = %call_id,
+                    source = source.as_str(),
+                    error = %e,
+                    "Automatic call recording not started"
+                ),
+            }
+        });
+    }
+
     /// Keep the media session's current counters on the call for its
     /// record, without ending anything. On a task of its own.
     fn capture_rtp_stats(&self, call: &Call) {
@@ -11857,6 +12045,7 @@ impl SipMessageHandler {
         what: &'static str,
     ) {
         let call_manager = Arc::clone(&self.call_manager);
+        let recorder = Arc::clone(&self.call_recorder);
         let call_id = call.id;
         let media = match (
             call.media_anchored,
@@ -11867,6 +12056,7 @@ impl SipMessageHandler {
             _ => None,
         };
         tokio::spawn(async move {
+            recorder.call_ended(&call_id).await;
             if let Some((session_id, media_manager)) = media {
                 match media_manager.get_session_stats(&session_id).await {
                     Ok(stats) => call_manager.set_rtp_stats(&call_id, rtp_stats_from(&stats)),

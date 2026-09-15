@@ -10,8 +10,8 @@ use axum::{
     Json,
 };
 use fcp_core::compliance::{
-    run_retention, AuditEvent, AuditQuery, CompliancePolicy, ComplianceStore, RecordingConsentMode,
-    RetentionReport,
+    run_retention, AuditEvent, AuditQuery, CompliancePolicy, ComplianceStore, ConsentFailureAction,
+    RecordingConsentMode, RetentionReport, MIN_NOTICE_INTERVAL_SECS,
 };
 use fcp_core::permissions::Permission;
 use fcp_core::TenantId;
@@ -62,6 +62,11 @@ pub struct PolicyResponse {
     pub voicemail_retention_days: Option<u32>,
     pub recording_consent: String,
     pub recording_consent_prompt_id: Option<String>,
+    /// `record` or `skip`: whether a recording goes ahead when its
+    /// announcement cannot be played.
+    pub recording_consent_on_failure: String,
+    /// A notice tone every this many seconds while a call is recorded.
+    pub recording_notice_interval_secs: Option<u32>,
     /// CDRs are deleted only once the archive has confirmed them.
     pub cdr_archive_required: bool,
     /// Unix seconds: every one of the tenant's CDRs that started before
@@ -88,6 +93,8 @@ impl PolicyResponse {
             voicemail_retention_days: p.voicemail_retention_days,
             recording_consent: p.recording_consent.to_string(),
             recording_consent_prompt_id: p.recording_consent_prompt_id,
+            recording_consent_on_failure: p.recording_consent_on_failure.as_str().to_string(),
+            recording_notice_interval_secs: p.recording_notice_interval_secs,
             cdr_archive_required: p.cdr_archive_required,
             cdr_archived_before: archived_before.map(unix_secs),
             configured,
@@ -114,6 +121,9 @@ pub struct UpdatePolicyRequest {
     pub recording_consent: Option<String>,
     #[serde(default, deserialize_with = "deserialize_double_option")]
     pub recording_consent_prompt_id: Option<Option<String>>,
+    pub recording_consent_on_failure: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub recording_notice_interval_secs: Option<Option<u32>>,
     pub cdr_archive_required: Option<bool>,
 }
 
@@ -240,6 +250,24 @@ pub async fn update_policy(
             }
         }
         policy.recording_consent_prompt_id = prompt;
+    }
+    if let Some(action) = req.recording_consent_on_failure {
+        policy.recording_consent_on_failure =
+            ConsentFailureAction::parse(&action).ok_or_else(|| {
+                ApiError::BadRequest(format!(
+                    "recording_consent_on_failure must be 'record' or 'skip', got '{action}'"
+                ))
+            })?;
+    }
+    if let Some(interval) = req.recording_notice_interval_secs {
+        if let Some(secs) = interval {
+            if secs < MIN_NOTICE_INTERVAL_SECS {
+                return Err(ApiError::BadRequest(format!(
+                    "recording_notice_interval_secs must be at least {MIN_NOTICE_INTERVAL_SECS}"
+                )));
+            }
+        }
+        policy.recording_notice_interval_secs = interval;
     }
     if policy.recording_consent == RecordingConsentMode::Announce
         && policy.recording_consent_prompt_id.is_none()

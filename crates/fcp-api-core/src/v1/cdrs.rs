@@ -68,6 +68,9 @@ pub struct CdrResponse {
     pub rtp_packets_lost: Option<u64>,
     pub rtp_jitter_ms: Option<f64>,
     pub recording_url: Option<String>,
+    /// `announced`, `failed`, `not_required` or `refused` when the call was
+    /// to be recorded; absent otherwise.
+    pub recording_consent: Option<String>,
     pub cost: Option<fcp_core::billing::Decimal>,
     pub currency: Option<String>,
     pub rate_plan_id: Option<String>,
@@ -135,6 +138,7 @@ impl From<fcp_core::storage::CallDetailRecord> for CdrResponse {
             rtp_packets_lost: cdr.rtp_packets_lost,
             rtp_jitter_ms: cdr.rtp_jitter_ms,
             recording_url: cdr.recording_url,
+            recording_consent: cdr.recording_consent.map(|c| c.as_str().to_string()),
             cost: cdr.cost,
             currency: cdr.currency,
             rate_plan_id: cdr.rate_plan_id,
@@ -454,7 +458,7 @@ fn csv_field(value: &str) -> String {
 const CSV_HEADER: &str =
     "call_id,tenant_id,sip_call_id,start_time,answer_time,end_time,from_uri,to_uri,\
      disposition,hangup_cause,setup_duration_ms,call_duration_ms,total_duration_ms,\
-     sip_status_code,codec_a_leg,codec_b_leg,cost,currency,recording_url,kind,cdr_id\n";
+     sip_status_code,codec_a_leg,codec_b_leg,cost,currency,recording_url,kind,cdr_id,recording_consent\n";
 
 /// One record as a CSV line.
 fn csv_row(r: &CdrResponse) -> String {
@@ -482,6 +486,7 @@ fn csv_row(r: &CdrResponse) -> String {
         opt_str(&r.recording_url),
         csv_field(&r.kind),
         csv_field(&r.cdr_id),
+        opt_str(&r.recording_consent),
     ]
     .join(",");
     line.push('\n');
@@ -643,6 +648,7 @@ mod tests {
             rtp_bytes_sent: None,
             rtp_bytes_received: None,
             recording_url: None,
+            recording_consent: None,
             cost: None,
             currency: None,
             direction: None,

@@ -23,6 +23,7 @@ pub mod mwi;
 pub mod presence;
 pub mod presence_checker;
 pub mod queue;
+pub mod recording;
 pub mod registrar;
 pub mod service;
 pub mod settings;

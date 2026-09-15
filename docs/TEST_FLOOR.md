@@ -72,7 +72,14 @@ process, one per test participant:
   asked for and the RFC 2833 detector: `heard(hz, within)` resolves when
   that tone's energy dominates for a few consecutive frames,
   `heard_dtmf(within)` when a digit ends, `packets_received()` for the
-  plain count. Latching accepts the answered address only.
+  plain count. Latching accepts the answered address only. `heard`
+  resolves on the first frames of a tone, not at its end: a test that
+  wants two tones apart in a recording waits out the first.
+- **`fcp_testkit::wav`** (added with compliance phase 3) writes a tone as
+  an 8 kHz prompt file and reads a recording back — past a header a
+  recorder never finalised — for `contains_tone(samples, hz)`, the same
+  detector offline: whether the announcement is heard by the parties but
+  absent from the file, whether both parties are in it.
 
 The phone is the only new machinery. Two smaller helpers go beside it:
 

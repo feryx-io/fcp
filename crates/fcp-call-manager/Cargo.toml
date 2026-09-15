@@ -40,6 +40,8 @@ forge-dtmf = { path = "../../external/forge-media/crates/forge-dtmf" }
 forge-recorder = { path = "../../external/forge-media/crates/forge-recorder" }
 forge-core = { path = "../../external/forge-media/crates/forge-core" }
 forge-transcoder = { path = "../../external/forge-media/crates/forge-transcoder" }
+forge-resampler = { path = "../../external/forge-media/crates/forge-resampler" }
+hound = "3"
 
 # Storage backend
 fcp-storage-postgres = { path = "../fcp-storage-postgres" }

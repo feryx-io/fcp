@@ -104,7 +104,7 @@ impl RecordingTrigger {
     }
 }
 
-/// What the room was told, under the tenant's consent policy.
+/// What the parties were told, under the tenant's consent policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum RecordingConsent {
@@ -116,6 +116,9 @@ pub enum RecordingConsent {
     /// An announcement was called for but could not be played; the
     /// recording went ahead and this says so.
     Failed,
+    /// An announcement was called for and could not be played, and the
+    /// tenant's policy says not to record without one: nothing was recorded.
+    Refused,
 }
 
 impl RecordingConsent {
@@ -124,6 +127,7 @@ impl RecordingConsent {
             RecordingConsent::NotRequired => "not_required",
             RecordingConsent::Announced => "announced",
             RecordingConsent::Failed => "failed",
+            RecordingConsent::Refused => "refused",
         }
     }
 
@@ -132,6 +136,7 @@ impl RecordingConsent {
             "not_required" => Some(RecordingConsent::NotRequired),
             "announced" => Some(RecordingConsent::Announced),
             "failed" => Some(RecordingConsent::Failed),
+            "refused" => Some(RecordingConsent::Refused),
             _ => None,
         }
     }
@@ -356,6 +361,12 @@ pub enum CallRecordingSource {
     Flow,
     /// A queue with `record_calls`.
     Queue,
+    /// `record_all_calls` on either party's user.
+    User,
+    /// `recording_enabled` on the dialled or calling number.
+    Number,
+    /// `media.enable_recording` on the node: every anchored call.
+    Platform,
     /// A recording a record named before recordings had rows.
     Legacy,
 }
@@ -366,6 +377,9 @@ impl CallRecordingSource {
             CallRecordingSource::Api => "api",
             CallRecordingSource::Flow => "flow",
             CallRecordingSource::Queue => "queue",
+            CallRecordingSource::User => "user",
+            CallRecordingSource::Number => "number",
+            CallRecordingSource::Platform => "platform",
             CallRecordingSource::Legacy => "legacy",
         }
     }
@@ -375,6 +389,9 @@ impl CallRecordingSource {
             "api" => Some(CallRecordingSource::Api),
             "flow" => Some(CallRecordingSource::Flow),
             "queue" => Some(CallRecordingSource::Queue),
+            "user" => Some(CallRecordingSource::User),
+            "number" => Some(CallRecordingSource::Number),
+            "platform" => Some(CallRecordingSource::Platform),
             "legacy" => Some(CallRecordingSource::Legacy),
             _ => None,
         }
@@ -523,6 +540,7 @@ mod tests {
             RecordingConsent::NotRequired,
             RecordingConsent::Announced,
             RecordingConsent::Failed,
+            RecordingConsent::Refused,
         ] {
             assert_eq!(RecordingConsent::parse(c.as_str()), Some(c));
         }
@@ -568,10 +586,17 @@ mod tests {
         }
         let r = CallRecording::starting(tenant, "call-1", CallRecordingSource::Flow, "x/y.OPUS");
         assert_eq!(r.format, "opus");
-        assert_eq!(
-            CallRecordingSource::parse(r.source.as_str()),
-            Some(CallRecordingSource::Flow)
-        );
+        for source in [
+            CallRecordingSource::Api,
+            CallRecordingSource::Flow,
+            CallRecordingSource::Queue,
+            CallRecordingSource::User,
+            CallRecordingSource::Number,
+            CallRecordingSource::Platform,
+            CallRecordingSource::Legacy,
+        ] {
+            assert_eq!(CallRecordingSource::parse(source.as_str()), Some(source));
+        }
     }
 
     #[test]

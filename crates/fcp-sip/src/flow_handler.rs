@@ -101,6 +101,10 @@ pub struct FlowCallHandler {
 
     /// Transport dispatcher for sending out-of-transaction messages (ACK for 2xx)
     dispatcher: Option<Arc<dyn TransportDispatcher>>,
+
+    /// The recorder a flow's recordings start through, shared with the SIP
+    /// handler so a call is recorded once whoever asks.
+    call_recorder: std::sync::OnceLock<Arc<crate::recording::CallRecorder>>,
 }
 
 impl FlowCallHandler {
@@ -131,7 +135,14 @@ impl FlowCallHandler {
             registrar: None,
             storage: None,
             dispatcher: None,
+            call_recorder: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Record through `recorder`, the SIP handler's.
+    pub fn with_call_recorder(self, recorder: Arc<crate::recording::CallRecorder>) -> Self {
+        let _ = self.call_recorder.set(recorder);
+        self
     }
 
     /// Set the call manager (for B2BUA operations).
@@ -2166,7 +2177,9 @@ impl FlowCallHandler {
         Box::pin(self.execute_next_node(call_id)).await
     }
 
-    /// Handle a StartRecording node by starting recording via the MediaManager.
+    /// Handle a StartRecording node: the call's recorder starts it, through
+    /// the tenant's consent step (`docs/COMPLIANCE_FOLLOWUPS.md` §8.3) — a
+    /// flow cannot record around the policy.
     async fn handle_start_recording(
         &self,
         call_id: CallId,
@@ -2175,208 +2188,116 @@ impl FlowCallHandler {
         next: String,
         on_error: Option<String>,
     ) -> Result<()> {
-        let media_manager = match &self.media_manager {
-            Some(mm) => Arc::clone(mm),
-            None => {
-                warn!(call_id = %call_id, "MediaManager not configured - recording unavailable");
+        use crate::recording::{RecordingError, RecordingPath};
 
-                let context_entry = self
-                    .contexts
-                    .get(&call_id)
-                    .ok_or_else(|| anyhow::anyhow!("Flow context not found"))?;
-                let context = Arc::clone(context_entry.value());
-                drop(context_entry);
+        let context_entry = self
+            .contexts
+            .get(&call_id)
+            .ok_or_else(|| anyhow::anyhow!("Flow context not found"))?;
+        let context = Arc::clone(context_entry.value());
+        drop(context_entry);
 
-                let mut context_guard = context.write().await;
-                context_guard.set_variable(variable, "error://no_media_manager".to_string());
-                context_guard.set_variable("recording_status".to_string(), "error".to_string());
-                context_guard.current_node = on_error.unwrap_or(next);
-                drop(context_guard);
-
-                return Box::pin(self.execute_next_node(call_id)).await;
-            }
+        let Some(recorder) = self.recorder() else {
+            warn!(call_id = %call_id, "No media manager or call manager - recording unavailable");
+            let mut context_guard = context.write().await;
+            context_guard.set_variable(variable, "error://no_media_manager".to_string());
+            context_guard.set_variable("recording_status".to_string(), "error".to_string());
+            context_guard.current_node = on_error.unwrap_or(next);
+            drop(context_guard);
+            return Box::pin(self.execute_next_node(call_id)).await;
         };
 
-        // Generate recording path based on call ID and format
+        // The flow's media session is the call's: a flow that anchored media
+        // itself tells the call, which the recorder records by.
+        let flow_session = context.read().await.media_session_id;
+        if let (Some(session), Some(cm)) = (flow_session, &self.call_manager) {
+            let _ = cm.update_call(&call_id, |call| {
+                if call.media_session_id.is_none() {
+                    call.media_session_id = Some(session);
+                    call.media_anchored = true;
+                }
+            });
+        }
+
         let extension = match format {
             fcp_flow::schema::RecordingFormat::Wav => "wav",
             fcp_flow::schema::RecordingFormat::Mp3 => "mp3",
         };
+        let started = recorder
+            .start(
+                &call_id,
+                fcp_core::recording::CallRecordingSource::Flow,
+                RecordingPath::Dated { extension },
+            )
+            .await;
 
-        // Under the tenant and the day, named for the call: no party's
-        // number in the path (docs/COMPLIANCE_FOLLOWUPS.md §4).
-        let tenant_id = self
-            .call_manager
-            .as_ref()
-            .and_then(|cm| cm.get_call(&call_id))
-            .map(|call| call.tenant_id);
-        let dir = match tenant_id {
-            Some(tenant) => {
-                fcp_core::recording::dated_recording_dir(&tenant, std::time::SystemTime::now())
-            }
-            None => std::path::PathBuf::from(chrono::Utc::now().format("%Y/%m/%d").to_string()),
-        };
-        let recording_filename = dir
-            .join(format!("{}.{}", call_id, extension))
-            .to_string_lossy()
-            .into_owned();
-
-        info!(
-            call_id = %call_id,
-            recording_path = %recording_filename,
-            format = ?format,
-            "Starting recording via MediaManager"
-        );
-
-        // Use the media_session_id from context if available, otherwise convert call_id
-        let session_id = {
-            let context_entry = self
-                .contexts
-                .get(&call_id)
-                .ok_or_else(|| anyhow::anyhow!("Flow context not found"))?;
-            let context = Arc::clone(context_entry.value());
-            drop(context_entry);
-            let guard = context.read().await;
-            guard
-                .media_session_id
-                .unwrap_or_else(|| fcp_core::CallId::from_uuid(*call_id.as_uuid()))
-        };
-
-        let started = match media_manager
-            .start_recording(&session_id, recording_filename.clone())
-            .await
-        {
-            Ok(()) => {
-                let file = media_manager.recording_file(&recording_filename);
-                match self.register_recording(&call_id, tenant_id, &file).await {
-                    Ok(()) => Ok(file),
-                    Err(e) => {
-                        // Ungovernable, so not kept.
-                        let _ = media_manager.stop_recording(&session_id).await;
-                        let _ = tokio::fs::remove_file(&file).await;
-                        Err(format!("recording not registered: {e}"))
-                    }
-                }
-            }
-            Err(e) => Err(e.to_string()),
-        };
+        let mut context_guard = context.write().await;
         match started {
-            Ok(recording_filename) => {
+            Ok(recording) => {
                 info!(
                     call_id = %call_id,
-                    recording_path = %recording_filename,
+                    recording_path = %recording.file,
+                    consent = recording.consent.as_str(),
                     "Recording started successfully"
                 );
-                // The call's record names its recording.
-                if let Some(cm) = &self.call_manager {
-                    let path = recording_filename.clone();
-                    let _ = cm.update_call(&call_id, |call| call.recording_path = Some(path));
-                }
-
-                let context_entry = self
-                    .contexts
-                    .get(&call_id)
-                    .ok_or_else(|| anyhow::anyhow!("Flow context not found"))?;
-                let context = Arc::clone(context_entry.value());
-                drop(context_entry);
-
-                let mut context_guard = context.write().await;
-                context_guard.set_variable(variable, recording_filename);
+                context_guard.set_variable(variable, recording.file);
                 context_guard.set_variable("recording_status".to_string(), "active".to_string());
+                context_guard.set_variable(
+                    "recording_consent".to_string(),
+                    recording.consent.as_str().to_string(),
+                );
                 context_guard.current_node = next;
-                drop(context_guard);
             }
             Err(e) => {
-                error!(
-                    call_id = %call_id,
-                    error = %e,
-                    "Failed to start recording"
-                );
-
-                let context_entry = self
-                    .contexts
-                    .get(&call_id)
-                    .ok_or_else(|| anyhow::anyhow!("Flow context not found"))?;
-                let context = Arc::clone(context_entry.value());
-                drop(context_entry);
-
-                let mut context_guard = context.write().await;
+                error!(call_id = %call_id, error = %e, "Failed to start recording");
+                let status = match e {
+                    RecordingError::ConsentRefused => {
+                        context_guard.set_variable(
+                            "recording_consent".to_string(),
+                            fcp_core::RecordingConsent::Refused.as_str().to_string(),
+                        );
+                        "refused"
+                    }
+                    _ => "error",
+                };
                 context_guard.set_variable(variable, format!("error://{}", e));
-                context_guard.set_variable("recording_status".to_string(), "error".to_string());
+                context_guard.set_variable("recording_status".to_string(), status.to_string());
                 context_guard.current_node = on_error.unwrap_or(next);
-                drop(context_guard);
             }
         }
+        drop(context_guard);
 
         Box::pin(self.execute_next_node(call_id)).await
     }
 
-    /// The row that makes a flow's recording governable. A store that is not
-    /// configured records nothing and is not an error.
-    async fn register_recording(
-        &self,
-        call_id: &CallId,
-        tenant_id: Option<fcp_core::TenantId>,
-        file: &str,
-    ) -> anyhow::Result<()> {
-        let (Some(store), Some(tenant)) = (
-            self.storage
-                .as_ref()
-                .and_then(|s| s.call_recording_store().cloned()),
-            tenant_id,
-        ) else {
-            return Ok(());
-        };
-        let recording = fcp_core::recording::CallRecording::starting(
-            tenant,
-            fcp_core::CallId::from_uuid(*call_id.as_uuid()).to_string(),
-            fcp_core::recording::CallRecordingSource::Flow,
-            file,
-        );
-        store.create_call_recording(&recording).await
+    /// The recorder this handler's recordings go through: the one shared with
+    /// the SIP handler when it was given one, else its own.
+    fn recorder(&self) -> Option<Arc<crate::recording::CallRecorder>> {
+        if let Some(recorder) = self.call_recorder.get() {
+            return Some(Arc::clone(recorder));
+        }
+        let call_manager = self.call_manager.as_ref()?;
+        self.media_manager.as_ref()?;
+        Some(Arc::clone(self.call_recorder.get_or_init(|| {
+            Arc::new(crate::recording::CallRecorder::new(
+                Arc::clone(call_manager),
+                self.media_manager.clone(),
+                self.storage.clone(),
+            ))
+        })))
     }
 
-    /// Handle a StopRecording node by stopping recording via the MediaManager.
+    /// Handle a StopRecording node: the call's recorder stops it and closes
+    /// its row.
     async fn handle_stop_recording(
         &self,
         call_id: CallId,
         next: String,
         on_error: Option<String>,
     ) -> Result<()> {
-        if let Some(media_manager) = &self.media_manager {
-            let session_id = {
-                let context_entry = self
-                    .contexts
-                    .get(&call_id)
-                    .ok_or_else(|| anyhow::anyhow!("Flow context not found"))?;
-                let context = Arc::clone(context_entry.value());
-                drop(context_entry);
-                let guard = context.read().await;
-                guard
-                    .media_session_id
-                    .unwrap_or_else(|| fcp_core::CallId::from_uuid(*call_id.as_uuid()))
-            };
-
-            match media_manager.stop_recording(&session_id).await {
-                Ok(()) => {
-                    info!(call_id = %call_id, "Recording stopped successfully");
-                    if let Some(store) = self
-                        .storage
-                        .as_ref()
-                        .and_then(|s| s.call_recording_store().cloned())
-                    {
-                        let key = fcp_core::CallId::from_uuid(*call_id.as_uuid()).to_string();
-                        if let Err(e) = fcp_core::recording::finish_call_recordings(
-                            store.as_ref(),
-                            &key,
-                            std::time::SystemTime::now(),
-                        )
-                        .await
-                        {
-                            warn!(call_id = %call_id, error = %e, "Could not close the recording's row");
-                        }
-                    }
-                }
+        match self.recorder() {
+            Some(recorder) => match recorder.stop(&call_id).await {
+                Ok(()) => info!(call_id = %call_id, "Recording stopped successfully"),
                 Err(e) => {
                     warn!(
                         call_id = %call_id,
@@ -2401,9 +2322,10 @@ impl FlowCallHandler {
                         return Box::pin(self.execute_next_node(call_id)).await;
                     }
                 }
+            },
+            None => {
+                warn!(call_id = %call_id, "MediaManager not configured - ignoring StopRecording")
             }
-        } else {
-            warn!(call_id = %call_id, "MediaManager not configured - ignoring StopRecording");
         }
 
         let context_entry = self
