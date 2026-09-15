@@ -288,6 +288,9 @@ pub struct RetentionReport {
     #[serde(default)]
     pub voicemail_messages_deleted: u64,
     pub audit_events_deleted: u64,
+    /// What legal holds kept past a window, by class.
+    #[serde(default)]
+    pub held: std::collections::BTreeMap<String, u64>,
     /// Non-fatal problems (a file that could not be removed, a store that
     /// is not configured). The run continues past each.
     pub errors: Vec<String>,
@@ -305,6 +308,7 @@ impl RetentionReport {
             conference_recordings_deleted: 0,
             voicemail_messages_deleted: 0,
             audit_events_deleted: 0,
+            held: Default::default(),
             errors: Vec::new(),
         }
     }
@@ -363,6 +367,78 @@ pub trait ComplianceStore: Send + Sync {
     /// Of `paths`, those a recording, voicemail, greeting, prompt or
     /// profile picture row still names.
     async fn referenced_paths(&self, paths: &[String]) -> anyhow::Result<Vec<String>>;
+
+    // ── Legal holds (docs/COMPLIANCE_FOLLOWUPS.md §5) ──────────────────
+
+    async fn place_hold(&self, hold: &crate::legal_hold::LegalHold) -> anyhow::Result<()> {
+        let _ = hold;
+        anyhow::bail!("this store keeps no legal holds")
+    }
+
+    async fn get_hold(
+        &self,
+        tenant_id: &TenantId,
+        id: &crate::LegalHoldId,
+    ) -> anyhow::Result<Option<crate::legal_hold::LegalHold>> {
+        let _ = (tenant_id, id);
+        Ok(None)
+    }
+
+    /// A tenant's holds, newest first; released ones too when asked.
+    async fn list_holds(
+        &self,
+        tenant_id: &TenantId,
+        include_released: bool,
+    ) -> anyhow::Result<Vec<crate::legal_hold::LegalHold>> {
+        let _ = (tenant_id, include_released);
+        Ok(Vec::new())
+    }
+
+    /// Release an active hold. `false` when it is not active (or not the
+    /// tenant's).
+    async fn release_hold(
+        &self,
+        tenant_id: &TenantId,
+        id: &crate::LegalHoldId,
+        release: &crate::legal_hold::HoldRelease,
+    ) -> anyhow::Result<bool> {
+        let _ = (tenant_id, id, release);
+        Ok(false)
+    }
+
+    /// How many items of each class a hold covers now; `None` for a class
+    /// too large to count within the store's time budget.
+    async fn held_counts(
+        &self,
+        tenant_id: &TenantId,
+        id: &crate::LegalHoldId,
+    ) -> anyhow::Result<Vec<(crate::legal_hold::DataClass, Option<u64>)>> {
+        let _ = (tenant_id, id);
+        Ok(Vec::new())
+    }
+
+    /// The hold covering one item (a recording's or a message's id), if any.
+    async fn hold_on(
+        &self,
+        tenant_id: &TenantId,
+        class: crate::legal_hold::DataClass,
+        item: &str,
+    ) -> anyhow::Result<Option<crate::LegalHoldId>> {
+        let _ = (tenant_id, class, item);
+        Ok(None)
+    }
+
+    /// How many of a tenant's items of `class` dated before `before` are
+    /// held: what retention kept.
+    async fn held_before(
+        &self,
+        tenant_id: &TenantId,
+        class: crate::legal_hold::DataClass,
+        before: SystemTime,
+    ) -> anyhow::Result<u64> {
+        let _ = (tenant_id, class, before);
+        Ok(0)
+    }
     async fn list_retention_runs(
         &self,
         tenant_id: &TenantId,
@@ -507,6 +583,38 @@ async fn apply_retention(storage: &DynStorage, policy: &CompliancePolicy) -> Ret
             None => report
                 .errors
                 .push("audit: store not configured".to_string()),
+        }
+    }
+
+    // What holds kept, for the report (docs/COMPLIANCE_FOLLOWUPS.md §5).
+    if let Some(store) = storage.compliance_store() {
+        use crate::legal_hold::DataClass;
+        match store.list_holds(&tenant, false).await {
+            Ok(holds) if !holds.is_empty() => {
+                for (class, days) in [
+                    (DataClass::Cdr, policy.cdr_retention_days),
+                    (DataClass::SipTrace, policy.sip_trace_retention_days),
+                    (DataClass::FlowTrace, policy.flow_trace_retention_days),
+                    (DataClass::CallRecording, policy.recording_retention_days),
+                    (
+                        DataClass::ConferenceRecording,
+                        policy.recording_retention_days,
+                    ),
+                    (DataClass::Voicemail, policy.voicemail_retention_days),
+                    (DataClass::AuditEvent, policy.audit_retention_days),
+                ] {
+                    let Some(days) = days else { continue };
+                    match store.held_before(&tenant, class, cutoff(now, days)).await {
+                        Ok(0) => {}
+                        Ok(n) => {
+                            report.held.insert(class.as_str().to_string(), n);
+                        }
+                        Err(e) => report.errors.push(format!("held {}: {e}", class.as_str())),
+                    }
+                }
+            }
+            Ok(_) => {}
+            Err(e) => report.errors.push(format!("legal holds: {e}")),
         }
     }
 

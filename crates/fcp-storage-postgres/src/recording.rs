@@ -215,6 +215,7 @@ impl RecordingStore for PostgresRecordingStore {
         let rows = sqlx::query(&format!(
             "SELECT {COLUMNS} FROM conference_recordings
              WHERE tenant_id = $1 AND started_at < $2 AND ended_at IS NOT NULL
+               AND fcp_conference_recording_hold(tenant_id, started_at, participant_list) IS NULL
              ORDER BY started_at"
         ))
         .bind(tenant_id.to_string())
@@ -384,6 +385,7 @@ impl CallRecordingStore for PostgresRecordingStore {
                     "DELETE FROM call_recordings WHERE id IN (
                          SELECT id FROM call_recordings
                          WHERE tenant_id = $1 AND started_at < $2
+                           AND fcp_call_recording_hold(tenant_id, started_at, call_id) IS NULL
                          LIMIT 1000)",
                 )
                 .bind(tenant_id.to_string())

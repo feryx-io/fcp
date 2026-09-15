@@ -157,7 +157,8 @@ pub(crate) async fn begin(
          ON CONFLICT (tenant_id, day) DO UPDATE SET
              generation = cdr_archives.generation + 1,
              started_at = now(),
-             archived_at = NULL
+             archived_at = NULL,
+             locked = false
          RETURNING generation",
     )
     .bind(tenant_id.to_string())
@@ -311,4 +312,59 @@ pub(crate) async fn status(pool: &Pool<Postgres>) -> Result<CdrArchiveStatus> {
             .try_get::<Option<DateTime<Utc>>, _>("last_archived_at")?
             .map(SystemTime::from),
     })
+}
+
+pub(crate) async fn lock_changes(
+    pool: &Pool<Postgres>,
+    limit: usize,
+) -> Result<Vec<(TenantId, NaiveDate, String, bool)>> {
+    // A day is held when an active hold on records reaches into it; its
+    // subjects and calls are not looked at — the object holds the whole day.
+    let rows = sqlx::query(
+        "SELECT tenant_id, day, object_key, desired FROM (
+             SELECT a.tenant_id, a.day, a.object_key, a.locked,
+                    EXISTS (
+                        SELECT 1 FROM legal_holds h
+                        WHERE h.tenant_id = a.tenant_id AND h.released_at IS NULL
+                          AND (cardinality(h.classes) = 0 OR 'cdr' = ANY (h.classes))
+                          AND (h.held_from IS NULL OR h.held_from < (a.day + 1)::timestamp AT TIME ZONE 'UTC')
+                          AND (h.held_to IS NULL OR h.held_to > a.day::timestamp AT TIME ZONE 'UTC')
+                    ) AS desired
+             FROM cdr_archives a
+             WHERE a.archived_at IS NOT NULL AND a.object_key IS NOT NULL
+         ) d
+         WHERE locked <> desired
+         ORDER BY day, tenant_id
+         LIMIT $1",
+    )
+    .bind(limit as i64)
+    .fetch_all(pool)
+    .await?;
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        if let Some(tenant) = tenants(vec![row.try_get("tenant_id")?]).pop() {
+            out.push((
+                tenant,
+                row.try_get("day")?,
+                row.try_get("object_key")?,
+                row.try_get("desired")?,
+            ));
+        }
+    }
+    Ok(out)
+}
+
+pub(crate) async fn set_locked(
+    pool: &Pool<Postgres>,
+    tenant_id: &TenantId,
+    day: NaiveDate,
+    locked: bool,
+) -> Result<()> {
+    sqlx::query("UPDATE cdr_archives SET locked = $3 WHERE tenant_id = $1 AND day = $2")
+        .bind(tenant_id.to_string())
+        .bind(day)
+        .bind(locked)
+        .execute(pool)
+        .await?;
+    Ok(())
 }

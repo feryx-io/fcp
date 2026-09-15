@@ -145,7 +145,8 @@ impl SipTraceStore for PostgresSipTraceStore {
                  WHERE timestamp < $2
                    AND (tenant_id = $1
                         OR (tenant_id = '_system'
-                            AND call_id IN (SELECT call_id FROM cdrs WHERE tenant_id = $1)))",
+                            AND call_id IN (SELECT call_id FROM cdrs WHERE tenant_id = $1)))
+                   AND fcp_sip_trace_hold($1, timestamp, from_uri, to_uri, call_id) IS NULL",
             )
             .bind(tenant_id)
             .bind(system_time_to_datetime(before)),

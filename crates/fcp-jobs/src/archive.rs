@@ -76,6 +76,12 @@ pub struct CdrArchiveConfig {
     #[serde(default)]
     pub s3: Option<S3Config>,
 
+    /// Lock the objects of days a legal hold covers (S3 Object Lock's legal
+    /// hold; the bucket must have Object Lock enabled), and unlock them when
+    /// no hold does.
+    #[serde(default)]
+    pub object_lock: bool,
+
     /// The Redis key prefix `cdr.archived` is published under.
     #[serde(default = "default_key_prefix")]
     pub key_prefix: String,
@@ -114,6 +120,7 @@ impl Default for CdrArchiveConfig {
             target: TargetKind::default(),
             directory: None,
             s3: None,
+            object_lock: false,
             key_prefix: default_key_prefix(),
             region: None,
         }
@@ -186,6 +193,7 @@ impl CdrArchiveRole {
             every: Duration::from_secs(cfg.every_secs.max(1)),
             grace: Duration::from_secs(cfg.grace_secs),
             prefix: cfg.prefix.clone(),
+            object_lock: cfg.object_lock,
             work_dir: cfg
                 .work_dir
                 .clone()

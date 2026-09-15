@@ -69,6 +69,13 @@ pub trait ArchiveTarget: Send + Sync {
     async fn put(&self, key: &str, file: &Path, object: &ObjectInfo) -> Result<(), ArchiveError>;
     /// Whether the object at `key` is `object`: its size and SHA-256.
     async fn confirm(&self, key: &str, object: &ObjectInfo) -> Result<bool, ArchiveError>;
+    /// Place (`on`) or lift a legal hold on the object at `key`, where the
+    /// store can lock an object against deletion. `false` when this target
+    /// has no such lock.
+    async fn set_legal_hold(&self, key: &str, on: bool) -> Result<bool, ArchiveError> {
+        let _ = (key, on);
+        Ok(false)
+    }
 }
 
 /// The hex SHA-256 of a file.
@@ -107,6 +114,10 @@ pub struct ArchiveConfig {
     /// A run stops after this many writes fail in a row: the target is
     /// likely down, and the next run tries again.
     pub max_consecutive_failures: u32,
+    /// Lock the objects of days a legal hold covers, where the target can
+    /// (S3 Object Lock), and unlock them when no hold does
+    /// (`docs/COMPLIANCE_FOLLOWUPS.md` §5).
+    pub object_lock: bool,
 }
 
 impl Default for ArchiveConfig {
@@ -119,6 +130,7 @@ impl Default for ArchiveConfig {
             work_dir: std::env::temp_dir().join("fcp-cdr-archive"),
             pending_per_run: 1000,
             max_consecutive_failures: 3,
+            object_lock: false,
         }
     }
 }
@@ -134,6 +146,11 @@ pub struct ArchiveRun {
     pub bytes: u64,
     /// Tenant-days that failed; they are retried on the next run.
     pub failures: u64,
+    /// Objects locked for a legal hold, and unlocked when it went.
+    #[serde(default)]
+    pub locked: u64,
+    #[serde(default)]
+    pub unlocked: u64,
 }
 
 /// Counters across runs, for `/status` and `/metrics`.
@@ -352,7 +369,11 @@ impl Archiver {
         };
         let started = Instant::now();
         let mut run = ArchiveRun::default();
-        let result = self.run_locked(&mut run).await;
+        let mut result = self.run_locked(&mut run).await;
+        if self.config.object_lock {
+            let locks = self.sync_locks(&mut run).await;
+            result = result.and(locks);
+        }
         lock.release().await;
         self.stats.record(&run, started.elapsed());
         result.map(|()| Some(run))
@@ -399,6 +420,40 @@ impl Archiver {
             };
         }
         Ok(())
+    }
+
+    /// Bring the objects' locks in line with the legal holds: a day a hold
+    /// covers is locked, a locked day no hold covers is unlocked. A target
+    /// that cannot lock is told once and left alone.
+    async fn sync_locks(&self, run: &mut ArchiveRun) -> Result<(), ArchiveError> {
+        loop {
+            let changes = self.store.cdr_archive_lock_changes(100).await?;
+            if changes.is_empty() {
+                return Ok(());
+            }
+            let count = changes.len();
+            for (tenant, day, key, lock) in changes {
+                if !self.target.set_legal_hold(&key, lock).await? {
+                    warn!(
+                        target = %self.target.location(),
+                        "The archive target cannot lock objects; object_lock has no effect"
+                    );
+                    return Ok(());
+                }
+                self.store
+                    .set_cdr_archive_locked(&tenant, day, lock)
+                    .await?;
+                if lock {
+                    run.locked += 1;
+                } else {
+                    run.unlocked += 1;
+                }
+                info!(tenant_id = %tenant, day = %day, key = %key, lock, "Archive object lock changed for a legal hold");
+            }
+            if count < 100 {
+                return Ok(());
+            }
+        }
     }
 
     /// Write one tenant-day into `run`. `false` when the run should stop.

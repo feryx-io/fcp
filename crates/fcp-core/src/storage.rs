@@ -1423,6 +1423,28 @@ pub trait CdrStore: Send + Sync {
     async fn cdr_archive_status(&self) -> Result<crate::cdr_archive::CdrArchiveStatus> {
         Ok(Default::default())
     }
+
+    /// Archived days whose object lock should change: `true` for a day an
+    /// active legal hold on records now covers and whose object is not
+    /// locked, `false` for a locked day no hold covers. Oldest first.
+    async fn cdr_archive_lock_changes(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<(crate::TenantId, chrono::NaiveDate, String, bool)>> {
+        let _ = limit;
+        Ok(Vec::new())
+    }
+
+    /// Record a day's object as locked or not.
+    async fn set_cdr_archive_locked(
+        &self,
+        tenant_id: &crate::TenantId,
+        day: chrono::NaiveDate,
+        locked: bool,
+    ) -> Result<()> {
+        let _ = (tenant_id, day, locked);
+        Ok(())
+    }
 }
 
 /// Query parameters for searching available pool phone numbers.
@@ -3428,6 +3450,24 @@ impl CdrStore for DynStorage {
 
     async fn cdr_archive_status(&self) -> Result<crate::cdr_archive::CdrArchiveStatus> {
         self.cdr_store.cdr_archive_status().await
+    }
+
+    async fn cdr_archive_lock_changes(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<(crate::TenantId, chrono::NaiveDate, String, bool)>> {
+        self.cdr_store.cdr_archive_lock_changes(limit).await
+    }
+
+    async fn set_cdr_archive_locked(
+        &self,
+        tenant_id: &crate::TenantId,
+        day: chrono::NaiveDate,
+        locked: bool,
+    ) -> Result<()> {
+        self.cdr_store
+            .set_cdr_archive_locked(tenant_id, day, locked)
+            .await
     }
 }
 

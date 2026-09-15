@@ -483,7 +483,7 @@ pub async fn delete_voicemail_message(
     storage
         .delete_message(&message_id)
         .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
+        .map_err(ApiError::storage)?;
 
     info!(username = %claims.sub, message_id = %message_id, "User deleted voicemail message");
 

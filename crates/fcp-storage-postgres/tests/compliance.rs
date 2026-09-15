@@ -500,3 +500,330 @@ async fn traces_find_their_tenant_and_rooms_name_who_was_recorded() {
 
     db.finish().await;
 }
+
+fn policy_all(tenant: TenantId, days: u32) -> CompliancePolicy {
+    let mut p = CompliancePolicy::defaults(tenant);
+    p.cdr_retention_days = Some(days);
+    p.sip_trace_retention_days = Some(days);
+    p.flow_trace_retention_days = Some(days);
+    p.recording_retention_days = Some(days);
+    p.voicemail_retention_days = Some(days);
+    p.audit_retention_days = Some(days);
+    p
+}
+
+#[tokio::test]
+async fn subject_keys_are_the_same_in_sql() {
+    let db = require_db!();
+    for (spelling, expected) in fcp_core::subject::KEY_VECTORS {
+        let sql: Vec<String> = sqlx::query_scalar("SELECT fcp_subject_keys($1)")
+            .bind(spelling)
+            .fetch_one(db.pg.pool())
+            .await
+            .unwrap();
+        assert_eq!(sql, *expected, "{spelling:?}");
+        assert_eq!(fcp_core::subject::keys(spelling), sql, "{spelling:?}");
+    }
+    db.finish().await;
+}
+
+#[tokio::test]
+async fn a_hold_keeps_what_it_covers_from_every_deletion_until_released() {
+    use fcp_core::legal_hold::{
+        DataClass, HoldRelease, HoldScope, LegalHold, LegalHoldViolation, SubjectIdentifier,
+    };
+    use fcp_core::storage::TenantStore;
+    let db = require_db!();
+    let root = tempfile::tempdir().unwrap();
+    let tenant = fcp_core::Tenant::new("held".to_string());
+    let t = tenant.id;
+    db.pg.put_tenant(tenant.clone()).await.unwrap();
+
+    // Two old calls: one with the subject, one without; a recording each.
+    let (held_call, free_call) = (CallId::new(), CallId::new());
+    let mut with_subject = record(t, held_call, "", days_ago(40));
+    with_subject.to_uri = "sip:+1 (415) 555-0100@carrier.example".into();
+    let without = record(t, free_call, "", days_ago(40));
+    db.pg
+        .insert_cdrs(vec![with_subject, without])
+        .await
+        .unwrap();
+    let recordings = db.storage.call_recording_store().unwrap();
+    let mut rec_ids = Vec::new();
+    for call in [held_call, free_call] {
+        let mut r = CallRecording::starting(
+            t,
+            call.to_string(),
+            CallRecordingSource::Api,
+            file(&root.path().join(format!("{call}.wav")), 40),
+        );
+        r.started_at = days_ago(40);
+        recordings.create_call_recording(&r).await.unwrap();
+        rec_ids.push(r.id);
+    }
+    // A mailbox whose old message is from the subject, and one that is not.
+    let (number, mb) = mailbox(&db, t, "+14155550999").await;
+    let mut from_subject = VoicemailMessage::new(
+        mb.id.clone(),
+        "4155550100".into(),
+        3,
+        root.path().join("m1.wav"),
+    );
+    from_subject.created_at = days_ago(40);
+    db.pg.put_message(from_subject.clone()).await.unwrap();
+    let mut other = VoicemailMessage::new(
+        mb.id.clone(),
+        "+442071234567".into(),
+        3,
+        root.path().join("m2.wav"),
+    );
+    other.created_at = days_ago(40);
+    db.pg.put_message(other.clone()).await.unwrap();
+
+    // The subject, by a national spelling of their number.
+    let keys = fcp_core::legal_hold::expand_subjects(
+        &db.storage,
+        &t,
+        &[SubjectIdentifier::Number {
+            number: "+14155550100".into(),
+        }],
+    )
+    .await
+    .unwrap();
+    let hold = LegalHold {
+        id: fcp_core::LegalHoldId::new(),
+        tenant_id: t,
+        matter: "Case 42".into(),
+        reason: None,
+        scope: HoldScope {
+            to: Some(days_ago(1)),
+            subjects: vec![SubjectIdentifier::Number {
+                number: "+14155550100".into(),
+            }],
+            ..Default::default()
+        },
+        subject_keys: keys,
+        created_by: "counsel".into(),
+        created_at: SystemTime::now(),
+        released: None,
+    };
+    db.compliance.place_hold(&hold).await.unwrap();
+    let listed = db.compliance.list_holds(&t, false).await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].scope.subjects, hold.scope.subjects);
+
+    // Retention keeps what the hold covers and deletes the rest.
+    let report = run_retention(&db.storage, &policy_all(t, 30), "retention-test").await;
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert_eq!(
+        (
+            report.cdrs_deleted,
+            report.recordings_deleted,
+            report.voicemail_messages_deleted
+        ),
+        (1, 1, 1)
+    );
+    assert_eq!(report.held.get("cdr"), Some(&1), "{:?}", report.held);
+    assert_eq!(report.held.get("call_recording"), Some(&1));
+    assert_eq!(report.held.get("voicemail"), Some(&1));
+    assert!(db.pg.get_cdr(&held_call).await.unwrap().is_some());
+    assert!(db.pg.get_cdr(&free_call).await.unwrap().is_none());
+    assert!(db.pg.get_message(&from_subject.id).await.unwrap().is_some());
+    assert!(db.pg.get_message(&other.id).await.unwrap().is_none());
+    let runs = db.compliance.list_retention_runs(&t, 1).await;
+    assert!(runs.is_ok());
+
+    // The counts and the single-item check.
+    let counts = db.compliance.held_counts(&t, &hold.id).await.unwrap();
+    let count = |class: DataClass| {
+        counts
+            .iter()
+            .find(|(c, _)| *c == class)
+            .and_then(|(_, n)| *n)
+    };
+    assert_eq!(
+        (
+            count(DataClass::Cdr),
+            count(DataClass::CallRecording),
+            count(DataClass::Voicemail)
+        ),
+        (Some(1), Some(1), Some(1))
+    );
+    assert_eq!(
+        db.compliance
+            .hold_on(&t, DataClass::Voicemail, &from_subject.id)
+            .await
+            .unwrap(),
+        Some(hold.id)
+    );
+
+    // Every other way in is refused, cascades and the tenant included.
+    let violation = |e: anyhow::Error| e.downcast::<LegalHoldViolation>().map(|v| v.hold_id).ok();
+    assert_eq!(
+        violation(db.pg.delete_message(&from_subject.id).await.unwrap_err()),
+        Some(hold.id.to_string())
+    );
+    assert_eq!(
+        violation(db.pg.delete_phone_number(&number.id).await.unwrap_err()),
+        Some(hold.id.to_string()),
+        "the number's cascade reaches a held message"
+    );
+    assert!(db.pg.get_message(&from_subject.id).await.unwrap().is_some());
+    let raw = sqlx::query("DELETE FROM cdrs WHERE call_id = $1")
+        .bind(held_call.to_string())
+        .execute(db.pg.pool())
+        .await
+        .unwrap_err();
+    assert_eq!(
+        raw.as_database_error().and_then(|d| d.code()).as_deref(),
+        Some("HLD01")
+    );
+    assert!(violation(db.pg.delete_tenant(&t).await.unwrap_err()).is_some());
+
+    // Released, the next run deletes it all.
+    let release = HoldRelease {
+        by: "counsel".into(),
+        at: SystemTime::now(),
+        reason: "settled".into(),
+    };
+    assert!(db
+        .compliance
+        .release_hold(&t, &hold.id, &release)
+        .await
+        .unwrap());
+    assert!(
+        !db.compliance
+            .release_hold(&t, &hold.id, &release)
+            .await
+            .unwrap(),
+        "once"
+    );
+    let report = run_retention(&db.storage, &policy_all(t, 30), "retention-test").await;
+    assert_eq!(
+        (
+            report.cdrs_deleted,
+            report.recordings_deleted,
+            report.voicemail_messages_deleted
+        ),
+        (1, 1, 1),
+        "{:?}",
+        report.errors
+    );
+    assert!(report.held.is_empty());
+    let kept = db.compliance.list_holds(&t, true).await.unwrap();
+    assert_eq!(
+        kept[0].released.as_ref().map(|r| r.reason.as_str()),
+        Some("settled"),
+        "never deleted"
+    );
+    let _ = rec_ids;
+
+    db.finish().await;
+}
+
+#[tokio::test]
+async fn a_tenant_wide_hold_covers_traces_audit_and_rooms_and_only_its_window() {
+    use fcp_core::legal_hold::{DataClass, HoldScope, LegalHold};
+    let db = require_db!();
+    let t = TenantId::new();
+    let call = CallId::new();
+    db.pg
+        .insert_cdrs(vec![record(t, call, "", days_ago(40))])
+        .await
+        .unwrap();
+    // A trace captured before its tenant was known.
+    db.storage
+        .sip_trace_store()
+        .unwrap()
+        .insert_sip_trace(&SipTraceMessage {
+            id: 0,
+            call_id: call.to_string(),
+            sip_call_id: "x@y".into(),
+            tenant_id: "_system".into(),
+            timestamp: days_ago(40),
+            direction: "inbound".into(),
+            method_or_status: "INVITE".into(),
+            cseq: "1 INVITE".into(),
+            from_uri: "sip:alice@a.example".into(),
+            to_uri: "sip:bob@a.example".into(),
+            source_addr: String::new(),
+            dest_addr: String::new(),
+            transport: "udp".into(),
+            raw_message: String::new(),
+            node_id: None,
+        })
+        .await
+        .unwrap();
+    let store = db.storage.recording_store().unwrap();
+    let mut room = Recording::starting(
+        t,
+        "8001",
+        "node-a",
+        "/r/room.wav",
+        RecordingFormat::Wav,
+        RecordingTrigger::Auto,
+    );
+    room.started_at = days_ago(40);
+    room.ended_at = Some(days_ago(40));
+    store.create_recording(&room).await.unwrap();
+    let mut recent = Recording::starting(
+        t,
+        "8001",
+        "node-a",
+        "/r/recent.wav",
+        RecordingFormat::Wav,
+        RecordingTrigger::Auto,
+    );
+    recent.started_at = days_ago(20);
+    recent.ended_at = Some(days_ago(20));
+    store.create_recording(&recent).await.unwrap();
+
+    // Everything from 50 to 30 days ago, of three classes.
+    let hold = LegalHold {
+        id: fcp_core::LegalHoldId::new(),
+        tenant_id: t,
+        matter: "Audit".into(),
+        reason: Some("regulator".into()),
+        scope: HoldScope {
+            from: Some(days_ago(50)),
+            to: Some(days_ago(30)),
+            classes: vec![
+                DataClass::SipTrace,
+                DataClass::ConferenceRecording,
+                DataClass::Cdr,
+            ],
+            ..Default::default()
+        },
+        subject_keys: Vec::new(),
+        created_by: "counsel".into(),
+        created_at: SystemTime::now(),
+        released: None,
+    };
+    db.compliance.place_hold(&hold).await.unwrap();
+
+    // The node's sweep does not see the held recording; it does the other.
+    let expired = store.expired_recordings(&t, days_ago(10)).await.unwrap();
+    assert_eq!(
+        expired.iter().map(|r| r.id).collect::<Vec<_>>(),
+        vec![recent.id]
+    );
+    let report = run_retention(&db.storage, &policy_all(t, 10), "retention-test").await;
+    assert_eq!(
+        (report.cdrs_deleted, report.sip_traces_deleted),
+        (0, 0),
+        "{:?}",
+        report.errors
+    );
+    assert_eq!(report.held.get("sip_trace"), Some(&1));
+    // A trace still under `_system` is refused through its call's tenant.
+    let raw = sqlx::query("DELETE FROM sip_trace_messages")
+        .execute(db.pg.pool())
+        .await
+        .unwrap_err();
+    assert_eq!(
+        raw.as_database_error().and_then(|d| d.code()).as_deref(),
+        Some("HLD01")
+    );
+
+    db.finish().await;
+}

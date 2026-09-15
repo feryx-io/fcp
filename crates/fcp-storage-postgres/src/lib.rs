@@ -36,6 +36,7 @@ mod deletion;
 pub mod emergency;
 pub mod encryption;
 pub mod flow_trace;
+mod holds;
 pub mod prompt;
 pub mod recording;
 pub mod sip_trace;
@@ -1361,10 +1362,12 @@ impl TenantStore for PostgresStorage {
     }
 
     async fn delete_tenant(&self, id: &TenantId) -> Result<()> {
-        sqlx::query("DELETE FROM tenants WHERE id = $1")
-            .bind(id.to_string())
-            .execute(self.writes())
-            .await?;
+        // Refused while the tenant holds anything (migration 063).
+        deletion::execute(
+            self.writes(),
+            sqlx::query("DELETE FROM tenants WHERE id = $1").bind(id.to_string()),
+        )
+        .await?;
 
         debug!(id = %id, "Tenant deleted");
         Ok(())
@@ -1570,19 +1573,26 @@ impl CdrStore for PostgresStorage {
         // In batches, so a tenant's first sweep over years of records is
         // many short transactions rather than one long one.
         const BATCH: i64 = 10_000;
+        // A held record is left where it is (docs/COMPLIANCE_FOLLOWUPS.md §5).
+        let held = if deletion::tenant_has_holds(self.writes(), &tenant_id.to_string()).await? {
+            " AND fcp_cdr_hold(tenant_id, start_time, from_uri, to_uri, call_id) IS NULL"
+        } else {
+            ""
+        };
+        let sql = format!(
+            "DELETE FROM cdrs WHERE (cdr_id, start_time) IN (
+                 SELECT cdr_id, start_time FROM cdrs
+                 WHERE tenant_id = $1 AND start_time < $2{held}
+                 LIMIT $3)"
+        );
         let mut deleted = 0;
         loop {
             let batch = deletion::execute(
                 self.writes(),
-                sqlx::query(
-                    "DELETE FROM cdrs WHERE (cdr_id, start_time) IN (
-                         SELECT cdr_id, start_time FROM cdrs
-                         WHERE tenant_id = $1 AND start_time < $2
-                         LIMIT $3)",
-                )
-                .bind(tenant_id.to_string())
-                .bind(system_time_to_datetime(before))
-                .bind(BATCH),
+                sqlx::query(&sql)
+                    .bind(tenant_id.to_string())
+                    .bind(system_time_to_datetime(before))
+                    .bind(BATCH),
             )
             .await?;
             deleted += batch;
@@ -1800,6 +1810,22 @@ impl CdrStore for PostgresStorage {
 
     async fn cdr_archive_status(&self) -> Result<fcp_core::cdr_archive::CdrArchiveStatus> {
         cdr_archive::status(&self.pool).await
+    }
+
+    async fn cdr_archive_lock_changes(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<(TenantId, chrono::NaiveDate, String, bool)>> {
+        cdr_archive::lock_changes(&self.pool, limit).await
+    }
+
+    async fn set_cdr_archive_locked(
+        &self,
+        tenant_id: &TenantId,
+        day: chrono::NaiveDate,
+        locked: bool,
+    ) -> Result<()> {
+        cdr_archive::set_locked(self.writes(), tenant_id, day, locked).await
     }
 }
 
@@ -6667,9 +6693,13 @@ impl VoicemailStore for PostgresStorage {
     ) -> Result<u64> {
         Ok(deletion::execute(
             self.writes(),
-            sqlx::query("DELETE FROM voicemail_messages WHERE tenant_id = $1 AND created_at < $2")
-                .bind(tenant_id.to_string())
-                .bind(system_time_to_datetime(before)),
+            sqlx::query(
+                "DELETE FROM voicemail_messages
+                 WHERE tenant_id = $1 AND created_at < $2
+                   AND fcp_voicemail_hold(tenant_id, created_at, caller, mailbox_id) IS NULL",
+            )
+            .bind(tenant_id.to_string())
+            .bind(system_time_to_datetime(before)),
         )
         .await?)
     }
@@ -6681,7 +6711,8 @@ impl VoicemailStore for PostgresStorage {
                 "DELETE FROM voicemail_messages m USING voicemail_mailboxes mb
                  WHERE mb.id = m.mailbox_id AND mb.retention_days IS NOT NULL
                    AND mb.retention_days > 0
-                   AND m.created_at < now() - make_interval(days => mb.retention_days)",
+                   AND m.created_at < now() - make_interval(days => mb.retention_days)
+                   AND fcp_voicemail_hold(m.tenant_id, m.created_at, m.caller, m.mailbox_id) IS NULL",
             ),
         )
         .await?)
@@ -6690,8 +6721,12 @@ impl VoicemailStore for PostgresStorage {
     async fn purge_deleted_messages(&self, before: SystemTime) -> Result<u64> {
         Ok(deletion::execute(
             self.writes(),
-            sqlx::query("DELETE FROM voicemail_messages WHERE deleted_at < $1")
-                .bind(system_time_to_datetime(before)),
+            sqlx::query(
+                "DELETE FROM voicemail_messages
+                 WHERE deleted_at < $1
+                   AND fcp_voicemail_hold(tenant_id, created_at, caller, mailbox_id) IS NULL",
+            )
+            .bind(system_time_to_datetime(before)),
         )
         .await?)
     }

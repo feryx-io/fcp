@@ -458,24 +458,37 @@ impl VoicemailService {
 
         // Delete from database; the deletion log names the mailbox's owner,
         // who deleted it from the phone.
-        fcp_core::compliance::deleting_as(
+        let deleted = fcp_core::compliance::deleting_as(
             fcp_core::compliance::Deleter::new(
                 fcp_core::compliance::DeletionCause::Manual,
                 format!("phone:{mailbox_id}"),
             ),
             self.storage.delete_message(message_id),
         )
-        .await
-        .context("Failed to delete message from database")?;
-
-        // Delete audio file
-        if message.recording_path.exists() {
-            tokio::fs::remove_file(&message.recording_path)
-                .await
-                .context("Failed to delete recording file")?;
+        .await;
+        match deleted {
+            Ok(()) => {
+                // Delete audio file
+                if message.recording_path.exists() {
+                    tokio::fs::remove_file(&message.recording_path)
+                        .await
+                        .context("Failed to delete recording file")?;
+                }
+                info!("Message deleted successfully");
+            }
+            // Under a legal hold the listener's delete takes it out of their
+            // mailbox and the message stays (docs/COMPLIANCE_FOLLOWUPS.md §5).
+            Err(e) if e.is::<fcp_core::legal_hold::LegalHoldViolation>() => {
+                let mut kept = message.clone();
+                kept.status = fcp_core::MessageStatus::Deleted;
+                self.storage
+                    .put_message(kept)
+                    .await
+                    .context("Failed to mark a held message deleted")?;
+                info!(error = %e, "Message marked deleted and kept under a legal hold");
+            }
+            Err(e) => return Err(e).context("Failed to delete message from database"),
         }
-
-        info!("Message deleted successfully");
 
         // Update MWI
         if let Err(e) = self.send_mwi(&mailbox_id).await {
@@ -770,6 +783,126 @@ mod tests {
 
     // Note: Full integration tests require storage backend and media manager mocks
     // These would be added in a separate test module with proper mocking
+
+    /// A mailbox store whose one message a legal hold covers: its delete is
+    /// refused the way the Postgres backend refuses it.
+    #[derive(Default)]
+    struct HeldStore {
+        messages: std::sync::Mutex<std::collections::HashMap<String, fcp_core::VoicemailMessage>>,
+    }
+
+    #[async_trait::async_trait]
+    impl VoicemailStore for HeldStore {
+        async fn get_mailbox(&self, _: &str) -> anyhow::Result<Option<fcp_core::VoicemailMailbox>> {
+            Ok(None)
+        }
+        async fn get_mailbox_by_line_binding(
+            &self,
+            _: &fcp_core::LineBindingId,
+        ) -> anyhow::Result<Option<fcp_core::VoicemailMailbox>> {
+            Ok(None)
+        }
+        async fn get_mailbox_by_user(
+            &self,
+            _: &fcp_core::UserId,
+        ) -> anyhow::Result<Option<fcp_core::VoicemailMailbox>> {
+            Ok(None)
+        }
+        async fn get_mailbox_by_extension(
+            &self,
+            _: &fcp_core::TenantId,
+            _: &str,
+        ) -> anyhow::Result<Option<fcp_core::VoicemailMailbox>> {
+            Ok(None)
+        }
+        async fn list_mailboxes(
+            &self,
+            _: &fcp_core::TenantId,
+        ) -> anyhow::Result<Vec<fcp_core::VoicemailMailbox>> {
+            Ok(Vec::new())
+        }
+        async fn put_mailbox(&self, _: fcp_core::VoicemailMailbox) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn delete_mailbox(&self, _: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn get_message(
+            &self,
+            id: &str,
+        ) -> anyhow::Result<Option<fcp_core::VoicemailMessage>> {
+            Ok(self.messages.lock().unwrap().get(id).cloned())
+        }
+        async fn list_messages(&self, _: &str) -> anyhow::Result<Vec<fcp_core::VoicemailMessage>> {
+            Ok(Vec::new())
+        }
+        async fn list_messages_by_status(
+            &self,
+            _: &str,
+            _: fcp_core::MessageStatus,
+        ) -> anyhow::Result<Vec<fcp_core::VoicemailMessage>> {
+            Ok(Vec::new())
+        }
+        async fn put_message(&self, message: fcp_core::VoicemailMessage) -> anyhow::Result<()> {
+            self.messages
+                .lock()
+                .unwrap()
+                .insert(message.id.clone(), message);
+            Ok(())
+        }
+        async fn delete_message(&self, _: &str) -> anyhow::Result<()> {
+            Err(anyhow::Error::new(
+                fcp_core::legal_hold::LegalHoldViolation {
+                    hold_id: "hold-test".into(),
+                },
+            ))
+        }
+        async fn get_mwi_status(&self, _: &str) -> anyhow::Result<fcp_core::MwiStatus> {
+            anyhow::bail!("no MWI in this test")
+        }
+        async fn get_mailbox_stats(&self, _: &str) -> anyhow::Result<fcp_core::VoicemailStats> {
+            anyhow::bail!("no stats in this test")
+        }
+    }
+
+    #[tokio::test]
+    async fn a_held_message_deleted_from_the_phone_is_marked_deleted_and_kept() {
+        let dir = std::env::temp_dir().join(format!("vm-held-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let audio = dir.join("held.wav");
+        std::fs::write(&audio, b"audio").unwrap();
+        let store = Arc::new(HeldStore::default());
+        let message = fcp_core::VoicemailMessage::new(
+            "mbx-1".into(),
+            "+14155550100".into(),
+            3,
+            audio.clone(),
+        );
+        store.put_message(message.clone()).await.unwrap();
+        let media = Arc::new(
+            MediaManager::new(fcp_media::MediaConfig {
+                rtp_port_start: 23000,
+                rtp_port_end: 23100,
+                ..Default::default()
+            })
+            .await
+            .unwrap(),
+        );
+        let service = VoicemailService::new(
+            store.clone(),
+            media,
+            VoicemailConfig {
+                recordings_dir: dir.clone(),
+                ..VoicemailConfig::default()
+            },
+        );
+
+        service.delete_message(&message.id).await.unwrap();
+        let kept = store.get_message(&message.id).await.unwrap().unwrap();
+        assert_eq!(kept.status, fcp_core::MessageStatus::Deleted);
+        assert!(audio.exists(), "the audio stays with the held message");
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     #[test]
     fn test_config_defaults() {

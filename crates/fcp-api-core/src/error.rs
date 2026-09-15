@@ -68,7 +68,21 @@ impl IntoResponse for ApiError {
 
 impl From<anyhow::Error> for ApiError {
     fn from(err: anyhow::Error) -> Self {
-        ApiError::Internal(err.to_string())
+        ApiError::storage(err)
+    }
+}
+
+impl ApiError {
+    /// A storage error: a delete a legal hold refused is a conflict the
+    /// caller can act on (release the hold), anything else is internal.
+    pub fn storage(err: anyhow::Error) -> Self {
+        match err.downcast_ref::<fcp_core::legal_hold::LegalHoldViolation>() {
+            Some(v) => ApiError::Conflict(format!(
+                "held by legal hold {} (docs/COMPLIANCE.md: legal holds)",
+                v.hold_id
+            )),
+            None => ApiError::Internal(err.to_string()),
+        }
     }
 }
 

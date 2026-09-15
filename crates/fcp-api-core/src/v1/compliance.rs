@@ -501,3 +501,268 @@ pub async fn list_deletions(
         .collect();
     Ok(Json(out))
 }
+
+// ─── Legal holds (docs/COMPLIANCE_FOLLOWUPS.md §5) ───────────────────────
+
+use fcp_core::legal_hold::{DataClass, HoldRelease, HoldScope, LegalHold, SubjectIdentifier};
+
+#[derive(Debug, Deserialize)]
+pub struct PlaceHoldRequest {
+    pub matter: String,
+    #[serde(default)]
+    pub reason: Option<String>,
+    /// Unix seconds; data from this instant.
+    #[serde(default)]
+    pub from: Option<u64>,
+    /// Unix seconds; data before this instant.
+    #[serde(default)]
+    pub to: Option<u64>,
+    #[serde(default)]
+    pub subjects: Vec<SubjectIdentifier>,
+    #[serde(default)]
+    pub call_ids: Vec<String>,
+    #[serde(default)]
+    pub classes: Vec<DataClass>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ReleaseHoldRequest {
+    pub reason: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ListHoldsQuery {
+    /// Released holds too.
+    #[serde(default)]
+    pub all: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct HoldResponse {
+    pub id: String,
+    pub tenant_id: String,
+    pub matter: String,
+    pub reason: Option<String>,
+    pub from: Option<u64>,
+    pub to: Option<u64>,
+    pub subjects: Vec<SubjectIdentifier>,
+    pub call_ids: Vec<String>,
+    pub classes: Vec<DataClass>,
+    /// The subjects as the store matches them.
+    pub subject_keys: Vec<String>,
+    pub created_by: String,
+    pub created_at: u64,
+    pub active: bool,
+    pub released_by: Option<String>,
+    pub released_at: Option<u64>,
+    pub release_reason: Option<String>,
+    /// Items held now, by class; `null` for a class too large to count
+    /// quickly. Only on `GET /compliance/holds/:id`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub held: Option<std::collections::BTreeMap<String, Option<u64>>>,
+}
+
+impl From<LegalHold> for HoldResponse {
+    fn from(h: LegalHold) -> Self {
+        Self {
+            id: h.id.to_string(),
+            tenant_id: h.tenant_id.to_string(),
+            matter: h.matter,
+            reason: h.reason,
+            from: h.scope.from.map(unix_secs),
+            to: h.scope.to.map(unix_secs),
+            subjects: h.scope.subjects,
+            call_ids: h.scope.call_ids,
+            classes: h.scope.classes,
+            subject_keys: h.subject_keys,
+            created_by: h.created_by,
+            created_at: unix_secs(h.created_at),
+            active: h.released.is_none(),
+            released_by: h.released.as_ref().map(|r| r.by.clone()),
+            released_at: h.released.as_ref().map(|r| unix_secs(r.at)),
+            release_reason: h.released.map(|r| r.reason),
+            held: None,
+        }
+    }
+}
+
+fn actor_of(identity: &Option<Extension<AuthIdentity>>) -> String {
+    identity
+        .as_ref()
+        .map(|Extension(i)| i.actor())
+        .unwrap_or_else(|| "anonymous".to_string())
+}
+
+fn parse_hold_id(id: &str) -> Result<fcp_core::LegalHoldId, ApiError> {
+    id.parse()
+        .map_err(|_| ApiError::BadRequest(format!("Invalid hold id: {id}")))
+}
+
+/// `POST /compliance/holds`: place a hold.
+pub async fn place_hold(
+    State(state): State<ApiState>,
+    tenant: TenantContext,
+    identity: Option<Extension<AuthIdentity>>,
+    Json(req): Json<PlaceHoldRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    permit(&state, &identity, Permission::LegalHoldManage)?;
+    let store = require_store(&state)?;
+    let storage = state
+        .storage
+        .as_ref()
+        .ok_or_else(|| ApiError::Internal("Storage not configured".to_string()))?;
+    let matter = req.matter.trim().to_string();
+    if matter.is_empty() {
+        return Err(ApiError::BadRequest("matter is required".to_string()));
+    }
+    crate::validation::reject_crlf("matter", &matter)?;
+    if let (Some(from), Some(to)) = (req.from, req.to) {
+        if from >= to {
+            return Err(ApiError::BadRequest("from must be before to".to_string()));
+        }
+    }
+    let secs = |s: u64| UNIX_EPOCH + std::time::Duration::from_secs(s);
+    let subject_keys = fcp_core::legal_hold::expand_subjects(storage, &tenant.0, &req.subjects)
+        .await
+        .map_err(|e| ApiError::BadRequest(format!("subjects: {e}")))?;
+    let hold = LegalHold {
+        id: fcp_core::LegalHoldId::new(),
+        tenant_id: tenant.0,
+        matter,
+        reason: req.reason.filter(|r| !r.trim().is_empty()),
+        scope: HoldScope {
+            from: req.from.map(secs),
+            to: req.to.map(secs),
+            subjects: req.subjects,
+            call_ids: req.call_ids,
+            classes: req.classes,
+        },
+        subject_keys,
+        created_by: actor_of(&identity),
+        created_at: SystemTime::now(),
+        released: None,
+    };
+    store.place_hold(&hold).await.map_err(ApiError::storage)?;
+    info!(tenant_id = %tenant.0, hold = %hold.id, matter = %hold.matter, "Legal hold placed");
+    state
+        .publish_event(fcp_events::PlatformEvent::Compliance(
+            fcp_events::ComplianceEvent::HoldPlaced {
+                hold_id: hold.id.to_string(),
+                tenant_id: tenant.0,
+                matter: hold.matter.clone(),
+                actor: hold.created_by.clone(),
+                timestamp: hold.created_at,
+            },
+        ))
+        .await;
+    Ok((
+        axum::http::StatusCode::CREATED,
+        Json(HoldResponse::from(hold)),
+    ))
+}
+
+/// `GET /compliance/holds?all=`: the tenant's holds, active ones unless
+/// `all`.
+pub async fn list_holds(
+    State(state): State<ApiState>,
+    tenant: TenantContext,
+    identity: Option<Extension<AuthIdentity>>,
+    Query(q): Query<ListHoldsQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    permit(&state, &identity, Permission::LegalHoldManage)?;
+    let store = require_store(&state)?;
+    let holds = store
+        .list_holds(&tenant.0, q.all)
+        .await
+        .map_err(ApiError::storage)?;
+    Ok(Json(
+        holds
+            .into_iter()
+            .map(HoldResponse::from)
+            .collect::<Vec<_>>(),
+    ))
+}
+
+/// `GET /compliance/holds/:id`: a hold, with what it holds now.
+pub async fn get_hold(
+    State(state): State<ApiState>,
+    tenant: TenantContext,
+    identity: Option<Extension<AuthIdentity>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    permit(&state, &identity, Permission::LegalHoldManage)?;
+    let store = require_store(&state)?;
+    let id = parse_hold_id(&id)?;
+    let hold = store
+        .get_hold(&tenant.0, &id)
+        .await
+        .map_err(ApiError::storage)?
+        .ok_or_else(|| ApiError::NotFound(format!("No hold {id}")))?;
+    let counts = if hold.is_active() {
+        store
+            .held_counts(&tenant.0, &id)
+            .await
+            .map_err(ApiError::storage)?
+    } else {
+        Vec::new()
+    };
+    let mut response = HoldResponse::from(hold);
+    response.held = Some(
+        counts
+            .into_iter()
+            .map(|(class, n)| (class.as_str().to_string(), n))
+            .collect(),
+    );
+    Ok(Json(response))
+}
+
+/// `POST /compliance/holds/:id/release`: release an active hold. The hold
+/// stays, with who released it, when and why.
+pub async fn release_hold(
+    State(state): State<ApiState>,
+    tenant: TenantContext,
+    identity: Option<Extension<AuthIdentity>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Json(req): Json<ReleaseHoldRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    permit(&state, &identity, Permission::LegalHoldManage)?;
+    let store = require_store(&state)?;
+    let id = parse_hold_id(&id)?;
+    let reason = req.reason.trim().to_string();
+    if reason.is_empty() {
+        return Err(ApiError::BadRequest("a reason is required".to_string()));
+    }
+    let hold = store
+        .get_hold(&tenant.0, &id)
+        .await
+        .map_err(ApiError::storage)?
+        .ok_or_else(|| ApiError::NotFound(format!("No hold {id}")))?;
+    let release = HoldRelease {
+        by: actor_of(&identity),
+        at: SystemTime::now(),
+        reason,
+    };
+    if !store
+        .release_hold(&tenant.0, &id, &release)
+        .await
+        .map_err(ApiError::storage)?
+    {
+        return Err(ApiError::Conflict(format!("Hold {id} is already released")));
+    }
+    info!(tenant_id = %tenant.0, hold = %id, "Legal hold released");
+    state
+        .publish_event(fcp_events::PlatformEvent::Compliance(
+            fcp_events::ComplianceEvent::HoldReleased {
+                hold_id: id.to_string(),
+                tenant_id: tenant.0,
+                matter: hold.matter.clone(),
+                actor: release.by.clone(),
+                reason: release.reason.clone(),
+                timestamp: release.at,
+            },
+        ))
+        .await;
+    let mut released = hold;
+    released.released = Some(release);
+    Ok(Json(HoldResponse::from(released)))
+}

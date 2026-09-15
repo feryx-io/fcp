@@ -26,13 +26,42 @@ pub(crate) async fn attributed(
     Ok(tx)
 }
 
-/// Run one deleting statement in an attributed transaction.
+/// Run one deleting statement in an attributed transaction. A delete a
+/// legal hold refuses (migration 063's triggers) comes back as a
+/// [`LegalHoldViolation`](fcp_core::legal_hold::LegalHoldViolation).
 pub(crate) async fn execute(
     pool: &Pool<Postgres>,
     query: sqlx::query::Query<'_, Postgres, sqlx::postgres::PgArguments>,
-) -> sqlx::Result<u64> {
+) -> anyhow::Result<u64> {
     let mut tx = attributed(pool).await?;
-    let affected = query.execute(&mut *tx).await?.rows_affected();
-    tx.commit().await?;
+    let affected = match query.execute(&mut *tx).await {
+        Ok(done) => done.rows_affected(),
+        Err(e) => return Err(held(e)),
+    };
+    tx.commit().await.map_err(held)?;
     Ok(affected)
+}
+
+/// A database error, or the legal hold it names.
+pub(crate) fn held(e: sqlx::Error) -> anyhow::Error {
+    if let Some(db) = e.as_database_error() {
+        if db.code().as_deref() == Some("HLD01") {
+            let hold_id = db
+                .try_downcast_ref::<sqlx::postgres::PgDatabaseError>()
+                .and_then(|pg| pg.detail())
+                .unwrap_or_default()
+                .to_string();
+            return anyhow::Error::new(fcp_core::legal_hold::LegalHoldViolation { hold_id });
+        }
+    }
+    e.into()
+}
+
+/// Whether `tenant` holds anything: a retention delete adds the hold
+/// filter only then.
+pub(crate) async fn tenant_has_holds(pool: &Pool<Postgres>, tenant: &str) -> anyhow::Result<bool> {
+    Ok(sqlx::query_scalar("SELECT fcp_tenant_has_holds($1)")
+        .bind(tenant)
+        .fetch_one(pool)
+        .await?)
 }

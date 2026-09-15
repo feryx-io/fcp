@@ -404,7 +404,7 @@ pub async fn delete_line_binding(
     storage
         .delete_line_binding(&binding.id)
         .await
-        .map_err(|e| ApiError::Internal(format!("Failed to delete line binding: {}", e)))?;
+        .map_err(ApiError::storage)?;
 
     info!("Deleted line binding {}", id);
     Ok(StatusCode::NO_CONTENT)
