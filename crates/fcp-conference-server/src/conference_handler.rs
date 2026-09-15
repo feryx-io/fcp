@@ -1846,17 +1846,21 @@ impl ConferenceCallHandler {
             .collect()
     }
 
-    /// Someone joined a room being recorded: their name goes on the row.
-    async fn note_recording_participant(&self, room_number: &str, participant_id: &str) {
+    /// Someone joined a room being recorded: their name goes on the row,
+    /// off the join path, which is on its way to the caller's audio.
+    fn note_recording_participant(&self, room_number: &str, participant_id: &str) {
         let Some(id) = self.recordings.get(room_number).map(|r| r.record.id) else {
             return;
         };
         let joined = self.recording_participants(room_number, Some(participant_id));
-        if let Some(store) = self.storage.recording_store() {
+        let Some(store) = self.storage.recording_store().cloned() else {
+            return;
+        };
+        tokio::spawn(async move {
             if let Err(e) = store.add_recording_participants(&id, &joined).await {
                 warn!(recording = %id, error = %e, "Could not add a participant to the recording's row");
             }
-        }
+        });
     }
 
     /// Complete a per-participant recording's row, if one is under way.
@@ -7043,8 +7047,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             let mut welcome_played = false;
 
             // Whoever joins a room being recorded is named on its row.
-            self.note_recording_participant(&room_number, &participant_id)
-                .await;
+            self.note_recording_participant(&room_number, &participant_id);
 
             // A room being recorded tells whoever joins, when the
             // tenant's policy asks for an announcement (§11,
