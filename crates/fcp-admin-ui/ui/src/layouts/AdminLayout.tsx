@@ -5,7 +5,7 @@ import {
   Link2, Building2, MapPin, Settings, LogOut, Moon, Sun, Monitor, Menu,
   ChevronLeft, PhoneCall, FileText, Headphones, Voicemail,
   Radio, Activity, Server, Shield, Workflow, Globe, Key,
-  ScrollText, Search, X, FileAudio, Video, Disc,
+  ScrollText, Search, X, FileAudio, Video, Disc, Siren,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -50,6 +50,7 @@ const navItems: NavItem[] = [
   { label: 'Presence', href: '/admin/presence', icon: Radio, section: 'Operations' },
   { label: 'Audio Prompts', href: '/admin/prompts', icon: FileAudio, section: 'Operations' },
   { label: 'Events', href: '/admin/events', icon: Activity, section: 'Operations' },
+  { label: 'Emergency', href: '/admin/emergency', icon: Siren, section: 'Operations' },
   // Advanced
   { label: 'SIP Trunks', href: '/admin/trunks', icon: Server, section: 'Advanced' },
   { label: 'Routing Rules', href: '/admin/routing', icon: Shield, section: 'Advanced' },

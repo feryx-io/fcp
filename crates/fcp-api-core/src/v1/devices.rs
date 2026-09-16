@@ -277,14 +277,30 @@ pub struct UpdateDeviceRequest {
     pub supports_blf: Option<bool>,
     pub location: Option<String>,
     pub location_id: Option<String>,
-    pub e911_override: Option<E911AddressResponse>,
+    /// The address for this phone alone. `null` removes it, so a phone
+    /// that goes back to its site stops carrying where it used to be
+    /// (`docs/E911.md`).
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub e911_override: Option<Option<E911AddressResponse>>,
     /// Trust this device's own location (`docs/E911_BLOCK_2.md` §6.3).
-    pub e911_trust_location: Option<bool>,
+    /// `null` returns it to whatever the tenant trusts its device type with.
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub e911_trust_location: Option<Option<bool>>,
     pub provisioning_url: Option<String>,
     pub config_template_id: Option<String>,
     /// Set or rotate the per-device provisioning token. An empty string clears it.
     pub provisioning_token: Option<String>,
     pub enabled: Option<bool>,
+}
+
+/// Tell "absent" from "present and null", so a field can be cleared.
+fn deserialize_double_option<'de, D, T>(d: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    use serde::Deserialize;
+    Option::<T>::deserialize(d).map(Some)
 }
 
 /// List devices.
@@ -684,11 +700,16 @@ pub async fn update_device(
     }
 
     if let Some(e911) = req.e911_override {
-        device.set_e911_override(e911.into());
+        match e911 {
+            // Removing an override puts the phone back on its site's
+            // address; a stale one would dispatch to where it used to be.
+            None => device.e911_override = None,
+            Some(address) => device.set_e911_override(address.into()),
+        }
     }
 
-    if req.e911_trust_location.is_some() {
-        device.e911_trust_location = req.e911_trust_location;
+    if let Some(trust) = req.e911_trust_location {
+        device.e911_trust_location = trust;
     }
 
     if req.provisioning_url.is_some() {

@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
-import { MoreHorizontal, Plus, ArrowUpDown, Pencil, Trash2, Upload, Download, CheckCircle2, XCircle, Loader2, FileUp, AlertCircle } from 'lucide-react'
+import { MoreHorizontal, Plus, ArrowUpDown, Pencil, Trash2, Upload, Download, CheckCircle2, XCircle, Loader2, FileUp, AlertCircle, ShieldCheck } from 'lucide-react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
@@ -19,8 +19,8 @@ import {
 } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
-import { locations, tenants } from '@/api/endpoints'
-import type { Location, CreateLocationRequest } from '@/types'
+import { emergency, locations, tenants } from '@/api/endpoints'
+import type { AddressValidation, Location, CreateLocationRequest } from '@/types'
 import { TenantField, useEffectiveTenantId, useTenantListFilter, useShowTenantColumn } from '@/components/TenantSelector'
 
 const TIMEZONES: Record<string, string[]> = (() => {
@@ -49,6 +49,7 @@ const createSchema = z.object({
   timezone: z.string().optional(),
   emergency_contact_name: z.string().optional(),
   emergency_contact_phone: z.string().optional(),
+  e911_callback_number: z.string().optional(),
   tenant_id: z.string().optional(),
 })
 
@@ -102,6 +103,23 @@ export function LocationsPage() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['locations'] }),
   })
 
+  // Address validation (docs/E911.md): the configured validator answers,
+  // the normalised address is written back, and editing it clears the mark.
+  const [validation, setValidation] = useState<{
+    name: string
+    result: AddressValidation | null
+    error: string | null
+  } | null>(null)
+  const validateMutation = useMutation({
+    mutationFn: ({ id }: { id: string; name: string }) => emergency.validateLocation(id),
+    onSuccess: (res, { name }) => {
+      queryClient.invalidateQueries({ queryKey: ['locations'] })
+      queryClient.invalidateQueries({ queryKey: ['emergency-readiness'] })
+      setValidation({ name, result: res.validation, error: null })
+    },
+    onError: (e: Error, { name }) => setValidation({ name, result: null, error: e.message }),
+  })
+
   const columns: ColumnDef<Location>[] = [
     {
       accessorKey: 'name',
@@ -143,6 +161,22 @@ export function LocationsPage() {
         <Badge variant="secondary">{row.original.timezone}</Badge>
       ) : '-',
     },
+    {
+      id: 'e911',
+      header: 'E911',
+      cell: ({ row }) => (
+        <div className="space-y-1">
+          <span className="font-mono text-xs">{row.original.e911_callback_number || 'no ELIN'}</span>
+          <div>
+            {row.original.e911_validated ? (
+              <Badge variant="success">validated</Badge>
+            ) : (
+              <Badge variant="outline">not validated</Badge>
+            )}
+          </div>
+        </div>
+      ),
+    },
     ...(showTenantColumn
       ? ([
           {
@@ -165,6 +199,14 @@ export function LocationsPage() {
             <DropdownMenuItem onClick={() => setEditItem(row.original)}>
               <Pencil className="mr-2 h-4 w-4" />
               Edit
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={() =>
+                validateMutation.mutate({ id: row.original.id, name: row.original.name })
+              }
+            >
+              <ShieldCheck className="mr-2 h-4 w-4" />
+              Validate address
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem
@@ -211,6 +253,7 @@ export function LocationsPage() {
       timezone: editItem.timezone || '',
       emergency_contact_name: editItem.emergency_contact_name || '',
       emergency_contact_phone: editItem.emergency_contact_phone || '',
+      e911_callback_number: editItem.e911_callback_number || '',
       tenant_id: editItem.tenant_id ?? '',
     })
   }
@@ -232,6 +275,7 @@ export function LocationsPage() {
     timezone: data.timezone || undefined,
     emergency_contact_name: data.emergency_contact_name || undefined,
     emergency_contact_phone: data.emergency_contact_phone || undefined,
+    e911_callback_number: data.e911_callback_number || undefined,
   })
 
   const onCreateSubmit = (data: CreateForm) => {
@@ -335,6 +379,14 @@ export function LocationsPage() {
           <Input id="f-emergency_contact_phone" {...form.register('emergency_contact_phone')} />
         </div>
       </div>
+      <div className="space-y-2">
+        <Label htmlFor="f-e911_callback_number">E911 Callback Number (ELIN)</Label>
+        <Input id="f-e911_callback_number" placeholder="+15185550100" {...form.register('e911_callback_number')} />
+        <p className="text-xs text-muted-foreground">
+          The number the carrier maps to this address. It is the caller ID on emergency calls from
+          here, and what a PSAP calls back. Editing the address clears its validation.
+        </p>
+      </div>
 
       {/* Coordinates */}
       <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider pt-2">Coordinates</p>
@@ -378,6 +430,66 @@ export function LocationsPage() {
       ) : (
         <DataTable columns={columns} data={items} searchKey="name" searchPlaceholder="Search locations..." />
       )}
+
+      {/* What the validator said (docs/E911.md, "Address validation") */}
+      <Dialog open={!!validation} onOpenChange={() => setValidation(null)}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{validation?.name}</DialogTitle>
+            <DialogDescription>
+              {validation?.result?.valid
+                ? 'The address was accepted and stored in its normalised form.'
+                : 'The address was not accepted; nothing was changed.'}
+            </DialogDescription>
+          </DialogHeader>
+          {validation?.error && <p className="text-sm text-destructive">{validation.error}</p>}
+          {validation?.result && (
+            <div className="space-y-3 text-sm">
+              <div className="flex items-center gap-2">
+                {validation.result.valid ? (
+                  <Badge variant="success">validated by {validation.result.validator}</Badge>
+                ) : (
+                  <Badge variant="destructive">refused by {validation.result.validator}</Badge>
+                )}
+              </div>
+              {validation.result.issues.length > 0 && (
+                <div>
+                  <p className="text-xs text-muted-foreground">What is wrong</p>
+                  <ul className="list-disc pl-5">
+                    {validation.result.issues.map((issue) => (
+                      <li key={issue} className="text-destructive">{issue}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {validation.result.notes.length > 0 && (
+                <div>
+                  <p className="text-xs text-muted-foreground">What it could not do</p>
+                  <ul className="list-disc pl-5">
+                    {validation.result.notes.map((note) => (
+                      <li key={note}>{note}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              <div>
+                <p className="text-xs text-muted-foreground">The address as it is now held</p>
+                <p>
+                  {validation.result.normalized.address1}, {validation.result.normalized.city},{' '}
+                  {validation.result.normalized.state} {validation.result.normalized.postal_code}
+                </p>
+                {validation.result.normalized.street_name && (
+                  <p className="text-xs text-muted-foreground">
+                    house {validation.result.normalized.house_number ?? '-'} · street{' '}
+                    {validation.result.normalized.street_name} · suffix{' '}
+                    {validation.result.normalized.street_suffix ?? '-'}
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
 
       {/* Create Dialog */}
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
@@ -442,6 +554,7 @@ const EXPORT_COLUMNS = [
   'name', 'description', 'address_line1', 'address_line2', 'city', 'state',
   'postal_code', 'country', 'floor', 'building', 'latitude', 'longitude',
   'phone_number', 'timezone', 'emergency_contact_name', 'emergency_contact_phone',
+  'e911_callback_number',
 ] as const
 
 function escapeCSVField(value: string): string {
@@ -476,6 +589,7 @@ const IMPORT_COLUMNS = [
   'name', 'description', 'address_line1', 'address_line2', 'city', 'state',
   'postal_code', 'country', 'floor', 'building', 'latitude', 'longitude',
   'phone_number', 'timezone', 'emergency_contact_name', 'emergency_contact_phone',
+  'e911_callback_number',
 ] as const
 
 interface ParsedRow {
@@ -679,6 +793,7 @@ function BulkImportDialog({
     if (row.timezone?.trim()) req.timezone = row.timezone.trim()
     if (row.emergency_contact_name?.trim()) req.emergency_contact_name = row.emergency_contact_name.trim()
     if (row.emergency_contact_phone?.trim()) req.emergency_contact_phone = row.emergency_contact_phone.trim()
+    if (row.e911_callback_number?.trim()) req.e911_callback_number = row.e911_callback_number.trim()
     return req
   }
 

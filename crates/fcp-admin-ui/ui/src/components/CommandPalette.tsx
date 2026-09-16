@@ -4,7 +4,7 @@ import {
   LayoutDashboard, Users, Phone, MonitorSmartphone, Link2,
   Building2, PhoneCall, FileText, Headphones, Voicemail,
   Radio, Server, Shield, Workflow, Globe, Key,
-  ScrollText, Search, Disc,
+  ScrollText, Search, Disc, Siren,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import {
@@ -38,6 +38,7 @@ const commands: CommandItem[] = [
   { label: 'Number Porting', href: '/admin/porting', icon: Phone, keywords: ['port', 'transfer', 'carrier'] },
   { label: 'Recordings', href: '/admin/recordings', icon: Disc, keywords: ['recording', 'conference', 'webm', 'mp4', 'wav', 'playback'] },
   { label: 'Audit Log', href: '/admin/audit', icon: ScrollText, keywords: ['audit', 'who', 'changes'] },
+  { label: 'Emergency Calling', href: '/admin/emergency', icon: Siren, keywords: ['e911', '911', 'emergency', 'kari', 'readiness', 'notification'] },
   { label: 'API Tokens', href: '/admin/tokens', icon: Key, keywords: ['api', 'key', 'secret'] },
 ]
 

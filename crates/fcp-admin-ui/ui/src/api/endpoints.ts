@@ -3,7 +3,7 @@ import type {
   User, CreateUserRequest, UpdateUserRequest,
   Tenant, CreateTenantRequest,
   Extension, CreateExtensionRequest, UpdateExtensionRequest,
-  Device, CreateDeviceRequest,
+  Device, CreateDeviceRequest, UpdateDeviceRequest,
   Location, CreateLocationRequest,
   PhoneNumber, CreatePhoneNumberRequest,
   LineBinding, CreateLineBindingRequest, UpdateLineBindingRequest,
@@ -23,6 +23,10 @@ import type {
   SystemStatus,
   PortRequest, CreatePortRequest,
   AuditEntry, AuditQueryParams, DeletionEntry, DeletionQueryParams,
+  EmergencyConfig, UpdateEmergencyConfigRequest, EmergencyReadiness,
+  EmergencyNetwork, CreateEmergencyNetworkRequest, EmergencyCall,
+  EmergencyNotification, AddressValidation, LocationValidationResponse,
+  DeviceValidationResponse, NumberValidationResponse, E911AddressInput,
   ConferenceRecording, RecordingQueryParams, ListRecordingsResponse,
   ApiToken, CreateApiTokenRequest, CreateApiTokenResponse,
   ClusterNodesResponse, ClusterStatsResponse,
@@ -95,7 +99,12 @@ export const devices = {
   list: () => apiClient.get<Device[]>('/devices'),
   get: (id: string) => apiClient.get<Device>(`/devices/${encodeURIComponent(id)}`),
   create: (data: CreateDeviceRequest) => apiClient.post<Device>('/devices', data),
-  update: (id: string, data: Partial<CreateDeviceRequest>) =>
+  /**
+   * `e911_override: null` removes the device's own address, and
+   * `e911_trust_location: null` returns it to the tenant's device types
+   * (`docs/E911.md`); every other field is left alone when it is absent.
+   */
+  update: (id: string, data: UpdateDeviceRequest) =>
     apiClient.patch<Device>(`/devices/${encodeURIComponent(id)}`, data),
   delete: (id: string) => apiClient.delete<void>(`/devices/${encodeURIComponent(id)}`),
 }
@@ -493,6 +502,40 @@ export const auditLog = {
   list: (params?: AuditQueryParams) => apiClient.get<AuditEntry[]>(`/audit-log${query(params)}`),
   deletions: (params?: DeletionQueryParams) =>
     apiClient.get<DeletionEntry[]>(`/compliance/deletions${query(params)}`),
+}
+
+// Emergency calling (E911), docs/E911.md
+export const emergency = {
+  config: () => apiClient.get<EmergencyConfig>('/emergency/config'),
+  updateConfig: (data: UpdateEmergencyConfigRequest) =>
+    apiClient.put<EmergencyConfig>('/emergency/config', data),
+  readiness: () => apiClient.get<EmergencyReadiness>('/emergency/readiness'),
+  networks: () => apiClient.get<EmergencyNetwork[]>('/emergency/networks'),
+  createNetwork: (data: CreateEmergencyNetworkRequest) =>
+    apiClient.post<EmergencyNetwork>('/emergency/networks', data),
+  updateNetwork: (id: string, data: Partial<CreateEmergencyNetworkRequest>) =>
+    apiClient.patch<EmergencyNetwork>(`/emergency/networks/${encodeURIComponent(id)}`, data),
+  deleteNetwork: (id: string) =>
+    apiClient.delete<void>(`/emergency/networks/${encodeURIComponent(id)}`),
+  calls: (limit = 100) => apiClient.get<EmergencyCall[]>(`/emergency/calls?limit=${limit}`),
+  notifications: (callId: string) =>
+    apiClient.get<EmergencyNotification[]>(
+      `/emergency/calls/${encodeURIComponent(callId)}/notifications`,
+    ),
+  // Validation (docs/E911.md, "Address validation"): the configured
+  // validator answers; a refusal is a 422 with the issues.
+  validateAddress: (address: E911AddressInput) =>
+    apiClient.post<AddressValidation>('/emergency/validate-address', { address }),
+  validateLocation: (id: string) =>
+    apiClient.post<LocationValidationResponse>(
+      `/locations/${encodeURIComponent(id)}/e911/validate`,
+    ),
+  validateDevice: (id: string) =>
+    apiClient.post<DeviceValidationResponse>(`/devices/${encodeURIComponent(id)}/e911/validate`),
+  validateNumber: (id: string) =>
+    apiClient.post<NumberValidationResponse>(
+      `/phone-numbers/${encodeURIComponent(id)}/e911/validate`,
+    ),
 }
 
 // API Tokens

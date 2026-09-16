@@ -155,6 +155,10 @@ export interface Device {
   has_provisioning_token: boolean
   /// Returned once on create when a token is auto-generated; never populated on list/get.
   provisioning_token?: string
+  /** An address for this phone alone, when it sits somewhere its site is not. */
+  e911_override: E911Address | null
+  /** Whether a location this device sends with a call is believed (`docs/E911.md`). */
+  e911_trust_location: boolean | null
   enabled: boolean
   created_at: string
   updated_at: string
@@ -176,6 +180,30 @@ export interface CreateDeviceRequest {
   /// Explicit provisioning token. Empty string on PATCH clears the token;
   /// omitting the field on create auto-generates one when mac_address is set.
   provisioning_token?: string
+  /// An address for this phone alone; it arrives unvalidated whatever it says.
+  e911_override?: E911AddressInput
+  e911_trust_location?: boolean
+}
+
+/**
+ * A change to a device. Absent fields are left alone; `e911_override` and
+ * `e911_trust_location` set to `null` are cleared.
+ */
+export interface UpdateDeviceRequest extends Partial<Omit<CreateDeviceRequest, 'e911_override' | 'e911_trust_location'>> {
+  enabled?: boolean
+  firmware_version?: string
+  e911_override?: E911AddressInput | null
+  e911_trust_location?: boolean | null
+}
+
+/** An address on the way in: the lines and, optionally, civic elements. */
+export interface E911AddressInput extends CivicElements {
+  address1: string
+  address2?: string | null
+  city: string
+  state: string
+  postal_code: string
+  country: string
 }
 
 export interface PhoneNumber {
@@ -204,15 +232,37 @@ export interface PhoneNumber {
   updated_at: string
 }
 
-export interface E911Address {
+export interface E911Address extends CivicElements {
   address1: string
   address2: string | null
   city: string
   state: string
   postal_code: string
   country: string
+  /** Read-only: set by a validation route, cleared when the address is edited. */
   validated: boolean
   validated_at: string | null
+  validated_by?: string | null
+  provider_reference?: string | null
+}
+
+/**
+ * RFC 5139 civic elements, flattened into the address they belong to
+ * (`docs/E911.md`): what an emergency call's PIDF-LO carries.
+ */
+export interface CivicElements {
+  house_number?: string | null
+  house_number_suffix?: string | null
+  street_predirection?: string | null
+  street_name?: string | null
+  street_suffix?: string | null
+  street_postdirection?: string | null
+  additional?: string | null
+  floor?: string | null
+  unit?: string | null
+  room?: string | null
+  building?: string | null
+  name?: string | null
 }
 
 export interface CreatePhoneNumberRequest {
@@ -673,6 +723,12 @@ export interface SipTrunk {
   outbound_proxy: string | null
   trunk_group: string | null
   header_rules: string | null
+  /**
+   * Whether this trunk may carry emergency calls. Stored, and shown here,
+   * but platform routing uses each node's TOML trunks until tenant trunks
+   * route (`docs/E911.md`).
+   */
+  emergency_capable: boolean
   health_status: string // "healthy" | "degraded" | "down" | "disabled" | "unknown"
   consecutive_failures: number
   uptime_secs: number | null
@@ -714,6 +770,7 @@ export interface CreateTrunkRequest {
   outbound_proxy?: string
   trunk_group?: string
   header_rules?: string
+  emergency_capable?: boolean
 }
 
 export interface TrunkStatsResponse {
@@ -1223,6 +1280,14 @@ export interface Location {
   timezone: string | null
   emergency_contact_name: string | null
   emergency_contact_phone: string | null
+  /** The ELIN the carrier maps to this address; the caller ID on emergency calls from here. */
+  e911_callback_number: string | null
+  /** The street in RFC 5139 civic elements, once a validator has structured it. */
+  civic?: CivicElements
+  e911_validated: boolean
+  e911_validated_at: string | null
+  e911_validated_by: string | null
+  e911_validation_reference: string | null
   created_at: string
   updated_at: string
 }
@@ -1245,6 +1310,7 @@ export interface CreateLocationRequest {
   timezone?: string
   emergency_contact_name?: string
   emergency_contact_phone?: string
+  e911_callback_number?: string
 }
 
 // SBC Quality Metrics
@@ -1368,4 +1434,190 @@ export interface UpdateMeetingRequest {
   video_content_share?: string
   video_content_layout?: string
   video_codecs?: string[]
+}
+
+// ── Emergency calling (E911), docs/E911.md ───────────────────────────────
+
+/** How an on-site notification reaches someone. */
+export type ContactKind = 'email' | 'sms' | 'call' | 'webhook'
+
+export interface NotifyContact {
+  kind: ContactKind
+  /** An address, an E.164 number, an extension or SIP URI, or a webhook endpoint id. */
+  target: string
+  name?: string | null
+  /** What keeps this contact from being delivered to; empty when it can be. */
+  issues?: string[]
+}
+
+export interface EmergencyConfig {
+  tenant_id: string
+  emergency_numbers: string[]
+  test_numbers: string[]
+  dial_prefixes: string[]
+  contacts: NotifyContact[]
+  /** The same contacts as the plain strings the event has always carried. */
+  notify_contacts: string[]
+  require_dispatchable_location: boolean
+  trust_device_locations: string[]
+  declared_location_ttl_secs: number
+  /** False while the tenant has never saved a configuration (defaults shown). */
+  configured: boolean
+  updated_at: number
+}
+
+export interface UpdateEmergencyConfigRequest {
+  emergency_numbers?: string[]
+  test_numbers?: string[]
+  dial_prefixes?: string[]
+  contacts?: Array<{ kind: ContactKind; target: string; name?: string }>
+  require_dispatchable_location?: boolean
+  trust_device_locations?: string[]
+  declared_location_ttl_secs?: number
+}
+
+export interface DispatchableLocation {
+  address: E911Address
+  callback_number: string | null
+  /** `device_override`, `device_supplied`, `network`, `device_location`, `user_location`, `declared`, `phone_number`. */
+  source: string
+  location_id: string | null
+  location_name: string | null
+  summary: string
+  client_address: string | null
+  declared_age_secs: number | null
+}
+
+export interface UserReadiness {
+  user_id: string
+  username: string
+  ready: boolean
+  location: DispatchableLocation | null
+  /** Whether every device of this user's moves, so where it was provisioned may not be where it is. */
+  nomadic: boolean
+  issues: string[]
+}
+
+export interface ContactReadiness {
+  kind: ContactKind
+  target: string
+  name: string | null
+  issues: string[]
+  last_delivery_at: number | null
+  last_test_at: number | null
+}
+
+export interface EmergencyReadiness {
+  summary: {
+    users: number
+    ready: number
+    missing_location: number
+    missing_callback: number
+    unvalidated_address: number
+    unplaced_nomadic: number
+  }
+  notifications: {
+    contacts: ContactReadiness[]
+    deliverable: number
+    issues: string[]
+  }
+  users: UserReadiness[]
+}
+
+export interface EmergencyNetwork {
+  id: string
+  tenant_id: string
+  cidr: string
+  location_id: string
+  name: string | null
+  priority: number
+  /** `nomadic` (softphones, mobiles, browsers) or `all`. */
+  applies_to: string
+  created_at: number
+  updated_at: number
+}
+
+export interface CreateEmergencyNetworkRequest {
+  cidr: string
+  location_id: string
+  name?: string
+  priority?: number
+  applies_to?: string
+}
+
+export interface EmergencyCall {
+  id: number
+  tenant_id: string
+  call_id: string
+  sip_call_id: string | null
+  caller_uri: string
+  caller_username: string | null
+  dialed_number: string
+  /** `live` or `test`. */
+  kind: string
+  callback_number: string | null
+  location: DispatchableLocation | null
+  trunk_name: string | null
+  outcome: string
+  placed_at: number
+  notified: boolean
+  sip_status: number | null
+  answered_at: number | null
+  ended_at: number | null
+  duration_secs: number | null
+  /** How the location travelled: `elin`, `pidf_lo`, `elin+pidf_lo`. */
+  delivery: string | null
+  location_structured: boolean | null
+  geolocation_error: string | null
+}
+
+export interface EmergencyNotification {
+  id: number
+  call_id: string
+  call_record_id: number | null
+  kind: ContactKind
+  target: string
+  name: string | null
+  attempt: number
+  /** `delivered`, `retrying` or `failed`. */
+  status: string
+  error: string | null
+  delivered_at: number | null
+  next_retry_at: number | null
+  test: boolean
+  created_at: number
+}
+
+export interface AddressValidation {
+  valid: boolean
+  normalized: E911Address
+  issues: string[]
+  /** What the validator could not do on an otherwise good address. */
+  notes: string[]
+  validator: string
+  provider_reference: string | null
+}
+
+export interface LocationValidationResponse {
+  validation: AddressValidation
+  location_id: string
+  name: string
+  validated: boolean
+  validated_at: number | null
+}
+
+export interface DeviceValidationResponse {
+  validation: AddressValidation
+  device_id: string
+  name: string
+  validated: boolean
+  validated_at: number | null
+}
+
+export interface NumberValidationResponse {
+  validation: AddressValidation
+  phone_number_id: string
+  e164: string
+  validated: boolean
+  validated_at: number | null
 }

@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
-import { MoreHorizontal, Plus, ArrowUpDown, Pencil, Trash2, Upload, Download, CheckCircle2, XCircle, Loader2, FileUp, AlertCircle } from 'lucide-react'
+import { MoreHorizontal, Plus, ArrowUpDown, Pencil, Trash2, Upload, Download, CheckCircle2, XCircle, Loader2, FileUp, AlertCircle, ShieldCheck } from 'lucide-react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
@@ -17,8 +17,8 @@ import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { phoneNumbers, locations, tenants } from '@/api/endpoints'
-import type { PhoneNumber, CreatePhoneNumberRequest } from '@/types'
+import { emergency, phoneNumbers, locations, tenants } from '@/api/endpoints'
+import type { AddressValidation, PhoneNumber, CreatePhoneNumberRequest } from '@/types'
 import { TenantField, useEffectiveTenantId, useTenantListFilter, useShowTenantColumn } from '@/components/TenantSelector'
 
 const createSchema = z.object({
@@ -107,6 +107,23 @@ export function PhoneNumbersPage() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['phone-numbers'] }),
   })
 
+  // Validating a number's registered address (docs/E911.md): on success it
+  // is normalised and marked; editing it clears the mark again.
+  const [validation, setValidation] = useState<{
+    name: string
+    result: AddressValidation | null
+    error: string | null
+  } | null>(null)
+  const validateMutation = useMutation({
+    mutationFn: ({ id }: { id: string; name: string }) => emergency.validateNumber(id),
+    onSuccess: (res, { name }) => {
+      queryClient.invalidateQueries({ queryKey: ['phone-numbers'] })
+      queryClient.invalidateQueries({ queryKey: ['emergency-readiness'] })
+      setValidation({ name, result: res.validation, error: null })
+    },
+    onError: (e: Error, { name }) => setValidation({ name, result: null, error: e.message }),
+  })
+
   const columns: ColumnDef<PhoneNumber>[] = [
     {
       accessorKey: 'e164',
@@ -144,11 +161,15 @@ export function PhoneNumbersPage() {
     {
       accessorKey: 'e911_address',
       header: 'E911',
-      cell: ({ row }) => row.original.e911_address ? (
-        <Badge variant="success">Configured</Badge>
-      ) : (
-        <Badge variant="warning">Not set</Badge>
-      ),
+      cell: ({ row }) => {
+        const address = row.original.e911_address
+        if (!address) return <Badge variant="warning">Not set</Badge>
+        return address.validated ? (
+          <Badge variant="success">Validated</Badge>
+        ) : (
+          <Badge variant="outline">Not validated</Badge>
+        )
+      },
     },
     {
       accessorKey: 'tags',
@@ -180,6 +201,16 @@ export function PhoneNumbersPage() {
               <Pencil className="mr-2 h-4 w-4" />
               Edit
             </DropdownMenuItem>
+            {row.original.e911_address && (
+              <DropdownMenuItem
+                onClick={() =>
+                  validateMutation.mutate({ id: row.original.id, name: row.original.e164 })
+                }
+              >
+                <ShieldCheck className="mr-2 h-4 w-4" />
+                Validate E911 address
+              </DropdownMenuItem>
+            )}
             <DropdownMenuSeparator />
             <DropdownMenuItem
               className="text-destructive"
@@ -363,6 +394,48 @@ export function PhoneNumbersPage() {
               <p className="text-sm text-destructive">{(updateMutation.error as Error).message}</p>
             )}
           </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* What the validator said (docs/E911.md, "Address validation") */}
+      <Dialog open={!!validation} onOpenChange={() => setValidation(null)}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{validation?.name}</DialogTitle>
+            <DialogDescription>
+              {validation?.result?.valid
+                ? 'The address was accepted and stored in its normalised form.'
+                : 'The address was not accepted; nothing was changed.'}
+            </DialogDescription>
+          </DialogHeader>
+          {validation?.error && <p className="text-sm text-destructive">{validation.error}</p>}
+          {validation?.result && (
+            <div className="space-y-3 text-sm">
+              {validation.result.valid ? (
+                <Badge variant="success">validated by {validation.result.validator}</Badge>
+              ) : (
+                <Badge variant="destructive">refused by {validation.result.validator}</Badge>
+              )}
+              {validation.result.issues.length > 0 && (
+                <ul className="list-disc pl-5">
+                  {validation.result.issues.map((issue) => (
+                    <li key={issue} className="text-destructive">{issue}</li>
+                  ))}
+                </ul>
+              )}
+              {validation.result.notes.length > 0 && (
+                <ul className="list-disc pl-5 text-muted-foreground">
+                  {validation.result.notes.map((note) => (
+                    <li key={note}>{note}</li>
+                  ))}
+                </ul>
+              )}
+              <p>
+                {validation.result.normalized.address1}, {validation.result.normalized.city},{' '}
+                {validation.result.normalized.state} {validation.result.normalized.postal_code}
+              </p>
+            </div>
+          )}
         </DialogContent>
       </Dialog>
 
