@@ -89,6 +89,7 @@ interface TrunkFormData {
   dtmf_mode: string
   session_timer_secs: number
   t38_enabled: boolean
+  emergency_capable: boolean
   outbound_proxy: string
   trunk_group: string
   header_rules: string
@@ -125,6 +126,7 @@ const defaultValues: TrunkFormData = {
   dtmf_mode: 'rfc2833',
   session_timer_secs: 0,
   t38_enabled: false,
+  emergency_capable: false,
   outbound_proxy: '',
   trunk_group: '',
   header_rules: '',
@@ -162,6 +164,7 @@ function trunkToForm(trunk: SipTrunk): TrunkFormData {
     dtmf_mode: trunk.dtmf_mode,
     session_timer_secs: trunk.session_timer_secs,
     t38_enabled: trunk.t38_enabled,
+    emergency_capable: trunk.emergency_capable,
     outbound_proxy: trunk.outbound_proxy ?? '',
     trunk_group: trunk.trunk_group ?? '',
     header_rules: trunk.header_rules ?? '',
@@ -202,6 +205,7 @@ function formToRequest(form: TrunkFormData): CreateTrunkRequest {
     dtmf_mode: form.dtmf_mode,
     session_timer_secs: form.session_timer_secs,
     t38_enabled: form.t38_enabled,
+    emergency_capable: form.emergency_capable,
     outbound_proxy: form.outbound_proxy || undefined,
     trunk_group: form.trunk_group || undefined,
     header_rules: form.header_rules || undefined,
@@ -569,6 +573,7 @@ function TrunkDetailView({ trunk, stats, onEdit }: { trunk: SipTrunk; stats?: Tr
         <Field label="DTMF" value={trunk.dtmf_mode.replace('_', ' ')} />
         {trunk.session_timer_secs > 0 && <Field label="Session Timer" value={`${trunk.session_timer_secs}s`} />}
         {trunk.t38_enabled && <Field label="T.38 Fax" value="Enabled" />}
+        {trunk.emergency_capable && <Field label="Emergency calls" value="Capable" />}
         {trunk.outbound_proxy && <Field label="Outbound Proxy" value={trunk.outbound_proxy} />}
         {trunk.trunk_group && <Field label="Group" value={trunk.trunk_group} />}
         {trunk.verify_tls && trunk.transport_protocol === 'tls' && <Field label="TLS Verify" value="Enabled" />}
@@ -806,6 +811,22 @@ function TrunkForm({ form, onSubmit, isSubmitting, submitLabel = 'Create Trunk' 
           <div>
             <Label htmlFor="session_timer_secs">Session Timer (0 = disabled)</Label>
             <Input id="session_timer_secs" type="number" {...register('session_timer_secs', { valueAsNumber: true })} />
+          </div>
+          <div className="flex items-end">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2">
+                <Switch
+                  id="emergency_capable"
+                  checked={watch('emergency_capable')}
+                  onCheckedChange={(v) => setValue('emergency_capable', v)}
+                />
+                <Label htmlFor="emergency_capable">Emergency calls</Label>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Kept with the trunk, and shown on the emergency pages. Calls are routed by each
+                node's own trunks until tenant trunks route (docs/E911.md).
+              </p>
+            </div>
           </div>
         </div>
       </div>

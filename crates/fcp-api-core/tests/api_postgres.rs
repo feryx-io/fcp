@@ -4708,6 +4708,49 @@ async fn e911_config_readiness_validation_and_audit() {
         "moving the device clears its validation: {}",
         device_moved.text
     );
+    // A phone that goes back to its site drops the address it carried:
+    // a stale override would dispatch to where it used to be.
+    let trusted = app
+        .admin(
+            Method::PATCH,
+            &format!("/api/v1/devices/{device_id}"),
+            Some(json!({ "e911_trust_location": true })),
+        )
+        .await;
+    assert_eq!(
+        trusted.json["e911_trust_location"], true,
+        "{}",
+        trusted.text
+    );
+    let cleared_device = app
+        .admin(
+            Method::PATCH,
+            &format!("/api/v1/devices/{device_id}"),
+            Some(json!({ "e911_override": null, "e911_trust_location": null })),
+        )
+        .await;
+    assert!(
+        cleared_device.json["e911_override"].is_null(),
+        "the override is removed: {}",
+        cleared_device.text
+    );
+    assert!(
+        cleared_device.json["e911_trust_location"].is_null(),
+        "and the device goes back to what its type is trusted with: {}",
+        cleared_device.text
+    );
+    let untouched = app
+        .admin(
+            Method::PATCH,
+            &format!("/api/v1/devices/{device_id}"),
+            Some(json!({ "name": "Lobby phone" })),
+        )
+        .await;
+    assert!(
+        untouched.json["e911_override"].is_null(),
+        "a change that says nothing about the address leaves it alone: {}",
+        untouched.text
+    );
     let bare_device = app
         .admin(
             Method::POST,

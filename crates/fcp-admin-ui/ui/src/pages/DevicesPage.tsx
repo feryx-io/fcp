@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
-import { MoreHorizontal, Plus, ArrowUpDown, Pencil, Trash2, Upload, Download, CheckCircle2, XCircle, Loader2, FileUp, AlertCircle, RefreshCw, Copy, KeyRound, EyeOff, Eye } from 'lucide-react'
+import { MoreHorizontal, Plus, ArrowUpDown, Pencil, Trash2, Upload, Download, CheckCircle2, XCircle, Loader2, FileUp, AlertCircle, RefreshCw, Copy, KeyRound, EyeOff, Eye, ShieldCheck } from 'lucide-react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
@@ -17,8 +17,8 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Switch } from '@/components/ui/switch'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
-import { devices, locations, tenants } from '@/api/endpoints'
-import type { Device, CreateDeviceRequest } from '@/types'
+import { devices, emergency, locations, tenants } from '@/api/endpoints'
+import type { AddressValidation, Device, CreateDeviceRequest, UpdateDeviceRequest } from '@/types'
 import { TenantField, useEffectiveTenantId, useTenantListFilter, useShowTenantColumn } from '@/components/TenantSelector'
 
 const createSchema = z.object({
@@ -42,6 +42,16 @@ const editSchema = z.object({
   location_id: z.string().optional(),
   enabled: z.boolean().optional(),
   tenant_id: z.string().optional(),
+  // The address for this phone alone (docs/E911.md): left empty, the
+  // phone is dispatched to its site.
+  e911_address1: z.string().optional(),
+  e911_address2: z.string().optional(),
+  e911_city: z.string().optional(),
+  e911_state: z.string().optional(),
+  e911_postal_code: z.string().optional(),
+  e911_country: z.string().optional(),
+  // 'inherit' leaves it to the tenant's trusted device types.
+  e911_trust_location: z.enum(['inherit', 'yes', 'no']).optional(),
 })
 
 type CreateForm = z.infer<typeof createSchema>
@@ -123,7 +133,7 @@ export function DevicesPage() {
   })
 
   const updateMutation = useMutation({
-    mutationFn: ({ id, data }: { id: string; data: Partial<EditForm> }) =>
+    mutationFn: ({ id, data }: { id: string; data: UpdateDeviceRequest }) =>
       devices.update(id, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['devices'] })
@@ -148,6 +158,23 @@ export function DevicesPage() {
   const deleteMutation = useMutation({
     mutationFn: devices.delete,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['devices'] }),
+  })
+
+  // Validating a device's own address (docs/E911.md): the normalised
+  // address is written back, and editing it clears the mark again.
+  const [validation, setValidation] = useState<{
+    name: string
+    result: AddressValidation | null
+    error: string | null
+  } | null>(null)
+  const validateMutation = useMutation({
+    mutationFn: ({ id }: { id: string; name: string }) => emergency.validateDevice(id),
+    onSuccess: (res, { name }) => {
+      queryClient.invalidateQueries({ queryKey: ['devices'] })
+      queryClient.invalidateQueries({ queryKey: ['emergency-readiness'] })
+      setValidation({ name, result: res.validation, error: null })
+    },
+    onError: (e: Error, { name }) => setValidation({ name, result: null, error: e.message }),
   })
 
   const columns: ColumnDef<Device>[] = [
@@ -182,6 +209,28 @@ export function DevicesPage() {
       cell: ({ row }) => row.original.sip_uri ? (
         <code className="text-xs">{row.original.sip_uri}</code>
       ) : <span className="text-muted-foreground">-</span>,
+    },
+    {
+      id: 'e911',
+      header: 'E911',
+      cell: ({ row }) => {
+        const override = row.original.e911_override
+        if (!override) {
+          return <span className="text-xs text-muted-foreground">its site</span>
+        }
+        return (
+          <div className="space-y-1">
+            <span className="text-xs">{override.address1}</span>
+            <div>
+              {override.validated ? (
+                <Badge variant="success">validated</Badge>
+              ) : (
+                <Badge variant="outline">not validated</Badge>
+              )}
+            </div>
+          </div>
+        )
+      },
     },
     {
       accessorKey: 'registration_state',
@@ -247,6 +296,16 @@ export function DevicesPage() {
               <Pencil className="mr-2 h-4 w-4" />
               Edit
             </DropdownMenuItem>
+            {row.original.e911_override && (
+              <DropdownMenuItem
+                onClick={() =>
+                  validateMutation.mutate({ id: row.original.id, name: row.original.name })
+                }
+              >
+                <ShieldCheck className="mr-2 h-4 w-4" />
+                Validate E911 address
+              </DropdownMenuItem>
+            )}
             <DropdownMenuItem
               disabled={!row.original.mac_address || rotateTokenMutation.isPending}
               onClick={() => {
@@ -301,6 +360,18 @@ export function DevicesPage() {
       location_id: editItem.location_id || '',
       enabled: editItem.enabled,
       tenant_id: editItem.tenant_id ?? '',
+      e911_address1: editItem.e911_override?.address1 ?? '',
+      e911_address2: editItem.e911_override?.address2 ?? '',
+      e911_city: editItem.e911_override?.city ?? '',
+      e911_state: editItem.e911_override?.state ?? '',
+      e911_postal_code: editItem.e911_override?.postal_code ?? '',
+      e911_country: editItem.e911_override?.country ?? '',
+      e911_trust_location:
+        editItem.e911_trust_location == null
+          ? 'inherit'
+          : editItem.e911_trust_location
+            ? 'yes'
+            : 'no',
     })
   }
 
@@ -331,6 +402,22 @@ export function DevicesPage() {
         location_id: data.location_id || undefined,
         enabled: data.enabled,
         tenant_id: data.tenant_id || undefined,
+        // An address needs its street, city, state and postal code to be
+        // dispatchable; emptied, the override is removed.
+        e911_override: data.e911_address1?.trim()
+          ? {
+              address1: data.e911_address1.trim(),
+              address2: data.e911_address2?.trim() || undefined,
+              city: data.e911_city?.trim() ?? '',
+              state: data.e911_state?.trim() ?? '',
+              postal_code: data.e911_postal_code?.trim() ?? '',
+              country: data.e911_country?.trim() || 'US',
+            }
+          : null,
+        e911_trust_location:
+          data.e911_trust_location === 'inherit'
+            ? null
+            : data.e911_trust_location === 'yes',
       },
     })
   }
@@ -491,6 +578,57 @@ export function DevicesPage() {
                 </SelectContent>
               </Select>
             </div>
+            {/* Emergency (docs/E911.md): where this phone is dispatched to
+                when it is not where its site is. */}
+            <p className="pt-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+              Emergency (E911)
+            </p>
+            <div className="space-y-2">
+              <Label htmlFor="e-e911_address1">Address override</Label>
+              <Input
+                id="e-e911_address1"
+                placeholder="1 State St — leave empty to use the site's address"
+                {...editForm.register('e911_address1')}
+              />
+              <Input placeholder="Suite 300" {...editForm.register('e911_address2')} />
+              <div className="grid grid-cols-2 gap-4">
+                <Input placeholder="City" {...editForm.register('e911_city')} />
+                <Input placeholder="State" {...editForm.register('e911_state')} />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <Input placeholder="Postal code" {...editForm.register('e911_postal_code')} />
+                <Input placeholder="Country (US)" {...editForm.register('e911_country')} />
+              </div>
+              <p className="text-xs text-muted-foreground">
+                An address saved here arrives unvalidated; validate it from the row's menu.
+                {editItem?.e911_override?.validated
+                  ? ' This one is validated.'
+                  : editItem?.e911_override
+                    ? ' This one has not been validated.'
+                    : ''}
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label>Location this device sends</Label>
+              <Select
+                value={editForm.watch('e911_trust_location') ?? 'inherit'}
+                onValueChange={(v) =>
+                  editForm.setValue('e911_trust_location', v as 'inherit' | 'yes' | 'no')
+                }
+              >
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="inherit">As the tenant's device types say</SelectItem>
+                  <SelectItem value="yes">Trusted</SelectItem>
+                  <SelectItem value="no">Never used</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                An NG911 phone can send its own location with the call; it is used only from a
+                device that is trusted to.
+              </p>
+            </div>
+
             <div className="flex justify-end gap-2">
               <Button type="button" variant="outline" onClick={() => setEditItem(null)}>Cancel</Button>
               <Button type="submit" disabled={updateMutation.isPending}>
@@ -501,6 +639,48 @@ export function DevicesPage() {
               <p className="text-sm text-destructive">{(updateMutation.error as Error).message}</p>
             )}
           </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* What the validator said (docs/E911.md, "Address validation") */}
+      <Dialog open={!!validation} onOpenChange={() => setValidation(null)}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{validation?.name}</DialogTitle>
+            <DialogDescription>
+              {validation?.result?.valid
+                ? 'The address was accepted and stored in its normalised form.'
+                : 'The address was not accepted; nothing was changed.'}
+            </DialogDescription>
+          </DialogHeader>
+          {validation?.error && <p className="text-sm text-destructive">{validation.error}</p>}
+          {validation?.result && (
+            <div className="space-y-3 text-sm">
+              {validation.result.valid ? (
+                <Badge variant="success">validated by {validation.result.validator}</Badge>
+              ) : (
+                <Badge variant="destructive">refused by {validation.result.validator}</Badge>
+              )}
+              {validation.result.issues.length > 0 && (
+                <ul className="list-disc pl-5">
+                  {validation.result.issues.map((issue) => (
+                    <li key={issue} className="text-destructive">{issue}</li>
+                  ))}
+                </ul>
+              )}
+              {validation.result.notes.length > 0 && (
+                <ul className="list-disc pl-5 text-muted-foreground">
+                  {validation.result.notes.map((note) => (
+                    <li key={note}>{note}</li>
+                  ))}
+                </ul>
+              )}
+              <p>
+                {validation.result.normalized.address1}, {validation.result.normalized.city},{' '}
+                {validation.result.normalized.state} {validation.result.normalized.postal_code}
+              </p>
+            </div>
+          )}
         </DialogContent>
       </Dialog>
 

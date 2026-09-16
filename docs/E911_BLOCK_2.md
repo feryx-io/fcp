@@ -1,8 +1,7 @@
 # Emergency Calling, Block 2 — Design
 
 Status: **agreed** (2026-09-15), every recommendation in §12 taken.
-Phases 1 to 5 are done (v0.25.176 to v0.25.180, see §11); only the admin
-UI (phase 6) is left. This
+All six phases are done (v0.25.176 to v0.25.181, see §11). This
 document is the plan for the four items `docs/E911.md` left for later — **location by value** (PIDF-LO) for
 NG911 trunks, **network-based location** for softphones and roaming
 devices, **provider-backed address validation**, and **notification
@@ -605,6 +604,39 @@ by release tag first.
    networks, the call log with its notifications; site, device and trunk
    fields the UI does not show today (`e911_callback_number`,
    `e911_override`, `emergency_capable`, `emergency_location`).
+
+   *Done (v0.25.181).* What shipped:
+
+   - **The emergency pages** at `/admin/emergency` (Operations →
+     Emergency), in four tabs: **Configuration** (numbers, prefixes, the
+     typed contacts added and removed here, the device types trusted to
+     send their own location, how long a declaration stands),
+     **Readiness** (the summary tiles, whether anybody would be told —
+     each contact with when anything last reached it and when a test last
+     did — and every user with the location that would be dispatched and
+     what keeps them from being ready), **Networks** (the ranges, their
+     sites, what they place and their priority) and **Calls** (every
+     emergency call, and behind *View* what was sent with it and every
+     attempt to tell somebody).
+   - **The fields the rest of the UI did not show.** Locations carry the
+     ELIN and their validation, and validate from the row's menu; devices
+     show where the phone would be dispatched to and take the override and
+     the trust setting in the edit dialog, with validation from the menu;
+     phone numbers say whether their address is validated and validate the
+     same way; trunks carry `emergency_capable`, with the note that
+     platform routing uses each node's own trunks.
+     `emergency_location` stays TOML per node (§12.1), so the UI says so
+     rather than pretending to edit it.
+   - **One API change the UI needed:** a device's `e911_override` and
+     `e911_trust_location` can be *cleared* (`null` on the PATCH, told
+     apart from absent), so a phone that goes back to its site stops
+     carrying the address it had somewhere else.
+   - **Checked against a running admin server**, not only compiled: the
+     configuration saved with typed contacts and read back, a site
+     validated through the API and its normalised civic elements stored,
+     readiness reporting a tenant with nobody to tell.
+
+Block 2 is complete.
 
 ## 12. Open questions
 
