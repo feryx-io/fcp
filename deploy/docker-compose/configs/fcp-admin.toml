@@ -47,3 +47,16 @@ server_url = "http://fcp-events-server:8081/ingest"
 exports_dir = "/app/data/exports"
 # export_ttl_days = 7
 # poll_secs = 30
+
+# How E911 addresses are validated (docs/E911.md, "Address validation").
+# "basic" checks completeness and splits the street into civic elements with
+# no external call; "http" asks a provider that can answer against an
+# MSAG-grade database. The bearer token may be sealed with encryption at
+# rest (POST /api/v1/system/encryption/seal) or mounted as a file.
+# [e911.validator]
+# provider = "http"
+# name = "acme-msag"
+# url = "https://validate.example.net/e911"
+# token = "enc:v1:..."
+# token_file = "/run/secrets/e911-validator"
+# timeout_secs = 5

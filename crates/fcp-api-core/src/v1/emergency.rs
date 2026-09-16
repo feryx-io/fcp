@@ -7,8 +7,10 @@
 //! - `GET /emergency/calls`: the audit trail of emergency calls placed.
 //! - `POST /emergency/validate-address`: run the configured validator on
 //!   an address without storing anything.
-//! - `POST /phone-numbers/:id/e911/validate`: validate the number's E911
-//!   address and mark it validated when it passes.
+//! - `POST /phone-numbers/:id/e911/validate`, `POST /locations/:id/e911/validate`
+//!   and `POST /devices/:id/e911/validate`: validate that entity's E911
+//!   address and mark it validated when it passes. Editing an address
+//!   clears its validation again.
 
 use crate::auth::TenantContext;
 use crate::v1::phone_numbers::E911AddressResponse;
@@ -489,7 +491,12 @@ pub struct ValidationResponse {
     pub valid: bool,
     pub normalized: E911AddressResponse,
     pub issues: Vec<String>,
+    /// What the validator could not do on an otherwise good address: the
+    /// parts of the street it could not tell apart, say.
+    pub notes: Vec<String>,
     pub validator: String,
+    /// The provider's reference for this answer, when it gave one.
+    pub provider_reference: Option<String>,
 }
 
 impl From<AddressValidation> for ValidationResponse {
@@ -498,7 +505,9 @@ impl From<AddressValidation> for ValidationResponse {
             valid: v.valid,
             normalized: v.normalized.into(),
             issues: v.issues,
+            notes: v.notes,
             validator: v.validator,
+            provider_reference: v.provider_reference,
         }
     }
 }
@@ -554,10 +563,7 @@ pub async fn validate_phone_number(
         .await
         .map_err(|e| ApiError::Internal(format!("Address validation failed: {e}")))?;
     if result.valid {
-        let mut validated = result.normalized.clone();
-        validated.validated = true;
-        validated.validated_at = Some(SystemTime::now());
-        number.e911_address = Some(validated);
+        number.e911_address = Some(result.validated_address(SystemTime::now()));
         number.updated_at = SystemTime::now();
         storage
             .put_phone_number(number.clone())
@@ -577,6 +583,182 @@ pub async fn validate_phone_number(
             phone_number_id: number.id.to_string(),
             e164: number.e164.clone(),
             validated: stored.map(|a| a.validated).unwrap_or(false),
+            validated_at: stored.and_then(|a| a.validated_at).map(unix_secs),
+        }),
+    ))
+}
+
+#[derive(Debug, Serialize)]
+pub struct LocationValidationResponse {
+    pub validation: ValidationResponse,
+    pub location_id: String,
+    pub name: String,
+    pub validated: bool,
+    pub validated_at: Option<u64>,
+}
+
+/// Validate a site's address and mark the site validated on success. The
+/// normalised street, city, state and civic elements are written back, so
+/// the emergency calls placed from this site carry them
+/// (`docs/E911_BLOCK_2.md` §7).
+pub async fn validate_location(
+    State(state): State<ApiState>,
+    tenant: TenantContext,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    use fcp_core::storage::SiteLocationStore;
+
+    let storage = state
+        .storage
+        .as_ref()
+        .ok_or_else(|| ApiError::Internal("Storage not configured".to_string()))?;
+    let id = fcp_core::LocationId::from_str(&id)
+        .map_err(|e| ApiError::BadRequest(format!("Invalid location ID: {e}")))?;
+    let mut site = storage
+        .get_location(&id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .filter(|s| s.tenant_id == tenant.0)
+        .ok_or_else(|| ApiError::NotFound(format!("Location {id} not found")))?;
+    let address = fcp_core::e911::site_address(&site).ok_or_else(|| {
+        ApiError::BadRequest(
+            "Location has no dispatchable address: set address_line1, city, state and postal_code"
+                .to_string(),
+        )
+    })?;
+
+    let result = state
+        .e911_validator
+        .validate(&address)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Address validation failed: {e}")))?;
+    if result.valid {
+        let now = SystemTime::now();
+        let normalized = result.validated_address(now);
+        site.address_line1 = Some(normalized.address1.clone());
+        site.city = Some(normalized.city.clone());
+        site.state = Some(normalized.state.clone());
+        site.postal_code = Some(normalized.postal_code.clone());
+        site.country = Some(normalized.country.clone());
+        // The floor and building are the site's own fields; keeping a copy
+        // in the elements would go stale the next time they change.
+        let mut civic = normalized.civic.clone();
+        civic.floor = None;
+        civic.building = None;
+        site.civic = civic;
+        site.e911_validated_at = Some(now);
+        site.e911_validated_by = Some(result.validator.clone());
+        site.e911_validation_reference = result.provider_reference.clone();
+        site.updated_at = now;
+        storage
+            .put_location(site.clone())
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
+        let _ = state
+            .event_bus
+            .publish(fcp_events::PlatformEvent::System(
+                fcp_events::SystemEvent::ConfigChanged {
+                    entity_type: "location".to_string(),
+                    entity_id: site.id.to_string(),
+                    tenant_id: site.tenant_id,
+                    timestamp: now,
+                },
+            ))
+            .await;
+        info!(location = %site.id, validator = %result.validator, "Site E911 address validated");
+    }
+    Ok((
+        if result.valid {
+            StatusCode::OK
+        } else {
+            StatusCode::UNPROCESSABLE_ENTITY
+        },
+        Json(LocationValidationResponse {
+            validation: result.into(),
+            location_id: site.id.to_string(),
+            name: site.name.clone(),
+            validated: site.e911_validated(),
+            validated_at: site.e911_validated_at.map(unix_secs),
+        }),
+    ))
+}
+
+#[derive(Debug, Serialize)]
+pub struct DeviceValidationResponse {
+    pub validation: ValidationResponse,
+    pub device_id: String,
+    pub name: String,
+    pub validated: bool,
+    pub validated_at: Option<u64>,
+}
+
+/// Validate a device's E911 override address and mark it validated on
+/// success (`docs/E911_BLOCK_2.md` §7).
+pub async fn validate_device(
+    State(state): State<ApiState>,
+    tenant: TenantContext,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    use fcp_core::storage::DeviceStore;
+
+    let storage = state
+        .storage
+        .as_ref()
+        .ok_or_else(|| ApiError::Internal("Storage not configured".to_string()))?;
+    let id = fcp_core::DeviceId::from_str(&id)
+        .map_err(|e| ApiError::BadRequest(format!("Invalid device ID: {e}")))?;
+    let mut device = storage
+        .get_device(&id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .filter(|d| d.tenant_id == tenant.0)
+        .ok_or_else(|| ApiError::NotFound(format!("Device {id} not found")))?;
+    let address = device.e911_override.clone().ok_or_else(|| {
+        ApiError::BadRequest(
+            "Device has no E911 override address to validate; it is located by its site, the \
+             network it registers from, or a location it sends"
+                .to_string(),
+        )
+    })?;
+
+    let result = state
+        .e911_validator
+        .validate(&address)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Address validation failed: {e}")))?;
+    if result.valid {
+        let now = SystemTime::now();
+        device.e911_override = Some(result.validated_address(now));
+        device.updated_at = now;
+        storage
+            .put_device(device.clone())
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
+        let _ = state
+            .event_bus
+            .publish(fcp_events::PlatformEvent::System(
+                fcp_events::SystemEvent::ConfigChanged {
+                    entity_type: "device".to_string(),
+                    entity_id: device.id.to_string(),
+                    tenant_id: device.tenant_id,
+                    timestamp: now,
+                },
+            ))
+            .await;
+        info!(device = %device.id, validator = %result.validator, "Device E911 address validated");
+    }
+    let stored = device.e911_override.as_ref();
+    Ok((
+        if result.valid {
+            StatusCode::OK
+        } else {
+            StatusCode::UNPROCESSABLE_ENTITY
+        },
+        Json(DeviceValidationResponse {
+            validation: result.into(),
+            device_id: device.id.to_string(),
+            name: device.name.clone(),
+            validated: stored.is_some_and(|a| a.validated),
             validated_at: stored.and_then(|a| a.validated_at).map(unix_secs),
         }),
     ))

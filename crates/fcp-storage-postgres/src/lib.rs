@@ -2428,6 +2428,21 @@ impl EncryptionStore for PostgresStorage {
             .context("encryption at rest is not enabled (set FCP_ENCRYPTION_PROVIDER)")?;
         enc.reencrypt(self.writes()).await
     }
+
+    async fn seal_secret(&self, plaintext: &str) -> Result<String> {
+        let enc = self
+            .encryption
+            .as_ref()
+            .context("encryption at rest is not enabled (set FCP_ENCRYPTION_PROVIDER)")?;
+        enc.seal(plaintext)
+    }
+
+    async fn open_secret(&self, value: &str) -> Result<String> {
+        Ok(self
+            .open_opt(Some(value.to_string()))
+            .await?
+            .unwrap_or_default())
+    }
 }
 
 // ============================================================================
@@ -4473,6 +4488,13 @@ fn row_to_site_location(row: sqlx::postgres::PgRow) -> Result<SiteLocation> {
             .flatten()
             .and_then(|v| serde_json::from_value(v).ok())
             .unwrap_or_default(),
+        e911_validated_at: row
+            .try_get::<Option<DateTime<Utc>>, _>("e911_validated_at")
+            .ok()
+            .flatten()
+            .map(datetime_to_system_time),
+        e911_validated_by: row.try_get("e911_validated_by").unwrap_or(None),
+        e911_validation_reference: row.try_get("e911_validation_reference").unwrap_or(None),
         created_at,
         updated_at,
     })
@@ -5061,7 +5083,8 @@ impl SiteLocationStore for PostgresStorage {
                     city, state, postal_code, country, floor, building,
                     latitude, longitude, phone_number, timezone,
                     emergency_contact_name, emergency_contact_phone,
-                    created_at, updated_at, e911_callback_number, civic
+                    created_at, updated_at, e911_callback_number, civic,
+                    e911_validated_at, e911_validated_by, e911_validation_reference
              FROM locations
              WHERE id = $1",
         )
@@ -5081,7 +5104,8 @@ impl SiteLocationStore for PostgresStorage {
                     city, state, postal_code, country, floor, building,
                     latitude, longitude, phone_number, timezone,
                     emergency_contact_name, emergency_contact_phone,
-                    created_at, updated_at, e911_callback_number, civic
+                    created_at, updated_at, e911_callback_number, civic,
+                    e911_validated_at, e911_validated_by, e911_validation_reference
              FROM locations
              WHERE tenant_id = $1
              ORDER BY name",
@@ -5110,9 +5134,10 @@ impl SiteLocationStore for PostgresStorage {
                 city, state, postal_code, country, floor, building,
                 latitude, longitude, phone_number, timezone,
                 emergency_contact_name, emergency_contact_phone,
-                created_at, updated_at, e911_callback_number, civic
+                created_at, updated_at, e911_callback_number, civic,
+                e911_validated_at, e911_validated_by, e911_validation_reference
              )
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)
              ON CONFLICT(id) DO UPDATE SET
                  name = EXCLUDED.name,
                  description = EXCLUDED.description,
@@ -5132,6 +5157,9 @@ impl SiteLocationStore for PostgresStorage {
                  emergency_contact_phone = EXCLUDED.emergency_contact_phone,
                  e911_callback_number = EXCLUDED.e911_callback_number,
                  civic = EXCLUDED.civic,
+                 e911_validated_at = EXCLUDED.e911_validated_at,
+                 e911_validated_by = EXCLUDED.e911_validated_by,
+                 e911_validation_reference = EXCLUDED.e911_validation_reference,
                  updated_at = EXCLUDED.updated_at",
         )
         .bind(&id)
@@ -5160,6 +5188,9 @@ impl SiteLocationStore for PostgresStorage {
                 .then(|| serde_json::to_value(&location.civic))
                 .transpose()?,
         )
+        .bind(location.e911_validated_at.map(system_time_to_datetime))
+        .bind(&location.e911_validated_by)
+        .bind(&location.e911_validation_reference)
         .execute(self.writes())
         .await?;
 

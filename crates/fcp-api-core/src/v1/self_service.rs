@@ -1005,6 +1005,8 @@ pub async fn declare_my_location(
         country: body.country.unwrap_or_else(|| "US".to_string()),
         validated: false,
         validated_at: None,
+        validated_by: None,
+        provider_reference: None,
         civic: body.civic,
     };
     let validation = state
@@ -1019,14 +1021,13 @@ pub async fn declare_my_location(
             Json(serde_json::json!({
                 "error": "The address could not be validated",
                 "issues": validation.issues,
+                "notes": validation.notes,
                 "validator": validation.validator,
             })),
         )
             .into_response());
     }
-    let mut address = validation.normalized;
-    address.validated = true;
-    address.validated_at = Some(std::time::SystemTime::now());
+    let address = validation.validated_address(std::time::SystemTime::now());
 
     let ttl = emergency_store(&state)?
         .get_emergency_config(&user.tenant_id)

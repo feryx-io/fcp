@@ -183,8 +183,12 @@ impl Device {
         self.updated_at = SystemTime::now();
     }
 
-    /// Set E911 override address.
+    /// Set E911 override address. An address that differs from the one
+    /// stored arrives unvalidated, whatever it claims
+    /// (`docs/E911_BLOCK_2.md` §7).
     pub fn set_e911_override(&mut self, address: E911Address) {
+        let mut address = address;
+        address.carry_validation(self.e911_override.as_ref());
         self.e911_override = Some(address);
         self.updated_at = SystemTime::now();
     }

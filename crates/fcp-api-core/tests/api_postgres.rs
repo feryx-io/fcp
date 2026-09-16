@@ -4375,7 +4375,7 @@ async fn e911_config_readiness_validation_and_audit() {
     assert_eq!(ready["location"]["callback_number"], "+15185550100");
     assert_eq!(ready["location"]["address"]["address2"], "Floor 3");
     assert_eq!(ready["location"]["location_id"], site_id);
-    // Site addresses are never "validated", so the user is not fully ready.
+    // Until the site's address is validated the user is not fully ready.
     assert_eq!(ready["ready"], false, "{ready}");
     assert_eq!(ready["issues"].as_array().unwrap().len(), 1, "{ready}");
     let nowhere = rows.iter().find(|u| u["username"] == "nowhere").unwrap();
@@ -4459,6 +4459,220 @@ async fn e911_config_readiness_validation_and_audit() {
         )
         .await;
     assert_eq!(cross.status, StatusCode::NOT_FOUND, "{}", cross.text);
+
+    // Re-sending the same address keeps its validation; changing it clears
+    // it, and a client cannot claim validation for itself.
+    let unchanged = app
+        .admin(
+            Method::PATCH,
+            &format!("/api/v1/phone-numbers/{number_id}"),
+            Some(json!({ "e911_address": {
+                "address1": "2 Main St", "city": "Albany", "state": "NY",
+                "postal_code": "12207", "country": "US", "validated": false,
+                "house_number": "2", "street_name": "Main", "street_suffix": "St"
+            }})),
+        )
+        .await;
+    assert_eq!(unchanged.status, StatusCode::OK, "{}", unchanged.text);
+    assert_eq!(
+        unchanged.json["e911_address"]["validated"], true,
+        "the same address keeps its validation: {}",
+        unchanged.text
+    );
+    let moved = app
+        .admin(
+            Method::PATCH,
+            &format!("/api/v1/phone-numbers/{number_id}"),
+            Some(json!({ "e911_address": {
+                "address1": "3 Main St", "city": "Albany", "state": "NY",
+                "postal_code": "12207", "country": "US", "validated": true
+            }})),
+        )
+        .await;
+    assert_eq!(
+        moved.json["e911_address"]["validated"], false,
+        "editing the address clears it, and `validated: true` is not believed: {}",
+        moved.text
+    );
+
+    // A site's address is validated the same way, and a validated site
+    // address makes the users placed there ready.
+    let no_address = app
+        .admin(
+            Method::POST,
+            "/api/v1/locations",
+            Some(json!({ "name": "Nameplate only" })),
+        )
+        .await;
+    let no_address_id = no_address.json["id"].as_str().unwrap().to_string();
+    let refused = app
+        .admin(
+            Method::POST,
+            &format!("/api/v1/locations/{no_address_id}/e911/validate"),
+            None,
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.text);
+
+    let site_check = app
+        .admin(
+            Method::POST,
+            &format!("/api/v1/locations/{site_id}/e911/validate"),
+            None,
+        )
+        .await;
+    assert_eq!(site_check.status, StatusCode::OK, "{}", site_check.text);
+    assert_eq!(site_check.json["validated"], true, "{}", site_check.text);
+    assert_eq!(site_check.json["validation"]["validator"], "basic");
+    let stored_site = app
+        .admin(Method::GET, &format!("/api/v1/locations/{site_id}"), None)
+        .await;
+    assert_eq!(
+        stored_site.json["e911_validated"], true,
+        "{}",
+        stored_site.text
+    );
+    assert_eq!(stored_site.json["e911_validated_by"], "basic");
+    assert_eq!(
+        stored_site.json["civic"]["unit"], "300",
+        "the elements the tenant set are kept: {}",
+        stored_site.text
+    );
+    assert!(
+        stored_site.json["civic"]["floor"].is_null(),
+        "the floor stays the site's own field: {}",
+        stored_site.text
+    );
+
+    let after = app
+        .admin(Method::GET, "/api/v1/emergency/readiness", None)
+        .await;
+    let ready = after.json["users"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|u| u["username"] == "ready")
+        .unwrap()
+        .clone();
+    assert_eq!(ready["ready"], true, "{ready}");
+    assert!(ready["issues"].as_array().unwrap().is_empty(), "{ready}");
+    assert_eq!(ready["location"]["address"]["validated"], true, "{ready}");
+
+    // Editing any part of the address clears the site's validation again.
+    let edited = app
+        .admin(
+            Method::PATCH,
+            &format!("/api/v1/locations/{site_id}"),
+            Some(json!({ "address_line1": "2 State St" })),
+        )
+        .await;
+    assert_eq!(edited.json["e911_validated"], false, "{}", edited.text);
+    let renamed = app
+        .admin(
+            Method::PATCH,
+            &format!("/api/v1/locations/{site_id}"),
+            Some(json!({ "description": "Head office" })),
+        )
+        .await;
+    assert_eq!(
+        renamed.json["e911_validated"], false,
+        "nothing re-validates on its own: {}",
+        renamed.text
+    );
+
+    // A device's own override is validated on the same route.
+    let device = app
+        .admin(
+            Method::POST,
+            "/api/v1/devices",
+            Some(json!({
+                "name": "Lobby phone",
+                "device_type": "desk_phone",
+                "tenant_id": app.tenant_a,
+                "mac_address": "aa-bb-cc-dd-ee-91",
+                "e911_override": {
+                    "address1": "1455 market street", "city": "San Francisco",
+                    "state": "ca", "postal_code": "94103", "country": "US",
+                    "validated": true
+                }
+            })),
+        )
+        .await;
+    assert_eq!(device.status, StatusCode::CREATED, "{}", device.text);
+    let device_id = device.json["id"].as_str().unwrap().to_string();
+    assert_eq!(
+        device.json["e911_override"]["validated"], false,
+        "an address arrives unvalidated whatever it claims: {}",
+        device.text
+    );
+    let checked = app
+        .admin(
+            Method::POST,
+            &format!("/api/v1/devices/{device_id}/e911/validate"),
+            None,
+        )
+        .await;
+    assert_eq!(checked.status, StatusCode::OK, "{}", checked.text);
+    assert_eq!(checked.json["validated"], true, "{}", checked.text);
+    assert_eq!(
+        checked.json["validation"]["normalized"]["street_name"], "market",
+        "the street is split into elements, keeping the case it was typed in: {}",
+        checked.text
+    );
+    let stored_device = app
+        .admin(Method::GET, &format!("/api/v1/devices/{device_id}"), None)
+        .await;
+    assert_eq!(
+        stored_device.json["e911_override"]["validated"], true,
+        "{}",
+        stored_device.text
+    );
+    assert_eq!(
+        stored_device.json["e911_override"]["validated_by"], "basic",
+        "{}",
+        stored_device.text
+    );
+    assert_eq!(
+        stored_device.json["e911_override"]["address1"], "1455 market street",
+        "the normalised address is stored: {}",
+        stored_device.text
+    );
+    let device_moved = app
+        .admin(
+            Method::PATCH,
+            &format!("/api/v1/devices/{device_id}"),
+            Some(json!({ "e911_override": {
+                "address1": "1500 Market St", "city": "San Francisco",
+                "state": "CA", "postal_code": "94103", "country": "US"
+            }})),
+        )
+        .await;
+    assert_eq!(
+        device_moved.json["e911_override"]["validated"], false,
+        "moving the device clears its validation: {}",
+        device_moved.text
+    );
+    let bare_device = app
+        .admin(
+            Method::POST,
+            "/api/v1/devices",
+            Some(json!({
+                "name": "No override",
+                "device_type": "desk_phone",
+                "tenant_id": app.tenant_a,
+                "mac_address": "aa-bb-cc-dd-ee-92"
+            })),
+        )
+        .await;
+    let bare_device_id = bare_device.json["id"].as_str().unwrap().to_string();
+    let nothing = app
+        .admin(
+            Method::POST,
+            &format!("/api/v1/devices/{bare_device_id}/e911/validate"),
+            None,
+        )
+        .await;
+    assert_eq!(nothing.status, StatusCode::BAD_REQUEST, "{}", nothing.text);
 
     // Trunks carry the emergency flag through create and update.
     let trunk = app

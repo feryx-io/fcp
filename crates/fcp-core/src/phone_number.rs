@@ -511,10 +511,22 @@ pub struct E911Address {
     pub country: String,
 
     /// Validated flag (set by E911 validation service)
+    #[serde(default)]
     pub validated: bool,
 
     /// Validation timestamp
+    #[serde(default)]
     pub validated_at: Option<SystemTime>,
+
+    /// The validator that last checked this address (`basic`, `http`, …),
+    /// set with `validated` (`docs/E911_BLOCK_2.md` §7).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validated_by: Option<String>,
+
+    /// The reference a validation provider gave for its answer, for
+    /// support calls about a rejected address.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_reference: Option<String>,
 
     /// The address's RFC 5139 civic elements, when something structured it
     /// (`docs/E911_BLOCK_2.md` §5.1). Kept alongside the line fields, which
@@ -626,7 +638,44 @@ impl E911Address {
             country,
             validated: false,
             validated_at: None,
+            validated_by: None,
+            provider_reference: None,
             civic: CivicElements::default(),
+        }
+    }
+
+    /// The parts a person edits: everything but the validation marks.
+    /// Two addresses that agree here are the same address.
+    pub fn same_address(&self, other: &Self) -> bool {
+        self.address1 == other.address1
+            && self.address2 == other.address2
+            && self.city == other.city
+            && self.state == other.state
+            && self.postal_code == other.postal_code
+            && self.country == other.country
+            && self.civic == other.civic
+    }
+
+    /// Forget that this address was validated: editing an address clears
+    /// its validation (`docs/E911_BLOCK_2.md` §7).
+    pub fn clear_validation(&mut self) {
+        self.validated = false;
+        self.validated_at = None;
+        self.validated_by = None;
+        self.provider_reference = None;
+    }
+
+    /// Keep the validation of `previous` when this is the same address,
+    /// and drop it when anything about the address changed.
+    pub fn carry_validation(&mut self, previous: Option<&Self>) {
+        match previous.filter(|p| p.same_address(self)) {
+            Some(previous) => {
+                self.validated = previous.validated;
+                self.validated_at = previous.validated_at;
+                self.validated_by = previous.validated_by.clone();
+                self.provider_reference = previous.provider_reference.clone();
+            }
+            None => self.clear_validation(),
         }
     }
 

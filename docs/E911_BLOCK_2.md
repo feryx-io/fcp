@@ -1,7 +1,7 @@
 # Emergency Calling, Block 2 — Design
 
 Status: **agreed** (2026-09-15), every recommendation in §12 taken.
-Phases 1, 2 and 3 are done (v0.25.176, v0.25.177 and v0.25.178, see §11). This
+Phases 1 to 4 are done (v0.25.176 to v0.25.179, see §11). This
 document is the plan for the four items `docs/E911.md` left for later — **location by value** (PIDF-LO) for
 NG911 trunks, **network-based location** for softphones and roaming
 devices, **provider-backed address validation**, and **notification
@@ -510,6 +510,41 @@ by release tag first.
 4. **Validation.** Site and device validation, structured normalisation in
    the basic validator, the HTTP provider with sealed credentials,
    validation cleared on edit.
+
+   *Done (v0.25.179).* What shipped:
+
+   - **Every address.** `POST /v1/locations/:id/e911/validate` and
+     `POST /v1/devices/:id/e911/validate` join the phone-number route. A
+     site keeps what the validator said (`e911_validated_at`,
+     `e911_validated_by`, `e911_validation_reference`, migration 070) and
+     its normalised street, city, state and civic elements are written
+     back; a device's `e911_override` carries the same marks in its own
+     JSON. A validated site's address reaches readiness as validated, so a
+     user placed there is finally *ready*.
+   - **Only a validator marks an address.** An address sent to the API
+     with `"validated": true` arrives unvalidated, and editing a site
+     address, a device override or a number's address clears the mark —
+     re-sending the same address keeps it.
+   - **Structure.** The basic validator splits `1455A N Market Street SW`
+     into `HNO`/`HNS`/`PRD`/`RD`/`STS`/`POD`, reads a second line such as
+     `Suite 300` or `4th Floor` into `UNIT`/`FLR`, and says in `notes`
+     what it could not tell apart — a note is not an issue and does not
+     make the address invalid.
+   - **The HTTP provider.** `[e911.validator]` in `fcp-admin` selects
+     `basic` or `http`; `HttpAddressValidator` posts the tidied,
+     structured address with a bearer token and reads
+     `{valid, normalized, issues, notes, provider_reference}`. A provider
+     that cannot be reached is an error, not an invalid address.
+     `with_e911_validator`, which nothing called, is now what wires it.
+   - **Sealed credentials.** The token may be a value sealed with
+     encryption at rest, in the file or in a mounted `token_file`, opened
+     at startup; `POST /v1/system/encryption/seal` (platform admin) is how
+     an operator produces one.
+   - **Tests.** `crates/fcp-api-core/tests/e911_validator.rs` runs the
+     HTTP validator against a provider that answers like one; the API test
+     covers site and device validation, clearing on edit, and readiness
+     turning ready once the site is validated; fcp-core's tests cover the
+     street parser.
 5. **Notification.** Typed contacts and their migration, the notifier in
    the events server (email, SMS, call, webhook), `emergency_notifications`,
    `notified`, test-call notices, the SMTP and SMS sinks in the testkit.

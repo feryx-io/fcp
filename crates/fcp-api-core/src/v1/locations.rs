@@ -49,6 +49,12 @@ pub struct LocationResponse {
     /// The street address as RFC 5139 civic elements (`docs/E911_BLOCK_2.md`
     /// §5.1): what an emergency call's PIDF-LO carries.
     pub civic: fcp_core::phone_number::CivicElements,
+    /// Whether a validator has confirmed the address
+    /// (`POST /locations/:id/e911/validate`); editing it clears this.
+    pub e911_validated: bool,
+    pub e911_validated_at: Option<SystemTime>,
+    pub e911_validated_by: Option<String>,
+    pub e911_validation_reference: Option<String>,
     pub created_at: SystemTime,
     pub updated_at: SystemTime,
 }
@@ -75,6 +81,10 @@ impl From<SiteLocation> for LocationResponse {
             emergency_contact_name: loc.emergency_contact_name,
             emergency_contact_phone: loc.emergency_contact_phone,
             e911_callback_number: loc.e911_callback_number,
+            e911_validated: loc.e911_validated_at.is_some(),
+            e911_validated_at: loc.e911_validated_at,
+            e911_validated_by: loc.e911_validated_by,
+            e911_validation_reference: loc.e911_validation_reference,
             civic: loc.civic,
             created_at: loc.created_at,
             updated_at: loc.updated_at,
@@ -259,12 +269,16 @@ pub async fn update_location(
         .map_err(|e| ApiError::BadRequest(format!("Invalid location ID: {}", e)))?;
 
     // Get existing location
-    let mut location = storage
+    let mut location: SiteLocation = storage
         .get_location(&id)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to get location: {}", e)))?
         .ok_or_else(|| ApiError::NotFound(format!("Location {} not found", id)))
         .and_then(|location| ensure_location_in_tenant(location, &tenant.0, &id))?;
+
+    // Editing any part of the address clears its validation
+    // (`docs/E911_BLOCK_2.md` §7).
+    let address_before = location.address_fingerprint();
 
     // Update fields if provided
     if let Some(name) = req.name {
@@ -324,6 +338,10 @@ pub async fn update_location(
             return Err(ApiError::BadRequest(problems.join("; ")));
         }
         location.civic = civic;
+    }
+
+    if location.address_fingerprint() != address_before {
+        location.clear_e911_validation();
     }
 
     // Update timestamp
