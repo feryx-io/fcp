@@ -118,10 +118,30 @@ impl Inner {
             .await
     }
 
+    /// As [`Inner::place_call`], with the SDP and `body`'s parts in one
+    /// multipart body.
+    async fn place_call_with_body(
+        self: &Arc<Self>,
+        target: &str,
+        body: sip_core::MultipartBody,
+        headers: sip_core::Headers,
+    ) -> Result<Call> {
+        self.place_call_inner(target, Some(body), headers).await
+    }
+
     /// As [`Inner::place_call`], with extra request headers.
     async fn place_call_with_headers(
         self: &Arc<Self>,
         target: &str,
+        headers: sip_core::Headers,
+    ) -> Result<Call> {
+        self.place_call_inner(target, None, headers).await
+    }
+
+    async fn place_call_inner(
+        self: &Arc<Self>,
+        target: &str,
+        multipart: Option<sip_core::MultipartBody>,
         headers: sip_core::Headers,
     ) -> Result<Call> {
         let target = if target.starts_with("sip:") || target.starts_with("sips:") {
@@ -131,11 +151,36 @@ impl Inner {
         };
         let media = Arc::new(MediaLeg::open().await?);
         let offer = media.sdp("sendrecv");
+        let options = match multipart {
+            Some(mut body) => {
+                // The SDP first, then whatever the caller added.
+                let mut whole = sip_core::MultipartBody::mixed();
+                whole
+                    .push(
+                        sip_core::BodyPart::new("application/sdp", offer.clone())
+                            .map_err(|e| anyhow!("sdp part: {e}"))?,
+                    )
+                    .map_err(|e| anyhow!("body: {e}"))?;
+                for part in body.parts() {
+                    whole.push(part.clone()).map_err(|e| anyhow!("body: {e}"))?;
+                }
+                body = whole;
+                sip_uac::InviteOptions {
+                    body: Some(sip_uac::InviteBody::multipart(&body)),
+                    extra_headers: headers,
+                    from: None,
+                }
+            }
+            None => sip_uac::InviteOptions {
+                body: Some(sip_uac::InviteBody::sdp(&offer)),
+                extra_headers: headers,
+                from: None,
+            },
+        };
         let handle = Arc::new(
             tokio::time::timeout(
                 Duration::from_secs(5),
-                self.uac()
-                    .invite_with_headers(target.as_str(), Some(&offer), headers),
+                self.uac().invite_with_options(target.as_str(), options),
             )
             .await
             .context("INVITE could not be sent")??,
@@ -357,8 +402,21 @@ impl Phone {
         realm: &str,
         server: SocketAddr,
     ) -> Result<Self> {
+        Self::bound_to("127.0.0.1:0", username, password, realm, server).await
+    }
+
+    /// As [`Phone::new`], from a chosen local address: a test that turns on
+    /// which network a device is on binds `127.0.0.2:0` and so on (every
+    /// 127.0.0.0/8 address is local on Linux).
+    pub async fn bound_to(
+        bind: &str,
+        username: &str,
+        password: &str,
+        realm: &str,
+        server: SocketAddr,
+    ) -> Result<Self> {
         disable_rate_limits();
-        let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await?);
+        let socket = Arc::new(UdpSocket::bind(bind).await?);
         let local_addr = socket.local_addr()?;
         let local_uri = SipUri::parse(&format!("sip:{username}@{realm}"))
             .map_err(|e| anyhow!("local uri: {e}"))?;
@@ -486,6 +544,32 @@ impl Phone {
                 .map_err(|e| anyhow!("header {name}: {e}"))?;
         }
         self.inner.place_call_with_headers(target, extra).await
+    }
+
+    /// As [`Phone::call`], with `parts` beside the SDP in a
+    /// `multipart/mixed` body: a device that sends its own location sends
+    /// a PIDF-LO this way (RFC 6442).
+    pub async fn call_with_body_parts(
+        &self,
+        target: &str,
+        parts: &[(&str, &str)],
+        headers: &[(&str, &str)],
+    ) -> Result<Call> {
+        let mut extra = sip_core::Headers::new();
+        for (name, value) in headers {
+            extra
+                .push(*name, *value)
+                .map_err(|e| anyhow!("header {name}: {e}"))?;
+        }
+        let mut body = sip_core::MultipartBody::mixed();
+        for (content_type, part) in parts {
+            body.push(
+                sip_core::BodyPart::new(*content_type, part.to_string())
+                    .map_err(|e| anyhow!("body part: {e}"))?,
+            )
+            .map_err(|e| anyhow!("body: {e}"))?;
+        }
+        self.inner.place_call_with_body(target, body, extra).await
     }
 
     /// The next incoming call; `None` at the deadline.

@@ -4,8 +4,8 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use fcp_core::e911::{
-    DispatchableLocation, EmergencyCallRecord, EmergencyCompletion, EmergencyConfig, EmergencyKind,
-    EmergencyStore,
+    DeclaredLocation, DispatchableLocation, EmergencyCallRecord, EmergencyCompletion,
+    EmergencyConfig, EmergencyKind, EmergencyNetwork, EmergencyStore, NetworkApplies,
 };
 use fcp_core::TenantId;
 use sqlx::{Pool, Postgres, Row};
@@ -29,6 +29,25 @@ pub struct PostgresEmergencyStore {
 impl PostgresEmergencyStore {
     pub fn new(pool: Pool<Postgres>) -> Self {
         Self { pool }
+    }
+
+    fn row_to_network(row: sqlx::postgres::PgRow) -> anyhow::Result<EmergencyNetwork> {
+        let created_at: DateTime<Utc> = row.try_get("created_at")?;
+        let updated_at: DateTime<Utc> = row.try_get("updated_at")?;
+        Ok(EmergencyNetwork {
+            id: fcp_core::EmergencyNetworkId::from_str(&row.try_get::<String, _>("id")?)?,
+            tenant_id: TenantId::from_str(&row.try_get::<String, _>("tenant_id")?)?,
+            cidr: row.try_get::<String, _>("cidr")?.parse()?,
+            location_id: fcp_core::LocationId::from_str(&row.try_get::<String, _>("location_id")?)?,
+            name: row.try_get("name")?,
+            priority: row.try_get("priority")?,
+            applies_to: row
+                .try_get::<String, _>("applies_to")?
+                .parse::<NetworkApplies>()
+                .unwrap_or_default(),
+            created_at: to_system_time(created_at),
+            updated_at: to_system_time(updated_at),
+        })
     }
 
     fn row_to_record(row: sqlx::postgres::PgRow) -> anyhow::Result<EmergencyCallRecord> {
@@ -81,7 +100,8 @@ impl EmergencyStore for PostgresEmergencyStore {
     ) -> anyhow::Result<Option<EmergencyConfig>> {
         let row = sqlx::query(
             "SELECT tenant_id, emergency_numbers, test_numbers, dial_prefixes, notify_contacts,
-                    require_dispatchable_location, updated_at
+                    require_dispatchable_location, updated_at,
+                    trust_device_locations, declared_location_ttl_secs
              FROM emergency_configs WHERE tenant_id = $1",
         )
         .bind(tenant_id.to_string())
@@ -98,6 +118,17 @@ impl EmergencyStore for PostgresEmergencyStore {
             dial_prefixes: row.try_get("dial_prefixes")?,
             notify_contacts: row.try_get("notify_contacts")?,
             require_dispatchable_location: row.try_get("require_dispatchable_location")?,
+            trust_device_locations: row
+                .try_get::<Vec<String>, _>("trust_device_locations")
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|t| serde_json::from_value(serde_json::Value::String(t.clone())).ok())
+                .collect(),
+            declared_location_ttl: std::time::Duration::from_secs(
+                row.try_get::<i64, _>("declared_location_ttl_secs")
+                    .unwrap_or(86_400)
+                    .max(0) as u64,
+            ),
             updated_at: to_system_time(updated_at),
         }))
     }
@@ -106,14 +137,17 @@ impl EmergencyStore for PostgresEmergencyStore {
         sqlx::query(
             "INSERT INTO emergency_configs
                 (tenant_id, emergency_numbers, test_numbers, dial_prefixes, notify_contacts,
-                 require_dispatchable_location, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7)
+                 require_dispatchable_location, updated_at, trust_device_locations,
+                 declared_location_ttl_secs)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
              ON CONFLICT (tenant_id) DO UPDATE SET
                 emergency_numbers = EXCLUDED.emergency_numbers,
                 test_numbers = EXCLUDED.test_numbers,
                 dial_prefixes = EXCLUDED.dial_prefixes,
                 notify_contacts = EXCLUDED.notify_contacts,
                 require_dispatchable_location = EXCLUDED.require_dispatchable_location,
+                trust_device_locations = EXCLUDED.trust_device_locations,
+                declared_location_ttl_secs = EXCLUDED.declared_location_ttl_secs,
                 updated_at = EXCLUDED.updated_at",
         )
         .bind(config.tenant_id.to_string())
@@ -123,6 +157,14 @@ impl EmergencyStore for PostgresEmergencyStore {
         .bind(&config.notify_contacts)
         .bind(config.require_dispatchable_location)
         .bind(to_datetime(config.updated_at))
+        .bind(
+            config
+                .trust_device_locations
+                .iter()
+                .map(|t| t.to_string())
+                .collect::<Vec<_>>(),
+        )
+        .bind(config.declared_location_ttl.as_secs() as i64)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -186,6 +228,136 @@ impl EmergencyStore for PostgresEmergencyStore {
     async fn mark_emergency_call_notified(&self, id: i64) -> anyhow::Result<()> {
         sqlx::query("UPDATE emergency_calls SET notified = TRUE WHERE id = $1")
             .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn list_emergency_networks(
+        &self,
+        tenant_id: &TenantId,
+    ) -> anyhow::Result<Vec<EmergencyNetwork>> {
+        let rows = sqlx::query(
+            "SELECT id, tenant_id, cidr, location_id, name, priority, applies_to,
+                    created_at, updated_at
+             FROM emergency_networks WHERE tenant_id = $1
+             ORDER BY priority, cidr",
+        )
+        .bind(tenant_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(Self::row_to_network).collect()
+    }
+
+    async fn get_emergency_network(
+        &self,
+        id: &fcp_core::EmergencyNetworkId,
+    ) -> anyhow::Result<Option<EmergencyNetwork>> {
+        let row = sqlx::query(
+            "SELECT id, tenant_id, cidr, location_id, name, priority, applies_to,
+                    created_at, updated_at
+             FROM emergency_networks WHERE id = $1",
+        )
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(Self::row_to_network).transpose()
+    }
+
+    async fn put_emergency_network(&self, network: &EmergencyNetwork) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO emergency_networks
+                (id, tenant_id, cidr, location_id, name, priority, applies_to,
+                 created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+             ON CONFLICT (id) DO UPDATE SET
+                cidr = EXCLUDED.cidr,
+                location_id = EXCLUDED.location_id,
+                name = EXCLUDED.name,
+                priority = EXCLUDED.priority,
+                applies_to = EXCLUDED.applies_to,
+                updated_at = EXCLUDED.updated_at",
+        )
+        .bind(network.id.to_string())
+        .bind(network.tenant_id.to_string())
+        .bind(network.cidr.to_string())
+        .bind(network.location_id.to_string())
+        .bind(&network.name)
+        .bind(network.priority)
+        .bind(network.applies_to.to_string())
+        .bind(to_datetime(network.created_at))
+        .bind(to_datetime(network.updated_at))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn delete_emergency_network(
+        &self,
+        id: &fcp_core::EmergencyNetworkId,
+    ) -> anyhow::Result<()> {
+        sqlx::query("DELETE FROM emergency_networks WHERE id = $1")
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn get_declared_location(
+        &self,
+        tenant_id: &TenantId,
+        user_id: &fcp_core::UserId,
+    ) -> anyhow::Result<Option<DeclaredLocation>> {
+        let row = sqlx::query(
+            "SELECT tenant_id, user_id, address, declared_at, expires_at
+             FROM declared_locations WHERE tenant_id = $1 AND user_id = $2",
+        )
+        .bind(tenant_id.to_string())
+        .bind(user_id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let declared_at: DateTime<Utc> = row.try_get("declared_at")?;
+        let expires_at: DateTime<Utc> = row.try_get("expires_at")?;
+        Ok(Some(DeclaredLocation {
+            tenant_id: TenantId::from_str(&row.try_get::<String, _>("tenant_id")?)?,
+            user_id: fcp_core::UserId::from_str(&row.try_get::<String, _>("user_id")?)?,
+            address: serde_json::from_value(row.try_get("address")?)?,
+            declared_at: to_system_time(declared_at),
+            expires_at: to_system_time(expires_at),
+        }))
+    }
+
+    async fn put_declared_location(&self, location: &DeclaredLocation) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO declared_locations
+                (tenant_id, user_id, address, declared_at, expires_at)
+             VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT (tenant_id, user_id) DO UPDATE SET
+                address = EXCLUDED.address,
+                declared_at = EXCLUDED.declared_at,
+                expires_at = EXCLUDED.expires_at",
+        )
+        .bind(location.tenant_id.to_string())
+        .bind(location.user_id.to_string())
+        .bind(serde_json::to_value(&location.address)?)
+        .bind(to_datetime(location.declared_at))
+        .bind(to_datetime(location.expires_at))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn delete_declared_location(
+        &self,
+        tenant_id: &TenantId,
+        user_id: &fcp_core::UserId,
+    ) -> anyhow::Result<()> {
+        sqlx::query("DELETE FROM declared_locations WHERE tenant_id = $1 AND user_id = $2")
+            .bind(tenant_id.to_string())
+            .bind(user_id.to_string())
             .execute(&self.pool)
             .await?;
         Ok(())

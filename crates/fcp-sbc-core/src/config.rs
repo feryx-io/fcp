@@ -80,6 +80,21 @@ impl Default for SbcStorageConfig {
 /// Aggregates the B2BUA config (from `fcp-b2bua-core`) with all SBC-specific
 /// sub-configurations. The default uses SBC-tuned B2BUA settings (full
 /// topology hiding, always anchor media, single forking, SBC transfer defaults).
+/// Emergency calling at the SBC (`docs/E911_BLOCK_2.md` §6.2).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct E911Config {
+    /// Edges whose `X-FCP-Caller-*` and `X-FCP-Client-Address` headers are
+    /// believed: addresses or CIDR ranges.
+    pub trusted_edges: Vec<String>,
+
+    /// Tell the next hop (the call manager) where each caller is, as
+    /// `X-FCP-Client-Address`. An SBC that fronts phones should: without
+    /// it the call manager sees only the SBC's own address, and a device
+    /// that moves cannot be placed by network.
+    pub vouch_client_address: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SbcConfig {
@@ -120,6 +135,10 @@ pub struct SbcConfig {
     /// Header manipulation rules.
     #[serde(default)]
     pub header_manipulation: HeaderManipulationConfig,
+
+    /// Emergency calling (`docs/E911_BLOCK_2.md` §6.2).
+    #[serde(default)]
+    pub e911: E911Config,
 
     /// Optional storage for CDR persistence.
     #[serde(default)]
@@ -206,6 +225,7 @@ impl Default for SbcConfig {
             external_domain: String::new(),
             transports: vec![TransportType::Udp, TransportType::Tcp],
             header_manipulation: HeaderManipulationConfig::default(),
+            e911: E911Config::default(),
             stir_shaken: StirShakenConfig::default(),
             storage: SbcStorageConfig::default(),
             tls_bind: None,

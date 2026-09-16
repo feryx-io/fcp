@@ -633,6 +633,11 @@ pub struct Registration {
     /// when routing requests to NAT'd clients.
     #[serde(default)]
     pub flow_token: Option<String>,
+
+    /// The address the REGISTER came from (`ip:port`), which places a
+    /// device that moves (`docs/E911_BLOCK_2.md` §6.2).
+    #[serde(default)]
+    pub source_address: Option<String>,
 }
 
 /// Storage backend for user credentials.
@@ -4410,6 +4415,7 @@ mod tests {
             registered_at: SystemTime::now(),
             path: None,
             flow_token: None,
+            source_address: None,
         };
 
         storage.put_registration(reg.clone()).await.unwrap();

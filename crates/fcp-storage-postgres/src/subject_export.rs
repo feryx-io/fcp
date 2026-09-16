@@ -182,6 +182,12 @@ fn class_query(class: ExportClass) -> String {
                AND (fcp_subject_keys(caller_uri) || fcp_subject_keys(caller_username)
                     || fcp_subject_keys(callback_number)) && $4"
         }
+        ExportClass::DeclaredLocations => {
+            "SELECT user_id AS id, 'owned' AS link, to_jsonb(d) AS data,
+                    declared_at AS at, NULL::text AS call_id, NULL::text AS file,
+                    NULL::text[] AS ids, false AS others
+             FROM declared_locations d WHERE tenant_id = $1 AND user_id = ANY($5)"
+        }
         ExportClass::AuditEvents => {
             "SELECT id::text AS id, 'ids' AS link, to_jsonb(a) AS data, occurred_at AS at,
                     NULL::text AS call_id, NULL::text AS file, ARRAY[actor] AS ids,

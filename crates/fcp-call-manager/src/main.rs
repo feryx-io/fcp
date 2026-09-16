@@ -1051,6 +1051,7 @@ async fn main() -> Result<()> {
     .with_trusted_edges(fcp_sip::emergency::TrustedEdges::parse(
         &config.e911.trusted_edges,
     )?)
+    .with_client_address_vouching(config.e911.vouch_client_address)
     .with_call_recorder(Arc::clone(&call_recorder));
     #[cfg(feature = "storage-redis")]
     if let Some((_, _, selector)) = &_cluster_manager {

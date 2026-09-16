@@ -94,6 +94,12 @@ pub struct E911Section {
     /// headers are ignored. Empty trusts no one.
     #[serde(default)]
     pub trusted_edges: Vec<String>,
+
+    /// Tell the next hop where each caller is (`X-FCP-Client-Address`).
+    /// A node that stands in front of phones — an SBC — sets this; a call
+    /// manager behind one does not.
+    #[serde(default)]
+    pub vouch_client_address: bool,
 }
 
 /// Service identification.

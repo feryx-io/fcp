@@ -13,6 +13,7 @@ pub mod dashboard;
 pub mod debug;
 pub mod devices;
 pub mod emergency;
+pub mod emergency_networks;
 pub mod encryption;
 pub mod events;
 pub mod extensions;
@@ -153,6 +154,12 @@ pub fn router() -> Router<ApiState> {
             "/me/voicemail/greetings/:greeting_type/audio",
             get(self_service::download_voicemail_greeting_audio),
         )
+        .route(
+            "/me/location",
+            get(self_service::get_my_location)
+                .put(self_service::declare_my_location)
+                .delete(self_service::clear_my_location),
+        )
         .route("/me/forwarding", get(self_service::get_forwarding))
         .route("/me/forwarding/:id", patch(self_service::update_forwarding))
         .route("/me/conferences", get(self_service::list_my_conferences))
@@ -184,6 +191,16 @@ pub fn router() -> Router<ApiState> {
             get(emergency::get_config).put(emergency::update_config),
         )
         .route("/emergency/readiness", get(emergency::readiness))
+        .route(
+            "/emergency/networks",
+            get(emergency_networks::list_networks).post(emergency_networks::create_network),
+        )
+        .route(
+            "/emergency/networks/:id",
+            get(emergency_networks::get_network)
+                .patch(emergency_networks::update_network)
+                .delete(emergency_networks::delete_network),
+        )
         .route("/emergency/calls", get(emergency::list_calls))
         .route(
             "/emergency/validate-address",

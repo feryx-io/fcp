@@ -100,6 +100,11 @@ pub const CALL_ID_HEADER: &str = "X-FCP-Call-Id";
 pub const CALLER_TENANT_HEADER: &str = "X-FCP-Caller-Tenant";
 /// The user, by username, a trusted edge places a call for.
 pub const CALLER_USER_HEADER: &str = "X-FCP-Caller-User";
+/// The address a trusted edge (an SBC, the WebRTC gateway) saw its client
+/// at, so the call manager can place the caller by network even though the
+/// call reached it from the edge (`docs/E911_BLOCK_2.md` §6.2). Believed
+/// only from `[e911] trusted_edges`, and never forwarded further.
+pub const CLIENT_ADDRESS_HEADER: &str = "X-FCP-Client-Address";
 pub use crate::line_binding::{BindingType, DeviceBinding, LineBinding, RingStrategy};
 pub use crate::meeting::Meeting;
 pub use crate::migration_ticket::{

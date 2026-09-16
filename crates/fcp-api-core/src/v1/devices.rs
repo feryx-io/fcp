@@ -53,6 +53,9 @@ pub struct DeviceResponse {
     pub location: Option<String>,
     pub location_id: Option<String>,
     pub e911_override: Option<E911AddressResponse>,
+    /// Whether this device is trusted to send its own location with a
+    /// call (`docs/E911_BLOCK_2.md` §6.3); `null` follows its type.
+    pub e911_trust_location: Option<bool>,
     pub provisioning_url: Option<String>,
     pub config_template_id: Option<String>,
     pub has_provisioning_token: bool,
@@ -94,6 +97,7 @@ impl From<Device> for DeviceResponse {
             location: device.location,
             location_id: device.location_id.map(|id| id.to_string()),
             e911_override: device.e911_override.map(|a| a.into()),
+            e911_trust_location: device.e911_trust_location,
             provisioning_url: device.provisioning_url,
             config_template_id: device.config_template_id,
             has_provisioning_token,
@@ -122,6 +126,8 @@ pub struct CreateDeviceRequest {
     pub location: Option<String>,
     pub location_id: Option<String>,
     pub e911_override: Option<E911AddressResponse>,
+    /// Trust this device's own location (`docs/E911_BLOCK_2.md` §6.3).
+    pub e911_trust_location: Option<bool>,
     /// Optional per-device provisioning token. If omitted for a device with a
     /// MAC address, a token is generated and returned once in the create response.
     pub provisioning_token: Option<String>,
@@ -272,6 +278,8 @@ pub struct UpdateDeviceRequest {
     pub location: Option<String>,
     pub location_id: Option<String>,
     pub e911_override: Option<E911AddressResponse>,
+    /// Trust this device's own location (`docs/E911_BLOCK_2.md` §6.3).
+    pub e911_trust_location: Option<bool>,
     pub provisioning_url: Option<String>,
     pub config_template_id: Option<String>,
     /// Set or rotate the per-device provisioning token. An empty string clears it.
@@ -543,6 +551,10 @@ pub async fn create_device(
         device.set_e911_override(e911.into());
     }
 
+    if req.e911_trust_location.is_some() {
+        device.e911_trust_location = req.e911_trust_location;
+    }
+
     // Store the device
     storage
         .put_device(device.clone())
@@ -673,6 +685,10 @@ pub async fn update_device(
 
     if let Some(e911) = req.e911_override {
         device.set_e911_override(e911.into());
+    }
+
+    if req.e911_trust_location.is_some() {
+        device.e911_trust_location = req.e911_trust_location;
     }
 
     if req.provisioning_url.is_some() {

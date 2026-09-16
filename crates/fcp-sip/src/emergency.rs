@@ -24,9 +24,9 @@ use fcp_core::storage::CredentialStore;
 use fcp_core::TenantId;
 use ipnetwork::IpNetwork;
 use smol_str::SmolStr;
-use tracing::warn;
+use tracing::{debug, warn};
 
-pub use fcp_core::{CALLER_TENANT_HEADER, CALLER_USER_HEADER};
+pub use fcp_core::{CALLER_TENANT_HEADER, CALLER_USER_HEADER, CLIENT_ADDRESS_HEADER};
 
 /// The caller a trusted edge vouched for.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,6 +67,28 @@ impl TrustedEdges {
         self.0.iter().any(|net| net.contains(ip))
     }
 
+    /// The address a trusted edge says its client is at
+    /// (`X-FCP-Client-Address`, `docs/E911_BLOCK_2.md` §6.2). From a peer
+    /// that is not a trusted edge the header is ignored, and so is the
+    /// peer's own address: an edge that vouches for nobody places nobody.
+    pub fn client_address(&self, request: &sip_core::Request, peer: IpAddr) -> Option<IpAddr> {
+        let vouched = sip_parse::header(request.headers(), CLIENT_ADDRESS_HEADER);
+        if !self.contains(peer) {
+            if vouched.is_some() {
+                warn!(peer = %peer, "Ignoring a client address from a peer that is not a trusted edge");
+            }
+            // The call came from the caller's own device.
+            return Some(peer);
+        }
+        match vouched.and_then(|v| parse_client_address(v.as_str())) {
+            Some(address) => Some(address),
+            None => {
+                debug!(peer = %peer, "A trusted edge named no client address; the caller is placed by other means");
+                None
+            }
+        }
+    }
+
     /// The caller an INVITE from `peer` was placed for: `None` when the
     /// request names none, and when `peer` is not a trusted edge (logged,
     /// since an untrusted peer naming a caller is either misconfigured or
@@ -100,6 +122,24 @@ impl TrustedEdges {
     }
 }
 
+/// An address, or an `address:port`, as a client address.
+fn parse_client_address(value: &str) -> Option<IpAddr> {
+    fcp_core::e911::parse_address(value)
+}
+
+/// The location a device sent with its INVITE, if it sent one this
+/// platform can read (`docs/E911_BLOCK_2.md` §6.3). Whether it is used is
+/// decided by what the tenant trusts the device to send.
+pub fn supplied_location(request: &sip_core::Request) -> Option<fcp_core::E911Address> {
+    let parts = crate::body::non_sdp_parts(request.headers(), request.body());
+    let pidf = parts
+        .iter()
+        .find(|p| p.content_type == fcp_core::pidf_lo::CONTENT_TYPE)?;
+    let xml = String::from_utf8_lossy(&pidf.body);
+    let parsed = fcp_core::pidf_lo::parse(&xml)?;
+    parsed.address.filter(|a| !a.address1.trim().is_empty())
+}
+
 /// The tenant's emergency configuration, or the US defaults.
 pub async fn config_for(
     storage: Option<&Arc<fcp_core::DynStorage>>,
@@ -122,12 +162,15 @@ pub async fn config_for(
 /// it is an emergency number, resolve the caller's dispatchable location
 /// and callback number. `caller_aor` (`user@host`) picks the caller's
 /// device. Never fails: a call with no location still goes out.
+#[allow(clippy::too_many_arguments)]
 pub async fn detect(
     storage: Option<&Arc<fcp_core::DynStorage>>,
     tenant_id: &TenantId,
     destination: &str,
     caller_username: Option<&str>,
     caller_aor: Option<&str>,
+    client_address: Option<std::net::IpAddr>,
+    supplied: Option<&fcp_core::E911Address>,
 ) -> Option<EmergencyCallInfo> {
     let config = config_for(storage, tenant_id).await;
     let kind = config.classify(destination)?;
@@ -154,7 +197,20 @@ pub async fn detect(
             .flatten()
     };
     if let Some(user) = &user {
-        info.location = resolve_for_user(storage.as_ref(), user, caller_aor).await;
+        // Where the caller was seen: the address a trusted edge vouched for
+        // or the INVITE's own source, else where their device last
+        // registered from (§6.2).
+        info.location = resolve_for_user(
+            storage.as_ref(),
+            user,
+            fcp_core::e911::CallerContext {
+                prefer_device_aor: caller_aor,
+                client_address,
+                supplied,
+                config: Some(&config),
+            },
+        )
+        .await;
     }
     info.callback_number = info
         .location
@@ -524,6 +580,8 @@ mod tests {
                 location_id: Some(site.id),
                 location_name: Some(site.name.clone()),
                 point: None,
+                client_address: None,
+                declared_age: None,
             }),
             leg: None,
             delivered: Vec::new(),

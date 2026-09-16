@@ -267,6 +267,9 @@ pub enum ExportClass {
     ResourceLists,
     PresenceHistory,
     EmergencyCalls,
+    /// Where the subject last said they were, for emergency calls
+    /// (`docs/E911_BLOCK_2.md` §6.4).
+    DeclaredLocations,
     AuditEvents,
     ConfigChanges,
     PortRequests,
@@ -277,7 +280,7 @@ pub enum ExportClass {
 }
 
 impl ExportClass {
-    pub const ALL: [ExportClass; 27] = [
+    pub const ALL: [ExportClass; 28] = [
         ExportClass::Profile,
         ExportClass::ApiTokens,
         ExportClass::Devices,
@@ -300,6 +303,7 @@ impl ExportClass {
         ExportClass::ResourceLists,
         ExportClass::PresenceHistory,
         ExportClass::EmergencyCalls,
+        ExportClass::DeclaredLocations,
         ExportClass::AuditEvents,
         ExportClass::ConfigChanges,
         ExportClass::PortRequests,
@@ -331,6 +335,7 @@ impl ExportClass {
             ExportClass::ResourceLists => "resource_lists",
             ExportClass::PresenceHistory => "presence_history",
             ExportClass::EmergencyCalls => "emergency_calls",
+            ExportClass::DeclaredLocations => "declared_locations",
             ExportClass::AuditEvents => "audit_events",
             ExportClass::ConfigChanges => "config_changes",
             ExportClass::PortRequests => "port_requests",

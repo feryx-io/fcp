@@ -1203,12 +1203,21 @@ impl FlowCallHandler {
         let aor = caller
             .as_ref()
             .map(|u| format!("{}@{}", u.user().unwrap_or_default(), u.host()));
+        // The flow's caller was placed when their call arrived; the A-leg's
+        // source stands in for where they are.
+        let client_address = call.a_leg.contact.map(|peer| peer.ip());
+        let supplied = call
+            .original_invite
+            .as_ref()
+            .and_then(crate::emergency::supplied_location);
         let info = crate::emergency::detect(
             self.storage.as_ref(),
             &call.tenant_id,
             destination,
             username.as_deref(),
             aor.as_deref(),
+            client_address,
+            supplied.as_ref(),
         )
         .await?;
 

@@ -164,9 +164,17 @@ impl LocationStoreAdapter {
         Self { store }
     }
 
-    async fn upsert_in_tenant(&self, binding: Binding, tenant_id: TenantId) -> Result<()> {
+    async fn upsert_in_tenant(
+        &self,
+        binding: Binding,
+        tenant_id: TenantId,
+        source_address: Option<std::net::SocketAddr>,
+    ) -> Result<()> {
         let mut registration = Self::from_binding(&binding);
         registration.tenant_id = tenant_id;
+        // Where the device registered from, which places a device that
+        // moves (`docs/E911_BLOCK_2.md` §6.2).
+        registration.source_address = source_address.map(|a| a.to_string());
         registration.contact =
             crate::registrar::FcpRegistrar::normalize_contact_for_matching(&registration.contact);
         self.store.put_registration(registration).await
@@ -293,6 +301,7 @@ impl LocationStoreAdapter {
             path: binding.path().map(|p| p.to_string()),
             // Store flow token for RFC 5626 connection reuse
             flow_token: binding.flow_token().map(|s| s.to_string()),
+            source_address: None,
         }
     }
 }
@@ -640,6 +649,18 @@ impl FcpRegistrar {
         self.handle_register_with_flow(request, None).await
     }
 
+    /// [`Self::handle_register_with_flow`], remembering the address the
+    /// REGISTER came from with the binding.
+    pub async fn handle_register_from(
+        &self,
+        request: &Request,
+        flow_token: Option<&str>,
+        source_address: Option<std::net::SocketAddr>,
+    ) -> Response {
+        self.handle_register_inner(request, flow_token, source_address)
+            .await
+    }
+
     /// Handle a REGISTER request with optional flow token for RFC 5626.
     ///
     /// # Arguments
@@ -652,6 +673,15 @@ impl FcpRegistrar {
         &self,
         request: &Request,
         flow_token: Option<&str>,
+    ) -> Response {
+        self.handle_register_inner(request, flow_token, None).await
+    }
+
+    async fn handle_register_inner(
+        &self,
+        request: &Request,
+        flow_token: Option<&str>,
+        source_address: Option<std::net::SocketAddr>,
     ) -> Response {
         // Extract AOR early for event emission
         let aor = self.extract_aor_from_request(request).unwrap_or_default();
@@ -736,7 +766,8 @@ impl FcpRegistrar {
         }
 
         // Authentication passed or not required - handle registration
-        self.process_registration(request, flow_token).await
+        self.process_registration(request, flow_token, source_address)
+            .await
     }
 
     /// Extract AOR from a REGISTER request's To header.
@@ -761,7 +792,12 @@ impl FcpRegistrar {
     }
 
     /// Process the actual registration logic
-    async fn process_registration(&self, request: &Request, flow_token: Option<&str>) -> Response {
+    async fn process_registration(
+        &self,
+        request: &Request,
+        flow_token: Option<&str>,
+        source_address: Option<std::net::SocketAddr>,
+    ) -> Response {
         // Extract To header for AOR
         let to_header = match request.headers().get_smol("To") {
             Some(to) => to,
@@ -888,7 +924,7 @@ impl FcpRegistrar {
 
             match self
                 .location_store
-                .upsert_in_tenant(binding, tenant_id)
+                .upsert_in_tenant(binding, tenant_id, source_address)
                 .await
             {
                 Ok(_) => {

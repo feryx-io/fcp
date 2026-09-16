@@ -1025,7 +1025,7 @@ impl CredentialStore for PostgresStorage {
 impl RegistrationStore for PostgresStorage {
     async fn get_registrations(&self, aor: &str) -> Result<Vec<Registration>> {
         let rows = sqlx::query(
-            "SELECT tenant_id, aor, contact, expires_at, call_id, cseq, user_agent, q, registered_at, path, flow_token
+            "SELECT tenant_id, aor, contact, expires_at, call_id, cseq, user_agent, q, registered_at, path, flow_token, source_address
              FROM registrations
              WHERE aor = $1
              ORDER BY q DESC NULLS LAST",
@@ -1048,7 +1048,7 @@ impl RegistrationStore for PostgresStorage {
         aor: &str,
     ) -> Result<Vec<Registration>> {
         let rows = sqlx::query(
-            "SELECT tenant_id, aor, contact, expires_at, call_id, cseq, user_agent, q, registered_at, path, flow_token
+            "SELECT tenant_id, aor, contact, expires_at, call_id, cseq, user_agent, q, registered_at, path, flow_token, source_address
              FROM registrations
              WHERE tenant_id = $1 AND aor = $2
              ORDER BY q DESC NULLS LAST",
@@ -1071,8 +1071,8 @@ impl RegistrationStore for PostgresStorage {
         let registered_at = system_time_to_datetime(registration.registered_at);
 
         sqlx::query(
-            "INSERT INTO registrations (tenant_id, aor, contact, expires_at, call_id, cseq, user_agent, q, registered_at, path, flow_token)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            "INSERT INTO registrations (tenant_id, aor, contact, expires_at, call_id, cseq, user_agent, q, registered_at, path, flow_token, source_address)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
              ON CONFLICT (tenant_id, aor, contact)
              DO UPDATE SET
                  expires_at = EXCLUDED.expires_at,
@@ -1082,7 +1082,8 @@ impl RegistrationStore for PostgresStorage {
                  q = EXCLUDED.q,
                  registered_at = EXCLUDED.registered_at,
                  path = EXCLUDED.path,
-                 flow_token = EXCLUDED.flow_token",
+                 flow_token = EXCLUDED.flow_token,
+                 source_address = EXCLUDED.source_address",
         )
         .bind(registration.tenant_id.to_string())
         .bind(&registration.aor)
@@ -1095,6 +1096,7 @@ impl RegistrationStore for PostgresStorage {
         .bind(registered_at)
         .bind(&registration.path)
         .bind(&registration.flow_token)
+        .bind(&registration.source_address)
         .execute(self.writes())
         .await?;
 
@@ -1178,7 +1180,7 @@ impl RegistrationStore for PostgresStorage {
 
     async fn get_all_registrations(&self) -> Result<Vec<Registration>> {
         let rows = sqlx::query(
-            "SELECT tenant_id, aor, contact, expires_at, call_id, cseq, user_agent, q, registered_at, path, flow_token
+            "SELECT tenant_id, aor, contact, expires_at, call_id, cseq, user_agent, q, registered_at, path, flow_token, source_address
              FROM registrations
              WHERE expires_at > NOW()
              ORDER BY aor, q DESC NULLS LAST",
@@ -1199,7 +1201,7 @@ impl RegistrationStore for PostgresStorage {
         tenant_id: &TenantId,
     ) -> Result<Vec<Registration>> {
         let rows = sqlx::query(
-            "SELECT tenant_id, aor, contact, expires_at, call_id, cseq, user_agent, q, registered_at, path, flow_token
+            "SELECT tenant_id, aor, contact, expires_at, call_id, cseq, user_agent, q, registered_at, path, flow_token, source_address
              FROM registrations
              WHERE tenant_id = $1 AND expires_at > NOW()
              ORDER BY aor, q DESC NULLS LAST",
@@ -2815,6 +2817,7 @@ fn row_to_registration(row: sqlx::postgres::PgRow) -> Result<Registration> {
         registered_at,
         path: row.try_get("path").ok(),
         flow_token: row.try_get("flow_token").ok().flatten(),
+        source_address: row.try_get("source_address").ok().flatten(),
     })
 }
 
@@ -3539,7 +3542,7 @@ impl DeviceStore for PostgresStorage {
             "SELECT id, name, device_type, mac_address, model, firmware_version, tenant_id, owner_user_id,
                     sip_uri, registration_state, last_registration, last_ip_address, user_agent,
                     max_lines, supports_video, supports_blf, codec_support,
-                    location, location_id, e911_override_json, provisioning_url, config_template_id, provisioning_token_hash, enabled,
+                    location, location_id, e911_override_json, e911_trust_location, provisioning_url, config_template_id, provisioning_token_hash, enabled,
                     created_at, updated_at
              FROM devices
              WHERE id = $1",
@@ -3559,7 +3562,7 @@ impl DeviceStore for PostgresStorage {
             "SELECT id, name, device_type, mac_address, model, firmware_version, tenant_id, owner_user_id,
                     sip_uri, registration_state, last_registration, last_ip_address, user_agent,
                     max_lines, supports_video, supports_blf, codec_support,
-                    location, location_id, e911_override_json, provisioning_url, config_template_id, provisioning_token_hash, enabled,
+                    location, location_id, e911_override_json, e911_trust_location, provisioning_url, config_template_id, provisioning_token_hash, enabled,
                     created_at, updated_at
              FROM devices
              WHERE sip_uri = $1",
@@ -3579,7 +3582,7 @@ impl DeviceStore for PostgresStorage {
             "SELECT id, name, device_type, mac_address, model, firmware_version, tenant_id, owner_user_id,
                     sip_uri, registration_state, last_registration, last_ip_address, user_agent,
                     max_lines, supports_video, supports_blf, codec_support,
-                    location, location_id, e911_override_json, provisioning_url, config_template_id, provisioning_token_hash, enabled,
+                    location, location_id, e911_override_json, e911_trust_location, provisioning_url, config_template_id, provisioning_token_hash, enabled,
                     created_at, updated_at
              FROM devices
              WHERE tenant_id = $1
@@ -3597,7 +3600,7 @@ impl DeviceStore for PostgresStorage {
             "SELECT id, name, device_type, mac_address, model, firmware_version, tenant_id, owner_user_id,
                     sip_uri, registration_state, last_registration, last_ip_address, user_agent,
                     max_lines, supports_video, supports_blf, codec_support,
-                    location, location_id, e911_override_json, provisioning_url, config_template_id, provisioning_token_hash, enabled,
+                    location, location_id, e911_override_json, e911_trust_location, provisioning_url, config_template_id, provisioning_token_hash, enabled,
                     created_at, updated_at
              FROM devices
              WHERE owner_user_id = $1
@@ -3637,10 +3640,10 @@ impl DeviceStore for PostgresStorage {
                 id, name, device_type, mac_address, model, firmware_version, tenant_id, owner_user_id,
                 sip_uri, registration_state, last_registration, last_ip_address, user_agent,
                 max_lines, supports_video, supports_blf, codec_support,
-                location, location_id, e911_override_json, provisioning_url, config_template_id, provisioning_token_hash, enabled,
+                location, location_id, e911_override_json, e911_trust_location, provisioning_url, config_template_id, provisioning_token_hash, enabled,
                 created_at, updated_at
              )
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27)
              ON CONFLICT(id) DO UPDATE SET
                  name = EXCLUDED.name,
                  mac_address = EXCLUDED.mac_address,
@@ -3659,6 +3662,7 @@ impl DeviceStore for PostgresStorage {
                  location = EXCLUDED.location,
                  location_id = EXCLUDED.location_id,
                  e911_override_json = EXCLUDED.e911_override_json,
+                 e911_trust_location = EXCLUDED.e911_trust_location,
                  provisioning_url = EXCLUDED.provisioning_url,
                  config_template_id = EXCLUDED.config_template_id,
                  provisioning_token_hash = EXCLUDED.provisioning_token_hash,
@@ -3685,6 +3689,7 @@ impl DeviceStore for PostgresStorage {
         .bind(&device.location)
         .bind(&location_id)
         .bind(&e911_override_json)
+        .bind(device.e911_trust_location)
         .bind(&device.provisioning_url)
         .bind(&device.config_template_id)
         .bind(&device.provisioning_token_hash)
@@ -3704,7 +3709,7 @@ impl DeviceStore for PostgresStorage {
             "SELECT id, name, device_type, mac_address, model, firmware_version, tenant_id, owner_user_id,
                     sip_uri, registration_state, last_registration, last_ip_address, user_agent,
                     max_lines, supports_video, supports_blf, codec_support,
-                    location, location_id, e911_override_json, provisioning_url, config_template_id, provisioning_token_hash, enabled,
+                    location, location_id, e911_override_json, e911_trust_location, provisioning_url, config_template_id, provisioning_token_hash, enabled,
                     created_at, updated_at
              FROM devices
              WHERE LOWER(REPLACE(REPLACE(REPLACE(mac_address, ':', ''), '-', ''), '.', '')) = $1",
@@ -4399,6 +4404,7 @@ fn row_to_device(row: sqlx::postgres::PgRow) -> Result<Device> {
             .get::<Option<String>, _>("location_id")
             .and_then(|s| LocationId::from_str(&s).ok()),
         e911_override,
+        e911_trust_location: row.try_get("e911_trust_location").unwrap_or(None),
         provisioning_url: row.get("provisioning_url"),
         config_template_id: row.get("config_template_id"),
         provisioning_token_hash: row.get("provisioning_token_hash"),

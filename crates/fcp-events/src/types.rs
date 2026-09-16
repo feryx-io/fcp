@@ -92,6 +92,9 @@ pub enum CallEvent {
         location_source: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         location_summary: Option<String>,
+        /// The address the caller was seen at, when one placed them.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        client_address: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         trunk_name: Option<String>,
         /// People/URIs the tenant asked to be told about emergency calls.

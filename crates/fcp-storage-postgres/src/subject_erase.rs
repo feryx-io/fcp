@@ -79,6 +79,7 @@ fn target(class: ExportClass) -> Option<Target> {
         ResourceLists => t("resource_lists", "tenant_id = $1", "uri", false),
         PresenceHistory => t("presence_history", "tenant_id = $1", "id::text", false),
         EmergencyCalls => t("emergency_calls", "tenant_id = $1", "id::text", false),
+        DeclaredLocations => t("declared_locations", "tenant_id = $1", "user_id", false),
         AuditEvents => t("admin_audit_log", "tenant_id = $1", "id::text", true),
         ConfigChanges => t("config_audit_log", "tenant_id = $1", "id::text", false),
         WebhookDeliveries => t(

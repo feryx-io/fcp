@@ -83,6 +83,7 @@ pub fn treatment(class: ExportClass, cdrs: CdrErasure) -> Treatment {
         | PresencePolicies
         | ResourceLists
         | PresenceHistory
+        | DeclaredLocations
         | WebhookDeliveries
         | NumberLists => Treatment::Delete,
     }
@@ -91,7 +92,7 @@ pub fn treatment(class: ExportClass, cdrs: CdrErasure) -> Treatment {
 /// The order an erasure acts in: records first (they name the calls), what
 /// hangs off the calls next, a mailbox's contents before the mailbox, the
 /// user last.
-pub const ERASURE_ORDER: [ExportClass; 27] = [
+pub const ERASURE_ORDER: [ExportClass; 28] = [
     ExportClass::Cdrs,
     ExportClass::CallRecordings,
     ExportClass::SipTraces,
@@ -113,6 +114,7 @@ pub const ERASURE_ORDER: [ExportClass; 27] = [
     ExportClass::ResourceLists,
     ExportClass::PresenceHistory,
     ExportClass::EmergencyCalls,
+    ExportClass::DeclaredLocations,
     ExportClass::AuditEvents,
     ExportClass::ConfigChanges,
     ExportClass::PortRequests,

@@ -551,6 +551,7 @@ impl App {
                 registered_at: now,
                 path: None,
                 flow_token: None,
+                source_address: None,
             })
             .await
             .expect("put registration");
@@ -4025,6 +4026,209 @@ async fn debug_endpoints_reflect_runtime_state_per_tenant() {
 }
 
 // ─── Emergency calling (E911) ────────────────────────────────────────────
+
+/// A tenant's networks place the devices that move, and a user says where
+/// they are when nothing else does (`docs/E911_BLOCK_2.md` §6).
+#[tokio::test]
+async fn e911_networks_and_declared_locations() {
+    let app = require_app!();
+
+    let site = app
+        .admin(
+            Method::POST,
+            "/api/v1/locations",
+            Some(json!({
+                "name": "Branch",
+                "address_line1": "9 Elm St",
+                "city": "Troy",
+                "state": "NY",
+                "postal_code": "12180",
+                "country": "US",
+                "e911_callback_number": "+15185550222"
+            })),
+        )
+        .await;
+    assert_eq!(site.status, StatusCode::CREATED, "{}", site.text);
+    let site_id = site.json["id"].as_str().unwrap().to_string();
+
+    // A network is mapped to that site, for the devices that move.
+    let created = app
+        .admin(
+            Method::POST,
+            "/api/v1/emergency/networks",
+            Some(json!({ "cidr": "10.1.2.0/24", "location_id": site_id, "name": "Branch wired" })),
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.text);
+    assert_eq!(created.json["cidr"], "10.1.2.0/24");
+    assert_eq!(created.json["applies_to"], "nomadic", "{}", created.text);
+    let network_id = created.json["id"].as_str().unwrap().to_string();
+
+    // A single address is a network of one.
+    let single = app
+        .admin(
+            Method::POST,
+            "/api/v1/emergency/networks",
+            Some(json!({ "cidr": "10.9.9.9", "location_id": site_id, "applies_to": "all" })),
+        )
+        .await;
+    assert_eq!(single.status, StatusCode::CREATED, "{}", single.text);
+    assert_eq!(single.json["cidr"], "10.9.9.9/32", "{}", single.text);
+
+    // Nonsense, an unknown rule and a site of another tenant are refused.
+    for body in [
+        json!({ "cidr": "not-a-network", "location_id": site_id }),
+        json!({ "cidr": "10.0.0.0/8", "location_id": site_id, "applies_to": "sometimes" }),
+        json!({ "cidr": "10.0.0.0/8", "location_id": fcp_core::LocationId::new().to_string() }),
+    ] {
+        let refused = app
+            .admin(
+                Method::POST,
+                "/api/v1/emergency/networks",
+                Some(body.clone()),
+            )
+            .await;
+        assert_eq!(
+            refused.status,
+            StatusCode::BAD_REQUEST,
+            "{body}: {}",
+            refused.text
+        );
+    }
+
+    let listed = app
+        .admin(Method::GET, "/api/v1/emergency/networks", None)
+        .await;
+    assert_eq!(listed.json.as_array().unwrap().len(), 2, "{}", listed.text);
+
+    let patched = app
+        .admin(
+            Method::PATCH,
+            &format!("/api/v1/emergency/networks/{network_id}"),
+            Some(json!({ "applies_to": "all", "priority": 5 })),
+        )
+        .await;
+    assert_eq!(patched.status, StatusCode::OK, "{}", patched.text);
+    assert_eq!(patched.json["applies_to"], "all");
+    assert_eq!(patched.json["priority"], 5);
+
+    let deleted = app
+        .admin(
+            Method::DELETE,
+            &format!("/api/v1/emergency/networks/{network_id}"),
+            None,
+        )
+        .await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{}", deleted.text);
+    let gone = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/emergency/networks/{network_id}"),
+            None,
+        )
+        .await;
+    assert_eq!(gone.status, StatusCode::NOT_FOUND, "{}", gone.text);
+
+    // Which device types may send their own location, and how long a
+    // declaration stands.
+    let config = app
+        .admin(
+            Method::PUT,
+            "/api/v1/emergency/config",
+            Some(json!({
+                "trust_device_locations": ["conference_room"],
+                "declared_location_ttl_secs": 7200
+            })),
+        )
+        .await;
+    assert_eq!(config.status, StatusCode::OK, "{}", config.text);
+    assert_eq!(config.json["trust_device_locations"][0], "conference_room");
+    assert_eq!(config.json["declared_location_ttl_secs"], 7200);
+    let refused = app
+        .admin(
+            Method::PUT,
+            "/api/v1/emergency/config",
+            Some(json!({ "trust_device_locations": ["toaster"] })),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.text);
+
+    // A user says where they are; it is validated, dated and expires.
+    app.create_user_with_role("nomad", "end_user").await;
+    let jwt = app.login("nomad", PASSWORD).await.json["token"]
+        .as_str()
+        .expect("jwt")
+        .to_string();
+    let none_yet = app
+        .send_as(&jwt, Method::GET, "/api/v1/me/location", None)
+        .await;
+    assert_eq!(none_yet.status, StatusCode::NOT_FOUND, "{}", none_yet.text);
+
+    let declared = app
+        .send_as(
+            &jwt,
+            Method::PUT,
+            "/api/v1/me/location",
+            Some(json!({
+                "address1": "500 Hotel Rd",
+                "city": "Saratoga Springs",
+                "state": "NY",
+                "postal_code": "12866",
+                "house_number": "500",
+                "street_name": "Hotel",
+                "street_suffix": "Rd"
+            })),
+        )
+        .await;
+    assert_eq!(declared.status, StatusCode::OK, "{}", declared.text);
+    assert_eq!(declared.json["address"]["city"], "Saratoga Springs");
+    assert_eq!(declared.json["address"]["street_name"], "Hotel");
+    assert_eq!(declared.json["address"]["validated"], true);
+    assert_eq!(declared.json["current"], true);
+    let declared_at = declared.json["declared_at"].as_u64().unwrap();
+    let expires_at = declared.json["expires_at"].as_u64().unwrap();
+    assert_eq!(expires_at - declared_at, 7200, "the tenant's TTL");
+
+    // An address the validator refuses is not stored.
+    let bad = app
+        .send_as(
+            &jwt,
+            Method::PUT,
+            "/api/v1/me/location",
+            Some(json!({
+                "address1": "Hotel Rd",
+                "city": "",
+                "state": "New York",
+                "postal_code": "1"
+            })),
+        )
+        .await;
+    assert_eq!(bad.status, StatusCode::UNPROCESSABLE_ENTITY, "{}", bad.text);
+    assert!(
+        !bad.json["issues"].as_array().unwrap().is_empty(),
+        "{}",
+        bad.text
+    );
+
+    let mine = app
+        .send_as(&jwt, Method::GET, "/api/v1/me/location", None)
+        .await;
+    assert_eq!(mine.status, StatusCode::OK, "{}", mine.text);
+    assert_eq!(mine.json["address"]["address1"], "500 Hotel Rd");
+
+    let cleared = app
+        .send_as(&jwt, Method::DELETE, "/api/v1/me/location", None)
+        .await;
+    assert_eq!(cleared.status, StatusCode::NO_CONTENT, "{}", cleared.text);
+    let gone = app
+        .send_as(&jwt, Method::GET, "/api/v1/me/location", None)
+        .await;
+    assert_eq!(gone.status, StatusCode::NOT_FOUND, "{}", gone.text);
+
+    // The platform token has no user behind it.
+    let no_user = app.admin(Method::GET, "/api/v1/me/location", None).await;
+    assert_eq!(no_user.status, StatusCode::UNAUTHORIZED, "{}", no_user.text);
+}
 
 #[tokio::test]
 async fn e911_config_readiness_validation_and_audit() {

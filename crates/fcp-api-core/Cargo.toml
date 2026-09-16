@@ -9,6 +9,7 @@ repository.workspace = true
 [dependencies]
 # FCP crates
 fcp-core = { path = "../fcp-core" }
+ipnetwork = "0.20"
 fcp-sip = { path = "../fcp-sip" }
 fcp-media = { path = "../fcp-media" }
 fcp-events = { path = "../fcp-events" }

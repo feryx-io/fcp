@@ -232,6 +232,7 @@ impl CallManager {
             callback_number: em.callback_number.clone(),
             location_source: em.location.as_ref().map(|l| l.source.to_string()),
             location_summary: em.location.as_ref().map(|l| l.summary()),
+            client_address: em.location.as_ref().and_then(|l| l.client_address.clone()),
             trunk_name: call.trunk_name.clone(),
             notify_contacts,
             timestamp: std::time::SystemTime::now(),
@@ -318,6 +319,14 @@ impl CallManager {
                 geolocation_error: em.geolocation_error.clone(),
             },
         };
+        fcp_core::e911::EmergencyCounters::global().placed(
+            em.kind,
+            em.location.as_ref(),
+            completion.delivery.as_deref(),
+        );
+        if let Some(error) = &completion.geolocation_error {
+            fcp_core::e911::EmergencyCounters::global().location_refused(error);
+        }
         info!(
             call_id = %call.id,
             outcome = %completion.outcome,
