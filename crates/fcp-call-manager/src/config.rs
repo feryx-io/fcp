@@ -79,6 +79,21 @@ pub struct CallManagerConfig {
     /// Cluster configuration.
     #[serde(default)]
     pub cluster: ClusterSection,
+
+    /// Emergency calling (`docs/E911.md`, `docs/E911_BLOCK_2.md`).
+    #[serde(default)]
+    pub e911: E911Section,
+}
+
+/// Emergency calling.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct E911Section {
+    /// The edges — a WebRTC gateway, an SBC — whose `X-FCP-Caller-Tenant`
+    /// and `X-FCP-Caller-User` headers name the tenant user a call is
+    /// placed for, as addresses or CIDR ranges. From any other peer those
+    /// headers are ignored. Empty trusts no one.
+    #[serde(default)]
+    pub trusted_edges: Vec<String>,
 }
 
 /// Service identification.
@@ -683,6 +698,8 @@ pub fn validate_config(config: &CallManagerConfig) -> Result<()> {
     validate_http_config(&config.http)?;
     validate_registrar_config(&config.sip, &config.registrar)?;
     fcp_pbx::config::validate_config(&config.pbx).map_err(anyhow::Error::msg)?;
+    fcp_sip::emergency::TrustedEdges::parse(&config.e911.trusted_edges)
+        .map_err(|e| anyhow::anyhow!("[e911] {e}"))?;
     Ok(())
 }
 

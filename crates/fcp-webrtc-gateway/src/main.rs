@@ -320,6 +320,8 @@ async fn main() -> Result<()> {
                 credential: s.credential.clone(),
             })
             .collect(),
+        outbound_proxy: config.sip.outbound_proxy.clone(),
+        emergency: config.e911.classifier(),
     };
     let mut session_manager = SessionManager::new(
         uac,

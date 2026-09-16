@@ -1,6 +1,7 @@
 # Emergency Calling, Block 2 — Design
 
-Status: **agreed** (2026-09-15), every recommendation in §12 taken. This
+Status: **agreed** (2026-09-15), every recommendation in §12 taken.
+Phase 1 is done (v0.25.176, see §11). This
 document is the plan for the four items `docs/E911.md` left for later — **location by value** (PIDF-LO) for
 NG911 trunks, **network-based location** for softphones and roaming
 devices, **provider-backed address validation**, and **notification
@@ -392,6 +393,41 @@ by release tag first.
    `route_trunks` and the completed record with `call.emergency_completed`,
    the trunk flag made honest (§12.1), the scripted phone's view of the
    INVITE, and the first emergency calls on the test floor.
+
+   *Done (v0.25.176).* What shipped:
+
+   - **One emergency path.** Classification, location, the outbound
+     identity and the placement record live in `fcp_sip::emergency`, and
+     the B2BUA's INVITE path and the flow `Dial` node both use them.
+   - **The record.** The call manager keeps each record's id as its
+     insert lands and completes the record from the call's ending (the
+     `leg` a `Dial` node reports for its own leg). Migration 067 adds
+     `sip_status`, `answered_at`, `ended_at` and `delivery`.
+   - **The gateway.** The WebRTC gateway takes `caller` on
+     `POST /v1/calls` and classifies against `[e911]`. It refuses an
+     emergency call with no caller (403) or no `[sip] outbound_proxy`
+     (503), and implements `outbound_proxy`, which it had parsed and
+     ignored. It sends `X-FCP-Caller-Tenant` and `X-FCP-Caller-User`,
+     which the call manager believes only from `[e911] trusted_edges`
+     (the cluster's nodes are not implied).
+   - **The trunk flag.** It is documented as not routing. `GET
+     /emergency/trunks` on each call manager shows what does, and the
+     call manager warns at startup with no emergency-capable trunk.
+   - **Bodies.** `fcp_b2bua_core::body` reads multipart bodies for every
+     request SDP read in the call manager, queue and conference server.
+   - **Tests.** Two test files cover it: `fcp-call-manager/tests/emergency.rs`
+     (911 and 933, failover, a flow, trusted edges) and
+     `fcp-webrtc-gateway/tests/calls.rs`.
+
+   Two defects the phase's tests found were fixed with it:
+
+   - **Parallel emergency routes.** The B2BUA forked an emergency call to
+     every emergency route at once, the ordinary LCR trunk included, so a
+     second carrier could deliver the same 911 call. Routes are now tried
+     one at a time.
+   - **A race in the `Dial` node.** Its response `select!` could take a
+     closed provisional channel, or the transaction's termination, for the
+     outcome of a call that had been answered.
 2. **Location by value.** Structured civic addresses (model, API,
    migration), the PIDF-LO builder, the SIP stack's multipart and
    geolocation additions and headers and bodies on the flow path,

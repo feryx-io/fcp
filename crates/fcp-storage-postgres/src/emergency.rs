@@ -4,7 +4,8 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use fcp_core::e911::{
-    DispatchableLocation, EmergencyCallRecord, EmergencyConfig, EmergencyKind, EmergencyStore,
+    DispatchableLocation, EmergencyCallRecord, EmergencyCompletion, EmergencyConfig, EmergencyKind,
+    EmergencyStore,
 };
 use fcp_core::TenantId;
 use sqlx::{Pool, Postgres, Row};
@@ -56,6 +57,16 @@ impl PostgresEmergencyStore {
             outcome: row.try_get("outcome")?,
             placed_at: to_system_time(placed_at),
             notified: row.try_get("notified")?,
+            sip_status: row
+                .try_get::<Option<i32>, _>("sip_status")?
+                .map(|s| s as u16),
+            answered_at: row
+                .try_get::<Option<DateTime<Utc>>, _>("answered_at")?
+                .map(to_system_time),
+            ended_at: row
+                .try_get::<Option<DateTime<Utc>>, _>("ended_at")?
+                .map(to_system_time),
+            delivery: row.try_get("delivery")?,
         })
     }
 }
@@ -125,8 +136,8 @@ impl EmergencyStore for PostgresEmergencyStore {
             "INSERT INTO emergency_calls
                 (tenant_id, call_id, sip_call_id, caller_uri, caller_username, dialed_number,
                  kind, callback_number, location, location_source, trunk_name, outcome,
-                 placed_at, notified)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                 placed_at, notified, delivery)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
              RETURNING id",
         )
         .bind(record.tenant_id.to_string())
@@ -143,6 +154,7 @@ impl EmergencyStore for PostgresEmergencyStore {
         .bind(&record.outcome)
         .bind(to_datetime(record.placed_at))
         .bind(record.notified)
+        .bind(&record.delivery)
         .fetch_one(&self.pool)
         .await?;
         Ok(id)
@@ -156,7 +168,7 @@ impl EmergencyStore for PostgresEmergencyStore {
         let rows = sqlx::query(
             "SELECT id, tenant_id, call_id, sip_call_id, caller_uri, caller_username,
                     dialed_number, kind, callback_number, location, trunk_name, outcome,
-                    placed_at, notified
+                    placed_at, notified, sip_status, answered_at, ended_at, delivery
              FROM emergency_calls WHERE tenant_id = $1
              ORDER BY placed_at DESC, id DESC LIMIT $2",
         )
@@ -172,6 +184,29 @@ impl EmergencyStore for PostgresEmergencyStore {
             .bind(id)
             .execute(&self.pool)
             .await?;
+        Ok(())
+    }
+
+    async fn complete_emergency_call(
+        &self,
+        id: i64,
+        completion: &EmergencyCompletion,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "UPDATE emergency_calls
+             SET trunk_name = COALESCE($2, trunk_name), outcome = $3, sip_status = $4,
+                 answered_at = $5, ended_at = $6, delivery = $7
+             WHERE id = $1",
+        )
+        .bind(id)
+        .bind(&completion.trunk_name)
+        .bind(&completion.outcome)
+        .bind(completion.sip_status.map(i32::from))
+        .bind(completion.answered_at.map(to_datetime))
+        .bind(to_datetime(completion.ended_at))
+        .bind(&completion.delivery)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 }

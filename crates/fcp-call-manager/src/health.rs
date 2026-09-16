@@ -44,6 +44,9 @@ pub struct AppState {
     pub cluster_parking: Option<Arc<dyn fcp_core::ClusterParkingStore>>,
     /// What call recordings start through, with the tenant's consent step.
     pub call_recorder: Arc<fcp_sip::recording::CallRecorder>,
+    /// This node's `[[trunks]]`, which outbound and emergency routing use.
+    pub trunks: Vec<fcp_sbc_core::TrunkConfig>,
+    pub trunk_health: Option<Arc<fcp_sbc_core::TrunkHealthMonitor>>,
 }
 
 fn queue_visible_to_service_tenant(
@@ -61,6 +64,48 @@ fn queue_not_found(queue_name: &str) -> Json<serde_json::Value> {
 
 fn agent_not_found(agent_id: &str) -> Json<serde_json::Value> {
     Json(serde_json::json!({"error": format!("Agent '{}' not found", agent_id)}))
+}
+
+/// The trunks this node routes emergency calls to, in the order it tries
+/// them: its emergency-capable `[[trunks]]` (`docs/E911_BLOCK_2.md` §12.1).
+/// Database trunks do not route calls, so their flag is not listed here.
+async fn emergency_trunks_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let mut trunks: Vec<&fcp_sbc_core::TrunkConfig> = state
+        .trunks
+        .iter()
+        .filter(|t| t.emergency_capable)
+        .collect();
+    trunks.sort_by_key(|t| (t.priority, std::cmp::Reverse(t.weight)));
+    let listed: Vec<serde_json::Value> = trunks
+        .iter()
+        .map(|t| {
+            let healthy = state
+                .trunk_health
+                .as_ref()
+                .map(|h| h.is_healthy(&t.name))
+                .unwrap_or(true);
+            serde_json::json!({
+                "name": t.name,
+                "enabled": t.enabled,
+                "healthy": healthy,
+                "priority": t.priority,
+                "hosts": t.hosts,
+            })
+        })
+        .collect();
+    let routable = trunks.iter().any(|t| {
+        t.enabled
+            && state
+                .trunk_health
+                .as_ref()
+                .map(|h| h.is_healthy(&t.name))
+                .unwrap_or(true)
+    });
+    Json(serde_json::json!({
+        "trunks": listed,
+        "routable": routable,
+        "configured_trunks": state.trunks.len(),
+    }))
 }
 
 /// Run the HTTP health/status/calls server.
@@ -81,6 +126,7 @@ pub async fn run_http_server(bind_addr: SocketAddr, state: Arc<AppState>) -> any
         .route("/cdr/status", get(cdr_status_handler))
         .route("/media-sessions", get(media_sessions_handler))
         .route("/transcoding", get(transcoding_handler))
+        .route("/emergency/trunks", get(emergency_trunks_handler))
         // Queue/Agent management endpoints
         .route(
             "/queues",

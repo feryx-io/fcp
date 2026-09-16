@@ -92,6 +92,13 @@ pub use crate::join_token::{JoinRole, JoinToken, JoinTokenError, JOIN_TOKEN_HEAD
 /// leg's record shares that call's id (`docs/CDR_PIPELINE.md` §5). It
 /// correlates records and decides nothing else.
 pub const CALL_ID_HEADER: &str = "X-FCP-Call-Id";
+
+/// The tenant a trusted edge (the WebRTC gateway) places a call for; with
+/// [`CALLER_USER_HEADER`], believed by a call manager only from the
+/// addresses in its `[e911] trusted_edges` (`docs/E911_BLOCK_2.md` §4).
+pub const CALLER_TENANT_HEADER: &str = "X-FCP-Caller-Tenant";
+/// The user, by username, a trusted edge places a call for.
+pub const CALLER_USER_HEADER: &str = "X-FCP-Caller-User";
 pub use crate::line_binding::{BindingType, DeviceBinding, LineBinding, RingStrategy};
 pub use crate::meeting::Meeting;
 pub use crate::migration_ticket::{

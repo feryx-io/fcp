@@ -471,6 +471,17 @@ impl Phone {
         self.inner.place_call(target).await
     }
 
+    /// As [`Phone::call`], with extra request headers on the INVITE.
+    pub async fn call_with_headers(&self, target: &str, headers: &[(&str, &str)]) -> Result<Call> {
+        let mut extra = sip_core::Headers::new();
+        for (name, value) in headers {
+            extra
+                .push(*name, *value)
+                .map_err(|e| anyhow!("header {name}: {e}"))?;
+        }
+        self.inner.place_call_with_headers(target, extra).await
+    }
+
     /// The next incoming call; `None` at the deadline.
     pub async fn incoming(&self, within: Duration) -> Option<IncomingCall> {
         let mut rx = self.incoming.lock().await;
@@ -654,6 +665,31 @@ pub struct IncomingCall {
 }
 
 impl IncomingCall {
+    /// A header of the INVITE as it arrived, by name (case-insensitive).
+    pub fn header(&self, name: &str) -> Option<String> {
+        sip_parse::header(self.request.headers(), name).map(|v| v.to_string())
+    }
+
+    /// Every value of a header of the INVITE.
+    pub fn headers_named(&self, name: &str) -> Vec<String> {
+        self.request
+            .headers()
+            .iter()
+            .filter(|h| h.name().eq_ignore_ascii_case(name))
+            .map(|h| h.value().to_string())
+            .collect()
+    }
+
+    /// The INVITE's body, as it arrived.
+    pub fn body(&self) -> &[u8] {
+        self.request.body()
+    }
+
+    /// The INVITE's request line target.
+    pub fn request_uri(&self) -> String {
+        self.request.uri().to_string()
+    }
+
     /// Send the 200 OK; the call is up.
     pub async fn answer(self) -> Result<Call> {
         let (response, handle) = self

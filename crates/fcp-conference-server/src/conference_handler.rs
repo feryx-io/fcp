@@ -4968,12 +4968,12 @@ impl ConferenceCallHandler {
         };
         let conf = self.conference_config.read().clone();
 
-        let body = request.body();
-        if body.is_empty() {
+        // The SDP alone or the SDP part of a multipart body.
+        let Some(sdp_offer) = fcp_sip::body::request_sdp(request) else {
             handle.send_final(reject(400, "Missing SDP")).await;
             return Ok(());
-        }
-        let sdp_offer = std::str::from_utf8(&body[..]).context("SDP body is not valid UTF-8")?;
+        };
+        let sdp_offer = sdp_offer.as_str();
         let offered_codecs = parse_sdp_codecs(sdp_offer);
         let Some((codec_name, payload_type, frame_size)) =
             pick_codec(&offered_codecs, conf.allowed_codecs.as_deref())
@@ -5727,13 +5727,13 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         let conf = self.conference_config.read().clone();
 
         // 3. Extract SDP offer from INVITE body
-        let body = request.body();
-        if body.is_empty() {
+        // The SDP alone or the SDP part of a multipart body.
+        let Some(sdp_offer) = fcp_sip::body::request_sdp(request) else {
             let reject = UserAgentServer::create_response(request, 400, "Missing SDP");
             handle.send_final(reject).await;
             return Ok(());
-        }
-        let sdp_offer = std::str::from_utf8(&body[..]).context("SDP body is not valid UTF-8")?;
+        };
+        let sdp_offer = sdp_offer.as_str();
 
         // 4. Parse codecs and pick first supported one (filtered by allowed_codecs config)
         let offered_codecs = parse_sdp_codecs(sdp_offer);
@@ -7369,9 +7369,8 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         }
 
         // Parse new SDP body
-        let body = request.body();
-        let sdp_offer =
-            std::str::from_utf8(&body[..]).context("re-INVITE SDP body is not valid UTF-8")?;
+        let sdp_offer = fcp_sip::body::request_sdp(request).unwrap_or_default();
+        let sdp_offer = sdp_offer.as_str();
 
         // Video added mid-call (a new active video section, for the camera
         // or a shared screen): prepared before the session is locked.
@@ -7775,11 +7774,8 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             .ok_or_else(|| anyhow::anyhow!("No conference session for call_id: {}", call_id))?;
 
         // Parse SDP if present (UPDATE may have no body for session refresh)
-        let body = request.body();
-        if !body.is_empty() {
-            let sdp_offer =
-                std::str::from_utf8(&body[..]).context("UPDATE SDP body is not valid UTF-8")?;
-
+        let offer = fcp_sip::body::request_sdp(request);
+        if let Some(sdp_offer) = offer.as_deref() {
             // Check for remote address change (e.g., hold/resume or IP migration)
             if let Some(new_remote) = parse_remote_rtp_addr(sdp_offer) {
                 if new_remote != session.remote_addr {
@@ -7812,8 +7808,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         let local_sip_uri = self.parse_local_sip_uri();
         let uas = UserAgentServer::new(local_sip_uri.clone(), local_sip_uri);
 
-        let mut response = if !body.is_empty() {
-            let sdp_offer = std::str::from_utf8(&body[..]).unwrap_or("");
+        let mut response = if let Some(sdp_offer) = offer.as_deref() {
             let video_codec: Vec<forge_core::VideoCodec> = session
                 .video
                 .as_ref()
