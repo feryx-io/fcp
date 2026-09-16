@@ -46,6 +46,9 @@ pub struct LocationResponse {
     pub emergency_contact_name: Option<String>,
     pub emergency_contact_phone: Option<String>,
     pub e911_callback_number: Option<String>,
+    /// The street address as RFC 5139 civic elements (`docs/E911_BLOCK_2.md`
+    /// §5.1): what an emergency call's PIDF-LO carries.
+    pub civic: fcp_core::phone_number::CivicElements,
     pub created_at: SystemTime,
     pub updated_at: SystemTime,
 }
@@ -72,6 +75,7 @@ impl From<SiteLocation> for LocationResponse {
             emergency_contact_name: loc.emergency_contact_name,
             emergency_contact_phone: loc.emergency_contact_phone,
             e911_callback_number: loc.e911_callback_number,
+            civic: loc.civic,
             created_at: loc.created_at,
             updated_at: loc.updated_at,
         }
@@ -100,6 +104,8 @@ pub struct CreateLocationRequest {
     pub emergency_contact_name: Option<String>,
     pub emergency_contact_phone: Option<String>,
     pub e911_callback_number: Option<String>,
+    #[serde(default)]
+    pub civic: Option<fcp_core::phone_number::CivicElements>,
 }
 
 fn default_tenant_id() -> TenantId {
@@ -138,6 +144,9 @@ pub struct UpdateLocationRequest {
     pub emergency_contact_name: Option<String>,
     pub emergency_contact_phone: Option<String>,
     pub e911_callback_number: Option<String>,
+    /// Replaces the civic elements when given.
+    #[serde(default)]
+    pub civic: Option<fcp_core::phone_number::CivicElements>,
 }
 
 /// List locations.
@@ -207,6 +216,13 @@ pub async fn create_location(
     location.emergency_contact_name = req.emergency_contact_name;
     location.emergency_contact_phone = req.emergency_contact_phone;
     location.e911_callback_number = req.e911_callback_number;
+    if let Some(civic) = req.civic {
+        let problems = civic.problems();
+        if !problems.is_empty() {
+            return Err(ApiError::BadRequest(problems.join("; ")));
+        }
+        location.civic = civic;
+    }
 
     // Store the location
     storage
@@ -301,6 +317,13 @@ pub async fn update_location(
     }
     if req.e911_callback_number.is_some() {
         location.e911_callback_number = req.e911_callback_number;
+    }
+    if let Some(civic) = req.civic {
+        let problems = civic.problems();
+        if !problems.is_empty() {
+            return Err(ApiError::BadRequest(problems.join("; ")));
+        }
+        location.civic = civic;
     }
 
     // Update timestamp

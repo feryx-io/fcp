@@ -38,11 +38,19 @@ struct Stack {
 struct Carrier {
     name: &'static str,
     priority: u32,
+    /// `emergency_location`, as TOML.
+    location: &'static str,
     phone: Phone,
 }
 
 impl Carrier {
     async fn new(name: &'static str, priority: u32) -> Self {
+        Self::taking(name, priority, r#"["elin"]"#).await
+    }
+
+    /// A carrier whose trunk takes the location as `location` says
+    /// (`["pidf_lo"]`, `["elin", "pidf_lo"]`).
+    async fn taking(name: &'static str, priority: u32, location: &'static str) -> Self {
         // The phone never sends to its "server"; it only answers.
         let nowhere = SocketAddr::from(([127, 0, 0, 1], 9));
         let phone = Phone::new(name, "x", REALM, nowhere)
@@ -51,6 +59,7 @@ impl Carrier {
         Self {
             name,
             priority,
+            location,
             phone,
         }
     }
@@ -68,6 +77,7 @@ priority = {priority}
 register = false
 max_concurrent_calls = 0
 emergency_capable = true
+emergency_location = {location}
 
 [trunks.transport]
 protocol = "Udp"
@@ -82,6 +92,7 @@ health_check_interval_secs = 60
 "#,
             name = self.name,
             priority = self.priority,
+            location = self.location,
             port = self.phone.local_addr.port(),
         )
     }
@@ -255,6 +266,10 @@ async fn a_911_call_reaches_the_emergency_trunk_as_the_sites_callback_number() {
         Some(format!("<sip:{ALICE_ELIN}@{REALM}>").as_str())
     );
     assert_eq!(incoming.header("Priority").as_deref(), Some("emergency"));
+    assert!(
+        incoming.multipart().is_none() && incoming.header("Geolocation").is_none(),
+        "an ELIN trunk gets no location by value"
+    );
     let carrier_call = incoming.answer().await.unwrap();
     call.answered(SOON).await.unwrap();
     tokio::time::sleep(Duration::from_millis(1200)).await;
@@ -358,7 +373,7 @@ async fn a_failing_emergency_trunk_gives_way_to_the_next() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_flow_dialing_911_places_an_emergency_call() {
-    let carrier = Carrier::new("psap-primary", 1).await;
+    let carrier = Carrier::taking("psap-primary", 1, r#"["elin", "pidf_lo"]"#).await;
     let mut stack = stack_or_skip!(&[&carrier], &[]);
     let alice = stack.seed.user("alice", "alice-pw", "1001").await;
     stack.seed.site_for("alice", ALICE_ELIN).await;
@@ -427,6 +442,13 @@ async fn a_flow_dialing_911_places_an_emergency_call() {
         incoming.from
     );
     assert_eq!(incoming.header("Priority").as_deref(), Some("emergency"));
+    let body = incoming
+        .multipart()
+        .expect("the flow's INVITE carries the location");
+    let cid = incoming.header("Geolocation").expect("Geolocation");
+    assert!(body
+        .part_by_content_id(cid.trim_start_matches('<').trim_end_matches('>'))
+        .is_some());
     let carrier_call = incoming.answer().await.unwrap();
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert_eq!(call.hangup().await.unwrap(), 200);
@@ -443,6 +465,7 @@ async fn a_flow_dialing_911_places_an_emergency_call() {
     assert_eq!(record.outcome, "answered", "{record:#?}");
     assert_eq!(record.sip_status, Some(200));
     assert!(record.answered_at.is_some());
+    assert_eq!(record.delivery.as_deref(), Some("elin+pidf_lo"));
 
     stack.finish().await;
 }
@@ -490,6 +513,206 @@ async fn a_named_caller_is_believed_only_from_a_trusted_edge() {
         let caller = if trusted { "bob" } else { "alice" };
         assert_eq!(records[0].caller_username.as_deref(), Some(caller));
 
+        stack.finish().await;
+    }
+}
+
+/// Alice's site with its street in civic elements and on the map.
+async fn structure_alice_site(seed: &Seed) {
+    use fcp_core::storage::{CredentialStore, SiteLocationStore};
+    let user = seed
+        .storage()
+        .get_user_in_tenant("alice", &seed.tenant_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut site = seed
+        .storage()
+        .get_location(&user.location_id.unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    site.civic.house_number = Some("100".into());
+    site.civic.street_name = Some("State".into());
+    site.civic.street_suffix = Some("St".into());
+    site.civic.room = Some("312".into());
+    site.latitude = Some(42.6526);
+    site.longitude = Some(-73.7562);
+    seed.storage().put_location(site).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_pidf_lo_trunk_receives_the_location_by_value() {
+    let carrier = Carrier::taking("psap-ng911", 1, r#"["elin", "pidf_lo"]"#).await;
+    let mut stack = stack_or_skip!(&[&carrier], &[]);
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    stack.seed.site_for("alice", ALICE_ELIN).await;
+    structure_alice_site(&stack.seed).await;
+    let alice_phone = stack.phone(&alice).await;
+
+    let call = alice_phone.call("911").await.unwrap();
+    let Some(incoming) = carrier.phone.incoming(SOON).await else {
+        let why = format!("the NG911 trunk never rang; the call is {:?}", call.phase());
+        stack.fail(&why).await;
+    };
+
+    // RFC 6442: the SDP and the PIDF-LO in one body, the location named
+    // by Content-ID from Geolocation, routing on it allowed; the callback
+    // number still the caller.
+    assert!(
+        incoming.from.contains(ALICE_ELIN),
+        "From: {}",
+        incoming.from
+    );
+    let body = incoming.multipart().expect("a multipart body");
+    assert!(body.part_by_type("application/sdp").is_some());
+    let geolocation = incoming.header("Geolocation").expect("Geolocation");
+    let cid = geolocation
+        .trim_start_matches('<')
+        .trim_end_matches('>')
+        .to_string();
+    assert!(cid.starts_with("cid:"), "{geolocation}");
+    let pidf = body
+        .part_by_content_id(&cid)
+        .expect("the part Geolocation names");
+    assert_eq!(pidf.media_type(), "application/pidf+xml");
+    assert_eq!(
+        incoming.header("Geolocation-Routing").as_deref(),
+        Some("yes")
+    );
+    let xml = String::from_utf8_lossy(pidf.body()).to_string();
+    for expected in [
+        format!("entity=\"pres:{ALICE_ELIN}@{REALM}\""),
+        "<ca:country>US</ca:country>".to_string(),
+        "<ca:A1>NY</ca:A1>".to_string(),
+        "<ca:A3>Albany</ca:A3>".to_string(),
+        "<ca:RD>State</ca:RD>".to_string(),
+        "<ca:STS>St</ca:STS>".to_string(),
+        "<ca:HNO>100</ca:HNO>".to_string(),
+        "<ca:FLR>3</ca:FLR>".to_string(),
+        "<ca:PC>12207</ca:PC>".to_string(),
+        "<ca:ROOM>312</ca:ROOM>".to_string(),
+        "<gml:pos>42.6526 -73.7562</gml:pos>".to_string(),
+        "<gbp:retransmission-allowed>true</gbp:retransmission-allowed>".to_string(),
+        "<gp:method>Manual</gp:method>".to_string(),
+    ] {
+        assert!(xml.contains(&expected), "{expected} in {xml}");
+    }
+    let carrier_call = incoming.answer().await.unwrap();
+    call.answered(SOON).await.unwrap();
+    assert_eq!(call.hangup().await.unwrap(), 200);
+    assert!(carrier_call.ended(SOON).await);
+
+    let records = stack
+        .seed
+        .emergency_calls(1, SOON, |r| r.ended_at.is_some())
+        .await;
+    assert_eq!(records[0].delivery.as_deref(), Some("elin+pidf_lo"));
+    assert_eq!(records[0].location_structured, Some(true));
+    assert_eq!(records[0].geolocation_error, None);
+
+    stack.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_refused_location_is_retried_as_elin_or_gives_way_to_the_next_trunk() {
+    const REFUSAL: &str = "300;code=\"Insufficient Location Information\"";
+    // A trunk that takes both, refusing the location: the same trunk again
+    // with ELIN alone.
+    {
+        let carrier = Carrier::taking("psap-both", 1, r#"["elin", "pidf_lo"]"#).await;
+        let mut stack = stack_or_skip!(&[&carrier], &[]);
+        let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+        stack.seed.site_for("alice", ALICE_ELIN).await;
+        let alice_phone = stack.phone(&alice).await;
+
+        let call = alice_phone.call("911").await.unwrap();
+        let Some(incoming) = carrier.phone.incoming(SOON).await else {
+            let why = format!("the trunk never rang; the call is {:?}", call.phase());
+            stack.fail(&why).await;
+        };
+        assert!(incoming.multipart().is_some());
+        incoming
+            .reject_with_headers(
+                424,
+                "Bad Location Information",
+                &[("Geolocation-Error", REFUSAL)],
+            )
+            .await
+            .unwrap();
+        let Some(again) = carrier.phone.incoming(SOON).await else {
+            let why = format!(
+                "the trunk was not tried again; the call is {:?}",
+                call.phase()
+            );
+            stack.fail(&why).await;
+        };
+        assert!(
+            again.multipart().is_none(),
+            "the retry carries no location by value"
+        );
+        assert!(again.header("Geolocation").is_none());
+        assert!(again.from.contains(ALICE_ELIN), "From: {}", again.from);
+        let carrier_call = again.answer().await.unwrap();
+        call.answered(SOON).await.unwrap();
+        assert_eq!(call.hangup().await.unwrap(), 200);
+        assert!(carrier_call.ended(SOON).await);
+        let records = stack
+            .seed
+            .emergency_calls(1, SOON, |r| r.ended_at.is_some())
+            .await;
+        assert_eq!(records[0].trunk_name.as_deref(), Some("psap-both"));
+        assert_eq!(records[0].delivery.as_deref(), Some("elin"));
+        assert_eq!(records[0].geolocation_error.as_deref(), Some(REFUSAL));
+        assert_eq!(records[0].outcome, "answered");
+        stack.finish().await;
+    }
+
+    // A trunk that takes only the location, refusing it: the next trunk.
+    {
+        let ng911 = Carrier::taking("psap-ng911", 1, r#"["pidf_lo"]"#).await;
+        let backup = Carrier::new("psap-elin", 2).await;
+        let mut stack = stack_or_skip!(&[&ng911, &backup], &[]);
+        let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+        stack.seed.site_for("alice", ALICE_ELIN).await;
+        let alice_phone = stack.phone(&alice).await;
+
+        let call = alice_phone.call("911").await.unwrap();
+        let Some(incoming) = ng911.phone.incoming(SOON).await else {
+            let why = format!("the NG911 trunk never rang; the call is {:?}", call.phase());
+            stack.fail(&why).await;
+        };
+        incoming
+            .reject_with_headers(
+                424,
+                "Bad Location Information",
+                &[("Geolocation-Error", REFUSAL)],
+            )
+            .await
+            .unwrap();
+        assert!(
+            ng911
+                .phone
+                .incoming(Duration::from_millis(1500))
+                .await
+                .is_none(),
+            "a pidf_lo-only trunk is not retried without the location"
+        );
+        let Some(incoming) = backup.phone.incoming(SOON).await else {
+            let why = format!("the ELIN trunk never rang; the call is {:?}", call.phase());
+            stack.fail(&why).await;
+        };
+        let carrier_call = incoming.answer().await.unwrap();
+        call.answered(SOON).await.unwrap();
+        assert_eq!(call.hangup().await.unwrap(), 200);
+        assert!(carrier_call.ended(SOON).await);
+        let records = stack
+            .seed
+            .emergency_calls(1, SOON, |r| r.ended_at.is_some())
+            .await;
+        assert_eq!(records[0].trunk_name.as_deref(), Some("psap-elin"));
+        assert_eq!(records[0].delivery.as_deref(), Some("elin"));
+        assert_eq!(records[0].geolocation_error.as_deref(), Some(REFUSAL));
         stack.finish().await;
     }
 }

@@ -200,6 +200,13 @@ pub struct EmergencyCallInfo {
     /// call was answered before it dialed).
     #[serde(default)]
     pub leg: Option<EmergencyLeg>,
+    /// How the location went out on the last attempt: the delivery methods
+    /// of the trunk it was sent to (`[[trunks]] emergency_location`).
+    #[serde(default)]
+    pub delivered: Vec<fcp_core::e911::LocationDelivery>,
+    /// The `Geolocation-Error` (or 424) a trunk answered the location with.
+    #[serde(default)]
+    pub geolocation_error: Option<String>,
 }
 
 /// What became of an emergency leg placed apart from the call's B-leg.
@@ -212,10 +219,24 @@ pub struct EmergencyLeg {
 }
 
 impl EmergencyCallInfo {
-    /// How the location travels with the call: `elin` when there is a
-    /// callback number for the carrier to map to an address.
-    pub fn delivery(&self) -> Option<&'static str> {
-        self.callback_number.as_ref().map(|_| "elin")
+    /// How the location travelled with the call: the last attempt's
+    /// delivery methods joined with `+` (`elin+pidf_lo`); `elin` when no
+    /// attempt recorded any and there is a callback number.
+    pub fn delivery(&self) -> Option<String> {
+        use fcp_core::e911::LocationDelivery;
+        let mut methods: Vec<String> = self
+            .delivered
+            .iter()
+            .filter(|d| **d != LocationDelivery::Elin || self.callback_number.is_some())
+            .filter(|d| **d != LocationDelivery::PidfLo || self.location.is_some())
+            .map(|d| d.to_string())
+            .collect();
+        if self.delivered.is_empty() && self.callback_number.is_some() {
+            methods.push(LocationDelivery::Elin.to_string());
+        }
+        methods.sort();
+        methods.dedup();
+        (!methods.is_empty()).then(|| methods.join("+"))
     }
 }
 

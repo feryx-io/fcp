@@ -20,111 +20,32 @@ pub struct BodyPart {
     pub body: Vec<u8>,
 }
 
-/// A `Content-Type` value's media type, lower-cased, and its parameters.
-fn media_type(value: &str) -> (String, Vec<(String, String)>) {
-    let mut pieces = value.split(';');
-    let media = pieces
+/// A `Content-Type` value's media type, lower-cased, without parameters.
+fn media_type(value: &str) -> String {
+    value
+        .split(';')
         .next()
         .unwrap_or_default()
         .trim()
-        .to_ascii_lowercase();
-    let params = pieces
-        .filter_map(|p| {
-            let (k, v) = p.split_once('=')?;
-            Some((
-                k.trim().to_ascii_lowercase(),
-                v.trim().trim_matches('"').to_string(),
-            ))
-        })
-        .collect();
-    (media, params)
+        .to_ascii_lowercase()
 }
 
 /// The parts of a `multipart/*` body; `None` when the content type is not
-/// multipart or names no boundary, or the body has no parts.
+/// multipart or names no usable boundary, or the body has no parts.
+/// Parsed by `sip_core::MultipartBody` (RFC 2046, RFC 5621).
 pub fn parse_multipart(content_type: &str, body: &[u8]) -> Option<Vec<BodyPart>> {
-    let (media, params) = media_type(content_type);
-    if !media.starts_with("multipart/") {
-        return None;
-    }
-    let boundary = params.into_iter().find(|(k, _)| k == "boundary")?.1;
-    if boundary.is_empty() {
-        return None;
-    }
-    let delimiter = format!("--{boundary}").into_bytes();
-    let mut parts = Vec::new();
-    let mut rest = body;
-    // Skip the preamble up to the first delimiter.
-    let first = find(rest, &delimiter)?;
-    rest = &rest[first + delimiter.len()..];
-    loop {
-        if rest.starts_with(b"--") {
-            break; // the close delimiter
-        }
-        // The rest of the delimiter line.
-        let line_end = find(rest, b"\n")?;
-        rest = &rest[line_end + 1..];
-        let Some(next) = find(rest, &delimiter) else {
-            break;
-        };
-        let mut part = &rest[..next];
-        // The CRLF before the next delimiter belongs to it.
-        if part.ends_with(b"\r\n") {
-            part = &part[..part.len() - 2];
-        } else if part.ends_with(b"\n") {
-            part = &part[..part.len() - 1];
-        }
-        if let Some(parsed) = parse_part(part) {
-            parts.push(parsed);
-        }
-        rest = &rest[next + delimiter.len()..];
-    }
-    (!parts.is_empty()).then_some(parts)
-}
-
-fn parse_part(part: &[u8]) -> Option<BodyPart> {
-    let (head, body) = match find(part, b"\r\n\r\n") {
-        Some(at) => (&part[..at], &part[at + 4..]),
-        None => match find(part, b"\n\n") {
-            Some(at) => (&part[..at], &part[at + 2..]),
-            // A part with no headers: all body.
-            None if part.starts_with(b"\r\n") => (&part[..0], &part[2..]),
-            None => (&part[..0], part),
-        },
-    };
-    let head = std::str::from_utf8(head).ok()?;
-    let mut content_type = "text/plain".to_string();
-    let mut content_id = None;
-    for line in head.lines() {
-        let Some((name, value)) = line.split_once(':') else {
-            continue;
-        };
-        match name.trim().to_ascii_lowercase().as_str() {
-            "content-type" | "c" => content_type = media_type(value).0,
-            "content-id" => {
-                content_id = Some(
-                    value
-                        .trim()
-                        .trim_start_matches('<')
-                        .trim_end_matches('>')
-                        .to_string(),
-                )
-            }
-            _ => {}
-        }
-    }
-    Some(BodyPart {
-        content_type,
-        content_id,
-        body: body.to_vec(),
-    })
-}
-
-fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    if needle.is_empty() || haystack.len() < needle.len() {
-        return None;
-    }
-    haystack.windows(needle.len()).position(|w| w == needle)
+    let parsed = sip_core::MultipartBody::parse(content_type, body).ok()?;
+    Some(
+        parsed
+            .parts()
+            .iter()
+            .map(|p| BodyPart {
+                content_type: p.media_type(),
+                content_id: p.content_id().map(str::to_string),
+                body: p.body().to_vec(),
+            })
+            .collect(),
+    )
 }
 
 /// The message's `Content-Type`, if any.
@@ -150,7 +71,7 @@ pub fn parts_of(headers: &Headers, body: &[u8]) -> Vec<BodyPart> {
     }
     vec![BodyPart {
         content_type: content_type
-            .map(|ct| media_type(&ct).0)
+            .map(|ct| media_type(&ct))
             .unwrap_or_else(|| "application/sdp".to_string()),
         content_id: None,
         body: body.to_vec(),

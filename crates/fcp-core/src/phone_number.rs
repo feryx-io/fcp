@@ -515,6 +515,97 @@ pub struct E911Address {
 
     /// Validation timestamp
     pub validated_at: Option<SystemTime>,
+
+    /// The address's RFC 5139 civic elements, when something structured it
+    /// (`docs/E911_BLOCK_2.md` §5.1). Kept alongside the line fields, which
+    /// stay what people read and edit; flattened into the same JSON object.
+    #[serde(flatten, default)]
+    pub civic: CivicElements,
+}
+
+/// The RFC 5139 civic address elements beyond city, state, postal code and
+/// country, which [`E911Address`] carries as fields of its own.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CivicElements {
+    /// `HNO`: the numeric part of the house number (`1455`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub house_number: Option<String>,
+    /// `HNS`: a house number suffix (`A`, `1/2`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub house_number_suffix: Option<String>,
+    /// `PRD`: a leading street direction (`N`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub street_predirection: Option<String>,
+    /// `RD`: the street name (`Market`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub street_name: Option<String>,
+    /// `STS`: the street suffix (`St`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub street_suffix: Option<String>,
+    /// `POD`: a trailing street direction (`SW`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub street_postdirection: Option<String>,
+    /// `LOC`: additional location information (`Room 4B`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub additional: Option<String>,
+    /// `FLR`: the floor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub floor: Option<String>,
+    /// `UNIT`: a unit or suite.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+    /// `ROOM`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub room: Option<String>,
+    /// `BLD`: the building.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub building: Option<String>,
+    /// `NAM`: the name of the place (`Example HQ`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+impl CivicElements {
+    /// Why these elements cannot be stored: an element longer than 128
+    /// characters or holding control characters (they are written into
+    /// XML and headers). Empty when fine.
+    pub fn problems(&self) -> Vec<String> {
+        let named = [
+            ("house_number", &self.house_number),
+            ("house_number_suffix", &self.house_number_suffix),
+            ("street_predirection", &self.street_predirection),
+            ("street_name", &self.street_name),
+            ("street_suffix", &self.street_suffix),
+            ("street_postdirection", &self.street_postdirection),
+            ("additional", &self.additional),
+            ("floor", &self.floor),
+            ("unit", &self.unit),
+            ("room", &self.room),
+            ("building", &self.building),
+            ("name", &self.name),
+        ];
+        named
+            .iter()
+            .filter_map(|(name, value)| {
+                let value = value.as_deref()?;
+                if value.chars().count() > 128 {
+                    Some(format!("{name} is longer than 128 characters"))
+                } else if value.chars().any(char::is_control) {
+                    Some(format!("{name} contains control characters"))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// Whether the street address is in elements: a street name and a
+    /// house number. An address that is not is sent with its street line
+    /// as the street name and flagged unstructured.
+    pub fn is_structured(&self) -> bool {
+        let present = |v: &Option<String>| v.as_deref().is_some_and(|s| !s.trim().is_empty());
+        present(&self.street_name) && present(&self.house_number)
+    }
 }
 
 impl E911Address {
@@ -535,6 +626,7 @@ impl E911Address {
             country,
             validated: false,
             validated_at: None,
+            civic: CivicElements::default(),
         }
     }
 

@@ -309,6 +309,12 @@ impl Inner {
     }
 }
 
+/// A request's body as a multipart body, when its Content-Type says so.
+fn multipart_of(request: &Request) -> Option<sip_core::MultipartBody> {
+    let content_type = sip_parse::header(request.headers(), "Content-Type")?;
+    sip_core::MultipartBody::parse(content_type.as_str(), request.body()).ok()
+}
+
 /// A SIP phone on loopback.
 pub struct Phone {
     pub username: String,
@@ -685,6 +691,11 @@ impl IncomingCall {
         self.request.body()
     }
 
+    /// The INVITE's body as a multipart body, when it is one.
+    pub fn multipart(&self) -> Option<sip_core::MultipartBody> {
+        multipart_of(&self.request)
+    }
+
     /// The INVITE's request line target.
     pub fn request_uri(&self) -> String {
         self.request.uri().to_string()
@@ -705,6 +716,17 @@ impl IncomingCall {
 
     /// Refuse with `code` (486 Busy Here, 603 Decline, …).
     pub async fn reject(self, code: u16, reason: &str) -> Result<()> {
+        self.reject_with_headers(code, reason, &[]).await
+    }
+
+    /// Refuse with `code` and extra response headers (a 424 with its
+    /// `Geolocation-Error`, …).
+    pub async fn reject_with_headers(
+        self,
+        code: u16,
+        reason: &str,
+        headers: &[(&str, &str)],
+    ) -> Result<()> {
         let (ok, handle) = self
             .pending
             .lock()
@@ -712,6 +734,12 @@ impl IncomingCall {
             .take()
             .context("already answered or cancelled")?;
         let mut response = UserAgentServer::create_response(&self.request, code, reason);
+        for (name, value) in headers {
+            response
+                .headers_mut()
+                .push(*name, *value)
+                .map_err(|e| anyhow!("header {name}: {e}"))?;
+        }
         // The same To tag the 180 carried: one early dialog, refused.
         if let Some(to) = ok.headers().get("To") {
             let _ = response.headers_mut().set_or_push("To", to);
@@ -787,7 +815,15 @@ impl UasRequestHandler for Handler {
         dialog: Option<&Dialog>,
     ) -> anyhow::Result<()> {
         let uas = self.0.uas.get().expect("uas built");
-        let offer = String::from_utf8_lossy(request.body()).to_string();
+        // The SDP alone, or the SDP part of a multipart body (a location by
+        // value rides beside it, RFC 6442).
+        let offer = match multipart_of(request) {
+            Some(body) => body
+                .part_by_type("application/sdp")
+                .map(|p| String::from_utf8_lossy(p.body()).to_string())
+                .unwrap_or_default(),
+            None => String::from_utf8_lossy(request.body()).to_string(),
+        };
         let call_id = sip_parse::header(request.headers(), "Call-ID")
             .map(|v| v.to_string())
             .unwrap_or_default();

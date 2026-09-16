@@ -72,6 +72,12 @@ pub struct SiteLocation {
     #[serde(default)]
     pub e911_callback_number: Option<String>,
 
+    /// The site's street address as RFC 5139 civic elements, when it has
+    /// been structured (`docs/E911_BLOCK_2.md` §5.1). Floor and building
+    /// stay in their own fields.
+    #[serde(default)]
+    pub civic: crate::phone_number::CivicElements,
+
     // ===== Timestamps =====
     /// Created timestamp
     pub created_at: SystemTime,
@@ -104,6 +110,7 @@ impl SiteLocation {
             emergency_contact_name: None,
             emergency_contact_phone: None,
             e911_callback_number: None,
+            civic: Default::default(),
             created_at: now,
             updated_at: now,
         }

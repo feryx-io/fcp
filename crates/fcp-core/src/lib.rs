@@ -30,6 +30,7 @@ pub mod metrics;
 pub mod migration_ticket;
 pub mod permissions;
 pub mod phone_number;
+pub mod pidf_lo;
 pub mod porting;
 pub mod prompt;
 pub mod queue_config;

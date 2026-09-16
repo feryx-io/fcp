@@ -449,6 +449,7 @@ impl TrunkRouter {
             target_uri: format!("sip:{}@{}:{}{}", user_part, host, port, transport_param),
             trunk_name: Some(trunk.name.clone()),
             allowed_codecs,
+            emergency_location: trunk.emergency_location.clone(),
         })
     }
 }

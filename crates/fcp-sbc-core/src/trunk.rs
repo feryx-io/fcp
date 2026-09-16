@@ -244,6 +244,14 @@ pub struct TrunkConfig {
     #[serde(default)]
     pub emergency_capable: bool,
 
+    /// How an emergency call's location travels on this trunk
+    /// (`docs/E911_BLOCK_2.md` §5): `elin`, the callback number as caller
+    /// ID, which the carrier maps to an address; `pidf_lo`, the location by
+    /// value in the INVITE (RFC 6442); or both. The callback number goes out
+    /// either way. Default `["elin"]`.
+    #[serde(default = "default_emergency_location")]
+    pub emergency_location: Vec<fcp_core::e911::LocationDelivery>,
+
     /// SRTP configuration for this trunk
     #[serde(default)]
     pub srtp: TrunkSrtpConfig,
@@ -266,6 +274,10 @@ pub struct TrunkConfig {
     pub egress_number_transform: Option<crate::number_transform::NumberTransform>,
 }
 
+fn default_emergency_location() -> Vec<fcp_core::e911::LocationDelivery> {
+    vec![fcp_core::e911::LocationDelivery::Elin]
+}
+
 impl Default for TrunkConfig {
     fn default() -> Self {
         Self {
@@ -283,6 +295,7 @@ impl Default for TrunkConfig {
             max_concurrent_calls: 0,
             header_rules: Vec::new(),
             emergency_capable: false,
+            emergency_location: default_emergency_location(),
             srtp: TrunkSrtpConfig::default(),
             dtmf: TrunkDtmfConfig::default(),
             codec: TrunkCodecConfig::default(),

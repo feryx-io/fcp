@@ -305,7 +305,8 @@ impl CallManager {
                 sip_status: leg.sip_status,
                 answered_at: leg.answered_at,
                 ended_at,
-                delivery: em.delivery().map(str::to_string),
+                delivery: em.delivery(),
+                geolocation_error: em.geolocation_error.clone(),
             },
             None => fcp_core::e911::EmergencyCompletion {
                 trunk_name: call.trunk_name.clone(),
@@ -313,7 +314,8 @@ impl CallManager {
                 sip_status,
                 answered_at: call.established_at,
                 ended_at,
-                delivery: em.delivery().map(str::to_string),
+                delivery: em.delivery(),
+                geolocation_error: em.geolocation_error.clone(),
             },
         };
         info!(

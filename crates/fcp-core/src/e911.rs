@@ -161,6 +161,41 @@ impl std::fmt::Display for LocationSource {
     }
 }
 
+impl LocationSource {
+    /// The PIDF-LO `method` (RFC 4119, IANA method tokens) for a location
+    /// from this source: every source today is provisioned by hand.
+    pub fn pidf_method(&self) -> &'static str {
+        "Manual"
+    }
+}
+
+/// How an emergency call's location travels to a trunk
+/// (`[[trunks]] emergency_location`, `docs/E911_BLOCK_2.md` §5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocationDelivery {
+    /// The callback number as caller ID; the carrier maps it to an address.
+    Elin,
+    /// The location by value: a PIDF-LO body referenced by `Geolocation`.
+    PidfLo,
+}
+
+impl std::fmt::Display for LocationDelivery {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            LocationDelivery::Elin => "elin",
+            LocationDelivery::PidfLo => "pidf_lo",
+        })
+    }
+}
+
+/// A WGS 84 point (EPSG:4326), in degrees.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct GeoPoint {
+    pub latitude: f64,
+    pub longitude: f64,
+}
+
 /// The civic address and callback number sent with an emergency call.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DispatchableLocation {
@@ -171,6 +206,9 @@ pub struct DispatchableLocation {
     pub source: LocationSource,
     pub location_id: Option<LocationId>,
     pub location_name: Option<String>,
+    /// Where the site is on the map, when its coordinates are set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub point: Option<GeoPoint>,
 }
 
 impl DispatchableLocation {
@@ -233,6 +271,7 @@ pub fn resolve_dispatchable_location(inputs: &LocationInputs<'_>) -> Option<Disp
             source: LocationSource::DeviceOverride,
             location_id: inputs.device.and_then(|d| d.location_id),
             location_name: inputs.device_site.map(|s| s.name.clone()),
+            point: inputs.device_site.and_then(site_point),
         });
     }
     if let Some((site, address)) = inputs
@@ -245,6 +284,7 @@ pub fn resolve_dispatchable_location(inputs: &LocationInputs<'_>) -> Option<Disp
             source: LocationSource::DeviceLocation,
             location_id: Some(site.id),
             location_name: Some(site.name.clone()),
+            point: site_point(site),
         });
     }
     if let Some((site, address)) = inputs
@@ -257,6 +297,7 @@ pub fn resolve_dispatchable_location(inputs: &LocationInputs<'_>) -> Option<Disp
             source: LocationSource::UserLocation,
             location_id: Some(site.id),
             location_name: Some(site.name.clone()),
+            point: site_point(site),
         });
     }
     if let Some(address) = inputs.phone_number.and_then(|n| n.e911_address.clone()) {
@@ -266,6 +307,7 @@ pub fn resolve_dispatchable_location(inputs: &LocationInputs<'_>) -> Option<Disp
             source: LocationSource::PhoneNumber,
             location_id: None,
             location_name: None,
+            point: None,
         });
     }
     None
@@ -360,6 +402,13 @@ pub fn site_address(site: &SiteLocation) -> Option<E911Address> {
             Some(parts.join(", "))
         }
     });
+    let mut civic = site.civic.clone();
+    if civic.floor.is_none() {
+        civic.floor = non_empty(site.floor.as_deref());
+    }
+    if civic.building.is_none() {
+        civic.building = non_empty(site.building.as_deref());
+    }
     Some(E911Address {
         address1,
         address2,
@@ -369,7 +418,19 @@ pub fn site_address(site: &SiteLocation) -> Option<E911Address> {
         country: non_empty(site.country.as_deref()).unwrap_or_else(|| "US".to_string()),
         validated: false,
         validated_at: None,
+        civic,
     })
+}
+
+/// A site's coordinates, when both are set and on the globe.
+pub fn site_point(site: &SiteLocation) -> Option<GeoPoint> {
+    let (latitude, longitude) = (site.latitude?, site.longitude?);
+    ((-90.0..=90.0).contains(&latitude) && (-180.0..=180.0).contains(&longitude)).then_some(
+        GeoPoint {
+            latitude,
+            longitude,
+        },
+    )
 }
 
 // ─── Address validation ───────────────────────────────────────────────────
@@ -517,9 +578,17 @@ pub struct EmergencyCallRecord {
     #[serde(default)]
     pub ended_at: Option<SystemTime>,
     /// How the location travelled with the call: `elin` (the callback
-    /// number the carrier maps to an address), or none.
+    /// number the carrier maps to an address), `pidf_lo` (by value), both
+    /// as `elin+pidf_lo`, or none.
     #[serde(default)]
     pub delivery: Option<String>,
+    /// Whether the location's street was in civic elements; `false` means it
+    /// went out with its street line as the street name.
+    #[serde(default)]
+    pub location_structured: Option<bool>,
+    /// The `Geolocation-Error` (or 424) a trunk answered the location with.
+    #[serde(default)]
+    pub geolocation_error: Option<String>,
 }
 
 /// What became of an emergency call, written onto its record when the call
@@ -532,6 +601,7 @@ pub struct EmergencyCompletion {
     pub answered_at: Option<SystemTime>,
     pub ended_at: SystemTime,
     pub delivery: Option<String>,
+    pub geolocation_error: Option<String>,
 }
 
 /// Persistence for emergency configuration and the call audit trail.
@@ -573,6 +643,7 @@ mod tests {
             country: "US".to_string(),
             validated: false,
             validated_at: None,
+            civic: Default::default(),
         }
     }
 
@@ -719,6 +790,7 @@ mod tests {
             country: "".to_string(),
             validated: false,
             validated_at: None,
+            civic: Default::default(),
         });
         assert!(ok.valid, "{:?}", ok.issues);
         assert_eq!(ok.normalized.address1, "1 State St");
@@ -735,6 +807,7 @@ mod tests {
             country: "US".to_string(),
             validated: false,
             validated_at: None,
+            civic: Default::default(),
         });
         assert!(!bad.valid);
         assert_eq!(bad.issues.len(), 4, "{:?}", bad.issues);
@@ -748,6 +821,7 @@ mod tests {
             source: LocationSource::UserLocation,
             location_id: None,
             location_name: Some("HQ".to_string()),
+            point: None,
         };
         assert_eq!(loc.summary(), "HQ: 1 State St, Albany, NY 12207");
     }
