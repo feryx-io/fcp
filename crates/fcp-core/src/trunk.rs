@@ -23,6 +23,23 @@ impl TrunkId {
     pub fn from_string(s: String) -> Self {
         Self(s)
     }
+
+    /// The id of a platform trunk — one a node reads from its own
+    /// `[[trunks]]` rather than from the database (`docs/TENANT_TRUNKS.md`
+    /// §4). Derived from the name, so it is the same on every node and
+    /// across restarts, and cannot collide with a stored trunk's id.
+    pub fn platform(name: &str) -> Self {
+        Self(format!("platform:{name}"))
+    }
+
+    /// Whether this is a platform trunk's id.
+    pub fn is_platform(&self) -> bool {
+        self.0.starts_with("platform:")
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 impl Default for TrunkId {
@@ -88,8 +105,10 @@ pub struct Trunk {
     /// Unique identifier
     pub id: TrunkId,
 
-    /// Tenant this trunk belongs to
-    pub tenant_id: TenantId,
+    /// The tenant whose calls this trunk carries. `None` is a platform
+    /// trunk — one a node reads from its own `[[trunks]]`, shared by every
+    /// tenant that has none of its own (`docs/TENANT_TRUNKS.md` §4).
+    pub tenant_id: Option<TenantId>,
 
     /// Human-readable name
     pub name: String,
@@ -225,12 +244,12 @@ pub struct TrunkStats {
 }
 
 impl Trunk {
-    /// Create a new trunk with defaults.
+    /// Create a new trunk with defaults, belonging to `tenant_id`.
     pub fn new(name: String, tenant_id: TenantId) -> Self {
         let now = SystemTime::now();
         Self {
             id: TrunkId::new(),
-            tenant_id,
+            tenant_id: Some(tenant_id),
             name,
             enabled: true,
             direction: TrunkDirection::Upstream,

@@ -197,11 +197,25 @@ impl Default for TrunkDtmfConfig {
     }
 }
 
-/// A trunk (carrier) configuration.
+/// A trunk (carrier) as the call path sees it: what a node reads from its
+/// own `[[trunks]]`, and what a tenant's stored trunk becomes
+/// (`From<&fcp_core::Trunk>`, `docs/TENANT_TRUNKS.md` §4).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrunkConfig {
-    /// Trunk name (unique identifier).
+    /// Trunk name: what people read, and what a node's own trunks are
+    /// unique by.
     pub name: String,
+
+    /// The stored trunk this came from. A trunk a node read from its own
+    /// TOML has none, and is identified by `TrunkId::platform(name)`; see
+    /// [`TrunkConfig::key`].
+    #[serde(skip)]
+    pub id: Option<fcp_core::TrunkId>,
+
+    /// The tenant whose calls this trunk carries. `None` is a platform
+    /// trunk, shared by every tenant that has none of its own.
+    #[serde(skip)]
+    pub tenant_id: Option<fcp_core::TenantId>,
 
     /// Whether this trunk is enabled.
     pub enabled: bool,
@@ -278,10 +292,38 @@ fn default_emergency_location() -> Vec<fcp_core::e911::LocationDelivery> {
     vec![fcp_core::e911::LocationDelivery::Elin]
 }
 
+impl TrunkConfig {
+    /// What this trunk is identified by everywhere its state is kept —
+    /// health, capacity, CPS, registration, and the call's record. Two
+    /// tenants may both call a trunk `carrier-a`; they never share a key.
+    pub fn trunk_id(&self) -> fcp_core::TrunkId {
+        self.id
+            .clone()
+            .unwrap_or_else(|| fcp_core::TrunkId::platform(&self.name))
+    }
+
+    /// [`TrunkConfig::trunk_id`] as the string the runtime maps key on.
+    pub fn key(&self) -> String {
+        self.trunk_id().to_string()
+    }
+
+    /// Whether this trunk carries `tenant`'s calls: its own trunk, or a
+    /// platform trunk, which carries anyone's.
+    pub fn serves(&self, tenant: Option<fcp_core::TenantId>) -> bool {
+        match (self.tenant_id, tenant) {
+            (None, _) => true,
+            (Some(owner), Some(caller)) => owner == caller,
+            (Some(_), None) => false,
+        }
+    }
+}
+
 impl Default for TrunkConfig {
     fn default() -> Self {
         Self {
             name: String::new(),
+            id: None,
+            tenant_id: None,
             enabled: true,
             direction: TrunkDirection::default(),
             priority: 100,
@@ -702,5 +744,221 @@ mod tests {
         let mut cfg = valid_trunk();
         cfg.codec.allowed_codecs = vec!["PCMU".into(), "PCMA".into(), "G722".into()];
         assert!(cfg.validate().is_ok());
+    }
+}
+
+// ── A stored trunk becomes a runtime one ─────────────────────────────────
+
+/// The one place the model a tenant manages (`fcp_core::Trunk`, what
+/// `/v1/trunks` reads and writes) becomes the model the call path uses
+/// (`docs/TENANT_TRUNKS.md` §4).
+///
+/// Fields the stored trunk does not have yet — the structured SRTP suites,
+/// STIR/SHAKEN modes, the emergency location — take the same defaults a
+/// TOML trunk gets when it leaves them out, so a stored trunk behaves like
+/// a plainly-written one until the columns arrive with the phases that
+/// need them.
+impl From<&fcp_core::Trunk> for TrunkConfig {
+    fn from(trunk: &fcp_core::Trunk) -> Self {
+        let credentials = trunk
+            .auth_username
+            .as_ref()
+            .map(|username| TrunkCredentials {
+                username: username.clone(),
+                password: trunk.auth_password.clone().unwrap_or_default(),
+                realm: trunk.auth_realm.clone(),
+            });
+        // The stored trunk says "strip these many digits, then prepend
+        // this"; the transform stage speaks in prefixes and a prepend.
+        let strip = trunk.strip_digits.max(0) as usize;
+        let prepend = trunk.prepend_digits.clone().unwrap_or_default();
+        let egress_number_transform =
+            (strip > 0 || !prepend.is_empty()).then(|| crate::number_transform::NumberTransform {
+                strip_prefixes: Vec::new(),
+                strip_leading: strip,
+                prepend,
+            });
+        Self {
+            name: trunk.name.clone(),
+            id: Some(trunk.id.clone()),
+            tenant_id: trunk.tenant_id,
+            enabled: trunk.enabled,
+            direction: match trunk.direction {
+                fcp_core::TrunkDirection::Upstream => TrunkDirection::Upstream,
+                fcp_core::TrunkDirection::Downstream => TrunkDirection::Downstream,
+                fcp_core::TrunkDirection::Bidirectional => TrunkDirection::Bidirectional,
+            },
+            priority: trunk.priority.max(0) as u32,
+            weight: trunk.weight.max(0) as u32,
+            hosts: trunk.hosts.clone(),
+            transport: TrunkTransport {
+                protocol: match trunk.transport_protocol.to_ascii_lowercase().as_str() {
+                    "tcp" => fcp_core::transport::TransportType::Tcp,
+                    "tls" => fcp_core::transport::TransportType::Tls,
+                    "ws" => fcp_core::transport::TransportType::Ws,
+                    "wss" => fcp_core::transport::TransportType::Wss,
+                    _ => fcp_core::transport::TransportType::Udp,
+                },
+                port: u16::try_from(trunk.transport_port).ok().filter(|p| *p > 0),
+                verify_tls: trunk.verify_tls,
+            },
+            credentials,
+            register: trunk.register,
+            register_expiry: u32::try_from(trunk.register_expiry).ok().filter(|e| *e > 0),
+            failover: TrunkFailover {
+                max_failures: trunk.max_failures.max(1) as u32,
+                recovery_interval_secs: trunk.recovery_interval_secs.max(1) as u64,
+                health_check_enabled: trunk.health_check_enabled,
+                health_check_interval_secs: trunk.health_check_interval_secs.max(1) as u64,
+            },
+            max_concurrent_calls: trunk.max_concurrent_calls.max(0) as u32,
+            // The stored form is one comma-separated list of rule names.
+            header_rules: trunk
+                .header_rules
+                .as_deref()
+                .map(|rules| {
+                    rules
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|r| !r.is_empty())
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default(),
+            emergency_capable: trunk.emergency_capable,
+            emergency_location: default_emergency_location(),
+            srtp: TrunkSrtpConfig {
+                mode: match trunk.srtp_mode.to_ascii_lowercase().as_str() {
+                    "required" | "require" => SrtpMode::Required,
+                    "preferred" | "prefer" => SrtpMode::Preferred,
+                    _ => SrtpMode::Disabled,
+                },
+                allowed_suites: Vec::new(),
+            },
+            dtmf: TrunkDtmfConfig {
+                mode: match trunk.dtmf_mode.to_ascii_lowercase().as_str() {
+                    "rfc2833" | "relay" => TrunkDtmfMode::Relay,
+                    "detect" | "info" => TrunkDtmfMode::Detect,
+                    _ => TrunkDtmfMode::Disabled,
+                },
+            },
+            codec: TrunkCodecConfig {
+                allowed_codecs: trunk.codec_prefs.clone(),
+                allow_transcoding: true,
+            },
+            stir_shaken: TrunkStirShakenConfig::default(),
+            egress_number_transform,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tenant_trunk_tests {
+    use super::*;
+    use fcp_core::{TenantId, Trunk, TrunkId};
+
+    fn stored(name: &str, tenant: TenantId) -> Trunk {
+        let mut trunk = Trunk::new(name.to_string(), tenant);
+        trunk.hosts = vec!["carrier.example.net".to_string()];
+        trunk.transport_protocol = "tls".to_string();
+        trunk.transport_port = 5061;
+        trunk.auth_username = Some("fcp".to_string());
+        trunk.auth_password = Some("s3cret".to_string());
+        trunk.strip_digits = 2;
+        trunk.prepend_digits = Some("+1".to_string());
+        trunk.header_rules = Some("strip-pai, add-diversion".to_string());
+        trunk.srtp_mode = "required".to_string();
+        trunk.dtmf_mode = "rfc2833".to_string();
+        trunk.codec_prefs = vec!["PCMU".to_string(), "G722".to_string()];
+        trunk.emergency_capable = true;
+        trunk
+    }
+
+    /// A trunk a node read from its own TOML is identified by its name;
+    /// a stored trunk by its id, so two tenants' `carrier-a` never meet
+    /// (`docs/TENANT_TRUNKS.md` §4).
+    #[test]
+    fn a_trunk_is_identified_by_its_id() {
+        let platform = TrunkConfig {
+            name: "carrier-a".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(platform.trunk_id(), TrunkId::platform("carrier-a"));
+        assert!(platform.trunk_id().is_platform());
+        assert_eq!(platform.key(), "platform:carrier-a");
+
+        let (a, b) = (TenantId::new(), TenantId::new());
+        let one = TrunkConfig::from(&stored("carrier-a", a));
+        let two = TrunkConfig::from(&stored("carrier-a", b));
+        assert_eq!(one.name, two.name);
+        assert_ne!(one.key(), two.key(), "same name, different trunks");
+        assert!(!one.trunk_id().is_platform());
+    }
+
+    /// A platform trunk carries anyone's calls; a tenant's carries only
+    /// its own.
+    #[test]
+    fn a_trunk_serves_its_own_tenant_or_everyone() {
+        let (a, b) = (TenantId::new(), TenantId::new());
+        let platform = TrunkConfig::default();
+        assert!(platform.serves(Some(a)));
+        assert!(platform.serves(None));
+
+        let tenant_trunk = TrunkConfig::from(&stored("carrier-a", a));
+        assert!(tenant_trunk.serves(Some(a)));
+        assert!(!tenant_trunk.serves(Some(b)));
+        assert!(
+            !tenant_trunk.serves(None),
+            "a call with no tenant uses the platform's trunks"
+        );
+    }
+
+    /// The one conversion between the model a tenant manages and the model
+    /// the call path uses.
+    #[test]
+    fn a_stored_trunk_becomes_a_runtime_one() {
+        let tenant = TenantId::new();
+        let trunk = stored("carrier-a", tenant);
+        let config = TrunkConfig::from(&trunk);
+
+        assert_eq!(config.name, "carrier-a");
+        assert_eq!(config.tenant_id, Some(tenant));
+        assert_eq!(config.id, Some(trunk.id.clone()));
+        assert_eq!(config.hosts, vec!["carrier.example.net".to_string()]);
+        assert_eq!(
+            config.transport.protocol,
+            fcp_core::transport::TransportType::Tls
+        );
+        assert_eq!(config.transport.port, Some(5061));
+        let credentials = config.credentials.expect("credentials");
+        assert_eq!(credentials.username, "fcp");
+        assert_eq!(credentials.password, "s3cret");
+        assert_eq!(config.srtp.mode, SrtpMode::Required);
+        assert_eq!(config.dtmf.mode, TrunkDtmfMode::Relay);
+        assert_eq!(
+            config.codec.allowed_codecs,
+            vec!["PCMU".to_string(), "G722".to_string()]
+        );
+        assert_eq!(
+            config.header_rules,
+            vec!["strip-pai".to_string(), "add-diversion".to_string()],
+            "the stored comma-separated list becomes rule names"
+        );
+        assert!(config.emergency_capable);
+        assert_eq!(
+            config.emergency_location,
+            vec![fcp_core::e911::LocationDelivery::Elin],
+            "a stored trunk takes the default until it can say otherwise"
+        );
+
+        // strip_digits + prepend_digits is the simple form of the transform.
+        let transform = config.egress_number_transform.expect("a transform");
+        assert_eq!(transform.strip_leading, 2);
+        assert_eq!(transform.prepend, "+1");
+        assert_eq!(transform.apply("915185550100"), "+15185550100");
+
+        // A trunk that says nothing about digits gets no transform.
+        let plain = TrunkConfig::from(&Trunk::new("plain".to_string(), tenant));
+        assert!(plain.egress_number_transform.is_none());
     }
 }

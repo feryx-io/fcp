@@ -30,6 +30,12 @@ pub struct NumberTransform {
     #[serde(default)]
     pub strip_prefixes: Vec<String>,
 
+    /// Leading characters to strip when no prefix matched — the stored
+    /// trunk's `strip_digits` (`docs/TENANT_TRUNKS.md` §4), which says how
+    /// many to take off rather than which. Optional.
+    #[serde(default)]
+    pub strip_leading: usize,
+
     /// String prepended after stripping. Optional.
     #[serde(default)]
     pub prepend: String,
@@ -46,20 +52,33 @@ impl NumberTransform {
             return number.to_string();
         }
 
-        let stripped = self
+        let matched = self
             .strip_prefixes
             .iter()
             .filter(|p| !p.is_empty() && number.starts_with(p.as_str()))
             .max_by_key(|p| p.len())
-            .map(|p| &number[p.len()..])
-            .unwrap_or(number);
+            .map(|p| &number[p.len()..]);
+        // A named prefix wins; `strip_leading` is what a trunk that only
+        // says "take off two digits" gets.
+        let stripped = match matched {
+            Some(rest) => rest,
+            None if self.strip_leading > 0 => {
+                let take = number
+                    .char_indices()
+                    .nth(self.strip_leading)
+                    .map(|(i, _)| i)
+                    .unwrap_or(number.len());
+                &number[take..]
+            }
+            None => number,
+        };
 
         format!("{}{}", self.prepend, stripped)
     }
 
     /// Whether the transform changes anything.
     pub fn is_noop(&self) -> bool {
-        self.strip_prefixes.is_empty() && self.prepend.is_empty()
+        self.strip_prefixes.is_empty() && self.strip_leading == 0 && self.prepend.is_empty()
     }
 
     /// Validate configuration values.
@@ -109,6 +128,7 @@ mod tests {
         let t = NumberTransform {
             strip_prefixes: vec!["+".into(), "+1".into()],
             prepend: "1".into(),
+            strip_leading: 0,
         };
         assert_eq!(t.apply("+14155550100"), "14155550100");
         assert_eq!(t.apply("+443300030000"), "1443300030000");
@@ -119,6 +139,7 @@ mod tests {
         let t = NumberTransform {
             strip_prefixes: vec!["00".into()],
             prepend: "+".into(),
+            strip_leading: 0,
         };
         assert_eq!(t.apply("00443300030000"), "+443300030000");
         // No prefix match: prepend still applies
@@ -130,6 +151,7 @@ mod tests {
         let t = NumberTransform {
             strip_prefixes: vec!["+".into()],
             prepend: "9".into(),
+            strip_leading: 0,
         };
         assert_eq!(t.apply("alice"), "alice");
         assert_eq!(t.apply("bob2"), "bob2");
@@ -144,12 +166,14 @@ mod tests {
         let bad = NumberTransform {
             strip_prefixes: vec!["abc".into()],
             prepend: String::new(),
+            strip_leading: 0,
         };
         assert!(bad.validate().is_err());
 
         let bad = NumberTransform {
             strip_prefixes: vec![],
             prepend: "x".into(),
+            strip_leading: 0,
         };
         assert!(bad.validate().is_err());
     }

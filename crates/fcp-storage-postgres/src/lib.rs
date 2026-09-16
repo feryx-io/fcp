@@ -4552,7 +4552,9 @@ fn row_to_trunk(row: sqlx::postgres::PgRow) -> Result<Trunk> {
 
     Ok(Trunk {
         id: TrunkId::from_string(id_str),
-        tenant_id: TenantId::from_str(&tenant_id_str).unwrap_or_else(|_| TenantId::nil()),
+        // A stored trunk always belongs to a tenant; only the platform
+        // trunks a node reads from its own TOML have none.
+        tenant_id: Some(TenantId::from_str(&tenant_id_str).unwrap_or_else(|_| TenantId::nil())),
         name,
         enabled,
         direction,
@@ -4699,7 +4701,12 @@ impl TrunkStore for PostgresStorage {
                 updated_at = EXCLUDED.updated_at",
         )
         .bind(trunk.id.to_string())
-        .bind(trunk.tenant_id.to_string())
+        .bind(
+            trunk
+                .tenant_id
+                .map(|t| t.to_string())
+                .context("a platform trunk has no tenant and cannot be stored")?,
+        )
         .bind(&trunk.name)
         .bind(trunk.enabled)
         .bind(trunk.direction.to_string())

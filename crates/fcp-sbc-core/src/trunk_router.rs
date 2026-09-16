@@ -97,7 +97,7 @@ impl TrunkRouter {
         // Partition into preferred (not degraded) and degraded
         let (preferred, degraded): (Vec<_>, Vec<_>) = candidates
             .into_iter()
-            .partition(|t| !self.health.is_degraded(&t.name));
+            .partition(|t| !self.health.is_degraded(&t.key()));
 
         let pool = if !preferred.is_empty() {
             preferred
@@ -220,10 +220,14 @@ impl TrunkRouter {
             || direction == TrunkDirection::Bidirectional;
 
         let enabled = trunk.enabled;
-        let healthy = self.health.is_healthy(&trunk.name);
+        // Health, capacity and CPS are kept per trunk key, not per name:
+        // two tenants may both have a `carrier-a` (`docs/TENANT_TRUNKS.md`
+        // §4).
+        let key = trunk.key();
+        let healthy = self.health.is_healthy(&key);
         let has_capacity = trunk.max_concurrent_calls == 0
-            || self.health.concurrent_calls(&trunk.name) < trunk.max_concurrent_calls as u64;
-        let within_cps = self.cps.is_trunk_within_cps(&trunk.name);
+            || self.health.concurrent_calls(&key) < trunk.max_concurrent_calls as u64;
+        let within_cps = self.cps.is_trunk_within_cps(&key);
 
         dir_match && enabled && healthy && has_capacity && within_cps
     }
@@ -448,6 +452,7 @@ impl TrunkRouter {
         Some(OutboundRoute {
             target_uri: format!("sip:{}@{}:{}{}", user_part, host, port, transport_param),
             trunk_name: Some(trunk.name.clone()),
+            trunk_id: Some(trunk.trunk_id()),
             allowed_codecs,
             emergency_location: trunk.emergency_location.clone(),
         })
@@ -459,9 +464,9 @@ impl TrunkRouter {
     ///
     /// Paired with the Terminated-event decrement in the SBC hooks, which is
     /// keyed by the call's recorded trunk name.
-    fn record_call_on(&self, trunk_name: &str) {
-        self.health.call_started(trunk_name);
-        self.cps.record_trunk_call(trunk_name);
+    fn record_call_on(&self, trunk_key: &str) {
+        self.health.call_started(trunk_key);
+        self.cps.record_trunk_call(trunk_key);
     }
 
     /// Whether any trunk is *configured* to carry this destination upstream,
@@ -496,14 +501,14 @@ impl OutboundRouteProvider for TrunkRouter {
         let trunks = self.select_trunks_ordered(TrunkDirection::Upstream, destination_uri);
         if let Some(trunk) = trunks.first() {
             let route = self.build_outbound_route(trunk, destination_uri)?;
-            self.record_call_on(&trunk.name);
+            self.record_call_on(&trunk.key());
             return Some(route);
         }
 
         // Fall through to legacy (should not normally reach here, but safety net)
         let trunk = self.select_trunk(TrunkDirection::Upstream)?;
         let route = self.build_outbound_route(trunk, destination_uri)?;
-        self.record_call_on(&trunk.name.clone());
+        self.record_call_on(&trunk.key());
         Some(route)
     }
 
@@ -521,8 +526,8 @@ impl OutboundRouteProvider for TrunkRouter {
         // B2BUA records the call under the primary route's trunk
         // (call.trunk_name), so start/end stay balanced on that trunk.
         if let Some(first) = routes.first() {
-            if let Some(ref name) = first.trunk_name {
-                self.record_call_on(name);
+            if let Some(id) = &first.trunk_id {
+                self.record_call_on(id.as_str());
             }
         }
         routes
@@ -1109,6 +1114,7 @@ mod tests {
         trunk.egress_number_transform = Some(crate::number_transform::NumberTransform {
             strip_prefixes: vec!["+".into()],
             prepend: String::new(),
+            strip_leading: 0,
         });
         let trunks = vec![trunk];
         let health = Arc::new(TrunkHealthMonitor::new(&trunks));

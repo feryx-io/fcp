@@ -207,6 +207,11 @@ pub struct OutboundRoute {
     pub target_uri: String,
     /// Name of the trunk selected (if trunk-based routing was used).
     pub trunk_name: Option<String>,
+    /// The trunk's id, which is what its health, capacity and record are
+    /// kept under: two tenants may both have a `carrier-a`
+    /// (`docs/TENANT_TRUNKS.md` §4). A platform trunk's id is derived from
+    /// its name.
+    pub trunk_id: Option<fcp_core::TrunkId>,
     /// Allowed codecs for this trunk in preference order (empty = no restriction).
     pub allowed_codecs: Option<Vec<String>>,
     /// How an emergency call's location travels on this route

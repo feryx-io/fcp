@@ -75,7 +75,7 @@ impl From<Trunk> for TrunkResponse {
     fn from(t: Trunk) -> Self {
         Self {
             id: t.id.to_string(),
-            tenant_id: t.tenant_id.to_string(),
+            tenant_id: t.tenant_id.map(|t| t.to_string()).unwrap_or_default(),
             name: t.name,
             enabled: t.enabled,
             direction: t.direction.to_string(),
@@ -277,7 +277,7 @@ pub async fn get_trunk(
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to get trunk: {}", e)))?
         .ok_or_else(|| ApiError::NotFound("Trunk not found".to_string()))?;
-    if trunk.tenant_id != tenant.0 {
+    if trunk.tenant_id != Some(tenant.0) {
         return Err(ApiError::NotFound("Trunk not found".to_string()));
     }
 
@@ -414,7 +414,7 @@ pub async fn update_trunk(
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to get trunk: {}", e)))?
         .ok_or_else(|| ApiError::NotFound("Trunk not found".to_string()))?;
-    if trunk.tenant_id != tenant.0 {
+    if trunk.tenant_id != Some(tenant.0) {
         return Err(ApiError::NotFound("Trunk not found".to_string()));
     }
 
@@ -552,7 +552,7 @@ pub async fn delete_trunk(
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to get trunk: {}", e)))?
         .ok_or_else(|| ApiError::NotFound("Trunk not found".to_string()))?;
-    if trunk.tenant_id != tenant.0 {
+    if trunk.tenant_id != Some(tenant.0) {
         return Err(ApiError::NotFound("Trunk not found".to_string()));
     }
 
@@ -582,7 +582,7 @@ pub async fn test_trunk(
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to get trunk: {}", e)))?
         .ok_or_else(|| ApiError::NotFound("Trunk not found".to_string()))?;
-    if trunk.tenant_id != tenant.0 {
+    if trunk.tenant_id != Some(tenant.0) {
         return Err(ApiError::NotFound("Trunk not found".to_string()));
     }
 
@@ -619,14 +619,14 @@ pub async fn clone_trunk(
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to get trunk: {}", e)))?
         .ok_or_else(|| ApiError::NotFound("Trunk not found".to_string()))?;
-    if source.tenant_id != tenant.0 {
+    if source.tenant_id != Some(tenant.0) {
         return Err(ApiError::NotFound("Trunk not found".to_string()));
     }
 
     let mut clone = source.clone();
     clone.id = fcp_core::TrunkId::new();
     clone.name = format!("{} (copy)", clone.name);
-    clone.tenant_id = tenant.0;
+    clone.tenant_id = Some(tenant.0);
     clone.enabled = false; // Disable clone by default
     let now = SystemTime::now();
     clone.created_at = now;
@@ -658,7 +658,7 @@ pub async fn get_trunk_stats(
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to get trunk: {}", e)))?
         .ok_or_else(|| ApiError::NotFound("Trunk not found".to_string()))?;
-    if trunk.tenant_id != tenant.0 {
+    if trunk.tenant_id != Some(tenant.0) {
         return Err(ApiError::NotFound("Trunk not found".to_string()));
     }
 

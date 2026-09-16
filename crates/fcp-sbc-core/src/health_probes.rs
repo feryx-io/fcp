@@ -43,19 +43,22 @@ pub async fn run_health_probes(
         }
 
         for trunk in &enabled {
-            if !monitor.should_probe(&trunk.name) {
+            // Health is kept per trunk, not per name (`docs/TENANT_TRUNKS.md`
+            // §4); the name is what the log says.
+            let key = trunk.key();
+            if !monitor.should_probe(&key) {
                 continue;
             }
 
             let success = probe_trunk_hosts(&uac, trunk).await;
-            monitor.mark_probed(&trunk.name);
+            monitor.mark_probed(&key);
 
             if success {
                 debug!(trunk = %trunk.name, "OPTIONS probe succeeded");
-                monitor.record_success(&trunk.name);
+                monitor.record_success(&key);
             } else {
                 warn!(trunk = %trunk.name, "OPTIONS probe failed");
-                monitor.record_failure(&trunk.name);
+                monitor.record_failure(&key);
             }
         }
     }
