@@ -315,10 +315,11 @@ mod tenant_keying_tests {
     use super::*;
     use crate::trunk::TrunkConfig;
 
+    /// `None` is a trunk a node read from its own TOML: no stored id.
     fn trunk(name: &str, id: Option<fcp_core::TrunkId>) -> TrunkConfig {
         TrunkConfig {
             name: name.to_string(),
-            id,
+            id: id.unwrap_or_else(|| fcp_core::TrunkId::from_string(String::new())),
             max_concurrent_calls: 1,
             ..Default::default()
         }

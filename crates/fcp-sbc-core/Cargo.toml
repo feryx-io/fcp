@@ -41,4 +41,5 @@ rand = "0.8"
 tokio = { workspace = true }
 
 [dev-dependencies]
+toml = "0.8"
 tokio = { workspace = true, features = ["test-util"] }

@@ -1645,8 +1645,11 @@ fn master_key(byte: u8) -> EncryptionSettings {
 fn trunk(tenant_id: TenantId, name: &str, password: &str) -> fcp_core::Trunk {
     let mut t = fcp_core::Trunk::new(name.to_string(), tenant_id);
     t.hosts = vec!["10.0.0.1".to_string()];
-    t.auth_username = Some("trunkuser".to_string());
-    t.auth_password = Some(password.to_string());
+    t.credentials = Some(fcp_core::trunk::TrunkCredentials {
+        username: "trunkuser".to_string(),
+        password: password.to_string(),
+        realm: None,
+    });
     t
 }
 
@@ -1824,7 +1827,10 @@ async fn encryption_seals_secret_columns_and_reads_them_back() {
     let trunk_id = t.id.clone();
     s.put_trunk(t).await.unwrap();
     let back = s.get_trunk(&trunk_id).await.unwrap().unwrap();
-    assert_eq!(back.auth_password.as_deref(), Some("trunk-pass"));
+    assert_eq!(
+        back.credentials.as_ref().map(|c| c.password.as_str()),
+        Some("trunk-pass")
+    );
     let raw = db
         .raw(
             "SELECT auth_password FROM trunks WHERE id = $1",
@@ -1833,10 +1839,13 @@ async fn encryption_seals_secret_columns_and_reads_them_back() {
         .await
         .unwrap();
     assert!(raw.starts_with("enc:v1:"));
-    assert!(s.list_trunks(&a.id).await.unwrap()[0]
-        .auth_password
-        .as_deref()
-        .eq(&Some("trunk-pass")));
+    assert_eq!(
+        s.list_trunks(&a.id).await.unwrap()[0]
+            .credentials
+            .as_ref()
+            .map(|c| c.password.as_str()),
+        Some("trunk-pass")
+    );
 
     // Conference PINs.
     let m = meeting(a.id, "1000", "1234");

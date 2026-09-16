@@ -633,7 +633,12 @@ impl PostgresStorage {
     }
 
     async fn open_trunk(&self, mut trunk: Trunk) -> Result<Trunk> {
-        trunk.auth_password = self.open_opt(trunk.auth_password).await?;
+        if let Some(credentials) = trunk.credentials.as_mut() {
+            credentials.password = self
+                .open_opt(Some(std::mem::take(&mut credentials.password)))
+                .await?
+                .unwrap_or_default();
+        }
         Ok(trunk)
     }
 
@@ -4507,91 +4512,168 @@ fn row_to_site_location(row: sqlx::postgres::PgRow) -> Result<SiteLocation> {
 // ============================================================================
 
 fn row_to_trunk(row: sqlx::postgres::PgRow) -> Result<Trunk> {
+    use fcp_core::trunk::{
+        NumberTransform, SrtpMode, TrunkCodecConfig, TrunkCredentials, TrunkDtmfConfig,
+        TrunkDtmfMode, TrunkFailover, TrunkSrtpConfig, TrunkStirShakenConfig, TrunkTransport,
+    };
+
     let id_str: String = row.try_get("id")?;
     let tenant_id_str: String = row.try_get("tenant_id")?;
-    let name: String = row.try_get("name")?;
-    let enabled: bool = row.try_get("enabled")?;
-    let direction_str: String = row.try_get("direction")?;
-    let priority: i32 = row.try_get("priority")?;
-    let weight: i32 = row.try_get("weight")?;
-    let hosts: Vec<String> = row.try_get("hosts")?;
-    let transport_protocol: String = row.try_get("transport_protocol")?;
-    let transport_port: i32 = row.try_get("transport_port")?;
-    let verify_tls: bool = row.try_get("verify_tls")?;
-    let auth_username: Option<String> = row.try_get("auth_username")?;
-    let auth_password: Option<String> = row.try_get("auth_password")?;
-    let auth_realm: Option<String> = row.try_get("auth_realm")?;
-    let register: bool = row.try_get("register")?;
-    let register_expiry: i32 = row.try_get("register_expiry")?;
-    let max_concurrent_calls: i32 = row.try_get("max_concurrent_calls")?;
-    let max_failures: i32 = row.try_get("max_failures")?;
-    let recovery_interval_secs: i32 = row.try_get("recovery_interval_secs")?;
-    let health_check_enabled: bool = row.try_get("health_check_enabled")?;
-    let health_check_interval_secs: i32 = row.try_get("health_check_interval_secs")?;
-    let emergency_capable: bool = row.try_get("emergency_capable").unwrap_or(false);
-    let codec_prefs: Vec<String> = row.try_get("codec_prefs")?;
-    let caller_id_override: Option<String> = row.try_get("caller_id_override")?;
-    let from_domain: Option<String> = row.try_get("from_domain")?;
-    let strip_digits: i32 = row.try_get("strip_digits")?;
-    let prepend_digits: Option<String> = row.try_get("prepend_digits")?;
-    let cps_limit: i32 = row.try_get("cps_limit")?;
-    let description: Option<String> = row.try_get("description")?;
-    let srtp_mode: String = row.try_get("srtp_mode")?;
-    let dtmf_mode: String = row.try_get("dtmf_mode")?;
-    let session_timer_secs: i32 = row.try_get("session_timer_secs")?;
-    let t38_enabled: bool = row.try_get("t38_enabled")?;
-    let outbound_proxy: Option<String> = row.try_get("outbound_proxy")?;
-    let trunk_group: Option<String> = row.try_get("trunk_group")?;
-    let header_rules: Option<String> = row.try_get("header_rules")?;
     let created_at: DateTime<Utc> = row.try_get("created_at")?;
     let updated_at: DateTime<Utc> = row.try_get("updated_at")?;
-
-    let direction = direction_str
+    let direction = row
+        .try_get::<String, _>("direction")?
         .parse::<TrunkDirection>()
         .unwrap_or(TrunkDirection::Upstream);
+
+    // The columns that are one structured setting on the trunk.
+    let auth_username: Option<String> = row.try_get("auth_username")?;
+    let credentials = auth_username.map(|username| TrunkCredentials {
+        username,
+        password: row
+            .try_get("auth_password")
+            .unwrap_or(None)
+            .unwrap_or_default(),
+        realm: row.try_get("auth_realm").unwrap_or(None),
+    });
+    let strip_leading: i32 = row.try_get("strip_digits")?;
+    let strip_prefixes: Vec<String> = row.try_get("strip_prefixes").unwrap_or_default();
+    let prepend: Option<String> = row.try_get("prepend_digits")?;
+    let prepend = prepend.unwrap_or_default();
+    let egress_number_transform = (strip_leading > 0
+        || !strip_prefixes.is_empty()
+        || !prepend.is_empty())
+    .then(|| NumberTransform {
+        strip_prefixes,
+        strip_leading: strip_leading.max(0) as usize,
+        prepend,
+    });
+    let header_rules: Option<String> = row.try_get("header_rules")?;
+    let emergency_location: Vec<String> = row.try_get("emergency_location").unwrap_or_default();
 
     Ok(Trunk {
         id: TrunkId::from_string(id_str),
         // A stored trunk always belongs to a tenant; only the platform
         // trunks a node reads from its own TOML have none.
         tenant_id: Some(TenantId::from_str(&tenant_id_str).unwrap_or_else(|_| TenantId::nil())),
-        name,
-        enabled,
+        name: row.try_get("name")?,
+        enabled: row.try_get("enabled")?,
         direction,
-        priority,
-        weight,
-        hosts,
-        transport_protocol,
-        transport_port,
-        verify_tls,
-        auth_username,
-        auth_password,
-        auth_realm,
-        register,
-        register_expiry,
-        max_concurrent_calls,
-        max_failures,
-        recovery_interval_secs,
-        health_check_enabled,
-        health_check_interval_secs,
-        emergency_capable,
-        codec_prefs,
-        caller_id_override,
-        from_domain,
-        strip_digits,
-        prepend_digits,
-        cps_limit,
-        description,
-        srtp_mode,
-        dtmf_mode,
-        session_timer_secs,
-        t38_enabled,
-        outbound_proxy,
-        trunk_group,
-        header_rules,
+        priority: row.try_get::<i32, _>("priority")?.max(0) as u32,
+        weight: row.try_get::<i32, _>("weight")?.max(0) as u32,
+        hosts: row.try_get("hosts")?,
+        transport: TrunkTransport {
+            protocol: parse_transport(&row.try_get::<String, _>("transport_protocol")?),
+            port: u16::try_from(row.try_get::<i32, _>("transport_port")?)
+                .ok()
+                .filter(|p| *p > 0),
+            verify_tls: row.try_get("verify_tls")?,
+        },
+        credentials,
+        register: row.try_get("register")?,
+        register_expiry: u32::try_from(row.try_get::<i32, _>("register_expiry")?)
+            .ok()
+            .filter(|e| *e > 0),
+        failover: TrunkFailover {
+            max_failures: row.try_get::<i32, _>("max_failures")?.max(1) as u32,
+            recovery_interval_secs: row.try_get::<i32, _>("recovery_interval_secs")?.max(1) as u64,
+            health_check_enabled: row.try_get("health_check_enabled")?,
+            health_check_interval_secs: row.try_get::<i32, _>("health_check_interval_secs")?.max(1)
+                as u64,
+        },
+        max_concurrent_calls: row.try_get::<i32, _>("max_concurrent_calls")?.max(0) as u32,
+        cps_limit: row.try_get::<i32, _>("cps_limit")?.max(0) as u32,
+        header_rules: header_rules
+            .as_deref()
+            .map(|rules| {
+                rules
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|r| !r.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default(),
+        emergency_capable: row.try_get("emergency_capable").unwrap_or(false),
+        emergency_location: if emergency_location.is_empty() {
+            vec![fcp_core::e911::LocationDelivery::Elin]
+        } else {
+            emergency_location
+                .iter()
+                .filter_map(|d| match d.as_str() {
+                    "pidf_lo" => Some(fcp_core::e911::LocationDelivery::PidfLo),
+                    "elin" => Some(fcp_core::e911::LocationDelivery::Elin),
+                    _ => None,
+                })
+                .collect()
+        },
+        srtp: TrunkSrtpConfig {
+            mode: SrtpMode::parse(&row.try_get::<String, _>("srtp_mode")?),
+            allowed_suites: row.try_get("srtp_suites").unwrap_or_default(),
+        },
+        dtmf: TrunkDtmfConfig {
+            mode: TrunkDtmfMode::parse(&row.try_get::<String, _>("dtmf_mode")?),
+        },
+        codec: TrunkCodecConfig {
+            allowed_codecs: row.try_get("codec_prefs")?,
+            allow_transcoding: row.try_get("allow_transcoding").unwrap_or(true),
+        },
+        stir_shaken: TrunkStirShakenConfig {
+            verify_mode: parse_stir_verify(row.try_get("stir_verify_mode").unwrap_or(None)),
+            sign_mode: parse_stir_sign(row.try_get("stir_sign_mode").unwrap_or(None)),
+            attestation: row
+                .try_get::<Option<String>, _>("stir_attestation")
+                .ok()
+                .flatten()
+                .and_then(|a| fcp_core::trunk::AttestationLevel::from_passport_str(&a))
+                .unwrap_or_default(),
+            max_iat_age_secs: row
+                .try_get::<Option<i64>, _>("stir_max_iat_age_secs")
+                .ok()
+                .flatten()
+                .map(|v| v.max(1) as u64)
+                .unwrap_or(60),
+        },
+        egress_number_transform,
+        caller_id_override: row.try_get("caller_id_override")?,
+        from_domain: row.try_get("from_domain")?,
+        session_timer_secs: row.try_get::<i32, _>("session_timer_secs")?.max(0) as u32,
+        t38_enabled: row.try_get("t38_enabled")?,
+        outbound_proxy: row.try_get("outbound_proxy")?,
+        trunk_group: row.try_get("trunk_group")?,
+        description: row.try_get("description")?,
         created_at: datetime_to_system_time(created_at),
         updated_at: datetime_to_system_time(updated_at),
     })
+}
+
+/// The transport a stored trunk names.
+fn parse_transport(value: &str) -> fcp_core::transport::TransportType {
+    use fcp_core::transport::TransportType;
+    match value.to_ascii_lowercase().as_str() {
+        "tcp" => TransportType::Tcp,
+        "tls" => TransportType::Tls,
+        "ws" => TransportType::Ws,
+        "wss" => TransportType::Wss,
+        _ => TransportType::Udp,
+    }
+}
+
+fn parse_stir_verify(value: Option<String>) -> fcp_core::trunk::StirVerifyMode {
+    use fcp_core::trunk::StirVerifyMode;
+    match value.unwrap_or_default().to_ascii_lowercase().as_str() {
+        "enforce" => StirVerifyMode::Enforce,
+        "log_only" | "logonly" => StirVerifyMode::LogOnly,
+        _ => StirVerifyMode::Disabled,
+    }
+}
+
+fn parse_stir_sign(value: Option<String>) -> fcp_core::trunk::StirSignMode {
+    use fcp_core::trunk::StirSignMode;
+    match value.unwrap_or_default().to_ascii_lowercase().as_str() {
+        "enabled" => StirSignMode::Enabled,
+        _ => StirSignMode::Disabled,
+    }
 }
 
 #[async_trait]
@@ -4661,8 +4743,11 @@ impl TrunkStore for PostgresStorage {
                     strip_digits, prepend_digits, cps_limit, description,
                     srtp_mode, dtmf_mode, session_timer_secs, t38_enabled,
                     outbound_proxy, trunk_group, header_rules,
-                    created_at, updated_at, emergency_capable)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38)
+                    created_at, updated_at, emergency_capable,
+                    strip_prefixes, srtp_suites, allow_transcoding,
+                    stir_verify_mode, stir_sign_mode, stir_attestation,
+                    stir_max_iat_age_secs, emergency_location)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46)
              ON CONFLICT (id) DO UPDATE SET
                 name = EXCLUDED.name,
                 enabled = EXCLUDED.enabled,
@@ -4698,6 +4783,14 @@ impl TrunkStore for PostgresStorage {
                 trunk_group = EXCLUDED.trunk_group,
                 header_rules = EXCLUDED.header_rules,
                 emergency_capable = EXCLUDED.emergency_capable,
+                strip_prefixes = EXCLUDED.strip_prefixes,
+                srtp_suites = EXCLUDED.srtp_suites,
+                allow_transcoding = EXCLUDED.allow_transcoding,
+                stir_verify_mode = EXCLUDED.stir_verify_mode,
+                stir_sign_mode = EXCLUDED.stir_sign_mode,
+                stir_attestation = EXCLUDED.stir_attestation,
+                stir_max_iat_age_secs = EXCLUDED.stir_max_iat_age_secs,
+                emergency_location = EXCLUDED.emergency_location,
                 updated_at = EXCLUDED.updated_at",
         )
         .bind(trunk.id.to_string())
@@ -4710,39 +4803,71 @@ impl TrunkStore for PostgresStorage {
         .bind(&trunk.name)
         .bind(trunk.enabled)
         .bind(trunk.direction.to_string())
-        .bind(trunk.priority)
-        .bind(trunk.weight)
+        .bind(trunk.priority as i32)
+        .bind(trunk.weight as i32)
         .bind(&trunk.hosts)
-        .bind(&trunk.transport_protocol)
-        .bind(trunk.transport_port)
-        .bind(trunk.verify_tls)
-        .bind(&trunk.auth_username)
-        .bind(self.seal_opt(trunk.auth_password.as_deref())?)
-        .bind(&trunk.auth_realm)
+        .bind(trunk.transport.protocol.to_string().to_lowercase())
+        .bind(trunk.transport.port.unwrap_or(5060) as i32)
+        .bind(trunk.transport.verify_tls)
+        .bind(trunk.credentials.as_ref().map(|c| c.username.clone()))
+        .bind(self.seal_opt(trunk.credentials.as_ref().map(|c| c.password.as_str()))?)
+        .bind(trunk.credentials.as_ref().and_then(|c| c.realm.clone()))
         .bind(trunk.register)
-        .bind(trunk.register_expiry)
-        .bind(trunk.max_concurrent_calls)
-        .bind(trunk.max_failures)
-        .bind(trunk.recovery_interval_secs)
-        .bind(trunk.health_check_enabled)
-        .bind(trunk.health_check_interval_secs)
-        .bind(&trunk.codec_prefs)
+        .bind(trunk.register_expiry.unwrap_or(3600) as i32)
+        .bind(trunk.max_concurrent_calls as i32)
+        .bind(trunk.failover.max_failures as i32)
+        .bind(trunk.failover.recovery_interval_secs as i32)
+        .bind(trunk.failover.health_check_enabled)
+        .bind(trunk.failover.health_check_interval_secs as i32)
+        .bind(&trunk.codec.allowed_codecs)
         .bind(&trunk.caller_id_override)
         .bind(&trunk.from_domain)
-        .bind(trunk.strip_digits)
-        .bind(&trunk.prepend_digits)
-        .bind(trunk.cps_limit)
+        .bind(
+            trunk
+                .egress_number_transform
+                .as_ref()
+                .map(|t| t.strip_leading as i32)
+                .unwrap_or(0),
+        )
+        .bind(
+            trunk
+                .egress_number_transform
+                .as_ref()
+                .map(|t| t.prepend.clone())
+                .filter(|p| !p.is_empty()),
+        )
+        .bind(trunk.cps_limit as i32)
         .bind(&trunk.description)
-        .bind(&trunk.srtp_mode)
-        .bind(&trunk.dtmf_mode)
-        .bind(trunk.session_timer_secs)
+        .bind(trunk.srtp.mode.as_str())
+        .bind(trunk.dtmf.mode.as_str())
+        .bind(trunk.session_timer_secs as i32)
         .bind(trunk.t38_enabled)
         .bind(&trunk.outbound_proxy)
         .bind(&trunk.trunk_group)
-        .bind(&trunk.header_rules)
+        .bind((!trunk.header_rules.is_empty()).then(|| trunk.header_rules.join(", ")))
         .bind(system_time_to_datetime(trunk.created_at))
         .bind(system_time_to_datetime(trunk.updated_at))
         .bind(trunk.emergency_capable)
+        .bind(
+            trunk
+                .egress_number_transform
+                .as_ref()
+                .map(|t| t.strip_prefixes.clone())
+                .unwrap_or_default(),
+        )
+        .bind(&trunk.srtp.allowed_suites)
+        .bind(trunk.codec.allow_transcoding)
+        .bind(format!("{:?}", trunk.stir_shaken.verify_mode).to_lowercase())
+        .bind(format!("{:?}", trunk.stir_shaken.sign_mode).to_lowercase())
+        .bind(trunk.stir_shaken.attestation.as_str())
+        .bind(trunk.stir_shaken.max_iat_age_secs as i64)
+        .bind(
+            trunk
+                .emergency_location
+                .iter()
+                .map(|d| d.to_string())
+                .collect::<Vec<_>>(),
+        )
         .execute(self.writes())
         .await?;
 

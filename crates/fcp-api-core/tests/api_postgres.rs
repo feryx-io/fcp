@@ -4793,6 +4793,52 @@ async fn e911_config_readiness_validation_and_audit() {
         .await;
     assert_eq!(cleared.json["emergency_capable"], false, "{}", cleared.text);
 
+    // One trunk model (`docs/TENANT_TRUNKS.md` §4): the API's flat JSON is
+    // what it always was, while the model groups these into the transport,
+    // the credentials, the digit plan and the media settings.
+    let full = app
+        .admin(
+            Method::PATCH,
+            &format!("/api/v1/trunks/{trunk_id}"),
+            Some(json!({
+                "transport_protocol": "tls", "transport_port": 5061, "verify_tls": false,
+                "auth_username": "fcp", "auth_password": "s3cret", "auth_realm": "carrier",
+                "strip_digits": 2, "prepend_digits": "+1",
+                "srtp_mode": "required", "dtmf_mode": "rfc2833",
+                "codec_prefs": ["PCMU", "G722"], "header_rules": "strip-pai, add-diversion",
+                "max_failures": 7, "recovery_interval_secs": 120,
+                "register": true, "register_expiry": 600, "cps_limit": 5
+            })),
+        )
+        .await;
+    assert_eq!(full.status, StatusCode::OK, "{}", full.text);
+    let stored_trunk = app
+        .admin(Method::GET, &format!("/api/v1/trunks/{trunk_id}"), None)
+        .await;
+    let t = &stored_trunk.json;
+    assert_eq!(t["transport_protocol"], "tls", "{}", stored_trunk.text);
+    assert_eq!(t["transport_port"], 5061);
+    assert_eq!(t["verify_tls"], false);
+    assert_eq!(t["has_credentials"], true);
+    assert_eq!(t["auth_username"], "fcp");
+    assert_eq!(t["auth_realm"], "carrier");
+    assert!(
+        t.get("auth_password").is_none(),
+        "the password never comes back: {}",
+        stored_trunk.text
+    );
+    assert_eq!(t["strip_digits"], 2);
+    assert_eq!(t["prepend_digits"], "+1");
+    assert_eq!(t["srtp_mode"], "required");
+    assert_eq!(t["dtmf_mode"], "rfc2833");
+    assert_eq!(t["codec_prefs"], json!(["PCMU", "G722"]));
+    assert_eq!(t["header_rules"], "strip-pai, add-diversion");
+    assert_eq!(t["max_failures"], 7);
+    assert_eq!(t["recovery_interval_secs"], 120);
+    assert_eq!(t["register"], true);
+    assert_eq!(t["register_expiry"], 600);
+    assert_eq!(t["cps_limit"], 5);
+
     // Audit trail: records written by the B2BUA are listed per tenant.
     let record = EmergencyCallRecord {
         id: 0,
