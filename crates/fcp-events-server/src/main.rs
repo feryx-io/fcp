@@ -160,9 +160,14 @@ async fn main() -> Result<()> {
 
     validate_listener_auth(&config)?;
 
-    // Initialize PostgreSQL storage for config store (and webhooks)
-    // Only connect if webhooks are enabled (which requires a real database_url).
-    let storage_result = if config.webhook.enabled {
+    // Whether this server delivers emergency notifications: it is asked
+    // to, and it has somewhere to deliver to (`docs/E911_BLOCK_2.md` §8).
+    let notifications_wanted = config.notifications.enabled
+        && (config.notifications.has_channel() || config.webhook.enabled);
+
+    // Initialize PostgreSQL storage for the config store, webhooks and the
+    // emergency notifier, which all read `webhook.database_url`.
+    let storage_result = if config.webhook.enabled || notifications_wanted {
         match storage::initialize_storage(&config.webhook.database_url).await {
             Ok(result) => Some(result),
             Err(e) => {
@@ -391,6 +396,57 @@ async fn main() -> Result<()> {
         }
     };
 
+    // On-site notification of emergency calls (Kari's Law,
+    // `docs/E911_BLOCK_2.md` §8): the notifier consumes `call.emergency`
+    // beside the webhook dispatcher.
+    let notifier = match storage_result.as_ref() {
+        Some(storage) if notifications_wanted => {
+            match build_notifier(
+                &config.notifications,
+                storage,
+                event_bus.clone(),
+                webhook_dispatcher.clone(),
+            )
+            .await
+            {
+                Ok(notifier) => {
+                    let notifier = Arc::new(notifier);
+                    fcp_notify::spawn_event_consumer(
+                        event_bus.clone() as Arc<dyn EventSubscriber>,
+                        Arc::clone(&notifier),
+                    );
+                    fcp_notify::spawn_retry_processor(
+                        Arc::clone(&notifier),
+                        Duration::from_secs(config.notifications.retry_interval_secs.max(1)),
+                    );
+                    info!(
+                        channels = ?notifier.kinds().iter().map(|k| k.to_string()).collect::<Vec<_>>(),
+                        "Emergency notifier started"
+                    );
+                    Some(notifier)
+                }
+                Err(e) => {
+                    // A notifier that cannot start must be loud: without it
+                    // nobody is told an emergency call was placed.
+                    error!(error = %e, "Emergency notifier not started");
+                    None
+                }
+            }
+        }
+        _ => {
+            if notifications_wanted {
+                warn!(
+                    "Emergency notifications need PostgreSQL storage (webhook.database_url); nobody will be told about emergency calls"
+                );
+            } else {
+                info!(
+                    "Emergency notifications not delivered from this server: configure [notifications.smtp], [notifications.sms] or [notifications.call], or enable webhooks"
+                );
+            }
+            None
+        }
+    };
+
     // Cross-region event bridge (set below when peer regions are configured).
     #[cfg(feature = "redis-events")]
     let mut event_bridge: Option<Arc<fcp_storage_redis::event_bus::EventBridge>> = None;
@@ -520,8 +576,23 @@ async fn main() -> Result<()> {
         require_api_token,
     ));
 
+    // What the notifier has done, for Prometheus (§9). Scraped without a
+    // token, like /health.
+    let metrics_state = notifier.as_ref().map(|n| n.metrics());
     let app = Router::new()
         .route("/health", get(health_handler))
+        .route(
+            "/metrics",
+            get(move || {
+                let metrics = metrics_state.clone();
+                async move {
+                    match metrics {
+                        Some(metrics) => metrics.prometheus(),
+                        None => String::new(),
+                    }
+                }
+            }),
+        )
         .merge(protected_routes)
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http());
@@ -1254,6 +1325,94 @@ fn process_event_for_state(
     }
 }
 
+/// The notifier this deployment delivers with: the channels its
+/// configuration gives it, and the retry policy it was given
+/// (`docs/E911_BLOCK_2.md` §8.3). Credentials sealed with encryption at
+/// rest are opened here.
+async fn build_notifier(
+    config: &config::NotificationsConfig,
+    storage: &storage::StorageResult,
+    events: Arc<dyn fcp_events::EventBus>,
+    webhooks: Option<Arc<fcp_webhooks::dispatcher::WebhookDispatcher>>,
+) -> anyhow::Result<fcp_notify::EmergencyNotifier> {
+    use fcp_core::encryption::EncryptionStore;
+
+    let store: Arc<dyn fcp_core::e911::EmergencyStore> = Arc::new(
+        fcp_storage_postgres::emergency::PostgresEmergencyStore::new(
+            storage.pg_storage.pool().clone(),
+        ),
+    );
+    let open = |value: Option<String>| {
+        let storage = Arc::clone(&storage.pg_storage);
+        async move {
+            match value.filter(|v| !v.is_empty()) {
+                Some(value) if value.starts_with("enc:") => storage
+                    .open_secret(&value)
+                    .await
+                    .map(Some)
+                    .context("Failed to open a sealed notifications credential"),
+                other => Ok(other),
+            }
+        }
+    };
+
+    let policy = fcp_notify::RetryPolicy {
+        max_attempts: config.max_attempts.max(1),
+        base_delay: Duration::from_secs(config.base_retry_delay_secs.max(1)),
+        max_delay: Duration::from_secs(config.max_retry_delay_secs.max(1)),
+        give_up_after: Duration::from_secs(config.give_up_after_secs.max(1)),
+    };
+    let mut notifier = fcp_notify::EmergencyNotifier::new(store, policy)
+        .with_events(events as Arc<dyn EventPublisher>);
+
+    if let Some(smtp) = &config.smtp {
+        let settings = fcp_notify::email::SmtpSettings {
+            host: smtp.host.clone(),
+            port: smtp.port,
+            encryption: smtp.encryption.clone(),
+            username: smtp.username.clone(),
+            password: open(smtp.password.clone()).await?,
+            from: smtp.from.clone(),
+            timeout: Duration::from_secs(smtp.timeout_secs.max(1)),
+        };
+        notifier =
+            notifier.with_channel(Arc::new(fcp_notify::email::EmailChannel::new(&settings)?));
+    }
+    if let Some(sms) = &config.sms {
+        let settings = fcp_notify::sms::SmsSettings {
+            url: sms.url.clone(),
+            token: open(sms.token.clone()).await?,
+            from: sms.from.clone(),
+            timeout: Duration::from_secs(sms.timeout_secs.max(1)),
+        };
+        notifier = notifier.with_channel(Arc::new(fcp_notify::sms::SmsChannel::new(settings)?));
+    }
+    if let Some(call) = &config.call {
+        let settings = fcp_notify::call::CallSettings {
+            call_manager_url: call.call_manager_url.clone(),
+            auth_token: open(call.auth_token.clone()).await?,
+            from: call.from.clone(),
+            ring_timeout: Duration::from_secs(call.ring_timeout_secs.max(1)),
+            repeat: call.repeat.max(1),
+            // The call rings, is answered and is spoken to, so it takes
+            // longer than the ringing alone.
+            timeout: Duration::from_secs(call.ring_timeout_secs.max(1) + 60),
+        };
+        notifier = notifier.with_channel(Arc::new(fcp_notify::call::CallChannel::new(settings)?));
+    }
+    if let Some(dispatcher) = webhooks {
+        notifier = notifier.with_channel(Arc::new(fcp_notify::webhook::WebhookChannel::new(
+            dispatcher,
+        )));
+    }
+    if notifier.kinds().is_empty() {
+        anyhow::bail!(
+            "notifications.enabled is true but no channel is configured: add [notifications.smtp],              [notifications.sms] or [notifications.call], or enable webhooks"
+        );
+    }
+    Ok(notifier)
+}
+
 /// Extract node_id from a CallEvent (if present).
 fn extract_node_id_from_call_event(event: &CallEvent) -> Option<String> {
     match event {
@@ -1263,9 +1422,9 @@ fn extract_node_id_from_call_event(event: &CallEvent) -> Option<String> {
         | CallEvent::Answered { node_id, .. }
         | CallEvent::Ended { node_id, .. }
         | CallEvent::Failed { node_id, .. } => node_id.clone(),
-        CallEvent::Emergency { node_id, .. } | CallEvent::EmergencyCompleted { node_id, .. } => {
-            node_id.clone()
-        }
+        CallEvent::Emergency { node_id, .. }
+        | CallEvent::EmergencyCompleted { node_id, .. }
+        | CallEvent::EmergencyNotificationFailed { node_id, .. } => node_id.clone(),
         CallEvent::Parked { .. } | CallEvent::Unparked { .. } => None,
     }
 }

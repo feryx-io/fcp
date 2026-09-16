@@ -24,6 +24,7 @@ pub mod media;
 pub mod phone;
 pub mod seed;
 pub mod service;
+pub mod sinks;
 pub mod smoke;
 pub mod wav;
 
@@ -31,4 +32,5 @@ pub use db::TestDatabase;
 pub use phone::{Call, IncomingCall, Phone, PhoneEvent};
 pub use seed::Seed;
 pub use service::Service;
+pub use sinks::{Email, HttpSink, SmtpSink};
 pub use smoke::{free_port, Smoke, SmokeReport};

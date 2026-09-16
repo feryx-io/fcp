@@ -3,6 +3,9 @@
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use fcp_core::e911::notify::{
+    EmergencyNotice, EmergencyNotification, NotificationStatus, NotifyContact,
+};
 use fcp_core::e911::{
     DeclaredLocation, DispatchableLocation, EmergencyCallRecord, EmergencyCompletion,
     EmergencyConfig, EmergencyKind, EmergencyNetwork, EmergencyStore, NetworkApplies,
@@ -29,6 +32,29 @@ pub struct PostgresEmergencyStore {
 impl PostgresEmergencyStore {
     pub fn new(pool: Pool<Postgres>) -> Self {
         Self { pool }
+    }
+
+    fn row_to_notification(row: sqlx::postgres::PgRow) -> anyhow::Result<EmergencyNotification> {
+        let created_at: DateTime<Utc> = row.try_get("created_at")?;
+        let delivered_at: Option<DateTime<Utc>> = row.try_get("delivered_at")?;
+        let next_retry_at: Option<DateTime<Utc>> = row.try_get("next_retry_at")?;
+        let contact: NotifyContact = serde_json::from_value(row.try_get("contact")?)?;
+        let notice: EmergencyNotice = serde_json::from_value(row.try_get("notice")?)?;
+        Ok(EmergencyNotification {
+            id: row.try_get("id")?,
+            tenant_id: TenantId::from_str(&row.try_get::<String, _>("tenant_id")?)?,
+            call_record_id: row.try_get("call_record_id")?,
+            call_id: row.try_get("call_id")?,
+            contact,
+            attempt: row.try_get("attempt")?,
+            status: NotificationStatus::from_str(&row.try_get::<String, _>("status")?)
+                .map_err(|e| anyhow::anyhow!(e))?,
+            error: row.try_get("error")?,
+            delivered_at: delivered_at.map(to_system_time),
+            next_retry_at: next_retry_at.map(to_system_time),
+            notice,
+            created_at: to_system_time(created_at),
+        })
     }
 
     fn row_to_network(row: sqlx::postgres::PgRow) -> anyhow::Result<EmergencyNetwork> {
@@ -99,8 +125,8 @@ impl EmergencyStore for PostgresEmergencyStore {
         tenant_id: &TenantId,
     ) -> anyhow::Result<Option<EmergencyConfig>> {
         let row = sqlx::query(
-            "SELECT tenant_id, emergency_numbers, test_numbers, dial_prefixes, notify_contacts,
-                    require_dispatchable_location, updated_at,
+            "SELECT tenant_id, emergency_numbers, test_numbers, dial_prefixes, contacts,
+                    notify_contacts, require_dispatchable_location, updated_at,
                     trust_device_locations, declared_location_ttl_secs
              FROM emergency_configs WHERE tenant_id = $1",
         )
@@ -116,7 +142,25 @@ impl EmergencyStore for PostgresEmergencyStore {
             emergency_numbers: row.try_get("emergency_numbers")?,
             test_numbers: row.try_get("test_numbers")?,
             dial_prefixes: row.try_get("dial_prefixes")?,
-            notify_contacts: row.try_get("notify_contacts")?,
+            contacts: {
+                let typed: Vec<NotifyContact> = row
+                    .try_get::<serde_json::Value, _>("contacts")
+                    .ok()
+                    .and_then(|v| serde_json::from_value(v).ok())
+                    .unwrap_or_default();
+                if typed.is_empty() {
+                    // A tenant whose contacts are still the free text of
+                    // block 1 (migration 071 reads most of them; this
+                    // reads the rest the same way, by shape).
+                    row.try_get::<Vec<String>, _>("notify_contacts")
+                        .unwrap_or_default()
+                        .iter()
+                        .filter_map(|c| NotifyContact::parse(c))
+                        .collect()
+                } else {
+                    typed
+                }
+            },
             require_dispatchable_location: row.try_get("require_dispatchable_location")?,
             trust_device_locations: row
                 .try_get::<Vec<String>, _>("trust_device_locations")
@@ -138,13 +182,14 @@ impl EmergencyStore for PostgresEmergencyStore {
             "INSERT INTO emergency_configs
                 (tenant_id, emergency_numbers, test_numbers, dial_prefixes, notify_contacts,
                  require_dispatchable_location, updated_at, trust_device_locations,
-                 declared_location_ttl_secs)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                 declared_location_ttl_secs, contacts)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
              ON CONFLICT (tenant_id) DO UPDATE SET
                 emergency_numbers = EXCLUDED.emergency_numbers,
                 test_numbers = EXCLUDED.test_numbers,
                 dial_prefixes = EXCLUDED.dial_prefixes,
                 notify_contacts = EXCLUDED.notify_contacts,
+                contacts = EXCLUDED.contacts,
                 require_dispatchable_location = EXCLUDED.require_dispatchable_location,
                 trust_device_locations = EXCLUDED.trust_device_locations,
                 declared_location_ttl_secs = EXCLUDED.declared_location_ttl_secs,
@@ -154,7 +199,9 @@ impl EmergencyStore for PostgresEmergencyStore {
         .bind(&config.emergency_numbers)
         .bind(&config.test_numbers)
         .bind(&config.dial_prefixes)
-        .bind(&config.notify_contacts)
+        // The plain targets stay in notify_contacts for anything reading
+        // the column that was there before block 2; `contacts` is the truth.
+        .bind(config.contact_targets())
         .bind(config.require_dispatchable_location)
         .bind(to_datetime(config.updated_at))
         .bind(
@@ -165,6 +212,7 @@ impl EmergencyStore for PostgresEmergencyStore {
                 .collect::<Vec<_>>(),
         )
         .bind(config.declared_location_ttl.as_secs() as i64)
+        .bind(serde_json::to_value(&config.contacts)?)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -386,5 +434,127 @@ impl EmergencyStore for PostgresEmergencyStore {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    // ── On-site notification (§8) ─────────────────────────────────────
+
+    async fn get_emergency_call_by_call_id(
+        &self,
+        tenant_id: &TenantId,
+        call_id: &str,
+    ) -> anyhow::Result<Option<EmergencyCallRecord>> {
+        let row = sqlx::query(
+            "SELECT id, tenant_id, call_id, sip_call_id, caller_uri, caller_username,
+                    dialed_number, kind, callback_number, location, trunk_name, outcome,
+                    placed_at, notified, sip_status, answered_at, ended_at, delivery,
+                    location_structured, geolocation_error
+             FROM emergency_calls WHERE tenant_id = $1 AND call_id = $2
+             ORDER BY id DESC LIMIT 1",
+        )
+        .bind(tenant_id.to_string())
+        .bind(call_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(Self::row_to_record).transpose()
+    }
+
+    async fn insert_emergency_notification(
+        &self,
+        notification: &EmergencyNotification,
+    ) -> anyhow::Result<i64> {
+        let id: i64 = sqlx::query_scalar(
+            "INSERT INTO emergency_notifications
+                (tenant_id, call_record_id, call_id, kind, target, contact, attempt,
+                 status, error, delivered_at, next_retry_at, test, notice, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+             RETURNING id",
+        )
+        .bind(notification.tenant_id.to_string())
+        .bind(notification.call_record_id)
+        .bind(&notification.call_id)
+        .bind(notification.contact.kind.to_string())
+        .bind(notification.contact.display_target())
+        .bind(serde_json::to_value(&notification.contact)?)
+        .bind(notification.attempt)
+        .bind(notification.status.to_string())
+        .bind(&notification.error)
+        .bind(notification.delivered_at.map(to_datetime))
+        .bind(notification.next_retry_at.map(to_datetime))
+        .bind(notification.is_test())
+        .bind(serde_json::to_value(&notification.notice)?)
+        .bind(to_datetime(notification.created_at))
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(id)
+    }
+
+    async fn list_emergency_notifications(
+        &self,
+        tenant_id: &TenantId,
+        call_id: &str,
+    ) -> anyhow::Result<Vec<EmergencyNotification>> {
+        let rows = sqlx::query(
+            "SELECT id, tenant_id, call_record_id, call_id, kind, target, contact, attempt,
+                    status, error, delivered_at, next_retry_at, test, notice, created_at
+             FROM emergency_notifications
+             WHERE tenant_id = $1 AND call_id = $2
+             ORDER BY created_at, id",
+        )
+        .bind(tenant_id.to_string())
+        .bind(call_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(Self::row_to_notification).collect()
+    }
+
+    async fn due_emergency_notifications(
+        &self,
+        limit: usize,
+    ) -> anyhow::Result<Vec<EmergencyNotification>> {
+        // Claim what is due in one statement, so two notifiers never take
+        // the same attempt.
+        let rows = sqlx::query(
+            "UPDATE emergency_notifications SET next_retry_at = NULL
+             WHERE id IN (
+                 SELECT id FROM emergency_notifications
+                 WHERE next_retry_at IS NOT NULL AND next_retry_at <= NOW()
+                 ORDER BY next_retry_at
+                 LIMIT $1
+                 FOR UPDATE SKIP LOCKED
+             )
+             RETURNING id, tenant_id, call_record_id, call_id, kind, target, contact, attempt,
+                    status, error, delivered_at, next_retry_at, test, notice, created_at",
+        )
+        .bind(limit.clamp(1, 1000) as i64)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(Self::row_to_notification).collect()
+    }
+
+    async fn clear_notification_retry(&self, id: i64) -> anyhow::Result<()> {
+        sqlx::query("UPDATE emergency_notifications SET next_retry_at = NULL WHERE id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn last_emergency_notifications(
+        &self,
+        tenant_id: &TenantId,
+        test_only: bool,
+    ) -> anyhow::Result<Vec<EmergencyNotification>> {
+        let rows = sqlx::query(
+            "SELECT DISTINCT ON (kind, target) id, tenant_id, call_record_id, call_id, kind, target, contact, attempt,
+                    status, error, delivered_at, next_retry_at, test, notice, created_at
+             FROM emergency_notifications
+             WHERE tenant_id = $1 AND delivered_at IS NOT NULL AND ($2 = FALSE OR test)
+             ORDER BY kind, target, delivered_at DESC",
+        )
+        .bind(tenant_id.to_string())
+        .bind(test_only)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(Self::row_to_notification).collect()
     }
 }

@@ -131,6 +131,28 @@ pub enum CallEvent {
         node_id: Option<String>,
     },
 
+    /// A contact the tenant asked to be told about emergency calls could
+    /// not be told, after every attempt (`docs/E911_BLOCK_2.md` §8.3).
+    EmergencyNotificationFailed {
+        call_id: CallId,
+        tenant_id: TenantId,
+        /// `email`, `sms`, `call` or `webhook`.
+        contact_kind: String,
+        /// The address, number, extension or endpoint id.
+        target: String,
+        /// How many attempts were made.
+        attempts: u32,
+        /// Why the last attempt failed.
+        error: String,
+        /// Whether this was a test call's notice.
+        #[serde(default)]
+        test: bool,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        node_id: Option<String>,
+    },
+
     /// Call is ringing (180/183 received)
     Ringing {
         call_id: CallId,
@@ -1299,6 +1321,7 @@ impl PlatformEvent {
                 CallEvent::Failed { .. } => "call.failed",
                 CallEvent::Emergency { .. } => "call.emergency",
                 CallEvent::EmergencyCompleted { .. } => "call.emergency_completed",
+                CallEvent::EmergencyNotificationFailed { .. } => "emergency.notification_failed",
                 CallEvent::Parked { .. } => "call.parked",
                 CallEvent::Unparked { .. } => "call.unparked",
             },
@@ -1442,7 +1465,14 @@ impl PlatformEvent {
     pub fn tenant_id(&self) -> Option<&TenantId> {
         match self {
             PlatformEvent::Call(e) => match e {
-                CallEvent::Initiated { tenant_id, .. } => Some(tenant_id),
+                // The call events that carry a tenant. Emergency events do
+                // and were nevertheless invisible to the webhook
+                // dispatcher, which needs one to find the endpoints
+                // (`docs/E911_BLOCK_2.md` §8).
+                CallEvent::Initiated { tenant_id, .. }
+                | CallEvent::Emergency { tenant_id, .. }
+                | CallEvent::EmergencyCompleted { tenant_id, .. }
+                | CallEvent::EmergencyNotificationFailed { tenant_id, .. } => Some(tenant_id),
                 _ => None,
             },
             PlatformEvent::User(e) => match e {
@@ -1654,6 +1684,7 @@ impl CallEvent {
             | CallEvent::Failed { call_id, .. }
             | CallEvent::Emergency { call_id, .. }
             | CallEvent::EmergencyCompleted { call_id, .. }
+            | CallEvent::EmergencyNotificationFailed { call_id, .. }
             | CallEvent::Parked { call_id, .. }
             | CallEvent::Unparked { call_id, .. } => Some(call_id),
         }
@@ -1667,6 +1698,7 @@ impl CallEvent {
             | CallEvent::Failed { timestamp, .. }
             | CallEvent::Emergency { timestamp, .. }
             | CallEvent::EmergencyCompleted { timestamp, .. }
+            | CallEvent::EmergencyNotificationFailed { timestamp, .. }
             | CallEvent::Parked { timestamp, .. }
             | CallEvent::Unparked { timestamp, .. } => *timestamp,
             CallEvent::Answered { answer_time, .. } => *answer_time,

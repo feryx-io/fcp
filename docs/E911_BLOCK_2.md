@@ -1,7 +1,8 @@
 # Emergency Calling, Block 2 — Design
 
 Status: **agreed** (2026-09-15), every recommendation in §12 taken.
-Phases 1 to 4 are done (v0.25.176 to v0.25.179, see §11). This
+Phases 1 to 5 are done (v0.25.176 to v0.25.180, see §11); only the admin
+UI (phase 6) is left. This
 document is the plan for the four items `docs/E911.md` left for later — **location by value** (PIDF-LO) for
 NG911 trunks, **network-based location** for softphones and roaming
 devices, **provider-backed address validation**, and **notification
@@ -548,6 +549,58 @@ by release tag first.
 5. **Notification.** Typed contacts and their migration, the notifier in
    the events server (email, SMS, call, webhook), `emergency_notifications`,
    `notified`, test-call notices, the SMTP and SMS sinks in the testkit.
+
+   *Done (v0.25.180).* What shipped:
+
+   - **Contacts.** `EmergencyConfig.contacts` is a list of typed contacts
+     (`email`, `sms`, `call`, `webhook`). Free text is read by its shape,
+     in migration 071 and again on every read, so nothing a tenant saved
+     before block 2 is lost; the API takes either form and answers with
+     both (`contacts`, and `notify_contacts` as the plain strings it
+     always was).
+   - **The notice.** `fcp_core::e911::notify` builds one notice from the
+     call — who placed it, the callback number, the location sent and its
+     source, where the caller was seen, the time — and renders it per
+     channel: an email subject and body, one line of SMS, spoken words
+     that read numbers digit by digit, a webhook payload. A `933` call's
+     notice is `[TEST]` in the subject and the first line and says no
+     emergency services were contacted.
+   - **The notifier.** The new `fcp-notify` crate holds the notifier and
+     its channels; `fcp-events-server` runs it on `call.emergency` beside
+     the webhook dispatcher, under `[notifications]`. Every contact is
+     tried at once, each attempt is an `emergency_notifications` row
+     (migration 071) carrying the notice itself, failures are retried with
+     a doubling delay until `max_attempts` and never past
+     `give_up_after_secs`, the first delivery sets the record's
+     `notified`, and a contact that runs out of attempts raises
+     `emergency.notification_failed`.
+   - **The channels.** SMTP (lettre, STARTTLS required by default), an
+     HTTP SMS provider with a documented contract, a call placed by a call
+     manager (`POST /v1/emergency/notify-call`, which rings the extension,
+     speaks the notice through TTS and answers with the outcome — only an
+     answered call counts), and the existing webhook dispatcher
+     (`deliver_once`). Credentials may be sealed with encryption at rest.
+   - **Readiness.** `/emergency/readiness` gained a `notifications` block:
+     every contact with what keeps it from being deliverable, when
+     anything last reached it and when a test last did; a tenant with
+     nobody to tell, or one that has never proved the chain with a `933`
+     call, is told so. `GET /emergency/calls/:call_id/notifications` lists
+     every attempt for a call.
+   - **Metrics** (§9): `fcp_emergency_notifications_total` by kind and
+     outcome and `fcp_emergency_notification_first_delivery_seconds` on
+     the events server's new `/metrics`.
+   - **Tests.** `fcp-notify` delivers to the testkit's new SMTP and HTTP
+     sinks against a real database (every contact told, the record marked,
+     retries and the failure event, a test call's notice); the storage
+     suite proves free-text contacts read back typed; the API suite covers
+     typed contacts, the attempt list and readiness; and the test floor
+     places a `933` call through a call manager wired to a real events
+     server and reads the email that arrives.
+
+   One defect this found and fixed: `PlatformEvent::tenant_id()` returned
+   a tenant only for `call.initiated`, so the webhook dispatcher dropped
+   every `call.emergency` — a tenant could subscribe to emergency events
+   and never receive one.
 6. **Admin UI.** Emergency pages: configuration and contacts, readiness,
    networks, the call log with its notifications; site, device and trunk
    fields the UI does not show today (`e911_callback_number`,

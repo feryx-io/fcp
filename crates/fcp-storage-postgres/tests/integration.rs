@@ -2332,3 +2332,81 @@ async fn a_node_finds_what_it_holds_and_what_has_expired() {
 
     db.finish().await;
 }
+
+/// A tenant whose notification contacts are the free text of block 1 reads
+/// back as typed contacts, whether migration 071 converted the row or the
+/// store reads it by shape (`docs/E911_BLOCK_2.md` §8.1).
+#[tokio::test]
+async fn emergency_contacts_saved_as_free_text_read_back_typed() {
+    use fcp_core::e911::notify::ContactKind;
+    use fcp_core::e911::EmergencyStore;
+
+    let db = require_db!();
+    let t = tenant("notify");
+    db.storage.put_tenant(t.clone()).await.unwrap();
+    let tenant = t.id;
+    let store =
+        fcp_storage_postgres::emergency::PostgresEmergencyStore::new(db.storage.pool().clone());
+
+    // A row as block 1 wrote it: free text, and no typed contacts.
+    sqlx::query(
+        "INSERT INTO emergency_configs
+            (tenant_id, emergency_numbers, test_numbers, dial_prefixes, notify_contacts,
+             require_dispatchable_location, updated_at)
+         VALUES ($1, ARRAY['911'], ARRAY['933'], ARRAY['9'], $2, FALSE, NOW())",
+    )
+    .bind(tenant.to_string())
+    .bind(vec![
+        "security@example.com".to_string(),
+        "sip:frontdesk@pbx.example.com".to_string(),
+        "+1 518 555 0143".to_string(),
+        "2001".to_string(),
+        "  ".to_string(),
+    ])
+    .execute(db.storage.pool())
+    .await
+    .expect("insert a block 1 configuration");
+
+    let config = store
+        .get_emergency_config(&tenant)
+        .await
+        .expect("read the configuration")
+        .expect("a configuration");
+    let kinds: Vec<(ContactKind, String)> = config
+        .contacts
+        .iter()
+        .map(|c| (c.kind, c.target.clone()))
+        .collect();
+    assert_eq!(
+        kinds,
+        vec![
+            (ContactKind::Email, "security@example.com".to_string()),
+            (
+                ContactKind::Call,
+                "sip:frontdesk@pbx.example.com".to_string()
+            ),
+            (ContactKind::Sms, "+1 518 555 0143".to_string()),
+            (ContactKind::Call, "2001".to_string()),
+        ],
+        "each contact read by its shape, the empty one dropped"
+    );
+
+    // Saving it again writes both: the typed contacts, and the plain
+    // targets the event has always carried.
+    store
+        .put_emergency_config(&config)
+        .await
+        .expect("save the configuration");
+    let stored: (serde_json::Value, Vec<String>) = sqlx::query_as(
+        "SELECT contacts, notify_contacts FROM emergency_configs WHERE tenant_id = $1",
+    )
+    .bind(tenant.to_string())
+    .fetch_one(db.storage.pool())
+    .await
+    .expect("read the row");
+    assert_eq!(stored.0.as_array().map(|a| a.len()), Some(4));
+    assert_eq!(stored.1.len(), 4);
+    assert_eq!(stored.1[0], "security@example.com");
+
+    db.finish().await;
+}

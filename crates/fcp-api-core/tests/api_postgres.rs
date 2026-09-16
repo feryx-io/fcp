@@ -4293,6 +4293,62 @@ async fn e911_config_readiness_validation_and_audit() {
         reread.json["notify_contacts"][1],
         "sip:frontdesk@pbx.example.com"
     );
+    // The free text a tenant saved is typed by its shape, and the plain
+    // strings stay for clients written before block 2
+    // (`docs/E911_BLOCK_2.md` §8.1).
+    assert_eq!(
+        reread.json["contacts"][0]["kind"], "email",
+        "{}",
+        reread.text
+    );
+    assert_eq!(reread.json["contacts"][0]["target"], "security@example.com");
+    assert_eq!(reread.json["contacts"][1]["kind"], "call");
+
+    // Contacts can be given typed, with a name, and are checked.
+    let typed = app
+        .admin(
+            Method::PUT,
+            "/api/v1/emergency/config",
+            Some(json!({ "contacts": [
+                { "kind": "email", "target": "security@example.com", "name": "Front desk" },
+                { "kind": "sms", "target": "+15185550143" },
+                "2001"
+            ]})),
+        )
+        .await;
+    assert_eq!(typed.status, StatusCode::OK, "{}", typed.text);
+    assert_eq!(typed.json["contacts"][0]["name"], "Front desk");
+    assert_eq!(typed.json["contacts"][1]["kind"], "sms");
+    assert_eq!(
+        typed.json["contacts"][2]["kind"], "call",
+        "a bare extension is a call: {}",
+        typed.text
+    );
+    assert_eq!(
+        typed.json["notify_contacts"],
+        json!(["security@example.com", "+15185550143", "2001"])
+    );
+    let refused = app
+        .admin(
+            Method::PUT,
+            "/api/v1/emergency/config",
+            Some(json!({ "contacts": [{ "kind": "email", "target": "nobody" }] })),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.text);
+    let unreadable = app
+        .admin(
+            Method::PUT,
+            "/api/v1/emergency/config",
+            Some(json!({ "contacts": ["down the hall"] })),
+        )
+        .await;
+    assert_eq!(
+        unreadable.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        unreadable.text
+    );
     // Tenant B still sees defaults.
     let other = app
         .admin_in(app.tenant_b, Method::GET, "/api/v1/emergency/config", None)
@@ -4786,6 +4842,127 @@ async fn e911_config_readiness_validation_and_audit() {
         calls.json[0]["geolocation_error"], "300;code=\"Insufficient Location Information\"",
         "{}",
         calls.text
+    );
+
+    // Notification attempts are listed under the call they told someone
+    // about (§8.3), and only for the tenant whose call it was.
+    let notice = fcp_core::e911::notify::EmergencyNotice {
+        tenant_id: app.tenant_a,
+        call_id: record.call_id.clone(),
+        kind: EmergencyKind::Live,
+        dialed: "911".to_string(),
+        caller: format!("sip:ready@{REALM}"),
+        caller_name: Some("ready".to_string()),
+        callback_number: Some("+15185550100".to_string()),
+        location_summary: Some("HQ: 1 State St, Albany, NY 12207".to_string()),
+        location_source: Some("user_location".to_string()),
+        client_address: None,
+        trunk_name: Some("e911-trunk".to_string()),
+        placed_at: SystemTime::now(),
+    };
+    let mut delivered = fcp_core::e911::notify::EmergencyNotification::first(
+        app.tenant_a,
+        Some(id),
+        record.call_id.clone(),
+        fcp_core::e911::notify::NotifyContact::new(
+            fcp_core::e911::notify::ContactKind::Email,
+            "security@example.com",
+        ),
+        notice.clone(),
+    );
+    delivered.status = fcp_core::e911::notify::NotificationStatus::Delivered;
+    delivered.delivered_at = Some(SystemTime::now());
+    app.emergency
+        .insert_emergency_notification(&delivered)
+        .await
+        .unwrap();
+    let mut failed = delivered.next_attempt();
+    failed.contact = fcp_core::e911::notify::NotifyContact::new(
+        fcp_core::e911::notify::ContactKind::Sms,
+        "+15185550143",
+    );
+    failed.status = fcp_core::e911::notify::NotificationStatus::Failed;
+    failed.error = Some("provider down".to_string());
+    app.emergency
+        .insert_emergency_notification(&failed)
+        .await
+        .unwrap();
+
+    let attempts = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/emergency/calls/{}/notifications", record.call_id),
+            None,
+        )
+        .await;
+    assert_eq!(attempts.status, StatusCode::OK, "{}", attempts.text);
+    let rows = attempts.json.as_array().unwrap();
+    assert_eq!(rows.len(), 2, "{}", attempts.text);
+    assert_eq!(rows[0]["kind"], "email");
+    assert_eq!(rows[0]["status"], "delivered");
+    assert_eq!(rows[1]["kind"], "sms");
+    assert_eq!(rows[1]["status"], "failed");
+    assert_eq!(rows[1]["error"], "provider down");
+    assert_eq!(rows[1]["attempt"], 2);
+    let other_tenant = app
+        .admin_in(
+            app.tenant_b,
+            Method::GET,
+            &format!("/api/v1/emergency/calls/{}/notifications", record.call_id),
+            None,
+        )
+        .await;
+    assert!(
+        other_tenant.json.as_array().unwrap().is_empty(),
+        "{}",
+        other_tenant.text
+    );
+
+    // Readiness says whether anybody would be told, and when a test last
+    // reached each contact (§8.4).
+    let readiness = app
+        .admin(Method::GET, "/api/v1/emergency/readiness", None)
+        .await;
+    let notifications = &readiness.json["notifications"];
+    assert_eq!(notifications["deliverable"], 3, "{}", readiness.text);
+    assert_eq!(notifications["contacts"][0]["kind"], "email");
+    assert!(
+        !notifications["contacts"][0]["last_delivery_at"].is_null(),
+        "the delivered attempt is remembered: {}",
+        readiness.text
+    );
+    assert!(
+        notifications["contacts"][0]["last_test_at"].is_null(),
+        "no test call has been made: {}",
+        readiness.text
+    );
+    assert!(
+        notifications["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i.as_str().unwrap_or_default().contains("933")),
+        "{}",
+        readiness.text
+    );
+
+    // A tenant with nobody to tell is told so.
+    let nobody = app
+        .admin_in(
+            app.tenant_b,
+            Method::GET,
+            "/api/v1/emergency/readiness",
+            None,
+        )
+        .await;
+    assert_eq!(nobody.json["notifications"]["deliverable"], 0);
+    assert!(
+        nobody.json["notifications"]["issues"][0]
+            .as_str()
+            .unwrap()
+            .contains("nobody would be told"),
+        "{}",
+        nobody.text
     );
 
     app.finish().await;

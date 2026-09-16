@@ -203,6 +203,11 @@ pub fn router() -> Router<ApiState> {
                 .delete(emergency_networks::delete_network),
         )
         .route("/emergency/calls", get(emergency::list_calls))
+        .route("/emergency/notify-call", post(emergency::notify_call))
+        .route(
+            "/emergency/calls/:call_id/notifications",
+            get(emergency::list_call_notifications),
+        )
         .route(
             "/emergency/validate-address",
             post(emergency::validate_address),

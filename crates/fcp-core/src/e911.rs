@@ -20,8 +20,11 @@
 //! balance: callers decide policy from these types, but the defaults here
 //! err on the side of placing the call.
 
+pub mod notify;
+
 use crate::{Device, E911Address, LocationId, PhoneNumber, SiteLocation, TenantId};
 use async_trait::async_trait;
+use notify::{EmergencyNotification, NotifyContact};
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, SystemTime};
 
@@ -44,10 +47,13 @@ pub struct EmergencyConfig {
     pub test_numbers: Vec<String>,
     /// Outside-line prefixes stripped before matching (`9` → `9911`).
     pub dial_prefixes: Vec<String>,
-    /// Contacts to notify when an emergency call is placed (Kari's Law
-    /// on-site notification). Free-form: email addresses, SIP URIs, or
-    /// phone numbers; delivery is the webhook/event consumer's job.
-    pub notify_contacts: Vec<String>,
+    /// Who is told when an emergency call is placed (Kari's Law on-site
+    /// notification, `docs/E911_BLOCK_2.md` §8): typed contacts, each an
+    /// email address, an SMS number, an extension to ring or a webhook
+    /// endpoint. Contacts saved as free text before block 2 are read by
+    /// their shape (`NotifyContact::parse`).
+    #[serde(default)]
+    pub contacts: Vec<NotifyContact>,
     /// When true, a caller without a dispatchable location is still
     /// connected, but the record and event flag the gap prominently.
     /// (Blocking emergency calls is never an option.)
@@ -72,6 +78,21 @@ fn default_declared_ttl() -> Duration {
 }
 
 impl EmergencyConfig {
+    /// The contacts as the plain strings `call.emergency` has always
+    /// carried, for consumers written before block 2.
+    pub fn contact_targets(&self) -> Vec<String> {
+        self.contacts.iter().map(|c| c.display_target()).collect()
+    }
+
+    /// The contacts a notifier can actually deliver to; a tenant with none
+    /// is a readiness issue (§8.3).
+    pub fn deliverable_contacts(&self) -> Vec<&NotifyContact> {
+        self.contacts
+            .iter()
+            .filter(|c| c.problems().is_empty())
+            .collect()
+    }
+
     /// US defaults for a tenant with no stored configuration.
     pub fn defaults(tenant_id: TenantId) -> Self {
         Self {
@@ -85,7 +106,7 @@ impl EmergencyConfig {
                 .iter()
                 .map(|s| s.to_string())
                 .collect(),
-            notify_contacts: Vec::new(),
+            contacts: Vec::new(),
             require_dispatchable_location: false,
             trust_device_locations: Vec::new(),
             declared_location_ttl: DEFAULT_DECLARED_LOCATION_TTL,
@@ -1402,6 +1423,65 @@ pub trait EmergencyStore: Send + Sync {
         id: i64,
         completion: &EmergencyCompletion,
     ) -> anyhow::Result<()>;
+
+    // ── On-site notification (§8) ─────────────────────────────────────
+    //
+    // Defaulted, so a store that keeps no notifications simply has none:
+    // the notifier then delivers without a record of having done so, and
+    // says as much in its logs.
+
+    /// The record of an emergency call, found by the call's id — how a
+    /// notifier, which sees only the event, reaches the record.
+    async fn get_emergency_call_by_call_id(
+        &self,
+        _tenant_id: &TenantId,
+        _call_id: &str,
+    ) -> anyhow::Result<Option<EmergencyCallRecord>> {
+        Ok(None)
+    }
+
+    /// Write one attempt at one contact and return its id.
+    async fn insert_emergency_notification(
+        &self,
+        _notification: &EmergencyNotification,
+    ) -> anyhow::Result<i64> {
+        anyhow::bail!("this store does not keep emergency notifications")
+    }
+
+    /// Every attempt made for one call, oldest first.
+    async fn list_emergency_notifications(
+        &self,
+        _tenant_id: &TenantId,
+        _call_id: &str,
+    ) -> anyhow::Result<Vec<EmergencyNotification>> {
+        Ok(Vec::new())
+    }
+
+    /// Attempts whose retry is due, oldest first; the notifier takes them
+    /// and clears the schedule as it does.
+    async fn due_emergency_notifications(
+        &self,
+        _limit: usize,
+    ) -> anyhow::Result<Vec<EmergencyNotification>> {
+        Ok(Vec::new())
+    }
+
+    /// Stop this attempt being picked up again (it has been, or it is
+    /// being retried by a row of its own).
+    async fn clear_notification_retry(&self, _id: i64) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// The last delivery to each of a tenant's contacts, for the readiness
+    /// report's "when did this last work" (§8.4). `test_only` limits it to
+    /// notices of test calls.
+    async fn last_emergency_notifications(
+        &self,
+        _tenant_id: &TenantId,
+        _test_only: bool,
+    ) -> anyhow::Result<Vec<EmergencyNotification>> {
+        Ok(Vec::new())
+    }
 }
 
 #[cfg(test)]
