@@ -20,6 +20,7 @@ const BIN: &str = env!("CARGO_BIN_EXE_fcp-webrtc-gw");
 const REALM: &str = "e2e.local";
 const OPERATOR: &str = "e2e-operator";
 const ELIN: &str = "+15185550100";
+const BRANCH_ELIN: &str = "+15185550222";
 const SOON: Duration = Duration::from_secs(10);
 const A_WHILE: Duration = Duration::from_secs(20);
 
@@ -52,8 +53,10 @@ bind_address = "127.0.0.1:{http}"
 tokens = ["{OPERATOR}"]
 
 [sip]
-udp_bind = "127.0.0.1:{sip}"
-local_ip = "127.0.0.1"
+# The gateway is an edge of its own: a different address from the browsers
+# it fronts, so the call manager can tell them apart.
+udp_bind = "127.0.0.3:{sip}"
+local_ip = "127.0.0.3"
 {proxy}
 
 [media]
@@ -209,7 +212,7 @@ level = "info"
 format = "compact"
 
 [e911]
-trusted_edges = ["127.0.0.1"]
+trusted_edges = ["127.0.0.3"]
 
 [[trunks]]
 name = "psap"
@@ -251,6 +254,10 @@ async fn a_browser_emergency_call_is_located_through_the_call_manager() {
     let seed = Seed::new(db.url(), REALM).await;
     seed.user("alice", "alice-pw", "1001").await;
     seed.site_for("alice", ELIN).await;
+    // The browser's own address is at the branch office; the gateway says
+    // where the browser is, and the call manager places it there rather
+    // than at the site Alice is provisioned at.
+    branch_network(&seed).await;
     let carrier = Phone::new("psap", "x", REALM, SocketAddr::from(([127, 0, 0, 1], 9)))
         .await
         .unwrap();
@@ -312,11 +319,15 @@ async fn a_browser_emergency_call_is_located_through_the_call_manager() {
         let cm_logs = cm.kill().await;
         panic!("the emergency trunk never rang\n{gw_logs}\n{cm_logs}");
     };
-    assert!(incoming.from.contains(ELIN), "From: {}", incoming.from);
+    assert!(
+        incoming.from.contains(BRANCH_ELIN),
+        "the browser is placed by the network it is on: {}",
+        incoming.from
+    );
     assert_eq!(incoming.header("Priority").as_deref(), Some("emergency"));
     assert_eq!(
         incoming.header("P-Asserted-Identity").as_deref(),
-        Some(format!("<sip:{ELIN}@127.0.0.1>").as_str())
+        Some(format!("<sip:{BRANCH_ELIN}@127.0.0.3>").as_str())
     );
     assert!(
         incoming.header(fcp_core::CALLER_USER_HEADER).is_none(),
@@ -329,11 +340,44 @@ async fn a_browser_emergency_call_is_located_through_the_call_manager() {
         .emergency_calls(1, SOON, |r| r.ended_at.is_some())
         .await;
     assert_eq!(records[0].caller_username.as_deref(), Some("alice"));
-    assert_eq!(records[0].callback_number.as_deref(), Some(ELIN));
+    assert_eq!(records[0].callback_number.as_deref(), Some(BRANCH_ELIN));
+    let location = records[0].location.as_ref().expect("a location");
+    assert_eq!(location.source, fcp_core::e911::LocationSource::Network);
+    assert_eq!(
+        location.client_address.as_deref(),
+        Some("127.0.0.1"),
+        "the address the gateway vouched for"
+    );
     assert_eq!(records[0].trunk_name.as_deref(), Some("psap"));
 
     peer.close();
     gw.logs().await;
     cm.stop().await;
     db.drop_db().await;
+}
+
+/// A site for the network the browser is on, so a browser at 127.0.0.1 is
+/// placed there rather than at the site its user is provisioned at.
+async fn branch_network(seed: &Seed) {
+    use fcp_core::e911::EmergencyStore;
+    use fcp_core::storage::SiteLocationStore;
+
+    let mut site = fcp_core::SiteLocation::new("Branch".to_string(), seed.tenant_id);
+    site.address_line1 = Some("9 Elm St".to_string());
+    site.city = Some("Troy".to_string());
+    site.state = Some("NY".to_string());
+    site.postal_code = Some("12180".to_string());
+    site.country = Some("US".to_string());
+    site.e911_callback_number = Some(BRANCH_ELIN.to_string());
+    let location_id = site.id;
+    seed.storage().put_location(site).await.unwrap();
+
+    let store =
+        fcp_storage_postgres::emergency::PostgresEmergencyStore::new(seed.storage().pool().clone());
+    let network = fcp_core::e911::EmergencyNetwork::new(
+        seed.tenant_id,
+        "127.0.0.1/32".parse().unwrap(),
+        location_id,
+    );
+    store.put_emergency_network(&network).await.unwrap();
 }

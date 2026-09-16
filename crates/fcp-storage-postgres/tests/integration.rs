@@ -169,6 +169,7 @@ fn registration(tenant_id: TenantId, aor: &str, contact: &str, ttl: Duration) ->
         registered_at: now,
         path: None,
         flow_token: None,
+        source_address: None,
     }
 }
 

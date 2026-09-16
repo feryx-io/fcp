@@ -22,6 +22,7 @@ const REALM: &str = "e2e.local";
 const SOON: Duration = Duration::from_secs(10);
 const ALICE_ELIN: &str = "+15185550100";
 const BOB_ELIN: &str = "+15185550199";
+const BRANCH_ELIN: &str = "+15185550222";
 
 /// A running call manager whose emergency trunks are scripted phones.
 struct Stack {
@@ -715,4 +716,347 @@ async fn a_refused_location_is_retried_as_elin_or_gives_way_to_the_next_trunk() 
         assert_eq!(records[0].geolocation_error.as_deref(), Some(REFUSAL));
         stack.finish().await;
     }
+}
+
+/// A second site, with its own ELIN, and a network that puts `cidr` at it.
+async fn network_site(
+    seed: &Seed,
+    name: &str,
+    elin: &str,
+    cidr: &str,
+    applies_to: fcp_core::e911::NetworkApplies,
+) -> fcp_core::LocationId {
+    use fcp_core::e911::EmergencyStore;
+    use fcp_core::storage::SiteLocationStore;
+
+    let mut site = fcp_core::SiteLocation::new(name.to_string(), seed.tenant_id);
+    site.address_line1 = Some("9 Elm St".to_string());
+    site.city = Some("Troy".to_string());
+    site.state = Some("NY".to_string());
+    site.postal_code = Some("12180".to_string());
+    site.country = Some("US".to_string());
+    site.e911_callback_number = Some(elin.to_string());
+    let id = site.id;
+    seed.storage().put_location(site).await.unwrap();
+
+    let store =
+        fcp_storage_postgres::emergency::PostgresEmergencyStore::new(seed.storage().pool().clone());
+    let mut network =
+        fcp_core::e911::EmergencyNetwork::new(seed.tenant_id, cidr.parse().unwrap(), id);
+    network.applies_to = applies_to;
+    network.name = Some(format!("{name} wired"));
+    store.put_emergency_network(&network).await.unwrap();
+    id
+}
+
+/// A user's device, as the seed made it.
+async fn user_device(seed: &Seed, username: &str) -> fcp_core::Device {
+    use fcp_core::storage::{CredentialStore, DeviceStore};
+    let user = seed
+        .storage()
+        .get_user_in_tenant(username, &seed.tenant_id)
+        .await
+        .unwrap()
+        .unwrap();
+    seed.storage()
+        .list_devices_by_user(&user.id)
+        .await
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| panic!("the seed gave {username} a device"))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_device_is_placed_by_the_network_it_is_on() {
+    use fcp_core::storage::DeviceStore;
+
+    let carrier = Carrier::new("psap-primary", 1).await;
+    let mut stack = stack_or_skip!(&[&carrier], &[]);
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    stack.seed.site_for("alice", ALICE_ELIN).await;
+    // 127.0.0.2 is the branch office; every 127.0.0.0/8 address is local.
+    network_site(
+        &stack.seed,
+        "Branch",
+        BRANCH_ELIN,
+        "127.0.0.2/32",
+        fcp_core::e911::NetworkApplies::Nomadic,
+    )
+    .await;
+
+    // A softphone at the branch: the call carries the branch's ELIN, and
+    // the record says the network placed it.
+    let phone = Phone::bound_to(
+        "127.0.0.2:0",
+        &alice.username,
+        &alice.password,
+        REALM,
+        stack.sip,
+    )
+    .await
+    .unwrap();
+    assert_eq!(phone.register().await.unwrap(), 200);
+    let call = phone.call("911").await.unwrap();
+    let Some(incoming) = carrier.phone.incoming(SOON).await else {
+        let why = format!("the trunk never rang; the call is {:?}", call.phase());
+        stack.fail(&why).await;
+    };
+    assert!(
+        incoming.from.contains(BRANCH_ELIN),
+        "the branch's ELIN: {}",
+        incoming.from
+    );
+    incoming.reject(486, "Busy Here").await.unwrap();
+    assert!(call.answered(SOON).await.is_err());
+    let records = stack
+        .seed
+        .emergency_calls(1, SOON, |r| r.ended_at.is_some())
+        .await;
+    let location = records[0].location.as_ref().expect("a location");
+    assert_eq!(location.source, fcp_core::e911::LocationSource::Network);
+    assert_eq!(location.client_address.as_deref(), Some("127.0.0.2"));
+    assert_eq!(location.location_name.as_deref(), Some("Branch"));
+
+    // A desk phone keeps the site it was provisioned at: a network that
+    // places only nomadic devices does not move it. (Bob's device is a desk
+    // phone from the start: the node caches devices as it registers them.)
+    let bob = stack.seed.user("bob", "bob-pw", "1002").await;
+    stack.seed.site_for("bob", BOB_ELIN).await;
+    // A device's type is fixed when it is created, so bob gets a desk
+    // phone in place of the seed's softphone.
+    let softphone = user_device(&stack.seed, "bob").await;
+    let mut desk_phone = fcp_core::Device::new(
+        "bob's desk phone".to_string(),
+        fcp_core::DeviceType::DeskPhone,
+        stack.seed.tenant_id,
+    );
+    desk_phone.owner_user_id = softphone.owner_user_id;
+    desk_phone.sip_uri = softphone.sip_uri.clone();
+    stack
+        .seed
+        .storage()
+        .delete_device(&softphone.id)
+        .await
+        .unwrap();
+    stack.seed.storage().put_device(desk_phone).await.unwrap();
+    let desk = Phone::bound_to(
+        "127.0.0.2:0",
+        &bob.username,
+        &bob.password,
+        REALM,
+        stack.sip,
+    )
+    .await
+    .unwrap();
+    assert_eq!(desk.register().await.unwrap(), 200);
+    let call = desk.call("911").await.unwrap();
+    let Some(incoming) = carrier.phone.incoming(SOON).await else {
+        let why = format!("the trunk never rang; the call is {:?}", call.phase());
+        stack.fail(&why).await;
+    };
+    assert!(
+        incoming.from.contains(BOB_ELIN),
+        "a desk phone keeps its site: {}",
+        incoming.from
+    );
+    incoming.reject(486, "Busy Here").await.unwrap();
+    assert!(call.answered(SOON).await.is_err());
+
+    // Until the tenant says that network places everything on it.
+    {
+        use fcp_core::e911::EmergencyStore;
+        let store = fcp_storage_postgres::emergency::PostgresEmergencyStore::new(
+            stack.seed.storage().pool().clone(),
+        );
+        let mut network = store
+            .list_emergency_networks(&stack.seed.tenant_id)
+            .await
+            .unwrap()
+            .remove(0);
+        network.applies_to = fcp_core::e911::NetworkApplies::All;
+        store.put_emergency_network(&network).await.unwrap();
+    }
+    let call = desk.call("911").await.unwrap();
+    let Some(incoming) = carrier.phone.incoming(SOON).await else {
+        let why = format!("the trunk never rang; the call is {:?}", call.phase());
+        stack.fail(&why).await;
+    };
+    assert!(
+        incoming.from.contains(BRANCH_ELIN),
+        "applies_to = all places the desk phone too: {}",
+        incoming.from
+    );
+    incoming.reject(486, "Busy Here").await.unwrap();
+    assert!(call.answered(SOON).await.is_err());
+
+    stack.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_declared_location_places_a_caller_nothing_else_places() {
+    use fcp_core::e911::EmergencyStore;
+    use fcp_core::storage::CredentialStore;
+
+    let carrier = Carrier::new("psap-primary", 1).await;
+    let mut stack = stack_or_skip!(&[&carrier], &[]);
+    // Bob has no site and no network: only what he said about himself.
+    let bob = stack.seed.user("bob", "bob-pw", "1002").await;
+    let user = stack
+        .seed
+        .storage()
+        .get_user_in_tenant("bob", &stack.seed.tenant_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let store = fcp_storage_postgres::emergency::PostgresEmergencyStore::new(
+        stack.seed.storage().pool().clone(),
+    );
+    let now = std::time::SystemTime::now();
+    let mut address = fcp_core::E911Address::new(
+        "500 Hotel Rd".to_string(),
+        "Saratoga Springs".to_string(),
+        "NY".to_string(),
+        "12866".to_string(),
+        "US".to_string(),
+    );
+    address.validated = true;
+    store
+        .put_declared_location(&fcp_core::e911::DeclaredLocation {
+            user_id: user.id,
+            tenant_id: stack.seed.tenant_id,
+            address,
+            declared_at: now - Duration::from_secs(120),
+            expires_at: now + Duration::from_secs(3600),
+        })
+        .await
+        .unwrap();
+
+    let phone = stack.phone(&bob).await;
+    let call = phone.call("911").await.unwrap();
+    let Some(incoming) = carrier.phone.incoming(SOON).await else {
+        let why = format!("the trunk never rang; the call is {:?}", call.phase());
+        stack.fail(&why).await;
+    };
+    incoming.reject(486, "Busy Here").await.unwrap();
+    assert!(call.answered(SOON).await.is_err());
+
+    let records = stack
+        .seed
+        .emergency_calls(1, SOON, |r| r.ended_at.is_some())
+        .await;
+    let location = records[0].location.as_ref().expect("a location");
+    assert_eq!(location.source, fcp_core::e911::LocationSource::Declared);
+    assert!(location.address.address1.contains("Hotel"));
+    assert!(
+        location.declared_age.unwrap() >= Duration::from_secs(120),
+        "the record dates the declaration: {:?}",
+        location.declared_age
+    );
+
+    stack.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_devices_own_location_is_used_only_from_a_trusted_device() {
+    use fcp_core::storage::DeviceStore;
+
+    let carrier = Carrier::taking("psap-ng911", 1, r#"["elin", "pidf_lo"]"#).await;
+    let mut stack = stack_or_skip!(&[&carrier], &[]);
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    stack.seed.site_for("alice", ALICE_ELIN).await;
+    let phone = stack.phone(&alice).await;
+
+    // The location the device sends: a PIDF-LO beside its SDP.
+    let sent = fcp_core::pidf_lo::document(
+        &fcp_core::e911::DispatchableLocation {
+            address: fcp_core::E911Address::new(
+                "12 Conference Way".to_string(),
+                "Albany".to_string(),
+                "NY".to_string(),
+                "12207".to_string(),
+                "US".to_string(),
+            ),
+            callback_number: None,
+            source: fcp_core::e911::LocationSource::DeviceOverride,
+            location_id: None,
+            location_name: None,
+            point: None,
+            client_address: None,
+            declared_age: None,
+        },
+        &fcp_core::pidf_lo::Subject {
+            entity: "pres:alice@e2e.local",
+            device_id: "urn:uuid:11111111-2222-3333-4444-555555555555",
+            timestamp: std::time::SystemTime::now(),
+        },
+    );
+
+    // An untrusted device's claim is ignored: the site stands.
+    let call = phone
+        .call_with_body_parts("911", &[(fcp_core::pidf_lo::CONTENT_TYPE, &sent)], &[])
+        .await
+        .unwrap();
+    let Some(incoming) = carrier.phone.incoming(SOON).await else {
+        let why = format!("the trunk never rang; the call is {:?}", call.phase());
+        stack.fail(&why).await;
+    };
+    let body = incoming
+        .multipart()
+        .expect("the location goes out by value");
+    let pidf = body
+        .part_by_type(fcp_core::pidf_lo::CONTENT_TYPE)
+        .expect("a PIDF-LO part");
+    let xml = String::from_utf8_lossy(pidf.body()).to_string();
+    assert!(
+        xml.contains("State St") && !xml.contains("Conference Way"),
+        "an untrusted device's own location is not dispatched: {xml}"
+    );
+    incoming.reject(486, "Busy Here").await.unwrap();
+    assert!(call.answered(SOON).await.is_err());
+
+    // The tenant trusts this device: now its claim is what goes out.
+    let mut device = user_device(&stack.seed, "alice").await;
+    device.e911_trust_location = Some(true);
+    stack.seed.storage().put_device(device).await.unwrap();
+    let call = phone
+        .call_with_body_parts("911", &[(fcp_core::pidf_lo::CONTENT_TYPE, &sent)], &[])
+        .await
+        .unwrap();
+    let Some(incoming) = carrier.phone.incoming(SOON).await else {
+        let why = format!("the trunk never rang; the call is {:?}", call.phase());
+        stack.fail(&why).await;
+    };
+    let body = incoming
+        .multipart()
+        .expect("the location goes out by value");
+    let xml = String::from_utf8_lossy(
+        body.part_by_type(fcp_core::pidf_lo::CONTENT_TYPE)
+            .unwrap()
+            .body(),
+    )
+    .to_string();
+    assert!(xml.contains("Conference Way"), "{xml}");
+    assert!(
+        incoming.from.contains(ALICE_ELIN),
+        "the callback number is still the site's: {}",
+        incoming.from
+    );
+    incoming.reject(486, "Busy Here").await.unwrap();
+    assert!(call.answered(SOON).await.is_err());
+
+    let records = stack
+        .seed
+        .emergency_calls(2, SOON, |r| r.ended_at.is_some())
+        .await;
+    let sources: Vec<_> = records
+        .iter()
+        .map(|r| r.location.as_ref().unwrap().source)
+        .collect();
+    assert!(
+        sources.contains(&fcp_core::e911::LocationSource::DeviceSupplied)
+            && sources.contains(&fcp_core::e911::LocationSource::UserLocation),
+        "{sources:?}"
+    );
+    stack.finish().await;
 }

@@ -207,6 +207,18 @@ in `[e911] trusted_edges` treats the call as that user's: their tenant,
 their location on an emergency call, their name on the record. From any
 other address those headers are ignored.
 
+With a `caller`, the gateway also sends the browser's own address as
+`X-FCP-Client-Address`, so the call manager can place it by network
+(`docs/E911_BLOCK_2.md` §6.2) rather than at the gateway. Behind a load
+balancer, list the balancer in `[http] trusted_proxies` and the gateway
+believes its `X-Forwarded-For`; otherwise the connection's own address is
+used.
+
+```toml
+[http]
+trusted_proxies = ["10.0.0.4"]   # whose X-Forwarded-For names the browser
+```
+
 ### Emergency numbers
 
 A browser can dial 911, and the call is placed only when it can be located

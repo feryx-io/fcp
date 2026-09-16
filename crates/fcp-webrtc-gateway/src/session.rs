@@ -124,6 +124,10 @@ pub enum SessionKind {
         /// Who the call is placed for, when the operator named them.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         caller: Option<CallerIdentity>,
+        /// Where the browser is, which the call manager uses to place the
+        /// caller by network (`docs/E911_BLOCK_2.md` §6.2).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        client_address: Option<std::net::IpAddr>,
         /// Set when the destination is an emergency number.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         emergency: Option<fcp_core::e911::EmergencyKind>,
@@ -630,6 +634,7 @@ impl SessionManager {
         destination: &str,
         connection_id: Option<&str>,
         caller: Option<CallerIdentity>,
+        client_address: std::net::IpAddr,
     ) -> Result<CreatedSession, SessionError> {
         if destination.trim().is_empty() {
             return Err(SessionError::BadRequest("destination is required".into()));
@@ -670,6 +675,7 @@ impl SessionManager {
             destination: target,
             caller,
             emergency,
+            client_address: Some(client_address),
         };
         let conn = match connection_id.filter(|id| !id.is_empty()) {
             Some(id) => {
@@ -1544,6 +1550,7 @@ impl SessionManager {
             SessionKind::Call {
                 destination,
                 caller,
+                client_address,
                 ..
             } => {
                 if let Some(caller) = caller {
@@ -1553,6 +1560,14 @@ impl SessionManager {
                     headers
                         .push(fcp_core::CALLER_USER_HEADER, caller.username)
                         .map_err(|e| format!("header: {e}"))?;
+                    // The gateway is the browser's edge: it says where the
+                    // browser is, and the call manager believes it only
+                    // from a trusted edge.
+                    if let Some(address) = client_address {
+                        headers
+                            .push(fcp_core::CLIENT_ADDRESS_HEADER, address.to_string())
+                            .map_err(|e| format!("header: {e}"))?;
+                    }
                 }
                 Ok((destination, headers))
             }

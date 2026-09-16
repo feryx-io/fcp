@@ -379,6 +379,9 @@ pub struct SipMessageHandler {
     default_tenant_id: Option<fcp_core::TenantId>,
     /// Edges whose caller headers are believed (`[e911] trusted_edges`).
     trusted_edges: crate::emergency::TrustedEdges,
+    /// Whether this node tells the next hop where its caller is
+    /// (`X-FCP-Client-Address`): an SBC in front of phones does.
+    vouch_client_address: bool,
 
     /// Media manager for RTP handling
     media_manager: Option<Arc<fcp_media::MediaManager>>,
@@ -785,6 +788,7 @@ impl SipMessageHandler {
             storage,
             default_tenant_id: None,
             trusted_edges: Default::default(),
+            vouch_client_address: false,
             media_manager,
             media_config,
             call_recorder,
@@ -893,6 +897,14 @@ impl SipMessageHandler {
     /// (`docs/E911_BLOCK_2.md` §4, [`crate::emergency`]).
     pub fn with_trusted_edges(mut self, edges: crate::emergency::TrustedEdges) -> Self {
         self.trusted_edges = edges;
+        self
+    }
+
+    /// Tell the next hop where each caller is (`X-FCP-Client-Address`),
+    /// for a node that stands in front of phones (`docs/E911_BLOCK_2.md`
+    /// §6.2). The next hop believes it only from its trusted edges.
+    pub fn with_client_address_vouching(mut self, vouch: bool) -> Self {
+        self.vouch_client_address = vouch;
         self
     }
 
@@ -1733,7 +1745,7 @@ impl SipMessageHandler {
         // detected before any admission control: they are never rejected for
         // balance, and they carry the caller's dispatchable location.
         let emergency = self
-            .detect_emergency(&tenant_id, request, edge_caller.as_ref())
+            .detect_emergency(&tenant_id, request, peer, edge_caller.as_ref())
             .await;
         if let Some(em) = &emergency {
             info!(
@@ -5294,6 +5306,10 @@ impl SipMessageHandler {
         }
 
         // Extract caller's identity from A-leg for B2BUA caller ID preservation
+        let peer_for_call = self
+            .call_manager
+            .get_call(&call_id)
+            .and_then(|c| c.a_leg.contact);
         let caller_display_name = extract_from_display_name(request);
         let caller_from_uri = extract_from_uri(request).ok().map(normalize_from_uri);
 
@@ -5323,6 +5339,21 @@ impl SipMessageHandler {
             Some(headers)
         } else {
             emergency_headers
+        };
+
+        // An edge in front of phones says where its caller is, so the next
+        // hop can place a device that moves (§6.2). The caller's own
+        // address is the A-leg's source.
+        let emergency_headers = match (self.vouch_client_address, peer_for_call) {
+            (true, Some(client)) => {
+                let mut headers = emergency_headers.unwrap_or_default();
+                let _ = headers.push(
+                    SmolStr::new(fcp_core::CLIENT_ADDRESS_HEADER),
+                    SmolStr::new(client.ip().to_string()),
+                );
+                Some(headers)
+            }
+            _ => emergency_headers,
         };
 
         if let Some(ref name) = caller_display_name {
@@ -8828,9 +8859,12 @@ impl SipMessageHandler {
                     None
                 };
 
-                // Use registrar to handle the request with flow token
+                // Use registrar to handle the request with flow token, and
+                // keep the address it came from with the binding: a device
+                // that moves is placed by where it is (docs/E911_BLOCK_2.md
+                // §6.2).
                 let response = registrar
-                    .handle_register_with_flow(request, flow_token.as_deref())
+                    .handle_register_from(request, flow_token.as_deref(), Some(peer_addr))
                     .await;
 
                 // Log success/failure
@@ -8868,6 +8902,7 @@ impl SipMessageHandler {
         &self,
         tenant_id: &fcp_core::TenantId,
         request: &sip_core::Request,
+        peer: SocketAddr,
         edge_caller: Option<&crate::emergency::EdgeCaller>,
     ) -> Option<fcp_b2bua_core::EmergencyCallInfo> {
         let destination = sip_parse::header(request.headers(), "To")
@@ -8882,12 +8917,19 @@ impl SipMessageHandler {
             })
             .unwrap_or_default();
         let (username, aor) = self.emergency_caller(request, edge_caller);
+        // Where the caller is: what a trusted edge vouched for, else the
+        // INVITE's own source (§6.2); and the location the device sent, if
+        // any (§6.3, used only from a device the tenant trusts).
+        let client_address = self.trusted_edges.client_address(request, peer.ip());
+        let supplied = crate::emergency::supplied_location(request);
         crate::emergency::detect(
             self.storage.as_ref(),
             tenant_id,
             &destination,
             username.as_deref(),
             aor.as_deref(),
+            client_address,
+            supplied.as_ref(),
         )
         .await
     }

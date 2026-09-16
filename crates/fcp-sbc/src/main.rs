@@ -576,7 +576,13 @@ async fn main() -> Result<()> {
             None,          // cluster_parking
             String::new(), // node_id
         )?
-        .with_default_tenant_id(sbc_config.default_tenant_id),
+        .with_default_tenant_id(sbc_config.default_tenant_id)
+        .with_trusted_edges(fcp_sip::emergency::TrustedEdges::parse(
+            &sbc_config.e911.trusted_edges,
+        )?)
+        // An SBC stands in front of phones: it tells the call manager where
+        // each caller is (docs/E911_BLOCK_2.md §6.2).
+        .with_client_address_vouching(sbc_config.e911.vouch_client_address),
     );
 
     // 19. Build peer-trunk IP map for ingress trunk identification (reuses shared

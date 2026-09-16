@@ -23,7 +23,7 @@
 use crate::{Device, E911Address, LocationId, PhoneNumber, SiteLocation, TenantId};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 /// Numbers treated as live emergency calls when a tenant has no config.
 pub const DEFAULT_EMERGENCY_NUMBERS: &[&str] = &["911"];
@@ -52,7 +52,23 @@ pub struct EmergencyConfig {
     /// connected, but the record and event flag the gap prominently.
     /// (Blocking emergency calls is never an option.)
     pub require_dispatchable_location: bool,
+    /// Device types whose own location (a PIDF-LO in the INVITE) this
+    /// tenant trusts (`docs/E911_BLOCK_2.md` §6.3, §12.3). Empty trusts
+    /// none; a device may still be trusted one by one.
+    #[serde(default)]
+    pub trust_device_locations: Vec<crate::DeviceType>,
+    /// How long a user's declared location stands (§6.4): a day by default.
+    #[serde(default = "default_declared_ttl")]
+    pub declared_location_ttl: Duration,
     pub updated_at: SystemTime,
+}
+
+/// A day: how long a declared location stands unless the tenant says
+/// otherwise.
+pub const DEFAULT_DECLARED_LOCATION_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+
+fn default_declared_ttl() -> Duration {
+    DEFAULT_DECLARED_LOCATION_TTL
 }
 
 impl EmergencyConfig {
@@ -71,6 +87,8 @@ impl EmergencyConfig {
                 .collect(),
             notify_contacts: Vec::new(),
             require_dispatchable_location: false,
+            trust_device_locations: Vec::new(),
+            declared_location_ttl: DEFAULT_DECLARED_LOCATION_TTL,
             updated_at: SystemTime::now(),
         }
     }
@@ -141,10 +159,17 @@ pub fn dialed_user_part(dialed: &str) -> &str {
 pub enum LocationSource {
     /// `Device.e911_override` set by an admin for one physical phone.
     DeviceOverride,
+    /// A location the device sent with the call, from a device the tenant
+    /// trusts to send one (`docs/E911_BLOCK_2.md` §6.3).
+    DeviceSupplied,
+    /// The site the client address falls in, by the tenant's networks.
+    Network,
     /// The site location the device is assigned to.
     DeviceLocation,
     /// The site location the user is assigned to.
     UserLocation,
+    /// Where the user last said they were, while that has not expired.
+    Declared,
     /// The E911 address registered on the caller's phone number (DID).
     PhoneNumber,
 }
@@ -153,8 +178,11 @@ impl std::fmt::Display for LocationSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = match self {
             LocationSource::DeviceOverride => "device_override",
+            LocationSource::DeviceSupplied => "device_supplied",
+            LocationSource::Network => "network",
             LocationSource::DeviceLocation => "device_location",
             LocationSource::UserLocation => "user_location",
+            LocationSource::Declared => "declared",
             LocationSource::PhoneNumber => "phone_number",
         };
         write!(f, "{s}")
@@ -163,9 +191,155 @@ impl std::fmt::Display for LocationSource {
 
 impl LocationSource {
     /// The PIDF-LO `method` (RFC 4119, IANA method tokens) for a location
-    /// from this source: every source today is provisioned by hand.
+    /// from this source.
     pub fn pidf_method(&self) -> &'static str {
-        "Manual"
+        match self {
+            // The network the device is on placed it.
+            LocationSource::Network => "Wiremap",
+            // The user said where they were.
+            LocationSource::Declared => "Manual-Entry",
+            // A device's own claim travels with its own method; this is the
+            // fallback when it named none.
+            LocationSource::DeviceSupplied => "Unknown",
+            _ => "Manual",
+        }
+    }
+
+    /// Whether a location from this source is only as good as its age: a
+    /// user's declaration, which the record dates.
+    pub fn is_declared(&self) -> bool {
+        matches!(self, LocationSource::Declared)
+    }
+}
+
+/// Which devices a network mapping places (`docs/E911_BLOCK_2.md` §6.1).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NetworkApplies {
+    /// Devices that move: softphones, mobile and browser clients. A desk
+    /// phone keeps the site it was provisioned at.
+    #[default]
+    Nomadic,
+    /// Every device on the network, desk phones included.
+    All,
+}
+
+impl std::fmt::Display for NetworkApplies {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            NetworkApplies::Nomadic => "nomadic",
+            NetworkApplies::All => "all",
+        })
+    }
+}
+
+impl std::str::FromStr for NetworkApplies {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "nomadic" => Ok(NetworkApplies::Nomadic),
+            "all" => Ok(NetworkApplies::All),
+            other => Err(format!("unknown applies_to {other:?}")),
+        }
+    }
+}
+
+/// Whether a device of this type moves, and so is placed by the network it
+/// is on rather than by where it was provisioned.
+pub fn is_nomadic(device_type: crate::DeviceType) -> bool {
+    use crate::DeviceType::*;
+    matches!(device_type, Softphone | WebRtc | Mobile)
+}
+
+/// A tenant's network: the site an address on it is at
+/// (`docs/E911_BLOCK_2.md` §6.1).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EmergencyNetwork {
+    pub id: crate::EmergencyNetworkId,
+    pub tenant_id: TenantId,
+    /// The range, v4 or v6.
+    pub cidr: ipnetwork::IpNetwork,
+    /// The site an address on this network is at.
+    pub location_id: LocationId,
+    /// What to call it in the admin UI (`Albany floor 3 wired`).
+    pub name: Option<String>,
+    /// Breaks ties between networks of the same prefix length; lower first.
+    #[serde(default)]
+    pub priority: i32,
+    #[serde(default)]
+    pub applies_to: NetworkApplies,
+    pub created_at: SystemTime,
+    pub updated_at: SystemTime,
+}
+
+impl EmergencyNetwork {
+    pub fn new(tenant_id: TenantId, cidr: ipnetwork::IpNetwork, location_id: LocationId) -> Self {
+        let now = SystemTime::now();
+        Self {
+            id: crate::EmergencyNetworkId::new(),
+            tenant_id,
+            cidr,
+            location_id,
+            name: None,
+            priority: 0,
+            applies_to: NetworkApplies::Nomadic,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    /// Whether this network places a device of `device_type` (unknown when
+    /// `None`, which counts as nomadic: a device the platform cannot name
+    /// is not a desk phone it can vouch for).
+    pub fn places(&self, device_type: Option<crate::DeviceType>) -> bool {
+        match self.applies_to {
+            NetworkApplies::All => true,
+            NetworkApplies::Nomadic => device_type.map(is_nomadic).unwrap_or(true),
+        }
+    }
+}
+
+/// The network an address is on: the most specific match, then the lowest
+/// priority, among those that place this kind of device.
+pub fn match_network(
+    networks: &[EmergencyNetwork],
+    address: std::net::IpAddr,
+    device_type: Option<crate::DeviceType>,
+) -> Option<&EmergencyNetwork> {
+    // An IPv4 address seen through a dual-stack socket arrives mapped.
+    let address = match address {
+        std::net::IpAddr::V6(v6) => v6
+            .to_ipv4_mapped()
+            .map(std::net::IpAddr::V4)
+            .unwrap_or(address),
+        v4 => v4,
+    };
+    networks
+        .iter()
+        .filter(|n| n.cidr.contains(address) && n.places(device_type))
+        .max_by_key(|n| (n.cidr.prefix(), std::cmp::Reverse(n.priority)))
+}
+
+/// Where a user last said they were (`docs/E911_BLOCK_2.md` §6.4).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DeclaredLocation {
+    pub user_id: crate::UserId,
+    pub tenant_id: TenantId,
+    pub address: E911Address,
+    pub declared_at: SystemTime,
+    /// When it stops being used; a day after it was declared by default.
+    pub expires_at: SystemTime,
+}
+
+impl DeclaredLocation {
+    pub fn is_current(&self, now: SystemTime) -> bool {
+        self.expires_at > now
+    }
+
+    /// How long ago it was declared.
+    pub fn age(&self, now: SystemTime) -> std::time::Duration {
+        now.duration_since(self.declared_at).unwrap_or_default()
     }
 }
 
@@ -209,6 +383,13 @@ pub struct DispatchableLocation {
     /// Where the site is on the map, when its coordinates are set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub point: Option<GeoPoint>,
+    /// The address the caller was seen at, when one placed them
+    /// (`docs/E911_BLOCK_2.md` §6.2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_address: Option<String>,
+    /// For a location the user declared, how long ago they declared it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub declared_age: Option<Duration>,
 }
 
 impl DispatchableLocation {
@@ -239,6 +420,15 @@ pub struct LocationInputs<'a> {
     pub user_site: Option<&'a SiteLocation>,
     /// The caller's DID, for its registered E911 address and callback.
     pub phone_number: Option<&'a PhoneNumber>,
+    /// A location the device sent with the call, already checked against
+    /// what this tenant trusts the device to send (§6.3).
+    pub supplied: Option<&'a E911Address>,
+    /// The network the caller's address is on, with its site (§6.1).
+    pub network: Option<(&'a EmergencyNetwork, &'a SiteLocation)>,
+    /// Where the caller was seen, for the record (§6.2).
+    pub client_address: Option<std::net::IpAddr>,
+    /// Where the user last said they were, if that has not expired (§6.4).
+    pub declared: Option<&'a DeclaredLocation>,
 }
 
 /// Apply the precedence rules: device override → device site → user site →
@@ -249,9 +439,62 @@ pub struct LocationInputs<'a> {
 /// callback → phone number itself, so a device override still goes out with
 /// the site's ELIN.
 pub fn resolve_dispatchable_location(inputs: &LocationInputs<'_>) -> Option<DispatchableLocation> {
-    let callback_number = inputs
-        .device_site
+    let client_address = inputs.client_address.map(|a| a.to_string());
+    // The site the address came from, when a site gave it: its ELIN is the
+    // callback number the carrier maps to that address.
+    let (address, source, site, declared_age) =
+        if let Some(address) = inputs.device.and_then(|d| d.e911_override.clone()) {
+            (
+                address,
+                LocationSource::DeviceOverride,
+                inputs.device_site,
+                None,
+            )
+        } else if let Some(supplied) = inputs.supplied {
+            (supplied.clone(), LocationSource::DeviceSupplied, None, None)
+        } else if let Some((_, site)) = inputs
+            .network
+            .filter(|(_, site)| site_address(site).is_some())
+        {
+            (
+                site_address(site).expect("checked"),
+                LocationSource::Network,
+                Some(site),
+                None,
+            )
+        } else if let Some((site, address)) = inputs
+            .device_site
+            .and_then(|s| site_address(s).map(|a| (s, a)))
+        {
+            (address, LocationSource::DeviceLocation, Some(site), None)
+        } else if let Some((site, address)) = inputs
+            .user_site
+            .and_then(|s| site_address(s).map(|a| (s, a)))
+        {
+            (address, LocationSource::UserLocation, Some(site), None)
+        } else if let Some(declared) = inputs.declared.filter(|d| d.is_current(SystemTime::now())) {
+            (
+                declared.address.clone(),
+                LocationSource::Declared,
+                None,
+                Some(declared.age(SystemTime::now())),
+            )
+        } else {
+            // The address registered on the caller's number, or nothing
+            // this platform can dispatch to.
+            let address = inputs.phone_number.and_then(|n| n.e911_address.clone())?;
+            (address, LocationSource::PhoneNumber, None, None)
+        };
+
+    // The callback number: the site the address came from first, then the
+    // sites the caller is provisioned at, then the number's own.
+    let callback_number = site
         .and_then(|s| non_empty(s.e911_callback_number.as_deref()))
+        .or_else(|| {
+            inputs
+                .device_site
+                .and_then(|s| non_empty(s.e911_callback_number.as_deref()))
+        })
         .or_else(|| {
             inputs
                 .user_site
@@ -264,64 +507,51 @@ pub fn resolve_dispatchable_location(inputs: &LocationInputs<'_>) -> Option<Disp
         })
         .or_else(|| inputs.phone_number.map(|n| n.e164.clone()));
 
-    if let Some(address) = inputs.device.and_then(|d| d.e911_override.clone()) {
-        return Some(DispatchableLocation {
-            address,
-            callback_number,
-            source: LocationSource::DeviceOverride,
-            location_id: inputs.device.and_then(|d| d.location_id),
-            location_name: inputs.device_site.map(|s| s.name.clone()),
-            point: inputs.device_site.and_then(site_point),
-        });
-    }
-    if let Some((site, address)) = inputs
-        .device_site
-        .and_then(|s| site_address(s).map(|a| (s, a)))
-    {
-        return Some(DispatchableLocation {
-            address,
-            callback_number,
-            source: LocationSource::DeviceLocation,
-            location_id: Some(site.id),
-            location_name: Some(site.name.clone()),
-            point: site_point(site),
-        });
-    }
-    if let Some((site, address)) = inputs
-        .user_site
-        .and_then(|s| site_address(s).map(|a| (s, a)))
-    {
-        return Some(DispatchableLocation {
-            address,
-            callback_number,
-            source: LocationSource::UserLocation,
-            location_id: Some(site.id),
-            location_name: Some(site.name.clone()),
-            point: site_point(site),
-        });
-    }
-    if let Some(address) = inputs.phone_number.and_then(|n| n.e911_address.clone()) {
-        return Some(DispatchableLocation {
-            address,
-            callback_number,
-            source: LocationSource::PhoneNumber,
-            location_id: None,
-            location_name: None,
-            point: None,
-        });
-    }
-    None
+    Some(DispatchableLocation {
+        address,
+        callback_number,
+        source,
+        location_id: site.map(|s| s.id).or_else(|| {
+            (source == LocationSource::DeviceOverride)
+                .then(|| inputs.device.and_then(|d| d.location_id))
+                .flatten()
+        }),
+        location_name: site.map(|s| s.name.clone()).or_else(|| {
+            (source == LocationSource::DeviceOverride)
+                .then(|| inputs.device_site.map(|s| s.name.clone()))
+                .flatten()
+        }),
+        point: site.and_then(site_point),
+        client_address,
+        declared_age,
+    })
+}
+
+/// What is known about the caller when their location is resolved.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct CallerContext<'a> {
+    /// The `user@host` of the device placing the call, which picks the
+    /// caller's device among their devices.
+    pub prefer_device_aor: Option<&'a str>,
+    /// Where the caller was seen: a trusted edge's client address, the
+    /// INVITE's own source, or the device's last registration (§6.2).
+    pub client_address: Option<std::net::IpAddr>,
+    /// A location the device sent with the call, not yet trusted (§6.3).
+    pub supplied: Option<&'a E911Address>,
+    /// The tenant's configuration, for which devices may supply a location.
+    pub config: Option<&'a EmergencyConfig>,
 }
 
 /// Resolve a user's dispatchable location from storage: their devices
 /// (preferring the one registered as `prefer_device_aor`, then any with an
-/// E911 override or a site), the sites those point at, and the DID bound to
-/// them. Every lookup is best-effort; a storage error just removes that
-/// input.
+/// E911 override or a site), the sites those point at, the tenant's
+/// networks for the client address, the user's declared location and the
+/// DID bound to them. Every lookup is best-effort; a storage error just
+/// removes that input.
 pub async fn resolve_for_user(
     storage: &crate::DynStorage,
     user: &crate::storage::User,
-    prefer_device_aor: Option<&str>,
+    caller: CallerContext<'_>,
 ) -> Option<DispatchableLocation> {
     use crate::storage::{DeviceStore, LineBindingStore, PhoneNumberStore, SiteLocationStore};
 
@@ -329,7 +559,9 @@ pub async fn resolve_for_user(
         .list_devices_by_user(&user.id)
         .await
         .unwrap_or_default();
-    let wanted = prefer_device_aor.map(|a| a.trim_start_matches("sip:").to_ascii_lowercase());
+    let wanted = caller
+        .prefer_device_aor
+        .map(|a| a.trim_start_matches("sip:").to_ascii_lowercase());
     let device = devices
         .iter()
         .find(|d| {
@@ -367,12 +599,101 @@ pub async fn resolve_for_user(
         None => None,
     };
 
+    // A location the device sent is used only from a device this tenant
+    // trusts to send one (§6.3, §12.3).
+    let supplied = caller.supplied.filter(|_| {
+        device.is_some_and(|d| {
+            d.e911_trust_location.unwrap_or_else(|| {
+                caller
+                    .config
+                    .is_some_and(|c| c.trust_device_locations.contains(&d.device_type))
+            })
+        })
+    });
+
+    // Where the caller was seen: what the call itself said, else where
+    // their device last registered from (§6.2).
+    let client_address = match caller.client_address {
+        Some(address) => Some(address),
+        None => last_registration_address(storage, &user.tenant_id, device).await,
+    };
+
+    // The network the caller's address is on, and the site it names.
+    let matched = match (client_address, storage.emergency_store()) {
+        (Some(address), Some(store)) => {
+            let networks = store
+                .list_emergency_networks(&user.tenant_id)
+                .await
+                .unwrap_or_default();
+            match match_network(&networks, address, device.map(|d| d.device_type)) {
+                Some(network) => storage
+                    .get_location(&network.location_id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|site| (network.clone(), site)),
+                None => None,
+            }
+        }
+        _ => None,
+    };
+
+    // Where the user last said they were, while that stands.
+    let declared = match storage.emergency_store() {
+        Some(store) => store
+            .get_declared_location(&user.tenant_id, &user.id)
+            .await
+            .ok()
+            .flatten()
+            .filter(|d| d.is_current(SystemTime::now())),
+        None => None,
+    };
+
     resolve_dispatchable_location(&LocationInputs {
         device,
         device_site: device_site.as_ref(),
         user_site: user_site.as_ref(),
         phone_number: phone_number.as_ref(),
+        supplied,
+        network: matched.as_ref().map(|(n, s)| (n, s)),
+        client_address,
+        declared: declared.as_ref(),
     })
+}
+
+/// The address a device last registered from, when it has registered.
+async fn last_registration_address(
+    storage: &crate::DynStorage,
+    tenant_id: &TenantId,
+    device: Option<&Device>,
+) -> Option<std::net::IpAddr> {
+    use crate::storage::RegistrationStore;
+
+    let aor = device?.sip_uri.as_deref()?;
+    let aor = format!("sip:{}", aor.trim_start_matches("sip:"));
+    let registrations = storage
+        .get_registrations_in_tenant(tenant_id, &aor)
+        .await
+        .ok()?;
+    registrations
+        .iter()
+        .filter_map(|r| r.source_address.as_deref())
+        .filter_map(parse_address)
+        .next()
+}
+
+/// An address, an `address:port`, or a bracketed IPv6 form.
+pub fn parse_address(value: &str) -> Option<std::net::IpAddr> {
+    let value = value.trim();
+    if let Ok(address) = value.parse::<std::net::IpAddr>() {
+        return Some(address);
+    }
+    if let Ok(socket) = value.parse::<std::net::SocketAddr>() {
+        return Some(socket.ip());
+    }
+    let bracketed = value.strip_prefix('[')?;
+    let (inside, _) = bracketed.split_once(']')?;
+    inside.parse().ok()
 }
 
 fn non_empty(s: Option<&str>) -> Option<String> {
@@ -604,6 +925,115 @@ pub struct EmergencyCompletion {
     pub geolocation_error: Option<String>,
 }
 
+/// What this node's emergency calls did, for `/metrics`
+/// (`docs/E911_BLOCK_2.md` §9).
+#[derive(Debug, Default)]
+pub struct EmergencyCounters {
+    /// Calls by kind, location source and delivery method.
+    calls: std::sync::Mutex<std::collections::BTreeMap<(String, String, String), u64>>,
+    /// Calls placed with no location at all, and with an address that was
+    /// never structured or never validated.
+    gaps: std::sync::Mutex<std::collections::BTreeMap<&'static str, u64>>,
+    /// `Geolocation-Error` answers by code.
+    location_errors: std::sync::Mutex<std::collections::BTreeMap<String, u64>>,
+}
+
+impl EmergencyCounters {
+    /// The process's counters.
+    pub fn global() -> &'static EmergencyCounters {
+        static COUNTERS: std::sync::OnceLock<EmergencyCounters> = std::sync::OnceLock::new();
+        COUNTERS.get_or_init(EmergencyCounters::default)
+    }
+
+    /// An emergency call was placed: its kind, where its location came from
+    /// and how it travelled.
+    pub fn placed(
+        &self,
+        kind: EmergencyKind,
+        location: Option<&DispatchableLocation>,
+        delivery: Option<&str>,
+    ) {
+        if let Ok(mut map) = self.calls.lock() {
+            *map.entry((
+                kind.to_string(),
+                location
+                    .map(|l| l.source.to_string())
+                    .unwrap_or_else(|| "none".to_string()),
+                delivery.unwrap_or("none").to_string(),
+            ))
+            .or_insert(0) += 1;
+        }
+        let Ok(mut gaps) = self.gaps.lock() else {
+            return;
+        };
+        match location {
+            None => *gaps.entry("no_location").or_insert(0) += 1,
+            Some(location) => {
+                if !location.address.civic.is_structured() {
+                    *gaps.entry("unstructured_address").or_insert(0) += 1;
+                }
+                if !location.address.validated {
+                    *gaps.entry("unvalidated_address").or_insert(0) += 1;
+                }
+            }
+        }
+    }
+
+    /// A trunk answered a location with an error (RFC 6442 §4.4).
+    pub fn location_refused(&self, error: &str) {
+        let code = error
+            .split(';')
+            .next()
+            .unwrap_or("unknown")
+            .trim()
+            .to_string();
+        if let Ok(mut map) = self.location_errors.lock() {
+            *map.entry(code).or_insert(0) += 1;
+        }
+    }
+
+    /// Prometheus text; `labels` is prepended to each series' labels
+    /// (`node="…"`), or empty.
+    pub fn prometheus(&self, labels: &str) -> String {
+        let sep = if labels.is_empty() { "" } else { "," };
+        let mut out = String::new();
+        if let Ok(map) = self.calls.lock() {
+            out.push_str(
+                "# HELP fcp_emergency_calls_total Emergency calls placed, by kind, location source and delivery.\n\
+                 # TYPE fcp_emergency_calls_total counter\n",
+            );
+            for ((kind, source, delivery), n) in map.iter() {
+                out.push_str(&format!(
+                    "fcp_emergency_calls_total{{{labels}{sep}kind=\"{kind}\",source=\"{source}\",delivery=\"{delivery}\"}} {n}\n"
+                ));
+            }
+        }
+        if let Ok(map) = self.gaps.lock() {
+            out.push_str(
+                "# HELP fcp_emergency_location_gaps_total Emergency calls whose location was missing, unstructured or unvalidated.\n\
+                 # TYPE fcp_emergency_location_gaps_total counter\n",
+            );
+            for (gap, n) in map.iter() {
+                out.push_str(&format!(
+                    "fcp_emergency_location_gaps_total{{{labels}{sep}gap=\"{gap}\"}} {n}\n"
+                ));
+            }
+        }
+        if let Ok(map) = self.location_errors.lock() {
+            out.push_str(
+                "# HELP fcp_emergency_location_errors_total Geolocation-Error answers from emergency trunks, by code.\n\
+                 # TYPE fcp_emergency_location_errors_total counter\n",
+            );
+            for (code, n) in map.iter() {
+                out.push_str(&format!(
+                    "fcp_emergency_location_errors_total{{{labels}{sep}code=\"{code}\"}} {n}\n"
+                ));
+            }
+        }
+        out
+    }
+}
+
 /// Persistence for emergency configuration and the call audit trail.
 #[async_trait]
 pub trait EmergencyStore: Send + Sync {
@@ -620,6 +1050,55 @@ pub trait EmergencyStore: Send + Sync {
         limit: usize,
     ) -> anyhow::Result<Vec<EmergencyCallRecord>>;
     async fn mark_emergency_call_notified(&self, id: i64) -> anyhow::Result<()>;
+
+    /// The tenant's networks, for placing a caller by address (§6.1).
+    /// Defaulted so a store without them places nobody.
+    async fn list_emergency_networks(
+        &self,
+        _tenant_id: &TenantId,
+    ) -> anyhow::Result<Vec<EmergencyNetwork>> {
+        Ok(Vec::new())
+    }
+
+    async fn get_emergency_network(
+        &self,
+        _id: &crate::EmergencyNetworkId,
+    ) -> anyhow::Result<Option<EmergencyNetwork>> {
+        Ok(None)
+    }
+
+    async fn put_emergency_network(&self, _network: &EmergencyNetwork) -> anyhow::Result<()> {
+        anyhow::bail!("this store does not keep emergency networks")
+    }
+
+    async fn delete_emergency_network(
+        &self,
+        _id: &crate::EmergencyNetworkId,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Where a user last said they were (§6.4), whether or not it has
+    /// expired; the caller decides.
+    async fn get_declared_location(
+        &self,
+        _tenant_id: &TenantId,
+        _user_id: &crate::UserId,
+    ) -> anyhow::Result<Option<DeclaredLocation>> {
+        Ok(None)
+    }
+
+    async fn put_declared_location(&self, _location: &DeclaredLocation) -> anyhow::Result<()> {
+        anyhow::bail!("this store does not keep declared locations")
+    }
+
+    async fn delete_declared_location(
+        &self,
+        _tenant_id: &TenantId,
+        _user_id: &crate::UserId,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
     /// Complete the record `id` with what became of the call.
     async fn complete_emergency_call(
         &self,
@@ -734,6 +1213,7 @@ mod tests {
             device_site: Some(&device_site),
             user_site: Some(&user_site),
             phone_number: Some(&did),
+            ..Default::default()
         })
         .unwrap();
         assert_eq!(loc.source, LocationSource::DeviceLocation);
@@ -747,6 +1227,7 @@ mod tests {
             device_site: Some(&device_site),
             user_site: Some(&user_site),
             phone_number: Some(&did),
+            ..Default::default()
         })
         .unwrap();
         assert_eq!(loc.source, LocationSource::DeviceOverride);
@@ -822,7 +1303,130 @@ mod tests {
             location_id: None,
             location_name: Some("HQ".to_string()),
             point: None,
+            client_address: None,
+            declared_age: None,
         };
         assert_eq!(loc.summary(), "HQ: 1 State St, Albany, NY 12207");
+    }
+
+    fn network(cidr: &str, site: &SiteLocation, applies_to: NetworkApplies) -> EmergencyNetwork {
+        let mut n = EmergencyNetwork::new(TenantId::nil(), cidr.parse().unwrap(), site.id);
+        n.applies_to = applies_to;
+        n
+    }
+
+    #[test]
+    fn the_network_a_caller_is_on_places_them_over_their_site() {
+        let office = site("HQ", Some("1 State St"), Some("+15185550001"));
+        let branch = {
+            let mut s = site("Branch", Some("9 Elm St"), Some("+15185550009"));
+            s.name = "Branch".to_string();
+            s
+        };
+        let mut device = Device::new("phone".into(), DeviceType::Softphone, TenantId::nil());
+        device.location_id = Some(office.id);
+        let networks = [
+            network("10.0.0.0/8", &branch, NetworkApplies::Nomadic),
+            network("10.1.2.0/24", &branch, NetworkApplies::Nomadic),
+        ];
+
+        // The most specific network wins, and it places a softphone.
+        let matched = match_network(
+            &networks,
+            "10.1.2.7".parse().unwrap(),
+            Some(DeviceType::Softphone),
+        )
+        .expect("a network matches");
+        assert_eq!(matched.cidr.prefix(), 24);
+        let loc = resolve_dispatchable_location(&LocationInputs {
+            device: Some(&device),
+            device_site: Some(&office),
+            network: Some((matched, &branch)),
+            client_address: Some("10.1.2.7".parse().unwrap()),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(loc.source, LocationSource::Network);
+        assert_eq!(loc.location_name.as_deref(), Some("Branch"));
+        assert_eq!(
+            loc.callback_number.as_deref(),
+            Some("+15185550009"),
+            "the callback number is the site the address came from"
+        );
+        assert_eq!(loc.client_address.as_deref(), Some("10.1.2.7"));
+        assert_eq!(loc.source.pidf_method(), "Wiremap");
+
+        // A desk phone keeps the site it was provisioned at, unless the
+        // network says it places everything.
+        assert!(match_network(
+            &networks,
+            "10.1.2.7".parse().unwrap(),
+            Some(DeviceType::DeskPhone)
+        )
+        .is_none());
+        let all = [network("10.1.2.0/24", &branch, NetworkApplies::All)];
+        assert!(match_network(
+            &all,
+            "10.1.2.7".parse().unwrap(),
+            Some(DeviceType::DeskPhone)
+        )
+        .is_some());
+        // An address on no network places nobody.
+        assert!(match_network(&networks, "192.0.2.5".parse().unwrap(), None).is_none());
+    }
+
+    #[test]
+    fn a_declared_location_stands_until_it_expires() {
+        let now = SystemTime::now();
+        let user_site = site("HQ", None, Some("+15185550001"));
+        let declared = DeclaredLocation {
+            user_id: UserId::new(),
+            tenant_id: TenantId::nil(),
+            address: addr("42 Hotel Rd"),
+            declared_at: now - Duration::from_secs(3600),
+            expires_at: now + Duration::from_secs(3600),
+        };
+        // The user's site has no street, so the declaration is the location.
+        let loc = resolve_dispatchable_location(&LocationInputs {
+            user_site: Some(&user_site),
+            declared: Some(&declared),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(loc.source, LocationSource::Declared);
+        assert!(loc.address.address1.contains("Hotel"));
+        assert!(loc.declared_age.unwrap() >= Duration::from_secs(3600));
+        assert_eq!(
+            loc.callback_number.as_deref(),
+            Some("+15185550001"),
+            "the user's site still supplies the callback number"
+        );
+
+        let expired = DeclaredLocation {
+            expires_at: now - Duration::from_secs(1),
+            ..declared.clone()
+        };
+        assert!(!expired.is_current(now));
+        assert!(resolve_dispatchable_location(&LocationInputs {
+            user_site: Some(&user_site),
+            declared: Some(&expired),
+            ..Default::default()
+        })
+        .is_none());
+    }
+
+    #[test]
+    fn a_trusted_devices_own_location_comes_first_after_its_override() {
+        let supplied = addr("77 Device Ln");
+        let user_site = site("HQ", Some("1 State St"), Some("+15185550001"));
+        let loc = resolve_dispatchable_location(&LocationInputs {
+            user_site: Some(&user_site),
+            supplied: Some(&supplied),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(loc.source, LocationSource::DeviceSupplied);
+        assert!(loc.address.address1.contains("Device"));
+        assert_eq!(loc.source.pidf_method(), "Unknown");
     }
 }

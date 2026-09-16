@@ -29,6 +29,8 @@ pub struct ApiState {
     pub sessions: Arc<SessionManager>,
     /// Operator tokens.
     pub operator_tokens: Arc<Vec<String>>,
+    /// Proxies whose `X-Forwarded-For` is believed (`[http] trusted_proxies`).
+    pub trusted_proxies: Arc<Vec<std::net::IpAddr>>,
     pub public_join: bool,
     pub serve_join_page: bool,
 }
@@ -244,17 +246,42 @@ async fn ice_candidate(
 /// `POST /v1/calls` — call a SIP destination.
 async fn initiate_call(
     State(state): State<ApiState>,
+    axum::extract::ConnectInfo(client): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    headers: axum::http::HeaderMap,
     Json(request): Json<InitiateCallRequest>,
 ) -> Result<(StatusCode, Json<CreatedSession>), ApiError> {
+    // Where the browser is, for the call manager to place it by network
+    // (`docs/E911_BLOCK_2.md` §6.2). A forwarded address is believed only
+    // from a proxy the operator listed.
+    let client_address = client_address(&state, client.ip(), &headers);
     let created = state
         .sessions
         .call(
             &request.destination,
             request.connection_id.as_deref(),
             request.caller,
+            client_address,
         )
         .await?;
     Ok((StatusCode::CREATED, Json(created)))
+}
+
+/// The browser's address: the connection's, or the first address in
+/// `X-Forwarded-For` when the connection came from a trusted proxy.
+fn client_address(
+    state: &ApiState,
+    peer: std::net::IpAddr,
+    headers: &axum::http::HeaderMap,
+) -> std::net::IpAddr {
+    if !state.trusted_proxies.contains(&peer) {
+        return peer;
+    }
+    headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split(',').next())
+        .and_then(|v| v.trim().parse::<std::net::IpAddr>().ok())
+        .unwrap_or(peer)
 }
 
 /// `GET /v1/calls` — every call session.

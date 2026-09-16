@@ -10,6 +10,7 @@
 //! dispatch.
 
 use crate::e911::{DispatchableLocation, GeoPoint};
+use crate::phone_number::E911Address;
 use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, BytesText, Event};
 use quick_xml::Writer;
 use std::io::Cursor;
@@ -205,6 +206,186 @@ fn text_element(w: &mut Writer<Cursor<Vec<u8>>>, name: &str, text: &str) {
     end(w, name);
 }
 
+/// A location a device sent in a PIDF-LO (`docs/E911_BLOCK_2.md` §6.3).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SuppliedLocation {
+    /// The civic address, when the document carried one.
+    pub address: Option<E911Address>,
+    /// The geodetic point, when it carried one.
+    pub point: Option<GeoPoint>,
+    /// The `gp:method` the document claimed (`GPS`, `Wiremap`, `Manual`, …).
+    pub method: Option<String>,
+}
+
+impl SuppliedLocation {
+    /// Whether anything usable was found.
+    pub fn is_empty(&self) -> bool {
+        self.address.is_none() && self.point.is_none()
+    }
+}
+
+/// Read a PIDF-LO a device sent: the first civic address and the first
+/// geodetic point in it, whatever prefixes the sender used and wherever in
+/// the document they sit (a `tuple`, a `device` or a `person`, RFC 5491
+/// §3). `None` when the XML does not parse; an empty result when it holds
+/// no location this platform understands.
+///
+/// The address is a caller's claim: validate it (and the caller's right to
+/// make it) before dispatching on it.
+pub fn parse(xml: &str) -> Option<SuppliedLocation> {
+    use quick_xml::name::ResolveResult;
+    use quick_xml::NsReader;
+
+    let mut reader = NsReader::from_str(xml);
+    // A document that ends mid-element, or closes what it never opened, is
+    // not a location object.
+    reader.config_mut().check_end_names = true;
+    reader.config_mut().allow_unmatched_ends = false;
+    let mut civic: Option<E911Address> = None;
+    let mut civic_elements: Vec<(String, String)> = Vec::new();
+    let mut in_civic = false;
+    let mut point: Option<GeoPoint> = None;
+    let mut method: Option<String> = None;
+    // The element whose text is being collected, and the text so far.
+    let mut collecting: Option<String> = None;
+    let mut text = String::new();
+    let mut pos: Option<String> = None;
+    // Open elements, so a document that ends inside one is refused.
+    let mut depth: i32 = 0;
+
+    loop {
+        let (namespace, event) = reader.read_resolved_event().ok()?;
+        let namespace = match namespace {
+            ResolveResult::Bound(ns) => String::from_utf8_lossy(ns.as_ref()).to_string(),
+            _ => String::new(),
+        };
+        match event {
+            Event::Start(e) => {
+                depth += 1;
+                let local = String::from_utf8_lossy(e.local_name().as_ref()).to_string();
+                match (namespace.as_str(), local.as_str()) {
+                    (CIVIC_NS, "civicAddress") if civic.is_none() => {
+                        in_civic = true;
+                        civic_elements.clear();
+                    }
+                    (GML_NS, "Point") => pos = Some(String::new()),
+                    _ => {}
+                }
+                collecting = Some(local);
+                text.clear();
+            }
+            Event::Text(t) => {
+                text.push_str(&t.decode().ok()?);
+            }
+            Event::GeneralRef(r) => {
+                text.push_str(match r.decode().ok()?.as_ref() {
+                    "amp" => "&",
+                    "lt" => "<",
+                    "gt" => ">",
+                    "quot" => "\"",
+                    "apos" => "'",
+                    _ => "",
+                });
+            }
+            Event::End(e) => {
+                depth -= 1;
+                let local = String::from_utf8_lossy(e.local_name().as_ref()).to_string();
+                let value = text.trim().to_string();
+                text.clear();
+                if collecting.as_deref() == Some(local.as_str()) {
+                    collecting = None;
+                }
+                match (namespace.as_str(), local.as_str()) {
+                    (CIVIC_NS, "civicAddress") => {
+                        in_civic = false;
+                        civic = Some(address_from_elements(&civic_elements));
+                    }
+                    (CIVIC_NS, _) if in_civic && !value.is_empty() => {
+                        civic_elements.push((local, value));
+                    }
+                    (GML_NS, "pos") if pos.is_some() => pos = Some(value),
+                    (GML_NS, "Point") => {
+                        point = point.or_else(|| pos.as_deref().and_then(parse_pos));
+                    }
+                    (GEOPRIV_NS, "method") if method.is_none() && !value.is_empty() => {
+                        method = Some(value);
+                    }
+                    _ => {}
+                }
+            }
+            Event::Eof if depth == 0 => break,
+            Event::Eof => return None,
+            _ => {}
+        }
+    }
+    Some(SuppliedLocation {
+        address: civic,
+        point,
+        method,
+    })
+}
+
+/// `latitude longitude` in degrees (EPSG:4326 axis order).
+fn parse_pos(pos: &str) -> Option<GeoPoint> {
+    let mut parts = pos.split_whitespace();
+    let latitude: f64 = parts.next()?.parse().ok()?;
+    let longitude: f64 = parts.next()?.parse().ok()?;
+    ((-90.0..=90.0).contains(&latitude) && (-180.0..=180.0).contains(&longitude)).then_some(
+        GeoPoint {
+            latitude,
+            longitude,
+        },
+    )
+}
+
+/// The RFC 5139 elements as an address: the elements this platform keeps,
+/// and a street line built from them for everything that reads one.
+fn address_from_elements(elements: &[(String, String)]) -> E911Address {
+    let get = |name: &str| {
+        elements
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, v)| v.clone())
+    };
+    let civic = crate::phone_number::CivicElements {
+        house_number: get("HNO"),
+        house_number_suffix: get("HNS"),
+        street_predirection: get("PRD"),
+        street_name: get("RD"),
+        street_suffix: get("STS"),
+        street_postdirection: get("POD"),
+        additional: get("LOC"),
+        floor: get("FLR"),
+        unit: get("UNIT"),
+        room: get("ROOM"),
+        building: get("BLD"),
+        name: get("NAM"),
+    };
+    let street = [
+        civic.house_number.as_deref(),
+        civic.house_number_suffix.as_deref(),
+        civic.street_predirection.as_deref(),
+        civic.street_name.as_deref(),
+        civic.street_suffix.as_deref(),
+        civic.street_postdirection.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(" ");
+    E911Address {
+        address1: street,
+        address2: civic.additional.clone(),
+        city: get("A3").unwrap_or_default(),
+        state: get("A1").unwrap_or_default(),
+        postal_code: get("PC").unwrap_or_default(),
+        country: get("country").unwrap_or_default(),
+        validated: false,
+        validated_at: None,
+        civic,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -256,6 +437,8 @@ mod tests {
             location_id: None,
             location_name: Some("Example HQ".into()),
             point,
+            client_address: None,
+            declared_age: None,
         }
     }
 
@@ -449,5 +632,81 @@ mod tests {
             children(&els, &["presence", "dm:device"])[..1],
             ["gp:geopriv"]
         );
+    }
+
+    #[test]
+    fn a_document_this_platform_wrote_reads_back() {
+        let point = GeoPoint {
+            latitude: 37.7749,
+            longitude: -122.4194,
+        };
+        let sent = located(true, Some(point));
+        let read = parse(&document(&sent, &subject())).expect("parses").clone();
+        let address = read.address.expect("a civic address");
+        assert_eq!(address.address1, "1455 A N Market St");
+        assert_eq!(address.city, "San Francisco");
+        assert_eq!(address.state, "CA");
+        assert_eq!(address.postal_code, "94103");
+        assert_eq!(address.country, "US");
+        assert_eq!(address.civic.house_number.as_deref(), Some("1455"));
+        assert_eq!(address.civic.street_name.as_deref(), Some("Market"));
+        assert_eq!(address.civic.room.as_deref(), Some("4B & <5>"));
+        assert!(!address.validated, "a device's claim is never validated");
+        assert_eq!(read.point, Some(point));
+        assert_eq!(read.method.as_deref(), Some("Manual"));
+    }
+
+    #[test]
+    fn another_stacks_prefixes_and_shapes_are_read() {
+        // RFC 5491 §3.2's shape, with other prefixes, a tuple rather than a
+        // device, and the point before the civic address.
+        let xml = r#"<?xml version="1.0"?>
+            <pres:presence xmlns:pres="urn:ietf:params:xml:ns:pidf"
+                           xmlns:gp="urn:ietf:params:xml:ns:pidf:geopriv10"
+                           xmlns:cl="urn:ietf:params:xml:ns:pidf:geopriv10:civicAddr"
+                           xmlns:g="http://www.opengis.net/gml"
+                           entity="pres:alice@example.com">
+              <pres:tuple id="t1"><pres:status><gp:geopriv>
+                <gp:location-info>
+                  <g:Point srsName="urn:ogc:def:crs:EPSG::4326"><g:pos>-43.5723 153.2176</g:pos></g:Point>
+                  <cl:civicAddress><cl:country>AU</cl:country><cl:A1>NSW</cl:A1>
+                    <cl:A3>Wollongong</cl:A3><cl:RD>Flinders</cl:RD><cl:STS>St</cl:STS>
+                    <cl:HNO>15</cl:HNO><cl:FLR>2</cl:FLR><cl:PC>2500</cl:PC></cl:civicAddress>
+                </gp:location-info>
+                <gp:usage-rules/>
+                <gp:method>GPS</gp:method>
+              </gp:geopriv></pres:status></pres:tuple>
+            </pres:presence>"#;
+        let read = parse(xml).expect("parses");
+        let address = read.address.expect("a civic address");
+        assert_eq!(address.address1, "15 Flinders St");
+        assert_eq!(address.city, "Wollongong");
+        assert_eq!(address.country, "AU");
+        assert_eq!(address.civic.floor.as_deref(), Some("2"));
+        assert_eq!(read.method.as_deref(), Some("GPS"));
+        assert_eq!(
+            read.point,
+            Some(GeoPoint {
+                latitude: -43.5723,
+                longitude: 153.2176
+            })
+        );
+    }
+
+    #[test]
+    fn nonsense_is_refused_or_empty() {
+        assert!(parse("<presence>").is_none(), "unclosed XML");
+        assert!(parse("not xml at all").unwrap().is_empty());
+        // A document with no location this platform understands.
+        let bare = r#"<presence xmlns="urn:ietf:params:xml:ns:pidf" entity="pres:a@b"/>"#;
+        assert!(parse(bare).unwrap().is_empty());
+        // A point off the globe is not a point.
+        let off = r#"<presence xmlns="urn:ietf:params:xml:ns:pidf"
+              xmlns:gp="urn:ietf:params:xml:ns:pidf:geopriv10"
+              xmlns:gml="http://www.opengis.net/gml" entity="pres:a@b">
+              <gp:geopriv><gp:location-info>
+                <gml:Point><gml:pos>999 999</gml:pos></gml:Point>
+              </gp:location-info><gp:usage-rules/></gp:geopriv></presence>"#;
+        assert!(parse(off).unwrap().point.is_none());
     }
 }

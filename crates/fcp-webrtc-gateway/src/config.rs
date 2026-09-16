@@ -167,6 +167,12 @@ pub struct HttpSection {
     #[serde(default)]
     pub serve_join_page: bool,
 
+    /// Proxies whose `X-Forwarded-For` names the real client. With none,
+    /// the connection's own address is the client's — which behind a proxy
+    /// is the proxy's (`docs/E911_BLOCK_2.md` §6.2).
+    #[serde(default)]
+    pub trusted_proxies: Vec<std::net::IpAddr>,
+
     /// Let `POST /v1/rooms/{room}/join` be called without an operator
     /// token. The join token inside the request is what admits the caller
     /// (the conference server verifies it); the rate limit bounds abuse.
@@ -196,6 +202,7 @@ impl Default for HttpSection {
             rate_limit_window_secs: default_rate_limit_window_secs(),
             serve_join_page: false,
             public_join: false,
+            trusted_proxies: Vec::new(),
         }
     }
 }

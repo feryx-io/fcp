@@ -318,6 +318,7 @@ mod tests {
             registered_at: SystemTime::now(),
             path: None,
             flow_token: None,
+            source_address: None,
         }
     }
 

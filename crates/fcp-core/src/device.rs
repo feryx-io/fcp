@@ -80,6 +80,12 @@ pub struct Device {
     /// Per-device E911 override (for mobile users)
     pub e911_override: Option<E911Address>,
 
+    /// Whether this device's own location (a PIDF-LO it sends with a call)
+    /// is trusted, over what the tenant trusts its device type to send
+    /// (`docs/E911_BLOCK_2.md` §6.3). `None` follows the type.
+    #[serde(default)]
+    pub e911_trust_location: Option<bool>,
+
     // ===== Provisioning =====
     /// Provisioning URL (for auto-provisioning)
     pub provisioning_url: Option<String>,
@@ -132,6 +138,7 @@ impl Device {
             location: None,
             location_id: None,
             e911_override: None,
+            e911_trust_location: None,
             provisioning_url: None,
             config_template_id: None,
             provisioning_token_hash: None,

@@ -813,6 +813,12 @@ async fn metrics_handler(State(state): State<Arc<AppState>>) -> impl IntoRespons
     body.push_str(
         &fcp_core::compliance::RecordingCounters::global().prometheus(&format!("node=\"{node}\"")),
     );
+    // Emergency calls by kind, location source and delivery, the location
+    // gaps, and the trunks' Geolocation-Error answers
+    // (docs/E911_BLOCK_2.md §9).
+    body.push_str(
+        &fcp_core::e911::EmergencyCounters::global().prometheus(&format!("node=\"{node}\"")),
+    );
     (
         StatusCode::OK,
         [("content-type", "text/plain; version=0.0.4; charset=utf-8")],

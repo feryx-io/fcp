@@ -913,7 +913,170 @@ pub struct ForwardingResponse {
     pub no_answer_timeout_secs: u64,
 }
 
-/// GET /me/forwarding
+// ─── Where I am (docs/E911_BLOCK_2.md §6.4) ──────────────────────────────
+
+/// A user's declared location: where they are when no network places them.
+#[derive(Debug, serde::Serialize)]
+pub struct DeclaredLocationResponse {
+    pub address: crate::v1::phone_numbers::E911AddressResponse,
+    pub declared_at: u64,
+    pub expires_at: u64,
+    /// False once it has expired: the platform stops using it.
+    pub current: bool,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct DeclareLocationRequest {
+    pub address1: String,
+    pub address2: Option<String>,
+    pub city: String,
+    pub state: String,
+    pub postal_code: String,
+    #[serde(default)]
+    pub country: Option<String>,
+    /// RFC 5139 civic elements, as `/v1/locations` takes them.
+    #[serde(flatten, default)]
+    pub civic: fcp_core::phone_number::CivicElements,
+}
+
+fn unix_secs(t: std::time::SystemTime) -> u64 {
+    t.duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+fn emergency_store(
+    state: &ApiState,
+) -> Result<&std::sync::Arc<dyn fcp_core::e911::EmergencyStore>, ApiError> {
+    state
+        .storage
+        .as_ref()
+        .and_then(|s| s.emergency_store())
+        .ok_or_else(|| ApiError::NotFound("Emergency storage is not configured".to_string()))
+}
+
+/// `GET /v1/me/location` — where I last said I was.
+pub async fn get_my_location(
+    State(state): State<ApiState>,
+    req: axum::extract::Request,
+) -> Result<impl IntoResponse, ApiError> {
+    let claims = extract_claims(&req, &state)?;
+    let storage = require_storage!(state);
+    let user = load_claims_user(storage, &claims, &state).await?;
+    let declared = emergency_store(&state)?
+        .get_declared_location(&user.tenant_id, &user.id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let Some(declared) = declared else {
+        return Err(ApiError::NotFound(
+            "You have not declared a location".to_string(),
+        ));
+    };
+    Ok(Json(DeclaredLocationResponse {
+        current: declared.is_current(std::time::SystemTime::now()),
+        address: declared.address.into(),
+        declared_at: unix_secs(declared.declared_at),
+        expires_at: unix_secs(declared.expires_at),
+    }))
+}
+
+/// `PUT /v1/me/location` — say where I am, for emergency calls. The
+/// address is validated like any other; it stands for the tenant's
+/// `declared_location_ttl_secs` (a day by default).
+pub async fn declare_my_location(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Json(body): Json<DeclareLocationRequest>,
+) -> Result<axum::response::Response, ApiError> {
+    let claims = extract_claims_from_headers(&headers, &state)?;
+    let storage = require_storage!(state);
+    let user = load_claims_user(storage, &claims, &state).await?;
+
+    let problems = body.civic.problems();
+    if !problems.is_empty() {
+        return Err(ApiError::BadRequest(problems.join("; ")));
+    }
+    let address = fcp_core::E911Address {
+        address1: body.address1,
+        address2: body.address2,
+        city: body.city,
+        state: body.state,
+        postal_code: body.postal_code,
+        country: body.country.unwrap_or_else(|| "US".to_string()),
+        validated: false,
+        validated_at: None,
+        civic: body.civic,
+    };
+    let validation = state
+        .e911_validator
+        .validate(&address)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Address validation failed: {e}")))?;
+    if !validation.valid {
+        // The same 422 the admin address-validation routes answer with.
+        return Ok((
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+            Json(serde_json::json!({
+                "error": "The address could not be validated",
+                "issues": validation.issues,
+                "validator": validation.validator,
+            })),
+        )
+            .into_response());
+    }
+    let mut address = validation.normalized;
+    address.validated = true;
+    address.validated_at = Some(std::time::SystemTime::now());
+
+    let ttl = emergency_store(&state)?
+        .get_emergency_config(&user.tenant_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|c| c.declared_location_ttl)
+        .unwrap_or(fcp_core::e911::DEFAULT_DECLARED_LOCATION_TTL);
+    let now = std::time::SystemTime::now();
+    let declared = fcp_core::e911::DeclaredLocation {
+        user_id: user.id,
+        tenant_id: user.tenant_id,
+        address,
+        declared_at: now,
+        expires_at: now + ttl,
+    };
+    emergency_store(&state)?
+        .put_declared_location(&declared)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    tracing::info!(
+        user = %user.username,
+        tenant_id = %user.tenant_id,
+        expires_in_secs = ttl.as_secs(),
+        "User declared where they are"
+    );
+    Ok(Json(DeclaredLocationResponse {
+        current: true,
+        address: declared.address.into(),
+        declared_at: unix_secs(declared.declared_at),
+        expires_at: unix_secs(declared.expires_at),
+    })
+    .into_response())
+}
+
+/// `DELETE /v1/me/location` — I am no longer there.
+pub async fn clear_my_location(
+    State(state): State<ApiState>,
+    req: axum::extract::Request,
+) -> Result<impl IntoResponse, ApiError> {
+    let claims = extract_claims(&req, &state)?;
+    let storage = require_storage!(state);
+    let user = load_claims_user(storage, &claims, &state).await?;
+    emergency_store(&state)?
+        .delete_declared_location(&user.tenant_id, &user.id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    Ok(axum::http::StatusCode::NO_CONTENT)
+}
+
 pub async fn get_forwarding(
     State(state): State<ApiState>,
     req: axum::extract::Request,

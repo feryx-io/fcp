@@ -1,7 +1,7 @@
 # Emergency Calling, Block 2 — Design
 
 Status: **agreed** (2026-09-15), every recommendation in §12 taken.
-Phases 1 and 2 are done (v0.25.176 and v0.25.177, see §11). This
+Phases 1, 2 and 3 are done (v0.25.176, v0.25.177 and v0.25.178, see §11). This
 document is the plan for the four items `docs/E911.md` left for later — **location by value** (PIDF-LO) for
 NG911 trunks, **network-based location** for softphones and roaming
 devices, **provider-backed address validation**, and **notification
@@ -474,6 +474,39 @@ by release tag first.
    addresses from the SBC and the gateway, `emergency_networks` and its
    API, device-supplied locations, declared locations, the new precedence,
    readiness per device type.
+
+   *Done (v0.25.178).* What shipped:
+
+   - **The address a call comes from.** A REGISTER's source is kept with
+     the registration (`registrations.source_address`); an INVITE's own
+     source places its caller; `X-FCP-Client-Address` carries what an edge
+     saw, believed only from `[e911] trusted_edges`. An edge adds it with
+     `vouch_client_address` — the WebRTC gateway always does (reading the
+     browser's address, with `[http] trusted_proxies` for
+     `X-Forwarded-For`), and the SBC gained `[core.e911]` for both settings.
+   - **Networks.** `emergency_networks` (migration 069) with
+     `/v1/emergency/networks`; `match_network` takes the most specific
+     range, then the lowest priority, among those that place the device's
+     kind.
+   - **Device-supplied locations.** `fcp_core::pidf_lo::parse` reads a
+     PIDF-LO a device sent, used only from a trusted device type
+     (`trust_device_locations`) or a device with `e911_trust_location`.
+   - **Declared locations.** `/v1/me/location` (get, put, delete), each
+     validated, expiring after `declared_location_ttl_secs` (a day by
+     default). Erasure covers them: `ExportClass::DeclaredLocations`.
+   - **The precedence** of §6.3, with the client address and a
+     declaration's age on the record and on `call.emergency`.
+   - **Readiness** flags users whose devices all move but whom nothing
+     places (`unplaced_nomadic`).
+   - **Metrics** (§9): `fcp_emergency_calls_total`,
+     `fcp_emergency_location_gaps_total`,
+     `fcp_emergency_location_errors_total` on the call manager's
+     `/metrics`.
+
+   One thing found on the way: a device's type cannot be changed after it
+   is created (`put_device` never updated it, and the API never offered
+   it). Left as it is, since nothing needs it; noted here because a test
+   had to make a new device rather than change one.
 4. **Validation.** Site and device validation, structured normalisation in
    the basic validator, the HTTP provider with sealed credentials,
    validation cleared on edit.

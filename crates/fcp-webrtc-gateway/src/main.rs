@@ -392,6 +392,7 @@ async fn main() -> Result<()> {
     let gateway_router = http_api::routes(http_api::ApiState {
         sessions: Arc::clone(&sessions),
         operator_tokens: Arc::new(config.auth.tokens.clone()),
+        trusted_proxies: Arc::new(config.http.trusted_proxies.clone()),
         public_join: config.http.public_join,
         serve_join_page: config.http.serve_join_page,
     });
