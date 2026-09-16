@@ -21,6 +21,7 @@ storage-redis = ["dep:fcp-storage-redis", "dep:fcp-cluster"]
 fcp-core = { path = "../fcp-core" }
 fcp-events = { path = "../fcp-events" }
 fcp-webhooks = { path = "../fcp-webhooks" }
+fcp-notify = { path = "../fcp-notify" }
 fcp-storage-postgres = { path = "../fcp-storage-postgres" }
 fcp-storage-redis = { path = "../fcp-storage-redis", features = ["event-bus"], optional = true }
 fcp-cluster = { path = "../fcp-cluster", optional = true }
@@ -51,8 +52,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 
-# HTTP client (for webhook test endpoint)
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+# HTTP client (for webhook test endpoint and the SMS and call channels)
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
 
 # Utilities
 dashmap = "6"

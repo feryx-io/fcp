@@ -462,9 +462,11 @@ pub async fn announce(
     call_id: fcp_b2bua_core::CallId,
     record: EmergencyCallRecord,
 ) {
+    // The event carries the plain targets it always has; the notifier
+    // reads the typed contacts from the tenant's configuration (§8.1).
     let notify_contacts = config_for(call_manager.storage(), &record.tenant_id)
         .await
-        .notify_contacts;
+        .contact_targets();
     if let Some(call) = call_manager.get_call(&call_id) {
         call_manager.publish_emergency(&call, notify_contacts);
     }

@@ -102,6 +102,17 @@ health_check_interval_secs = 60
 impl Stack {
     /// `None` without a database. `trusted_edges` goes into `[e911]`.
     async fn start(carriers: &[&Carrier], trusted_edges: &[&str]) -> Option<Self> {
+        Self::start_with_events(carriers, trusted_edges, None).await
+    }
+
+    /// As [`Stack::start`], forwarding events to `ingest` (an events
+    /// server's `/ingest`), which is how the notifier hears about an
+    /// emergency call (`docs/E911_BLOCK_2.md` §8.3).
+    async fn start_with_events(
+        carriers: &[&Carrier],
+        trusted_edges: &[&str],
+        ingest: Option<&str>,
+    ) -> Option<Self> {
         let db = TestDatabase::create().await?;
         let seed = Seed::new(db.url(), REALM).await;
         let sip_port = free_port();
@@ -156,11 +167,16 @@ format = "compact"
 
 [e911]
 trusted_edges = [{edges}]
+{events}
 {trunks}
 "#,
             db = db.url(),
             rtp_end = rtp_start + 60,
             dir = dir.path().display(),
+            events = match ingest {
+                Some(url) => format!("\n[events]\nserver_url = \"{url}\"\n"),
+                None => String::new(),
+            },
         );
         let service =
             Service::start("call-manager", BIN, &config, &loopback(http, "/health")).await;
@@ -180,6 +196,11 @@ trusted_edges = [{edges}]
             .expect("phone binds");
         assert_eq!(phone.register().await.unwrap(), 200);
         phone
+    }
+
+    /// The test database everything in this stack shares.
+    fn db_url(&self) -> String {
+        self.db.as_ref().expect("a database").url().to_string()
     }
 
     async fn get(&self, path: &str) -> serde_json::Value {
@@ -1058,5 +1079,155 @@ async fn a_devices_own_location_is_used_only_from_a_trusted_device() {
             && sources.contains(&fcp_core::e911::LocationSource::UserLocation),
         "{sources:?}"
     );
+    stack.finish().await;
+}
+
+/// The chain Kari's Law asks for, end to end (`docs/E911_BLOCK_2.md` §8):
+/// a `933` test call is placed, the events server hears `call.emergency`,
+/// and the front desk's email arrives saying it was a test — with the
+/// attempt recorded and the call's record marked notified.
+#[tokio::test]
+async fn a_test_call_tells_the_tenants_contacts() {
+    use fcp_core::e911::notify::{ContactKind, NotifyContact};
+    use fcp_core::e911::{EmergencyConfig, EmergencyStore};
+
+    let carrier = Carrier::new("carrier-a", 10).await;
+    let mail = fcp_testkit::SmtpSink::start().await;
+    let events_port = free_port();
+    let ingest = loopback(events_port, "/ingest");
+    let mut stack = match Stack::start_with_events(&[&carrier], &[], Some(&ingest)).await {
+        Some(s) => s,
+        None => {
+            eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+            return;
+        }
+    };
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    stack.seed.site_for("alice", ALICE_ELIN).await;
+
+    // Who this tenant is told at.
+    let store = fcp_storage_postgres::emergency::PostgresEmergencyStore::new(
+        stack.seed.storage().pool().clone(),
+    );
+    let mut config = EmergencyConfig::defaults(stack.seed.tenant_id);
+    config.contacts = vec![NotifyContact::new(
+        ContactKind::Email,
+        "frontdesk@example.com",
+    )];
+    store.put_emergency_config(&config).await.unwrap();
+
+    // An events server with nothing but the email channel.
+    let events_config = format!(
+        r#"
+[service]
+node_id = "e2e-events"
+
+[websocket]
+bind_address = "127.0.0.1:{events_port}"
+
+[event_bus]
+bus_type = "memory"
+
+[webhook]
+enabled = false
+database_url = "{db}"
+
+[notifications]
+enabled = true
+max_attempts = 1
+retry_interval_secs = 1
+
+[notifications.smtp]
+host = "{host}"
+port = {port}
+encryption = "none"
+from = "fcp@example.com"
+
+[logging]
+level = "info"
+format = "compact"
+"#,
+        db = stack.db_url(),
+        host = mail.host(),
+        port = mail.port(),
+    );
+    let events = Service::start(
+        "events-server",
+        fcp_testkit::bins::path("fcp-events-server", "fcp-events-server"),
+        &events_config,
+        &loopback(events_port, "/health"),
+    )
+    .await;
+
+    let phone = stack.phone(&alice).await;
+    let call = phone.call("933").await.unwrap();
+    let Some(incoming) = carrier.phone.incoming(SOON).await else {
+        let why = format!("the trunk never rang; the call is {:?}", call.phase());
+        stack.fail(&why).await;
+    };
+    incoming.answer().await.unwrap();
+    call.answered(SOON).await.unwrap();
+    call.hangup().await.unwrap();
+
+    // The notice arrives, and says it was only a test.
+    let mail = {
+        let deadline = std::time::Instant::now() + Duration::from_secs(25);
+        loop {
+            let seen = mail.received();
+            if !seen.is_empty() {
+                break seen;
+            }
+            if std::time::Instant::now() >= deadline {
+                let logs = events.kill().await;
+                stack
+                    .fail(&format!("no notification arrived\nevents server:\n{logs}"))
+                    .await;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    };
+    assert_eq!(mail[0].to, vec!["frontdesk@example.com".to_string()]);
+    assert!(
+        mail[0].subject().starts_with("[TEST]"),
+        "{}",
+        mail[0].subject()
+    );
+    let body = mail[0].body();
+    assert!(body.contains("933"), "{body}");
+    assert!(body.contains("alice"), "{body}");
+    assert!(body.contains(ALICE_ELIN), "{body}");
+
+    // And the attempt is recorded against the call, which now says
+    // somebody was told.
+    let records = stack
+        .seed
+        .emergency_calls(1, SOON, |r| r.ended_at.is_some())
+        .await;
+    let record = &records[0];
+    let mut notifications = Vec::new();
+    for _ in 0..40 {
+        notifications = store
+            .list_emergency_notifications(&stack.seed.tenant_id, &record.call_id)
+            .await
+            .unwrap();
+        if !notifications.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert_eq!(notifications.len(), 1, "{notifications:?}");
+    assert_eq!(notifications[0].contact.target, "frontdesk@example.com");
+    assert_eq!(
+        notifications[0].status,
+        fcp_core::e911::notify::NotificationStatus::Delivered
+    );
+    let told = store
+        .get_emergency_call_by_call_id(&stack.seed.tenant_id, &record.call_id)
+        .await
+        .unwrap()
+        .expect("the record");
+    assert!(told.notified, "the record says somebody was told");
+
+    events.stop().await;
     stack.finish().await;
 }

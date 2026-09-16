@@ -334,6 +334,31 @@ struct EmergencyFallback {
     headers: Option<sip_core::Headers>,
 }
 
+/// What became of a notification call (`docs/E911_BLOCK_2.md` §8.1).
+/// Only [`AnnouncementOutcome::Answered`] told anybody anything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnnouncementOutcome {
+    /// Someone answered and heard the notice.
+    Answered,
+    /// It rang out, or was cancelled before it was answered.
+    NoAnswer,
+    /// The extension was busy or rejected the call.
+    Busy,
+    /// A final response that is neither: its status.
+    Failed(u16),
+}
+
+impl std::fmt::Display for AnnouncementOutcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AnnouncementOutcome::Answered => f.write_str("answered"),
+            AnnouncementOutcome::NoAnswer => f.write_str("no_answer"),
+            AnnouncementOutcome::Busy => f.write_str("busy"),
+            AnnouncementOutcome::Failed(status) => write!(f, "failed_{status}"),
+        }
+    }
+}
+
 /// Routes inbound SIP messages to the transaction manager.
 #[derive(Clone)]
 pub struct SipMessageHandler {
@@ -9064,6 +9089,7 @@ impl SipMessageHandler {
         let local_addr = self.local_addr.clone();
         let node_id = self.node_id.clone();
         let recorder = Arc::clone(&self.call_recorder);
+        let media_manager = self.media_manager.clone();
         tokio::spawn(async move {
             let mut attempts = 0;
             loop {
@@ -9233,6 +9259,15 @@ impl SipMessageHandler {
                             if a_done && b_done {
                                 info!(call_id = %call_id, "Both legs terminated after forwarded BYE, terminating call");
                                 recorder.call_ended(&call_id).await;
+                                // The record is written by this call, so
+                                // the media session's counters have to be
+                                // on the call before it is: the leg that
+                                // received the BYE asked for them too, but
+                                // on a task of its own that this one can
+                                // beat.
+                                let media = anchored_media(&updated_call, media_manager.as_ref());
+                                close_media(&call_manager, &call_id, media, true, "forwarded BYE")
+                                    .await;
                                 let _ = call_manager.terminate_call(&call_id, None);
                             }
                         }
@@ -12115,6 +12150,139 @@ impl SipMessageHandler {
         Ok(call_id)
     }
 
+    /// Ring `to`, and when someone answers speak `text` to them: the call
+    /// channel of on-site emergency notification (`docs/E911_BLOCK_2.md`
+    /// §8.1). The events server asks for this over HTTP, since it has no
+    /// SIP stack of its own.
+    ///
+    /// Returns what became of the call. Only `answered` told anybody
+    /// anything; the caller decides whether to ring again.
+    pub async fn announce_call(
+        &self,
+        to: &str,
+        text: &str,
+        ring_timeout: std::time::Duration,
+        repeat: u32,
+    ) -> Result<AnnouncementOutcome> {
+        let uac = self.uac.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("UAC not configured — cannot place notification calls")
+        })?;
+        let media_manager = self.media_manager.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "media manager not configured — a notification call has nothing to speak with"
+            )
+        })?;
+        if media_manager.tts_service().is_none() {
+            anyhow::bail!("no TTS service configured — a notification call has no voice");
+        }
+        let target = self.resolve_contact(to).await?;
+
+        // A media session of our own: this call has one leg, and what it
+        // plays is played into that leg.
+        let session_id = fcp_core::CallId::new();
+        let dialog_id = fcp_core::DialogId::new();
+        media_manager
+            .create_session_default(session_id, dialog_id)
+            .await
+            .context("could not create the notification call's media session")?;
+        let session = media_manager.get_session(&session_id).await?;
+        let (rtp_port, _rtcp_port) = session.ports();
+        let offer = generate_basic_sdp(&self.local_addr, rtp_port);
+
+        let outcome = self
+            .run_announcement(
+                uac,
+                media_manager,
+                &target,
+                text,
+                &offer,
+                session_id,
+                ring_timeout,
+                repeat,
+            )
+            .await;
+        let _ = media_manager.terminate_session(&session_id).await;
+        match &outcome {
+            Ok(outcome) => {
+                info!(target = %target, outcome = %outcome, "Notification call finished")
+            }
+            Err(e) => warn!(target = %target, error = %e, "Notification call failed"),
+        }
+        outcome
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn run_announcement(
+        &self,
+        uac: &Arc<SipUserAgentClient>,
+        media_manager: &Arc<fcp_media::MediaManager>,
+        target: &str,
+        text: &str,
+        offer: &str,
+        session_id: fcp_core::CallId,
+        ring_timeout: std::time::Duration,
+        repeat: u32,
+    ) -> Result<AnnouncementOutcome> {
+        let handle = uac
+            .invite(target, Some(offer))
+            .await
+            .with_context(|| format!("INVITE to {target} failed"))?;
+
+        let response = match tokio::time::timeout(ring_timeout, handle.await_final()).await {
+            Ok(Ok(response)) => response,
+            Ok(Err(e)) => return Err(anyhow::anyhow!("notification call failed: {e}")),
+            Err(_) => {
+                let _ = handle.cancel().await;
+                return Ok(AnnouncementOutcome::NoAnswer);
+            }
+        };
+        let status = response.start_line().code();
+        if !(200..300).contains(&status) {
+            return Ok(match status {
+                486 | 600 | 603 => AnnouncementOutcome::Busy,
+                408 | 480 | 487 => AnnouncementOutcome::NoAnswer,
+                _ => AnnouncementOutcome::Failed(status),
+            });
+        }
+
+        // Answered: point the media session at whoever picked up and speak.
+        if let Some(answer) = crate::body::sdp_of(response.headers(), response.body()) {
+            media_manager
+                .update_session(&session_id, answer)
+                .await
+                .context("could not set the notification call's media endpoint")?;
+        }
+        for _ in 0..repeat.max(1) {
+            match media_manager
+                .play_tts(
+                    &session_id,
+                    text.to_string(),
+                    "en".to_string(),
+                    None,
+                    fcp_media::AudioTarget::Both,
+                )
+                .await
+            {
+                Ok(playback) => {
+                    if let Err(e) = media_manager.wait_playback_completion(playback).await {
+                        warn!(error = %e, "Notification call playback did not finish");
+                        break;
+                    }
+                }
+                Err(e) => {
+                    warn!(error = %e, "Notification call could not speak");
+                    break;
+                }
+            }
+        }
+
+        let dialog = handle.dialog.read().await.clone();
+        if let Err(e) = uac.bye(&dialog).await {
+            debug!(error = %e, "Notification call BYE failed");
+        }
+        Ok(AnnouncementOutcome::Answered)
+    }
+
     /// Hangs up an active call by sending BYE on both legs and terminating the call.
     ///
     /// This method retrieves the call from CallManager, sends BYE on each leg that
@@ -12231,39 +12399,10 @@ impl SipMessageHandler {
         let call_manager = Arc::clone(&self.call_manager);
         let recorder = Arc::clone(&self.call_recorder);
         let call_id = call.id;
-        let media = match (
-            call.media_anchored,
-            call.media_session_id,
-            &self.media_manager,
-        ) {
-            (true, Some(session_id), Some(mm)) => Some((session_id, Arc::clone(mm))),
-            _ => None,
-        };
+        let media = anchored_media(call, self.media_manager.as_ref());
         tokio::spawn(async move {
             recorder.call_ended(&call_id).await;
-            if let Some((session_id, media_manager)) = media {
-                match media_manager.get_session_stats(&session_id).await {
-                    Ok(stats) => call_manager.set_rtp_stats(&call_id, rtp_stats_from(&stats)),
-                    Err(e) => {
-                        debug!(call_id = %call_id, error = %e, "No media counters for the record")
-                    }
-                }
-                if teardown {
-                    match media_manager.terminate_session(&session_id).await {
-                        Ok(()) => info!(
-                            call_id = %call_id,
-                            media_session_id = %session_id,
-                            "Terminated media session ({what})"
-                        ),
-                        Err(e) => error!(
-                            call_id = %call_id,
-                            media_session_id = %session_id,
-                            error = %e,
-                            "Failed to terminate media session ({what})"
-                        ),
-                    }
-                }
-            }
+            close_media(&call_manager, &call_id, media, teardown, what).await;
             let _ = call_manager.terminate_call_with(&call_id, reason);
         });
     }
@@ -13144,6 +13283,52 @@ fn with_uri_header(uri: &str, name: &str, value: &str) -> String {
 /// The record's RTP counters from a media session's statistics. The
 /// backend reports no jitter yet; a zero is left out rather than stored as
 /// a measurement.
+/// Put the media session's counters on the call before its record is
+/// written, and tear the session down when this path owns it. Every
+/// teardown path goes through here: a record that misses its RTP counters
+/// is a record nobody can bill or debug from.
+async fn close_media(
+    call_manager: &Arc<fcp_b2bua_core::CallManager>,
+    call_id: &fcp_b2bua_core::CallId,
+    media: Option<(fcp_core::CallId, Arc<fcp_media::MediaManager>)>,
+    teardown: bool,
+    what: &'static str,
+) {
+    let Some((session_id, media_manager)) = media else {
+        return;
+    };
+    match media_manager.get_session_stats(&session_id).await {
+        Ok(stats) => call_manager.set_rtp_stats(call_id, rtp_stats_from(&stats)),
+        Err(e) => debug!(call_id = %call_id, error = %e, "No media counters for the record"),
+    }
+    if teardown {
+        match media_manager.terminate_session(&session_id).await {
+            Ok(()) => info!(
+                call_id = %call_id,
+                media_session_id = %session_id,
+                "Terminated media session ({what})"
+            ),
+            Err(e) => error!(
+                call_id = %call_id,
+                media_session_id = %session_id,
+                error = %e,
+                "Failed to terminate media session ({what})"
+            ),
+        }
+    }
+}
+
+/// The media session a call's teardown owns, if it anchored one.
+fn anchored_media(
+    call: &fcp_b2bua_core::Call,
+    media_manager: Option<&Arc<fcp_media::MediaManager>>,
+) -> Option<(fcp_core::CallId, Arc<fcp_media::MediaManager>)> {
+    match (call.media_anchored, call.media_session_id, media_manager) {
+        (true, Some(session_id), Some(mm)) => Some((session_id, Arc::clone(mm))),
+        _ => None,
+    }
+}
+
 fn rtp_stats_from(stats: &fcp_media::MediaSessionStats) -> fcp_cdr::RtpStats {
     fcp_cdr::RtpStats {
         packets_sent: stats.packets_sent,

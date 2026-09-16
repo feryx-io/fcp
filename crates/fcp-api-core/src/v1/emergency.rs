@@ -21,6 +21,7 @@ use axum::{
     response::IntoResponse,
     Json,
 };
+use fcp_core::e911::notify::{EmergencyNotification, NotifyContact};
 use fcp_core::e911::{
     resolve_for_user, AddressValidation, DispatchableLocation, EmergencyCallRecord,
     EmergencyConfig, EmergencyStore,
@@ -53,6 +54,11 @@ pub struct EmergencyConfigResponse {
     pub emergency_numbers: Vec<String>,
     pub test_numbers: Vec<String>,
     pub dial_prefixes: Vec<String>,
+    /// Who is told when an emergency call is placed, typed by channel
+    /// (`docs/E911_BLOCK_2.md` §8.1).
+    pub contacts: Vec<ContactResponse>,
+    /// The same contacts as the plain strings this field has always
+    /// carried, for clients written before block 2.
     pub notify_contacts: Vec<String>,
     pub require_dispatchable_location: bool,
     /// Device types whose own location (a PIDF-LO they send with the call)
@@ -67,12 +73,15 @@ pub struct EmergencyConfigResponse {
 
 impl EmergencyConfigResponse {
     fn from_config(c: EmergencyConfig, configured: bool) -> Self {
+        let notify_contacts = c.contact_targets();
+        let contacts = c.contacts.iter().map(ContactResponse::from).collect();
         Self {
             tenant_id: c.tenant_id.to_string(),
             emergency_numbers: c.emergency_numbers,
             test_numbers: c.test_numbers,
             dial_prefixes: c.dial_prefixes,
-            notify_contacts: c.notify_contacts,
+            notify_contacts,
+            contacts,
             require_dispatchable_location: c.require_dispatchable_location,
             trust_device_locations: c
                 .trust_device_locations
@@ -86,12 +95,93 @@ impl EmergencyConfigResponse {
     }
 }
 
+/// One notification contact as the API shows it.
+#[derive(Debug, Clone, Serialize)]
+pub struct ContactResponse {
+    /// `email`, `sms`, `call` or `webhook`.
+    pub kind: String,
+    pub target: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// What keeps this contact from being delivered to, empty when it can.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub issues: Vec<String>,
+}
+
+impl From<&NotifyContact> for ContactResponse {
+    fn from(c: &NotifyContact) -> Self {
+        Self {
+            kind: c.kind.to_string(),
+            target: c.target.clone(),
+            name: c.name.clone(),
+            issues: c.problems(),
+        }
+    }
+}
+
+/// A contact on the way in: either the plain string the API took before
+/// block 2, read by its shape, or a typed object.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum ContactInput {
+    Text(String),
+    Typed {
+        kind: String,
+        target: String,
+        #[serde(default)]
+        name: Option<String>,
+    },
+}
+
+impl ContactInput {
+    fn into_contact(self, field: &str) -> Result<Option<NotifyContact>, ApiError> {
+        let contact = match self {
+            ContactInput::Text(text) => {
+                crate::validation::reject_crlf(field, &text)?;
+                if text.trim().is_empty() {
+                    return Ok(None);
+                }
+                NotifyContact::parse(&text).ok_or_else(|| {
+                    ApiError::BadRequest(format!(
+                        "{field}: '{text}' is not an email address, phone number, extension, \
+                         SIP URI or webhook endpoint id; give {{\"kind\": …, \"target\": …}} to say \
+                         which it is"
+                    ))
+                })?
+            }
+            ContactInput::Typed { kind, target, name } => {
+                crate::validation::reject_crlf(field, &target)?;
+                let kind = kind
+                    .parse::<fcp_core::e911::notify::ContactKind>()
+                    .map_err(|e| ApiError::BadRequest(format!("{field}: {e}")))?;
+                NotifyContact {
+                    kind,
+                    target: target.trim().to_string(),
+                    name: name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty()),
+                }
+            }
+        };
+        let problems = contact.problems();
+        if !problems.is_empty() {
+            return Err(ApiError::BadRequest(format!(
+                "{field}: {}",
+                problems.join("; ")
+            )));
+        }
+        Ok(Some(contact))
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct UpdateEmergencyConfigRequest {
     pub emergency_numbers: Option<Vec<String>>,
     pub test_numbers: Option<Vec<String>>,
     pub dial_prefixes: Option<Vec<String>>,
-    pub notify_contacts: Option<Vec<String>>,
+    /// Replaces the notification contacts. Strings are read by shape.
+    pub contacts: Option<Vec<ContactInput>>,
+    /// The field this took before block 2; `contacts` wins when both are
+    /// given.
+    pub notify_contacts: Option<Vec<ContactInput>>,
     pub require_dispatchable_location: Option<bool>,
     /// Device types trusted to send their own location (`softphone`,
     /// `desk_phone`, `webrtc`, `mobile`, …); replaces the list.
@@ -165,15 +255,21 @@ pub async fn update_config(
     if let Some(prefixes) = req.dial_prefixes {
         config.dial_prefixes = clean_numbers("dial_prefixes", prefixes)?;
     }
-    if let Some(contacts) = req.notify_contacts {
-        for c in &contacts {
-            crate::validation::reject_crlf("notify_contacts", c)?;
+    let (field, given) = match (req.contacts, req.notify_contacts) {
+        (Some(contacts), _) => ("contacts", Some(contacts)),
+        (None, Some(contacts)) => ("notify_contacts", Some(contacts)),
+        (None, None) => ("contacts", None),
+    };
+    if let Some(given) = given {
+        let mut contacts: Vec<NotifyContact> = Vec::new();
+        for input in given {
+            if let Some(contact) = input.into_contact(field)? {
+                if !contacts.contains(&contact) {
+                    contacts.push(contact);
+                }
+            }
         }
-        config.notify_contacts = contacts
-            .into_iter()
-            .map(|c| c.trim().to_string())
-            .filter(|c| !c.is_empty())
-            .collect();
+        config.contacts = contacts;
     }
     if let Some(require) = req.require_dispatchable_location {
         config.require_dispatchable_location = require;
@@ -275,9 +371,38 @@ pub struct ReadinessSummary {
     pub unplaced_nomadic: usize,
 }
 
+/// One contact and how it has fared (§8.4): a tenant should be able to
+/// see that its notifications work before it needs them to.
+#[derive(Debug, Serialize)]
+pub struct ContactReadiness {
+    pub kind: String,
+    pub target: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// What keeps this contact from being delivered to.
+    pub issues: Vec<String>,
+    /// When anything was last delivered to it.
+    pub last_delivery_at: Option<u64>,
+    /// When a `933` test call's notice last reached it.
+    pub last_test_at: Option<u64>,
+}
+
+/// Whether anyone would be told about an emergency call today.
+#[derive(Debug, Serialize)]
+pub struct NotificationReadiness {
+    pub contacts: Vec<ContactReadiness>,
+    /// How many of them can be delivered to.
+    pub deliverable: usize,
+    /// Empty when the tenant would notify somebody.
+    pub issues: Vec<String>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct ReadinessResponse {
     pub summary: ReadinessSummary,
+    /// On-site notification: Kari's Law asks for it, so the report says
+    /// whether it would happen.
+    pub notifications: NotificationReadiness,
     pub users: Vec<UserReadiness>,
 }
 
@@ -387,8 +512,70 @@ pub async fn readiness(
     rows.sort_by(|a, b| a.ready.cmp(&b.ready).then(a.username.cmp(&b.username)));
     Ok(Json(ReadinessResponse {
         summary,
+        notifications: notification_readiness(&state, &tenant.0, &config).await,
         users: rows,
     }))
+}
+
+/// The contacts an emergency call would reach, with when each last heard
+/// anything and when a test last reached it (§8.4).
+async fn notification_readiness(
+    state: &ApiState,
+    tenant_id: &fcp_core::TenantId,
+    config: &EmergencyConfig,
+) -> NotificationReadiness {
+    let store = state.storage.as_ref().and_then(|s| s.emergency_store());
+    let delivered = match &store {
+        Some(store) => store
+            .last_emergency_notifications(tenant_id, false)
+            .await
+            .unwrap_or_default(),
+        None => Vec::new(),
+    };
+    let tests = match &store {
+        Some(store) => store
+            .last_emergency_notifications(tenant_id, true)
+            .await
+            .unwrap_or_default(),
+        None => Vec::new(),
+    };
+    let last = |rows: &[EmergencyNotification], contact: &NotifyContact| {
+        rows.iter()
+            .find(|n| n.contact.kind == contact.kind && n.contact.target == contact.target)
+            .and_then(|n| n.delivered_at)
+            .map(unix_secs)
+    };
+    let contacts: Vec<ContactReadiness> = config
+        .contacts
+        .iter()
+        .map(|c| ContactReadiness {
+            kind: c.kind.to_string(),
+            target: c.target.clone(),
+            name: c.name.clone(),
+            issues: c.problems(),
+            last_delivery_at: last(&delivered, c),
+            last_test_at: last(&tests, c),
+        })
+        .collect();
+    let deliverable = contacts.iter().filter(|c| c.issues.is_empty()).count();
+    let mut issues = Vec::new();
+    if deliverable == 0 {
+        issues.push(
+            "nobody would be told about an emergency call: add a contact to \
+             /v1/emergency/config (Kari's Law requires on-site notification)"
+                .to_string(),
+        );
+    } else if contacts.iter().all(|c| c.last_test_at.is_none()) {
+        issues.push(
+            "no test call's notice has reached a contact yet: dial 933 to prove the chain"
+                .to_string(),
+        );
+    }
+    NotificationReadiness {
+        contacts,
+        deliverable,
+        issues,
+    }
 }
 
 // ─── Audit trail ─────────────────────────────────────────────────────────
@@ -477,6 +664,147 @@ pub async fn list_calls(
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     let out: Vec<EmergencyCallResponse> = calls.into_iter().map(Into::into).collect();
     Ok(Json(out))
+}
+
+/// One attempt to tell one contact about one emergency call (§8.3).
+#[derive(Debug, Serialize)]
+pub struct NotificationResponse {
+    pub id: i64,
+    pub call_id: String,
+    pub call_record_id: Option<i64>,
+    pub kind: String,
+    pub target: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub attempt: i32,
+    /// `delivered`, `retrying` or `failed`.
+    pub status: String,
+    pub error: Option<String>,
+    pub delivered_at: Option<u64>,
+    pub next_retry_at: Option<u64>,
+    /// Whether this told someone about a test call.
+    pub test: bool,
+    pub created_at: u64,
+}
+
+impl From<EmergencyNotification> for NotificationResponse {
+    fn from(n: EmergencyNotification) -> Self {
+        Self {
+            id: n.id,
+            call_id: n.call_id.clone(),
+            call_record_id: n.call_record_id,
+            kind: n.contact.kind.to_string(),
+            target: n.contact.target.clone(),
+            name: n.contact.name.clone(),
+            attempt: n.attempt,
+            status: n.status.to_string(),
+            error: n.error.clone(),
+            delivered_at: n.delivered_at.map(unix_secs),
+            next_retry_at: n.next_retry_at.map(unix_secs),
+            test: n.is_test(),
+            created_at: unix_secs(n.created_at),
+        }
+    }
+}
+
+/// `GET /emergency/calls/:call_id/notifications` — every attempt made to
+/// tell someone about one emergency call, oldest first.
+pub async fn list_call_notifications(
+    State(state): State<ApiState>,
+    tenant: TenantContext,
+    Path(call_id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let store = require_store(&state)?;
+    // Records keep the bare uuid; a client may hold either form.
+    let mut rows = store
+        .list_emergency_notifications(&tenant.0, call_id.trim())
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let bare = call_id.trim().trim_start_matches("call-");
+    if rows.is_empty() && bare != call_id.trim() {
+        rows = store
+            .list_emergency_notifications(&tenant.0, bare)
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
+    }
+    let out: Vec<NotificationResponse> = rows.into_iter().map(Into::into).collect();
+    Ok(Json(out))
+}
+
+// ─── The call channel ────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct NotifyCallRequest {
+    /// The extension or SIP URI to ring.
+    pub to: String,
+    /// What to say once it is answered.
+    pub text: String,
+    /// How long to ring.
+    #[serde(default = "default_ring_timeout_secs")]
+    pub ring_timeout_secs: u64,
+    /// How often the notice is spoken.
+    #[serde(default = "default_notice_repeat")]
+    pub repeat: u32,
+    /// The call this is about, for the log.
+    #[serde(default)]
+    pub call_id: Option<String>,
+    /// Whether it is about a test call.
+    #[serde(default)]
+    pub test: bool,
+}
+
+fn default_ring_timeout_secs() -> u64 {
+    30
+}
+
+fn default_notice_repeat() -> u32 {
+    2
+}
+
+#[derive(Debug, Serialize)]
+pub struct NotifyCallResponse {
+    /// `answered`, `no_answer`, `busy` or `failed_<status>`; only an
+    /// answered call told anybody anything.
+    pub outcome: String,
+    pub to: String,
+}
+
+/// `POST /emergency/notify-call` — ring someone and speak the notice to
+/// them: the call channel of on-site notification, which the events
+/// server asks this node for (`docs/E911_BLOCK_2.md` §8.1).
+pub async fn notify_call(
+    State(state): State<ApiState>,
+    tenant: TenantContext,
+    Json(req): Json<NotifyCallRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    if req.to.trim().is_empty() {
+        return Err(ApiError::BadRequest("to is required".to_string()));
+    }
+    if req.text.trim().is_empty() {
+        return Err(ApiError::BadRequest("text is required".to_string()));
+    }
+    let outcome = state
+        .handler
+        .announce_call(
+            req.to.trim(),
+            req.text.trim(),
+            std::time::Duration::from_secs(req.ring_timeout_secs.clamp(5, 120)),
+            req.repeat.clamp(1, 5),
+        )
+        .await
+        .map_err(|e| ApiError::Internal(format!("Notification call failed: {e}")))?;
+    info!(
+        tenant_id = %tenant.0,
+        to = %req.to,
+        call_id = %req.call_id.as_deref().unwrap_or("-"),
+        test = req.test,
+        outcome = %outcome,
+        "Emergency notification call"
+    );
+    Ok(Json(NotifyCallResponse {
+        outcome: outcome.to_string(),
+        to: req.to,
+    }))
 }
 
 // ─── Validation ──────────────────────────────────────────────────────────

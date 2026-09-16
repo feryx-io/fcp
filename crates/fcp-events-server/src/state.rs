@@ -224,7 +224,8 @@ impl CallStateStore {
             CallEvent::Parked { .. }
             | CallEvent::Unparked { .. }
             | CallEvent::Emergency { .. }
-            | CallEvent::EmergencyCompleted { .. } => {}
+            | CallEvent::EmergencyCompleted { .. }
+            | CallEvent::EmergencyNotificationFailed { .. } => {}
         }
     }
 

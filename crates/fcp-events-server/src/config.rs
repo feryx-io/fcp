@@ -46,6 +46,202 @@ pub struct EventsConfig {
     /// Service authentication configuration
     #[serde(default)]
     pub auth: AuthConfig,
+
+    /// On-site notification of emergency calls (`docs/E911_BLOCK_2.md` §8)
+    #[serde(default)]
+    pub notifications: NotificationsConfig,
+}
+
+/// `[notifications]`: on-site notification of emergency calls (Kari's
+/// Law, `docs/E911_BLOCK_2.md` §8). The notifier runs here, beside the
+/// webhook dispatcher, and reads the same PostgreSQL storage.
+///
+/// ```toml
+/// [notifications]
+/// enabled = true
+/// max_attempts = 5
+///
+/// [notifications.smtp]
+/// host = "smtp.example.com"
+/// port = 587
+/// from = "fcp@example.com"
+/// username = "fcp"
+/// password = "enc:v1:…"        # sealed with encryption at rest
+///
+/// [notifications.sms]
+/// url = "https://sms.example.net/send"
+/// token = "enc:v1:…"
+/// from = "+15185550100"
+///
+/// [notifications.call]
+/// call_manager_url = "http://fcp-call-manager:8080"
+/// auth_token = "enc:v1:…"
+/// from = "sip:alerts@pbx.example.com"
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct NotificationsConfig {
+    /// Whether emergency notifications are delivered from this server.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// Attempts per contact, the first included.
+    #[serde(default = "default_notify_attempts")]
+    pub max_attempts: u32,
+
+    /// The delay before the second attempt; it doubles from there.
+    #[serde(default = "default_notify_base_delay_secs")]
+    pub base_retry_delay_secs: u64,
+
+    /// The longest a delay grows to.
+    #[serde(default = "default_notify_max_delay_secs")]
+    pub max_retry_delay_secs: u64,
+
+    /// Nothing is retried longer than this after the call was placed: a
+    /// notice that arrives an hour late tells nobody anything useful.
+    #[serde(default = "default_notify_give_up_secs")]
+    pub give_up_after_secs: u64,
+
+    /// How often due retries are looked for.
+    #[serde(default = "default_notify_retry_interval_secs")]
+    pub retry_interval_secs: u64,
+
+    /// Email, for the tenants with email contacts.
+    #[serde(default)]
+    pub smtp: Option<SmtpConfig>,
+
+    /// The SMS provider, for the tenants with SMS contacts.
+    #[serde(default)]
+    pub sms: Option<SmsConfig>,
+
+    /// The call manager that rings extensions and speaks the notice.
+    #[serde(default)]
+    pub call: Option<CallNotifyConfig>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_notify_attempts() -> u32 {
+    5
+}
+
+fn default_notify_base_delay_secs() -> u64 {
+    30
+}
+
+fn default_notify_max_delay_secs() -> u64 {
+    300
+}
+
+fn default_notify_give_up_secs() -> u64 {
+    1800
+}
+
+fn default_notify_retry_interval_secs() -> u64 {
+    20
+}
+
+impl NotificationsConfig {
+    /// Whether this deployment has anywhere to deliver to of its own. A
+    /// server with none still notifies webhook contacts when the webhook
+    /// dispatcher is running.
+    pub fn has_channel(&self) -> bool {
+        self.smtp.is_some() || self.sms.is_some() || self.call.is_some()
+    }
+}
+
+impl Default for NotificationsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_true(),
+            max_attempts: default_notify_attempts(),
+            base_retry_delay_secs: default_notify_base_delay_secs(),
+            max_retry_delay_secs: default_notify_max_delay_secs(),
+            give_up_after_secs: default_notify_give_up_secs(),
+            retry_interval_secs: default_notify_retry_interval_secs(),
+            smtp: None,
+            sms: None,
+            call: None,
+        }
+    }
+}
+
+/// `[notifications.smtp]`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SmtpConfig {
+    pub host: String,
+    #[serde(default = "default_smtp_port")]
+    pub port: u16,
+    /// `starttls` (the default), `tls`, or `none`.
+    #[serde(default = "default_smtp_encryption")]
+    pub encryption: String,
+    #[serde(default)]
+    pub username: Option<String>,
+    /// May be a value sealed with encryption at rest (`enc:v1:…`).
+    #[serde(default)]
+    pub password: Option<String>,
+    /// The address notices come from.
+    pub from: String,
+    #[serde(default = "default_smtp_timeout_secs")]
+    pub timeout_secs: u64,
+}
+
+fn default_smtp_port() -> u16 {
+    587
+}
+
+fn default_smtp_encryption() -> String {
+    "starttls".to_string()
+}
+
+fn default_smtp_timeout_secs() -> u64 {
+    20
+}
+
+/// `[notifications.sms]`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SmsConfig {
+    /// Where the text is posted.
+    pub url: String,
+    /// The bearer token, sealed or plain.
+    #[serde(default)]
+    pub token: Option<String>,
+    /// The number texts come from, when the provider wants one.
+    #[serde(default)]
+    pub from: Option<String>,
+    #[serde(default = "default_sms_timeout_secs")]
+    pub timeout_secs: u64,
+}
+
+fn default_sms_timeout_secs() -> u64 {
+    10
+}
+
+/// `[notifications.call]`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CallNotifyConfig {
+    /// A call manager's API.
+    pub call_manager_url: String,
+    /// Its bearer token, sealed or plain.
+    #[serde(default)]
+    pub auth_token: Option<String>,
+    /// Who the call comes from.
+    #[serde(default)]
+    pub from: Option<String>,
+    #[serde(default = "default_call_ring_secs")]
+    pub ring_timeout_secs: u64,
+    /// How often the notice is spoken once the call is answered.
+    #[serde(default = "default_call_repeat")]
+    pub repeat: u32,
+}
+
+fn default_call_ring_secs() -> u64 {
+    30
+}
+
+fn default_call_repeat() -> u32 {
+    2
 }
 
 /// Upstream services configuration
