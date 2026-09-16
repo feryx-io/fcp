@@ -1,6 +1,6 @@
 # Tenant Trunks — Design
 
-Status: **proposed** (2026-09-16). One document for the item E911 block 2
+Status: **agreed** (2026-09-16), every recommendation in §13 taken. One document for the item E911 block 2
 deferred (`docs/E911_BLOCK_2.md` §12.1) and the gap behind it: **the trunks
 the API manages do not carry calls.** Outbound routing is built only from
 each node's TOML `[[trunks]]`, so a tenant cannot have a carrier of its own,
@@ -311,7 +311,17 @@ One PR per phase, reviewed before the next starts.
 
 ## 13. Open questions
 
-Each with a recommendation; none is settled until you say so.
+Each with a recommendation; every recommendation was taken on 2026-09-16.
+What that settles, in one place: the platform's TOML trunks stay and tenant
+trunks are additive; a node reads tenant trunks from the store and
+refreshes them on a new config-changed event for trunks; CPS and
+concurrency stay per node; the lowest live node id that loaded a
+registering trunk registers it; a tenant with no trunks falls back to the
+platform's unless it opts out; an emergency call from a tenant with no
+emergency-capable trunk uses the platform's; the record gains `trunk_id`
+beside `trunk_name`; the SBC keeps platform trunks only and gains tenant
+identification from the trunk a call arrived on; and `trunk_group` becomes
+what a routing rule names in phase 6.
 
 1. **Do platform trunks stay?** (a) Yes — TOML trunks remain the
    platform's, tenant trunks are additive (recommended: it is the only
