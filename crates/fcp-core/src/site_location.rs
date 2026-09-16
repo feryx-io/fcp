@@ -78,6 +78,20 @@ pub struct SiteLocation {
     #[serde(default)]
     pub civic: crate::phone_number::CivicElements,
 
+    /// When a validator last confirmed this address
+    /// (`POST /v1/locations/:id/e911/validate`, `docs/E911_BLOCK_2.md`
+    /// §7). Editing the address clears it.
+    #[serde(default)]
+    pub e911_validated_at: Option<SystemTime>,
+
+    /// The validator that confirmed it (`basic`, `http`, …).
+    #[serde(default)]
+    pub e911_validated_by: Option<String>,
+
+    /// The reference that validator gave for its answer.
+    #[serde(default)]
+    pub e911_validation_reference: Option<String>,
+
     // ===== Timestamps =====
     /// Created timestamp
     pub created_at: SystemTime,
@@ -111,9 +125,43 @@ impl SiteLocation {
             emergency_contact_phone: None,
             e911_callback_number: None,
             civic: Default::default(),
+            e911_validated_at: None,
+            e911_validated_by: None,
+            e911_validation_reference: None,
             created_at: now,
             updated_at: now,
         }
+    }
+
+    /// Whether a validator has confirmed the site's address.
+    pub fn e911_validated(&self) -> bool {
+        self.e911_validated_at.is_some()
+    }
+
+    /// Forget that the address was validated, as editing any part of it
+    /// must (`docs/E911_BLOCK_2.md` §7).
+    pub fn clear_e911_validation(&mut self) {
+        self.e911_validated_at = None;
+        self.e911_validated_by = None;
+        self.e911_validation_reference = None;
+    }
+
+    /// The parts of the site a PSAP is dispatched to, for telling whether
+    /// an edit changed the address.
+    pub fn address_fingerprint(&self) -> String {
+        let field = |v: &Option<String>| v.as_deref().unwrap_or_default().trim().to_string();
+        [
+            field(&self.address_line1),
+            field(&self.address_line2),
+            field(&self.city),
+            field(&self.state),
+            field(&self.postal_code),
+            field(&self.country),
+            field(&self.floor),
+            field(&self.building),
+            serde_json::to_string(&self.civic).unwrap_or_default(),
+        ]
+        .join("\u{1f}")
     }
 }
 

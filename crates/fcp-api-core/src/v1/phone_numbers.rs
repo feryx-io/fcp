@@ -72,8 +72,18 @@ pub struct E911AddressResponse {
     pub state: String,
     pub postal_code: String,
     pub country: String,
+    /// Whether a validator has confirmed this address. Read-only: an
+    /// address is validated by `POST …/e911/validate`, never by claiming
+    /// it here (`docs/E911_BLOCK_2.md` §7).
+    #[serde(default)]
     pub validated: bool,
+    #[serde(default)]
     pub validated_at: Option<SystemTime>,
+    /// The validator that confirmed it, and the reference it gave.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validated_by: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_reference: Option<String>,
     /// RFC 5139 civic elements (`house_number`, `street_name`,
     /// `street_suffix`, `unit`, …), beside the lines above
     /// (`docs/E911_BLOCK_2.md` §5.1).
@@ -92,11 +102,17 @@ impl From<E911Address> for E911AddressResponse {
             country: addr.country,
             validated: addr.validated,
             validated_at: addr.validated_at,
+            validated_by: addr.validated_by,
+            provider_reference: addr.provider_reference,
             civic: addr.civic,
         }
     }
 }
 
+/// An address given to the API arrives unvalidated whatever it claims:
+/// only a validator marks one, and the handler carries a previous
+/// validation over when the address did not change
+/// (`E911Address::carry_validation`).
 impl From<E911AddressResponse> for E911Address {
     fn from(resp: E911AddressResponse) -> Self {
         E911Address {
@@ -106,8 +122,10 @@ impl From<E911AddressResponse> for E911Address {
             state: resp.state,
             postal_code: resp.postal_code,
             country: resp.country,
-            validated: resp.validated,
-            validated_at: resp.validated_at,
+            validated: false,
+            validated_at: None,
+            validated_by: None,
+            provider_reference: None,
             civic: resp.civic,
         }
     }
@@ -345,7 +363,11 @@ pub async fn update_phone_number(
     }
 
     if let Some(e911) = req.e911_address {
-        number.e911_address = Some(e911.into());
+        // Editing the address clears its validation; re-sending the same
+        // address keeps it (`docs/E911_BLOCK_2.md` §7).
+        let mut address: fcp_core::E911Address = e911.into();
+        address.carry_validation(number.e911_address.as_ref());
+        number.e911_address = Some(address);
     }
     if req.e911_callback.is_some() {
         number.e911_callback = req.e911_callback;

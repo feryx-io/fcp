@@ -72,6 +72,7 @@ POST /api/v1/system/encryption/reencrypt      # platform admin
 | `GET /api/v1/system/encryption` | provider, KEK id, active DEK, all DEK ids, sealed columns |
 | `POST /api/v1/system/encryption/rotate` | new DEK becomes active; old ones stay for reads |
 | `POST /api/v1/system/encryption/reencrypt` | rewrite every plaintext or old-DEK value with the active DEK; returns counts per column |
+| `POST /api/v1/system/encryption/seal` | seal one value (`{"value": "…"}` → `{"sealed": "enc:v1:…"}`) for a credential that lives in a configuration file rather than a column — today the E911 validator's bearer token (`docs/E911.md`). The value is neither stored nor logged |
 
 **Rotation** is two steps: rotate, then reencrypt once every node has picked
 up the new ring (they do so lazily on the first unknown-DEK read, or at

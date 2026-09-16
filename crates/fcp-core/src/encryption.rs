@@ -62,4 +62,19 @@ pub trait EncryptionStore: Send + Sync {
     /// non-active DEK using the active one. Fails when encryption is
     /// disabled.
     async fn reencrypt_secrets(&self) -> anyhow::Result<ReencryptReport>;
+
+    /// Seal one value with the active DEK, for a credential that lives in
+    /// a configuration file rather than a column (the E911 validator's
+    /// bearer token, `docs/E911_BLOCK_2.md` §7). Fails when encryption is
+    /// disabled: there would be nothing to seal it with.
+    async fn seal_secret(&self, _plaintext: &str) -> anyhow::Result<String> {
+        anyhow::bail!("Encryption at rest is not enabled on this deployment")
+    }
+
+    /// Open a value sealed by [`EncryptionStore::seal_secret`]. Plaintext
+    /// passes through, so a deployment without encryption reads its
+    /// configuration unchanged.
+    async fn open_secret(&self, value: &str) -> anyhow::Result<String> {
+        Ok(value.to_string())
+    }
 }

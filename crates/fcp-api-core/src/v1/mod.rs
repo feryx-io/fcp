@@ -185,6 +185,7 @@ pub fn router() -> Router<ApiState> {
         .route("/system/encryption", get(encryption::status))
         .route("/system/encryption/rotate", post(encryption::rotate))
         .route("/system/encryption/reencrypt", post(encryption::reencrypt))
+        .route("/system/encryption/seal", post(encryption::seal))
         // Emergency calling (E911)
         .route(
             "/emergency/config",
@@ -209,6 +210,14 @@ pub fn router() -> Router<ApiState> {
         .route(
             "/phone-numbers/:id/e911/validate",
             post(emergency::validate_phone_number),
+        )
+        .route(
+            "/locations/:id/e911/validate",
+            post(emergency::validate_location),
+        )
+        .route(
+            "/devices/:id/e911/validate",
+            post(emergency::validate_device),
         )
         // Usage & Billing
         .route("/usage", get(usage::get_usage))

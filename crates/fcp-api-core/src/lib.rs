@@ -12,6 +12,7 @@
 
 pub mod audit;
 pub mod auth;
+pub mod e911_validator;
 pub mod error;
 pub mod state;
 pub mod trunk_health;

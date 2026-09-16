@@ -737,8 +737,10 @@ pub fn site_address(site: &SiteLocation) -> Option<E911Address> {
         state,
         postal_code,
         country: non_empty(site.country.as_deref()).unwrap_or_else(|| "US".to_string()),
-        validated: false,
-        validated_at: None,
+        validated: site.e911_validated(),
+        validated_at: site.e911_validated_at,
+        validated_by: site.e911_validated_by.clone(),
+        provider_reference: site.e911_validation_reference.clone(),
         civic,
     })
 }
@@ -765,8 +767,32 @@ pub struct AddressValidation {
     pub normalized: E911Address,
     /// Human-readable problems, empty when valid.
     pub issues: Vec<String>,
+    /// What the validator could not do, on an address that is otherwise
+    /// fine: the parts of the street it could not tell apart, say. Notes
+    /// do not make an address invalid (`docs/E911_BLOCK_2.md` §7).
+    #[serde(default)]
+    pub notes: Vec<String>,
     /// Name of the validator that produced this result.
     pub validator: String,
+    /// The provider's own reference for this answer, when it gave one.
+    #[serde(default)]
+    pub provider_reference: Option<String>,
+}
+
+impl AddressValidation {
+    /// The address as it should be stored once a validator accepted it:
+    /// the normalised form, marked with who validated it and when.
+    pub fn validated_address(&self, now: SystemTime) -> E911Address {
+        let mut address = self.normalized.clone();
+        address.validated = self.valid;
+        address.validated_at = self.valid.then_some(now);
+        address.validated_by = self.valid.then(|| self.validator.clone());
+        address.provider_reference = self
+            .valid
+            .then(|| self.provider_reference.clone())
+            .flatten();
+        address
+    }
 }
 
 /// Pluggable E911 address validation. The built-in
@@ -839,14 +865,285 @@ impl BasicAddressValidator {
             }
         }
 
+        // Split the street into its elements where the shape is clear, so
+        // the call's PIDF-LO carries HNO/RD/STS rather than a street line
+        // (§7). What could not be told apart is said, not held against the
+        // address.
+        let notes = structure_address(&mut normalized);
+
         let valid = issues.is_empty();
         AddressValidation {
             valid,
             normalized,
             issues,
+            notes,
             validator: "basic".to_string(),
+            provider_reference: None,
         }
     }
+}
+
+/// Fill an address's civic elements (RFC 5139) from its street lines,
+/// leaving every element the caller already set alone. Returns what could
+/// not be told apart, as notes for whoever typed the address.
+pub fn structure_address(address: &mut E911Address) -> Vec<String> {
+    let mut notes = Vec::new();
+    let street = collapse(&address.address1);
+    let parsed = parse_street(&street);
+    let c = &mut address.civic;
+    fill(&mut c.house_number, parsed.house_number);
+    fill(&mut c.house_number_suffix, parsed.house_number_suffix);
+    fill(&mut c.street_predirection, parsed.predirection);
+    fill(&mut c.street_name, parsed.street_name);
+    fill(&mut c.street_suffix, parsed.suffix);
+    fill(&mut c.street_postdirection, parsed.postdirection);
+
+    if let Some(line2) = address.address2.as_deref().map(collapse) {
+        if !line2.is_empty() {
+            let (kind, value) = parse_second_line(&line2);
+            let slot = match kind {
+                SecondLine::Unit => &mut c.unit,
+                SecondLine::Floor => &mut c.floor,
+                SecondLine::Room => &mut c.room,
+                SecondLine::Building => &mut c.building,
+                SecondLine::Other => &mut c.additional,
+            };
+            fill(slot, Some(value));
+        }
+    }
+
+    if !street.is_empty() {
+        if c.house_number.as_deref().is_none_or(str::is_empty) {
+            notes.push(format!(
+                "no house number could be read from \"{street}\": set house_number to say which \
+                 building this is"
+            ));
+        } else if c.street_suffix.as_deref().is_none_or(str::is_empty) {
+            notes.push(format!(
+                "no street suffix (St, Ave, Rd, …) could be read from \"{street}\": the street \
+                 name is \"{}\"",
+                c.street_name.as_deref().unwrap_or_default()
+            ));
+        }
+    }
+    notes
+}
+
+fn fill(slot: &mut Option<String>, value: Option<String>) {
+    if slot.as_deref().is_none_or(|s| s.trim().is_empty()) {
+        if let Some(value) = value.filter(|v| !v.trim().is_empty()) {
+            *slot = Some(value);
+        }
+    }
+}
+
+#[derive(Debug, Default, PartialEq)]
+struct StreetParts {
+    house_number: Option<String>,
+    house_number_suffix: Option<String>,
+    predirection: Option<String>,
+    street_name: Option<String>,
+    suffix: Option<String>,
+    postdirection: Option<String>,
+}
+
+/// USPS suffixes seen in dispatchable addresses, spelled out or
+/// abbreviated, mapped to the abbreviation an MSAG expects.
+const STREET_SUFFIXES: &[(&str, &str)] = &[
+    ("alley", "Aly"),
+    ("aly", "Aly"),
+    ("avenue", "Ave"),
+    ("ave", "Ave"),
+    ("av", "Ave"),
+    ("boulevard", "Blvd"),
+    ("blvd", "Blvd"),
+    ("circle", "Cir"),
+    ("cir", "Cir"),
+    ("court", "Ct"),
+    ("ct", "Ct"),
+    ("cove", "Cv"),
+    ("cv", "Cv"),
+    ("crossing", "Xing"),
+    ("xing", "Xing"),
+    ("drive", "Dr"),
+    ("dr", "Dr"),
+    ("expressway", "Expy"),
+    ("expy", "Expy"),
+    ("extension", "Ext"),
+    ("ext", "Ext"),
+    ("highway", "Hwy"),
+    ("hwy", "Hwy"),
+    ("lane", "Ln"),
+    ("ln", "Ln"),
+    ("loop", "Loop"),
+    ("parkway", "Pkwy"),
+    ("pkwy", "Pkwy"),
+    ("path", "Path"),
+    ("pike", "Pike"),
+    ("place", "Pl"),
+    ("pl", "Pl"),
+    ("plaza", "Plz"),
+    ("plz", "Plz"),
+    ("road", "Rd"),
+    ("rd", "Rd"),
+    ("route", "Rte"),
+    ("rte", "Rte"),
+    ("row", "Row"),
+    ("run", "Run"),
+    ("square", "Sq"),
+    ("sq", "Sq"),
+    ("street", "St"),
+    ("st", "St"),
+    ("terrace", "Ter"),
+    ("ter", "Ter"),
+    ("trail", "Trl"),
+    ("trl", "Trl"),
+    ("turnpike", "Tpke"),
+    ("tpke", "Tpke"),
+    ("walk", "Walk"),
+    ("way", "Way"),
+    ("wy", "Way"),
+];
+
+const DIRECTIONS: &[(&str, &str)] = &[
+    ("north", "N"),
+    ("n", "N"),
+    ("south", "S"),
+    ("s", "S"),
+    ("east", "E"),
+    ("e", "E"),
+    ("west", "W"),
+    ("w", "W"),
+    ("northeast", "NE"),
+    ("ne", "NE"),
+    ("northwest", "NW"),
+    ("nw", "NW"),
+    ("southeast", "SE"),
+    ("se", "SE"),
+    ("southwest", "SW"),
+    ("sw", "SW"),
+];
+
+fn lookup(table: &[(&str, &str)], token: &str) -> Option<String> {
+    let key = token
+        .trim_matches(|c: char| c == '.' || c == ',')
+        .to_ascii_lowercase();
+    table
+        .iter()
+        .find(|(name, _)| *name == key)
+        .map(|(_, abbrev)| abbrev.to_string())
+}
+
+/// `1455A N Market St SW` → house number 1455, suffix A, predirection N,
+/// street Market, suffix St, postdirection SW. Anything that does not fit
+/// stays in the street name.
+fn parse_street(street: &str) -> StreetParts {
+    let mut parts = StreetParts::default();
+    let mut tokens: Vec<&str> = street.split_whitespace().collect();
+    if tokens.is_empty() {
+        return parts;
+    }
+
+    // The house number: leading digits, with a letter or fraction after
+    // them either attached (`1455A`) or on its own (`1455 1/2`).
+    let head = tokens[0];
+    let digits: String = head.chars().take_while(char::is_ascii_digit).collect();
+    if !digits.is_empty() && tokens.len() > 1 {
+        parts.house_number = Some(digits.clone());
+        let rest: String = head[digits.len()..].trim_matches('-').to_string();
+        if !rest.is_empty() {
+            parts.house_number_suffix = Some(rest);
+        }
+        tokens.remove(0);
+        let attached = parts.house_number_suffix.is_some();
+        if !attached && tokens.len() > 1 {
+            let next = tokens[0];
+            let fraction =
+                next.contains('/') && next.chars().all(|c| c.is_ascii_digit() || c == '/');
+            let letter = next.len() == 1 && next.chars().all(|c| c.is_ascii_alphabetic());
+            // A single letter is a house-number suffix only when it is not
+            // a direction (`100 N Main St`).
+            if fraction || (letter && lookup(DIRECTIONS, next).is_none()) {
+                parts.house_number_suffix = Some(next.to_ascii_uppercase());
+                tokens.remove(0);
+            }
+        }
+    }
+
+    // A leading direction, when a street name follows it.
+    if tokens.len() > 1 {
+        if let Some(direction) = lookup(DIRECTIONS, tokens[0]) {
+            parts.predirection = Some(direction);
+            tokens.remove(0);
+        }
+    }
+
+    // A trailing direction, then the suffix before it; both only while a
+    // street name is left.
+    if tokens.len() > 2 {
+        if let Some(direction) = lookup(DIRECTIONS, tokens[tokens.len() - 1]) {
+            parts.postdirection = Some(direction);
+            tokens.pop();
+        }
+    }
+    if tokens.len() > 1 {
+        if let Some(suffix) = lookup(STREET_SUFFIXES, tokens[tokens.len() - 1]) {
+            parts.suffix = Some(suffix);
+            tokens.pop();
+        }
+    }
+
+    if !tokens.is_empty() {
+        parts.street_name = Some(tokens.join(" "));
+    }
+    parts
+}
+
+#[derive(Clone, Copy)]
+enum SecondLine {
+    Unit,
+    Floor,
+    Room,
+    Building,
+    Other,
+}
+
+/// `Suite 300` → a unit, `4th Floor` → a floor, anything unrecognised →
+/// additional location information (`LOC`).
+fn parse_second_line(line: &str) -> (SecondLine, String) {
+    const KINDS: &[(&str, SecondLine)] = &[
+        ("suite", SecondLine::Unit),
+        ("ste", SecondLine::Unit),
+        ("unit", SecondLine::Unit),
+        ("apartment", SecondLine::Unit),
+        ("apt", SecondLine::Unit),
+        ("floor", SecondLine::Floor),
+        ("fl", SecondLine::Floor),
+        ("flr", SecondLine::Floor),
+        ("room", SecondLine::Room),
+        ("rm", SecondLine::Room),
+        ("building", SecondLine::Building),
+        ("bldg", SecondLine::Building),
+    ];
+    let tokens: Vec<&str> = line.split_whitespace().collect();
+    let key = |t: &str| {
+        t.trim_matches(|c: char| c == '.' || c == ',')
+            .to_ascii_lowercase()
+    };
+    if tokens.len() == 2 {
+        for (name, kind) in KINDS {
+            if key(tokens[0]) == *name {
+                return (*kind, tokens[1].to_string());
+            }
+            if key(tokens[1]) == *name {
+                // `4th Floor`: the ordinal keeps its digits only.
+                let value = tokens[0].trim_end_matches(|c: char| c.is_ascii_alphabetic());
+                let value = if value.is_empty() { tokens[0] } else { value };
+                return (*kind, value.to_string());
+            }
+        }
+    }
+    (SecondLine::Other, line.to_string())
 }
 
 #[async_trait]
@@ -1122,6 +1419,8 @@ mod tests {
             country: "US".to_string(),
             validated: false,
             validated_at: None,
+            validated_by: None,
+            provider_reference: None,
             civic: Default::default(),
         }
     }
@@ -1271,6 +1570,8 @@ mod tests {
             country: "".to_string(),
             validated: false,
             validated_at: None,
+            validated_by: None,
+            provider_reference: None,
             civic: Default::default(),
         });
         assert!(ok.valid, "{:?}", ok.issues);
@@ -1288,10 +1589,117 @@ mod tests {
             country: "US".to_string(),
             validated: false,
             validated_at: None,
+            validated_by: None,
+            provider_reference: None,
             civic: Default::default(),
         });
         assert!(!bad.valid);
         assert_eq!(bad.issues.len(), 4, "{:?}", bad.issues);
+    }
+
+    /// The street a person types comes back in RFC 5139 elements, so the
+    /// call's PIDF-LO carries HNO/RD/STS (§5.1, §7).
+    #[test]
+    fn basic_validator_structures_the_street() {
+        let mut address = addr("1455A N Market Street SW");
+        address.address2 = Some("Suite 300".to_string());
+        let checked = BasicAddressValidator::check(&address);
+        assert!(checked.valid, "{:?}", checked.issues);
+        let c = &checked.normalized.civic;
+        assert_eq!(c.house_number.as_deref(), Some("1455"));
+        assert_eq!(c.house_number_suffix.as_deref(), Some("A"));
+        assert_eq!(c.street_predirection.as_deref(), Some("N"));
+        assert_eq!(c.street_name.as_deref(), Some("Market"));
+        assert_eq!(c.street_suffix.as_deref(), Some("St"), "spelled out or not");
+        assert_eq!(c.street_postdirection.as_deref(), Some("SW"));
+        assert_eq!(c.unit.as_deref(), Some("300"));
+        assert!(c.is_structured());
+        assert!(checked.notes.is_empty(), "{:?}", checked.notes);
+
+        // A house number on its own line, and a floor written the other
+        // way round.
+        let mut address = addr("22 1/2 E Main Ave");
+        address.address2 = Some("4th Floor".to_string());
+        let checked = BasicAddressValidator::check(&address);
+        let c = &checked.normalized.civic;
+        assert_eq!(c.house_number.as_deref(), Some("22"));
+        assert_eq!(c.house_number_suffix.as_deref(), Some("1/2"));
+        assert_eq!(c.street_predirection.as_deref(), Some("E"));
+        assert_eq!(c.street_name.as_deref(), Some("Main"));
+        assert_eq!(c.street_suffix.as_deref(), Some("Ave"));
+        assert_eq!(c.floor.as_deref(), Some("4"));
+    }
+
+    /// What the basic validator cannot tell apart it says, and a street it
+    /// cannot split does not make the address invalid.
+    #[test]
+    fn basic_validator_says_what_it_could_not_split() {
+        let checked = BasicAddressValidator::check(&addr("100 Broadway"));
+        assert!(checked.valid, "{:?}", checked.issues);
+        assert_eq!(
+            checked.normalized.civic.house_number.as_deref(),
+            Some("100")
+        );
+        assert_eq!(
+            checked.normalized.civic.street_name.as_deref(),
+            Some("Broadway")
+        );
+        assert_eq!(checked.notes.len(), 1, "{:?}", checked.notes);
+        assert!(
+            checked.notes[0].contains("street suffix"),
+            "{:?}",
+            checked.notes
+        );
+
+        let checked = BasicAddressValidator::check(&addr("Elm Street"));
+        assert!(!checked.valid, "no house number is an issue of its own");
+        assert!(
+            checked.notes.iter().any(|n| n.contains("house number")),
+            "{:?}",
+            checked.notes
+        );
+
+        // An address already in elements keeps the elements it was given.
+        let mut address = addr("1 State St");
+        address.civic.street_name = Some("State Street".to_string());
+        address.civic.house_number = Some("1".to_string());
+        let checked = BasicAddressValidator::check(&address);
+        assert_eq!(
+            checked.normalized.civic.street_name.as_deref(),
+            Some("State Street")
+        );
+        assert_eq!(
+            checked.normalized.civic.street_suffix.as_deref(),
+            Some("St")
+        );
+    }
+
+    /// Only a validator marks an address validated, and it says which one.
+    #[test]
+    fn a_validated_address_carries_who_validated_it() {
+        let checked = BasicAddressValidator::check(&addr("1 State St"));
+        let now = SystemTime::now();
+        let stored = checked.validated_address(now);
+        assert!(stored.validated);
+        assert_eq!(stored.validated_at, Some(now));
+        assert_eq!(stored.validated_by.as_deref(), Some("basic"));
+
+        // Editing any part of it forgets that.
+        let mut edited = stored.clone();
+        edited.address1 = "2 State St".to_string();
+        edited.carry_validation(Some(&stored));
+        assert!(!edited.validated);
+        assert_eq!(edited.validated_by, None);
+
+        // Re-sending the same address keeps it.
+        let mut same = stored.clone();
+        same.clear_validation();
+        same.carry_validation(Some(&stored));
+        assert!(same.validated);
+        assert_eq!(same.validated_at, Some(now));
+
+        let refused = BasicAddressValidator::check(&addr("Elm Street"));
+        assert!(!refused.validated_address(now).validated);
     }
 
     #[test]

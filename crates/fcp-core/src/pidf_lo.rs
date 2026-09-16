@@ -382,6 +382,8 @@ fn address_from_elements(elements: &[(String, String)]) -> E911Address {
         country: get("country").unwrap_or_default(),
         validated: false,
         validated_at: None,
+        validated_by: None,
+        provider_reference: None,
         civic,
     }
 }
@@ -430,6 +432,8 @@ mod tests {
                 country: "US".into(),
                 validated: true,
                 validated_at: None,
+                validated_by: None,
+                provider_reference: None,
                 civic,
             },
             callback_number: Some("+14155550100".into()),

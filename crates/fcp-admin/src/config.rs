@@ -77,6 +77,82 @@ pub struct AdminConfig {
     /// TTS configuration for prompt audio synthesis
     #[serde(default)]
     pub tts: Option<TtsSection>,
+
+    /// Emergency calling: how E911 addresses are validated
+    /// (`docs/E911_BLOCK_2.md` §7).
+    #[serde(default)]
+    pub e911: E911Section,
+}
+
+/// The `[e911]` section.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct E911Section {
+    #[serde(default)]
+    pub validator: ValidatorConfig,
+}
+
+/// `[e911.validator]`: which validator answers
+/// `POST …/e911/validate`.
+///
+/// ```toml
+/// [e911.validator]
+/// provider = "http"
+/// name = "acme-msag"              # what validated addresses are marked by
+/// url = "https://validate.example.net/e911"
+/// token = "enc:v1:…"              # sealed with POST /v1/system/encryption/seal
+/// # token_file = "/run/secrets/e911-validator"
+/// timeout_secs = 5
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ValidatorConfig {
+    /// `basic` (completeness and structure, no external call) or `http`.
+    #[serde(default = "default_validator_provider")]
+    pub provider: String,
+
+    /// What a validated address is marked by; the provider's name by
+    /// default, so several deployments' answers stay distinguishable.
+    #[serde(default)]
+    pub name: Option<String>,
+
+    /// Where `http` posts the address.
+    #[serde(default)]
+    pub url: Option<String>,
+
+    /// The bearer token for that URL. A value sealed with the deployment's
+    /// encryption at rest (`enc:v1:…`, from
+    /// `POST /api/v1/system/encryption/seal`) is opened at startup.
+    #[serde(default)]
+    pub token: Option<String>,
+
+    /// A file holding that token instead (a mounted secret). Takes
+    /// precedence over `token`; its contents may also be sealed.
+    #[serde(default)]
+    pub token_file: Option<String>,
+
+    /// How long to wait for the provider; an administrator is waiting.
+    #[serde(default = "default_validator_timeout_secs")]
+    pub timeout_secs: u64,
+}
+
+fn default_validator_provider() -> String {
+    "basic".to_string()
+}
+
+fn default_validator_timeout_secs() -> u64 {
+    5
+}
+
+impl Default for ValidatorConfig {
+    fn default() -> Self {
+        Self {
+            provider: default_validator_provider(),
+            name: None,
+            url: None,
+            token: None,
+            token_file: None,
+            timeout_secs: default_validator_timeout_secs(),
+        }
+    }
 }
 
 /// The `[compliance]` section.
@@ -495,6 +571,30 @@ pub fn load_config(config_path: Option<&Path>) -> Result<AdminConfig> {
 }
 
 pub fn validate_config(config: &AdminConfig) -> Result<()> {
+    match config.e911.validator.provider.as_str() {
+        "basic" => {}
+        "http" => {
+            if config
+                .e911
+                .validator
+                .url
+                .as_deref()
+                .map(str::trim)
+                .is_none_or(str::is_empty)
+            {
+                anyhow::bail!(
+                    "e911.validator.url must be set when e911.validator.provider = \"http\""
+                );
+            }
+            if config.e911.validator.timeout_secs == 0 {
+                anyhow::bail!("e911.validator.timeout_secs must be greater than zero");
+            }
+        }
+        other => {
+            anyhow::bail!("e911.validator.provider must be \"basic\" or \"http\" (got {other:?})")
+        }
+    }
+
     let public_bind = !config.api.bind_address.ip().is_loopback();
     let has_token = config
         .api

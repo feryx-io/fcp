@@ -84,3 +84,43 @@ pub async fn reencrypt(
     );
     Ok(Json(report))
 }
+
+#[derive(Debug, serde::Deserialize)]
+pub struct SealRequest {
+    /// The credential to seal, in plaintext.
+    pub value: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct SealResponse {
+    /// The sealed form (`enc:v1:…`) to put in a configuration file.
+    pub sealed: String,
+}
+
+/// POST /api/v1/system/encryption/seal — Seal one credential with the
+/// active DEK, for secrets that live in a configuration file rather than a
+/// column: the E911 validator's bearer token (`docs/E911_BLOCK_2.md` §7).
+/// The value is never stored or logged.
+pub async fn seal(
+    State(state): State<ApiState>,
+    identity: Option<Extension<AuthIdentity>>,
+    Json(req): Json<SealRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    require_platform(identity.as_ref().map(|e| &e.0))?;
+    if req.value.is_empty() {
+        return Err(ApiError::BadRequest("value must not be empty".to_string()));
+    }
+    let store = state
+        .storage
+        .as_ref()
+        .and_then(|s| s.encryption_store())
+        .ok_or_else(|| {
+            ApiError::Conflict("Encryption at rest is not enabled on this deployment".to_string())
+        })?;
+    let sealed = store
+        .seal_secret(&req.value)
+        .await
+        .map_err(|e| ApiError::Conflict(format!("Sealing failed: {e}")))?;
+    info!("Configuration secret sealed via API");
+    Ok(Json(SealResponse { sealed }))
+}

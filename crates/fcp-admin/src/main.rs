@@ -426,6 +426,9 @@ async fn main() -> Result<()> {
         info!("Trunk health probe task started");
     }
 
+    // The validator behind POST …/e911/validate (`docs/E911_BLOCK_2.md` §7).
+    let e911_validator = build_e911_validator(&config.e911.validator, &storage).await?;
+
     // Create API state
     let api_state = fcp_api_core::ApiState::new(
         Some(storage),
@@ -449,7 +452,8 @@ async fn main() -> Result<()> {
     .with_conference_gateway_url(config.conference.gateway_url.clone())
     .with_config_store(config_store)
     .with_trunk_health(trunk_health_map)
-    .with_deployment_mode(config.api.deployment_mode);
+    .with_deployment_mode(config.api.deployment_mode)
+    .with_e911_validator(e911_validator);
 
     // Set security policy from config
     let api_state = api_state.with_security_policy(fcp_api_core::SecurityPolicy {
@@ -610,6 +614,60 @@ async fn main() -> Result<()> {
 
     info!("FCP Admin API shutdown complete");
     Ok(())
+}
+
+/// The address validator this deployment answers `…/e911/validate` with
+/// (`docs/E911_BLOCK_2.md` §7). `basic` needs nothing; `http` takes its
+/// bearer token from `token_file` or `token`, either of which may be a
+/// value sealed with encryption at rest (`enc:v1:…`), opened here.
+async fn build_e911_validator(
+    config: &config::ValidatorConfig,
+    storage: &Arc<fcp_core::DynStorage>,
+) -> Result<Arc<dyn fcp_core::e911::E911AddressValidator>> {
+    if config.provider != "http" {
+        return Ok(Arc::new(fcp_core::e911::BasicAddressValidator));
+    }
+    let url = config
+        .url
+        .as_deref()
+        .map(str::trim)
+        .filter(|u| !u.is_empty())
+        .context("e911.validator.url must be set when provider = \"http\"")?;
+
+    let token = match &config.token_file {
+        Some(path) => Some(
+            std::fs::read_to_string(path)
+                .with_context(|| format!("Failed to read e911.validator.token_file {path}"))?
+                .trim()
+                .to_string(),
+        ),
+        None => config.token.clone(),
+    };
+    let token = match token.filter(|t| !t.is_empty()) {
+        Some(token) if token.starts_with("enc:") => {
+            let store = storage.encryption_store().context(
+                "e911.validator token is sealed but this deployment has no encryption at rest",
+            )?;
+            Some(
+                store
+                    .open_secret(&token)
+                    .await
+                    .context("Failed to open the sealed e911.validator token")?,
+            )
+        }
+        other => other,
+    };
+
+    let name = config.name.clone().unwrap_or_else(|| "http".to_string());
+    info!(validator = %name, url = %url, sealed_token = token.is_some(), "E911 address validator configured");
+    Ok(Arc::new(
+        fcp_api_core::e911_validator::HttpAddressValidator::new(
+            name,
+            url,
+            token,
+            std::time::Duration::from_secs(config.timeout_secs),
+        )?,
+    ))
 }
 
 /// Subscribe to the events server's WebSocket and republish events to the local event bus.
