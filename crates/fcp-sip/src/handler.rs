@@ -9089,6 +9089,7 @@ impl SipMessageHandler {
         let local_addr = self.local_addr.clone();
         let node_id = self.node_id.clone();
         let recorder = Arc::clone(&self.call_recorder);
+        let media_manager = self.media_manager.clone();
         tokio::spawn(async move {
             let mut attempts = 0;
             loop {
@@ -9258,6 +9259,15 @@ impl SipMessageHandler {
                             if a_done && b_done {
                                 info!(call_id = %call_id, "Both legs terminated after forwarded BYE, terminating call");
                                 recorder.call_ended(&call_id).await;
+                                // The record is written by this call, so
+                                // the media session's counters have to be
+                                // on the call before it is: the leg that
+                                // received the BYE asked for them too, but
+                                // on a task of its own that this one can
+                                // beat.
+                                let media = anchored_media(&updated_call, media_manager.as_ref());
+                                close_media(&call_manager, &call_id, media, true, "forwarded BYE")
+                                    .await;
                                 let _ = call_manager.terminate_call(&call_id, None);
                             }
                         }
@@ -12389,39 +12399,10 @@ impl SipMessageHandler {
         let call_manager = Arc::clone(&self.call_manager);
         let recorder = Arc::clone(&self.call_recorder);
         let call_id = call.id;
-        let media = match (
-            call.media_anchored,
-            call.media_session_id,
-            &self.media_manager,
-        ) {
-            (true, Some(session_id), Some(mm)) => Some((session_id, Arc::clone(mm))),
-            _ => None,
-        };
+        let media = anchored_media(call, self.media_manager.as_ref());
         tokio::spawn(async move {
             recorder.call_ended(&call_id).await;
-            if let Some((session_id, media_manager)) = media {
-                match media_manager.get_session_stats(&session_id).await {
-                    Ok(stats) => call_manager.set_rtp_stats(&call_id, rtp_stats_from(&stats)),
-                    Err(e) => {
-                        debug!(call_id = %call_id, error = %e, "No media counters for the record")
-                    }
-                }
-                if teardown {
-                    match media_manager.terminate_session(&session_id).await {
-                        Ok(()) => info!(
-                            call_id = %call_id,
-                            media_session_id = %session_id,
-                            "Terminated media session ({what})"
-                        ),
-                        Err(e) => error!(
-                            call_id = %call_id,
-                            media_session_id = %session_id,
-                            error = %e,
-                            "Failed to terminate media session ({what})"
-                        ),
-                    }
-                }
-            }
+            close_media(&call_manager, &call_id, media, teardown, what).await;
             let _ = call_manager.terminate_call_with(&call_id, reason);
         });
     }
@@ -13302,6 +13283,52 @@ fn with_uri_header(uri: &str, name: &str, value: &str) -> String {
 /// The record's RTP counters from a media session's statistics. The
 /// backend reports no jitter yet; a zero is left out rather than stored as
 /// a measurement.
+/// Put the media session's counters on the call before its record is
+/// written, and tear the session down when this path owns it. Every
+/// teardown path goes through here: a record that misses its RTP counters
+/// is a record nobody can bill or debug from.
+async fn close_media(
+    call_manager: &Arc<fcp_b2bua_core::CallManager>,
+    call_id: &fcp_b2bua_core::CallId,
+    media: Option<(fcp_core::CallId, Arc<fcp_media::MediaManager>)>,
+    teardown: bool,
+    what: &'static str,
+) {
+    let Some((session_id, media_manager)) = media else {
+        return;
+    };
+    match media_manager.get_session_stats(&session_id).await {
+        Ok(stats) => call_manager.set_rtp_stats(call_id, rtp_stats_from(&stats)),
+        Err(e) => debug!(call_id = %call_id, error = %e, "No media counters for the record"),
+    }
+    if teardown {
+        match media_manager.terminate_session(&session_id).await {
+            Ok(()) => info!(
+                call_id = %call_id,
+                media_session_id = %session_id,
+                "Terminated media session ({what})"
+            ),
+            Err(e) => error!(
+                call_id = %call_id,
+                media_session_id = %session_id,
+                error = %e,
+                "Failed to terminate media session ({what})"
+            ),
+        }
+    }
+}
+
+/// The media session a call's teardown owns, if it anchored one.
+fn anchored_media(
+    call: &fcp_b2bua_core::Call,
+    media_manager: Option<&Arc<fcp_media::MediaManager>>,
+) -> Option<(fcp_core::CallId, Arc<fcp_media::MediaManager>)> {
+    match (call.media_anchored, call.media_session_id, media_manager) {
+        (true, Some(session_id), Some(mm)) => Some((session_id, Arc::clone(mm))),
+        _ => None,
+    }
+}
+
 fn rtp_stats_from(stats: &fcp_media::MediaSessionStats) -> fcp_cdr::RtpStats {
     fcp_cdr::RtpStats {
         packets_sent: stats.packets_sent,
