@@ -391,3 +391,77 @@ async fn a_tenant_without_trunks_falls_back_to_the_platforms_unless_it_refuses()
 
     stack.finish().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_trunk_presents_its_own_identity_timer_and_dtmf() {
+    let carrier = Carrier::new("billing-carrier").await;
+    let mut stack = stack_or_skip!(&[]);
+
+    let acme = stack.seed.tenant_id;
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    stack
+        .seed
+        .trunk_with(acme, "billing-carrier", carrier.port(), |trunk| {
+            trunk.caller_id_override = Some("+15125550100".to_string());
+            trunk.from_domain = Some("carrier.example".to_string());
+            trunk.session_timer_secs = 1800;
+            trunk.dtmf = fcp_core::trunk::TrunkDtmfConfig {
+                mode: fcp_core::trunk::TrunkDtmfMode::Detect,
+            };
+        })
+        .await;
+    tokio::time::sleep(REFRESHED).await;
+
+    let alice_phone = stack.phone(&alice).await;
+    let alice_caller = Caller::new(acme, "alice");
+    let call = alice_phone
+        .call_with_headers("+15125559999", &alice_caller.headers())
+        .await
+        .unwrap();
+    let Some(incoming) = carrier.phone.incoming(SOON).await else {
+        let why = format!("the carrier never rang; the call is {:?}", call.phase());
+        stack.fail(&why).await;
+    };
+
+    // The identity the trunk bills by, not the extension behind it.
+    assert!(
+        incoming.from.contains("+15125550100@carrier.example"),
+        "From: {}",
+        incoming.from
+    );
+    assert_eq!(
+        incoming.header("P-Asserted-Identity").as_deref(),
+        Some("<sip:+15125550100@carrier.example>"),
+        "the carrier is told which identity the trunk asserts"
+    );
+
+    // The session refresh it asks for (RFC 4028).
+    assert_eq!(
+        incoming.header("Session-Expires").as_deref(),
+        Some("1800;refresher=uac")
+    );
+    assert_eq!(incoming.header("Min-SE").as_deref(), Some("90"));
+    assert!(
+        incoming
+            .headers_named("Supported")
+            .iter()
+            .any(|v| v.contains("timer")),
+        "Supported: {:?}",
+        incoming.headers_named("Supported")
+    );
+
+    // And no RFC 2833 offered to a trunk that takes DTMF as SIP INFO.
+    let offer = String::from_utf8_lossy(incoming.body()).to_string();
+    assert!(
+        !offer.contains("telephone-event"),
+        "the offer keeps RFC 2833 the trunk does not take:\n{offer}"
+    );
+
+    let leg = incoming.answer().await.unwrap();
+    call.answered(SOON).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert_eq!(call.hangup().await.unwrap(), 200);
+    assert!(leg.ended(SOON).await);
+
+    stack.finish().await;
+}

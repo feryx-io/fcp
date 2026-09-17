@@ -238,7 +238,10 @@ Applied on the leg that goes out on a trunk, in this order:
 4. **Headers** — `header_rules` names rules from the HMR set the SBC
    already has.
 5. **Transport** — `outbound_proxy` when set, else the trunk's hosts, with
-   the trunk's transport and TLS verification.
+   the trunk's transport and TLS verification. The INVITE is addressed to
+   the proxy with the dialled number as its user part, which is what a
+   proxy routes by and what `[sip] outbound_proxy` already means elsewhere
+   on this platform.
 
 Inbound, the same trunk decides the tenant, the admission limits (CPS,
 concurrency) and which HMR rules run.
@@ -394,7 +397,42 @@ One PR per phase, reviewed before the next starts.
    so the emergency-capable list a node offers is still its own trunks'.
 3. **The trunk's own behaviour.** Number transform, caller ID and
    from-domain, codecs, SRTP, DTMF, session timer, header rules, outbound
-   proxy — applied, and tested on the wire.
+   proxy — applied, and tested on the wire. Split in two when it was built,
+   because the first half is per-trunk data the B-leg can read and the
+   second needs infrastructure the call manager does not have yet.
+
+   **3a — what the trunk presents.** *Done (v0.25.187).*
+
+   - **The route carries the trunk itself.** `OutboundRoute.trunk` is an
+     `Arc<Trunk>`; the name, the id, the codecs and the emergency delivery
+     are read from it rather than copied beside it, so a field added to the
+     trunk is a field the leg can read. `Call.route_trunks` carries it too,
+     which is how the route that answered names its own trunk.
+   - **Identity.** `caller_id_override` replaces the From user (a whole URI
+     is taken whole), `from_domain` replaces the host, and the trunk's
+     identity is asserted in `P-Asserted-Identity` — a carrier that bills by
+     it sees the trunk's number, not the extension behind it. An emergency
+     call's callback number outranks both (`docs/E911.md`).
+   - **Session timer.** `session_timer_secs` sends `Session-Expires:
+     N;refresher=uac`, `Min-SE: 90` and `Supported: timer`, with RFC 4028's
+     90-second floor applied to anything shorter.
+   - **DTMF.** A trunk whose `dtmf` is not RFC 2833 is not offered
+     `telephone-event`: offering it and then not sending it is how DTMF goes
+     missing on a carrier that believes the offer.
+   - **Outbound proxy.** `outbound_proxy` is where the INVITE goes — a host,
+     `host:port` or a SIP URI — with the dialled number still the user part,
+     which is what the proxy routes by, and the trunk's own transport and
+     port when the proxy names none. Health probes still probe the trunk's
+     hosts: the proxy is not the trunk.
+   - **Number transform and codecs** were already applied when the route was
+     built; both now have their behaviour asserted on the wire.
+
+   **3b — what the trunk requires.** SRTP (offered and required through the
+   media layer), header rules (the HMR engine is the SBC binary's today and
+   the rule set is its TOML; both have to be shared before a trunk's
+   `header_rules` can mean anything on a call manager), STIR/SHAKEN signing
+   per trunk off the SBC, and DTMF converted rather than only offered
+   (2833 ↔ INFO).
 4. **Inbound.** The trunk decides the tenant; per-trunk inbound
    authentication and limits; admission rewritten on the match.
 5. **Cluster.** One node registers a registering trunk; health per node;

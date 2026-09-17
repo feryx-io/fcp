@@ -478,7 +478,7 @@ impl TrunkRouter {
     /// Build an OutboundRoute from a trunk and destination URI.
     fn build_outbound_route(
         &self,
-        trunk: &TrunkConfig,
+        trunk: &Arc<TrunkConfig>,
         destination_uri: &str,
     ) -> Option<OutboundRoute> {
         // Extract user part from destination URI
@@ -498,29 +498,58 @@ impl TrunkRouter {
         };
         let user_part = user_part.as_str();
 
-        let host = trunk.hosts.first()?;
-        let port = trunk
-            .transport
-            .port
-            .unwrap_or_else(|| trunk.transport.protocol.default_port());
+        // Where the INVITE goes: the trunk's outbound proxy when it has
+        // one, else its own hosts (`docs/TENANT_TRUNKS.md` §6). A proxy is
+        // given as a host, `host:port`, or a whole SIP URI; the dialled
+        // number stays the user part, as the proxy routes by it.
+        let (host, port) = match trunk.outbound_proxy.as_deref().map(str::trim) {
+            Some(proxy) if !proxy.is_empty() => proxy_host_port(proxy, trunk),
+            _ => (
+                trunk.hosts.first()?.clone(),
+                trunk
+                    .transport
+                    .port
+                    .unwrap_or_else(|| trunk.transport.protocol.default_port()),
+            ),
+        };
         let transport_param = match trunk.transport.protocol {
             fcp_core::transport::TransportType::Udp => String::new(),
             other => format!(";transport={}", other.as_str()),
         };
 
-        let allowed_codecs = if trunk.codec.allowed_codecs.is_empty() {
-            None
-        } else {
-            Some(trunk.codec.allowed_codecs.clone())
-        };
-
         Some(OutboundRoute {
             target_uri: format!("sip:{}@{}:{}{}", user_part, host, port, transport_param),
-            trunk_name: Some(trunk.name.clone()),
-            trunk_id: Some(trunk.trunk_id()),
-            allowed_codecs,
-            emergency_location: trunk.emergency_location.clone(),
+            trunk: Some(Arc::clone(trunk)),
         })
+    }
+}
+
+/// The host and port an outbound proxy names. A proxy may be written as a
+/// host, `host:port` or a whole SIP URI; what it does not say, the trunk's
+/// own transport does.
+fn proxy_host_port(proxy: &str, trunk: &TrunkConfig) -> (String, u16) {
+    let proxy = proxy
+        .strip_prefix("sip:")
+        .or_else(|| proxy.strip_prefix("sips:"))
+        .unwrap_or(proxy);
+    let proxy = proxy.rsplit('@').next().unwrap_or(proxy);
+    let proxy = proxy.split(';').next().unwrap_or(proxy).trim();
+    let default_port = trunk
+        .transport
+        .port
+        .unwrap_or_else(|| trunk.transport.protocol.default_port());
+    // An IPv6 literal keeps its brackets; its port is what follows them.
+    if let Some(rest) = proxy.strip_prefix('[') {
+        return match rest.split_once("]:") {
+            Some((host, port)) => (format!("[{host}]"), port.parse().unwrap_or(default_port)),
+            None => (proxy.to_string(), default_port),
+        };
+    }
+    match proxy.rsplit_once(':') {
+        Some((host, port)) if !host.is_empty() => {
+            (host.to_string(), port.parse().unwrap_or(default_port))
+        }
+        _ => (proxy.to_string(), default_port),
     }
 }
 
@@ -603,9 +632,9 @@ impl OutboundRouteProvider for TrunkRouter {
         // only the call's recorded trunk — unused candidates leaked
         // concurrency until they appeared permanently at max capacity. The
         // B2BUA records the call under the primary route's trunk
-        // (call.trunk_name), so start/end stay balanced on that trunk.
+        // (call.trunk_name()), so start/end stay balanced on that trunk.
         if let Some(first) = routes.first() {
-            if let Some(id) = &first.trunk_id {
+            if let Some(id) = &first.trunk_id() {
                 self.record_call_on(id.as_str());
             }
         }
@@ -1065,9 +1094,9 @@ mod tests {
             .resolve_outbound_ordered(None, "sip:+12125551234@example.com")
             .await;
         assert_eq!(routes.len(), 3);
-        assert_eq!(routes[0].trunk_name, Some("nyc-local".to_string()));
-        assert_eq!(routes[1].trunk_name, Some("us-cheap".to_string()));
-        assert_eq!(routes[2].trunk_name, Some("us-premium".to_string()));
+        assert_eq!(routes[0].trunk_name(), Some("nyc-local".to_string()));
+        assert_eq!(routes[1].trunk_name(), Some("us-cheap".to_string()));
+        assert_eq!(routes[2].trunk_name(), Some("us-premium".to_string()));
         // All target URIs should contain the user part
         for route in &routes {
             assert!(route.target_uri.contains("+12125551234"));
@@ -1097,9 +1126,9 @@ mod tests {
             .await;
         assert!(route.is_some());
         let route = route.unwrap();
-        assert_eq!(route.trunk_name, Some("codec-trunk".to_string()));
+        assert_eq!(route.trunk_name(), Some("codec-trunk".to_string()));
         assert_eq!(
-            route.allowed_codecs,
+            route.allowed_codecs(),
             Some(vec!["PCMU".to_string(), "PCMA".to_string()])
         );
     }
@@ -1121,8 +1150,8 @@ mod tests {
             .await;
         assert!(route.is_some());
         let route = route.unwrap();
-        assert_eq!(route.trunk_name, Some("plain-trunk".to_string()));
-        assert_eq!(route.allowed_codecs, None);
+        assert_eq!(route.trunk_name(), Some("plain-trunk".to_string()));
+        assert_eq!(route.allowed_codecs(), None);
     }
 
     fn lcr_router_two_trunks() -> (TrunkRouter, Arc<TrunkHealthMonitor>) {
@@ -1213,6 +1242,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_outbound_proxy_is_where_the_invite_goes() {
+        let mut trunk = make_trunk("proxied", 100, 100, TrunkDirection::Upstream);
+        trunk.hosts = vec!["carrier.example".to_string()];
+        trunk.outbound_proxy = Some("sbc.example:5080".to_string());
+        let trunks = vec![trunk];
+        let health = Arc::new(TrunkHealthMonitor::new(&trunks));
+        let router = TrunkRouter::new(trunks, health, no_cps());
+
+        let route = router
+            .resolve_outbound(None, "sip:+15125550100@pbx")
+            .await
+            .expect("route");
+        assert_eq!(
+            route.target_uri, "sip:+15125550100@sbc.example:5080",
+            "the dialled number stays the user part; the proxy routes by it"
+        );
+        assert_eq!(route.trunk_name().as_deref(), Some("proxied"));
+    }
+
+    #[tokio::test]
+    async fn a_proxy_that_names_no_port_takes_the_trunks_own() {
+        let mut trunk = make_trunk("proxied", 100, 100, TrunkDirection::Upstream);
+        trunk.hosts = vec!["carrier.example".to_string()];
+        trunk.transport.port = Some(5062);
+        trunk.outbound_proxy = Some("sip:sbc.example".to_string());
+        let trunks = vec![trunk];
+        let health = Arc::new(TrunkHealthMonitor::new(&trunks));
+        let router = TrunkRouter::new(trunks, health, no_cps());
+
+        let route = router
+            .resolve_outbound(None, "sip:+15125550100@pbx")
+            .await
+            .expect("route");
+        assert_eq!(route.target_uri, "sip:+15125550100@sbc.example:5062");
+    }
+
+    #[tokio::test]
     async fn test_egress_number_transform_applied_to_route() {
         let mut trunk = make_trunk("carrier", 100, 100, TrunkDirection::Upstream);
         trunk.egress_number_transform = Some(crate::number_transform::NumberTransform {
@@ -1281,7 +1347,7 @@ mod tests {
 
         // Through the provider trait, the routes keep that order.
         let routes = router.resolve_emergency_ordered(None, "sip:911@pbx").await;
-        assert_eq!(routes[0].trunk_name.as_deref(), Some("primary-911"));
+        assert_eq!(routes[0].trunk_name().as_deref(), Some("primary-911"));
 
         // With nothing flagged, emergency routing degrades to the normal choice.
         let plain = vec![regular];
@@ -1289,6 +1355,6 @@ mod tests {
         let router = TrunkRouter::new(plain, health, no_cps());
         let routes = router.resolve_emergency_ordered(None, "sip:911@pbx").await;
         assert_eq!(routes.len(), 1);
-        assert_eq!(routes[0].trunk_name.as_deref(), Some("regular"));
+        assert_eq!(routes[0].trunk_name().as_deref(), Some("regular"));
     }
 }
