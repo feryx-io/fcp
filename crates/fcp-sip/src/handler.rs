@@ -577,6 +577,9 @@ pub struct SipMessageHandler {
     /// The SRTP this node offered on a call's B-leg, kept until the answer
     /// names the key the far end sends with (`docs/TENANT_TRUNKS.md` §6).
     b_leg_srtp: Arc<dashmap::DashMap<fcp_b2bua_core::CallId, fcp_media::SrtpOffer>>,
+    /// The header manipulation rules a trunk may name
+    /// (`docs/TENANT_TRUNKS.md` §6); `None` on a node with none configured.
+    header_rules: Option<Arc<dyn crate::trunk_egress::TrunkHeaderRules>>,
     /// Conference calls whose B-leg is being moved to another conference
     /// node (phase 5b), so a second REFER while one is in flight is refused.
     conference_migrations: Arc<dashmap::DashMap<fcp_b2bua_core::CallId, ()>>,
@@ -924,6 +927,7 @@ impl SipMessageHandler {
             sip_call_id_map: Arc::new(dashmap::DashMap::new()),
             emergency_fallbacks: Arc::new(dashmap::DashMap::new()),
             b_leg_srtp: Arc::new(dashmap::DashMap::new()),
+            header_rules: None,
             conference_migrations: Arc::new(dashmap::DashMap::new()),
         };
 
@@ -997,6 +1001,16 @@ impl SipMessageHandler {
 
     /// Believe the caller a trusted edge names for its INVITEs
     /// (`docs/E911_BLOCK_2.md` §4, [`crate::emergency`]).
+    /// The engine that runs the header manipulation rules a trunk names
+    /// (`docs/TENANT_TRUNKS.md` §6).
+    pub fn with_header_rules(
+        mut self,
+        rules: Option<Arc<dyn crate::trunk_egress::TrunkHeaderRules>>,
+    ) -> Self {
+        self.header_rules = rules;
+        self
+    }
+
     pub fn with_trusted_edges(mut self, edges: crate::emergency::TrustedEdges) -> Self {
         self.trusted_edges = edges;
         self
@@ -5867,6 +5881,7 @@ impl SipMessageHandler {
             let call_id_clone = call_id;
             let flow_token_clone = target_contact.flow_token.clone();
             let egress = target_contact.egress.clone();
+            let header_rules = self.header_rules.clone();
             let emergency_headers_clone = emergency_headers.clone();
             let flow_registry_clone = Arc::clone(&self.flow_registry);
             let sip_call_id_map_clone = Arc::clone(&self.sip_call_id_map);
@@ -5894,6 +5909,9 @@ impl SipMessageHandler {
                     body: sdp.map(sip_uac::InviteBody::sdp),
                     extra_headers: extra_headers.clone(),
                     from: egress.from_uri(),
+                    // The trunk's own header rules, run on the finished
+                    // INVITE (`docs/TENANT_TRUNKS.md` §6).
+                    filter: egress.request_filter(header_rules.as_ref()),
                 };
 
                 // Add 5-second timeout for each INVITE to prevent TLS hangs

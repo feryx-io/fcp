@@ -1,8 +1,8 @@
 //! Egress HMR dispatcher — wraps `TransportDispatcher` to apply header
 //! manipulation rules before sending SIP messages on the wire.
 
-use crate::hmr::HeaderManipulationEngine;
 use bytes::Bytes;
+use fcp_sbc_core::HeaderManipulationEngine;
 use fcp_sbc_core::TrunkConfig;
 use sip_transaction::{TransportContext, TransportDispatcher};
 use std::collections::HashMap;

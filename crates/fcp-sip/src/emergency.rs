@@ -403,6 +403,8 @@ pub fn attempt_invite(
             body,
             extra_headers: extra,
             from,
+            // An emergency INVITE is not rewritten by an operator's rules.
+            filter: None,
         },
         delivered,
     )

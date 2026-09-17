@@ -12,6 +12,7 @@
 pub mod admission;
 pub mod config;
 pub mod hmr;
+pub mod hmr_engine;
 pub mod metrics;
 pub mod nat;
 pub mod number_transform;
@@ -60,6 +61,7 @@ pub use trunk_quality::{TrunkQualitySnapshot, TrunkQualityTracker};
 // Re-export trunk runtime types for convenience
 pub use cps::{CpsChecker, NoCpsLimit};
 pub use health_probes::run_health_probes;
+pub use hmr_engine::HeaderManipulationEngine;
 pub use trunk_auth::TrunkCredentialProvider;
 pub use trunk_health::TrunkHealthMonitor;
 pub use trunk_refresh::{refresh_trunks, spawn_trunk_refresh, TRUNK_ENTITY};
