@@ -1035,6 +1035,33 @@ async fn main() -> Result<()> {
     ));
     let flow_handler = Arc::new(flow_handler.with_call_recorder(Arc::clone(&call_recorder)));
 
+    // The header manipulation rules a trunk may name
+    // (`docs/TENANT_TRUNKS.md` §6). The rules are this node's; which of
+    // them run on a call is the trunk's to say.
+    let header_rules: Option<Arc<dyn fcp_sip::trunk_egress::TrunkHeaderRules>> = if config
+        .header_manipulation
+        .enabled
+    {
+        match fcp_sbc_core::HeaderManipulationEngine::new(
+            &config.header_manipulation,
+            &config.trunks,
+        ) {
+            Ok(engine) => {
+                info!(
+                    rules = config.header_manipulation.rules.len(),
+                    "Header manipulation rules loaded"
+                );
+                Some(Arc::new(engine) as Arc<dyn fcp_sip::trunk_egress::TrunkHeaderRules>)
+            }
+            Err(e) => {
+                warn!(error = %e, "Header manipulation rules could not be compiled; none will run");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let mut handler = SipMessageHandler::new(
         Arc::clone(&transaction_manager_ref),
         Arc::clone(&dialog_manager_ref),
@@ -1071,6 +1098,7 @@ async fn main() -> Result<()> {
         &config.e911.trusted_edges,
     )?)
     .with_client_address_vouching(config.e911.vouch_client_address)
+    .with_header_rules(header_rules.clone())
     .with_call_recorder(Arc::clone(&call_recorder));
     #[cfg(feature = "storage-redis")]
     if let Some((_, _, selector)) = &_cluster_manager {

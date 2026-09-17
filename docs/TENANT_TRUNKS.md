@@ -452,16 +452,34 @@ One PR per phase, reviewed before the next starts.
      (`update_session_b_leg_offered`) and keeps a fresh key only for a peer
      that sent crypto unasked, which is all it could do before.
 
-   **3b-2 — header rules and STIR/SHAKEN.** A trunk's `header_rules` names
-   rules from a set that lives, today, in the SBC binary's TOML and is
-   compiled by an engine in the SBC binary; both have to move into
-   `fcp-sbc-core` and be readable by a call manager before a tenant trunk's
-   `header_rules` can mean anything. The rules also act on a request this
-   node *generates*, so the UAC needs a last look at the INVITE before it
-   goes out — a small addition to siphon-rs. Per-trunk STIR/SHAKEN signing
-   rides with it: the `Identity` header is one more thing the trunk adds.
+   **3b-2 — header rules.** *Done (v0.25.189).*
 
-   **3b-3 — DTMF converted.** 3a stops offering RFC 2833 to a trunk that
+   - **The engine is shared.** The compiled HMR engine moved from the SBC
+     *binary* into `fcp-sbc-core`, beside the configuration types it was
+     already reading, and the SBC now uses it from there. A call manager
+     reads the same `[header_manipulation]` section the SBC does: the rules
+     are the node's, and which of them run on a call is the trunk's to say.
+   - **A trunk names its rules.** The engine gained
+     `apply_request_egress_named`, which takes rule names rather than a
+     trunk name, because a tenant's trunk arrives after the engine is built
+     and was never in its trunk map. Names it does not know are logged and
+     skipped.
+   - **The rules reach a request this node builds.** They run on the
+     finished INVITE — after the Via, Contact and Content-Length, before
+     the transaction starts — through `InviteOptions::filter`, a
+     `RequestFilter` added to siphon-rs for this (`sip-uac` 0.7.3,
+     `v2026.09.17`). A rule can therefore remove or rewrite a header this
+     node itself wrote, which is the whole point of HMR and was impossible
+     while the request was built and sent in one call.
+   - Emergency INVITEs are not rewritten by an operator's rules.
+   - On the wire: a trunk that names one rule gets that rule (a header
+     added, a header removed) and not the other one configured.
+
+   **3b-3 — STIR/SHAKEN signing.** Per-trunk signing off the SBC: the
+   `Identity` header is one more thing the trunk adds, and the signer and
+   its certificate are the node's.
+
+   **3b-4 — DTMF converted.** 3a stops offering RFC 2833 to a trunk that
    does not take it; this turns what the A-leg sends into what the trunk
    takes (2833 ↔ INFO), which is the media layer's detector and the INFO
    sender rather than the offer.

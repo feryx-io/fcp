@@ -144,6 +144,38 @@ refresh_secs = 1
 # the tenant it is calling for, as a gateway or an SBC does.
 [e911]
 trusted_edges = ["127.0.0.0/8"]
+
+# The rules a trunk may name (`docs/TENANT_TRUNKS.md` §6). They are the
+# node's; which of them run on a call is the trunk's to say.
+[header_manipulation]
+enabled = true
+
+[[header_manipulation.rules]]
+name = "carrier-account"
+priority = 10
+direction = "Egress"
+message_type = "Request"
+methods = ["INVITE"]
+
+[[header_manipulation.rules.actions]]
+action_type = "Add"
+header_name = "P-Charge-Info"
+value = "<sip:acct-42@carrier.example>"
+
+[[header_manipulation.rules.actions]]
+action_type = "Remove"
+header_name = "User-Agent"
+
+[[header_manipulation.rules]]
+name = "never-asked-for"
+priority = 20
+direction = "Egress"
+message_type = "Request"
+
+[[header_manipulation.rules.actions]]
+action_type = "Add"
+header_name = "X-Should-Not-Appear"
+value = "no"
 {trunks}
 "#,
             db = db.url(),
@@ -561,6 +593,62 @@ async fn a_trunk_that_requires_srtp_refuses_an_answer_without_it() {
         leg.ended(SOON).await,
         "and the carrier's leg is hung up, not left up"
     );
+
+    stack.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_trunk_runs_the_header_rules_it_names_and_no_others() {
+    let carrier = Carrier::new("hmr-carrier").await;
+    let mut stack = stack_or_skip!(&[]);
+
+    let acme = stack.seed.tenant_id;
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    stack
+        .seed
+        .trunk_with(acme, "hmr-carrier", carrier.port(), |trunk| {
+            trunk.header_rules = vec!["carrier-account".to_string()];
+        })
+        .await;
+    tokio::time::sleep(REFRESHED).await;
+
+    let alice_phone = stack.phone(&alice).await;
+    let alice_caller = Caller::new(acme, "alice");
+    let call = alice_phone
+        .call_with_headers("+15125559999", &alice_caller.headers())
+        .await
+        .unwrap();
+    let Some(incoming) = carrier.phone.incoming(SOON).await else {
+        let why = format!("the carrier never rang; the call is {:?}", call.phase());
+        stack.fail(&why).await;
+    };
+
+    // The rule this trunk names ran, on the finished INVITE: it added a
+    // header of its own and took away one the builder had written.
+    assert_eq!(
+        incoming.header("P-Charge-Info").as_deref(),
+        Some("<sip:acct-42@carrier.example>")
+    );
+    assert!(
+        incoming.header("User-Agent").is_none(),
+        "a rule can remove a header this node itself wrote"
+    );
+    // And the rule it did not name did not run.
+    assert!(
+        incoming.header("X-Should-Not-Appear").is_none(),
+        "only the rules the trunk names run on its calls"
+    );
+    // The call is otherwise ordinary.
+    assert!(
+        incoming.header("Call-ID").is_some() && incoming.header("Via").is_some(),
+        "the request is still a SIP request"
+    );
+
+    let leg = incoming.answer().await.unwrap();
+    call.answered(SOON).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert_eq!(call.hangup().await.unwrap(), 200);
+    assert!(leg.ended(SOON).await);
 
     stack.finish().await;
 }

@@ -11,12 +11,12 @@
 //! (e.g. removing `Server` headers) works for both requests and responses.
 
 use crate::admission::AdmissionController;
-use crate::hmr::HeaderManipulationEngine;
 use crate::metrics::SbcRuntimeMetrics;
 use crate::stir_shaken::{StirMetrics, StirVerifier, VerificationResult};
 use bytes::Bytes;
 use fcp_sbc_core::security::{AclAction, MalformedSipPolicy, SecurityConfig};
 use fcp_sbc_core::stir_shaken::{StirVerifyMode, TrunkStirShakenConfig};
+use fcp_sbc_core::HeaderManipulationEngine;
 use fcp_sip::listener::InboundMessageHandler;
 use fcp_sip::transport::RealTransportDispatcher;
 use sip_ratelimit::RateLimiterSet;
@@ -694,8 +694,8 @@ mod tests {
 
     #[test]
     fn test_response_ingress_hmr_removes_server_header() {
-        use crate::hmr::HeaderManipulationEngine;
         use fcp_sbc_core::hmr::*;
+        use fcp_sbc_core::HeaderManipulationEngine;
 
         // Build an HMR rule that removes the Server header on ingress responses
         let cfg = HeaderManipulationConfig {
@@ -1216,8 +1216,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_hmr_applied_to_request() {
-        use crate::hmr::HeaderManipulationEngine;
         use fcp_sbc_core::hmr::*;
+        use fcp_sbc_core::HeaderManipulationEngine;
 
         let (mock, calls) = MockInnerHandler::new();
 

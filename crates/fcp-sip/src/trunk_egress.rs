@@ -13,6 +13,18 @@ use sip_core::SipUri;
 /// RFC 4028 §4: a session interval below 90 seconds is not asked for.
 pub const MIN_SESSION_EXPIRES: u32 = 90;
 
+/// The header manipulation rules a trunk names (`docs/TENANT_TRUNKS.md`
+/// §6). The engine that compiles and runs them is the SBC's, in
+/// `fcp-sbc-core`; a node that has one hands it to its handler, and a node
+/// without one applies no rules.
+///
+/// The rules act on a request this node *builds*, so they run on the
+/// finished INVITE — after the Via and Contact, before it is sent.
+pub trait TrunkHeaderRules: Send + Sync {
+    /// Apply the egress rules `names` names to a request going out.
+    fn apply_egress(&self, names: &[String], request: &mut sip_core::Request);
+}
+
 /// The INVITE a trunk wants, over the one the B2BUA would have sent.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct TrunkEgress {
@@ -26,6 +38,9 @@ pub struct TrunkEgress {
     /// sends. A trunk that takes DTMF as SIP INFO, or takes none, is not
     /// offered it.
     pub offer_telephone_event: bool,
+    /// The header manipulation rules the trunk names, run on the finished
+    /// INVITE by whatever [`TrunkHeaderRules`] the node has.
+    pub header_rules: Vec<String>,
 }
 
 impl TrunkEgress {
@@ -68,6 +83,7 @@ impl TrunkEgress {
             from,
             headers,
             offer_telephone_event: matches!(trunk.dtmf.mode, TrunkDtmfMode::Relay),
+            header_rules: trunk.header_rules.clone(),
         }
     }
 
@@ -77,12 +93,29 @@ impl TrunkEgress {
             from: None,
             headers: Vec::new(),
             offer_telephone_event: true,
+            header_rules: Vec::new(),
         }
     }
 
     /// The From URI as a parsed SIP URI, for the INVITE's options.
     pub fn from_uri(&self) -> Option<SipUri> {
         self.from.as_deref().and_then(|f| SipUri::parse(f).ok())
+    }
+
+    /// The last look at the INVITE this trunk's rules want, when it names
+    /// any and the node has an engine to run them.
+    pub fn request_filter(
+        &self,
+        rules: Option<&std::sync::Arc<dyn TrunkHeaderRules>>,
+    ) -> Option<sip_uac::RequestFilter> {
+        if self.header_rules.is_empty() {
+            return None;
+        }
+        let rules = std::sync::Arc::clone(rules?);
+        let names = self.header_rules.clone();
+        Some(sip_uac::RequestFilter::new(move |request| {
+            rules.apply_egress(&names, request)
+        }))
     }
 }
 

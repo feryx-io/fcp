@@ -169,12 +169,14 @@ impl Inner {
                     body: Some(sip_uac::InviteBody::multipart(&body)),
                     extra_headers: headers,
                     from: None,
+                    filter: None,
                 }
             }
             None => sip_uac::InviteOptions {
                 body: Some(sip_uac::InviteBody::sdp(&offer)),
                 extra_headers: headers,
                 from: None,
+                filter: None,
             },
         };
         let handle = Arc::new(

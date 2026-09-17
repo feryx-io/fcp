@@ -35,6 +35,7 @@ tracing.workspace = true
 
 # IP network parsing
 ipnetwork = "0.20"
+regex = "1"
 
 # Runtime infrastructure
 dashmap = "6"
@@ -43,5 +44,6 @@ rand = "0.8"
 tokio = { workspace = true }
 
 [dev-dependencies]
+bytes = { workspace = true }
 toml = "0.8"
 tokio = { workspace = true, features = ["test-util"] }

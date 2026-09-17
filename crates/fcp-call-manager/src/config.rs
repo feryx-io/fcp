@@ -88,6 +88,12 @@ pub struct CallManagerConfig {
     /// (`docs/TENANT_TRUNKS.md` §4).
     #[serde(default)]
     pub trunk_routing: TrunkRoutingSection,
+
+    /// Header manipulation rules, by name. A trunk's `header_rules` names
+    /// the ones applied to the calls it carries (`docs/TENANT_TRUNKS.md`
+    /// §6); the rules themselves are the node's, as they are on the SBC.
+    #[serde(default)]
+    pub header_manipulation: fcp_sbc_core::hmr::HeaderManipulationConfig,
 }
 
 /// What a node does about trunks it did not read from its own config.

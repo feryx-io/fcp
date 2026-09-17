@@ -5,8 +5,8 @@
 //! egress), message type filtering (request/response), method filtering, trunk
 //! scoping, conditional matching, and priority ordering.
 
-use fcp_sbc_core::hmr::{HeaderManipulationConfig, HmrActionType, HmrDirection, HmrMessageType};
-use fcp_sbc_core::TrunkConfig;
+use crate::hmr::{HeaderManipulationConfig, HmrActionType, HmrDirection, HmrMessageType};
+use crate::TrunkConfig;
 use regex::Regex;
 use sip_core::uri::Uri;
 use sip_core::{Request, Response};
@@ -56,6 +56,10 @@ pub struct HeaderManipulationEngine {
     rules: Vec<CompiledRule>,
     /// Maps trunk name → indices into `rules` that apply to that trunk.
     trunk_rule_map: HashMap<String, Vec<usize>>,
+    /// Maps rule name → its index, so a trunk this engine never saw — a
+    /// tenant's, created after the node started — can still name the rules
+    /// it wants (`docs/TENANT_TRUNKS.md` §6).
+    rule_index: HashMap<String, usize>,
 }
 
 impl HeaderManipulationEngine {
@@ -150,9 +154,16 @@ impl HeaderManipulationEngine {
             trunk_rule_map.insert(trunk.name.clone(), indices);
         }
 
+        let rule_index = rules
+            .iter()
+            .enumerate()
+            .map(|(idx, rule)| (rule.name.clone(), idx))
+            .collect();
+
         Ok(Self {
             rules,
             trunk_rule_map,
+            rule_index,
         })
     }
 
@@ -176,11 +187,50 @@ impl HeaderManipulationEngine {
         self.apply_response(resp, HmrDirection::Egress, trunk);
     }
 
+    /// Apply the egress rules `names` names, in the order this engine
+    /// compiled them (by priority), to a request leaving on a trunk this
+    /// engine was not built from — a tenant's trunk, which names its rules
+    /// itself (`docs/TENANT_TRUNKS.md` §6). Names it does not know are
+    /// logged once and skipped.
+    pub fn apply_request_egress_named(&self, req: &mut Request, names: &[String]) {
+        if names.is_empty() {
+            return;
+        }
+        let mut indices: Vec<usize> = names
+            .iter()
+            .filter_map(|name| match self.rule_index.get(name) {
+                Some(idx) => Some(*idx),
+                None => {
+                    warn!(rule = %name, "trunk names an unknown HMR rule");
+                    None
+                }
+            })
+            .collect();
+        indices.sort_unstable();
+        indices.dedup();
+        let rules: Vec<&CompiledRule> = indices
+            .into_iter()
+            .map(|idx| &self.rules[idx])
+            .filter(|rule| matches!(rule.direction, HmrDirection::Both | HmrDirection::Egress))
+            .collect();
+        self.apply_rules_to_request(req, &rules);
+    }
+
+    /// Whether this engine knows any rule at all.
+    pub fn is_empty(&self) -> bool {
+        self.rules.is_empty()
+    }
+
     fn apply_request(&self, req: &mut Request, direction: HmrDirection, trunk: Option<&str>) {
+        let rules = self.matching_rules(direction, trunk);
+        self.apply_rules_to_request(req, &rules);
+    }
+
+    fn apply_rules_to_request(&self, req: &mut Request, rules: &[&CompiledRule]) {
         let method_str = req.method().to_string();
         let uri_str = req.uri().to_string();
 
-        for rule in self.matching_rules(direction, trunk) {
+        for rule in rules {
             // Check message type filter
             if rule.message_type == HmrMessageType::Response {
                 continue;
@@ -255,6 +305,15 @@ impl HeaderManipulationEngine {
                 }
             })
             .collect()
+    }
+}
+
+/// The rules a trunk names, for a node that builds its own outbound
+/// INVITEs (`docs/TENANT_TRUNKS.md` §6). The call manager hands its engine
+/// to `fcp-sip` through this.
+impl fcp_sip::trunk_egress::TrunkHeaderRules for HeaderManipulationEngine {
+    fn apply_egress(&self, names: &[String], request: &mut Request) {
+        self.apply_request_egress_named(request, names);
     }
 }
 
@@ -418,8 +477,8 @@ fn execute_action_response(action: &CompiledAction, resp: &mut Response) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hmr::*;
     use bytes::Bytes;
-    use fcp_sbc_core::hmr::*;
     use sip_core::{Headers, Method, RequestLine, StatusLine};
 
     fn make_request(method: Method, uri: &str) -> Request {
