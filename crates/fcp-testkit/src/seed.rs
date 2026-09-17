@@ -67,6 +67,19 @@ impl Seed {
     /// device's contacts are the registrations on its SIP URI), and an
     /// extension that dials them.
     pub async fn user(&self, username: &str, password: &str, extension: &str) -> SeededUser {
+        self.user_in(self.tenant_id, username, password, extension)
+            .await
+    }
+
+    /// As [`Seed::user`], in a tenant [`Seed::tenant`] made: what a test
+    /// that routes two tenants' calls needs.
+    pub async fn user_in(
+        &self,
+        tenant_id: TenantId,
+        username: &str,
+        password: &str,
+        extension: &str,
+    ) -> SeededUser {
         let now = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap()
@@ -75,7 +88,7 @@ impl Seed {
             "username": username,
             "password": password,
             "sip_ha1_hash": compute_ha1(username, &self.realm, password),
-            "tenant_id": self.tenant_id,
+            "tenant_id": tenant_id,
             "display_name": username,
             "extension": extension,
             "enabled": true,
@@ -88,7 +101,7 @@ impl Seed {
         let mut device = Device::new(
             format!("{username} softphone"),
             DeviceType::Softphone,
-            self.tenant_id,
+            tenant_id,
         );
         device.owner_user_id = Some(user_id);
         device.sip_uri = Some(format!("sip:{username}@{}", self.realm));
@@ -96,7 +109,7 @@ impl Seed {
         let ext = Extension::new(
             extension.to_string(),
             ExtensionTarget::User(user_id),
-            self.tenant_id,
+            tenant_id,
         )
         .expect("extension number is valid");
         self.storage
@@ -188,6 +201,46 @@ impl Seed {
             );
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         }
+    }
+
+    /// A second tenant, with `sip_domain` on its allowlist: what a test
+    /// that routes two tenants' calls to two carriers needs
+    /// (`docs/TENANT_TRUNKS.md` §5).
+    pub async fn tenant(&self, name: &str, sip_domain: &str) -> TenantId {
+        let mut tenant = Tenant::new(name.to_string());
+        tenant.sip_domains = vec![sip_domain.to_string()];
+        let id = tenant.id;
+        self.storage.put_tenant(tenant).await.expect("seed tenant");
+        id
+    }
+
+    /// Whether the platform's trunks may carry `tenant`'s calls
+    /// (`docs/TENANT_TRUNKS.md` §5).
+    pub async fn platform_trunk_fallback(&self, tenant: TenantId, allowed: bool) {
+        let mut row = self
+            .storage
+            .get_tenant(&tenant)
+            .await
+            .expect("read tenant")
+            .expect("the tenant exists");
+        row.platform_trunk_fallback = allowed;
+        self.storage.put_tenant(row).await.expect("seed tenant");
+    }
+
+    /// A tenant's own trunk to a carrier the test is running on the
+    /// loopback at `port`: one UDP host, no registration, no probing.
+    pub async fn trunk(&self, tenant: TenantId, name: &str, port: u16) -> fcp_core::TrunkId {
+        use fcp_core::storage::TrunkStore;
+        let mut trunk = fcp_core::Trunk::new(name.to_string(), tenant);
+        trunk.enabled = true;
+        trunk.direction = fcp_core::TrunkDirection::Upstream;
+        trunk.hosts = vec!["127.0.0.1".to_string()];
+        trunk.transport.protocol = fcp_core::transport::TransportType::Udp;
+        trunk.transport.port = Some(port);
+        trunk.failover.health_check_enabled = false;
+        let id = trunk.id.clone();
+        self.storage.put_trunk(trunk).await.expect("seed trunk");
+        id
     }
 
     /// The storage, for fixtures this helper has no shorthand for.

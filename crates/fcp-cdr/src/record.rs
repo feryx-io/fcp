@@ -312,6 +312,7 @@ pub struct RecordBuilder {
     rtp: Option<RtpStats>,
     rtp_packets: Option<(u64, u64)>,
     trunk_name: Option<String>,
+    trunk_id: Option<fcp_core::TrunkId>,
     gateway_id: Option<String>,
     route_id: Option<String>,
     node_id: Option<String>,
@@ -344,6 +345,7 @@ impl RecordBuilder {
             rtp: None,
             rtp_packets: None,
             trunk_name: None,
+            trunk_id: None,
             gateway_id: None,
             route_id: None,
             node_id: None,
@@ -429,6 +431,13 @@ impl RecordBuilder {
         self
     }
 
+    /// Which trunk carried the call (`docs/TENANT_TRUNKS.md` §4). Two
+    /// tenants may both have a "carrier-a", so the record keeps the id.
+    pub fn trunk_id(mut self, trunk_id: Option<fcp_core::TrunkId>) -> Self {
+        self.trunk_id = trunk_id;
+        self
+    }
+
     pub fn gateway(mut self, gateway_id: Option<String>) -> Self {
         self.gateway_id = gateway_id;
         self
@@ -509,6 +518,7 @@ impl RecordBuilder {
             region: self.region,
             correlation_id: self.correlation_id,
             trunk_name: self.trunk_name.clone(),
+            trunk_id: self.trunk_id,
             route_id: self.route_id,
             gateway_id: self.gateway_id.or(self.trunk_name),
             media_anchored: self.media_anchored,

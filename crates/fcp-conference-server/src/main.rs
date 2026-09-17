@@ -656,46 +656,61 @@ async fn main() -> Result<()> {
     };
 
     // 13. Trunk infrastructure (optional)
+    //
+    // The node routes by its own `[[trunks]]` — the platform's — and by every
+    // tenant's, read from the database and kept current as they change
+    // (`docs/TENANT_TRUNKS.md` §4). Either may be empty at startup and filled
+    // later, so the provider always exists.
     let trunk_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>;
-    let outbound_route_provider: Option<Arc<dyn fcp_sip::OutboundRouteProvider>> =
-        if !config.trunks.is_empty() {
-            let health = Arc::new(TrunkHealthMonitor::new(&config.trunks));
-            let cps: Arc<dyn CpsChecker> = Arc::new(NoCpsLimit);
-            let router = Arc::new(TrunkRouter::new(
-                config.trunks.clone(),
-                Arc::clone(&health),
-                cps,
+    let outbound_route_provider: Option<Arc<dyn fcp_sip::OutboundRouteProvider>> = {
+        let trunk_set = Arc::new(fcp_sbc_core::TrunkSet::platform_only(config.trunks.clone()));
+        let health = Arc::new(TrunkHealthMonitor::new(&config.trunks));
+        let cps: Arc<dyn CpsChecker> = Arc::new(NoCpsLimit);
+        let router = Arc::new(TrunkRouter::with_trunk_set(
+            Arc::clone(&trunk_set),
+            Arc::clone(&health),
+            cps,
+        ));
+
+        // Read the tenants' trunks now, and again whenever they change
+        fcp_sbc_core::spawn_trunk_refresh(
+            Arc::clone(&trunk_set),
+            Arc::clone(&dyn_storage),
+            Arc::clone(&health),
+            Some(Arc::clone(&event_bus) as Arc<dyn fcp_events::EventSubscriber>),
+            fcp_sbc_core::trunk_refresh::REFRESH_INTERVAL,
+        )
+        .await;
+
+        // Probe every trunk the node routes by, the tenants' included
+        tokio::spawn(fcp_sbc_core::run_health_probes(
+            Arc::clone(&health),
+            Arc::clone(&trunk_set),
+            Arc::clone(&uac),
+        ));
+
+        // Spawn trunk registration task (this node's own trunks)
+        let trunk_registrar = Arc::new(TrunkRegistrar::new(&config.trunks));
+        if trunk_registrar.has_registerable_trunks() {
+            let (tx, rx) = tokio::sync::watch::channel(false);
+            let reg = Arc::clone(&trunk_registrar);
+            let reg_health = Arc::clone(&health);
+            let reg_uac = Arc::clone(&uac);
+            tokio::spawn(fcp_sbc_core::run_trunk_registration(
+                reg, reg_health, reg_uac, rx,
             ));
-
-            let health_clone = Arc::clone(&health);
-            let trunks_clone = config.trunks.clone();
-            let uac_clone = Arc::clone(&uac);
-            tokio::spawn(fcp_sbc_core::run_health_probes(
-                health_clone,
-                trunks_clone,
-                uac_clone,
-            ));
-
-            let trunk_registrar = Arc::new(TrunkRegistrar::new(&config.trunks));
-            if trunk_registrar.has_registerable_trunks() {
-                let (tx, rx) = tokio::sync::watch::channel(false);
-                let reg = Arc::clone(&trunk_registrar);
-                let reg_health = Arc::clone(&health);
-                let reg_uac = Arc::clone(&uac);
-                tokio::spawn(fcp_sbc_core::run_trunk_registration(
-                    reg, reg_health, reg_uac, rx,
-                ));
-                trunk_shutdown_tx = Some(tx);
-            } else {
-                trunk_shutdown_tx = None;
-            }
-
-            info!(count = config.trunks.len(), "Trunk routing enabled");
-            Some(router as Arc<dyn fcp_sip::OutboundRouteProvider>)
+            trunk_shutdown_tx = Some(tx);
         } else {
             trunk_shutdown_tx = None;
-            None
-        };
+        }
+
+        info!(
+            platform_trunks = config.trunks.len(),
+            tenants_with_trunks = trunk_set.tenant_count(),
+            "Trunk routing enabled"
+        );
+        Some(router as Arc<dyn fcp_sip::OutboundRouteProvider>)
+    };
 
     // 14. Create media manager (kept for potential future use, but not wired
     //     into the SIP handler — the conference room handles RTP directly)

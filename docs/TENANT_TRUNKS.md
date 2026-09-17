@@ -342,6 +342,56 @@ One PR per phase, reviewed before the next starts.
    `TrunkSet` refreshed from the database on `ConfigChanged`; selection is
    the tenant's trunks then the platform's; `trunk_id` on the records; the
    test floor routes two tenants to two carriers.
+
+   *Done (v0.25.186).* What shipped:
+
+   - **The node holds a `TrunkSet`** — its own `[[trunks]]` and every
+     tenant's, read from `TrunkStore::list_all_trunks` at startup, again
+     on every `system.config_changed { entity_type: "trunk" }` the trunks
+     API now publishes (create, update, delete, clone, and a change to a
+     tenant's `platform_trunk_fallback`), and on a backstop tick
+     (`[trunk_routing] refresh_secs`, a minute by default) for a node that
+     missed the event. Health probes run over the set, so a trunk created
+     while the node runs is probed as soon as it is known. The call
+     manager, the IVR, the voicemail and the conference server all route
+     this way; the SBC stays platform-only (§13.8).
+   - **A node with no `[[trunks]]` still routes**: the outbound provider is
+     always there, since the tenants' trunks arrive after startup.
+   - **Selection takes the tenant** — `OutboundRouteProvider`'s four
+     methods and every call site — and is the tenant's trunks, then the
+     platform's unless the tenant refuses them
+     (`tenants.platform_trunk_fallback`, on `/v1/tenants`).
+   - **The record names which trunk carried the call**: `cdrs.trunk_id`
+     beside `trunk_name`, on `/v1/cdrs`, and the failover route that
+     answered names its own. `call.initiated`, `call.ended` and
+     `call.failed` carry the id too; the emergency events wait for phase 6,
+     where a tenant's `emergency_capable` starts to mean something.
+   - **On the floor**: two tenants, two carriers, one node with no trunks
+     of its own — each tenant's call leaves on its own tenant's trunk, and
+     a tenant with none of its own falls back to the platform's until it
+     says not to (`fcp-call-manager/tests/trunks.rs`).
+
+   Two things the phase found, both fixed in it:
+
+   - **An outbound call never reached a trunk on a node with a database.**
+     A dialled E.164 that is nobody's DID here went phone-number lookup →
+     registration lookup → `480`; only the no-storage path asked the route
+     provider. Every deployment with a database — which is every real one —
+     could route out only through a routing rule or the emergency path.
+     The two dead ends now ask for a trunk first (503 when trunks exist but
+     none can take the call, `480` when none is configured), which is what
+     made the floor test above possible.
+   - **`tenants.platform_trunk_fallback` read back as `true` whatever was
+     stored**, because the tenant SELECT list did not name the new column
+     and the row mapping defaulted quietly. The column is listed and the
+     mapping now reads it like every other field — the same shape of bug as
+     phase 1's trunk columns, and the second reason not to write a mapping
+     that can default.
+
+   Left for later phases: what the trunk does to the call is still the
+   SBC's (phase 3), the registrar keys on the name (phase 5), and
+   `emergency_capable` on a tenant trunk still decides nothing (phase 6),
+   so the emergency-capable list a node offers is still its own trunks'.
 3. **The trunk's own behaviour.** Number transform, caller ID and
    from-domain, codecs, SRTP, DTMF, session timer, header rules, outbound
    proxy — applied, and tested on the wire.

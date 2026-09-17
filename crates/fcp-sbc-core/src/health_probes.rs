@@ -2,6 +2,7 @@
 
 use crate::trunk::TrunkConfig;
 use crate::trunk_health::TrunkHealthMonitor;
+use crate::trunk_set::TrunkSet;
 use fcp_core::transport::TransportType;
 use fcp_sip::uac::SipUserAgentClient;
 use sip_dns::{DnsTarget, Transport as DnsTransport};
@@ -9,7 +10,9 @@ use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, info, warn};
 
-/// Run periodic OPTIONS health probes for all enabled trunks.
+/// Run periodic OPTIONS health probes for every trunk this node routes by —
+/// its own and every tenant's (`docs/TENANT_TRUNKS.md` §4). A tenant trunk
+/// created while the node runs is probed as soon as the set holds it.
 ///
 /// This function loops forever. Spawn it with `tokio::spawn`.
 /// Every 5 seconds it checks which trunks are due for probing (based on their
@@ -17,20 +20,10 @@ use tracing::{debug, info, warn};
 /// and records the result.
 pub async fn run_health_probes(
     monitor: Arc<TrunkHealthMonitor>,
-    trunks: Vec<TrunkConfig>,
+    trunks: Arc<TrunkSet>,
     uac: Arc<SipUserAgentClient>,
 ) {
-    let enabled: Vec<_> = trunks
-        .into_iter()
-        .filter(|t| t.failover.health_check_enabled)
-        .collect();
-
-    if enabled.is_empty() {
-        info!("No trunks with health checks enabled, probe task exiting");
-        return;
-    }
-
-    info!(count = enabled.len(), "Starting OPTIONS health probes");
+    info!("Starting OPTIONS health probes");
 
     let mut ticker = tokio::time::interval(Duration::from_secs(5));
     loop {
@@ -41,6 +34,12 @@ pub async fn run_health_probes(
         for name in &recovered {
             info!(trunk = %name, "Degraded trunk auto-recovered to Healthy");
         }
+
+        let enabled: Vec<_> = trunks
+            .all()
+            .into_iter()
+            .filter(|t| t.failover.health_check_enabled)
+            .collect();
 
         for trunk in &enabled {
             // Health is kept per trunk, not per name (`docs/TENANT_TRUNKS.md`

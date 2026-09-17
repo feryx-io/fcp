@@ -12,6 +12,7 @@ fcp-core = { path = "../fcp-core" }
 fcp-b2bua-core = { path = "../fcp-b2bua-core" }
 fcp-cdr = { path = "../fcp-cdr" }
 fcp-sip = { path = "../fcp-sip" }
+fcp-events = { path = "../fcp-events" }
 
 # SIP stack dependencies (from siphon-rs)
 sip-core = { path = "../../external/siphon-rs/crates/sip-core" }
@@ -22,6 +23,7 @@ sip-dns = { path = "../../external/siphon-rs/crates/sip-dns" }
 p256 = { version = "0.13", features = ["ecdsa", "pem"] }
 base64 = "0.22"
 uuid = { workspace = true }
+anyhow = { workspace = true }
 thiserror = { workspace = true }
 
 # Serialization

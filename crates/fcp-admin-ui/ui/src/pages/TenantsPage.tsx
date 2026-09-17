@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Switch } from '@/components/ui/switch'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
@@ -28,6 +29,7 @@ const createSchema = z.object({
   max_phone_numbers: z.coerce.number().positive().optional().or(z.literal(0).transform(() => undefined)),
   max_concurrent_calls: z.coerce.number().positive().optional().or(z.literal(0).transform(() => undefined)),
   sip_domains: z.string().optional(),
+  platform_trunk_fallback: z.boolean().optional(),
 })
 
 const editSchema = z.object({
@@ -39,6 +41,7 @@ const editSchema = z.object({
   max_phone_numbers: z.coerce.number().positive().optional().or(z.literal(0).transform(() => undefined)),
   max_concurrent_calls: z.coerce.number().positive().optional().or(z.literal(0).transform(() => undefined)),
   sip_domains: z.string().optional(),
+  platform_trunk_fallback: z.boolean().optional(),
 })
 
 type CreateForm = z.infer<typeof createSchema>
@@ -193,6 +196,7 @@ export function TenantsPage() {
       max_phone_numbers: editItem.max_phone_numbers ?? undefined,
       max_concurrent_calls: editItem.max_concurrent_calls ?? undefined,
       sip_domains: (editItem.sip_domains ?? []).join('\n'),
+      platform_trunk_fallback: editItem.platform_trunk_fallback ?? true,
     })
   }
 
@@ -304,6 +308,21 @@ export function TenantsPage() {
                 allowed here &mdash; they fall back to the default tenant.
               </p>
             </div>
+            <div className="flex items-center justify-between rounded-md border p-3">
+              <div className="space-y-0.5 pr-4">
+                <Label htmlFor="c-platform_trunk_fallback">Use platform trunks</Label>
+                <p className="text-xs text-muted-foreground">
+                  When this tenant&rsquo;s own trunks cannot take a call, let it
+                  leave on one of the platform&rsquo;s. Turn this off for a
+                  tenant whose calls must never leave on a shared carrier.
+                </p>
+              </div>
+              <Switch
+                id="c-platform_trunk_fallback"
+                checked={createForm.watch('platform_trunk_fallback') ?? true}
+                onCheckedChange={(v) => createForm.setValue('platform_trunk_fallback', v)}
+              />
+            </div>
             <div className="flex justify-end gap-2">
               <Button type="button" variant="outline" onClick={() => setCreateOpen(false)}>Cancel</Button>
               <Button type="submit" disabled={createMutation.isPending}>
@@ -373,6 +392,21 @@ export function TenantsPage() {
                 Request-URI host matches one of these will be routed to this
                 tenant. Leave blank to use only the default-tenant fallback.
               </p>
+            </div>
+            <div className="flex items-center justify-between rounded-md border p-3">
+              <div className="space-y-0.5 pr-4">
+                <Label htmlFor="e-platform_trunk_fallback">Use platform trunks</Label>
+                <p className="text-xs text-muted-foreground">
+                  When this tenant&rsquo;s own trunks cannot take a call, let it
+                  leave on one of the platform&rsquo;s. Turn this off for a
+                  tenant whose calls must never leave on a shared carrier.
+                </p>
+              </div>
+              <Switch
+                id="e-platform_trunk_fallback"
+                checked={editForm.watch('platform_trunk_fallback') ?? true}
+                onCheckedChange={(v) => editForm.setValue('platform_trunk_fallback', v)}
+              />
             </div>
             <div className="flex justify-end gap-2">
               <Button type="button" variant="outline" onClick={() => setEditItem(null)}>Cancel</Button>

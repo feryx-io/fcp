@@ -105,6 +105,8 @@ The phone is the only new machinery. Two smaller helpers go beside it:
 
 Next to the binary under test, as the smoke tests are:
 `crates/fcp-call-manager/tests/calls.rs`,
+`crates/fcp-call-manager/tests/emergency.rs`,
+`crates/fcp-call-manager/tests/trunks.rs`,
 `crates/fcp-conference-server/tests/rooms.rs`, and later the gateway's.
 Each test starts its own processes on free ports and a fresh database,
 so tests run in parallel and leave nothing behind. They gate on the same

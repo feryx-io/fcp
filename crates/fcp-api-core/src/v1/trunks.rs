@@ -11,7 +11,8 @@ use axum::{
 };
 use fcp_core::permissions::Permission;
 use fcp_core::storage::TrunkStore;
-use fcp_core::{Trunk, TrunkDirection, TrunkId};
+use fcp_core::{TenantId, Trunk, TrunkDirection, TrunkId};
+use fcp_events::{PlatformEvent, SystemEvent};
 use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
 use tracing::info;
@@ -557,6 +558,21 @@ impl From<UpdateTrunkRequest> for TrunkFields {
     }
 }
 
+/// Tell every node that a trunk changed, so the ones routing calls re-read
+/// the tenants' trunks now rather than at the next backstop tick
+/// (`docs/TENANT_TRUNKS.md` §4).
+pub(crate) async fn announce_trunk_change(state: &ApiState, entity_id: &str, tenant_id: TenantId) {
+    let _ = state
+        .event_bus
+        .publish(PlatformEvent::System(SystemEvent::ConfigChanged {
+            entity_type: "trunk".to_string(),
+            entity_id: entity_id.to_string(),
+            tenant_id,
+            timestamp: SystemTime::now(),
+        }))
+        .await;
+}
+
 /// Create a new trunk.
 pub async fn create_trunk(
     State(state): State<ApiState>,
@@ -582,6 +598,8 @@ pub async fn create_trunk(
         .put_trunk(trunk.clone())
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to create trunk: {}", e)))?;
+
+    announce_trunk_change(&state, &trunk.id.to_string(), tenant_id).await;
 
     Ok((StatusCode::CREATED, Json(TrunkResponse::from(trunk))))
 }
@@ -621,6 +639,8 @@ pub async fn update_trunk(
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to update trunk: {}", e)))?;
 
+    announce_trunk_change(&state, &trunk.id.to_string(), tenant.0).await;
+
     Ok(Json(TrunkResponse::from(trunk)))
 }
 
@@ -651,6 +671,8 @@ pub async fn delete_trunk(
         .delete_trunk(&trunk_id)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to delete trunk: {}", e)))?;
+
+    announce_trunk_change(&state, &trunk_id.to_string(), tenant.0).await;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -727,6 +749,8 @@ pub async fn clone_trunk(
         .put_trunk(clone.clone())
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to create trunk clone: {}", e)))?;
+
+    announce_trunk_change(&state, &clone.id.to_string(), tenant.0).await;
 
     Ok((StatusCode::CREATED, Json(TrunkResponse::from(clone))))
 }

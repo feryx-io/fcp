@@ -107,6 +107,7 @@ impl CallStateStore {
                 timestamp,
                 trunk_name,
                 node_id,
+                ..
             } => {
                 let call = AggregatedCall {
                     call_id: call_id.to_string(),
@@ -582,6 +583,7 @@ mod tests {
             direction: CallDirection::Outbound,
             timestamp: SystemTime::now(),
             trunk_name: None,
+            trunk_id: None,
             node_id: node_id.map(String::from),
         }
     }
@@ -654,6 +656,7 @@ mod tests {
             hangup_cause: "Normal Clearing".to_string(),
             hangup_party: None,
             trunk_name: None,
+            trunk_id: None,
             node_id: Some("node-1".to_string()),
         });
         let call = store.get_call(&call_id.to_string()).unwrap();

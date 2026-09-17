@@ -506,6 +506,7 @@ impl App {
             region: None,
             correlation_id: None,
             trunk_name: None,
+            trunk_id: None,
             rtp_packets_lost: None,
             rtp_jitter_ms: None,
             rate_plan_id: None,

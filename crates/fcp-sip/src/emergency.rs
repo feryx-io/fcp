@@ -264,6 +264,8 @@ pub fn outbound_identity(
 pub struct EmergencyAttempt {
     pub target: String,
     pub trunk: Option<String>,
+    /// Which trunk that is (`docs/TENANT_TRUNKS.md` §4).
+    pub trunk_id: Option<fcp_core::TrunkId>,
     pub delivery: Vec<LocationDelivery>,
 }
 
@@ -277,6 +279,7 @@ impl EmergencyAttempt {
         Self {
             target: route.target_uri.clone(),
             trunk: route.trunk_name.clone(),
+            trunk_id: route.trunk_id.clone(),
             delivery,
         }
     }
@@ -595,6 +598,7 @@ mod tests {
         EmergencyAttempt {
             target: "sip:911@10.0.0.9".into(),
             trunk: Some("psap".into()),
+            trunk_id: None,
             delivery: delivery.to_vec(),
         }
     }
