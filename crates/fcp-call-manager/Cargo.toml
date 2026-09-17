@@ -100,3 +100,8 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 [dev-dependencies]
 fcp-testkit = { path = "../fcp-testkit" }
 tempfile = "3"
+# A signing key for the STIR/SHAKEN wire test, made on the spot, and the
+# base64 to read back the PASSporT it signs.
+p256 = { version = "0.13", features = ["ecdsa", "pem"] }
+rand = "0.8"
+base64 = "0.22"

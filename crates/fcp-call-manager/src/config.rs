@@ -94,6 +94,13 @@ pub struct CallManagerConfig {
     /// §6); the rules themselves are the node's, as they are on the SBC.
     #[serde(default)]
     pub header_manipulation: fcp_sbc_core::hmr::HeaderManipulationConfig,
+
+    /// STIR/SHAKEN (RFC 8224). The signing key and the certificate it
+    /// names are the node's; which calls are signed, and at what
+    /// attestation, is each trunk's `stir_shaken` to say
+    /// (`docs/TENANT_TRUNKS.md` §6).
+    #[serde(default)]
+    pub stir_shaken: fcp_sbc_core::stir_shaken::StirShakenConfig,
 }
 
 /// What a node does about trunks it did not read from its own config.

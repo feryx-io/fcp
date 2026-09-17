@@ -5,6 +5,7 @@
 //! for base64url encoding.
 
 use dashmap::DashMap;
+use p256::ecdsa::SigningKey;
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 
@@ -121,13 +122,47 @@ pub struct PassportTnField {
     pub tn: Vec<String>,
 }
 
+/// The `orig` claim: **one** telephone number, as a string (RFC 8225
+/// §5.2.1 — only `dest` holds an array). A PASSporT whose `orig.tn` is an
+/// array is what a strict verifier rejects, so this is written as a string
+/// and read from either shape, since implementations that copied `dest`
+/// are out there.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PassportOrig {
+    #[serde(with = "one_or_many_tn")]
+    pub tn: String,
+}
+
+/// Serialise one telephone number as a string; accept a string or a
+/// one-element array on the way in.
+mod one_or_many_tn {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(tn: &str, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(tn)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum OneOrMany {
+            One(String),
+            Many(Vec<String>),
+        }
+        Ok(match OneOrMany::deserialize(deserializer)? {
+            OneOrMany::One(tn) => tn,
+            OneOrMany::Many(tns) => tns.into_iter().next().unwrap_or_default(),
+        })
+    }
+}
+
 /// PASSporT payload claims.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PassportPayload {
     pub attest: String,
     pub dest: PassportTnField,
     pub iat: u64,
-    pub orig: PassportTnField,
+    pub orig: PassportOrig,
     pub origid: String,
 }
 
@@ -363,8 +398,8 @@ pub fn generate_identity_header(
             tn: vec![dest_tn.to_string()],
         },
         iat: now,
-        orig: PassportTnField {
-            tn: vec![orig_tn.to_string()],
+        orig: PassportOrig {
+            tn: orig_tn.to_string(),
         },
         origid: uuid::Uuid::new_v4().to_string(),
     };
@@ -518,6 +553,119 @@ pub fn extract_header_from_payload(payload: &[u8], header_name: &str) -> Option<
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
+
+// ── Signing ─────────────────────────────────────────────────────────────
+
+/// Signing engine for outbound STIR/SHAKEN Identity headers.
+pub struct StirSigner {
+    signing_key: SigningKey,
+    cert_url: String,
+}
+
+impl StirSigner {
+    /// Create a new signer from the global STIR/SHAKEN config.
+    ///
+    /// Returns `Ok(None)` if signing is not configured (no key/cert/url).
+    /// Returns `Err` if configuration is incomplete or key loading fails.
+    pub fn new(config: &StirShakenConfig) -> Result<Option<Self>, StirError> {
+        let (key_path, cert_url) = match (&config.signing_key_path, &config.signing_cert_url) {
+            (Some(key_path), Some(cert_url)) => (key_path.clone(), cert_url.clone()),
+            (None, None) => return Ok(None),
+            _ => {
+                return Err(StirError::SigningError(
+                    "incomplete signing config: need both signing_key_path and signing_cert_url"
+                        .into(),
+                ));
+            }
+        };
+
+        let key_pem = std::fs::read_to_string(&key_path)
+            .map_err(|e| StirError::SigningError(format!("reading {key_path}: {e}")))?;
+
+        let signing_key = Self::parse_signing_key(&key_pem)?;
+
+        Ok(Some(Self {
+            signing_key,
+            cert_url,
+        }))
+    }
+
+    /// A signer from a key already in hand and the URL its certificate is
+    /// published at: what [`StirSigner::new`] builds from configuration,
+    /// and what a test builds from a key it generated.
+    pub fn from_key(signing_key: SigningKey, cert_url: impl Into<String>) -> Self {
+        Self {
+            signing_key,
+            cert_url: cert_url.into(),
+        }
+    }
+
+    /// Parse a PEM-encoded ECDSA P-256 private key (SEC1 or PKCS8).
+    fn parse_signing_key(pem_str: &str) -> Result<SigningKey, StirError> {
+        // Try SEC1 format first (-----BEGIN EC PRIVATE KEY-----)
+        if pem_str.contains("EC PRIVATE KEY") {
+            use p256::pkcs8::DecodePrivateKey;
+            // Try PKCS8 decode first for EC keys (some PEM files use PKCS8 format even
+            // with EC PRIVATE KEY label)
+            if let Ok(key) = SigningKey::from_pkcs8_pem(pem_str) {
+                return Ok(key);
+            }
+            // Fall through to SEC1
+            use p256::SecretKey;
+            let secret = SecretKey::from_sec1_pem(pem_str)
+                .map_err(|e| StirError::SigningError(format!("SEC1 PEM parse: {e}")))?;
+            return Ok(SigningKey::from(&secret));
+        }
+
+        // Try PKCS8 format (-----BEGIN PRIVATE KEY-----)
+        if pem_str.contains("PRIVATE KEY") {
+            use p256::pkcs8::DecodePrivateKey;
+            let key = SigningKey::from_pkcs8_pem(pem_str)
+                .map_err(|e| StirError::SigningError(format!("PKCS8 PEM parse: {e}")))?;
+            return Ok(key);
+        }
+
+        Err(StirError::SigningError(
+            "unrecognized PEM key format".into(),
+        ))
+    }
+
+    /// Generate an Identity header value for the given orig/dest TNs and attestation.
+    pub fn sign(
+        &self,
+        orig_tn: &str,
+        dest_tn: &str,
+        attestation: AttestationLevel,
+    ) -> Result<String, StirError> {
+        generate_identity_header(
+            orig_tn,
+            dest_tn,
+            attestation,
+            &self.cert_url,
+            &self.signing_key,
+        )
+    }
+}
+
+/// What signs the calls a trunk asks to have signed, for a node that
+/// builds its own outbound INVITEs (`docs/TENANT_TRUNKS.md` §6). The call
+/// manager hands its signer to `fcp-sip` through this.
+impl fcp_sip::trunk_egress::TrunkCallSigner for StirSigner {
+    fn identity(
+        &self,
+        orig_tn: &str,
+        dest_tn: &str,
+        attestation: AttestationLevel,
+    ) -> Option<String> {
+        match self.sign(orig_tn, dest_tn, attestation) {
+            Ok(identity) => Some(identity),
+            Err(e) => {
+                tracing::warn!(error = %e, "STIR/SHAKEN signing failed; the call goes out unsigned");
+                None
+            }
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -684,7 +832,7 @@ mod tests {
         assert_eq!(parsed.header.alg, "ES256");
         assert_eq!(parsed.header.ppt, "shaken");
         assert_eq!(parsed.payload.attest, "A");
-        assert_eq!(parsed.payload.orig.tn, vec!["+15551001"]);
+        assert_eq!(parsed.payload.orig.tn, "+15551001");
         assert_eq!(parsed.payload.dest.tn, vec!["+15551002"]);
         assert_eq!(parsed.payload.iat, 1700000000);
     }
@@ -872,7 +1020,7 @@ mod tests {
         assert_eq!(parsed.header.ppt, "shaken");
         assert_eq!(parsed.header.typ, "passport");
         assert_eq!(parsed.payload.attest, "A");
-        assert_eq!(parsed.payload.orig.tn, vec!["+15551001"]);
+        assert_eq!(parsed.payload.orig.tn, "+15551001");
         assert_eq!(parsed.payload.dest.tn, vec!["+15551002"]);
         assert!(!parsed.payload.origid.is_empty());
     }

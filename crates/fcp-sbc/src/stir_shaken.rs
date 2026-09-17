@@ -1,13 +1,17 @@
 //! STIR/SHAKEN verification engine, signing engine, transport dispatcher,
 //! and metrics for the SBC (RFC 8224/8225/8588).
 
+pub use fcp_sbc_core::stir_shaken::StirSigner;
+
 use bytes::Bytes;
 use fcp_sbc_core::stir_shaken::{
     self, AttestationLevel, CertificateCache, ParsedIdentity, StirError, StirShakenConfig,
     TrunkStirShakenConfig,
 };
 use fcp_sbc_core::TrunkConfig;
-use p256::ecdsa::{signature::Verifier, Signature, SigningKey, VerifyingKey};
+#[cfg(test)]
+use p256::ecdsa::SigningKey;
+use p256::ecdsa::{signature::Verifier, Signature, VerifyingKey};
 use sip_transaction::{TransportContext, TransportDispatcher};
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -175,16 +179,15 @@ impl StirVerifier {
 
         // Check orig TN
         let from_clean = stir_shaken::clean_tn(from_tn);
-        if let Some(passport_orig) = parsed.payload.orig.tn.first() {
-            let passport_clean = stir_shaken::clean_tn(passport_orig);
-            if passport_clean != from_clean {
-                return Err(StirError::OrigTnMismatch {
-                    passport_tn: passport_clean,
-                    from_tn: from_clean,
-                });
-            }
-        } else {
+        if parsed.payload.orig.tn.is_empty() {
             return Err(StirError::ClaimsInvalid("orig.tn is empty".into()));
+        }
+        let passport_clean = stir_shaken::clean_tn(&parsed.payload.orig.tn);
+        if passport_clean != from_clean {
+            return Err(StirError::OrigTnMismatch {
+                passport_tn: passport_clean,
+                from_tn: from_clean,
+            });
         }
 
         // Check dest TN
@@ -257,89 +260,6 @@ fn extract_verifying_key_from_cert(cert_bytes: &[u8]) -> Result<VerifyingKey, St
 
     VerifyingKey::from_sec1_bytes(key_bytes.as_ref())
         .map_err(|e| StirError::CertificateInvalid(format!("P-256 key extract: {e}")))
-}
-
-// ── StirSigner ──────────────────────────────────────────────────────────────
-
-/// Signing engine for outbound STIR/SHAKEN Identity headers.
-pub struct StirSigner {
-    signing_key: SigningKey,
-    cert_url: String,
-}
-
-impl StirSigner {
-    /// Create a new signer from the global STIR/SHAKEN config.
-    ///
-    /// Returns `Ok(None)` if signing is not configured (no key/cert/url).
-    /// Returns `Err` if configuration is incomplete or key loading fails.
-    pub fn new(config: &StirShakenConfig) -> Result<Option<Self>, StirError> {
-        let (key_path, cert_url) = match (&config.signing_key_path, &config.signing_cert_url) {
-            (Some(key_path), Some(cert_url)) => (key_path.clone(), cert_url.clone()),
-            (None, None) => return Ok(None),
-            _ => {
-                return Err(StirError::SigningError(
-                    "incomplete signing config: need both signing_key_path and signing_cert_url"
-                        .into(),
-                ));
-            }
-        };
-
-        let key_pem = std::fs::read_to_string(&key_path)
-            .map_err(|e| StirError::SigningError(format!("reading {key_path}: {e}")))?;
-
-        let signing_key = Self::parse_signing_key(&key_pem)?;
-
-        Ok(Some(Self {
-            signing_key,
-            cert_url,
-        }))
-    }
-
-    /// Parse a PEM-encoded ECDSA P-256 private key (SEC1 or PKCS8).
-    fn parse_signing_key(pem_str: &str) -> Result<SigningKey, StirError> {
-        // Try SEC1 format first (-----BEGIN EC PRIVATE KEY-----)
-        if pem_str.contains("EC PRIVATE KEY") {
-            use p256::pkcs8::DecodePrivateKey;
-            // Try PKCS8 decode first for EC keys (some PEM files use PKCS8 format even
-            // with EC PRIVATE KEY label)
-            if let Ok(key) = SigningKey::from_pkcs8_pem(pem_str) {
-                return Ok(key);
-            }
-            // Fall through to SEC1
-            use p256::SecretKey;
-            let secret = SecretKey::from_sec1_pem(pem_str)
-                .map_err(|e| StirError::SigningError(format!("SEC1 PEM parse: {e}")))?;
-            return Ok(SigningKey::from(&secret));
-        }
-
-        // Try PKCS8 format (-----BEGIN PRIVATE KEY-----)
-        if pem_str.contains("PRIVATE KEY") {
-            use p256::pkcs8::DecodePrivateKey;
-            let key = SigningKey::from_pkcs8_pem(pem_str)
-                .map_err(|e| StirError::SigningError(format!("PKCS8 PEM parse: {e}")))?;
-            return Ok(key);
-        }
-
-        Err(StirError::SigningError(
-            "unrecognized PEM key format".into(),
-        ))
-    }
-
-    /// Generate an Identity header value for the given orig/dest TNs and attestation.
-    pub fn sign(
-        &self,
-        orig_tn: &str,
-        dest_tn: &str,
-        attestation: AttestationLevel,
-    ) -> Result<String, StirError> {
-        stir_shaken::generate_identity_header(
-            orig_tn,
-            dest_tn,
-            attestation,
-            &self.cert_url,
-            &self.signing_key,
-        )
-    }
 }
 
 // ── StirTransportDispatcher ─────────────────────────────────────────────────
@@ -507,7 +427,9 @@ impl StirMetrics {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fcp_sbc_core::stir_shaken::{PassportHeader, PassportPayload, PassportTnField};
+    use fcp_sbc_core::stir_shaken::{
+        PassportHeader, PassportOrig, PassportPayload, PassportTnField,
+    };
 
     /// Helper: build a valid ParsedIdentity with configurable TNs and iat.
     fn make_parsed_identity(orig_tn: &str, dest_tn: &str, iat: u64) -> ParsedIdentity {
@@ -523,8 +445,8 @@ mod tests {
                 tn: vec![dest_tn.to_string()],
             },
             iat,
-            orig: PassportTnField {
-                tn: vec![orig_tn.to_string()],
+            orig: PassportOrig {
+                tn: orig_tn.to_string(),
             },
             origid: "test-origid".into(),
         };
@@ -615,7 +537,7 @@ mod tests {
         let config = StirShakenConfig::default();
         let verifier = StirVerifier::new(&config);
         let mut parsed = make_parsed_identity("+15551001", "+15551002", now_epoch());
-        parsed.payload.orig.tn.clear(); // empty orig
+        parsed.payload.orig.tn = String::new(); // empty orig
 
         let result = verifier.validate_claims(
             &parsed,
@@ -659,7 +581,7 @@ mod tests {
                 attest: "A".into(),
                 dest: PassportTnField { tn: vec![] },
                 iat: 0,
-                orig: PassportTnField { tn: vec![] },
+                orig: PassportOrig { tn: String::new() },
                 origid: "test".into(),
             },
             raw_header,
@@ -701,7 +623,7 @@ mod tests {
                 attest: "A".into(),
                 dest: PassportTnField { tn: vec![] },
                 iat: 0,
-                orig: PassportTnField { tn: vec![] },
+                orig: PassportOrig { tn: String::new() },
                 origid: "test".into(),
             },
             raw_header,
@@ -723,10 +645,7 @@ mod tests {
         let verifying_key = VerifyingKey::from(&signing_key);
 
         // Create a signer directly
-        let signer = StirSigner {
-            signing_key: signing_key.clone(),
-            cert_url: "https://cert.example.com/cert.pem".into(),
-        };
+        let signer = StirSigner::from_key(signing_key.clone(), "https://cert.example.com/cert.pem");
 
         // Sign
         let identity_header = signer
@@ -775,10 +694,10 @@ mod tests {
         });
 
         let signing_key = SigningKey::random(&mut rand::thread_rng());
-        let signer = Arc::new(StirSigner {
+        let signer = Arc::new(StirSigner::from_key(
             signing_key,
-            cert_url: "https://cert.example.com/cert.pem".into(),
-        });
+            "https://cert.example.com/cert.pem",
+        ));
         let metrics = Arc::new(StirMetrics::new());
 
         let dispatcher = StirTransportDispatcher {

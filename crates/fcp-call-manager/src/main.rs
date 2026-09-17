@@ -1062,6 +1062,31 @@ async fn main() -> Result<()> {
         None
     };
 
+    // What signs the calls a trunk asks to have signed (RFC 8224). The key
+    // and certificate are this node's; the trunk says which calls and at
+    // what attestation (`docs/TENANT_TRUNKS.md` §6).
+    let call_signer: Option<Arc<dyn fcp_sip::trunk_egress::TrunkCallSigner>> = if config
+        .stir_shaken
+        .enabled
+    {
+        match fcp_sbc_core::stir_shaken::StirSigner::new(&config.stir_shaken) {
+            Ok(Some(signer)) => {
+                info!("STIR/SHAKEN signing key loaded");
+                Some(Arc::new(signer) as Arc<dyn fcp_sip::trunk_egress::TrunkCallSigner>)
+            }
+            Ok(None) => {
+                info!("STIR/SHAKEN enabled with no signing key; calls go out unsigned");
+                None
+            }
+            Err(e) => {
+                warn!(error = %e, "STIR/SHAKEN signing key could not be loaded; calls go out unsigned");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let mut handler = SipMessageHandler::new(
         Arc::clone(&transaction_manager_ref),
         Arc::clone(&dialog_manager_ref),
@@ -1099,6 +1124,7 @@ async fn main() -> Result<()> {
     )?)
     .with_client_address_vouching(config.e911.vouch_client_address)
     .with_header_rules(header_rules.clone())
+    .with_call_signer(call_signer.clone())
     .with_call_recorder(Arc::clone(&call_recorder));
     #[cfg(feature = "storage-redis")]
     if let Some((_, _, selector)) = &_cluster_manager {

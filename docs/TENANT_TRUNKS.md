@@ -475,9 +475,30 @@ One PR per phase, reviewed before the next starts.
    - On the wire: a trunk that names one rule gets that rule (a header
      added, a header removed) and not the other one configured.
 
-   **3b-3 — STIR/SHAKEN signing.** Per-trunk signing off the SBC: the
-   `Identity` header is one more thing the trunk adds, and the signer and
-   its certificate are the node's.
+   **3b-3 — STIR/SHAKEN signing.** *Done (v0.25.190).*
+
+   - **The signer is shared.** `StirSigner` moved from the SBC *binary*
+     into `fcp-sbc-core`, beside the PASSporT primitives it was already
+     calling; the SBC uses it from there and a call manager reads the same
+     `[stir_shaken]` section. The key and the certificate it names are the
+     node's; which calls are signed, and at what attestation, is each
+     trunk's `stir_shaken` to say.
+   - **Signed where the numbers are final.** The `Identity` header is
+     built for the leg, over the numbers the carrier will see: after the
+     trunk's `caller_id_override` and after its digit plan, because those
+     are the numbers the carrier verifies. A call with a name rather than
+     a number at either end, or a node with no signing key, goes out
+     unsigned — an `Identity` that does not match the call is worse than
+     none.
+   - **A PASSporT a strict verifier accepts.** `orig.tn` was written as an
+     array; RFC 8225 §5.2.1 says one number, as a string — only `dest.tn`
+     is an array. It is a string now, and read from either shape, since
+     implementations that copied `dest` are out there. Nothing on this
+     platform signed a tenant's call before this phase, so the wrong shape
+     had never left it in anger.
+   - On the wire: the carrier receives an `Identity` header whose PASSporT
+     names this node's certificate, attestation A, and the trunk's own
+     caller ID as `orig` — not the extension behind it.
 
    **3b-4 — DTMF converted.** 3a stops offering RFC 2833 to a trunk that
    does not take it; this turns what the A-leg sends into what the trunk

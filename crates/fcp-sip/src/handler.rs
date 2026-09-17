@@ -580,6 +580,9 @@ pub struct SipMessageHandler {
     /// The header manipulation rules a trunk may name
     /// (`docs/TENANT_TRUNKS.md` §6); `None` on a node with none configured.
     header_rules: Option<Arc<dyn crate::trunk_egress::TrunkHeaderRules>>,
+    /// What signs the calls a trunk asks to have signed (RFC 8224);
+    /// `None` on a node with no signing key.
+    call_signer: Option<Arc<dyn crate::trunk_egress::TrunkCallSigner>>,
     /// Conference calls whose B-leg is being moved to another conference
     /// node (phase 5b), so a second REFER while one is in flight is refused.
     conference_migrations: Arc<dashmap::DashMap<fcp_b2bua_core::CallId, ()>>,
@@ -928,6 +931,7 @@ impl SipMessageHandler {
             emergency_fallbacks: Arc::new(dashmap::DashMap::new()),
             b_leg_srtp: Arc::new(dashmap::DashMap::new()),
             header_rules: None,
+            call_signer: None,
             conference_migrations: Arc::new(dashmap::DashMap::new()),
         };
 
@@ -1008,6 +1012,16 @@ impl SipMessageHandler {
         rules: Option<Arc<dyn crate::trunk_egress::TrunkHeaderRules>>,
     ) -> Self {
         self.header_rules = rules;
+        self
+    }
+
+    /// What signs the calls a trunk asks to have signed
+    /// (`docs/TENANT_TRUNKS.md` §6).
+    pub fn with_call_signer(
+        mut self,
+        signer: Option<Arc<dyn crate::trunk_egress::TrunkCallSigner>>,
+    ) -> Self {
+        self.call_signer = signer;
         self
     }
 
@@ -5764,6 +5778,16 @@ impl SipMessageHandler {
                             &route.trunk,
                             caller.as_deref(),
                             emergency,
+                        );
+                        // The numbers the carrier will see are the ones the
+                        // call is signed over (RFC 8224).
+                        let orig_tn = tn_of(target.egress.from.as_deref().or(caller.as_deref()));
+                        let dest_tn = tn_of(Some(target.uri.as_str()));
+                        target.egress.sign(
+                            &route.trunk,
+                            self.call_signer.as_ref(),
+                            &orig_tn,
+                            &dest_tn,
                         );
                         debug!(
                             call_id = %call_id,
@@ -13707,6 +13731,33 @@ pub(crate) fn route_trunks(routes: &[OutboundRoute]) -> Vec<fcp_b2bua_core::Rout
         .collect()
 }
 
+/// The telephone number in a SIP URI, as STIR/SHAKEN states it: digits
+/// only, without the `+` (RFC 8224 §4). Empty when the user part is not a
+/// number, which is a call that cannot be signed.
+fn tn_of(uri: Option<&str>) -> String {
+    let Some(uri) = uri else {
+        return String::new();
+    };
+    let user = uri
+        .trim()
+        .trim_start_matches('<')
+        .trim_end_matches('>')
+        .trim_start_matches("sip:")
+        .trim_start_matches("sips:")
+        .split('@')
+        .next()
+        .unwrap_or_default();
+    let digits: String = user
+        .trim_start_matches('+')
+        .chars()
+        .filter(|c| c.is_ascii_digit())
+        .collect();
+    if digits.is_empty() || digits.len() != user.trim_start_matches('+').len() {
+        return String::new();
+    }
+    digits
+}
+
 /// The trunk whose route target is `winner` (a fork target, which may
 /// have gained or lost angle brackets on the way).
 fn answering_trunk<'a>(
@@ -14530,6 +14581,27 @@ mod tests {
                 .map(|v| v.as_str()),
             Some("abc")
         );
+    }
+
+    #[test]
+    fn a_signed_call_names_its_numbers_as_stir_shaken_states_them() {
+        // Digits only, without the `+` (RFC 8224 §4).
+        assert_eq!(
+            tn_of(Some("sip:+15125550100@carrier.example")),
+            "15125550100"
+        );
+        assert_eq!(tn_of(Some("<sip:15125550100@pbx>")), "15125550100");
+        assert_eq!(tn_of(Some("+15125550100")), "15125550100");
+
+        // A call that is not between numbers is not signed.
+        assert_eq!(tn_of(Some("sip:alice@pbx.local")), "");
+        assert_eq!(
+            tn_of(Some("sip:911@psap")),
+            "911",
+            "an emergency number is one"
+        );
+        assert_eq!(tn_of(Some("sip:+1-512-555-0100@carrier")), "");
+        assert_eq!(tn_of(None), "");
     }
 
     #[test]
