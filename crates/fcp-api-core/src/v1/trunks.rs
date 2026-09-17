@@ -338,7 +338,7 @@ struct TrunkFields {
 }
 
 fn apply_trunk_fields(trunk: &mut Trunk, fields: TrunkFields) -> Result<(), ApiError> {
-    use fcp_core::trunk::{NumberTransform, SrtpMode, TrunkCredentials, TrunkDtmfMode};
+    use fcp_core::trunk::{SrtpMode, TrunkCredentials, TrunkDtmfMode};
 
     if let Some(enabled) = fields.enabled {
         trunk.enabled = enabled;
@@ -433,10 +433,7 @@ fn apply_trunk_fields(trunk: &mut Trunk, fields: TrunkFields) -> Result<(), ApiE
         trunk.from_domain = fields.from_domain;
     }
     if fields.strip_digits.is_some() || fields.prepend_digits.is_some() {
-        let mut transform = trunk
-            .egress_number_transform
-            .clone()
-            .unwrap_or_else(NumberTransform::default);
+        let mut transform = trunk.egress_number_transform.clone().unwrap_or_default();
         if let Some(n) = fields.strip_digits {
             transform.strip_leading = n.max(0) as usize;
         }
