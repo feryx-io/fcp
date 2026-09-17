@@ -271,15 +271,15 @@ pub struct EmergencyAttempt {
 
 impl EmergencyAttempt {
     pub fn from_route(route: &crate::handler::OutboundRoute) -> Self {
-        let delivery = if route.emergency_location.is_empty() {
+        let delivery = if route.emergency_location().is_empty() {
             vec![LocationDelivery::Elin]
         } else {
-            route.emergency_location.clone()
+            route.emergency_location()
         };
         Self {
             target: route.target_uri.clone(),
-            trunk: route.trunk_name.clone(),
-            trunk_id: route.trunk_id.clone(),
+            trunk: route.trunk_name(),
+            trunk_id: route.trunk_id(),
             delivery,
         }
     }

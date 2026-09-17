@@ -201,22 +201,56 @@ use fcp_core::storage::{
 };
 
 /// Result of outbound route resolution.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct OutboundRoute {
     /// Target SIP URI to INVITE.
     pub target_uri: String,
-    /// Name of the trunk selected (if trunk-based routing was used).
-    pub trunk_name: Option<String>,
+    /// The trunk this route goes out on, when a trunk chose it. What the
+    /// trunk does to the call it carries — its identity, its codecs, its
+    /// session timer, where it sends the INVITE — is read from here and
+    /// nowhere else (`docs/TENANT_TRUNKS.md` §6).
+    pub trunk: Option<Arc<fcp_core::Trunk>>,
+}
+
+impl OutboundRoute {
+    /// A route to `target_uri` that no trunk chose — a registered contact.
+    pub fn to(target_uri: impl Into<String>) -> Self {
+        Self {
+            target_uri: target_uri.into(),
+            trunk: None,
+        }
+    }
+
+    /// The trunk's name, for the log and the record.
+    pub fn trunk_name(&self) -> Option<String> {
+        self.trunk.as_ref().map(|t| t.name.clone())
+    }
+
     /// The trunk's id, which is what its health, capacity and record are
     /// kept under: two tenants may both have a `carrier-a`
     /// (`docs/TENANT_TRUNKS.md` §4). A platform trunk's id is derived from
     /// its name.
-    pub trunk_id: Option<fcp_core::TrunkId>,
-    /// Allowed codecs for this trunk in preference order (empty = no restriction).
-    pub allowed_codecs: Option<Vec<String>>,
+    pub fn trunk_id(&self) -> Option<fcp_core::TrunkId> {
+        self.trunk.as_ref().map(|t| t.trunk_id())
+    }
+
+    /// Allowed codecs in the trunk's preference order; `None` when it
+    /// restricts none.
+    pub fn allowed_codecs(&self) -> Option<Vec<String>> {
+        self.trunk.as_ref().and_then(|t| {
+            (!t.codec.allowed_codecs.is_empty()).then(|| t.codec.allowed_codecs.clone())
+        })
+    }
+
     /// How an emergency call's location travels on this route
-    /// (`[[trunks]] emergency_location`); ELIN alone when empty.
-    pub emergency_location: Vec<fcp_core::e911::LocationDelivery>,
+    /// (`[[trunks]] emergency_location`); ELIN alone when the trunk says
+    /// nothing, as a route with no trunk does.
+    pub fn emergency_location(&self) -> Vec<fcp_core::e911::LocationDelivery> {
+        match &self.trunk {
+            Some(trunk) if !trunk.emergency_location.is_empty() => trunk.emergency_location.clone(),
+            _ => vec![fcp_core::e911::LocationDelivery::Elin],
+        }
+    }
 }
 
 /// What a node found when it looked for a trunk to carry a call
@@ -350,6 +384,10 @@ struct TargetContact {
     uri: String,
     /// Optional flow token for RFC 5626 TLS connection reuse
     flow_token: Option<String>,
+    /// What the trunk carrying this leg makes of the INVITE — its
+    /// identity, its session timer (`docs/TENANT_TRUNKS.md` §6). Nothing
+    /// for a registered contact, which no trunk carries.
+    egress: crate::trunk_egress::TrunkEgress,
 }
 
 /// The emergency routes a call has not tried yet, and what each attempt
@@ -1173,13 +1211,13 @@ impl SipMessageHandler {
             call_id = %call_id,
             destination = %destination,
             target = %route.target_uri,
-            trunk = ?route.trunk_name,
+            trunk = ?route.trunk_name(),
             routes = routes.len(),
             "Routing via outbound trunk"
         );
-        let trunk_name = route.trunk_name.clone();
-        let trunk_id = route.trunk_id.clone();
-        let allowed_codecs = route.allowed_codecs.clone();
+        let trunk_name = route.trunk_name();
+        let trunk_id = route.trunk_id();
+        let allowed_codecs = route.allowed_codecs();
         let trunks = route_trunks(&routes);
         let _ = self.call_manager.update_call(call_id, |call| {
             call.trunk_name = trunk_name;
@@ -3267,13 +3305,13 @@ impl SipMessageHandler {
                 info!(
                     call_id = %call_id,
                     target = %route.target_uri,
-                    trunk = ?route.trunk_name,
+                    trunk = ?route.trunk_name(),
                     routes = routes.len(),
                     "Routing emergency call via trunk"
                 );
-                let trunk_name = route.trunk_name.clone();
-                let trunk_id = route.trunk_id.clone();
-                let allowed_codecs = route.allowed_codecs.clone();
+                let trunk_name = route.trunk_name();
+                let trunk_id = route.trunk_id();
+                let allowed_codecs = route.allowed_codecs();
                 let trunks = route_trunks(&routes);
                 let _ = self.call_manager.update_call(&call_id, |call| {
                     call.trunk_name = trunk_name;
@@ -4206,12 +4244,12 @@ impl SipMessageHandler {
                                     }
                                 };
                                 if let Some(route) = routes.first() {
-                                    info!(call_id = %call_id, target = %route.target_uri, trunk = ?route.trunk_name, allowed_codecs = ?route.allowed_codecs, routes = routes.len(), "Routing via outbound trunk (failover available)");
+                                    info!(call_id = %call_id, target = %route.target_uri, trunk = ?route.trunk_name(), allowed_codecs = ?route.allowed_codecs(), routes = routes.len(), "Routing via outbound trunk (failover available)");
                                     // Store trunk name and allowed codecs on call for lifecycle tracking
                                     {
-                                        let trunk_name = route.trunk_name.clone();
-                                        let trunk_id = route.trunk_id.clone();
-                                        let allowed_codecs = route.allowed_codecs.clone();
+                                        let trunk_name = route.trunk_name();
+                                        let trunk_id = route.trunk_id();
+                                        let allowed_codecs = route.allowed_codecs();
                                         let route_trunks = route_trunks(&routes);
                                         let _ = self.call_manager.update_call(&call_id, |call| {
                                             call.trunk_name = trunk_name;
@@ -5169,12 +5207,12 @@ impl SipMessageHandler {
                                     }
                                 };
                                 if let Some(route) = routes.first() {
-                                    info!(call_id = %call_id, target = %route.target_uri, trunk = ?route.trunk_name, allowed_codecs = ?route.allowed_codecs, routes = routes.len(), "Routing via outbound trunk (extension path, failover available)");
+                                    info!(call_id = %call_id, target = %route.target_uri, trunk = ?route.trunk_name(), allowed_codecs = ?route.allowed_codecs(), routes = routes.len(), "Routing via outbound trunk (extension path, failover available)");
                                     // Store trunk name and allowed codecs on call for lifecycle tracking
                                     {
-                                        let trunk_name = route.trunk_name.clone();
-                                        let trunk_id = route.trunk_id.clone();
-                                        let allowed_codecs = route.allowed_codecs.clone();
+                                        let trunk_name = route.trunk_name();
+                                        let trunk_id = route.trunk_id();
+                                        let allowed_codecs = route.allowed_codecs();
                                         let route_trunks = route_trunks(&routes);
                                         let _ = self.call_manager.update_call(&call_id, |call| {
                                             call.trunk_name = trunk_name;
@@ -5306,6 +5344,7 @@ impl SipMessageHandler {
                 TargetContact {
                     uri,
                     flow_token: contact.flow_token().map(|s: &str| s.to_string()),
+                    egress: crate::trunk_egress::TrunkEgress::none(),
                 }
             })
             .collect();
@@ -5493,6 +5532,31 @@ impl SipMessageHandler {
             }
         }
 
+        // A trunk that takes DTMF as SIP INFO, or takes none, is not
+        // offered RFC 2833 (`docs/TENANT_TRUNKS.md` §6): offering
+        // `telephone-event` and then not sending it is how DTMF goes
+        // missing on a carrier that believes the offer. The primary route's
+        // trunk decides, as it does for codecs.
+        if let Some(sdp) = a_leg_sdp.as_deref() {
+            let takes_rfc2833 = self
+                .call_manager
+                .get_call(&call_id)
+                .and_then(|c| c.route_trunks.first().cloned())
+                .map(|route| {
+                    matches!(route.trunk.dtmf.mode, fcp_core::trunk::TrunkDtmfMode::Relay)
+                });
+            if takes_rfc2833 == Some(false) {
+                let without = fcp_media::sdp::drop_telephone_event(sdp);
+                if without != sdp {
+                    debug!(
+                        call_id = %call_id,
+                        "The trunk does not take RFC 2833; offering no telephone-event"
+                    );
+                    a_leg_sdp = Some(without);
+                }
+            }
+        }
+
         // Extract caller's identity from A-leg for B2BUA caller ID preservation
         let peer_for_call = self
             .call_manager
@@ -5556,6 +5620,39 @@ impl SipMessageHandler {
             .set_display_name(caller_display_name.clone())
             .await;
         uac.inner().set_from_uri(caller_from_uri.clone()).await;
+
+        // What each trunk makes of the leg it carries: the identity it
+        // presents, the session timer it asks for
+        // (`docs/TENANT_TRUNKS.md` §6). A target no trunk carries — a
+        // registered device — is left as the B2BUA built it.
+        {
+            let route_trunks = self
+                .call_manager
+                .get_call(&call_id)
+                .map(|c| c.route_trunks)
+                .unwrap_or_default();
+            if !route_trunks.is_empty() {
+                let emergency = emergency_ctx.is_some();
+                let caller = caller_from_uri.as_ref().map(|u| u.as_str().to_string());
+                for target in &mut target_contacts {
+                    if let Some(route) = answering_trunk(&route_trunks, &target.uri) {
+                        target.egress = crate::trunk_egress::TrunkEgress::of(
+                            &route.trunk,
+                            caller.as_deref(),
+                            emergency,
+                        );
+                        debug!(
+                            call_id = %call_id,
+                            trunk = %route.name(),
+                            target = %target.uri,
+                            from = ?target.egress.from,
+                            headers = target.egress.headers.len(),
+                            "The trunk's own identity on this leg"
+                        );
+                    }
+                }
+            }
+        }
 
         // Cap target list to configured max_parallel_legs
         let max_legs = self.b2bua_config.forking.max_parallel_legs;
@@ -5659,6 +5756,7 @@ impl SipMessageHandler {
             let a_leg_sdp_clone = a_leg_sdp.clone();
             let call_id_clone = call_id;
             let flow_token_clone = target_contact.flow_token.clone();
+            let egress = target_contact.egress.clone();
             let emergency_headers_clone = emergency_headers.clone();
             let flow_registry_clone = Arc::clone(&self.flow_registry);
             let sip_call_id_map_clone = Arc::clone(&self.sip_call_id_map);
@@ -5672,8 +5770,21 @@ impl SipMessageHandler {
                     target = %target_uri_clone,
                     has_sdp = a_leg_sdp_clone.is_some(),
                     has_flow_token = flow_token_clone.is_some(),
+                    trunk_identity = egress.from.is_some(),
                     "Creating B-leg INVITE"
                 );
+
+                // The emergency headers, then what the trunk adds
+                // (`docs/TENANT_TRUNKS.md` §6).
+                let mut extra_headers = emergency_headers_clone.clone().unwrap_or_default();
+                for (name, value) in &egress.headers {
+                    let _ = extra_headers.push(SmolStr::new(name), SmolStr::new(value));
+                }
+                let invite_options = |sdp: Option<&str>| sip_uac::InviteOptions {
+                    body: sdp.map(sip_uac::InviteBody::sdp),
+                    extra_headers: extra_headers.clone(),
+                    from: egress.from_uri(),
+                };
 
                 // Add 5-second timeout for each INVITE to prevent TLS hangs
                 let invite_result = if let Some(ref flow_token) = flow_token_clone {
@@ -5688,15 +5799,11 @@ impl SipMessageHandler {
                         );
                         // The headers a routed target gets, a flow target
                         // gets too (the conference call-id, …).
-                        let options = sip_uac::InviteOptions {
-                            extra_headers: emergency_headers_clone.clone().unwrap_or_default(),
-                            ..sip_uac::InviteOptions::with_sdp(a_leg_sdp_clone.as_deref())
-                        };
                         tokio::time::timeout(
                             std::time::Duration::from_secs(5),
                             uac_clone.invite_via_flow_with_options(
                                 &target_uri_clone,
-                                options,
+                                invite_options(a_leg_sdp_clone.as_deref()),
                                 flow_info.stream,
                                 flow_info.peer_addr,
                             ),
@@ -5710,10 +5817,9 @@ impl SipMessageHandler {
                         );
                         tokio::time::timeout(
                             std::time::Duration::from_secs(5),
-                            uac_clone.invite_with_optional_headers(
+                            uac_clone.invite_with_options(
                                 &target_uri_clone,
-                                a_leg_sdp_clone.as_deref(),
-                                emergency_headers_clone.clone(),
+                                invite_options(a_leg_sdp_clone.as_deref()),
                             ),
                         )
                         .await
@@ -5722,10 +5828,9 @@ impl SipMessageHandler {
                     // Normal INVITE (UDP/TCP without flow)
                     tokio::time::timeout(
                         std::time::Duration::from_secs(5),
-                        uac_clone.invite_with_optional_headers(
+                        uac_clone.invite_with_options(
                             &target_uri_clone,
-                            a_leg_sdp_clone.as_deref(),
-                            emergency_headers_clone.clone(),
+                            invite_options(a_leg_sdp_clone.as_deref()),
                         ),
                     )
                     .await
@@ -6736,9 +6841,9 @@ impl SipMessageHandler {
                 }
                 call.state = fcp_b2bua_core::CallState::Established;
                 // A failover route that answered names its own trunk.
-                if let Some(trunk) = answering_trunk(&call.route_trunks, &winner_uri) {
-                    call.trunk_name = Some(trunk.name.clone());
-                    call.trunk_id = trunk.id.clone();
+                if let Some(answered) = answering_trunk(&call.route_trunks, &winner_uri) {
+                    call.trunk_name = Some(answered.name());
+                    call.trunk_id = Some(answered.id());
                 }
             });
 
@@ -13417,10 +13522,9 @@ pub(crate) fn route_trunks(routes: &[OutboundRoute]) -> Vec<fcp_b2bua_core::Rout
     routes
         .iter()
         .filter_map(|r| {
-            r.trunk_name.clone().map(|name| fcp_b2bua_core::RouteTrunk {
+            r.trunk.as_ref().map(|trunk| fcp_b2bua_core::RouteTrunk {
                 target: r.target_uri.clone(),
-                name,
-                id: r.trunk_id.clone(),
+                trunk: Arc::clone(trunk),
             })
         })
         .collect()
@@ -14253,10 +14357,13 @@ mod tests {
 
     #[test]
     fn the_trunk_that_answered_is_found_by_its_route_target() {
-        let route = |target: &str, name: &str| fcp_b2bua_core::RouteTrunk {
-            target: target.to_string(),
-            name: name.to_string(),
-            id: Some(fcp_core::TrunkId::from_string(format!("trunk-{name}"))),
+        let route = |target: &str, name: &str| {
+            let mut trunk = fcp_core::Trunk::new(name.to_string(), fcp_core::TenantId::new());
+            trunk.id = fcp_core::TrunkId::from_string(format!("trunk-{name}"));
+            fcp_b2bua_core::RouteTrunk {
+                target: target.to_string(),
+                trunk: Arc::new(trunk),
+            }
         };
         let routes = vec![
             route("sip:+15550100@primary.example:5060", "primary"),
@@ -14264,10 +14371,10 @@ mod tests {
         ];
         let answered = answering_trunk(&routes, "<sip:+15550100@backup.example:5060>")
             .expect("the backup route answered");
-        assert_eq!(answered.name, "backup");
+        assert_eq!(answered.name(), "backup");
         assert_eq!(
-            answered.id.as_ref().map(|id| id.to_string()),
-            Some("trunk-backup".to_string()),
+            answered.id().to_string(),
+            "trunk-backup".to_string(),
             "the record names which trunk, not just what it was called"
         );
         assert!(answering_trunk(&routes, "sip:someone@else").is_none());

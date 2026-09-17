@@ -1656,6 +1656,64 @@ pub fn filter_sdp_codecs(original_sdp: &str, allowed_codecs: &[&str]) -> String 
     result
 }
 
+/// The same offer with RFC 2833 taken out of it: the `telephone-event`
+/// payload type leaves the audio `m=` line and its `a=rtpmap`/`a=fmtp`
+/// lines go with it.
+///
+/// A trunk that takes DTMF as SIP INFO, or takes none, is not offered
+/// `telephone-event` (`docs/TENANT_TRUNKS.md` §6) — offering it and then
+/// not sending it is how DTMF goes missing on a carrier that believes the
+/// offer.
+pub fn drop_telephone_event(sdp_body: &str) -> String {
+    let Some(te_pt) = extract_telephone_event_pt(sdp_body) else {
+        return sdp_body.to_string();
+    };
+
+    let mut result = String::new();
+    let mut audio_seen = false;
+    let mut in_audio = false;
+    for line in sdp_body.lines() {
+        let trimmed = line.trim();
+
+        if trimmed.starts_with("m=") {
+            in_audio = false;
+            if trimmed.starts_with("m=audio ") && !audio_seen {
+                audio_seen = true;
+                in_audio = true;
+                let parts: Vec<&str> = trimmed.split_whitespace().collect();
+                if parts.len() >= 4 {
+                    result.push_str(&format!("m=audio {} {}", parts[1], parts[2]));
+                    for pt in parts[3..].iter() {
+                        if pt.parse::<u8>() == Ok(te_pt) {
+                            continue;
+                        }
+                        result.push(' ');
+                        result.push_str(pt);
+                    }
+                    result.push_str("\r\n");
+                    continue;
+                }
+            }
+        }
+
+        if in_audio && (trimmed.starts_with("a=rtpmap:") || trimmed.starts_with("a=fmtp:")) {
+            let attr_data = match trimmed.strip_prefix("a=rtpmap:") {
+                Some(rest) => rest,
+                None => &trimmed["a=fmtp:".len()..],
+            };
+            if let Some(pt_str) = attr_data.split_whitespace().next() {
+                if pt_str.parse::<u8>() == Ok(te_pt) {
+                    continue;
+                }
+            }
+        }
+
+        result.push_str(line);
+        result.push_str("\r\n");
+    }
+    result
+}
+
 /// Extract audio codec names from the first audio section of an SDP body.
 ///
 /// ```text
@@ -2208,6 +2266,35 @@ a=rtpmap:0 PCMU/8000
         assert_eq!(decoded.len(), 30);
         assert_eq!(&decoded[..16], &material.master_key[..]);
         assert_eq!(&decoded[16..], &material.master_salt[..]);
+    }
+
+    #[test]
+    fn a_trunk_that_takes_no_rfc_2833_is_offered_none() {
+        let sdp = "v=0\r\n\
+                   o=- 123 1 IN IP4 192.168.1.100\r\n\
+                   s=Test\r\n\
+                   c=IN IP4 192.168.1.100\r\n\
+                   t=0 0\r\n\
+                   m=audio 10000 RTP/AVP 0 8 101\r\n\
+                   a=rtpmap:0 PCMU/8000\r\n\
+                   a=rtpmap:8 PCMA/8000\r\n\
+                   a=rtpmap:101 telephone-event/8000\r\n\
+                   a=fmtp:101 0-15\r\n\
+                   a=sendrecv\r\n";
+
+        let without = drop_telephone_event(sdp);
+        assert!(
+            without.contains("m=audio 10000 RTP/AVP 0 8\r\n"),
+            "{without}"
+        );
+        assert!(!without.contains("telephone-event"), "{without}");
+        assert!(!without.contains("a=fmtp:101"), "{without}");
+        assert!(without.contains("a=rtpmap:0 PCMU/8000"));
+        assert!(without.contains("a=rtpmap:8 PCMA/8000"));
+        assert!(without.contains("a=sendrecv"), "the rest is untouched");
+
+        // An offer that never had it is left exactly as it is.
+        assert_eq!(drop_telephone_event(&without), without);
     }
 
     #[test]

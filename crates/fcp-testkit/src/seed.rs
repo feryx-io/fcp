@@ -230,6 +230,18 @@ impl Seed {
     /// A tenant's own trunk to a carrier the test is running on the
     /// loopback at `port`: one UDP host, no registration, no probing.
     pub async fn trunk(&self, tenant: TenantId, name: &str, port: u16) -> fcp_core::TrunkId {
+        self.trunk_with(tenant, name, port, |_| {}).await
+    }
+
+    /// As [`Seed::trunk`], with whatever else the trunk says about the
+    /// calls it carries (`docs/TENANT_TRUNKS.md` §6).
+    pub async fn trunk_with(
+        &self,
+        tenant: TenantId,
+        name: &str,
+        port: u16,
+        edit: impl FnOnce(&mut fcp_core::Trunk),
+    ) -> fcp_core::TrunkId {
         use fcp_core::storage::TrunkStore;
         let mut trunk = fcp_core::Trunk::new(name.to_string(), tenant);
         trunk.enabled = true;
@@ -238,6 +250,7 @@ impl Seed {
         trunk.transport.protocol = fcp_core::transport::TransportType::Udp;
         trunk.transport.port = Some(port);
         trunk.failover.health_check_enabled = false;
+        edit(&mut trunk);
         let id = trunk.id.clone();
         self.storage.put_trunk(trunk).await.expect("seed trunk");
         id

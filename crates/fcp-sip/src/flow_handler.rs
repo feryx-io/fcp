@@ -1254,8 +1254,8 @@ impl FlowCallHandler {
         let (from, headers) =
             crate::emergency::outbound_identity(&info, caller.clone(), &local_host);
         let trunks = crate::handler::route_trunks(&routes);
-        let first_trunk = routes.first().and_then(|r| r.trunk_name.clone());
-        let first_trunk_id = routes.first().and_then(|r| r.trunk_id.clone());
+        let first_trunk = routes.first().and_then(|r| r.trunk_name());
+        let first_trunk_id = routes.first().and_then(|r| r.trunk_id());
         let marked = info.clone();
         let _ = call_mgr.update_call(&a_leg_call_id, |c| {
             c.emergency = Some(marked);

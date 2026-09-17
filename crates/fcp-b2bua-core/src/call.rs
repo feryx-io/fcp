@@ -241,14 +241,25 @@ impl EmergencyCallInfo {
 }
 
 /// One outbound route and the trunk that carries it — the target as the
-/// fork sees it, the trunk's name for the record, and the trunk's id,
-/// which is what its health and capacity are kept under
-/// (`docs/TENANT_TRUNKS.md` §4).
+/// fork sees it, and the trunk itself, which says what it does to the call
+/// (`docs/TENANT_TRUNKS.md` §§4, 6) and under which id its health, its
+/// capacity and its record are kept.
 #[derive(Debug, Clone)]
 pub struct RouteTrunk {
     pub target: String,
-    pub name: String,
-    pub id: Option<fcp_core::TrunkId>,
+    pub trunk: std::sync::Arc<fcp_core::Trunk>,
+}
+
+impl RouteTrunk {
+    /// The trunk's name, for the log and the record.
+    pub fn name(&self) -> String {
+        self.trunk.name.clone()
+    }
+
+    /// The trunk's id.
+    pub fn id(&self) -> fcp_core::TrunkId {
+        self.trunk.trunk_id()
+    }
 }
 
 /// A B2BUA call with two legs.
