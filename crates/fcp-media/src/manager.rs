@@ -118,6 +118,20 @@ impl MediaManager {
         self.backend.update_session_b_leg(call_id, remote_sdp).await
     }
 
+    /// As [`MediaManager::update_session_b_leg`], with the SRTP offer this
+    /// node made on that leg: the key it encrypts with is the one it
+    /// advertised (`docs/TENANT_TRUNKS.md` §6).
+    pub async fn update_session_b_leg_offered(
+        &self,
+        call_id: &CallId,
+        remote_sdp: String,
+        offer: Option<crate::sdp::SrtpOffer>,
+    ) -> Result<()> {
+        self.backend
+            .update_session_b_leg_offered(call_id, remote_sdp, offer)
+            .await
+    }
+
     /// Put call on hold (send silence/comfort noise)
     pub async fn hold_session(&self, call_id: &CallId) -> Result<()> {
         self.backend.hold_session(call_id).await

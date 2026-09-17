@@ -465,3 +465,102 @@ async fn a_trunk_presents_its_own_identity_timer_and_dtmf() {
 
     stack.finish().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_trunk_that_wants_srtp_is_offered_it() {
+    let carrier = Carrier::new("srtp-carrier").await;
+    let mut stack = stack_or_skip!(&[]);
+
+    let acme = stack.seed.tenant_id;
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    stack
+        .seed
+        .trunk_with(acme, "srtp-carrier", carrier.port(), |trunk| {
+            trunk.srtp = fcp_core::trunk::TrunkSrtpConfig {
+                mode: fcp_core::trunk::SrtpMode::Preferred,
+                allowed_suites: Vec::new(),
+            };
+        })
+        .await;
+    tokio::time::sleep(REFRESHED).await;
+
+    let alice_phone = stack.phone(&alice).await;
+    let alice_caller = Caller::new(acme, "alice");
+    let call = alice_phone
+        .call_with_headers("+15125559999", &alice_caller.headers())
+        .await
+        .unwrap();
+    let Some(incoming) = carrier.phone.incoming(SOON).await else {
+        let why = format!("the carrier never rang; the call is {:?}", call.phase());
+        stack.fail(&why).await;
+    };
+
+    let offer = String::from_utf8_lossy(incoming.body()).to_string();
+    assert!(
+        offer.contains("RTP/SAVP"),
+        "a trunk that wants SRTP is offered an encrypted profile:\n{offer}"
+    );
+    assert!(
+        offer.contains("a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:"),
+        "and the key this node will send with:\n{offer}"
+    );
+
+    // This trunk only prefers it, so an answer in the clear still connects.
+    let leg = incoming.answer().await.unwrap();
+    call.answered(SOON).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert_eq!(call.hangup().await.unwrap(), 200);
+    assert!(leg.ended(SOON).await);
+
+    stack.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_trunk_that_requires_srtp_refuses_an_answer_without_it() {
+    let carrier = Carrier::new("srtp-only-carrier").await;
+    let mut stack = stack_or_skip!(&[]);
+
+    let acme = stack.seed.tenant_id;
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    stack
+        .seed
+        .trunk_with(acme, "srtp-only-carrier", carrier.port(), |trunk| {
+            trunk.srtp = fcp_core::trunk::TrunkSrtpConfig {
+                mode: fcp_core::trunk::SrtpMode::Required,
+                allowed_suites: Vec::new(),
+            };
+        })
+        .await;
+    tokio::time::sleep(REFRESHED).await;
+
+    let alice_phone = stack.phone(&alice).await;
+    let alice_caller = Caller::new(acme, "alice");
+    let call = alice_phone
+        .call_with_headers("+15125559999", &alice_caller.headers())
+        .await
+        .unwrap();
+    let Some(incoming) = carrier.phone.incoming(SOON).await else {
+        let why = format!("the carrier never rang; the call is {:?}", call.phase());
+        stack.fail(&why).await;
+    };
+
+    // The scripted carrier answers in the clear, which this trunk does not
+    // allow: the leg is hung up and the caller refused rather than sent
+    // unencrypted media the carrier expected encrypted.
+    let leg = incoming.answer().await.unwrap();
+    let code = call.failed(SOON).await;
+    if code.is_none() {
+        let why = format!(
+            "a call to a trunk requiring SRTP was not refused; it is {:?}",
+            call.phase()
+        );
+        stack.fail(&why).await;
+    }
+    assert_eq!(code, Some(488), "Not Acceptable Here");
+    assert!(
+        leg.ended(SOON).await,
+        "and the carrier's leg is hung up, not left up"
+    );
+
+    stack.finish().await;
+}
