@@ -24,7 +24,7 @@ const MIN_SAMPLES_FOR_QUALITY_FILTER: u64 = 10;
 
 /// Trunk router selects outbound trunks based on policy.
 pub struct TrunkRouter {
-    trunks: Vec<TrunkConfig>,
+    trunks: Arc<crate::trunk_set::TrunkSet>,
     health: Arc<TrunkHealthMonitor>,
     cps: Arc<dyn CpsChecker>,
     lcr: Option<LcrRouteTable>,
@@ -39,6 +39,23 @@ impl TrunkRouter {
         cps: Arc<dyn CpsChecker>,
     ) -> Self {
         Self {
+            trunks: Arc::new(crate::trunk_set::TrunkSet::platform_only(trunks)),
+            health,
+            cps,
+            lcr: None,
+            lcr_config: LcrConfig::default(),
+            quality: None,
+        }
+    }
+
+    /// A router over the trunks a node routes by — its own and every
+    /// tenant's (`docs/TENANT_TRUNKS.md` §5).
+    pub fn with_trunk_set(
+        trunks: Arc<crate::trunk_set::TrunkSet>,
+        health: Arc<TrunkHealthMonitor>,
+        cps: Arc<dyn CpsChecker>,
+    ) -> Self {
+        Self {
             trunks,
             health,
             cps,
@@ -46,6 +63,32 @@ impl TrunkRouter {
             lcr_config: LcrConfig::default(),
             quality: None,
         }
+    }
+
+    /// As [`TrunkRouter::with_trunk_set`], with LCR.
+    pub fn with_trunk_set_and_lcr(
+        trunks: Arc<crate::trunk_set::TrunkSet>,
+        health: Arc<TrunkHealthMonitor>,
+        cps: Arc<dyn CpsChecker>,
+        lcr_config: LcrConfig,
+        quality: Arc<TrunkQualityTracker>,
+    ) -> Self {
+        let lcr = lcr_config
+            .enabled
+            .then(|| LcrRouteTable::new(&lcr_config.routes));
+        Self {
+            trunks,
+            health,
+            cps,
+            lcr,
+            lcr_config,
+            quality: Some(quality),
+        }
+    }
+
+    /// The trunks this router routes by.
+    pub fn trunk_set(&self) -> &Arc<crate::trunk_set::TrunkSet> {
+        &self.trunks
     }
 
     /// Create a router with LCR support.
@@ -62,7 +105,7 @@ impl TrunkRouter {
             None
         };
         Self {
-            trunks,
+            trunks: Arc::new(crate::trunk_set::TrunkSet::platform_only(trunks)),
             health,
             cps,
             lcr,
@@ -87,8 +130,13 @@ impl TrunkRouter {
     /// Within a pool, selects by priority (lowest first), with weighted random
     /// selection among trunks sharing the best priority. Records the selected
     /// trunk's call in the CPS sliding window.
-    pub fn select_trunk(&self, direction: TrunkDirection) -> Option<&TrunkConfig> {
-        let candidates: Vec<&TrunkConfig> = self.filter_candidates(direction);
+    pub fn select_trunk(
+        &self,
+        tenant: Option<fcp_core::TenantId>,
+        direction: TrunkDirection,
+    ) -> Option<Arc<TrunkConfig>> {
+        let trunks = self.trunks.for_tenant(tenant);
+        let candidates: Vec<&Arc<TrunkConfig>> = self.filter_candidates(&trunks, direction);
 
         if candidates.is_empty() {
             return None;
@@ -108,7 +156,7 @@ impl TrunkRouter {
         // Selection is pure: call accounting (health concurrency + CPS
         // window) is recorded once at the OutboundRouteProvider layer for
         // the route actually returned, not here.
-        self.select_from_pool(&pool)
+        self.select_from_pool(&pool).cloned()
     }
 
     /// Select ordered list of trunks for the given destination, applying LCR
@@ -119,20 +167,29 @@ impl TrunkRouter {
     /// Trunks for an emergency call: every eligible `emergency_capable`
     /// trunk first (by priority, then weight), followed by the normal
     /// ordered choice so a 911 call still goes out when nothing is flagged.
+    ///
+    /// The flagged set is the node's own trunks only. What a tenant's
+    /// `emergency_capable` means — and the rule that the platform's trunks
+    /// are the last resort for anyone's 911 call — is phase 6's
+    /// (`docs/TENANT_TRUNKS.md` §12, `docs/E911_BLOCK_2.md` §12.1); until
+    /// then a tenant's trunks reach an emergency call only as the ordinary
+    /// route below, which is what they did before they routed at all.
     pub fn select_emergency_trunks_ordered(
         &self,
+        tenant: Option<fcp_core::TenantId>,
         direction: TrunkDirection,
         destination: &str,
-    ) -> Vec<&TrunkConfig> {
-        let mut flagged: Vec<&TrunkConfig> = self
-            .trunks
+    ) -> Vec<Arc<TrunkConfig>> {
+        let trunks = self.trunks.platform().to_vec();
+        let mut flagged: Vec<Arc<TrunkConfig>> = trunks
             .iter()
             .filter(|t| t.emergency_capable && self.is_trunk_eligible(t, direction))
+            .cloned()
             .collect();
         flagged.sort_by_key(|t| (t.priority, std::cmp::Reverse(t.weight)));
         let mut ordered = flagged;
-        for trunk in self.select_trunks_ordered(direction, destination) {
-            if !ordered.iter().any(|t| t.name == trunk.name) {
+        for trunk in self.select_trunks_ordered(tenant, direction, destination) {
+            if !ordered.iter().any(|t| t.key() == trunk.key()) {
                 ordered.push(trunk);
             }
         }
@@ -141,14 +198,15 @@ impl TrunkRouter {
 
     pub fn select_trunks_ordered(
         &self,
+        tenant: Option<fcp_core::TenantId>,
         direction: TrunkDirection,
         destination: &str,
-    ) -> Vec<&TrunkConfig> {
+    ) -> Vec<Arc<TrunkConfig>> {
         // If LCR disabled or no route table: fall back to legacy single trunk
         let lcr_table = match &self.lcr {
             Some(table) => table,
             None => {
-                return self.select_trunk(direction).into_iter().collect();
+                return self.select_trunk(tenant, direction).into_iter().collect();
             }
         };
 
@@ -157,14 +215,17 @@ impl TrunkRouter {
 
         if matched_routes.is_empty() {
             // No LCR routes match — fall back to legacy selection
-            return self.select_trunk(direction).into_iter().collect();
+            return self.select_trunk(tenant, direction).into_iter().collect();
         }
 
+        // The trunks this tenant's calls may leave on, its own first.
+        let trunks = self.trunks.for_tenant(tenant);
+
         // For each matched route, look up the trunk and apply filters
-        let mut candidates: Vec<(&TrunkConfig, usize, f64, u32)> = Vec::new();
+        let mut candidates: Vec<(&Arc<TrunkConfig>, usize, f64, u32)> = Vec::new();
 
         for route in &matched_routes {
-            let trunk = match self.trunks.iter().find(|t| t.name == route.trunk_name) {
+            let trunk = match trunks.iter().find(|t| t.name == route.trunk_name) {
                 Some(t) => t,
                 None => continue,
             };
@@ -208,7 +269,7 @@ impl TrunkRouter {
 
         candidates
             .into_iter()
-            .map(|(trunk, _, _, _)| trunk)
+            .map(|(trunk, _, _, _)| Arc::clone(trunk))
             .collect()
     }
 
@@ -233,15 +294,19 @@ impl TrunkRouter {
     }
 
     /// Filter candidates by direction, enabled, health, capacity, CPS.
-    fn filter_candidates(&self, direction: TrunkDirection) -> Vec<&TrunkConfig> {
-        self.trunks
+    fn filter_candidates<'a>(
+        &self,
+        trunks: &'a [Arc<TrunkConfig>],
+        direction: TrunkDirection,
+    ) -> Vec<&'a Arc<TrunkConfig>> {
+        trunks
             .iter()
             .filter(|t| self.is_trunk_eligible(t, direction))
             .collect()
     }
 
     /// Apply load balancing strategy to reorder equal-tier candidates.
-    fn apply_load_balancing(&self, candidates: &mut Vec<(&TrunkConfig, usize, f64, u32)>) {
+    fn apply_load_balancing(&self, candidates: &mut Vec<(&Arc<TrunkConfig>, usize, f64, u32)>) {
         match self.lcr_config.load_balance_strategy {
             LoadBalanceStrategy::LeastCost => {
                 // Already sorted by prefix_len desc, cost asc, priority asc — no change needed
@@ -259,7 +324,7 @@ impl TrunkRouter {
     }
 
     /// Rotate among candidates that share the same tier (prefix_len + cost + priority).
-    fn apply_round_robin(&self, candidates: &mut [(&TrunkConfig, usize, f64, u32)]) {
+    fn apply_round_robin(&self, candidates: &mut [(&Arc<TrunkConfig>, usize, f64, u32)]) {
         if candidates.len() <= 1 {
             return;
         }
@@ -298,7 +363,7 @@ impl TrunkRouter {
     }
 
     /// Weighted random selection among equal-tier candidates.
-    fn apply_weighted_random(&self, candidates: &mut [(&TrunkConfig, usize, f64, u32)]) {
+    fn apply_weighted_random(&self, candidates: &mut [(&Arc<TrunkConfig>, usize, f64, u32)]) {
         if candidates.len() <= 1 {
             return;
         }
@@ -347,7 +412,7 @@ impl TrunkRouter {
     }
 
     /// Sort equal-tier candidates by concurrent calls (ascending).
-    fn apply_least_connections(&self, candidates: &mut Vec<(&TrunkConfig, usize, f64, u32)>) {
+    fn apply_least_connections(&self, candidates: &mut Vec<(&Arc<TrunkConfig>, usize, f64, u32)>) {
         if candidates.len() <= 1 {
             return;
         }
@@ -373,7 +438,7 @@ impl TrunkRouter {
 
     /// Select a trunk from a pool by priority (lowest first) with weighted
     /// random selection among equal-priority candidates.
-    fn select_from_pool<'a>(&self, pool: &[&'a TrunkConfig]) -> Option<&'a TrunkConfig> {
+    fn select_from_pool<'a>(&self, pool: &[&'a Arc<TrunkConfig>]) -> Option<&'a Arc<TrunkConfig>> {
         if pool.is_empty() {
             return None;
         }
@@ -382,7 +447,7 @@ impl TrunkRouter {
         let best_priority = pool.iter().map(|t| t.priority).min().unwrap();
 
         // Filter to only best-priority trunks
-        let best: Vec<&&TrunkConfig> = pool
+        let best: Vec<&&Arc<TrunkConfig>> = pool
             .iter()
             .filter(|t| t.priority == best_priority)
             .collect();
@@ -473,32 +538,42 @@ impl TrunkRouter {
     /// regardless of current health/capacity. Used to distinguish "no route
     /// exists" (404) from "routes exist but none is available right now"
     /// (503) — the reachability stage.
-    pub fn has_configured_route(&self, direction: TrunkDirection, destination: &str) -> bool {
-        let dir_matches = |t: &TrunkConfig| {
+    pub fn has_configured_route(
+        &self,
+        tenant: Option<fcp_core::TenantId>,
+        direction: TrunkDirection,
+        destination: &str,
+    ) -> bool {
+        let dir_matches = |t: &Arc<TrunkConfig>| {
             t.direction == direction
                 || t.direction == TrunkDirection::Bidirectional
                 || direction == TrunkDirection::Bidirectional
         };
+        let trunks = self.trunks.for_tenant(tenant);
 
         if let Some(ref table) = self.lcr {
             let matched = table.find_routes_ordered(destination);
             if !matched.is_empty() {
                 return matched.iter().any(|route| {
-                    self.trunks
+                    trunks
                         .iter()
                         .any(|t| t.name == route.trunk_name && dir_matches(t))
                 });
             }
         }
-        self.trunks.iter().any(dir_matches)
+        trunks.iter().any(dir_matches)
     }
 }
 
 #[async_trait::async_trait]
 impl OutboundRouteProvider for TrunkRouter {
-    async fn resolve_outbound(&self, destination_uri: &str) -> Option<OutboundRoute> {
+    async fn resolve_outbound(
+        &self,
+        tenant: Option<fcp_core::TenantId>,
+        destination_uri: &str,
+    ) -> Option<OutboundRoute> {
         // Use first result from ordered selection if LCR is enabled
-        let trunks = self.select_trunks_ordered(TrunkDirection::Upstream, destination_uri);
+        let trunks = self.select_trunks_ordered(tenant, TrunkDirection::Upstream, destination_uri);
         if let Some(trunk) = trunks.first() {
             let route = self.build_outbound_route(trunk, destination_uri)?;
             self.record_call_on(&trunk.key());
@@ -506,14 +581,18 @@ impl OutboundRouteProvider for TrunkRouter {
         }
 
         // Fall through to legacy (should not normally reach here, but safety net)
-        let trunk = self.select_trunk(TrunkDirection::Upstream)?;
-        let route = self.build_outbound_route(trunk, destination_uri)?;
+        let trunk = self.select_trunk(tenant, TrunkDirection::Upstream)?;
+        let route = self.build_outbound_route(&trunk, destination_uri)?;
         self.record_call_on(&trunk.key());
         Some(route)
     }
 
-    async fn resolve_outbound_ordered(&self, destination_uri: &str) -> Vec<OutboundRoute> {
-        let trunks = self.select_trunks_ordered(TrunkDirection::Upstream, destination_uri);
+    async fn resolve_outbound_ordered(
+        &self,
+        tenant: Option<fcp_core::TenantId>,
+        destination_uri: &str,
+    ) -> Vec<OutboundRoute> {
+        let trunks = self.select_trunks_ordered(tenant, TrunkDirection::Upstream, destination_uri);
         let routes: Vec<OutboundRoute> = trunks
             .iter()
             .filter_map(|trunk| self.build_outbound_route(trunk, destination_uri))
@@ -533,19 +612,27 @@ impl OutboundRouteProvider for TrunkRouter {
         routes
     }
 
-    async fn resolve_emergency_ordered(&self, destination_uri: &str) -> Vec<OutboundRoute> {
-        self.select_emergency_trunks_ordered(TrunkDirection::Upstream, destination_uri)
+    async fn resolve_emergency_ordered(
+        &self,
+        tenant: Option<fcp_core::TenantId>,
+        destination_uri: &str,
+    ) -> Vec<OutboundRoute> {
+        self.select_emergency_trunks_ordered(tenant, TrunkDirection::Upstream, destination_uri)
             .into_iter()
-            .filter_map(|trunk| self.build_outbound_route(trunk, destination_uri))
+            .filter_map(|trunk| self.build_outbound_route(&trunk, destination_uri))
             .collect()
     }
 
-    async fn resolve_outbound_classified(&self, destination_uri: &str) -> RouteResolution {
-        let routes = self.resolve_outbound_ordered(destination_uri).await;
+    async fn resolve_outbound_classified(
+        &self,
+        tenant: Option<fcp_core::TenantId>,
+        destination_uri: &str,
+    ) -> RouteResolution {
+        let routes = self.resolve_outbound_ordered(tenant, destination_uri).await;
         if !routes.is_empty() {
             return RouteResolution::Routes(routes);
         }
-        if self.has_configured_route(TrunkDirection::Upstream, destination_uri) {
+        if self.has_configured_route(tenant, TrunkDirection::Upstream, destination_uri) {
             RouteResolution::Unavailable
         } else {
             RouteResolution::NoRoute
@@ -595,7 +682,7 @@ mod tests {
         health.record_success("a");
         let router = TrunkRouter::new(trunks, health, no_cps());
 
-        let selected = router.select_trunk(TrunkDirection::Upstream);
+        let selected = router.select_trunk(None, TrunkDirection::Upstream);
         assert_eq!(selected.unwrap().name, "a");
     }
 
@@ -610,7 +697,7 @@ mod tests {
         health.record_success("high");
         let router = TrunkRouter::new(trunks, health, no_cps());
 
-        let selected = router.select_trunk(TrunkDirection::Upstream);
+        let selected = router.select_trunk(None, TrunkDirection::Upstream);
         assert_eq!(selected.unwrap().name, "high"); // priority 100 < 200
     }
 
@@ -625,7 +712,7 @@ mod tests {
         health.record_success("downstream");
         let router = TrunkRouter::new(trunks, health, no_cps());
 
-        let selected = router.select_trunk(TrunkDirection::Downstream);
+        let selected = router.select_trunk(None, TrunkDirection::Downstream);
         assert_eq!(selected.unwrap().name, "downstream");
     }
 
@@ -636,8 +723,12 @@ mod tests {
         health.record_success("bidi");
         let router = TrunkRouter::new(trunks, health, no_cps());
 
-        assert!(router.select_trunk(TrunkDirection::Upstream).is_some());
-        assert!(router.select_trunk(TrunkDirection::Downstream).is_some());
+        assert!(router
+            .select_trunk(None, TrunkDirection::Upstream)
+            .is_some());
+        assert!(router
+            .select_trunk(None, TrunkDirection::Downstream)
+            .is_some());
     }
 
     #[test]
@@ -649,7 +740,9 @@ mod tests {
         health.record_success("a");
         let router = TrunkRouter::new(trunks, health, no_cps());
 
-        assert!(router.select_trunk(TrunkDirection::Upstream).is_none());
+        assert!(router
+            .select_trunk(None, TrunkDirection::Upstream)
+            .is_none());
     }
 
     #[test]
@@ -662,14 +755,18 @@ mod tests {
         }
         let router = TrunkRouter::new(trunks, health, no_cps());
 
-        assert!(router.select_trunk(TrunkDirection::Upstream).is_none());
+        assert!(router
+            .select_trunk(None, TrunkDirection::Upstream)
+            .is_none());
     }
 
     #[test]
     fn test_no_trunks_returns_none() {
         let health = Arc::new(TrunkHealthMonitor::new(&[]));
         let router = TrunkRouter::new(Vec::new(), health, no_cps());
-        assert!(router.select_trunk(TrunkDirection::Upstream).is_none());
+        assert!(router
+            .select_trunk(None, TrunkDirection::Upstream)
+            .is_none());
     }
 
     #[test]
@@ -682,7 +779,9 @@ mod tests {
         health.call_started("a"); // now at 1 concurrent
 
         let router = TrunkRouter::new(trunks, health, no_cps());
-        assert!(router.select_trunk(TrunkDirection::Upstream).is_none());
+        assert!(router
+            .select_trunk(None, TrunkDirection::Upstream)
+            .is_none());
     }
 
     #[test]
@@ -703,7 +802,7 @@ mod tests {
         let router = TrunkRouter::new(trunks, health, no_cps());
         // Healthy trunk should always be selected over Degraded at same priority
         for _ in 0..20 {
-            let selected = router.select_trunk(TrunkDirection::Upstream);
+            let selected = router.select_trunk(None, TrunkDirection::Upstream);
             assert_eq!(selected.unwrap().name, "healthy");
         }
     }
@@ -719,7 +818,7 @@ mod tests {
         assert!(health.is_degraded("degraded"));
 
         let router = TrunkRouter::new(trunks, health, no_cps());
-        let selected = router.select_trunk(TrunkDirection::Upstream);
+        let selected = router.select_trunk(None, TrunkDirection::Upstream);
         assert_eq!(selected.unwrap().name, "degraded");
     }
 
@@ -740,7 +839,7 @@ mod tests {
         }
 
         let router = TrunkRouter::new(trunks, health, no_cps());
-        let selected = router.select_trunk(TrunkDirection::Upstream);
+        let selected = router.select_trunk(None, TrunkDirection::Upstream);
         assert_eq!(selected.unwrap().name, "high-pri"); // priority 100 < 200
     }
 
@@ -810,8 +909,11 @@ mod tests {
         let (trunks, health, quality) = lcr_setup();
         let router = TrunkRouter::with_lcr(trunks, health, no_cps(), lcr_config(), quality);
 
-        let selected =
-            router.select_trunks_ordered(TrunkDirection::Upstream, "sip:+12125551234@example.com");
+        let selected = router.select_trunks_ordered(
+            None,
+            TrunkDirection::Upstream,
+            "sip:+12125551234@example.com",
+        );
         // nyc-local (+1212, $0.005) first, then us-cheap (+1, $0.01), then us-premium (+1, $0.05)
         assert_eq!(selected.len(), 3);
         assert_eq!(selected[0].name, "nyc-local");
@@ -827,7 +929,7 @@ mod tests {
         health.record_success("a");
         let router = TrunkRouter::new(trunks, health, no_cps());
 
-        let selected = router.select_trunks_ordered(TrunkDirection::Upstream, "+15551234567");
+        let selected = router.select_trunks_ordered(None, TrunkDirection::Upstream, "+15551234567");
         assert_eq!(selected.len(), 1);
         assert_eq!(selected[0].name, "a");
     }
@@ -838,7 +940,7 @@ mod tests {
         let router = TrunkRouter::with_lcr(trunks, health, no_cps(), lcr_config(), quality);
 
         // +86 has no LCR route — falls back to legacy selection
-        let selected = router.select_trunks_ordered(TrunkDirection::Upstream, "+8612345678");
+        let selected = router.select_trunks_ordered(None, TrunkDirection::Upstream, "+8612345678");
         assert_eq!(selected.len(), 1); // gets one from legacy selection
     }
 
@@ -862,7 +964,7 @@ mod tests {
         let router = TrunkRouter::with_lcr(trunks, health, no_cps(), config, quality);
 
         let selected =
-            router.select_trunks_ordered(TrunkDirection::Upstream, "sip:+15551234567@host");
+            router.select_trunks_ordered(None, TrunkDirection::Upstream, "sip:+15551234567@host");
         // us-cheap should be excluded (ASR 10% < 50% min)
         // Only us-premium should remain
         assert_eq!(selected.len(), 1);
@@ -889,7 +991,7 @@ mod tests {
         let router = TrunkRouter::with_lcr(trunks, health, no_cps(), config, quality);
 
         let selected =
-            router.select_trunks_ordered(TrunkDirection::Upstream, "sip:+15551234567@host");
+            router.select_trunks_ordered(None, TrunkDirection::Upstream, "sip:+15551234567@host");
         // us-cheap should NOT be excluded (insufficient samples)
         let names: Vec<&str> = selected.iter().map(|t| t.name.as_str()).collect();
         assert!(names.contains(&"us-cheap"));
@@ -904,7 +1006,7 @@ mod tests {
         let router = TrunkRouter::with_lcr(trunks, health, no_cps(), config, quality);
 
         let selected =
-            router.select_trunks_ordered(TrunkDirection::Upstream, "sip:+12125551234@host");
+            router.select_trunks_ordered(None, TrunkDirection::Upstream, "sip:+12125551234@host");
         // max_failover_attempts=1 → 2 results max
         assert_eq!(selected.len(), 2);
     }
@@ -946,7 +1048,7 @@ mod tests {
         let router = TrunkRouter::with_lcr(trunks, health, no_cps(), config, quality);
 
         let selected =
-            router.select_trunks_ordered(TrunkDirection::Upstream, "sip:+15551234567@host");
+            router.select_trunks_ordered(None, TrunkDirection::Upstream, "sip:+15551234567@host");
         // Both us-cheap and us-premium match +1 at same cost and priority
         // With LeastConnections, us-premium (0 calls) should come before us-cheap (3 calls)
         assert!(selected.len() >= 2);
@@ -960,7 +1062,7 @@ mod tests {
         let router = TrunkRouter::with_lcr(trunks, health, no_cps(), lcr_config(), quality);
 
         let routes = router
-            .resolve_outbound_ordered("sip:+12125551234@example.com")
+            .resolve_outbound_ordered(None, "sip:+12125551234@example.com")
             .await;
         assert_eq!(routes.len(), 3);
         assert_eq!(routes[0].trunk_name, Some("nyc-local".to_string()));
@@ -991,7 +1093,7 @@ mod tests {
         let router = TrunkRouter::new(trunks, health, no_cps());
 
         let route = router
-            .resolve_outbound("sip:+15551234567@example.com")
+            .resolve_outbound(None, "sip:+15551234567@example.com")
             .await;
         assert!(route.is_some());
         let route = route.unwrap();
@@ -1015,7 +1117,7 @@ mod tests {
         let router = TrunkRouter::new(trunks, health, no_cps());
 
         let route = router
-            .resolve_outbound("sip:+15551234567@example.com")
+            .resolve_outbound(None, "sip:+15551234567@example.com")
             .await;
         assert!(route.is_some());
         let route = route.unwrap();
@@ -1062,7 +1164,9 @@ mod tests {
     async fn test_ordered_resolve_accounts_only_primary_trunk() {
         let (router, health) = lcr_router_two_trunks();
 
-        let routes = router.resolve_outbound_ordered("sip:14155550100@sbc").await;
+        let routes = router
+            .resolve_outbound_ordered(None, "sip:14155550100@sbc")
+            .await;
         assert_eq!(routes.len(), 2, "both candidates returned for failover");
 
         // Regression: previously every candidate was recorded as a started
@@ -1077,7 +1181,7 @@ mod tests {
         let router = TrunkRouter::new(vec![], Arc::new(TrunkHealthMonitor::new(&[])), no_cps());
         assert!(matches!(
             router
-                .resolve_outbound_classified("sip:14155550100@sbc")
+                .resolve_outbound_classified(None, "sip:14155550100@sbc")
                 .await,
             RouteResolution::NoRoute
         ));
@@ -1092,7 +1196,7 @@ mod tests {
         }
         assert!(matches!(
             router
-                .resolve_outbound_classified("sip:14155550100@sbc")
+                .resolve_outbound_classified(None, "sip:14155550100@sbc")
                 .await,
             RouteResolution::Unavailable
         ));
@@ -1102,7 +1206,7 @@ mod tests {
         health.record_success("backup");
         assert!(matches!(
             router
-                .resolve_outbound_classified("sip:14155550100@sbc")
+                .resolve_outbound_classified(None, "sip:14155550100@sbc")
                 .await,
             RouteResolution::Routes(_)
         ));
@@ -1121,7 +1225,7 @@ mod tests {
         let router = TrunkRouter::new(trunks, health, no_cps());
 
         let route = router
-            .resolve_outbound("sip:+14155550100@sbc")
+            .resolve_outbound(None, "sip:+14155550100@sbc")
             .await
             .expect("route");
         assert!(
@@ -1132,7 +1236,7 @@ mod tests {
 
         // Named users pass through untransformed.
         let route = router
-            .resolve_outbound("sip:alice@sbc")
+            .resolve_outbound(None, "sip:alice@sbc")
             .await
             .expect("route");
         assert!(route.target_uri.starts_with("sip:alice@"));
@@ -1154,36 +1258,36 @@ mod tests {
         let health = Arc::new(TrunkHealthMonitor::new(&trunks));
         let router = TrunkRouter::new(trunks, health, no_cps());
 
-        let names: Vec<&str> = router
-            .select_emergency_trunks_ordered(TrunkDirection::Upstream, "sip:911@pbx")
+        let names: Vec<String> = router
+            .select_emergency_trunks_ordered(None, TrunkDirection::Upstream, "sip:911@pbx")
             .into_iter()
-            .map(|t| t.name.as_str())
+            .map(|t| t.name.clone())
             .collect();
         assert_eq!(names[0], "primary-911", "{names:?}");
         assert_eq!(names[1], "backup-911", "{names:?}");
         assert!(
-            !names.contains(&"dead-911"),
+            !names.iter().any(|n| n == "dead-911"),
             "disabled trunk excluded: {names:?}"
         );
         assert!(
-            !names.contains(&"inbound-911"),
+            !names.iter().any(|n| n == "inbound-911"),
             "wrong direction excluded: {names:?}"
         );
         assert!(
-            names.contains(&"regular"),
+            names.iter().any(|n| n == "regular"),
             "normal choice appended: {names:?}"
         );
         assert_eq!(names.len(), 3, "{names:?}");
 
         // Through the provider trait, the routes keep that order.
-        let routes = router.resolve_emergency_ordered("sip:911@pbx").await;
+        let routes = router.resolve_emergency_ordered(None, "sip:911@pbx").await;
         assert_eq!(routes[0].trunk_name.as_deref(), Some("primary-911"));
 
         // With nothing flagged, emergency routing degrades to the normal choice.
         let plain = vec![regular];
         let health = Arc::new(TrunkHealthMonitor::new(&plain));
         let router = TrunkRouter::new(plain, health, no_cps());
-        let routes = router.resolve_emergency_ordered("sip:911@pbx").await;
+        let routes = router.resolve_emergency_ordered(None, "sip:911@pbx").await;
         assert_eq!(routes.len(), 1);
         assert_eq!(routes[0].trunk_name.as_deref(), Some("regular"));
     }

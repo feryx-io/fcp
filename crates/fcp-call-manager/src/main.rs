@@ -542,62 +542,81 @@ async fn main() -> Result<()> {
     };
 
     // 13b. Trunk infrastructure (session-manager mode)
+    //
+    // The node routes by the trunks it reads from its own `[[trunks]]` — the
+    // platform's — and by every tenant's, read from the database and kept
+    // current as they change (`docs/TENANT_TRUNKS.md` §4). Either may be
+    // empty at startup and filled later, so the provider always exists.
     let trunk_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>;
-    let mut trunk_health: Option<Arc<TrunkHealthMonitor>> = None;
-    let outbound_route_provider: Option<Arc<dyn fcp_sip::OutboundRouteProvider>> =
-        if !config.trunks.is_empty() {
-            let health = Arc::new(TrunkHealthMonitor::new(&config.trunks));
-            trunk_health = Some(Arc::clone(&health));
-            let cps: Arc<dyn CpsChecker> = Arc::new(NoCpsLimit);
-            let router = Arc::new(TrunkRouter::new(
-                config.trunks.clone(),
-                Arc::clone(&health),
-                cps,
+    let trunk_set = Arc::new(fcp_sbc_core::TrunkSet::platform_only(config.trunks.clone()));
+    let trunk_health_monitor = Arc::new(TrunkHealthMonitor::new(&config.trunks));
+    let trunk_health: Option<Arc<TrunkHealthMonitor>> = Some(Arc::clone(&trunk_health_monitor));
+    let outbound_route_provider: Option<Arc<dyn fcp_sip::OutboundRouteProvider>> = {
+        let cps: Arc<dyn CpsChecker> = Arc::new(NoCpsLimit);
+        let router = Arc::new(TrunkRouter::with_trunk_set(
+            Arc::clone(&trunk_set),
+            Arc::clone(&trunk_health_monitor),
+            cps,
+        ));
+
+        // Read the tenants' trunks now, and again whenever they change.
+        fcp_sbc_core::spawn_trunk_refresh(
+            Arc::clone(&trunk_set),
+            Arc::clone(&dyn_storage),
+            Arc::clone(&trunk_health_monitor),
+            Some(Arc::clone(&event_bus) as Arc<dyn fcp_events::EventSubscriber>),
+            Duration::from_secs(config.trunk_routing.refresh_secs.max(1)),
+        )
+        .await;
+
+        // Probe every trunk the node routes by, the tenants' included
+        tokio::spawn(fcp_sbc_core::run_health_probes(
+            Arc::clone(&trunk_health_monitor),
+            Arc::clone(&trunk_set),
+            Arc::clone(&uac),
+        ));
+
+        // Spawn trunk registration task (this node's own trunks)
+        let trunk_registrar = Arc::new(TrunkRegistrar::new(&config.trunks));
+        if trunk_registrar.has_registerable_trunks() {
+            let (tx, rx) = tokio::sync::watch::channel(false);
+            let reg = Arc::clone(&trunk_registrar);
+            let reg_health = Arc::clone(&trunk_health_monitor);
+            let reg_uac = Arc::clone(&uac);
+            tokio::spawn(fcp_sbc_core::run_trunk_registration(
+                reg, reg_health, reg_uac, rx,
             ));
+            trunk_shutdown_tx = Some(tx);
+        } else {
+            trunk_shutdown_tx = None;
+        }
 
-            // Spawn health probes
-            let health_clone = Arc::clone(&health);
-            let trunks_clone = config.trunks.clone();
-            let uac_clone = Arc::clone(&uac);
-            tokio::spawn(fcp_sbc_core::run_health_probes(
-                health_clone,
-                trunks_clone,
-                uac_clone,
-            ));
-
-            // Spawn trunk registration task
-            let trunk_registrar = Arc::new(TrunkRegistrar::new(&config.trunks));
-            if trunk_registrar.has_registerable_trunks() {
-                let (tx, rx) = tokio::sync::watch::channel(false);
-                let reg = Arc::clone(&trunk_registrar);
-                let reg_health = Arc::clone(&health);
-                let reg_uac = Arc::clone(&uac);
-                tokio::spawn(fcp_sbc_core::run_trunk_registration(
-                    reg, reg_health, reg_uac, rx,
-                ));
-                trunk_shutdown_tx = Some(tx);
-            } else {
-                trunk_shutdown_tx = None;
-            }
-
-            info!(count = config.trunks.len(), "Trunk routing enabled");
-            if !config
+        if config.trunks.is_empty() && trunk_set.tenant_count() == 0 {
+            warn!(
+                "No trunks: neither this node's [[trunks]] nor any tenant's. Calls that need a \
+                 carrier, emergency calls included, have no route"
+            );
+        } else {
+            info!(
+                platform_trunks = config.trunks.len(),
+                tenants_with_trunks = trunk_set.tenant_count(),
+                "Trunk routing enabled"
+            );
+        }
+        if !config.trunks.is_empty()
+            && !config
                 .trunks
                 .iter()
                 .any(|t| t.enabled && t.emergency_capable)
-            {
-                warn!(
-                    "No enabled [[trunks]] entry is emergency_capable: emergency calls take the \
-                     ordinary route. The admin API's trunk flag does not route calls \
-                     (docs/E911.md)"
-                );
-            }
-            Some(router as Arc<dyn fcp_sip::OutboundRouteProvider>)
-        } else {
-            trunk_shutdown_tx = None;
-            warn!("No [[trunks]] configured: emergency calls from this node have no route");
-            None
-        };
+        {
+            warn!(
+                "No enabled [[trunks]] entry is emergency_capable: emergency calls take the \
+                 ordinary route. The admin API's trunk flag does not route calls \
+                 (docs/E911.md)"
+            );
+        }
+        Some(router as Arc<dyn fcp_sip::OutboundRouteProvider>)
+    };
 
     // 13. Create routing service (if configured)
     let routing_service = if let Some(ref rules_file) = config.routing.rules_file {

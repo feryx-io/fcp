@@ -516,6 +516,12 @@ async fn main() -> Result<()> {
     );
 
     // 13. Create TrunkRouter with LCR support (provides outbound routing when registrar lookup fails)
+    //
+    // The SBC is the platform's own edge: it routes by the trunks in its
+    // configuration, not by a tenant's (`docs/TENANT_TRUNKS.md` §13.8).
+    let trunk_set = Arc::new(fcp_sbc_core::TrunkSet::platform_only(
+        sbc_config.trunks.clone(),
+    ));
     let trunk_router = if sbc_config.lcr.enabled {
         if let Some(ref qt) = quality_tracker {
             info!(
@@ -524,23 +530,23 @@ async fn main() -> Result<()> {
                 max_failover = sbc_config.lcr.max_failover_attempts,
                 "LCR routing enabled"
             );
-            Arc::new(TrunkRouter::with_lcr(
-                sbc_config.trunks.clone(),
+            Arc::new(TrunkRouter::with_trunk_set_and_lcr(
+                Arc::clone(&trunk_set),
                 Arc::clone(&trunk_health),
                 Arc::clone(&admission) as Arc<dyn CpsChecker>,
                 sbc_config.lcr.clone(),
                 Arc::clone(qt),
             ))
         } else {
-            Arc::new(TrunkRouter::new(
-                sbc_config.trunks.clone(),
+            Arc::new(TrunkRouter::with_trunk_set(
+                Arc::clone(&trunk_set),
                 Arc::clone(&trunk_health),
                 Arc::clone(&admission) as Arc<dyn CpsChecker>,
             ))
         }
     } else {
-        Arc::new(TrunkRouter::new(
-            sbc_config.trunks.clone(),
+        Arc::new(TrunkRouter::with_trunk_set(
+            Arc::clone(&trunk_set),
             Arc::clone(&trunk_health),
             Arc::clone(&admission) as Arc<dyn CpsChecker>,
         ))
@@ -793,7 +799,7 @@ async fn main() -> Result<()> {
     // Spawn trunk health OPTIONS probe task
     let probe_monitor = Arc::clone(&trunk_health);
     let probe_uac = Arc::clone(&uac);
-    let probe_trunks = sbc_config.trunks.clone();
+    let probe_trunks = Arc::clone(&trunk_set);
     tokio::spawn(async move {
         health_probes::run_health_probes(probe_monitor, probe_trunks, probe_uac).await;
     });

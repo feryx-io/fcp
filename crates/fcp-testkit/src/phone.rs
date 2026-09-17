@@ -659,6 +659,25 @@ impl Call {
         }
     }
 
+    /// Wait for the call to be refused, and answer with the code the far
+    /// end gave; `None` if it was answered, ended, or is still ringing at
+    /// the deadline.
+    pub async fn failed(&self, within: Duration) -> Option<u16> {
+        let mut rx = self.state.phase.subscribe();
+        let deadline = tokio::time::Instant::now() + within;
+        loop {
+            match rx.borrow().clone() {
+                CallPhase::Failed(code) => return Some(code),
+                CallPhase::Answered | CallPhase::Ended => return None,
+                _ => {}
+            }
+            tokio::time::timeout_at(deadline, rx.changed())
+                .await
+                .ok()?
+                .ok()?;
+        }
+    }
+
     async fn dialog(&self) -> Result<Dialog> {
         self.state
             .dialog

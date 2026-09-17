@@ -68,7 +68,9 @@ fn agent_not_found(agent_id: &str) -> Json<serde_json::Value> {
 
 /// The trunks this node routes emergency calls to, in the order it tries
 /// them: its emergency-capable `[[trunks]]` (`docs/E911_BLOCK_2.md` §12.1).
-/// Database trunks do not route calls, so their flag is not listed here.
+/// A tenant's own trunks carry its ordinary calls (`docs/TENANT_TRUNKS.md`);
+/// whether one of them may carry an emergency call is phase 6's, so they
+/// are not listed here yet.
 async fn emergency_trunks_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let mut trunks: Vec<&fcp_sbc_core::TrunkConfig> = state
         .trunks

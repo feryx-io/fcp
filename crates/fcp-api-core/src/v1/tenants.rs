@@ -79,6 +79,9 @@ pub struct TenantResponse {
     pub metadata: Option<String>,
     /// SIP domains claimed by this tenant. See `Tenant::sip_domains`.
     pub sip_domains: Vec<String>,
+    /// Whether this tenant's calls may leave on the platform's trunks when
+    /// it has none of its own that can take them (`docs/TENANT_TRUNKS.md`).
+    pub platform_trunk_fallback: bool,
 }
 
 impl From<Tenant> for TenantResponse {
@@ -111,6 +114,7 @@ impl From<Tenant> for TenantResponse {
             }),
             metadata: tenant.metadata,
             sip_domains: tenant.sip_domains,
+            platform_trunk_fallback: tenant.platform_trunk_fallback,
         }
     }
 }
@@ -132,6 +136,11 @@ pub struct CreateTenantRequest {
     /// SIP domains to claim on behalf of the new tenant.
     #[serde(default)]
     pub sip_domains: Vec<String>,
+    /// Whether the platform's trunks may carry this tenant's calls when it
+    /// has none of its own that can (`docs/TENANT_TRUNKS.md` §5). True
+    /// unless said otherwise.
+    #[serde(default)]
+    pub platform_trunk_fallback: Option<bool>,
 }
 
 /// Request to update a tenant
@@ -151,6 +160,8 @@ pub struct UpdateTenantRequest {
     /// Full replacement for the tenant's SIP domain list. Use `None` to
     /// leave the list alone; use `Some(vec![])` to clear it.
     pub sip_domains: Option<Vec<String>>,
+    /// Whether the platform's trunks may carry this tenant's calls.
+    pub platform_trunk_fallback: Option<bool>,
 }
 
 /// Normalize and validate a list of user-supplied SIP domains.
@@ -324,6 +335,7 @@ pub async fn create_tenant(
         trial_expires_at,
         metadata: req.metadata,
         sip_domains,
+        platform_trunk_fallback: req.platform_trunk_fallback.unwrap_or(true),
     };
 
     storage.put_tenant(tenant.clone()).await?;
@@ -425,9 +437,24 @@ pub async fn update_tenant(
         tenant.sip_domains = normalized;
     }
 
+    let fallback_changed = req
+        .platform_trunk_fallback
+        .is_some_and(|fallback| fallback != tenant.platform_trunk_fallback);
+    if let Some(fallback) = req.platform_trunk_fallback {
+        tenant.platform_trunk_fallback = fallback;
+    }
+
     tenant.updated_at = SystemTime::now();
 
     storage.put_tenant(tenant.clone()).await?;
+
+    // Whether the platform's trunks may carry this tenant's calls is part of
+    // what a node routes by (`docs/TENANT_TRUNKS.md` §4), so a change to it
+    // is a trunk change.
+    if fallback_changed {
+        crate::v1::trunks::announce_trunk_change(&state, "platform_trunk_fallback", tenant.id)
+            .await;
+    }
 
     Ok(Json(tenant.into()))
 }

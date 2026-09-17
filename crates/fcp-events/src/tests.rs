@@ -14,6 +14,7 @@ async fn test_event_serialization() {
         direction: CallDirection::Inbound,
         timestamp: SystemTime::now(),
         trunk_name: None,
+        trunk_id: None,
         node_id: Some("test-node-1".to_string()),
     });
 

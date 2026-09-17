@@ -68,6 +68,35 @@ impl TrunkHealthMonitor {
         }
     }
 
+    /// Start watching trunks this monitor has not seen — the tenants'
+    /// trunks, which arrive after startup and change while the node runs
+    /// (`docs/TENANT_TRUNKS.md` §5). Trunks it already knows keep the
+    /// health they have earned.
+    pub fn track(&self, trunks: &[std::sync::Arc<TrunkConfig>]) {
+        for trunk in trunks {
+            let key = trunk.key();
+            self.keys_by_name.insert(trunk.name.clone(), key.clone());
+            if self.state.contains_key(&key) {
+                continue;
+            }
+            self.state.insert(
+                key,
+                TrunkHealthState {
+                    status: TrunkHealthStatus::Unknown,
+                    consecutive_failures: 0,
+                    max_failures: trunk.failover.max_failures,
+                    recovery_interval_secs: trunk.failover.recovery_interval_secs,
+                    last_failure: None,
+                    last_success: None,
+                    concurrent_calls: AtomicU64::new(0),
+                    health_check_enabled: trunk.failover.health_check_enabled,
+                    health_check_interval_secs: trunk.failover.health_check_interval_secs,
+                    last_probe: None,
+                },
+            );
+        }
+    }
+
     /// The key of a trunk named `name`, or the name itself when nothing
     /// knows it — so a caller that has only a name still reads and writes
     /// the same entry it did before tenant trunks existed.

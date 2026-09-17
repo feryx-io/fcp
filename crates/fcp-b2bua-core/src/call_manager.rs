@@ -419,6 +419,7 @@ impl CallManager {
                 },
                 timestamp: call.created_at,
                 trunk_name: call.trunk_name.clone(),
+                trunk_id: call.trunk_id.as_ref().map(|t| t.to_string()),
                 node_id: self.node_id.clone(),
             });
 
@@ -582,6 +583,7 @@ impl CallManager {
                         hangup_cause: "Normal Clearing".to_string(),
                         hangup_party,
                         trunk_name: call.trunk_name.clone(),
+                        trunk_id: call.trunk_id.as_ref().map(|t| t.to_string()),
                         node_id: node_id.clone(),
                     })
                 }
@@ -602,6 +604,7 @@ impl CallManager {
                         reason,
                         sip_code,
                         trunk_name: call.trunk_name.clone(),
+                        trunk_id: call.trunk_id.as_ref().map(|t| t.to_string()),
                         node_id: node_id.clone(),
                     })
                 }
@@ -619,6 +622,7 @@ impl CallManager {
                         reason: format!("Terminated in unexpected state: {:?}", call.state),
                         sip_code: None,
                         trunk_name: call.trunk_name.clone(),
+                        trunk_id: call.trunk_id.as_ref().map(|t| t.to_string()),
                         node_id: node_id.clone(),
                     })
                 }
@@ -694,6 +698,7 @@ impl CallManager {
         .recording(call.recording_path.clone())
         .recording_consent(call.recording_consent)
         .trunk(call.trunk_name.clone())
+        .trunk_id(call.trunk_id.clone())
         .node(self.node_id.clone(), self.region.clone())
         .custom_data(call.custom_data.clone());
         if let Some(id) = sip_call_id {

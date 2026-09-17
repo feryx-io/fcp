@@ -73,6 +73,10 @@ pub enum CallEvent {
         timestamp: SystemTime,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         trunk_name: Option<String>,
+        /// Which trunk that is: two tenants may both have a "carrier-a"
+        /// (`docs/TENANT_TRUNKS.md` §4).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trunk_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         node_id: Option<String>,
     },
@@ -195,6 +199,9 @@ pub enum CallEvent {
         hangup_party: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         trunk_name: Option<String>,
+        /// Which trunk carried it (`docs/TENANT_TRUNKS.md` §4).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trunk_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         node_id: Option<String>,
     },
@@ -208,6 +215,9 @@ pub enum CallEvent {
         sip_code: Option<u16>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         trunk_name: Option<String>,
+        /// Which trunk it was tried on (`docs/TENANT_TRUNKS.md` §4).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trunk_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         node_id: Option<String>,
     },

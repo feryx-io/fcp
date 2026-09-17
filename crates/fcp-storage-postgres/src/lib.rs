@@ -1232,7 +1232,8 @@ impl RegistrationStore for PostgresStorage {
 /// `row_to_tenant` below.
 const TENANT_SELECT_COLS: &str = "id, name, description, status, contact_email, contact_phone,
     max_users, max_phone_numbers, max_concurrent_calls, billing_id,
-    created_at, updated_at, trial_expires_at, metadata, sip_domains";
+    created_at, updated_at, trial_expires_at, metadata, sip_domains,
+    platform_trunk_fallback";
 
 #[async_trait]
 impl TenantStore for PostgresStorage {
@@ -1331,9 +1332,10 @@ impl TenantStore for PostgresStorage {
             "INSERT INTO tenants (
                 id, name, description, status, contact_email, contact_phone,
                 max_users, max_phone_numbers, max_concurrent_calls, billing_id,
-                created_at, updated_at, trial_expires_at, metadata, sip_domains, data
+                created_at, updated_at, trial_expires_at, metadata, sip_domains,
+                platform_trunk_fallback, data
              )
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, '{}'::jsonb)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, '{}'::jsonb)
              ON CONFLICT(id) DO UPDATE SET
                  name = EXCLUDED.name,
                  description = EXCLUDED.description,
@@ -1347,7 +1349,8 @@ impl TenantStore for PostgresStorage {
                  updated_at = EXCLUDED.updated_at,
                  trial_expires_at = EXCLUDED.trial_expires_at,
                  metadata = EXCLUDED.metadata,
-                 sip_domains = EXCLUDED.sip_domains",
+                 sip_domains = EXCLUDED.sip_domains,
+                 platform_trunk_fallback = EXCLUDED.platform_trunk_fallback",
         )
         .bind(&id)
         .bind(&tenant.name)
@@ -1364,6 +1367,7 @@ impl TenantStore for PostgresStorage {
         .bind(trial_expires_at)
         .bind(&tenant.metadata)
         .bind(&sip_domains)
+        .bind(tenant.platform_trunk_fallback)
         .execute(self.writes())
         .await?;
 
@@ -1419,6 +1423,12 @@ fn row_to_tenant(row: sqlx::postgres::PgRow) -> Result<Tenant> {
         trial_expires_at,
         metadata: row.get("metadata"),
         sip_domains,
+        // A tenant whose row predates the column falls back to the
+        // platform's trunks, as every tenant did before (`docs/TENANT_TRUNKS.md` §5).
+        // Selected by name like every other column: a mapping that quietly
+        // defaults is a mapping that can lie about what a tenant said
+        // (`docs/TENANT_TRUNKS.md` §5).
+        platform_trunk_fallback: row.get("platform_trunk_fallback"),
     })
 }
 
@@ -1460,7 +1470,7 @@ impl CdrStore for PostgresStorage {
                     rtp_packets_sent, rtp_packets_received, rtp_bytes_sent, rtp_bytes_received,
                     recording_url, cost, currency, custom_data,
                     cdr_id, kind, schema_version, direction, node_id, region,
-                    correlation_id, trunk_name, rtp_packets_lost, rtp_jitter_ms,
+                    correlation_id, trunk_name, trunk_id, rtp_packets_lost, rtp_jitter_ms,
                     rate_plan_id, matched_prefix, billable_seconds, rated_at, created_at,
                     recording_consent
                  ) ",
@@ -1505,6 +1515,7 @@ impl CdrStore for PostgresStorage {
                     .push_bind(&row.r.region)
                     .push_bind(row.r.correlation_id.map(|c| c.to_string()))
                     .push_bind(&row.r.trunk_name)
+                    .push_bind(row.r.trunk_id.as_ref().map(|t| t.to_string()))
                     .push_bind(row.r.rtp_packets_lost.map(|p| p as i64))
                     .push_bind(row.r.rtp_jitter_ms)
                     .push_bind(&row.r.rate_plan_id)
@@ -2922,6 +2933,9 @@ fn row_to_cdr(row: sqlx::postgres::PgRow) -> Result<CallDetailRecord> {
         region: row.get("region"),
         correlation_id,
         trunk_name: row.get("trunk_name"),
+        trunk_id: row
+            .get::<Option<String>, _>("trunk_id")
+            .map(fcp_core::TrunkId::from_string),
         route_id: row.get("route_id"),
         gateway_id: row.get("gateway_id"),
         media_anchored: row.get("media_anchored"),
@@ -4690,7 +4704,10 @@ impl TrunkStore for PostgresStorage {
                     strip_digits, prepend_digits, cps_limit, description,
                     srtp_mode, dtmf_mode, session_timer_secs, t38_enabled,
                     outbound_proxy, trunk_group, header_rules,
-                    created_at, updated_at, emergency_capable
+                    created_at, updated_at, emergency_capable,
+                    strip_prefixes, srtp_suites, allow_transcoding,
+                    stir_verify_mode, stir_sign_mode, stir_attestation,
+                    stir_max_iat_age_secs, emergency_location
              FROM trunks WHERE id = $1",
         )
         .bind(id.to_string())
@@ -4715,7 +4732,10 @@ impl TrunkStore for PostgresStorage {
                     strip_digits, prepend_digits, cps_limit, description,
                     srtp_mode, dtmf_mode, session_timer_secs, t38_enabled,
                     outbound_proxy, trunk_group, header_rules,
-                    created_at, updated_at, emergency_capable
+                    created_at, updated_at, emergency_capable,
+                    strip_prefixes, srtp_suites, allow_transcoding,
+                    stir_verify_mode, stir_sign_mode, stir_attestation,
+                    stir_max_iat_age_secs, emergency_location
              FROM trunks WHERE tenant_id = $1
              ORDER BY priority, name",
         )
@@ -4729,6 +4749,37 @@ impl TrunkStore for PostgresStorage {
             .collect();
         let trunks = self.open_trunks(trunks).await?;
         Ok(trunks)
+    }
+
+    /// Every tenant's trunks, for a node building what it routes by
+    /// (`docs/TENANT_TRUNKS.md` §4).
+    async fn list_all_trunks(&self) -> Result<Vec<Trunk>> {
+        let rows = sqlx::query(
+            "SELECT id, tenant_id, name, enabled, direction, priority, weight, hosts,
+                    transport_protocol, transport_port, verify_tls,
+                    auth_username, auth_password, auth_realm,
+                    register, register_expiry, max_concurrent_calls,
+                    max_failures, recovery_interval_secs,
+                    health_check_enabled, health_check_interval_secs,
+                    codec_prefs, caller_id_override, from_domain,
+                    strip_digits, prepend_digits, cps_limit, description,
+                    srtp_mode, dtmf_mode, session_timer_secs, t38_enabled,
+                    outbound_proxy, trunk_group, header_rules,
+                    created_at, updated_at, emergency_capable,
+                    strip_prefixes, srtp_suites, allow_transcoding,
+                    stir_verify_mode, stir_sign_mode, stir_attestation,
+                    stir_max_iat_age_secs, emergency_location
+             FROM trunks
+             ORDER BY tenant_id, priority, name",
+        )
+        .fetch_all(self.reads())
+        .await?;
+
+        let trunks = rows
+            .into_iter()
+            .filter_map(|row| row_to_trunk(row).ok())
+            .collect();
+        self.open_trunks(trunks).await
     }
 
     async fn put_trunk(&self, trunk: Trunk) -> Result<()> {

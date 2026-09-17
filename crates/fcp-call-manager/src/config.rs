@@ -83,6 +83,33 @@ pub struct CallManagerConfig {
     /// Emergency calling (`docs/E911.md`, `docs/E911_BLOCK_2.md`).
     #[serde(default)]
     pub e911: E911Section,
+
+    /// How the node keeps the tenants' trunks current
+    /// (`docs/TENANT_TRUNKS.md` §4).
+    #[serde(default)]
+    pub trunk_routing: TrunkRoutingSection,
+}
+
+/// What a node does about trunks it did not read from its own config.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct TrunkRoutingSection {
+    /// How often the node re-reads the tenants' trunks when nothing has
+    /// told it they changed. `system.config_changed` from the API is the
+    /// fast path; this is the backstop, for a node that missed it.
+    #[serde(default = "default_trunk_refresh_secs")]
+    pub refresh_secs: u64,
+}
+
+fn default_trunk_refresh_secs() -> u64 {
+    fcp_sbc_core::trunk_refresh::REFRESH_INTERVAL.as_secs()
+}
+
+impl Default for TrunkRoutingSection {
+    fn default() -> Self {
+        Self {
+            refresh_secs: default_trunk_refresh_secs(),
+        }
+    }
 }
 
 /// Emergency calling.

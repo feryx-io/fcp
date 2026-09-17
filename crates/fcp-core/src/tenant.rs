@@ -126,6 +126,18 @@ pub struct Tenant {
     /// level.
     #[serde(default)]
     pub sip_domains: Vec<String>,
+
+    /// Whether this tenant's calls may leave on the platform's trunks —
+    /// the ones a node reads from its own `[[trunks]]` — when the tenant
+    /// has no trunk of its own that can take them
+    /// (`docs/TENANT_TRUNKS.md` §5). True unless a tenant's calls must
+    /// never leave on a shared carrier.
+    #[serde(default = "default_platform_trunk_fallback")]
+    pub platform_trunk_fallback: bool,
+}
+
+fn default_platform_trunk_fallback() -> bool {
+    true
 }
 
 impl Tenant {
@@ -148,6 +160,7 @@ impl Tenant {
             trial_expires_at: None,
             metadata: None,
             sip_domains: Vec::new(),
+            platform_trunk_fallback: true,
         }
     }
 

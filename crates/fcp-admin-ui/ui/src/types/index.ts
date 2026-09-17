@@ -79,6 +79,11 @@ export interface Tenant {
   updated_at: string
   /** SIP domains the tenant claims (e.g. ["acme.fcp.net", "sip.acme.com"]). */
   sip_domains: string[]
+  /**
+   * Whether the platform's own trunks may carry this tenant's calls when
+   * its own cannot (docs/TENANT_TRUNKS.md §5).
+   */
+  platform_trunk_fallback: boolean
 }
 
 export type TenantStatus = 'active' | 'suspended' | 'trial' | 'disabled'
@@ -94,6 +99,8 @@ export interface CreateTenantRequest {
   billing_id?: string
   /** SIP domains to claim for this tenant. Empty array = none claimed. */
   sip_domains?: string[]
+  /** Leave unset to allow the platform's trunks to carry this tenant's calls. */
+  platform_trunk_fallback?: boolean
 }
 
 export interface ExtensionTarget {

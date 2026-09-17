@@ -1045,6 +1045,11 @@ pub struct CallDetailRecord {
     #[serde(default)]
     pub trunk_name: Option<String>,
 
+    /// Which trunk that was (`docs/TENANT_TRUNKS.md` §4): two tenants may
+    /// both have a "carrier-a", so the name alone does not say.
+    #[serde(default)]
+    pub trunk_id: Option<crate::TrunkId>,
+
     /// Routing information (placeholders for future use)
     pub route_id: Option<String>,
     pub gateway_id: Option<String>,
@@ -1618,6 +1623,13 @@ pub trait TrunkStore: Send + Sync {
 
     /// List all trunks for a tenant
     async fn list_trunks(&self, tenant_id: &crate::TenantId) -> Result<Vec<crate::Trunk>>;
+
+    /// Every tenant's trunks, for a node building what it routes by
+    /// (`docs/TENANT_TRUNKS.md` §4). Defaulted so a store that cannot do it
+    /// simply has none, and the node routes by its own trunks.
+    async fn list_all_trunks(&self) -> Result<Vec<crate::Trunk>> {
+        Ok(Vec::new())
+    }
 
     /// Create or update a trunk
     async fn put_trunk(&self, trunk: crate::Trunk) -> Result<()>;
@@ -3788,6 +3800,10 @@ impl TrunkStore for DynStorage {
 
     async fn list_trunks(&self, tenant_id: &crate::TenantId) -> Result<Vec<crate::Trunk>> {
         self.trunk_store.list_trunks(tenant_id).await
+    }
+
+    async fn list_all_trunks(&self) -> Result<Vec<crate::Trunk>> {
+        self.trunk_store.list_all_trunks().await
     }
 
     async fn put_trunk(&self, trunk: crate::Trunk) -> Result<()> {

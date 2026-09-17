@@ -219,6 +219,19 @@ pub struct OutboundRoute {
     pub emergency_location: Vec<fcp_core::e911::LocationDelivery>,
 }
 
+/// What a node found when it looked for a trunk to carry a call
+/// (`docs/TENANT_TRUNKS.md` §5).
+enum TrunkBindings {
+    /// The ordered routes to try, primary first.
+    Routed(Vec<sip_registrar::Binding>),
+    /// Trunks are configured for this destination, but none can take the
+    /// call now — unhealthy, at capacity, over CPS (503).
+    Unavailable,
+    /// Nothing is configured to carry it; the caller answers as it did
+    /// before trunks were consulted.
+    NoRoute,
+}
+
 /// Outcome of classified route resolution (the reachability stage).
 ///
 /// Distinguishes *why* no route was produced so the caller can answer with
@@ -279,14 +292,23 @@ impl ConferenceVideoNeed {
 
 #[async_trait::async_trait]
 pub trait OutboundRouteProvider: Send + Sync {
-    /// Given a destination URI (e.g. "sip:+15551234@example.com"),
-    /// return an outbound route with target URI and optional trunk name,
-    /// or None if no route available.
-    async fn resolve_outbound(&self, destination_uri: &str) -> Option<OutboundRoute>;
+    /// The route for `destination_uri` on behalf of `tenant` — the caller's
+    /// tenant, whose own trunks carry its calls before the platform's
+    /// (`docs/TENANT_TRUNKS.md` §5). `None` is a call the platform itself
+    /// is placing, which uses the node's own trunks.
+    async fn resolve_outbound(
+        &self,
+        tenant: Option<fcp_core::TenantId>,
+        destination_uri: &str,
+    ) -> Option<OutboundRoute>;
 
     /// Return an ordered list of routes for failover. Default wraps single route.
-    async fn resolve_outbound_ordered(&self, destination_uri: &str) -> Vec<OutboundRoute> {
-        self.resolve_outbound(destination_uri)
+    async fn resolve_outbound_ordered(
+        &self,
+        tenant: Option<fcp_core::TenantId>,
+        destination_uri: &str,
+    ) -> Vec<OutboundRoute> {
+        self.resolve_outbound(tenant, destination_uri)
             .await
             .into_iter()
             .collect()
@@ -298,12 +320,20 @@ pub trait OutboundRouteProvider: Send + Sync {
     /// Routes for an emergency call, best first. Providers that know about
     /// emergency-capable trunks put them ahead of the normal choice; the
     /// default is the ordinary ordered resolution so the call still goes out.
-    async fn resolve_emergency_ordered(&self, destination_uri: &str) -> Vec<OutboundRoute> {
-        self.resolve_outbound_ordered(destination_uri).await
+    async fn resolve_emergency_ordered(
+        &self,
+        tenant: Option<fcp_core::TenantId>,
+        destination_uri: &str,
+    ) -> Vec<OutboundRoute> {
+        self.resolve_outbound_ordered(tenant, destination_uri).await
     }
 
-    async fn resolve_outbound_classified(&self, destination_uri: &str) -> RouteResolution {
-        let routes = self.resolve_outbound_ordered(destination_uri).await;
+    async fn resolve_outbound_classified(
+        &self,
+        tenant: Option<fcp_core::TenantId>,
+        destination_uri: &str,
+    ) -> RouteResolution {
+        let routes = self.resolve_outbound_ordered(tenant, destination_uri).await;
         if routes.is_empty() {
             RouteResolution::NoRoute
         } else {
@@ -1105,6 +1135,76 @@ impl SipMessageHandler {
         }
 
         None
+    }
+
+    /// The tenant whose call this is, for choosing the trunks its calls may
+    /// leave on (`docs/TENANT_TRUNKS.md` §5).
+    fn call_tenant(&self, call_id: &fcp_b2bua_core::CallId) -> Option<fcp_core::TenantId> {
+        self.call_manager
+            .get_call(call_id)
+            .map(|call| call.tenant_id)
+    }
+
+    /// The trunk routes a call to `destination` takes when this platform
+    /// serves the destination itself no longer — an outbound call to a
+    /// number that is nobody's DID here (`docs/TENANT_TRUNKS.md` §5).
+    /// Records the chosen trunk on the call, and the whole ordered list so
+    /// failover can name the one that answered.
+    async fn trunk_bindings(
+        &self,
+        call_id: &fcp_b2bua_core::CallId,
+        destination: &str,
+    ) -> TrunkBindings {
+        let Some(provider) = &self.outbound_route_provider else {
+            return TrunkBindings::NoRoute;
+        };
+        let routes = match provider
+            .resolve_outbound_classified(self.call_tenant(call_id), destination)
+            .await
+        {
+            RouteResolution::Routes(routes) => routes,
+            RouteResolution::Unavailable => return TrunkBindings::Unavailable,
+            RouteResolution::NoRoute => return TrunkBindings::NoRoute,
+        };
+        let Some(route) = routes.first() else {
+            return TrunkBindings::NoRoute;
+        };
+        info!(
+            call_id = %call_id,
+            destination = %destination,
+            target = %route.target_uri,
+            trunk = ?route.trunk_name,
+            routes = routes.len(),
+            "Routing via outbound trunk"
+        );
+        let trunk_name = route.trunk_name.clone();
+        let trunk_id = route.trunk_id.clone();
+        let allowed_codecs = route.allowed_codecs.clone();
+        let trunks = route_trunks(&routes);
+        let _ = self.call_manager.update_call(call_id, |call| {
+            call.trunk_name = trunk_name;
+            call.trunk_id = trunk_id;
+            call.outbound_allowed_codecs = allowed_codecs;
+            call.route_trunks = trunks;
+        });
+
+        let mut bindings = Vec::with_capacity(routes.len());
+        for r in &routes {
+            match sip_registrar::Binding::new(
+                SmolStr::new(destination),
+                SmolStr::new(&r.target_uri),
+                Duration::from_secs(3600),
+            ) {
+                Ok(binding) => bindings.push(binding),
+                Err(e) => {
+                    warn!(call_id = %call_id, target = %r.target_uri, error = %e, "Skipping route: failed to create binding")
+                }
+            }
+        }
+        if bindings.is_empty() {
+            return TrunkBindings::Unavailable;
+        }
+        TrunkBindings::Routed(bindings)
     }
 
     async fn resolve_runtime_tenant(
@@ -3156,7 +3256,11 @@ impl SipMessageHandler {
             .and_then(|call| call.emergency.clone());
         let (emergency_bindings, emergency_routes) = if emergency_ctx.is_some() {
             let routes = match &self.outbound_route_provider {
-                Some(provider) => provider.resolve_emergency_ordered(destination_aor).await,
+                Some(provider) => {
+                    provider
+                        .resolve_emergency_ordered(self.call_tenant(&call_id), destination_aor)
+                        .await
+                }
                 None => Vec::new(),
             };
             if let Some(route) = routes.first() {
@@ -3168,10 +3272,12 @@ impl SipMessageHandler {
                     "Routing emergency call via trunk"
                 );
                 let trunk_name = route.trunk_name.clone();
+                let trunk_id = route.trunk_id.clone();
                 let allowed_codecs = route.allowed_codecs.clone();
                 let trunks = route_trunks(&routes);
                 let _ = self.call_manager.update_call(&call_id, |call| {
                     call.trunk_name = trunk_name;
+                    call.trunk_id = trunk_id;
                     call.outbound_allowed_codecs = allowed_codecs;
                     call.route_trunks = trunks;
                 });
@@ -3905,20 +4011,42 @@ impl SipMessageHandler {
                                 if let Some(registrar) = &self.registrar {
                                     match registrar.get_registrations(destination_aor).await {
                                         Ok(bindings) if !bindings.is_empty() => bindings,
-                                        _ => {
-                                            info!(call_id = %call_id, destination = %destination_aor, "No line binding or registration found");
-                                            let response = self.create_simple_response(
-                                                request,
-                                                480,
-                                                "Temporarily Unavailable",
-                                            );
-                                            a_leg_handle.send_final(response).await;
-                                            let _ = self.call_manager.terminate_call(
-                                                &call_id,
-                                                Some("Destination not found".to_string()),
-                                            );
-                                            return Ok(());
-                                        }
+                                        // Nobody here answers this number: it is an
+                                        // outbound call, and goes out on a trunk.
+                                        _ => match self
+                                            .trunk_bindings(&call_id, destination_aor)
+                                            .await
+                                        {
+                                            TrunkBindings::Routed(bindings) => bindings,
+                                            TrunkBindings::Unavailable => {
+                                                warn!(call_id = %call_id, destination = %destination_aor, "Routes configured but no trunk currently available");
+                                                let response = self.create_simple_response(
+                                                    request,
+                                                    503,
+                                                    "Service Unavailable",
+                                                );
+                                                a_leg_handle.send_final(response).await;
+                                                let _ = self.call_manager.terminate_call(
+                                                    &call_id,
+                                                    Some("All trunks unavailable".to_string()),
+                                                );
+                                                return Ok(());
+                                            }
+                                            TrunkBindings::NoRoute => {
+                                                info!(call_id = %call_id, destination = %destination_aor, "No line binding or registration found");
+                                                let response = self.create_simple_response(
+                                                    request,
+                                                    480,
+                                                    "Temporarily Unavailable",
+                                                );
+                                                a_leg_handle.send_final(response).await;
+                                                let _ = self.call_manager.terminate_call(
+                                                    &call_id,
+                                                    Some("Destination not found".to_string()),
+                                                );
+                                                return Ok(());
+                                            }
+                                        },
                                     }
                                 } else {
                                     error!(call_id = %call_id, "No registrar available");
@@ -3967,20 +4095,40 @@ impl SipMessageHandler {
                         if let Some(registrar) = &self.registrar {
                             match registrar.get_registrations(destination_aor).await {
                                 Ok(bindings) if !bindings.is_empty() => bindings,
-                                _ => {
-                                    info!(call_id = %call_id, destination = %destination_aor, "Phone number not found");
-                                    let response = self.create_simple_response(
-                                        request,
-                                        480,
-                                        "Temporarily Unavailable",
-                                    );
-                                    a_leg_handle.send_final(response).await;
-                                    let _ = self.call_manager.terminate_call(
-                                        &call_id,
-                                        Some("Destination not found".to_string()),
-                                    );
-                                    return Ok(());
-                                }
+                                // This number is nobody's here: the call is
+                                // outbound, and goes out on a trunk — the
+                                // caller's tenant's, then the platform's.
+                                _ => match self.trunk_bindings(&call_id, destination_aor).await {
+                                    TrunkBindings::Routed(bindings) => bindings,
+                                    TrunkBindings::Unavailable => {
+                                        warn!(call_id = %call_id, destination = %destination_aor, "Routes configured but no trunk currently available");
+                                        let response = self.create_simple_response(
+                                            request,
+                                            503,
+                                            "Service Unavailable",
+                                        );
+                                        a_leg_handle.send_final(response).await;
+                                        let _ = self.call_manager.terminate_call(
+                                            &call_id,
+                                            Some("All trunks unavailable".to_string()),
+                                        );
+                                        return Ok(());
+                                    }
+                                    TrunkBindings::NoRoute => {
+                                        info!(call_id = %call_id, destination = %destination_aor, "Phone number not found");
+                                        let response = self.create_simple_response(
+                                            request,
+                                            480,
+                                            "Temporarily Unavailable",
+                                        );
+                                        a_leg_handle.send_final(response).await;
+                                        let _ = self.call_manager.terminate_call(
+                                            &call_id,
+                                            Some("Destination not found".to_string()),
+                                        );
+                                        return Ok(());
+                                    }
+                                },
                             }
                         } else {
                             error!(call_id = %call_id, "No registrar available");
@@ -4024,7 +4172,10 @@ impl SipMessageHandler {
                             // routes exist but no trunk is currently available.
                             if let Some(provider) = &self.outbound_route_provider {
                                 let routes = match provider
-                                    .resolve_outbound_classified(destination_aor)
+                                    .resolve_outbound_classified(
+                                        self.call_tenant(&call_id),
+                                        destination_aor,
+                                    )
                                     .await
                                 {
                                     RouteResolution::Routes(routes) => routes,
@@ -4059,10 +4210,12 @@ impl SipMessageHandler {
                                     // Store trunk name and allowed codecs on call for lifecycle tracking
                                     {
                                         let trunk_name = route.trunk_name.clone();
+                                        let trunk_id = route.trunk_id.clone();
                                         let allowed_codecs = route.allowed_codecs.clone();
                                         let route_trunks = route_trunks(&routes);
                                         let _ = self.call_manager.update_call(&call_id, |call| {
                                             call.trunk_name = trunk_name;
+                                            call.trunk_id = trunk_id;
                                             call.outbound_allowed_codecs = allowed_codecs;
                                             call.route_trunks = route_trunks;
                                         });
@@ -4982,7 +5135,10 @@ impl SipMessageHandler {
                             // routes exist but no trunk is currently available.
                             if let Some(provider) = &self.outbound_route_provider {
                                 let routes = match provider
-                                    .resolve_outbound_classified(destination_aor)
+                                    .resolve_outbound_classified(
+                                        self.call_tenant(&call_id),
+                                        destination_aor,
+                                    )
                                     .await
                                 {
                                     RouteResolution::Routes(routes) => routes,
@@ -5017,10 +5173,12 @@ impl SipMessageHandler {
                                     // Store trunk name and allowed codecs on call for lifecycle tracking
                                     {
                                         let trunk_name = route.trunk_name.clone();
+                                        let trunk_id = route.trunk_id.clone();
                                         let allowed_codecs = route.allowed_codecs.clone();
                                         let route_trunks = route_trunks(&routes);
                                         let _ = self.call_manager.update_call(&call_id, |call| {
                                             call.trunk_name = trunk_name;
+                                            call.trunk_id = trunk_id;
                                             call.outbound_allowed_codecs = allowed_codecs;
                                             call.route_trunks = route_trunks;
                                         });
@@ -6579,7 +6737,8 @@ impl SipMessageHandler {
                 call.state = fcp_b2bua_core::CallState::Established;
                 // A failover route that answered names its own trunk.
                 if let Some(trunk) = answering_trunk(&call.route_trunks, &winner_uri) {
-                    call.trunk_name = Some(trunk);
+                    call.trunk_name = Some(trunk.name.clone());
+                    call.trunk_id = trunk.id.clone();
                 }
             });
 
@@ -7065,8 +7224,10 @@ impl SipMessageHandler {
                 "Placing emergency call attempt"
             );
             let trunk = attempt.trunk.clone();
+            let trunk_id = attempt.trunk_id.clone();
             let _ = self.call_manager.update_call(&call_id, |call| {
                 call.trunk_name = trunk;
+                call.trunk_id = trunk_id;
                 if let Some(em) = call.emergency.as_mut() {
                     em.delivered = delivered;
                 }
@@ -13252,16 +13413,25 @@ fn terminate_dialog(
 }
 
 /// Each route's target and trunk, for naming the trunk that answered.
-pub(crate) fn route_trunks(routes: &[OutboundRoute]) -> Vec<(String, String)> {
+pub(crate) fn route_trunks(routes: &[OutboundRoute]) -> Vec<fcp_b2bua_core::RouteTrunk> {
     routes
         .iter()
-        .filter_map(|r| r.trunk_name.clone().map(|t| (r.target_uri.clone(), t)))
+        .filter_map(|r| {
+            r.trunk_name.clone().map(|name| fcp_b2bua_core::RouteTrunk {
+                target: r.target_uri.clone(),
+                name,
+                id: r.trunk_id.clone(),
+            })
+        })
         .collect()
 }
 
 /// The trunk whose route target is `winner` (a fork target, which may
 /// have gained or lost angle brackets on the way).
-fn answering_trunk(route_trunks: &[(String, String)], winner: &str) -> Option<String> {
+fn answering_trunk<'a>(
+    route_trunks: &'a [fcp_b2bua_core::RouteTrunk],
+    winner: &str,
+) -> Option<&'a fcp_b2bua_core::RouteTrunk> {
     let bare = |s: &str| {
         s.trim()
             .trim_start_matches('<')
@@ -13269,10 +13439,7 @@ fn answering_trunk(route_trunks: &[(String, String)], winner: &str) -> Option<St
             .to_string()
     };
     let winner = bare(winner);
-    route_trunks
-        .iter()
-        .find(|(target, _)| bare(target) == winner)
-        .map(|(_, trunk)| trunk.clone())
+    route_trunks.iter().find(|rt| bare(&rt.target) == winner)
 }
 
 /// The header a transferred call's INVITE carries naming the call it left.
@@ -14086,21 +14253,24 @@ mod tests {
 
     #[test]
     fn the_trunk_that_answered_is_found_by_its_route_target() {
+        let route = |target: &str, name: &str| fcp_b2bua_core::RouteTrunk {
+            target: target.to_string(),
+            name: name.to_string(),
+            id: Some(fcp_core::TrunkId::from_string(format!("trunk-{name}"))),
+        };
         let routes = vec![
-            (
-                "sip:+15550100@primary.example:5060".to_string(),
-                "primary".to_string(),
-            ),
-            (
-                "sip:+15550100@backup.example:5060".to_string(),
-                "backup".to_string(),
-            ),
+            route("sip:+15550100@primary.example:5060", "primary"),
+            route("sip:+15550100@backup.example:5060", "backup"),
         ];
+        let answered = answering_trunk(&routes, "<sip:+15550100@backup.example:5060>")
+            .expect("the backup route answered");
+        assert_eq!(answered.name, "backup");
         assert_eq!(
-            answering_trunk(&routes, "<sip:+15550100@backup.example:5060>").as_deref(),
-            Some("backup")
+            answered.id.as_ref().map(|id| id.to_string()),
+            Some("trunk-backup".to_string()),
+            "the record names which trunk, not just what it was called"
         );
-        assert_eq!(answering_trunk(&routes, "sip:someone@else"), None);
+        assert!(answering_trunk(&routes, "sip:someone@else").is_none());
     }
 
     #[test]

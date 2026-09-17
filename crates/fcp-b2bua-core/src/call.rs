@@ -240,6 +240,17 @@ impl EmergencyCallInfo {
     }
 }
 
+/// One outbound route and the trunk that carries it — the target as the
+/// fork sees it, the trunk's name for the record, and the trunk's id,
+/// which is what its health and capacity are kept under
+/// (`docs/TENANT_TRUNKS.md` §4).
+#[derive(Debug, Clone)]
+pub struct RouteTrunk {
+    pub target: String,
+    pub name: String,
+    pub id: Option<fcp_core::TrunkId>,
+}
+
 /// A B2BUA call with two legs.
 #[derive(Clone)]
 pub struct Call {
@@ -321,7 +332,7 @@ pub struct Call {
 
     /// Each outbound route's target and trunk, primary first, so the trunk
     /// that answered can be named on the record rather than the primary.
-    pub route_trunks: Vec<(String, String)>,
+    pub route_trunks: Vec<RouteTrunk>,
 
     /// Flow ID if this call is executing a flow
     pub flow_id: Option<String>,
@@ -331,6 +342,10 @@ pub struct Call {
 
     /// Name of the outbound trunk (if routed via trunk).
     pub trunk_name: Option<String>,
+
+    /// Which trunk that is (`docs/TENANT_TRUNKS.md` §4): two tenants may
+    /// both have a "carrier-a", so the record keeps the id.
+    pub trunk_id: Option<fcp_core::TrunkId>,
 
     /// Allowed codecs from the outbound trunk's codec config (preference order).
     /// When set, B-leg SDP is filtered to these codecs.
@@ -407,6 +422,7 @@ impl fmt::Debug for Call {
             .field("ended_at", &self.ended_at)
             .field("failure_reason", &self.failure_reason)
             .field("trunk_name", &self.trunk_name)
+            .field("trunk_id", &self.trunk_id)
             .field("custom_data", &self.custom_data)
             .field("parked_orbit", &self.parked_orbit)
             .field("parker_extension", &self.parker_extension)
@@ -450,6 +466,7 @@ impl Call {
             flow_id: None,
             flow_current_node: None,
             trunk_name: None,
+            trunk_id: None,
             outbound_allowed_codecs: None,
             cancel_notify: None,
             max_duration: None,
@@ -549,6 +566,7 @@ impl Call {
             flow_id: None,
             flow_current_node: None,
             trunk_name: None,
+            trunk_id: None,
             outbound_allowed_codecs: None,
             cancel_notify: None,
             max_duration: None,

@@ -133,6 +133,7 @@ mod tests {
             direction: CallDirection::Inbound,
             timestamp: SystemTime::now(),
             trunk_name: None,
+            trunk_id: None,
             node_id: None,
         });
 
@@ -152,6 +153,7 @@ mod tests {
             direction: CallDirection::Inbound,
             timestamp: SystemTime::now(),
             trunk_name: None,
+            trunk_id: None,
             node_id: None,
         });
 
@@ -163,6 +165,7 @@ mod tests {
             direction: CallDirection::Inbound,
             timestamp: SystemTime::now(),
             trunk_name: None,
+            trunk_id: None,
             node_id: None,
         });
 
@@ -182,6 +185,7 @@ mod tests {
             direction: CallDirection::Inbound,
             timestamp: SystemTime::now(),
             trunk_name: None,
+            trunk_id: None,
             node_id: None,
         });
 
@@ -208,6 +212,7 @@ mod tests {
             direction: CallDirection::Inbound,
             timestamp: SystemTime::now(),
             trunk_name: None,
+            trunk_id: None,
             node_id: None,
         });
         let non_matching_event = PlatformEvent::Call(CallEvent::Initiated {
@@ -218,6 +223,7 @@ mod tests {
             direction: CallDirection::Inbound,
             timestamp: SystemTime::now(),
             trunk_name: None,
+            trunk_id: None,
             node_id: None,
         });
 

@@ -460,6 +460,7 @@ mod tests {
             direction: CallDirection::Inbound,
             timestamp: SystemTime::now(),
             trunk_name: None,
+            trunk_id: None,
             node_id: None,
         })
     }

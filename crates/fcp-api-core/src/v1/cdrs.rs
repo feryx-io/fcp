@@ -58,6 +58,9 @@ pub struct CdrResponse {
     pub region: Option<String>,
     pub correlation_id: Option<String>,
     pub trunk_name: Option<String>,
+    /// Which trunk carried the call (`docs/TENANT_TRUNKS.md` §4): two
+    /// tenants may both have a "carrier-a".
+    pub trunk_id: Option<String>,
     pub media_anchored: bool,
     pub codec_a_leg: Option<String>,
     pub codec_b_leg: Option<String>,
@@ -128,6 +131,7 @@ impl From<fcp_core::storage::CallDetailRecord> for CdrResponse {
             region: cdr.region,
             correlation_id: cdr.correlation_id.map(|c| c.to_string()),
             trunk_name: cdr.trunk_name,
+            trunk_id: cdr.trunk_id.map(|t| t.to_string()),
             media_anchored: cdr.media_anchored,
             codec_a_leg: cdr.codec_a_leg,
             codec_b_leg: cdr.codec_b_leg,
@@ -656,6 +660,7 @@ mod tests {
             region: None,
             correlation_id: None,
             trunk_name: None,
+            trunk_id: None,
             rtp_packets_lost: None,
             rtp_jitter_ms: None,
             rate_plan_id: None,

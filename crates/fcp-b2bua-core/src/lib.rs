@@ -60,7 +60,9 @@ pub mod topology;
 pub mod transfer;
 
 // Re-export key types for convenience
-pub use call::{Call, CallDirection, CallId, CallLeg, CallState, EmergencyCallInfo, EmergencyLeg};
+pub use call::{
+    Call, CallDirection, CallId, CallLeg, CallState, EmergencyCallInfo, EmergencyLeg, RouteTrunk,
+};
 pub use call_manager::{CallManager, CallStats};
 pub use forking::{EarlyMediaPolicy, ForkingConfig, ForkingMode};
 pub use media_anchoring::{MediaAnchoringConfig, MediaAnchoringMode};

@@ -1233,10 +1233,20 @@ impl FlowCallHandler {
             callback = ?info.callback_number,
             "Flow dialing an emergency number"
         );
+        // The tenant whose call this is decides which trunks may carry it
+        // (`docs/TENANT_TRUNKS.md` §5).
+        let tenant = self
+            .call_manager
+            .as_ref()
+            .and_then(|cm| cm.get_call(&a_leg_call_id))
+            .map(|call| call.tenant_id);
         let routes = match &self.outbound_route_provider {
             Some(provider) => {
                 provider
-                    .resolve_emergency_ordered(&format!("sip:{}@{}", info.dialed, local_host))
+                    .resolve_emergency_ordered(
+                        tenant,
+                        &format!("sip:{}@{}", info.dialed, local_host),
+                    )
                     .await
             }
             None => Vec::new(),
@@ -1245,11 +1255,13 @@ impl FlowCallHandler {
             crate::emergency::outbound_identity(&info, caller.clone(), &local_host);
         let trunks = crate::handler::route_trunks(&routes);
         let first_trunk = routes.first().and_then(|r| r.trunk_name.clone());
+        let first_trunk_id = routes.first().and_then(|r| r.trunk_id.clone());
         let marked = info.clone();
         let _ = call_mgr.update_call(&a_leg_call_id, |c| {
             c.emergency = Some(marked);
             c.route_trunks = trunks;
             c.trunk_name = first_trunk;
+            c.trunk_id = first_trunk_id;
         });
         let record = crate::emergency::placement_record(
             a_leg_call_id,

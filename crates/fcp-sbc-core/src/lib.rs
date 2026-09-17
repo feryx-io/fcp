@@ -28,8 +28,10 @@ pub mod lcr;
 pub mod trunk_auth;
 pub mod trunk_health;
 pub mod trunk_quality;
+pub mod trunk_refresh;
 pub mod trunk_registration;
 pub mod trunk_router;
+pub mod trunk_set;
 
 // Re-export config types for convenience
 pub use admission::{AdmissionAction, AdmissionConfig, TrunkCpsLimit};
@@ -60,5 +62,7 @@ pub use cps::{CpsChecker, NoCpsLimit};
 pub use health_probes::run_health_probes;
 pub use trunk_auth::TrunkCredentialProvider;
 pub use trunk_health::TrunkHealthMonitor;
+pub use trunk_refresh::{refresh_trunks, spawn_trunk_refresh, TRUNK_ENTITY};
 pub use trunk_registration::{run_trunk_registration, RegistrationState, TrunkRegistrar};
 pub use trunk_router::TrunkRouter;
+pub use trunk_set::TrunkSet;

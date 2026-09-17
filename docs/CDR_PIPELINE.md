@@ -303,6 +303,7 @@ MVP had). New or changed fields:
 | `node_id`, `region` | text | node | Which node owned the call; the region it advertised |
 | `correlation_id` | `CallId`, nullable | node | The call a transferred caller left (REFER), the ringing call a pickup took, the parked call a retrieve brought back. Replaces is not implemented by the B2BUA, so an attended transfer is not linked |
 | `trunk_name` | text, nullable | node | Already on `CallEvent::Ended`; stored |
+| `trunk_id` | text, nullable | node | Which trunk that was: two tenants may both have a "carrier-a" (`docs/TENANT_TRUNKS.md` §4). Added with tenant trunks phase 2 |
 | `codec_a_leg`, `codec_b_leg` | as today | node | Parsed with `sip-sdp`, not sniffed |
 | `rtp_packets_*`, `rtp_bytes_*`, `packets_lost`, `jitter_ms`, `rtt_ms` | as today plus two | node | From `MediaSessionStats` at `terminate_session`, which the handler already calls before the CDR |
 | `recording_url` | as today | node | The recorder's path when the leg was recorded; today's TODO |
