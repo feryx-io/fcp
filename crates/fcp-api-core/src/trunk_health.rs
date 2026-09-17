@@ -107,7 +107,7 @@ pub async fn run_trunk_health_probes(
         for trunk in &trunks {
             let trunk_id = trunk.id.to_string();
 
-            if !trunk.enabled || !trunk.health_check_enabled || trunk.hosts.is_empty() {
+            if !trunk.enabled || !trunk.failover.health_check_enabled || trunk.hosts.is_empty() {
                 // Ensure entry exists but don't probe
                 health_map
                     .entry(trunk_id.clone())
@@ -118,8 +118,8 @@ pub async fn run_trunk_health_probes(
                             HealthStatus::Down
                         },
                         consecutive_failures: 0,
-                        max_failures: trunk.max_failures as u32,
-                        recovery_interval_secs: trunk.recovery_interval_secs as u64,
+                        max_failures: trunk.failover.max_failures,
+                        recovery_interval_secs: trunk.failover.recovery_interval_secs,
                         last_probe: None,
                         last_success: None,
                         last_failure: None,
@@ -135,7 +135,7 @@ pub async fn run_trunk_health_probes(
                         let interval = if entry.status == HealthStatus::Down {
                             entry.recovery_interval_secs
                         } else {
-                            trunk.health_check_interval_secs as u64
+                            trunk.failover.health_check_interval_secs
                         };
                         match entry.last_probe {
                             Some(last) => Instant::now().duration_since(last).as_secs() >= interval,
@@ -161,8 +161,8 @@ pub async fn run_trunk_health_probes(
                     .or_insert_with(|| TrunkHealthEntry {
                         status: HealthStatus::Unknown,
                         consecutive_failures: 0,
-                        max_failures: trunk.max_failures as u32,
-                        recovery_interval_secs: trunk.recovery_interval_secs as u64,
+                        max_failures: trunk.failover.max_failures,
+                        recovery_interval_secs: trunk.failover.recovery_interval_secs,
                         last_probe: None,
                         last_success: None,
                         last_failure: None,
@@ -170,8 +170,8 @@ pub async fn run_trunk_health_probes(
                     });
 
             entry.last_probe = Some(now);
-            entry.max_failures = trunk.max_failures as u32;
-            entry.recovery_interval_secs = trunk.recovery_interval_secs as u64;
+            entry.max_failures = trunk.failover.max_failures;
+            entry.recovery_interval_secs = trunk.failover.recovery_interval_secs;
 
             if success {
                 let was_healthy = entry.status == HealthStatus::Healthy;
@@ -222,7 +222,7 @@ pub async fn probe_trunk_hosts_public(trunk: &fcp_core::Trunk) -> bool {
 /// Send a SIP OPTIONS probe to a trunk's hosts via raw UDP.
 /// Returns true if any host responds (2xx, 401, 407 all count as reachable).
 async fn probe_trunk_hosts(trunk: &fcp_core::Trunk) -> bool {
-    let default_port = trunk.transport_port as u16;
+    let default_port = trunk.transport.port.unwrap_or(5060);
 
     for host_str in &trunk.hosts {
         let (host, port) = parse_host_port(host_str, default_port);

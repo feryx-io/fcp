@@ -1,393 +1,31 @@
-//! Trunk/carrier configuration for the SBC.
+//! The trunks the call path routes by.
 //!
-//! Defines trunk direction, transport settings, credentials, failover
-//! policy, and the main `TrunkConfig` struct.
+//! One model — `fcp_core::Trunk` — is what a tenant manages through
+//! `/v1/trunks`, what a node reads from its own `[[trunks]]`, and what the
+//! router, health monitor and registrar work on
+//! (`docs/TENANT_TRUNKS.md` §4). This module keeps the names this crate has
+//! always used for it.
 
-use crate::stir_shaken::TrunkStirShakenConfig;
-use fcp_core::transport::TransportType;
-use serde::{Deserialize, Serialize};
+pub use fcp_core::trunk::{
+    AttestationLevel, NumberTransform, SrtpMode, StirSignMode, StirVerifyMode, TrunkCodecConfig,
+    TrunkCredentials, TrunkDirection, TrunkDtmfConfig, TrunkDtmfMode, TrunkFailover,
+    TrunkSrtpConfig, TrunkStirShakenConfig, TrunkTransport,
+};
 
-/// Direction of traffic for a trunk.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum TrunkDirection {
-    /// Upstream (outbound to carrier/PSTN).
-    Upstream,
-
-    /// Downstream (inbound from carrier/users).
-    Downstream,
-
-    /// Both directions.
-    #[default]
-    Bidirectional,
-}
-
-/// Transport settings for a trunk.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TrunkTransport {
-    /// SIP transport protocol.
-    pub protocol: TransportType,
-
-    /// Optional explicit port (otherwise uses protocol default).
-    pub port: Option<u16>,
-
-    /// Verify TLS certificates (only relevant for TLS/WSS).
-    pub verify_tls: bool,
-}
-
-impl Default for TrunkTransport {
-    fn default() -> Self {
-        Self {
-            protocol: TransportType::Udp,
-            port: None,
-            verify_tls: true,
-        }
-    }
-}
-
-/// Authentication credentials for a trunk.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TrunkCredentials {
-    /// Authentication username.
-    pub username: String,
-
-    /// Authentication password.
-    pub password: String,
-
-    /// Optional digest realm override.
-    pub realm: Option<String>,
-}
-
-/// Failover policy for a trunk.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TrunkFailover {
-    /// Number of consecutive failures before marking trunk as down.
-    pub max_failures: u32,
-
-    /// Seconds before retrying a failed trunk.
-    pub recovery_interval_secs: u64,
-
-    /// Whether to send periodic OPTIONS health checks.
-    pub health_check_enabled: bool,
-
-    /// Seconds between health check probes.
-    pub health_check_interval_secs: u64,
-}
-
-impl Default for TrunkFailover {
-    fn default() -> Self {
-        Self {
-            max_failures: 5,
-            recovery_interval_secs: 30,
-            health_check_enabled: true,
-            health_check_interval_secs: 30,
-        }
-    }
-}
-
-impl TrunkFailover {
-    /// Validate the failover configuration.
-    pub fn validate(&self) -> Result<(), String> {
-        if self.max_failures == 0 {
-            return Err("failover max_failures must be greater than zero".into());
-        }
-        if self.max_failures > 1000 {
-            return Err("failover max_failures must not exceed 1000".into());
-        }
-        if self.recovery_interval_secs == 0 || self.recovery_interval_secs > 86400 {
-            return Err("failover recovery_interval_secs must be between 1 and 86400".into());
-        }
-        if self.health_check_enabled
-            && (self.health_check_interval_secs == 0 || self.health_check_interval_secs > 3600)
-        {
-            return Err(
-                "failover health_check_interval_secs must be between 1 and 3600 when enabled"
-                    .into(),
-            );
-        }
-        Ok(())
-    }
-}
-
-/// SRTP policy for a trunk.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum SrtpMode {
-    /// SRTP disabled — RTP/AVP only
-    #[default]
-    Disabled,
-    /// Prefer SRTP if the remote side offers it, but fall back to RTP
-    Preferred,
-    /// Require SRTP — reject calls that don't offer crypto
-    Required,
-}
-
-/// SRTP configuration for a trunk.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TrunkSrtpConfig {
-    /// SRTP mode
-    pub mode: SrtpMode,
-    /// Allowed crypto suites (empty = all supported)
-    #[serde(default)]
-    pub allowed_suites: Vec<String>,
-}
-
-impl Default for TrunkSrtpConfig {
-    fn default() -> Self {
-        Self {
-            mode: SrtpMode::Disabled,
-            allowed_suites: Vec::new(),
-        }
-    }
-}
-
-/// Codec configuration for a trunk.
+/// A trunk as the call path holds it.
 ///
-/// Controls which audio codecs are allowed on this trunk and whether
-/// transcoding is permitted when codec negotiation would otherwise fail.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TrunkCodecConfig {
-    /// Allowed codecs in preference order (e.g., `["PCMU", "PCMA"]`).
-    /// Empty means no restriction — all codecs are allowed.
-    #[serde(default)]
-    pub allowed_codecs: Vec<String>,
-
-    /// Whether the media pipeline may transcode when the A-leg and B-leg
-    /// codec sets don't overlap. When `false`, calls that require transcoding
-    /// will be rejected.
-    #[serde(default = "default_allow_transcoding")]
-    pub allow_transcoding: bool,
-}
-
-fn default_allow_transcoding() -> bool {
-    true
-}
-
-impl Default for TrunkCodecConfig {
-    fn default() -> Self {
-        Self {
-            allowed_codecs: Vec::new(),
-            allow_transcoding: true,
-        }
-    }
-}
-
-/// DTMF handling mode for a trunk.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum TrunkDtmfMode {
-    /// DTMF detection and relay disabled
-    #[default]
-    Disabled,
-    /// Detect DTMF events but don't relay (publish to EventBus only)
-    Detect,
-    /// Relay RFC 2833 telephone-event packets between legs
-    Relay,
-}
-
-/// DTMF configuration for a trunk.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TrunkDtmfConfig {
-    /// DTMF handling mode
-    pub mode: TrunkDtmfMode,
-}
-
-impl Default for TrunkDtmfConfig {
-    fn default() -> Self {
-        Self {
-            mode: TrunkDtmfMode::Disabled,
-        }
-    }
-}
-
-/// A trunk (carrier) configuration.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TrunkConfig {
-    /// Trunk name (unique identifier).
-    pub name: String,
-
-    /// Whether this trunk is enabled.
-    pub enabled: bool,
-
-    /// Traffic direction.
-    pub direction: TrunkDirection,
-
-    /// Priority for trunk selection (lower = higher priority).
-    pub priority: u32,
-
-    /// Weight for weighted round-robin selection among equal-priority trunks.
-    pub weight: u32,
-
-    /// Remote host addresses (IP or FQDN).
-    pub hosts: Vec<String>,
-
-    /// Transport settings.
-    pub transport: TrunkTransport,
-
-    /// Optional authentication credentials.
-    pub credentials: Option<TrunkCredentials>,
-
-    /// Whether to REGISTER with the remote peer.
-    pub register: bool,
-
-    /// Registration expiry in seconds (when `register` is true).
-    pub register_expiry: Option<u32>,
-
-    /// Failover policy.
-    pub failover: TrunkFailover,
-
-    /// Maximum concurrent calls on this trunk (0 = unlimited).
-    pub max_concurrent_calls: u32,
-
-    /// Names of HMR rules to apply for this trunk (empty = use all matching global rules).
-    #[serde(default)]
-    pub header_rules: Vec<String>,
-    /// Emergency calls (911) are routed to trunks with this flag first, in
-    /// priority order, before falling back to the normal LCR choice.
-    #[serde(default)]
-    pub emergency_capable: bool,
-
-    /// How an emergency call's location travels on this trunk
-    /// (`docs/E911_BLOCK_2.md` §5): `elin`, the callback number as caller
-    /// ID, which the carrier maps to an address; `pidf_lo`, the location by
-    /// value in the INVITE (RFC 6442); or both. The callback number goes out
-    /// either way. Default `["elin"]`.
-    #[serde(default = "default_emergency_location")]
-    pub emergency_location: Vec<fcp_core::e911::LocationDelivery>,
-
-    /// SRTP configuration for this trunk
-    #[serde(default)]
-    pub srtp: TrunkSrtpConfig,
-
-    /// DTMF configuration for this trunk
-    #[serde(default)]
-    pub dtmf: TrunkDtmfConfig,
-
-    /// Codec configuration for this trunk
-    #[serde(default)]
-    pub codec: TrunkCodecConfig,
-
-    /// STIR/SHAKEN caller ID verification and signing configuration
-    #[serde(default)]
-    pub stir_shaken: TrunkStirShakenConfig,
-
-    /// Egress dialed-number transform: applied to the Request-URI user part
-    /// when this trunk is selected as the outbound route (transform stage).
-    #[serde(default)]
-    pub egress_number_transform: Option<crate::number_transform::NumberTransform>,
-}
-
-fn default_emergency_location() -> Vec<fcp_core::e911::LocationDelivery> {
-    vec![fcp_core::e911::LocationDelivery::Elin]
-}
-
-impl Default for TrunkConfig {
-    fn default() -> Self {
-        Self {
-            name: String::new(),
-            enabled: true,
-            direction: TrunkDirection::default(),
-            priority: 100,
-            weight: 100,
-            hosts: Vec::new(),
-            transport: TrunkTransport::default(),
-            credentials: None,
-            register: false,
-            register_expiry: None,
-            failover: TrunkFailover::default(),
-            max_concurrent_calls: 0,
-            header_rules: Vec::new(),
-            emergency_capable: false,
-            emergency_location: default_emergency_location(),
-            srtp: TrunkSrtpConfig::default(),
-            dtmf: TrunkDtmfConfig::default(),
-            codec: TrunkCodecConfig::default(),
-            stir_shaken: TrunkStirShakenConfig::default(),
-            egress_number_transform: None,
-        }
-    }
-}
-
-impl TrunkConfig {
-    /// Validate the trunk configuration.
-    ///
-    /// Returns `Err` if:
-    /// - `name` is empty or contains CR/LF
-    /// - `hosts` is empty
-    /// - `weight` exceeds 100
-    /// - `register_expiry` is set but not in 60..=86400
-    /// - `credentials` username is empty
-    /// - Failover validation fails
-    pub fn validate(&self) -> Result<(), String> {
-        if self.name.is_empty() {
-            return Err("trunk name must not be empty".into());
-        }
-        if self.name.contains('\r') || self.name.contains('\n') {
-            return Err("trunk name must not contain CR/LF characters".into());
-        }
-        if self.hosts.is_empty() {
-            return Err(format!("trunk {:?}: hosts must not be empty", self.name));
-        }
-        for (i, host) in self.hosts.iter().enumerate() {
-            if host.is_empty() {
-                return Err(format!("trunk {:?}: host {i} must not be empty", self.name));
-            }
-            if host.contains('\r') || host.contains('\n') {
-                return Err(format!(
-                    "trunk {:?}: host {i} must not contain CR/LF characters",
-                    self.name
-                ));
-            }
-        }
-        if self.weight > 100 {
-            return Err(format!("trunk {:?}: weight must not exceed 100", self.name));
-        }
-        if let Some(expiry) = self.register_expiry {
-            if !(60..=86400).contains(&expiry) {
-                return Err(format!(
-                    "trunk {:?}: register_expiry must be between 60 and 86400",
-                    self.name
-                ));
-            }
-        }
-        if let Some(ref transform) = self.egress_number_transform {
-            transform
-                .validate()
-                .map_err(|e| format!("trunk {:?}: {e}", self.name))?;
-        }
-        if let Some(ref creds) = self.credentials {
-            if creds.username.is_empty() {
-                return Err(format!(
-                    "trunk {:?}: credentials username must not be empty",
-                    self.name
-                ));
-            }
-        }
-        // Validate codec names (no empty strings, no CR/LF)
-        for (i, codec_name) in self.codec.allowed_codecs.iter().enumerate() {
-            if codec_name.is_empty() {
-                return Err(format!(
-                    "trunk {:?}: codec.allowed_codecs[{i}] must not be empty",
-                    self.name
-                ));
-            }
-            if codec_name.contains('\r') || codec_name.contains('\n') {
-                return Err(format!(
-                    "trunk {:?}: codec.allowed_codecs[{i}] must not contain CR/LF characters",
-                    self.name
-                ));
-            }
-        }
-        self.failover
-            .validate()
-            .map_err(|e| format!("trunk {:?}: {e}", self.name))?;
-        self.stir_shaken
-            .validate()
-            .map_err(|e| format!("trunk {:?}: {e}", self.name))?;
-        Ok(())
-    }
-}
+/// One model, `fcp_core::Trunk`: what a tenant manages through `/v1/trunks`,
+/// what a node reads from its own `[[trunks]]`, and what the router, the
+/// health monitor and the registrar work on — so a field the API accepts
+/// cannot quietly do nothing (`docs/TENANT_TRUNKS.md` §4). The alias is
+/// kept because `TrunkConfig` is what a configuration file's trunks are
+/// called throughout this crate.
+pub type TrunkConfig = fcp_core::Trunk;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fcp_core::transport::TransportType;
 
     fn valid_trunk() -> TrunkConfig {
         TrunkConfig {
@@ -702,5 +340,158 @@ mod tests {
         let mut cfg = valid_trunk();
         cfg.codec.allowed_codecs = vec!["PCMU".into(), "PCMA".into(), "G722".into()];
         assert!(cfg.validate().is_ok());
+    }
+}
+
+#[cfg(test)]
+mod tenant_trunk_tests {
+    use super::*;
+    use fcp_core::{TenantId, TrunkId};
+
+    fn stored(name: &str, tenant: TenantId) -> TrunkConfig {
+        let mut trunk = TrunkConfig::new(name.to_string(), tenant);
+        trunk.hosts = vec!["carrier.example.net".to_string()];
+        trunk
+    }
+
+    /// A trunk a node read from its own TOML is identified by its name; a
+    /// stored trunk by its id, so two tenants' `carrier-a` never meet
+    /// (`docs/TENANT_TRUNKS.md` §4).
+    #[test]
+    fn a_trunk_is_identified_by_its_id() {
+        let platform = TrunkConfig {
+            name: "carrier-a".to_string(),
+            id: TrunkId::from_string(String::new()),
+            ..Default::default()
+        };
+        assert_eq!(platform.trunk_id(), TrunkId::platform("carrier-a"));
+        assert!(platform.trunk_id().is_platform());
+        assert_eq!(platform.key(), "platform:carrier-a");
+
+        let (a, b) = (TenantId::new(), TenantId::new());
+        let one = stored("carrier-a", a);
+        let two = stored("carrier-a", b);
+        assert_eq!(one.name, two.name);
+        assert_ne!(one.key(), two.key(), "same name, different trunks");
+        assert!(!one.trunk_id().is_platform());
+    }
+
+    /// A platform trunk carries anyone's calls; a tenant's carries only
+    /// its own.
+    #[test]
+    fn a_trunk_serves_its_own_tenant_or_everyone() {
+        let (a, b) = (TenantId::new(), TenantId::new());
+        let platform = TrunkConfig::default();
+        assert!(platform.serves(Some(a)));
+        assert!(platform.serves(None));
+
+        let tenant_trunk = stored("carrier-a", a);
+        assert!(tenant_trunk.serves(Some(a)));
+        assert!(!tenant_trunk.serves(Some(b)));
+        assert!(
+            !tenant_trunk.serves(None),
+            "a call with no tenant uses the platform's trunks"
+        );
+    }
+
+    /// The `[[trunks]]` a node has always read parses into the one model,
+    /// unchanged: this is the shape in every deployment's configuration
+    /// and in the test floor.
+    #[test]
+    fn the_trunks_toml_a_node_reads_is_unchanged() {
+        #[derive(serde::Deserialize)]
+        struct Config {
+            trunks: Vec<TrunkConfig>,
+        }
+
+        let config: Config = toml::from_str(
+            r#"
+[[trunks]]
+name = "carrier-a"
+enabled = true
+direction = "Upstream"
+hosts = ["10.0.0.9"]
+weight = 100
+priority = 10
+register = false
+max_concurrent_calls = 0
+emergency_capable = true
+emergency_location = ["elin", "pidf_lo"]
+header_rules = ["strip-pai"]
+
+[trunks.transport]
+protocol = "Tls"
+port = 5061
+verify_tls = false
+
+[trunks.failover]
+max_failures = 3
+recovery_interval_secs = 30
+health_check_enabled = false
+health_check_interval_secs = 60
+
+[trunks.credentials]
+username = "fcp"
+password = "s3cret"
+
+[trunks.srtp]
+mode = "Required"
+
+[trunks.egress_number_transform]
+strip_prefixes = ["+1"]
+prepend = "1"
+
+[[trunks]]
+name = "carrier-b"
+hosts = ["10.0.0.10"]
+"#,
+        )
+        .expect("the trunks a node reads");
+
+        let a = &config.trunks[0];
+        assert_eq!(a.name, "carrier-a");
+        assert_eq!(a.direction, TrunkDirection::Upstream);
+        assert_eq!(a.priority, 10);
+        assert_eq!(
+            a.transport.protocol,
+            fcp_core::transport::TransportType::Tls
+        );
+        assert_eq!(a.transport.port, Some(5061));
+        assert!(!a.transport.verify_tls);
+        assert_eq!(a.failover.max_failures, 3);
+        assert!(!a.failover.health_check_enabled);
+        assert_eq!(
+            a.credentials.as_ref().map(|c| c.username.as_str()),
+            Some("fcp")
+        );
+        assert_eq!(a.srtp.mode, SrtpMode::Required);
+        assert_eq!(a.header_rules, vec!["strip-pai".to_string()]);
+        assert_eq!(
+            a.emergency_location,
+            vec![
+                fcp_core::e911::LocationDelivery::Elin,
+                fcp_core::e911::LocationDelivery::PidfLo
+            ]
+        );
+        let transform = a.egress_number_transform.as_ref().expect("a transform");
+        assert_eq!(transform.strip_prefixes, vec!["+1".to_string()]);
+        assert_eq!(transform.apply("+15185550100"), "15185550100");
+        // No tenant, no stored id: identified by its name, the same way on
+        // every node.
+        assert!(a.tenant_id.is_none());
+        assert_eq!(a.key(), "platform:carrier-a");
+
+        // A trunk that says almost nothing still has the defaults a
+        // `[[trunks]]` entry has always had.
+        let b = &config.trunks[1];
+        assert!(b.enabled);
+        assert_eq!(b.direction, TrunkDirection::Bidirectional);
+        assert_eq!(b.priority, 100);
+        assert_eq!(b.srtp.mode, SrtpMode::Disabled);
+        assert_eq!(
+            b.emergency_location,
+            vec![fcp_core::e911::LocationDelivery::Elin]
+        );
+        assert!(b.validate().is_ok());
     }
 }

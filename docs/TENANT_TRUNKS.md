@@ -152,8 +152,28 @@ pub struct Trunk {
 
 `strip_digits` / `prepend_digits` stay as the simple form of
 `egress_number_transform` and are folded into it on read, so the API keeps
-working. `TrunkConfig` in `fcp-sbc-core` becomes `From<&Trunk>`: the TOML
-shape stays what an operator writes, and the router sees only `Trunk`.
+working.
+
+**One type, not two models and a conversion** (built in phase 1). The call
+path holds `fcp_core::Trunk` itself: `TrunkConfig` in `fcp-sbc-core` is an
+alias of it, and the settings that crate owned — transport, credentials,
+failover, SRTP, DTMF, codecs, STIR/SHAKEN, the egress digit plan — live in
+`fcp_core::trunk`, re-exported from their old paths. `Trunk`'s serde shape
+**is** the `[[trunks]]` TOML a node has always read, so an operator's
+configuration parses into the same type the API writes, unchanged.
+
+What is left where the two worlds meet is not a model conversion but two
+mappings that cannot hide a field:
+
+- **Storage** maps the trunk to the database's flat columns, explicitly, as
+  every other table is mapped.
+- **The API's DTO** keeps the flat JSON `/v1/trunks` has always answered
+  with (`transport_port`, `srtp_mode`, `strip_digits`), and one helper
+  applies those flat fields to the grouped model for create and update
+  alike.
+
+A field added to the trunk is therefore a field the call path can read;
+what is left to do is read it (phase 3).
 
 **Where trunks come from.** Each routing node holds a `TrunkSet`:
 
@@ -289,10 +309,35 @@ Nothing moves on its own.
 
 One PR per phase, reviewed before the next starts.
 
-1. **One model.** `fcp_core::Trunk` gains the missing fields;
-   `TrunkConfig` is derived from it; TOML trunks load through the same
-   model with stable ids; health, CPS, registration and the router key on
-   `TrunkId`. No routing change: platform trunks only, as today.
+1. **One model.** `fcp_core::Trunk` gains the missing fields and becomes
+   the type the call path holds (`TrunkConfig` an alias of it); the
+   `[[trunks]]` TOML parses into it unchanged; health, capacity and CPS key
+   on the trunk rather than its name; `OutboundRoute` carries the trunk id.
+   No routing change: platform trunks only, as today.
+
+   *Done (v0.25.185).* What shipped:
+
+   - **One type.** The settings `fcp-sbc-core` owned moved into
+     `fcp_core::trunk` and are re-exported from their old paths, so the
+     router, health monitor, registrar, HMR and STIR/SHAKEN kept their
+     imports. Migration 072 gives the stored trunk the columns it lacked
+     (`strip_prefixes`, `srtp_suites`, `allow_transcoding`, the four
+     STIR/SHAKEN columns, `emergency_location`).
+   - **Identity.** A trunk with no stored id — one a node read from its own
+     TOML — is `TrunkId::platform(name)`, the same on every node and across
+     restarts. Two tenants may both have a `carrier-a` without sharing
+     health or capacity; the name is still what the admin API, the logs and
+     the CDR read.
+   - **The API is unchanged**, field for field, and asserted so by a
+     round-trip test.
+   - Two defaults nearly changed on the way and are now pinned by tests: a
+     `[[trunks]]` entry keeps `max_failures = 5` and `direction =
+     bidirectional` when it says nothing, though the API's own default for
+     a new trunk is `upstream`.
+
+   Left for later phases: registration keys on the name until phase 5 gives
+   the registrar trunks from more than one tenant, and the call events and
+   CDR gain `trunk_id` in phase 2 with the selection that needs it.
 2. **Tenant trunks route.** The provider takes a tenant; the node holds a
    `TrunkSet` refreshed from the database on `ConfigChanged`; selection is
    the tenant's trunks then the platform's; `trunk_id` on the records; the

@@ -9,62 +9,12 @@ use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 
 // ── Configuration types ─────────────────────────────────────────────────────
+//
+// A trunk's STIR/SHAKEN settings are part of the one trunk model
+// (`fcp_core::trunk`, `docs/TENANT_TRUNKS.md` §4); this module keeps the
+// paths its users import them by.
 
-/// Verification mode for inbound calls.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum StirVerifyMode {
-    #[default]
-    Disabled,
-    /// Verify + log result, allow call regardless.
-    LogOnly,
-    /// Verify, reject with 438 on failure.
-    Enforce,
-}
-
-/// Signing mode for outbound calls.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum StirSignMode {
-    #[default]
-    Disabled,
-    Enabled,
-}
-
-/// Attestation level (RFC 8588 §5.2.1).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum AttestationLevel {
-    /// Full — originator known + authorized for calling number.
-    #[default]
-    A,
-    /// Partial — originator known, can't verify number authorization.
-    B,
-    /// Gateway — no relationship with caller.
-    C,
-}
-
-impl AttestationLevel {
-    /// Return the single-character string representation used in PASSporT.
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            AttestationLevel::A => "A",
-            AttestationLevel::B => "B",
-            AttestationLevel::C => "C",
-        }
-    }
-
-    /// Parse from the single-character string in a PASSporT claim.
-    pub fn from_passport_str(s: &str) -> Option<Self> {
-        match s {
-            "A" => Some(AttestationLevel::A),
-            "B" => Some(AttestationLevel::B),
-            "C" => Some(AttestationLevel::C),
-            _ => None,
-        }
-    }
-}
-
-fn default_max_iat_age() -> u64 {
-    60
-}
+pub use fcp_core::trunk::{AttestationLevel, StirSignMode, StirVerifyMode, TrunkStirShakenConfig};
 
 fn default_cert_cache_ttl() -> u64 {
     3600
@@ -76,47 +26,6 @@ fn default_cert_cache_max() -> usize {
 
 fn default_cert_fetch_timeout() -> u64 {
     5
-}
-
-/// Per-trunk STIR/SHAKEN configuration.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TrunkStirShakenConfig {
-    /// Verification mode for inbound calls on this trunk.
-    #[serde(default)]
-    pub verify_mode: StirVerifyMode,
-
-    /// Signing mode for outbound calls on this trunk.
-    #[serde(default)]
-    pub sign_mode: StirSignMode,
-
-    /// Attestation level to use when signing outbound calls.
-    #[serde(default)]
-    pub attestation: AttestationLevel,
-
-    /// Maximum age of `iat` claim in seconds before treating as expired.
-    #[serde(default = "default_max_iat_age")]
-    pub max_iat_age_secs: u64,
-}
-
-impl Default for TrunkStirShakenConfig {
-    fn default() -> Self {
-        Self {
-            verify_mode: StirVerifyMode::default(),
-            sign_mode: StirSignMode::default(),
-            attestation: AttestationLevel::default(),
-            max_iat_age_secs: default_max_iat_age(),
-        }
-    }
-}
-
-impl TrunkStirShakenConfig {
-    /// Validate the per-trunk STIR/SHAKEN configuration.
-    pub fn validate(&self) -> Result<(), String> {
-        if self.max_iat_age_secs == 0 || self.max_iat_age_secs > 600 {
-            return Err("stir_shaken.max_iat_age_secs must be between 1 and 600".into());
-        }
-        Ok(())
-    }
 }
 
 /// Global STIR/SHAKEN configuration (in SbcConfig).

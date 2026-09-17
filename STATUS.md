@@ -134,7 +134,7 @@ nothing). Design in `docs/TENANT_TRUNKS.md` (v0.25.182): one trunk model,
 selection over the tenant's trunks then the platform's, the trunk's own
 behaviour applied to the calls it carries, inbound tenancy from the trunk,
 one node registering a registering trunk, and `emergency_capable` made real;
-six phases, nine open questions with recommendations.
+six phases, nine open questions with recommendations, every recommendation taken. Phase 1 done (v0.25.185): one trunk model — `fcp_core::Trunk` is what a tenant manages, what a node's `[[trunks]]` parses into and what the call path holds (`TrunkConfig` an alias of it, migration 072 giving the stored trunk the columns it lacked), identified by `TrunkId` rather than by name so two tenants' `carrier-a` never share health or capacity; no routing change yet.
 
 ## Historical documents
 
