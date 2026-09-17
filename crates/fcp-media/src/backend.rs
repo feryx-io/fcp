@@ -78,6 +78,22 @@ pub trait MediaBackend: Send + Sync {
     /// destined for the B-leg endpoint.
     async fn update_session_b_leg(&self, call_id: &CallId, remote_sdp: String) -> Result<()>;
 
+    /// As [`MediaBackend::update_session_b_leg`], with the SRTP offer this
+    /// node made on that leg (`docs/TENANT_TRUNKS.md` §6).
+    ///
+    /// In SDES each side states the key it sends with, so the key this node
+    /// encrypts with is the one it advertised — generating a fresh one on
+    /// the answer would encrypt to a key the far end never saw. A backend
+    /// that cannot take an offer falls back to the plain update.
+    async fn update_session_b_leg_offered(
+        &self,
+        call_id: &CallId,
+        remote_sdp: String,
+        _offer: Option<crate::sdp::SrtpOffer>,
+    ) -> Result<()> {
+        self.update_session_b_leg(call_id, remote_sdp).await
+    }
+
     /// Put session on hold
     async fn hold_session(&self, call_id: &CallId) -> Result<()>;
 
@@ -648,6 +664,16 @@ pub mod embedded {
             call_id: &fcp_core::CallId,
             remote_sdp: String,
         ) -> Result<()> {
+            self.update_session_b_leg_offered(call_id, remote_sdp, None)
+                .await
+        }
+
+        async fn update_session_b_leg_offered(
+            &self,
+            call_id: &fcp_core::CallId,
+            remote_sdp: String,
+            offer: Option<crate::sdp::SrtpOffer>,
+        ) -> Result<()> {
             debug!(?call_id, "Setting B-leg remote endpoint from SDP");
 
             let session_info = self
@@ -691,42 +717,64 @@ pub mod embedded {
                 debug!(?call_id, te_pt, "B-leg telephone-event PT set from SDP");
             }
 
-            // Wire SRTP keys for B-leg if remote offered crypto
+            // Wire SRTP keys for the B-leg from the answer's `a=crypto`.
+            //
+            // The key this node encrypts with is the one it advertised in
+            // its own offer, not a fresh one: in SDES each side states the
+            // key it sends with (RFC 4568 §5.1.2), so a new key here would
+            // be one the far end never saw. Without an offer of our own —
+            // a peer that sent crypto unasked — a fresh key is the best
+            // that can be done, and is what this did before.
             let b_leg_crypto = crate::sdp::parse_sdes_crypto(&remote_sdp);
             if let Some(first_crypto) = b_leg_crypto.into_iter().next() {
-                match crate::sdp::decode_sdes_key_params(
-                    &first_crypto.key_params,
-                    &first_crypto.suite,
-                ) {
-                    Ok((remote_key, remote_salt, profile)) => {
-                        match forge_rtp::srtp::SrtpKeyMaterial::new(
-                            remote_key,
-                            remote_salt,
-                            profile,
-                        ) {
-                            Ok(remote_material) => {
-                                // Generate local key for B-leg
-                                match crate::sdp::generate_srtp_key_material() {
-                                    Ok((local_material, _)) => {
-                                        let mut srtp_b =
-                                            session_info.forge_session.srtp_b().lock().await;
-                                        srtp_b.set_local_key(local_material);
-                                        srtp_b.set_remote_key(remote_material);
-                                        info!(?call_id, "SRTP keys configured for B-leg");
-                                    }
-                                    Err(e) => {
-                                        warn!(?call_id, error = %e, "Failed to generate B-leg local SRTP key material");
+                match offer {
+                    Some(offer) => match offer.accept(&first_crypto) {
+                        Ok(context) => {
+                            let mut srtp_b = session_info.forge_session.srtp_b().lock().await;
+                            *srtp_b = context;
+                            info!(
+                                ?call_id,
+                                "SRTP keys configured for B-leg from our own offer"
+                            );
+                        }
+                        Err(e) => {
+                            warn!(?call_id, error = %e, "The B-leg answered SRTP on terms we cannot use")
+                        }
+                    },
+                    None => match crate::sdp::decode_sdes_key_params(
+                        &first_crypto.key_params,
+                        &first_crypto.suite,
+                    ) {
+                        Ok((remote_key, remote_salt, profile)) => {
+                            match forge_rtp::srtp::SrtpKeyMaterial::new(
+                                remote_key,
+                                remote_salt,
+                                profile,
+                            ) {
+                                Ok(remote_material) => {
+                                    // Generate local key for B-leg
+                                    match crate::sdp::generate_srtp_key_material() {
+                                        Ok((local_material, _)) => {
+                                            let mut srtp_b =
+                                                session_info.forge_session.srtp_b().lock().await;
+                                            srtp_b.set_local_key(local_material);
+                                            srtp_b.set_remote_key(remote_material);
+                                            info!(?call_id, "SRTP keys configured for B-leg");
+                                        }
+                                        Err(e) => {
+                                            warn!(?call_id, error = %e, "Failed to generate B-leg local SRTP key material");
+                                        }
                                     }
                                 }
-                            }
-                            Err(e) => {
-                                warn!(?call_id, error = %e, "Failed to create B-leg remote SRTP key material");
+                                Err(e) => {
+                                    warn!(?call_id, error = %e, "Failed to create B-leg remote SRTP key material");
+                                }
                             }
                         }
-                    }
-                    Err(e) => {
-                        warn!(?call_id, error = %e, "Failed to decode B-leg SDES key params");
-                    }
+                        Err(e) => {
+                            warn!(?call_id, error = %e, "Failed to decode B-leg SDES key params");
+                        }
+                    },
                 }
             }
 

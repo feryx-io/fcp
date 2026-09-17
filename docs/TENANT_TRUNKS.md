@@ -427,12 +427,44 @@ One PR per phase, reviewed before the next starts.
    - **Number transform and codecs** were already applied when the route was
      built; both now have their behaviour asserted on the wire.
 
-   **3b — what the trunk requires.** SRTP (offered and required through the
-   media layer), header rules (the HMR engine is the SBC binary's today and
-   the rule set is its TOML; both have to be shared before a trunk's
-   `header_rules` can mean anything on a call manager), STIR/SHAKEN signing
-   per trunk off the SBC, and DTMF converted rather than only offered
-   (2833 ↔ INFO).
+   **3b — what the trunk requires.** Three pieces, each needing
+   infrastructure of its own, so each is its own PR.
+
+   **3b-1 — SRTP.** *Done (v0.25.188).*
+
+   - A trunk whose `srtp` is `preferred` or `required` is **offered** SRTP:
+     the B-leg's offer is `RTP/SAVP` with an `a=crypto` line carrying the
+     key this node will send with.
+   - A carrier that answers a `required` trunk in the clear has not
+     answered it: the leg takes a BYE and the caller a `488`, rather than
+     media going out unencrypted to a carrier expecting it encrypted.
+     `preferred` takes either answer.
+   - This node terminates the encryption, so it can only offer SRTP on a leg
+     whose media it anchors. A `required` trunk on a call this node does not
+     anchor is refused (`488`) instead of being sent plain RTP; a
+     `preferred` one is offered plain RTP and says so in the log.
+   - **A latent bug fixed on the way:** the media backend armed the B-leg
+     with a *freshly generated* local key whenever an answer carried
+     `a=crypto`. In SDES each side states the key it sends with (RFC 4568
+     §5.1.2), so that key is the one this node advertised — a new one would
+     encrypt to a key the far end never saw, and the carrier would hear
+     noise. The backend now takes the offer it made
+     (`update_session_b_leg_offered`) and keeps a fresh key only for a peer
+     that sent crypto unasked, which is all it could do before.
+
+   **3b-2 — header rules and STIR/SHAKEN.** A trunk's `header_rules` names
+   rules from a set that lives, today, in the SBC binary's TOML and is
+   compiled by an engine in the SBC binary; both have to move into
+   `fcp-sbc-core` and be readable by a call manager before a tenant trunk's
+   `header_rules` can mean anything. The rules also act on a request this
+   node *generates*, so the UAC needs a last look at the INVITE before it
+   goes out — a small addition to siphon-rs. Per-trunk STIR/SHAKEN signing
+   rides with it: the `Identity` header is one more thing the trunk adds.
+
+   **3b-3 — DTMF converted.** 3a stops offering RFC 2833 to a trunk that
+   does not take it; this turns what the A-leg sends into what the trunk
+   takes (2833 ↔ INFO), which is the media layer's detector and the INFO
+   sender rather than the offer.
 4. **Inbound.** The trunk decides the tenant; per-trunk inbound
    authentication and limits; admission rewritten on the match.
 5. **Cluster.** One node registers a registering trunk; health per node;

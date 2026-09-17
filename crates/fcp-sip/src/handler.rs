@@ -574,6 +574,9 @@ pub struct SipMessageHandler {
     sip_call_id_map: Arc<dashmap::DashMap<String, String>>,
     /// Emergency calls' untried routes (see [`EmergencyFallback`]).
     emergency_fallbacks: Arc<dashmap::DashMap<fcp_b2bua_core::CallId, EmergencyFallback>>,
+    /// The SRTP this node offered on a call's B-leg, kept until the answer
+    /// names the key the far end sends with (`docs/TENANT_TRUNKS.md` §6).
+    b_leg_srtp: Arc<dashmap::DashMap<fcp_b2bua_core::CallId, fcp_media::SrtpOffer>>,
     /// Conference calls whose B-leg is being moved to another conference
     /// node (phase 5b), so a second REFER while one is in flight is refused.
     conference_migrations: Arc<dashmap::DashMap<fcp_b2bua_core::CallId, ()>>,
@@ -920,6 +923,7 @@ impl SipMessageHandler {
             sip_trace_tx: None,
             sip_call_id_map: Arc::new(dashmap::DashMap::new()),
             emergency_fallbacks: Arc::new(dashmap::DashMap::new()),
+            b_leg_srtp: Arc::new(dashmap::DashMap::new()),
             conference_migrations: Arc::new(dashmap::DashMap::new()),
         };
 
@@ -1177,6 +1181,55 @@ impl SipMessageHandler {
 
     /// The tenant whose call this is, for choosing the trunks its calls may
     /// leave on (`docs/TENANT_TRUNKS.md` §5).
+    /// Whether an answer honours the SRTP the trunk requires: a carrier
+    /// that answers a `required` trunk in the clear has not answered it
+    /// (`docs/TENANT_TRUNKS.md` §6). `true` for every other trunk, which
+    /// is free to answer either way.
+    fn srtp_answer_honoured(
+        &self,
+        call_id: &fcp_b2bua_core::CallId,
+        answer_sdp: Option<&str>,
+    ) -> bool {
+        let required = self
+            .call_manager
+            .get_call(call_id)
+            .and_then(|c| c.route_trunks.first().map(|r| r.trunk.srtp.mode))
+            .is_some_and(|mode| mode == fcp_core::trunk::SrtpMode::Required);
+        if !required {
+            return true;
+        }
+        answer_sdp.is_some_and(|sdp| !fcp_media::sdp::parse_sdes_crypto(sdp).is_empty())
+    }
+
+    /// End a leg this node cannot use: a carrier that answered a trunk
+    /// requiring SRTP without any (`docs/TENANT_TRUNKS.md` §6). The leg is
+    /// answered, so it takes a BYE.
+    async fn hang_up_unencrypted_leg(
+        &self,
+        call_id: &fcp_b2bua_core::CallId,
+        leg: &crate::uac::OutboundCall,
+    ) {
+        let Some(uac) = &self.uac else { return };
+        let dialog = leg.dialog.read().await.clone();
+        match uac.bye(&dialog).await {
+            Ok(response) => {
+                self.dialog_manager.remove(dialog.id());
+                debug!(
+                    call_id = %call_id,
+                    code = response.start_line().code(),
+                    "Sent BYE to the leg that answered without the SRTP its trunk requires"
+                );
+            }
+            Err(e) => warn!(call_id = %call_id, error = %e, "BYE to the unencrypted leg failed"),
+        }
+    }
+
+    /// The SRTP this node offered on the call's B-leg, taken out of the map
+    /// now that the answer is here.
+    fn take_b_leg_srtp(&self, call_id: &fcp_b2bua_core::CallId) -> Option<fcp_media::SrtpOffer> {
+        self.b_leg_srtp.remove(call_id).map(|(_, offer)| offer)
+    }
+
     fn call_tenant(&self, call_id: &fcp_b2bua_core::CallId) -> Option<fcp_core::TenantId> {
         self.call_manager
             .get_call(call_id)
@@ -5408,6 +5461,62 @@ impl SipMessageHandler {
         // Extract SDP from A-leg INVITE to forward to B-leg
         let mut a_leg_sdp = crate::body::request_sdp(request);
 
+        // What the trunk carrying this leg says about SRTP
+        // (`docs/TENANT_TRUNKS.md` §6). The node terminates the encryption,
+        // so it can only offer SRTP on a leg whose media it anchors; a
+        // trunk that requires SRTP on a call this node does not anchor has
+        // no route it can honour, and says so rather than sending RTP in
+        // the clear to a carrier expecting it encrypted.
+        let srtp_mode = self
+            .call_manager
+            .get_call(&call_id)
+            .and_then(|c| c.route_trunks.first().map(|r| r.trunk.srtp.mode))
+            .unwrap_or(fcp_core::trunk::SrtpMode::Disabled);
+        let anchored = self
+            .call_manager
+            .get_call(&call_id)
+            .is_some_and(|c| c.media_anchored && c.media_session_id.is_some());
+        let srtp_offer = match (srtp_mode, anchored) {
+            (fcp_core::trunk::SrtpMode::Disabled, _) => None,
+            (_, true) => match fcp_media::SrtpOffer::generate() {
+                Ok(offer) => Some(offer),
+                Err(e) => {
+                    warn!(call_id = %call_id, error = %e, "Could not generate SRTP key material for the trunk");
+                    None
+                }
+            },
+            (fcp_core::trunk::SrtpMode::Required, false) => {
+                warn!(
+                    call_id = %call_id,
+                    "The trunk requires SRTP and this call's media is not anchored here; \
+                     refusing rather than sending it in the clear"
+                );
+                let response = self.create_simple_response(request, 488, "Not Acceptable Here");
+                a_leg_handle.send_final(response).await;
+                let _ = self.call_manager.terminate_call(
+                    &call_id,
+                    Some("Trunk requires SRTP on unanchored media".to_string()),
+                );
+                return Ok(());
+            }
+            (fcp_core::trunk::SrtpMode::Preferred, false) => {
+                debug!(
+                    call_id = %call_id,
+                    "The trunk prefers SRTP but this call's media is not anchored here; \
+                     offering plain RTP"
+                );
+                None
+            }
+        };
+        if let Some(offer) = &srtp_offer {
+            // An offer lives until its answer. One whose call ended without
+            // an answer — cancelled, refused, timed out — is dropped here,
+            // so the map holds only calls in flight.
+            self.b_leg_srtp
+                .retain(|id, _| self.call_manager.get_call(id).is_some());
+            self.b_leg_srtp.insert(call_id, offer.clone());
+        }
+
         // Rewrite SDP if media is anchored on server
         if let Some(ref original_sdp) = a_leg_sdp {
             // Check if this call has anchored media
@@ -5427,12 +5536,13 @@ impl SipMessageHandler {
                     Ok(session) => {
                         let (rtp_port, _rtcp_port) = session.ports();
 
-                        // Rewrite SDP to point to server's RTP endpoint
+                        // Rewrite SDP to point to server's RTP endpoint, and
+                        // offer the trunk's SRTP on it when it wants any.
                         let rewritten_sdp = fcp_media::rewrite_sdp_for_anchoring(
                             original_sdp,
                             &self.local_addr,
                             rtp_port,
-                            None,
+                            srtp_offer.as_ref().map(|o| &o.sdp),
                         );
 
                         info!(
@@ -6165,6 +6275,23 @@ impl SipMessageHandler {
                 None
             };
 
+            // A carrier that answers a trunk requiring SRTP in the clear
+            // has not answered it (`docs/TENANT_TRUNKS.md` §6).
+            if !self.srtp_answer_honoured(&call_id, b_leg_sdp.as_deref()) {
+                warn!(
+                    call_id = %call_id,
+                    "The trunk requires SRTP and the answer carried none; hanging up the leg"
+                );
+                self.hang_up_unencrypted_leg(&call_id, &b_leg_handle).await;
+                let response = self.create_simple_response(&request, 488, "Not Acceptable Here");
+                a_leg_handle.send_final(response).await;
+                let _ = self.call_manager.terminate_call(
+                    &call_id,
+                    Some("Trunk requires SRTP; the answer carried none".to_string()),
+                );
+                return Ok(());
+            }
+
             // Set B-leg remote endpoint on the media session (before SDP rewriting)
             if let Some(ref original_sdp) = b_leg_sdp {
                 let media_session_id = self.call_manager.get_call(&call_id).and_then(|call| {
@@ -6178,8 +6305,15 @@ impl SipMessageHandler {
                 if let (Some(ref media_session_id), Some(media_manager)) =
                     (&media_session_id, &self.media_manager)
                 {
+                    // The key this node sends with is the one it offered
+                    // (`docs/TENANT_TRUNKS.md` §6).
+                    let offered = self.take_b_leg_srtp(&call_id);
                     if let Err(e) = media_manager
-                        .update_session_b_leg(media_session_id, original_sdp.clone())
+                        .update_session_b_leg_offered(
+                            media_session_id,
+                            original_sdp.clone(),
+                            offered,
+                        )
                         .await
                     {
                         warn!(
@@ -6854,6 +6988,24 @@ impl SipMessageHandler {
                 None
             };
 
+            // A carrier that answers a trunk requiring SRTP in the clear
+            // has not answered it (`docs/TENANT_TRUNKS.md` §6).
+            if !self.srtp_answer_honoured(&call_id, b_leg_sdp.as_deref()) {
+                warn!(
+                    call_id = %call_id,
+                    target = %target,
+                    "The trunk requires SRTP and the answer carried none; hanging up the leg"
+                );
+                self.hang_up_unencrypted_leg(&call_id, &handle).await;
+                let response = self.create_simple_response(&request, 488, "Not Acceptable Here");
+                a_leg_handle.send_final(response).await;
+                let _ = self.call_manager.terminate_call(
+                    &call_id,
+                    Some("Trunk requires SRTP; the answer carried none".to_string()),
+                );
+                return Ok(());
+            }
+
             // Set B-leg remote endpoint on the media session (before SDP rewriting)
             if let Some(ref original_sdp) = b_leg_sdp {
                 let media_session_id = self.call_manager.get_call(&call_id).and_then(|call| {
@@ -6867,8 +7019,15 @@ impl SipMessageHandler {
                 if let (Some(ref media_session_id), Some(media_manager)) =
                     (&media_session_id, &self.media_manager)
                 {
+                    // The key this node sends with is the one it offered
+                    // (`docs/TENANT_TRUNKS.md` §6).
+                    let offered = self.take_b_leg_srtp(&call_id);
                     if let Err(e) = media_manager
-                        .update_session_b_leg(media_session_id, original_sdp.clone())
+                        .update_session_b_leg_offered(
+                            media_session_id,
+                            original_sdp.clone(),
+                            offered,
+                        )
                         .await
                     {
                         warn!(
