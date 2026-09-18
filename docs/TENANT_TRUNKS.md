@@ -500,10 +500,49 @@ One PR per phase, reviewed before the next starts.
      names this node's certificate, attestation A, and the trunk's own
      caller ID as `orig` — not the extension behind it.
 
-   **3b-4 — DTMF converted.** 3a stops offering RFC 2833 to a trunk that
-   does not take it; this turns what the A-leg sends into what the trunk
-   takes (2833 ↔ INFO), which is the media layer's detector and the INFO
-   sender rather than the offer.
+   **3b-4 — DTMF converted.** *Done (v0.25.191).* 3a stopped offering
+   RFC 2833 to a trunk that does not take it; this turns what one leg
+   sends into what the other takes.
+
+   - **Settled when the trunk answers.** Each leg's way of taking DTMF is
+     worked out from the caller's offer and the trunk's answer and kept
+     on the call (`DtmfCarriage`): a leg takes RFC 2833 only when its SDP
+     has `telephone-event`, so a trunk set to `rfc2833` that answers
+     without it takes digits in the audio, and one set to `sip_info`
+     takes INFO whatever it answered.
+   - **Telephone-event goes only where it was negotiated.** Relay was one
+     switch for both directions; it is now per leg, so a trunk (or a
+     caller) that did not agree to `telephone-event` is not sent packets
+     at a payload type it never saw.
+   - **RFC 2833 → INFO.** A digit the caller sends as telephone-event to
+     a trunk that takes SIP INFO is sent on the trunk's dialog as an
+     `application/dtmf-relay` INFO, serialised with the dialog's other
+     requests so its CSeq is the next one. A digit heard in the audio is
+     not: the trunk hears it already.
+   - **INFO → RFC 2833.** An INFO digit for a leg that takes
+     telephone-event — the caller's to an `rfc2833` trunk, or the trunk's
+     to a caller that offered it — is played to that leg as
+     telephone-event at its own payload type and answered `200` here,
+     rather than forwarded as a request it does not take. Any other INFO
+     is forwarded as before.
+   - **The media engine grew what this needed** (forge-engine 0.6.1,
+     forge-media `v2026.09.17`): the digits each leg sends, tagged with
+     that leg and how they arrived; relay per direction; and a digit
+     played to one leg. The media backend's `send_dtmf`, a no-op until
+     now with no caller, takes a leg and plays the digit.
+   - **Needs the media anchored.** Only a node that carries the call's
+     media can hear a digit or play one; an unanchored call's DTMF goes
+     as each end sends it. A trunk that takes DTMF in-band is not sent
+     generated tones.
+   - On the wire: a caller's RFC 2833 `5` reaches a `sip_info` trunk as an
+     INFO and not as telephone-event, the trunk's INFO `9` reaches the
+     caller as telephone-event, and a caller's INFO `7` reaches an
+     `rfc2833` trunk as telephone-event and not as an INFO.
+   - The test phone counted every repeated end packet of an RFC 4733
+     event as a digit of its own; it counts one per event now, which is
+     what let a test hear two digits in a row.
+
+   **Phase 3 is complete.**
 4. **Inbound.** The trunk decides the tenant; per-trunk inbound
    authentication and limits; admission rewritten on the match.
 5. **Cluster.** One node registers a registering trunk; health per node;

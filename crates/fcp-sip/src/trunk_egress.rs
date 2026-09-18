@@ -6,6 +6,7 @@
 //! are the route's (the router applies both when it builds the target);
 //! what is left is everything the B-leg's INVITE carries.
 
+use fcp_b2bua_core::{DtmfCarriage, DtmfWay};
 use fcp_core::trunk::TrunkDtmfMode;
 use fcp_core::Trunk;
 use sip_core::SipUri;
@@ -159,6 +160,66 @@ impl TrunkEgress {
     }
 }
 
+/// The content type SIP INFO carries a digit in.
+pub const DTMF_RELAY: &str = "application/dtmf-relay";
+
+/// How long a digit is said to last when its sender did not say.
+const DEFAULT_DIGIT_MS: u32 = 160;
+
+/// How each leg of a call `trunk` carries takes DTMF, from the caller's
+/// offer and the trunk's answer (`docs/TENANT_TRUNKS.md` §6).
+///
+/// A leg takes RFC 2833 only when its SDP has `telephone-event`: a trunk
+/// set to RFC 2833 that answers without it takes digits in the audio, if
+/// at all. A caller that did not offer it is left to send and receive
+/// digits as it did before — INFO passes it unchanged.
+pub fn dtmf_carriage(trunk: &Trunk, a_offer: Option<&str>, b_answer: &str) -> DtmfCarriage {
+    let takes_2833 = |sdp: &str| fcp_media::extract_telephone_event_pt(sdp).is_some();
+    let a = if a_offer.is_some_and(takes_2833) {
+        DtmfWay::Rfc2833
+    } else {
+        DtmfWay::Info
+    };
+    let b = match trunk.dtmf.mode {
+        TrunkDtmfMode::Relay if takes_2833(b_answer) => DtmfWay::Rfc2833,
+        TrunkDtmfMode::Relay | TrunkDtmfMode::Disabled => DtmfWay::Inband,
+        TrunkDtmfMode::Detect => DtmfWay::Info,
+    };
+    DtmfCarriage { a, b }
+}
+
+/// The `application/dtmf-relay` body for one digit.
+pub fn dtmf_relay_body(digit: char, duration_ms: Option<u32>) -> String {
+    format!(
+        "Signal={digit}\r\nDuration={}\r\n",
+        duration_ms.unwrap_or(DEFAULT_DIGIT_MS)
+    )
+}
+
+/// The digit and duration an `application/dtmf-relay` body carries.
+pub fn parse_dtmf_relay(body: &str) -> Option<(char, u32)> {
+    let mut digit = None;
+    let mut duration = DEFAULT_DIGIT_MS;
+    for line in body.lines() {
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let value = value.trim();
+        match key.trim().to_ascii_lowercase().as_str() {
+            "signal" => {
+                digit = value
+                    .chars()
+                    .next()
+                    .map(|c| c.to_ascii_uppercase())
+                    .filter(|c| c.is_ascii_digit() || matches!(c, '*' | '#' | 'A'..='D'));
+            }
+            "duration" => duration = value.parse().unwrap_or(DEFAULT_DIGIT_MS),
+            _ => {}
+        }
+    }
+    Some((digit?, duration))
+}
+
 /// The From URI `trunk` presents for a caller whose own From is
 /// `caller_from`: `caller_id_override` replaces the user part (or the
 /// whole URI when it is one), `from_domain` replaces the host. `None` when
@@ -228,6 +289,65 @@ mod tests {
     use super::*;
     use fcp_core::trunk::TrunkDtmfConfig;
     use fcp_core::TenantId;
+
+    const WITH_TE: &str = "v=0\r\no=- 1 1 IN IP4 10.0.0.1\r\ns=-\r\nc=IN IP4 10.0.0.1\r\nt=0 0\r\n\
+        m=audio 4000 RTP/AVP 0 101\r\na=rtpmap:0 PCMU/8000\r\na=rtpmap:101 telephone-event/8000\r\n";
+    const WITHOUT_TE: &str =
+        "v=0\r\no=- 1 1 IN IP4 10.0.0.1\r\ns=-\r\nc=IN IP4 10.0.0.1\r\nt=0 0\r\n\
+        m=audio 4000 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n";
+
+    fn trunk_taking(mode: TrunkDtmfMode) -> Trunk {
+        let mut t = trunk();
+        t.dtmf = TrunkDtmfConfig { mode };
+        t
+    }
+
+    #[test]
+    fn an_info_trunk_takes_info_whatever_the_caller_sends() {
+        let t = trunk_taking(TrunkDtmfMode::Detect);
+        assert_eq!(
+            dtmf_carriage(&t, Some(WITH_TE), WITHOUT_TE),
+            DtmfCarriage {
+                a: DtmfWay::Rfc2833,
+                b: DtmfWay::Info
+            }
+        );
+        assert_eq!(
+            dtmf_carriage(&t, Some(WITHOUT_TE), WITHOUT_TE),
+            DtmfCarriage {
+                a: DtmfWay::Info,
+                b: DtmfWay::Info
+            }
+        );
+    }
+
+    #[test]
+    fn an_rfc2833_trunk_takes_it_only_when_its_answer_does() {
+        let t = trunk_taking(TrunkDtmfMode::Relay);
+        assert_eq!(dtmf_carriage(&t, None, WITH_TE).b, DtmfWay::Rfc2833);
+        assert_eq!(dtmf_carriage(&t, None, WITH_TE).a, DtmfWay::Info);
+        assert_eq!(dtmf_carriage(&t, None, WITHOUT_TE).b, DtmfWay::Inband);
+    }
+
+    #[test]
+    fn an_inband_trunk_takes_neither() {
+        let t = trunk_taking(TrunkDtmfMode::Disabled);
+        assert_eq!(dtmf_carriage(&t, Some(WITH_TE), WITH_TE).b, DtmfWay::Inband);
+    }
+
+    #[test]
+    fn dtmf_relay_bodies_round_trip() {
+        let body = dtmf_relay_body('5', Some(250));
+        assert_eq!(body, "Signal=5\r\nDuration=250\r\n");
+        assert_eq!(parse_dtmf_relay(&body), Some(('5', 250)));
+        assert_eq!(parse_dtmf_relay("Signal=#\r\n"), Some(('#', 160)));
+        assert_eq!(
+            parse_dtmf_relay("signal = a\nduration = 90"),
+            Some(('A', 90))
+        );
+        assert_eq!(parse_dtmf_relay("Signal=x\r\nDuration=100\r\n"), None);
+        assert_eq!(parse_dtmf_relay("Duration=100\r\n"), None);
+    }
 
     fn trunk() -> Trunk {
         Trunk::new("carrier-a".to_string(), TenantId::new())

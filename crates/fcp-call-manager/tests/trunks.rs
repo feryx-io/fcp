@@ -739,6 +739,108 @@ async fn a_trunk_that_asks_for_stir_shaken_gets_a_signed_call() {
 /// The claims of the PASSporT in an `Identity` header (RFC 8225), read
 /// without verifying it: the signature is the carrier's business, the
 /// claims are this test's.
+/// A call from a tenant user out on a trunk that takes DTMF as `mode`,
+/// answered at both ends: the caller's phone, its call and the carrier's
+/// leg.
+async fn answered_dtmf_call(
+    stack: &mut Stack,
+    carrier: &Carrier,
+    mode: fcp_core::trunk::TrunkDtmfMode,
+) -> (Phone, fcp_testkit::Call, fcp_testkit::Call) {
+    let acme = stack.seed.tenant_id;
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    stack
+        .seed
+        .trunk_with(acme, carrier.name, carrier.port(), |trunk| {
+            trunk.dtmf = fcp_core::trunk::TrunkDtmfConfig { mode };
+        })
+        .await;
+    tokio::time::sleep(REFRESHED).await;
+
+    let alice_phone = stack.phone(&alice).await;
+    let call = alice_phone
+        .call_with_headers("+15125559999", &Caller::new(acme, "alice").headers())
+        .await
+        .unwrap();
+    let Some(incoming) = carrier.phone.incoming(SOON).await else {
+        let why = format!("the carrier never rang; the call is {:?}", call.phase());
+        stack.fail(&why).await;
+    };
+    let leg = incoming.answer().await.unwrap();
+    call.answered(SOON).await.unwrap();
+    // Media flowing both ways before any digit is sent.
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    (alice_phone, call, leg)
+}
+
+/// Whether the carrier is sent a SIP INFO carrying `digit`.
+async fn carrier_got_info(carrier: &Carrier, digit: char, within: Duration) -> bool {
+    let signal = format!("Signal={digit}");
+    carrier
+        .phone
+        .expect(
+            within,
+            |ev| matches!(ev, fcp_testkit::PhoneEvent::Info { body, .. } if body.contains(&signal)),
+        )
+        .await
+        .is_some()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_trunk_that_takes_sip_info_is_sent_the_callers_digits_as_info() {
+    let carrier = Carrier::new("info-carrier").await;
+    let mut stack = stack_or_skip!(&[]);
+    let (_phone, call, leg) =
+        answered_dtmf_call(&mut stack, &carrier, fcp_core::trunk::TrunkDtmfMode::Detect).await;
+
+    // The caller presses 5 the way a phone does, as telephone-event.
+    call.media().send_dtmf('5');
+    if !carrier_got_info(&carrier, '5', SOON).await {
+        stack
+            .fail("the carrier never received the caller's digit as SIP INFO")
+            .await;
+    }
+    assert_eq!(
+        leg.media().heard_dtmf(NEVER).await,
+        None,
+        "telephone-event went to a trunk that did not negotiate it"
+    );
+
+    // And the trunk's own INFO reaches a caller that takes telephone-event
+    // as telephone-event.
+    assert_eq!(leg.send_info_dtmf('9').await.unwrap(), 200);
+    assert_eq!(call.media().heard_dtmf(SOON).await, Some('9'));
+
+    assert_eq!(call.hangup().await.unwrap(), 200);
+    assert!(leg.ended(SOON).await);
+    stack.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_trunk_that_takes_rfc2833_is_played_the_callers_info_digits() {
+    let carrier = Carrier::new("rfc2833-carrier").await;
+    let mut stack = stack_or_skip!(&[]);
+    let (_phone, call, leg) =
+        answered_dtmf_call(&mut stack, &carrier, fcp_core::trunk::TrunkDtmfMode::Relay).await;
+
+    // A caller that sends its digit as SIP INFO; the trunk hears it as
+    // telephone-event, and is not sent the INFO.
+    assert_eq!(call.send_info_dtmf('7').await.unwrap(), 200);
+    assert_eq!(leg.media().heard_dtmf(SOON).await, Some('7'));
+    assert!(
+        !carrier_got_info(&carrier, '7', NEVER).await,
+        "the trunk was sent INFO it does not take"
+    );
+
+    // Telephone-event itself still goes straight through.
+    call.media().send_dtmf('3');
+    assert_eq!(leg.media().heard_dtmf(SOON).await, Some('3'));
+
+    assert_eq!(call.hangup().await.unwrap(), 200);
+    assert!(leg.ended(SOON).await);
+    stack.finish().await;
+}
+
 fn passport_claims(identity: &str) -> serde_json::Value {
     use base64::Engine;
     let token = identity.split(';').next().unwrap_or(identity).trim();

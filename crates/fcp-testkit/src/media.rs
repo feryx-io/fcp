@@ -488,6 +488,10 @@ impl MediaLeg {
         let received = Arc::clone(&self.packets_received);
         tokio::spawn(async move {
             let mut detector = Rfc2833Detector::new(8000);
+            // RFC 4733 §2.5.1.4: the end of an event is sent three times,
+            // every packet of it under the event's one timestamp — one
+            // digit per timestamp, not per end packet.
+            let mut last_end: Option<u32> = None;
             loop {
                 let pkt = tokio::select! {
                     _ = stop.changed() => return,
@@ -509,7 +513,10 @@ impl MediaLeg {
                         detector.process_with_timestamp(&pkt.payload, pkt.header.timestamp)
                     {
                         for ev in events {
-                            if ev.event_type == DtmfEventType::End {
+                            if ev.event_type == DtmfEventType::End
+                                && last_end != Some(pkt.header.timestamp)
+                            {
+                                last_end = Some(pkt.header.timestamp);
                                 let c = ev.digit.to_string().chars().next().unwrap_or('?');
                                 heard.lock().unwrap().dtmf.push(c);
                             }

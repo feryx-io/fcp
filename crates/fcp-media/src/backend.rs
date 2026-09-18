@@ -106,8 +106,34 @@ pub trait MediaBackend: Send + Sync {
     /// Get session statistics
     async fn get_stats(&self, call_id: &CallId) -> Result<crate::session::MediaSessionStats>;
 
-    /// Send DTMF digit
-    async fn send_dtmf(&self, call_id: &CallId, digit: char, duration_ms: u32) -> Result<()>;
+    /// Send a DTMF digit to one leg, as RFC 2833 telephone-event at the
+    /// payload type that leg negotiated.
+    async fn send_dtmf(
+        &self,
+        call_id: &CallId,
+        leg: MediaLeg,
+        digit: char,
+        duration_ms: u32,
+    ) -> Result<()>;
+
+    /// Whether telephone-event the other leg sends is relayed to `leg`.
+    /// Off for a leg that did not negotiate it; the digits are still
+    /// detected ([`MediaBackend::subscribe_digits`]).
+    fn set_rfc2833_relay_to(&self, _call_id: &CallId, _leg: MediaLeg, _relay: bool) -> Result<()> {
+        Err(Error::Backend(format!(
+            "the {} backend cannot steer RFC 2833 relay",
+            self.backend_name()
+        )))
+    }
+
+    /// Every digit either leg sends, with the leg it came from, until the
+    /// session ends. `None` when this backend cannot say which leg.
+    fn subscribe_digits(
+        &self,
+        _call_id: &CallId,
+    ) -> Option<tokio::sync::mpsc::UnboundedReceiver<LegDigit>> {
+        None
+    }
 
     /// Create a DTMF collector wired to the media backend's event stream.
     ///
@@ -249,6 +275,39 @@ pub trait MediaBackend: Send + Sync {
 
     /// List all active RTP sessions with their details
     async fn list_sessions(&self) -> Vec<RtpSessionInfo>;
+}
+
+/// One leg of a two-party media session: A the caller, B the callee.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaLeg {
+    /// The caller's leg.
+    A,
+    /// The callee's leg.
+    B,
+}
+
+impl MediaLeg {
+    /// The other leg.
+    pub fn other(self) -> Self {
+        match self {
+            Self::A => Self::B,
+            Self::B => Self::A,
+        }
+    }
+}
+
+/// A digit one leg sent, once it has ended — RFC 2833 or in-band.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LegDigit {
+    /// The leg the digit came from.
+    pub leg: MediaLeg,
+    /// `0`-`9`, `*`, `#` or `A`-`D`.
+    pub digit: char,
+    /// How long it was held, when the sender said.
+    pub duration_ms: Option<u32>,
+    /// Heard in the audio rather than sent as telephone-event — already
+    /// in what the other leg hears.
+    pub in_band: bool,
 }
 
 /// Audio injection target
@@ -430,6 +489,13 @@ pub mod embedded {
                 tts_service,
                 event_bus,
             })
+        }
+    }
+
+    fn forge_leg(leg: MediaLeg) -> forge_engine::ParticipantLabel {
+        match leg {
+            MediaLeg::A => forge_engine::ParticipantLabel::A,
+            MediaLeg::B => forge_engine::ParticipantLabel::B,
         }
     }
 
@@ -878,21 +944,77 @@ pub mod embedded {
         async fn send_dtmf(
             &self,
             call_id: &fcp_core::CallId,
+            leg: MediaLeg,
             digit: char,
             duration_ms: u32,
         ) -> Result<()> {
-            let session_info = self
+            let forge_session = self
+                .sessions
+                .get(call_id)
+                .map(|s| Arc::clone(&s.forge_session))
+                .ok_or_else(|| Error::SessionNotFound(call_id.to_string()))?;
+            let digit = forge_engine::DtmfDigit::from_char(digit)
+                .map_err(|e| Error::InvalidState(e.to_string()))?;
+            debug!(?call_id, ?leg, %digit, duration_ms, "Sending DTMF");
+            forge_session
+                .send_dtmf(forge_leg(leg), digit, duration_ms)
+                .await
+                .map_err(|e| Error::ForgeMedia(e.to_string()))
+        }
+
+        fn set_rfc2833_relay_to(
+            &self,
+            call_id: &fcp_core::CallId,
+            leg: MediaLeg,
+            relay: bool,
+        ) -> Result<()> {
+            let session = self
                 .sessions
                 .get(call_id)
                 .ok_or_else(|| Error::SessionNotFound(call_id.to_string()))?;
-
-            // Send DTMF via forge-media
-            // forge-media expects DTMF to be injected as RTP events
-            // This is a placeholder - full implementation depends on forge-media API
-            debug!(?call_id, digit = %digit, duration_ms, "Sending DTMF");
-
-            drop(session_info); // Explicit drop to release lock
+            session
+                .forge_session
+                .set_rfc2833_relay_to(forge_leg(leg), relay);
             Ok(())
+        }
+
+        fn subscribe_digits(
+            &self,
+            call_id: &fcp_core::CallId,
+        ) -> Option<tokio::sync::mpsc::UnboundedReceiver<LegDigit>> {
+            let mut digits = self.sessions.get(call_id)?.forge_session.subscribe_digits();
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+            // Ends when the session does (the sender goes with it) or when
+            // the subscriber stops listening.
+            tokio::spawn(async move {
+                use tokio::sync::broadcast::error::RecvError;
+                loop {
+                    match digits.recv().await {
+                        Ok(d) => {
+                            let Some(digit) = d.digit.to_string().chars().next() else {
+                                continue;
+                            };
+                            let digit = LegDigit {
+                                leg: match d.leg {
+                                    forge_engine::ParticipantLabel::A => MediaLeg::A,
+                                    forge_engine::ParticipantLabel::B => MediaLeg::B,
+                                },
+                                digit,
+                                duration_ms: d.duration_ms,
+                                in_band: d.method == forge_engine::DtmfMethod::Inband,
+                            };
+                            if tx.send(digit).is_err() {
+                                break;
+                            }
+                        }
+                        Err(RecvError::Lagged(n)) => {
+                            warn!(lagged = n, "Digit subscriber lagged; digits were lost");
+                        }
+                        Err(RecvError::Closed) => break,
+                    }
+                }
+            });
+            Some(rx)
         }
 
         fn create_dtmf_collector(
@@ -2302,6 +2424,7 @@ pub mod remote {
         async fn send_dtmf(
             &self,
             _call_id: &fcp_core::CallId,
+            _leg: MediaLeg,
             _digit: char,
             _duration_ms: u32,
         ) -> Result<()> {

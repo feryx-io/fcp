@@ -240,6 +240,28 @@ impl EmergencyCallInfo {
     }
 }
 
+/// How a leg takes DTMF.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DtmfWay {
+    /// RFC 2833 telephone-event, negotiated in its SDP.
+    Rfc2833,
+    /// SIP INFO (`application/dtmf-relay`).
+    Info,
+    /// In the audio, or not at all.
+    Inband,
+}
+
+/// How each leg of a trunk call takes DTMF, settled when the trunk answers
+/// (`docs/TENANT_TRUNKS.md` §6), so a digit one leg sends reaches the other
+/// the way that leg takes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DtmfCarriage {
+    /// The caller's leg.
+    pub a: DtmfWay,
+    /// The trunk's leg.
+    pub b: DtmfWay,
+}
+
 /// One outbound route and the trunk that carries it — the target as the
 /// fork sees it, and the trunk itself, which says what it does to the call
 /// (`docs/TENANT_TRUNKS.md` §§4, 6) and under which id its health, its
@@ -344,6 +366,10 @@ pub struct Call {
     /// Each outbound route's target and trunk, primary first, so the trunk
     /// that answered can be named on the record rather than the primary.
     pub route_trunks: Vec<RouteTrunk>,
+
+    /// How each leg takes DTMF, once a trunk has answered on an anchored
+    /// call; `None` leaves digits as each leg sends them.
+    pub dtmf_carriage: Option<DtmfCarriage>,
 
     /// Flow ID if this call is executing a flow
     pub flow_id: Option<String>,
@@ -474,6 +500,7 @@ impl Call {
             recording_consent: None,
             auto_recording: None,
             route_trunks: Vec::new(),
+            dtmf_carriage: None,
             flow_id: None,
             flow_current_node: None,
             trunk_name: None,
@@ -574,6 +601,7 @@ impl Call {
             recording_consent: None,
             auto_recording: None,
             route_trunks: Vec::new(),
+            dtmf_carriage: None,
             flow_id: None,
             flow_current_node: None,
             trunk_name: None,
