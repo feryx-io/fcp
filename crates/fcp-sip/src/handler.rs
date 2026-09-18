@@ -2748,10 +2748,13 @@ impl SipMessageHandler {
                                     // Insert dialog into dialog manager
                                     let _ = dialog_manager.insert(a_leg_dialog.clone());
 
-                                    // Update call with dialog
+                                    // Update call with dialog. `establish` and not the
+                                    // state alone: the answer time is what makes the
+                                    // record an answered call with a duration, and a
+                                    // flow answering is an answer like any other.
                                     let _ = call_manager.update_call(&call_id, |call| {
                                         call.a_leg.dialog = Some(a_leg_dialog.clone());
-                                        call.state = fcp_b2bua_core::CallState::Established;
+                                        call.establish();
                                     });
 
                                     info!(call_id = %call_id, "A-leg dialog stored in call");
@@ -4126,10 +4129,15 @@ impl SipMessageHandler {
                                                         {
                                                             let _ = dialog_manager
                                                                 .insert(a_leg_dialog.clone());
-                                                            let _ = call_manager.update_call(&call_id, |call| {
-                                                            call.a_leg.dialog = Some(a_leg_dialog.clone());
-                                                            call.state = fcp_b2bua_core::CallState::Established;
-                                                        });
+                                                            // `establish` for the answer time, as above.
+                                                            let _ = call_manager.update_call(
+                                                                &call_id,
+                                                                |call| {
+                                                                    call.a_leg.dialog =
+                                                                        Some(a_leg_dialog.clone());
+                                                                    call.establish();
+                                                                },
+                                                            );
                                                         }
 
                                                         handle.send_final(response.clone()).await;

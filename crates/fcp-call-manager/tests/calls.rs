@@ -1251,5 +1251,10 @@ async fn a_flow_that_hangs_up_ends_the_call_it_answered() {
             .is_some_and(|to| to.contains("+15125550777")),
         "the record is this call's: {cdr}"
     );
+    // A flow answering is an answer: the record says so, and it has the
+    // time and the duration that go with one.
+    assert_eq!(cdr["disposition"], "Answered", "{cdr}");
+    assert!(!cdr["answer_time_epoch"].is_null(), "{cdr}");
+    assert!(!cdr["call_duration_ms"].is_null(), "{cdr}");
     stack.finish().await;
 }
