@@ -560,6 +560,12 @@ pub struct Trunk {
     #[serde(default)]
     pub hosts: Vec<String>,
 
+    /// Where the carrier's calls come from: IP addresses and CIDR ranges
+    /// (`docs/TENANT_TRUNKS.md` §7). A carrier often sends from addresses
+    /// it does not receive on. Empty means the trunk's `hosts`.
+    #[serde(default)]
+    pub inbound_sources: Vec<String>,
+
     /// Transport settings.
     #[serde(default)]
     pub transport: TrunkTransport,
@@ -698,6 +704,7 @@ impl Default for Trunk {
             priority: default_priority(),
             weight: default_weight(),
             hosts: Vec::new(),
+            inbound_sources: Vec::new(),
             transport: TrunkTransport::default(),
             credentials: None,
             register: false,
@@ -743,16 +750,40 @@ pub struct TrunkStats {
     pub hourly_volume: Vec<u64>,
 }
 
+/// One of a trunk's `inbound_sources`: an address, or a CIDR range.
+pub fn parse_inbound_source(source: &str) -> Result<ipnetwork::IpNetwork, String> {
+    let source = source.trim();
+    source
+        .parse::<ipnetwork::IpNetwork>()
+        .map_err(|_| format!("'{source}' is not an IP address or CIDR range"))
+}
+
 impl Trunk {
+    /// Whether this trunk's carrier may send it calls.
+    pub fn takes_inbound(&self) -> bool {
+        self.enabled && self.direction != TrunkDirection::Upstream
+    }
+
+    /// The ranges `inbound_sources` names; entries that do not parse are
+    /// skipped (the API refuses them, so only a hand-edited row has any).
+    pub fn inbound_networks(&self) -> Vec<ipnetwork::IpNetwork> {
+        self.inbound_sources
+            .iter()
+            .filter_map(|s| parse_inbound_source(s).ok())
+            .collect()
+    }
+
     /// A new trunk belonging to `tenant_id`, with the defaults the API
     /// applies when a field is not given.
     pub fn new(name: String, tenant_id: TenantId) -> Self {
         Self {
             name,
             tenant_id: Some(tenant_id),
-            // What a tenant creating a carrier means, which is not what a
-            // `[[trunks]]` entry that says nothing means.
-            direction: TrunkDirection::Upstream,
+            // A carrier carries calls both ways unless a tenant says
+            // otherwise — as a `[[trunks]]` entry that says nothing does.
+            // Inbound admission honours direction (§7), so an outbound-only
+            // default would refuse the carrier's calls.
+            direction: TrunkDirection::Bidirectional,
             priority: 10,
             dtmf: TrunkDtmfConfig {
                 mode: TrunkDtmfMode::Relay,

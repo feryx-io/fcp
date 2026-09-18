@@ -7,12 +7,35 @@
 //! Selection asks for one tenant's trunks and gets that tenant's first,
 //! then the platform's, unless the tenant has said its calls may not leave
 //! on a shared carrier.
+//!
+//! Inbound, the set answers the other question (§7): which trunks a call
+//! from this address may have arrived on, and so whose call it is.
 
 use fcp_core::storage::{TenantStore, TrunkStore};
 use fcp_core::{TenantId, Trunk};
-use std::collections::HashMap;
+use ipnetwork::IpNetwork;
+use std::collections::{HashMap, HashSet};
+use std::net::IpAddr;
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 use tracing::{debug, warn};
+
+/// How long one trunk host's name may take to resolve during a refresh.
+const RESOLVE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// The address part of a trunk host — `10.0.0.1:5060`, `[2001:db8::1]:5060`
+/// and `sip.carrier.example` all name a host.
+fn host_part(host: &str) -> &str {
+    let host = host.trim();
+    if let Some(rest) = host.strip_prefix('[') {
+        return rest.split(']').next().unwrap_or(rest);
+    }
+    match host.rsplit_once(':') {
+        // One colon is a port; more is an IPv6 address without brackets.
+        Some((h, port)) if !h.contains(':') && port.parse::<u16>().is_ok() => h,
+        _ => host,
+    }
+}
 
 /// One tenant's trunks, and whether the platform's may carry its calls.
 #[derive(Debug, Default, Clone)]
@@ -28,6 +51,11 @@ pub struct TrunkSet {
     platform: Vec<Arc<Trunk>>,
     /// Every tenant's trunks, as of the last refresh.
     tenants: RwLock<HashMap<TenantId, TenantTrunks>>,
+    /// Where each trunk that takes inbound calls takes them from, most
+    /// specific range first.
+    inbound: RwLock<Vec<(IpNetwork, Arc<Trunk>)>>,
+    /// The addresses of trunk hosts given by name, as of the last refresh.
+    resolved: RwLock<HashMap<String, Vec<IpAddr>>>,
 }
 
 impl TrunkSet {
@@ -35,9 +63,96 @@ impl TrunkSet {
     /// created a trunk through the API, and the SBC, which is the
     /// platform's edge (§13.8).
     pub fn platform_only(trunks: Vec<Trunk>) -> Self {
-        Self {
+        let set = Self {
             platform: trunks.into_iter().map(Arc::new).collect(),
             tenants: RwLock::new(HashMap::new()),
+            inbound: RwLock::new(Vec::new()),
+            resolved: RwLock::new(HashMap::new()),
+        };
+        set.rebuild_inbound();
+        set
+    }
+
+    /// The trunks a call from `source` may have arrived on: enabled, not
+    /// outbound-only, and taking calls from that address — by their
+    /// `inbound_sources`, or by their hosts when they name none. Most
+    /// specific range first.
+    pub fn inbound_from(&self, source: IpAddr) -> Vec<Arc<Trunk>> {
+        let Ok(inbound) = self.inbound.read() else {
+            return Vec::new();
+        };
+        let mut seen = HashSet::new();
+        inbound
+            .iter()
+            .filter(|(net, _)| net.contains(source))
+            .filter(|(_, trunk)| seen.insert(trunk.trunk_id()))
+            .map(|(_, trunk)| Arc::clone(trunk))
+            .collect()
+    }
+
+    /// Rebuild the inbound index from the trunks and the names resolved so
+    /// far.
+    fn rebuild_inbound(&self) {
+        let resolved = self.resolved.read().map(|r| r.clone()).unwrap_or_default();
+        let mut index = Vec::new();
+        for trunk in self.all() {
+            if !trunk.takes_inbound() {
+                continue;
+            }
+            let networks = trunk.inbound_networks();
+            if !networks.is_empty() {
+                index.extend(networks.into_iter().map(|n| (n, Arc::clone(&trunk))));
+                continue;
+            }
+            for host in &trunk.hosts {
+                let host = host_part(host);
+                let addrs = match host.parse::<IpAddr>() {
+                    Ok(ip) => vec![ip],
+                    Err(_) => resolved.get(host).cloned().unwrap_or_default(),
+                };
+                index.extend(
+                    addrs
+                        .into_iter()
+                        .map(|ip| (IpNetwork::from(ip), Arc::clone(&trunk))),
+                );
+            }
+        }
+        index.sort_by_key(|(net, _)| std::cmp::Reverse(net.prefix()));
+        match self.inbound.write() {
+            Ok(mut inbound) => *inbound = index,
+            Err(e) => warn!(error = %e, "Trunk set lock poisoned; inbound index not rebuilt"),
+        }
+    }
+
+    /// Resolve the trunk hosts given by name and take calls from what they
+    /// resolve to. Done off the call path: at startup, and on each refresh.
+    pub async fn resolve_names(&self) {
+        self.resolve_hosts().await;
+        self.rebuild_inbound();
+    }
+
+    /// Resolve every trunk host given by name, keeping what a name last
+    /// resolved to when it fails now.
+    async fn resolve_hosts(&self) {
+        let names: HashSet<String> = self
+            .all()
+            .iter()
+            .filter(|t| t.takes_inbound() && t.inbound_sources.is_empty())
+            .flat_map(|t| t.hosts.iter().map(|h| host_part(h).to_string()))
+            .filter(|h| !h.is_empty() && h.parse::<IpAddr>().is_err())
+            .collect();
+        for name in names {
+            let lookup = tokio::net::lookup_host((name.clone(), 5060));
+            match tokio::time::timeout(RESOLVE_TIMEOUT, lookup).await {
+                Ok(Ok(addrs)) => {
+                    let addrs: Vec<IpAddr> = addrs.map(|a| a.ip()).collect();
+                    if let Ok(mut resolved) = self.resolved.write() {
+                        resolved.insert(name, addrs);
+                    }
+                }
+                Ok(Err(e)) => debug!(host = %name, error = %e, "Trunk host did not resolve"),
+                Err(_) => debug!(host = %name, "Trunk host took too long to resolve"),
+            }
         }
     }
 
@@ -120,6 +235,7 @@ impl TrunkSet {
             Ok(mut tenants) => *tenants = by_tenant,
             Err(e) => warn!(error = %e, "Trunk set lock poisoned; tenant trunks not refreshed"),
         }
+        self.rebuild_inbound();
         count
     }
 
@@ -138,12 +254,19 @@ impl TrunkSet {
             .map(|t| (t.id, t.platform_trunk_fallback))
             .collect();
         let count = self.set_tenant_trunks(trunks, &fallback);
+        self.resolve_names().await;
         debug!(
             trunks = count,
             tenants = self.tenant_count(),
             "Tenant trunks refreshed"
         );
         Ok(count)
+    }
+}
+
+impl fcp_sip::trunk_ingress::InboundTrunks for TrunkSet {
+    fn inbound_from(&self, source: IpAddr) -> Vec<Arc<Trunk>> {
+        TrunkSet::inbound_from(self, source)
     }
 }
 
@@ -221,5 +344,83 @@ mod tests {
         let b = TenantId::new();
         set.set_tenant_trunks(Vec::new(), &HashMap::from([(b, false)]));
         assert!(set.for_tenant(Some(b)).is_empty());
+    }
+
+    fn inbound(name: &str, tenant: Option<TenantId>, sources: &[&str]) -> Trunk {
+        let mut t = trunk(name, tenant);
+        t.direction = fcp_core::trunk::TrunkDirection::Bidirectional;
+        t.inbound_sources = sources.iter().map(|s| s.to_string()).collect();
+        t
+    }
+
+    fn ip(s: &str) -> IpAddr {
+        s.parse().unwrap()
+    }
+
+    #[test]
+    fn a_trunk_takes_calls_from_its_ranges_or_else_its_hosts() {
+        let a = TenantId::new();
+        let mut by_host = inbound("by-host", Some(a), &[]);
+        by_host.hosts = vec![
+            "10.0.0.9:5060".to_string(),
+            "[2001:db8::7]:5061".to_string(),
+        ];
+        let mut outbound_only = inbound("outbound", Some(a), &["192.0.2.0/24"]);
+        outbound_only.direction = fcp_core::trunk::TrunkDirection::Upstream;
+        let mut disabled = inbound("disabled", Some(a), &["192.0.2.0/24"]);
+        disabled.enabled = false;
+        let set = TrunkSet::platform_only(Vec::new());
+        set.set_tenant_trunks(
+            vec![
+                by_host,
+                inbound("by-range", Some(a), &["198.51.100.0/24"]),
+                outbound_only,
+                disabled,
+            ],
+            &HashMap::new(),
+        );
+
+        let names = |from: &str| -> Vec<String> {
+            set.inbound_from(ip(from))
+                .iter()
+                .map(|t| t.name.clone())
+                .collect()
+        };
+        assert_eq!(names("10.0.0.9"), vec!["by-host"]);
+        assert_eq!(names("2001:db8::7"), vec!["by-host"]);
+        assert_eq!(names("198.51.100.77"), vec!["by-range"]);
+        assert!(
+            names("192.0.2.1").is_empty(),
+            "an outbound-only or disabled trunk takes no calls"
+        );
+        assert!(names("203.0.113.1").is_empty());
+    }
+
+    #[test]
+    fn the_most_specific_range_comes_first() {
+        let (a, b) = (TenantId::new(), TenantId::new());
+        let set = TrunkSet::platform_only(Vec::new());
+        set.set_tenant_trunks(
+            vec![
+                inbound("wide", Some(a), &["198.51.100.0/24"]),
+                inbound("narrow", Some(b), &["198.51.100.8/29"]),
+            ],
+            &HashMap::new(),
+        );
+        let names: Vec<String> = set
+            .inbound_from(ip("198.51.100.9"))
+            .iter()
+            .map(|t| t.name.clone())
+            .collect();
+        assert_eq!(names, vec!["narrow", "wide"]);
+    }
+
+    #[test]
+    fn host_part_strips_ports_and_brackets() {
+        assert_eq!(host_part("10.0.0.1:5060"), "10.0.0.1");
+        assert_eq!(host_part("sip.carrier.example"), "sip.carrier.example");
+        assert_eq!(host_part("sip.carrier.example:5080"), "sip.carrier.example");
+        assert_eq!(host_part("[2001:db8::1]:5060"), "2001:db8::1");
+        assert_eq!(host_part("2001:db8::1"), "2001:db8::1");
     }
 }

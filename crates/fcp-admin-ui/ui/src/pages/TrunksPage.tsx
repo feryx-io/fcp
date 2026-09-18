@@ -70,6 +70,7 @@ interface TrunkFormData {
   priority: number
   weight: number
   hosts: string
+  inbound_sources: string
   transport_protocol: string
   transport_port: number
   verify_tls: boolean
@@ -103,10 +104,11 @@ const defaultValues: TrunkFormData = {
   name: '',
   description: '',
   enabled: true,
-  direction: 'upstream',
+  direction: 'bidirectional',
   priority: 10,
   weight: 100,
   hosts: '',
+  inbound_sources: '',
   transport_protocol: 'udp',
   transport_port: 5060,
   verify_tls: true,
@@ -145,6 +147,7 @@ function trunkToForm(trunk: SipTrunk): TrunkFormData {
     priority: trunk.priority,
     weight: trunk.weight,
     hosts: trunk.hosts.join('\n'),
+    inbound_sources: (trunk.inbound_sources ?? []).join('\n'),
     transport_protocol: trunk.transport_protocol,
     transport_port: trunk.transport_port,
     verify_tls: trunk.verify_tls,
@@ -177,6 +180,7 @@ function trunkToForm(trunk: SipTrunk): TrunkFormData {
 
 function formToRequest(form: TrunkFormData): CreateTrunkRequest {
   const hosts = form.hosts.split('\n').map((h) => h.trim()).filter(Boolean)
+  const inboundSources = form.inbound_sources.split('\n').map((h) => h.trim()).filter(Boolean)
   const codecs = form.codec_prefs.split(',').map((c) => c.trim()).filter(Boolean)
   return {
     name: form.name,
@@ -186,6 +190,7 @@ function formToRequest(form: TrunkFormData): CreateTrunkRequest {
     priority: form.priority,
     weight: form.weight,
     hosts,
+    inbound_sources: inboundSources,
     transport_protocol: form.transport_protocol,
     transport_port: form.transport_port,
     verify_tls: form.verify_tls,
@@ -590,6 +595,17 @@ function TrunkDetailView({ trunk, stats, onEdit }: { trunk: SipTrunk; stats?: Tr
         </div>
       )}
 
+      {trunk.direction !== 'upstream' && (
+        <div>
+          <p className="text-xs text-muted-foreground mb-1">Takes calls from</p>
+          <div className="space-y-1">
+            {(trunk.inbound_sources?.length ? trunk.inbound_sources : ['the hosts above']).map((source) => (
+              <p key={source} className="font-mono text-sm bg-muted rounded px-2 py-1">{source}</p>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="flex justify-end">
         <Button onClick={onEdit}>
           <Pencil className="mr-2 h-4 w-4" /> Edit Trunk
@@ -656,6 +672,20 @@ function TrunkForm({ form, onSubmit, isSubmitting, submitLabel = 'Create Trunk' 
             placeholder={'sip.carrier.com:5060\n192.168.1.100:5060'}
             {...register('hosts')}
           />
+        </div>
+        <div>
+          <Label htmlFor="inbound_sources">Inbound Sources (one per line, IP or CIDR)</Label>
+          <textarea
+            id="inbound_sources"
+            rows={3}
+            className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            placeholder={'203.0.113.0/24\n198.51.100.7'}
+            {...register('inbound_sources')}
+          />
+          <p className="text-xs text-muted-foreground mt-1">
+            Where the carrier's calls come from. Leave empty to take calls from the hosts. A call arriving on
+            this trunk is this tenant's call.
+          </p>
         </div>
       </div>
 

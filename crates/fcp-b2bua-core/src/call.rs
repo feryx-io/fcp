@@ -371,6 +371,9 @@ pub struct Call {
     /// call; `None` leaves digits as each leg sends them.
     pub dtmf_carriage: Option<DtmfCarriage>,
 
+    /// The trunk a carrier's call arrived on (`docs/TENANT_TRUNKS.md` §7).
+    pub arrived_on_trunk: Option<fcp_core::TrunkId>,
+
     /// Flow ID if this call is executing a flow
     pub flow_id: Option<String>,
 
@@ -501,6 +504,7 @@ impl Call {
             auto_recording: None,
             route_trunks: Vec::new(),
             dtmf_carriage: None,
+            arrived_on_trunk: None,
             flow_id: None,
             flow_current_node: None,
             trunk_name: None,
@@ -602,6 +606,7 @@ impl Call {
             auto_recording: None,
             route_trunks: Vec::new(),
             dtmf_carriage: None,
+            arrived_on_trunk: None,
             flow_id: None,
             flow_current_node: None,
             trunk_name: None,

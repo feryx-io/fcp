@@ -4576,6 +4576,7 @@ fn row_to_trunk(row: sqlx::postgres::PgRow) -> Result<Trunk> {
         priority: row.try_get::<i32, _>("priority")?.max(0) as u32,
         weight: row.try_get::<i32, _>("weight")?.max(0) as u32,
         hosts: row.try_get("hosts")?,
+        inbound_sources: row.get("inbound_sources"),
         transport: TrunkTransport {
             protocol: parse_transport(&row.try_get::<String, _>("transport_protocol")?),
             port: u16::try_from(row.try_get::<i32, _>("transport_port")?)
@@ -4707,7 +4708,7 @@ impl TrunkStore for PostgresStorage {
                     created_at, updated_at, emergency_capable,
                     strip_prefixes, srtp_suites, allow_transcoding,
                     stir_verify_mode, stir_sign_mode, stir_attestation,
-                    stir_max_iat_age_secs, emergency_location
+                    stir_max_iat_age_secs, emergency_location, inbound_sources
              FROM trunks WHERE id = $1",
         )
         .bind(id.to_string())
@@ -4735,7 +4736,7 @@ impl TrunkStore for PostgresStorage {
                     created_at, updated_at, emergency_capable,
                     strip_prefixes, srtp_suites, allow_transcoding,
                     stir_verify_mode, stir_sign_mode, stir_attestation,
-                    stir_max_iat_age_secs, emergency_location
+                    stir_max_iat_age_secs, emergency_location, inbound_sources
              FROM trunks WHERE tenant_id = $1
              ORDER BY priority, name",
         )
@@ -4768,7 +4769,7 @@ impl TrunkStore for PostgresStorage {
                     created_at, updated_at, emergency_capable,
                     strip_prefixes, srtp_suites, allow_transcoding,
                     stir_verify_mode, stir_sign_mode, stir_attestation,
-                    stir_max_iat_age_secs, emergency_location
+                    stir_max_iat_age_secs, emergency_location, inbound_sources
              FROM trunks
              ORDER BY tenant_id, priority, name",
         )
@@ -4797,8 +4798,8 @@ impl TrunkStore for PostgresStorage {
                     created_at, updated_at, emergency_capable,
                     strip_prefixes, srtp_suites, allow_transcoding,
                     stir_verify_mode, stir_sign_mode, stir_attestation,
-                    stir_max_iat_age_secs, emergency_location)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46)
+                    stir_max_iat_age_secs, emergency_location, inbound_sources)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47)
              ON CONFLICT (id) DO UPDATE SET
                 name = EXCLUDED.name,
                 enabled = EXCLUDED.enabled,
@@ -4842,6 +4843,7 @@ impl TrunkStore for PostgresStorage {
                 stir_attestation = EXCLUDED.stir_attestation,
                 stir_max_iat_age_secs = EXCLUDED.stir_max_iat_age_secs,
                 emergency_location = EXCLUDED.emergency_location,
+                inbound_sources = EXCLUDED.inbound_sources,
                 updated_at = EXCLUDED.updated_at",
         )
         .bind(trunk.id.to_string())
@@ -4919,6 +4921,7 @@ impl TrunkStore for PostgresStorage {
                 .map(|d| d.to_string())
                 .collect::<Vec<_>>(),
         )
+        .bind(&trunk.inbound_sources)
         .execute(self.writes())
         .await?;
 
