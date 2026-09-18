@@ -61,7 +61,8 @@ pub mod transfer;
 
 // Re-export key types for convenience
 pub use call::{
-    Call, CallDirection, CallId, CallLeg, CallState, EmergencyCallInfo, EmergencyLeg, RouteTrunk,
+    Call, CallDirection, CallId, CallLeg, CallState, DtmfCarriage, DtmfWay, EmergencyCallInfo,
+    EmergencyLeg, RouteTrunk,
 };
 pub use call_manager::{CallManager, CallStats};
 pub use forking::{EarlyMediaPolicy, ForkingConfig, ForkingMode};

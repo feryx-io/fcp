@@ -164,16 +164,43 @@ impl MediaManager {
         self.backend.list_sessions().await
     }
 
-    /// Send DTMF digit on a call
-    pub async fn send_dtmf(&self, call_id: &CallId, digit: char, duration_ms: u32) -> Result<()> {
-        if !digit.is_ascii_digit() && digit != '*' && digit != '#' {
+    /// Send a DTMF digit to one leg of a call, as RFC 2833 telephone-event.
+    pub async fn send_dtmf(
+        &self,
+        call_id: &CallId,
+        leg: crate::backend::MediaLeg,
+        digit: char,
+        duration_ms: u32,
+    ) -> Result<()> {
+        if !digit.is_ascii_digit() && !matches!(digit, '*' | '#' | 'A'..='D') {
             return Err(Error::InvalidState(format!(
                 "Invalid DTMF digit: {}",
                 digit
             )));
         }
 
-        self.backend.send_dtmf(call_id, digit, duration_ms).await
+        self.backend
+            .send_dtmf(call_id, leg, digit, duration_ms)
+            .await
+    }
+
+    /// Whether telephone-event the other leg sends is relayed to `leg`.
+    pub fn set_rfc2833_relay_to(
+        &self,
+        call_id: &CallId,
+        leg: crate::backend::MediaLeg,
+        relay: bool,
+    ) -> Result<()> {
+        self.backend.set_rfc2833_relay_to(call_id, leg, relay)
+    }
+
+    /// Every digit either leg of the call sends, with the leg it came
+    /// from, until the session ends; `None` when the backend cannot say.
+    pub fn subscribe_digits(
+        &self,
+        call_id: &CallId,
+    ) -> Option<tokio::sync::mpsc::UnboundedReceiver<crate::backend::LegDigit>> {
+        self.backend.subscribe_digits(call_id)
     }
 
     /// Create a DTMF collector wired to the media backend for a specific call.

@@ -1258,6 +1258,171 @@ impl SipMessageHandler {
         self.b_leg_srtp.remove(call_id).map(|(_, offer)| offer)
     }
 
+    /// Settle how each leg of an anchored trunk call takes DTMF, once the
+    /// trunk has answered with `answer` (`docs/TENANT_TRUNKS.md` §6), and
+    /// arrange for a digit one leg sends to reach the other that way.
+    ///
+    /// Telephone-event is relayed only to a leg that negotiated it. A
+    /// digit the caller sends as telephone-event to a trunk that takes
+    /// SIP INFO is sent on as INFO; the other direction — INFO to a leg
+    /// that takes telephone-event — is [`Self::convert_info_dtmf`]'s.
+    async fn arrange_trunk_dtmf(&self, call_id: &fcp_b2bua_core::CallId, answer: &str) {
+        let Some(media) = self.media_manager.as_ref() else {
+            return;
+        };
+        let Some(call) = self.call_manager.get_call(call_id) else {
+            return;
+        };
+        let (true, Some(session_id)) = (call.media_anchored, call.media_session_id) else {
+            return;
+        };
+        let Some(trunk) = carrying_trunk(&call) else {
+            return;
+        };
+        let a_offer = call
+            .original_invite
+            .as_ref()
+            .and_then(crate::body::request_sdp);
+        let carriage = crate::trunk_egress::dtmf_carriage(&trunk, a_offer.as_deref(), answer);
+        let _ = self.call_manager.update_call(call_id, |call| {
+            call.dtmf_carriage = Some(carriage);
+        });
+        debug!(call_id = %call_id, trunk = %trunk.name, ?carriage, "DTMF per leg");
+
+        for (leg, way) in [
+            (fcp_media::MediaLeg::A, carriage.a),
+            (fcp_media::MediaLeg::B, carriage.b),
+        ] {
+            let relay = way == fcp_b2bua_core::DtmfWay::Rfc2833;
+            if let Err(e) = media.set_rfc2833_relay_to(&session_id, leg, relay) {
+                warn!(call_id = %call_id, ?leg, error = %e, "Could not steer RFC 2833 relay");
+            }
+        }
+
+        if carriage.b != fcp_b2bua_core::DtmfWay::Info {
+            return;
+        }
+        let (Some(mut digits), Some(uac)) = (media.subscribe_digits(&session_id), self.uac.clone())
+        else {
+            warn!(
+                call_id = %call_id,
+                trunk = %trunk.name,
+                "The trunk takes DTMF as SIP INFO and this node cannot convert the caller's"
+            );
+            return;
+        };
+        let call_manager = Arc::clone(&self.call_manager);
+        let dialog_manager = Arc::clone(&self.dialog_manager);
+        let locks = Arc::clone(&self.mid_dialog_lock);
+        let call_id = *call_id;
+        tokio::spawn(async move {
+            while let Some(digit) = digits.recv().await {
+                // A digit heard in the audio is in what the trunk hears
+                // already; only telephone-event needs carrying.
+                if digit.leg != fcp_media::MediaLeg::A || digit.in_band {
+                    continue;
+                }
+                let Some(dialog_id) = call_manager.get_call(&call_id).map(|c| {
+                    c.b_leg
+                        .as_ref()
+                        .and_then(|b| b.dialog.as_ref().map(|d| d.id().clone()))
+                }) else {
+                    break;
+                };
+                let Some(dialog_id) = dialog_id else {
+                    continue;
+                };
+                // Serialised with every other request on the trunk's
+                // dialog, and the dialog read under the lock, so the CSeq
+                // is the next one.
+                let lock = Arc::clone(
+                    locks
+                        .entry(dialog_id)
+                        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+                        .value(),
+                );
+                let _guard = lock.lock_owned().await;
+                let Some(mut dialog) = call_manager
+                    .get_call(&call_id)
+                    .and_then(|c| c.b_leg.and_then(|b| b.dialog))
+                else {
+                    break;
+                };
+                let body = crate::trunk_egress::dtmf_relay_body(digit.digit, digit.duration_ms);
+                match uac
+                    .send_info(&mut dialog, crate::trunk_egress::DTMF_RELAY, &body)
+                    .await
+                {
+                    Ok(resp) => debug!(
+                        call_id = %call_id,
+                        digit = %digit.digit,
+                        status = resp.start_line().code(),
+                        "Sent the caller's digit to the trunk as SIP INFO"
+                    ),
+                    Err(e) => warn!(
+                        call_id = %call_id,
+                        digit = %digit.digit,
+                        error = %e,
+                        "Could not send the caller's digit to the trunk as SIP INFO"
+                    ),
+                }
+                let _ = call_manager.update_call(&call_id, |call| {
+                    if let Some(b) = &mut call.b_leg {
+                        b.dialog = Some(dialog.clone());
+                    }
+                });
+                let _ = dialog_manager.insert(dialog);
+            }
+        });
+    }
+
+    /// A digit arriving as SIP INFO for a leg that takes telephone-event
+    /// instead: played to that leg, and the INFO answered here. `None`
+    /// when the INFO goes on as it came.
+    async fn convert_info_dtmf(
+        &self,
+        request: &sip_core::Request,
+        call: &fcp_b2bua_core::Call,
+        is_a_leg: bool,
+    ) -> Option<sip_core::Response> {
+        let carriage = call.dtmf_carriage?;
+        let content_type = sip_parse::header(request.headers(), "Content-Type")?;
+        if !content_type
+            .as_str()
+            .trim()
+            .eq_ignore_ascii_case(crate::trunk_egress::DTMF_RELAY)
+        {
+            return None;
+        }
+        let (to, way) = if is_a_leg {
+            (fcp_media::MediaLeg::B, carriage.b)
+        } else {
+            (fcp_media::MediaLeg::A, carriage.a)
+        };
+        if way != fcp_b2bua_core::DtmfWay::Rfc2833 {
+            return None;
+        }
+        let (digit, duration_ms) =
+            crate::trunk_egress::parse_dtmf_relay(&String::from_utf8_lossy(request.body()))?;
+        let session_id = call.media_session_id.as_ref()?;
+        let media = self.media_manager.as_ref()?;
+        match media.send_dtmf(session_id, to, digit, duration_ms).await {
+            Ok(()) => {
+                debug!(call_id = %call.id, %digit, ?to, "Played a SIP INFO digit as RFC 2833");
+                Some(self.create_simple_response(request, 200, "OK"))
+            }
+            Err(e) => {
+                warn!(
+                    call_id = %call.id,
+                    %digit,
+                    error = %e,
+                    "Could not play a SIP INFO digit as RFC 2833; forwarding the INFO"
+                );
+                None
+            }
+        }
+    }
+
     fn call_tenant(&self, call_id: &fcp_b2bua_core::CallId) -> Option<fcp_core::TenantId> {
         self.call_manager
             .get_call(call_id)
@@ -6364,6 +6529,7 @@ impl SipMessageHandler {
                             "Failed to set B-leg media endpoint"
                         );
                     }
+                    self.arrange_trunk_dtmf(&call_id, original_sdp).await;
                 }
             }
 
@@ -7078,6 +7244,7 @@ impl SipMessageHandler {
                             "Failed to set B-leg media endpoint in parallel fork"
                         );
                     }
+                    self.arrange_trunk_dtmf(&call_id, original_sdp).await;
                 }
             }
 
@@ -9011,6 +9178,11 @@ impl SipMessageHandler {
                     }
                 }
             }
+        }
+        // A digit for a leg that takes telephone-event instead
+        // (`docs/TENANT_TRUNKS.md` §6).
+        if let Some(response) = self.convert_info_dtmf(request, &call, is_a_leg).await {
+            return Ok(response);
         }
         let target_dialog = self.get_opposite_dialog(&call, is_a_leg)?;
         let mut target_dialog = target_dialog.clone();
@@ -13719,6 +13891,16 @@ fn terminate_dialog(
 }
 
 /// Each route's target and trunk, for naming the trunk that answered.
+/// The trunk carrying a call's outbound leg: the one that answered, as the
+/// record names it, else the primary route's.
+fn carrying_trunk(call: &fcp_b2bua_core::Call) -> Option<Arc<fcp_core::Trunk>> {
+    call.route_trunks
+        .iter()
+        .find(|rt| Some(rt.id()) == call.trunk_id)
+        .or_else(|| call.route_trunks.first())
+        .map(|rt| Arc::clone(&rt.trunk))
+}
+
 pub(crate) fn route_trunks(routes: &[OutboundRoute]) -> Vec<fcp_b2bua_core::RouteTrunk> {
     routes
         .iter()
