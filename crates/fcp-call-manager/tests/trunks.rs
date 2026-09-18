@@ -20,6 +20,9 @@ const SOON: Duration = Duration::from_secs(10);
 const REFRESHED: Duration = Duration::from_secs(4);
 /// A carrier that is not meant to ring is given this long to prove it.
 const NEVER: Duration = Duration::from_secs(2);
+/// The registration loop ticks every five seconds, and the trunk it is
+/// registering has to reach the node first.
+const REGISTERED: Duration = Duration::from_secs(20);
 
 /// A fresh P-256 key, PEM-encoded, for the node to sign test calls with.
 fn signing_key_pem() -> String {
@@ -96,22 +99,98 @@ impl Stack {
     /// `[[trunks]]`; a test that gives none is a node whose every trunk
     /// comes from the database.
     async fn start(platform: &[&Carrier]) -> Option<Self> {
+        Self::start_as("e2e-trunks", None, platform).await
+    }
+
+    /// As [`Stack::start`], with a node id of its own and, when a cluster
+    /// is wanted, the Redis every node of it shares.
+    async fn start_as(node_id: &str, redis: Option<&str>, platform: &[&Carrier]) -> Option<Self> {
         let db = TestDatabase::create().await?;
         let seed = Seed::new(db.url(), REALM).await;
-        let sip_port = free_port();
-        let http = free_port();
-        let rtp_start = allocate_port_pair().rtp_port;
-        let dir = tempfile::tempdir().expect("tempdir");
-        let trunks: String = platform.iter().map(|c| c.platform_trunk_toml()).collect();
-        // A signing key of this node's own, so a trunk that asks for
-        // STIR/SHAKEN has something to sign with (`docs/TENANT_TRUNKS.md`
-        // §6). Made on the spot: it signs test calls and nothing else.
-        let key_path = dir.path().join("stir-signing-key.pem");
-        std::fs::write(&key_path, signing_key_pem()).expect("write the signing key");
-        let config = format!(
-            r#"
+        Self::node_on(db, seed, node_id, redis, platform).await
+    }
+
+    async fn node_on(
+        db: TestDatabase,
+        seed: Seed,
+        node_id: &str,
+        redis: Option<&str>,
+        platform: &[&Carrier],
+    ) -> Option<Self> {
+        let (service, sip, dir) = spawn_node(db.url(), node_id, redis, platform).await;
+        Some(Self {
+            service: Some(service),
+            db: Some(db),
+            seed,
+            sip,
+            _dir: dir,
+        })
+    }
+
+    /// A phone that does not register: a tenant's call placed by an edge
+    /// in front of this node, which names the caller in its headers rather
+    /// than registering as them. A registrar authenticates against one
+    /// tenant's users, and this node's realm is the first tenant's.
+    async fn edge_phone(&self, user: &SeededUser) -> Phone {
+        Phone::new(&user.username, &user.password, REALM, self.sip)
+            .await
+            .expect("phone binds")
+    }
+
+    async fn phone(&mut self, user: &SeededUser) -> Phone {
+        let phone = Phone::new(&user.username, &user.password, REALM, self.sip)
+            .await
+            .expect("phone binds");
+        match phone.register().await {
+            Ok(200) => phone,
+            other => {
+                let why = format!("{} could not register: {other:?}", user.username);
+                self.fail(&why).await
+            }
+        }
+    }
+
+    /// Give up with the service's logs.
+    async fn fail(&mut self, why: &str) -> ! {
+        let logs = match self.service.take() {
+            Some(service) => service.kill().await,
+            None => String::new(),
+        };
+        panic!("{why}\n{logs}");
+    }
+
+    async fn finish(mut self) {
+        if let Some(service) = self.service.take() {
+            service.stop().await;
+        }
+        if let Some(db) = self.db.take() {
+            db.drop_db().await;
+        }
+    }
+}
+
+/// One call manager: its configuration, its ports and the process. A test
+/// that wants a cluster starts more than one on the same database.
+async fn spawn_node(
+    db_url: &str,
+    node_id: &str,
+    redis: Option<&str>,
+    platform: &[&Carrier],
+) -> (Service, SocketAddr, tempfile::TempDir) {
+    let sip_port = free_port();
+    let http = free_port();
+    let rtp_start = allocate_port_pair().rtp_port;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let trunks: String = platform.iter().map(|c| c.platform_trunk_toml()).collect();
+    // A signing key of this node's own, so a trunk that asks for
+    // STIR/SHAKEN has something to sign with (`docs/TENANT_TRUNKS.md`
+    // §6). Made on the spot: it signs test calls and nothing else.
+    let key_path = dir.path().join("stir-signing-key.pem");
+    std::fs::write(&key_path, signing_key_pem()).expect("write the signing key");
+    let config = format!(
+        r#"
 [service]
-node_id = "e2e-trunks"
+node_id = "{node_id}"
 
 [sip]
 udp_bind = "127.0.0.1:{sip_port}"
@@ -124,6 +203,7 @@ realm = "{REALM}"
 
 [storage]
 database_url = "{db}"
+{redis}
 
 [cdr]
 spool_dir = "{dir}/cdr-spool"
@@ -212,62 +292,24 @@ pattern = "sip:0([0-9]+)@"
 value = "sip:+1$1@"
 {trunks}
 "#,
-            db = db.url(),
-            rtp_end = rtp_start + 60,
-            dir = dir.path().display(),
-            key_path = key_path.display(),
-        );
-        let service =
-            Service::start("call-manager", BIN, &config, &loopback(http, "/health")).await;
-        Some(Self {
-            service: Some(service),
-            db: Some(db),
-            seed,
-            sip: SocketAddr::from(([127, 0, 0, 1], sip_port)),
-            _dir: dir,
-        })
-    }
-
-    /// A phone that does not register: a tenant's call placed by an edge
-    /// in front of this node, which names the caller in its headers rather
-    /// than registering as them. A registrar authenticates against one
-    /// tenant's users, and this node's realm is the first tenant's.
-    async fn edge_phone(&self, user: &SeededUser) -> Phone {
-        Phone::new(&user.username, &user.password, REALM, self.sip)
-            .await
-            .expect("phone binds")
-    }
-
-    async fn phone(&mut self, user: &SeededUser) -> Phone {
-        let phone = Phone::new(&user.username, &user.password, REALM, self.sip)
-            .await
-            .expect("phone binds");
-        match phone.register().await {
-            Ok(200) => phone,
-            other => {
-                let why = format!("{} could not register: {other:?}", user.username);
-                self.fail(&why).await
-            }
-        }
-    }
-
-    /// Give up with the service's logs.
-    async fn fail(&mut self, why: &str) -> ! {
-        let logs = match self.service.take() {
-            Some(service) => service.kill().await,
-            None => String::new(),
-        };
-        panic!("{why}\n{logs}");
-    }
-
-    async fn finish(mut self) {
-        if let Some(service) = self.service.take() {
-            service.stop().await;
-        }
-        if let Some(db) = self.db.take() {
-            db.drop_db().await;
-        }
-    }
+        db = db_url,
+        node_id = node_id,
+        // A node of a cluster says where the others are and beats fast,
+        // so a test does not wait a quarter-minute for a takeover.
+        redis = redis
+            .map(|url| {
+                format!(
+                    "redis_url = \"{url}\"\n\n[cluster]\nenabled = true\n\
+                     heartbeat_interval_secs = 1\nheartbeat_ttl_secs = 3"
+                )
+            })
+            .unwrap_or_default(),
+        rtp_end = rtp_start + 60,
+        dir = dir.path().display(),
+        key_path = key_path.display(),
+    );
+    let service = Service::start("call-manager", BIN, &config, &loopback(http, "/health")).await;
+    (service, SocketAddr::from(([127, 0, 0, 1], sip_port)), dir)
 }
 
 macro_rules! stack_or_skip {
@@ -1063,4 +1105,189 @@ fn passport_claims(identity: &str) -> serde_json::Value {
         .decode(payload)
         .expect("the payload is base64url");
     serde_json::from_slice(&bytes).expect("the payload is JSON")
+}
+
+/// A registering trunk binds its own account at the carrier
+/// (`docs/TENANT_TRUNKS.md` §8): `From` and `To` name the carrier's
+/// account and the challenge is answered with that account's own
+/// credentials, not this node's identity. `Contact` is this node, which is
+/// where the carrier's calls for the account arrive.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_registering_trunk_binds_its_own_account_at_the_carrier() {
+    let carrier = Carrier::new("registrar-carrier").await;
+    carrier.phone.challenge_registrations("carrier.example");
+    let mut stack = stack_or_skip!(&[]);
+    let acme = stack.seed.tenant_id;
+
+    stack
+        .seed
+        .trunk_with(acme, "registering", carrier.port(), |trunk| {
+            trunk.register = true;
+            trunk.register_expiry = Some(120);
+            trunk.credentials = Some(fcp_core::trunk::TrunkCredentials {
+                username: "acct-4471".to_string(),
+                password: "s3cret".to_string(),
+                realm: Some("carrier.example".to_string()),
+            });
+        })
+        .await;
+
+    let bound = carrier
+        .phone
+        .registrations_settle(REGISTERED, |seen| !seen.is_empty())
+        .await;
+    if !bound {
+        stack.fail("the trunk never registered").await;
+    }
+    let seen = carrier.phone.registrations().remove(0);
+    assert!(
+        seen.account.contains("sip:acct-4471@carrier.example"),
+        "the account, not this node: {}",
+        seen.account
+    );
+    assert!(
+        seen.from.contains("sip:acct-4471@carrier.example"),
+        "and it is who the REGISTER is from: {}",
+        seen.from
+    );
+    assert_eq!(
+        seen.auth_username.as_deref(),
+        Some("acct-4471"),
+        "the trunk's own credentials answered the challenge"
+    );
+    assert!(
+        seen.contact.contains(&stack.sip.port().to_string()),
+        "the binding points at this node: {}",
+        seen.contact
+    );
+    assert_eq!(seen.expires, 120, "the trunk's own expiry");
+    stack.finish().await;
+}
+
+/// One node of a cluster registers a registering trunk
+/// (`docs/TENANT_TRUNKS.md` §8, §11): two call managers load the same
+/// tenant trunk, the carrier is asked for one binding and not two, and
+/// when the node holding it goes the other takes it over.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn one_node_of_a_cluster_registers_a_trunk_and_another_takes_it_over() {
+    let Some(redis) = fcp_testkit::cluster::private_redis_url() else {
+        eprintln!("skipped: FCP_TEST_REDIS_URL is not set");
+        return;
+    };
+    let carrier = Carrier::new("cluster-carrier").await;
+    let Some(mut first) = Stack::start_as("e2e-trunks-a", Some(&redis), &[]).await else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let acme = first.seed.tenant_id;
+    first
+        .seed
+        .trunk_with(acme, "shared-carrier", carrier.port(), |trunk| {
+            trunk.register = true;
+            trunk.register_expiry = Some(120);
+            trunk.credentials = Some(fcp_core::trunk::TrunkCredentials {
+                username: "acct-shared".to_string(),
+                password: "s3cret".to_string(),
+                realm: Some("carrier.example".to_string()),
+            });
+        })
+        .await;
+
+    // A second node on the same database and the same Redis: both load
+    // the trunk, and both would have registered it before this phase.
+    let (second, second_sip, _second_dir) = spawn_node(
+        first.db.as_ref().expect("the test database").url(),
+        "e2e-trunks-b",
+        Some(&redis),
+        &[],
+    )
+    .await;
+
+    let bound = |seen: &[fcp_testkit::phone::SeenRegistration]| seen.iter().any(|r| r.expires > 0);
+    if !carrier.phone.registrations_settle(REGISTERED, bound).await {
+        first.fail("neither node registered the trunk").await;
+    }
+
+    // Long enough for both nodes to have seen each other's claim: the
+    // node that loads a trunk first may hold it for a tick before the
+    // lower node id takes it over, and the one that loses it gives its
+    // binding up rather than leave the carrier with two.
+    tokio::time::sleep(Duration::from_secs(12)).await;
+    let holder = live_binding(&carrier.phone);
+    let Some(first_holder) = holder else {
+        let b_logs = second.kill().await;
+        eprintln!("=== NODE B ===\n{b_logs}");
+        first
+            .fail(&format!(
+                "no node holds the binding: {:?}",
+                carrier.phone.registrations()
+            ))
+            .await;
+    };
+
+    // The node holding it goes. The other has it within a beat or two of
+    // the heartbeat expiring.
+    let held_by_first = first_holder.contains(&first.sip.port().to_string());
+    let mut survivor_node = None;
+    if held_by_first {
+        if let Some(service) = first.service.take() {
+            service.kill().await;
+        }
+        survivor_node = Some(second);
+    } else {
+        assert!(
+            first_holder.contains(&second_sip.port().to_string()),
+            "the binding is one of the two nodes': {first_holder}"
+        );
+        second.kill().await;
+    }
+
+    let taken_over = carrier
+        .phone
+        .registrations_settle(REGISTERED, |seen| {
+            seen.iter()
+                .any(|r| r.expires > 0 && r.contact != first_holder)
+        })
+        .await;
+    assert!(
+        taken_over,
+        "the surviving node never took the binding over: {:?}",
+        carrier.phone.registrations()
+    );
+    let survivor = carrier
+        .phone
+        .registrations()
+        .into_iter()
+        .rfind(|r| r.expires > 0)
+        .expect("a binding");
+    assert_ne!(survivor.contact, first_holder, "and it is the other node's");
+    assert!(
+        survivor.account.contains("sip:acct-shared@carrier.example"),
+        "and still as the trunk's own account: {}",
+        survivor.account
+    );
+
+    if let Some(node) = survivor_node {
+        node.stop().await;
+    }
+    first.finish().await;
+}
+
+/// The one binding a carrier is holding for a trunk right now: the
+/// contact of the last REGISTER that was not withdrawn. `None` when every
+/// binding has been given up, and a panic when two nodes hold one at once,
+/// which is what this phase is for.
+fn live_binding(carrier: &Phone) -> Option<String> {
+    let mut live: Vec<String> = Vec::new();
+    for seen in carrier.registrations() {
+        live.retain(|c| *c != seen.contact);
+        if seen.expires > 0 {
+            live.push(seen.contact);
+        }
+    }
+    assert!(
+        live.len() <= 1,
+        "two nodes hold a binding for one trunk at once: {live:?}"
+    );
+    live.pop()
 }

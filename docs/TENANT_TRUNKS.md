@@ -668,7 +668,63 @@ One PR per phase, reviewed before the next starts.
      refused. A carrier's national caller number reaches the phone as
      E.164, rewritten by the ingress rule its trunk names.
 5. **Cluster.** One node registers a registering trunk; health per node;
-   failover across nodes; the events.
+   failover across nodes; the events. Split in two: what a node registers
+   is one piece of work, what every node sees of a trunk is another.
+
+   **5a — one node registers, as the trunk itself.** *Done (v0.25.198).*
+
+   - **Every registering trunk, not just the node's own.** Registration was
+     built once at startup from the node's `[[trunks]]`, keyed by name. It
+     is driven from the `TrunkSet` now, keyed by trunk id, and re-read on
+     every tick: a tenant's trunk registers as soon as the node has it, an
+     edit reaches the next refresh without dropping the binding, and a
+     trunk the node stops routing by is given up. Two tenants' "carrier-a"
+     are two registrations.
+   - **The trunk registers as itself.** `From` and `To` name the carrier
+     account — the trunk's credentials at the realm the carrier challenges
+     with, else its `from_domain`, else the host — and the challenge is
+     answered with that account's own credentials. `Contact` is this node,
+     which is where the carrier's calls for the account arrive, so the
+     trunk a call comes in on says whose it is (§7, and what phase 4a left
+     open). A trunk with no credentials has no account to be and registers
+     under the node's own address of record as it always did.
+   - **One node holds it.** `ClusterMember` carries the registering trunks
+     each node has loaded, because a `[[trunks]]` entry may be on one node
+     and no other: the owner is the lowest live node id that loaded it,
+     preferring a node that is not draining, and a node that stops being
+     the owner de-registers rather than leave the carrier with two bindings
+     for one account. Without a cluster every node owns what it loaded,
+     which is what a single node did before. Failover is the membership
+     TTL: the owner's heartbeat expires and the next-lowest node takes the
+     binding over.
+   - **A node does not claim what it has not yet advertised.** Ownership is
+     read from what every node has published about itself, so a node that
+     has just loaded a trunk has said nothing about it yet — and a node
+     that acts on that silence registers a second binding beside one
+     another node already holds. A trunk becomes claimable a couple of
+     heartbeats after this node first advertised it, and the advertisement
+     is published at once rather than on the next beat. Two nodes that load
+     a trunk seconds apart still converge rather than settle: the one that
+     had it first holds it until the lower node id has it too, then gives
+     it up.
+   - **The events**: `trunk.registered` and `trunk.registration_failed`,
+     each naming the trunk, its tenant, the account bound and the node that
+     holds it — two nodes reporting one trunk is how a split is seen.
+   - **siphon-rs** gained the REGISTER an account other than the agent's
+     own needs (`sip-uac` 0.7.4): `create_register_as` / `register_as`,
+     with the refresh series (Call-ID, `From` tag, CSeq) kept per account
+     and registrar rather than per registrar — two trunks at one carrier
+     were otherwise sharing one series, where each refresh would have
+     invalidated the other's binding.
+   - On the floor: a trunk binds its own account and answers the carrier's
+     digest challenge with its own credentials; and two call managers on
+     one database hold one binding between them, which moves to the
+     survivor when the node holding it is killed.
+
+   **5b — what every node sees.** Per-node health published to the cluster,
+   `trunk.health_changed`, `/v1/trunks` gaining the health each node sees
+   and the calls in flight, `GET /trunks` on each node, and the per-trunk
+   metrics (§9).
 6. **Emergency and policy.** `emergency_capable` on tenant trunks closes
    block 2 §12.1 (with the platform's trunks as the last resort); routing
    rules gain a "route via trunk / trunk group" action; per-tenant LCR

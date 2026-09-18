@@ -1,26 +1,39 @@
-//! Outbound trunk registration for the SBC.
+//! Outbound trunk registration.
 //!
-//! Trunks with `register: true` in their configuration need to maintain
-//! active REGISTER bindings with their remote peers. Most SIP carriers
-//! require registration before they accept outbound calls.
+//! A trunk with `register: true` holds a REGISTER binding at its carrier:
+//! most carriers will not take a call from an address they have no binding
+//! for. This module keeps those bindings for every trunk the node routes
+//! by — its own `[[trunks]]` and every tenant's — and for each one:
 //!
-//! This module provides:
-//! - [`TrunkRegistrar`]: Tracks registration state per trunk
-//! - [`run_trunk_registration`]: Background task that maintains registrations
+//! - **registers the trunk as itself**, when it has credentials: `From`
+//!   and `To` name the carrier account and `Contact` names this node, so
+//!   the carrier's calls for that account arrive here and the trunk they
+//!   arrive on says whose they are (`docs/TENANT_TRUNKS.md` §7). A trunk
+//!   with no credentials has no account to be, and registers under this
+//!   node's own address of record as it always did.
+//! - **holds it on one node.** Several nodes load the same trunk, and
+//!   several bindings for one account is not what a carrier expects: the
+//!   owner ([`TrunkOwnership`]) registers and refreshes, and a node that
+//!   stops being the owner gives its binding up. Without a cluster every
+//!   node owns what it loaded, which is one node.
+//!
+//! [`TrunkRegistrar`] keeps the state, [`run_trunk_registration`] the loop.
 
-use crate::trunk::TrunkConfig;
 use crate::trunk_health::TrunkHealthMonitor;
+use crate::trunk_set::TrunkSet;
 use dashmap::DashMap;
 use fcp_core::transport::TransportType;
+use fcp_core::{TenantId, Trunk};
+use fcp_events::{EventPublisher, PlatformEvent, TrunkEvent};
 use fcp_sip::uac::SipUserAgentClient;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
-use tracing::{debug, error, info, warn};
+use std::time::{Duration, Instant, SystemTime};
+use tracing::{debug, info, warn};
 
 /// Registration state for a trunk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RegistrationState {
-    /// Not yet registered or de-registered.
+    /// Not yet registered, de-registered, or held by another node.
     Unregistered,
     /// REGISTER request in flight.
     Pending,
@@ -41,152 +54,323 @@ impl std::fmt::Display for RegistrationState {
     }
 }
 
-/// Per-trunk registration entry.
+/// Which node holds a registering trunk's binding.
+///
+/// A cluster answers from what every node has published about itself
+/// (`fcp_cluster::ClusterManager::registers_trunk`); a node on its own
+/// answers [`AloneOnThisNode`].
+pub trait TrunkOwnership: Send + Sync {
+    /// Say which registering trunks this node has loaded, so its peers can
+    /// work out who owns each of them.
+    fn advertise(&self, trunk_ids: Vec<String>);
+
+    /// Whether this node is the one that registers `trunk_id`.
+    fn registers(&self, trunk_id: &str) -> bool;
+}
+
+/// A node with no cluster: everything it loaded is its own to register,
+/// which is what a single node did before trunks were shared.
+pub struct AloneOnThisNode;
+
+impl TrunkOwnership for AloneOnThisNode {
+    fn advertise(&self, _trunk_ids: Vec<String>) {}
+
+    fn registers(&self, _trunk_id: &str) -> bool {
+        true
+    }
+}
+
+/// A node in a cluster: it says what it has loaded in its heartbeat, and
+/// the lowest live node id that loaded a trunk registers it.
+///
+/// A node claims a trunk only once its own claim to it has had time to
+/// reach its peers. Ownership is decided from what every node has said
+/// about itself, so a node that has just loaded a trunk — at startup, or
+/// because a tenant created one — has said nothing about it yet, and
+/// neither has it necessarily read what a peer said a moment ago. Acting
+/// on that silence puts a second binding at the carrier beside the one
+/// another node is already holding. A trunk is therefore claimable a
+/// couple of heartbeats after this node first advertised it, which costs
+/// seconds and is the difference between one binding and two.
+pub struct ClusterOwnership {
+    cluster: Arc<fcp_cluster::ClusterManager>,
+    /// When each trunk this node loaded becomes claimable.
+    claimable: DashMap<String, Instant>,
+    settle: Duration,
+}
+
+impl ClusterOwnership {
+    pub fn new(cluster: Arc<fcp_cluster::ClusterManager>) -> Self {
+        // Two beats: one to publish what this node has loaded, one to read
+        // what its peers have.
+        let settle = Duration::from_secs(cluster.heartbeat_interval_secs() * 2 + 1);
+        Self {
+            cluster,
+            claimable: DashMap::new(),
+            settle,
+        }
+    }
+}
+
+impl TrunkOwnership for ClusterOwnership {
+    fn advertise(&self, trunk_ids: Vec<String>) {
+        let now = Instant::now();
+        for id in &trunk_ids {
+            self.claimable
+                .entry(id.clone())
+                .or_insert_with(|| now + self.settle);
+        }
+        self.claimable.retain(|id, _| trunk_ids.contains(id));
+        if self.cluster.set_registering_trunks(trunk_ids) {
+            // A claim its peers cannot see is a claim they will override:
+            // out with it now rather than on the next beat.
+            let cluster = Arc::clone(&self.cluster);
+            tokio::spawn(async move { cluster.publish_now().await });
+        }
+    }
+
+    fn registers(&self, trunk_id: &str) -> bool {
+        let claimable = self.claimable.get(trunk_id).map(|at| *at);
+        match claimable {
+            Some(at) if Instant::now() >= at => self.cluster.registers_trunk(trunk_id),
+            // Advertised a moment ago, or not advertised at all.
+            _ => false,
+        }
+    }
+}
+
+/// What this node is doing about one trunk's binding.
 struct TrunkRegEntry {
+    name: String,
+    tenant_id: Option<TenantId>,
     reg_state: RegistrationState,
     expires_at: Option<Instant>,
     configured_expiry: u32,
     last_attempt: Option<Instant>,
     last_error: Option<String>,
     registrar_uri: String,
+    /// The carrier account this trunk binds, when it has credentials.
+    account: Option<String>,
+    credentials: Option<(String, String)>,
 }
 
-/// Tracks outbound registration state for trunks that require it.
+/// Tracks outbound registration state for the trunks that need it.
+///
+/// Keyed by trunk id ([`Trunk::key`]): two tenants may both have a
+/// "carrier-a", and they are two registrations.
 pub struct TrunkRegistrar {
     state: DashMap<String, TrunkRegEntry>,
 }
 
+impl Default for TrunkRegistrar {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TrunkRegistrar {
-    /// Create a new registrar from trunk configurations.
-    ///
-    /// Only trunks with `register: true` are included.
-    pub fn new(trunks: &[TrunkConfig]) -> Self {
-        let state = DashMap::new();
-        for trunk in trunks {
-            if !trunk.register {
-                continue;
-            }
-            let uri = match build_registrar_uri(trunk) {
-                Some(uri) => uri,
-                None => {
-                    warn!(trunk = %trunk.name, "Trunk has register=true but no hosts configured, skipping");
-                    continue;
-                }
-            };
-            state.insert(
-                trunk.name.clone(),
-                TrunkRegEntry {
-                    reg_state: RegistrationState::Unregistered,
-                    expires_at: None,
-                    configured_expiry: trunk.register_expiry.unwrap_or(3600),
-                    last_attempt: None,
-                    last_error: None,
-                    registrar_uri: uri,
-                },
-            );
+    /// An empty registrar; [`Self::track`] fills it from the trunk set.
+    pub fn new() -> Self {
+        Self {
+            state: DashMap::new(),
         }
-        Self { state }
     }
 
-    /// Get the current registration state for a trunk.
+    /// Take the registering trunks of `trunks`, forgetting any this node no
+    /// longer routes by. Returns their ids, which is what the node
+    /// advertises to its peers.
+    ///
+    /// A trunk already tracked keeps its state — a refresh in progress is
+    /// not restarted because the set was re-read — but takes the current
+    /// account, credentials and expiry, so an edit reaches the next
+    /// refresh.
+    pub fn track(&self, trunks: &[Arc<Trunk>]) -> Vec<String> {
+        let mut ids = Vec::new();
+        for trunk in trunks {
+            if !trunk.register || !trunk.enabled {
+                continue;
+            }
+            let Some(uri) = build_registrar_uri(trunk) else {
+                warn!(
+                    trunk = %trunk.name,
+                    "Trunk has register=true but no hosts configured, skipping"
+                );
+                continue;
+            };
+            let id = trunk.key();
+            ids.push(id.clone());
+            let account = account_uri(trunk);
+            let credentials = trunk
+                .credentials
+                .as_ref()
+                .map(|c| (c.username.clone(), c.password.clone()));
+            let expiry = trunk.register_expiry.unwrap_or(3600);
+            match self.state.get_mut(&id) {
+                Some(mut held) => {
+                    held.name = trunk.name.clone();
+                    held.tenant_id = trunk.tenant_id;
+                    held.configured_expiry = expiry;
+                    held.registrar_uri = uri;
+                    held.account = account;
+                    held.credentials = credentials;
+                }
+                None => {
+                    self.state.insert(
+                        id,
+                        TrunkRegEntry {
+                            name: trunk.name.clone(),
+                            tenant_id: trunk.tenant_id,
+                            reg_state: RegistrationState::Unregistered,
+                            expires_at: None,
+                            configured_expiry: expiry,
+                            last_attempt: None,
+                            last_error: None,
+                            registrar_uri: uri,
+                            account,
+                            credentials,
+                        },
+                    );
+                }
+            }
+        }
+        self.state.retain(|id, _| ids.contains(id));
+        ids
+    }
+
+    /// The registration state of a trunk, by id.
     pub fn registration_state(&self, trunk: &str) -> Option<RegistrationState> {
         self.state.get(trunk).map(|e| e.reg_state)
     }
 
-    /// Returns `true` if the trunk needs (re-)registration.
-    ///
-    /// A trunk needs registration when:
-    /// - It is `Unregistered` or `Failed`
-    /// - It is `Registered` but expiry is within 50% of the configured interval
+    /// Whether the trunk needs a REGISTER sent now: never registered, the
+    /// last attempt failed long enough ago to try again, or the binding is
+    /// within a refresh window of expiring.
     pub fn needs_registration(&self, trunk: &str) -> bool {
-        self.state
-            .get(trunk)
-            .map(|e| match e.reg_state {
-                RegistrationState::Unregistered | RegistrationState::Failed => true,
-                RegistrationState::Pending => false,
-                RegistrationState::Registered => {
-                    match e.expires_at {
-                        Some(expiry) => {
-                            let now = Instant::now();
-                            if now >= expiry {
-                                return true;
-                            }
-                            let remaining = expiry.duration_since(now);
-                            let threshold = Duration::from_secs(u64::from(e.configured_expiry) / 2);
-                            remaining <= threshold
-                        }
-                        None => true, // No expiry recorded — re-register
-                    }
-                }
-            })
-            .unwrap_or(false)
+        let Some(entry) = self.state.get(trunk) else {
+            return false;
+        };
+        match entry.reg_state {
+            RegistrationState::Unregistered => true,
+            RegistrationState::Pending => false,
+            RegistrationState::Failed => entry
+                .last_attempt
+                .is_none_or(|at| at.elapsed() >= Duration::from_secs(30)),
+            RegistrationState::Registered => entry
+                .expires_at
+                .is_none_or(|at| at.saturating_duration_since(Instant::now()).as_secs() < 60),
+        }
+    }
+
+    /// Whether this node holds a binding it should now give up.
+    fn holds_binding(&self, trunk: &str) -> bool {
+        matches!(
+            self.registration_state(trunk),
+            Some(RegistrationState::Registered) | Some(RegistrationState::Pending)
+        )
     }
 
     /// Record a successful registration.
     pub fn record_registered(&self, trunk: &str, expires_secs: u32) {
         if let Some(mut entry) = self.state.get_mut(trunk) {
             entry.reg_state = RegistrationState::Registered;
-            entry.expires_at = Some(Instant::now() + Duration::from_secs(u64::from(expires_secs)));
+            entry.expires_at = Some(Instant::now() + Duration::from_secs(expires_secs as u64));
+            entry.last_attempt = Some(Instant::now());
             entry.last_error = None;
         }
     }
 
-    /// Record a failed registration attempt.
+    /// Record a failed registration.
     pub fn record_failed(&self, trunk: &str, reason: String) {
         if let Some(mut entry) = self.state.get_mut(trunk) {
             entry.reg_state = RegistrationState::Failed;
+            entry.last_attempt = Some(Instant::now());
             entry.last_error = Some(reason);
         }
     }
 
-    /// Mark a trunk as pending (REGISTER in flight).
+    /// Mark a registration as in flight.
     pub fn mark_pending(&self, trunk: &str) {
         if let Some(mut entry) = self.state.get_mut(trunk) {
             entry.reg_state = RegistrationState::Pending;
-            entry.last_attempt = Some(Instant::now());
         }
     }
 
-    /// Mark a trunk as unregistered (for admin force-register or de-registration).
+    /// Mark a trunk as no longer registered here.
     pub fn mark_unregistered(&self, trunk: &str) {
         if let Some(mut entry) = self.state.get_mut(trunk) {
             entry.reg_state = RegistrationState::Unregistered;
             entry.expires_at = None;
-            entry.last_error = None;
         }
     }
 
-    /// Get the registrar URI for a trunk.
+    /// The registrar URI for a trunk.
     pub fn registrar_uri(&self, trunk: &str) -> Option<String> {
         self.state.get(trunk).map(|e| e.registrar_uri.clone())
     }
 
-    /// Get the configured expiry for a trunk.
+    /// The carrier account a trunk binds, when it has one.
+    pub fn account(&self, trunk: &str) -> Option<String> {
+        self.state.get(trunk).and_then(|e| e.account.clone())
+    }
+
+    /// The trunk's own credentials, when it has them.
+    fn credentials(&self, trunk: &str) -> Option<(String, String)> {
+        self.state.get(trunk).and_then(|e| e.credentials.clone())
+    }
+
+    /// The configured expiry for a trunk.
     pub fn configured_expiry(&self, trunk: &str) -> Option<u32> {
         self.state.get(trunk).map(|e| e.configured_expiry)
     }
 
-    /// Get the last registration error for a trunk.
+    /// The last error recorded for a trunk.
     pub fn last_error(&self, trunk: &str) -> Option<String> {
         self.state.get(trunk).and_then(|e| e.last_error.clone())
     }
 
-    /// Get all trunk names managed by this registrar.
-    pub fn trunk_names(&self) -> Vec<String> {
+    /// The name of a trunk, for logs and the admin API.
+    pub fn name_of(&self, trunk: &str) -> Option<String> {
+        self.state.get(trunk).map(|e| e.name.clone())
+    }
+
+    /// The tenant whose trunk this is; `None` for the platform's own.
+    pub fn tenant_of(&self, trunk: &str) -> Option<TenantId> {
+        self.state.get(trunk).and_then(|e| e.tenant_id)
+    }
+
+    /// The ids of every trunk being tracked.
+    pub fn trunk_ids(&self) -> Vec<String> {
         self.state.iter().map(|e| e.key().clone()).collect()
     }
 
-    /// Returns `true` if there is at least one trunk that requires registration.
+    /// Whether any trunk needs registering at all.
     pub fn has_registerable_trunks(&self) -> bool {
         !self.state.is_empty()
     }
+}
+
+/// The address of record a trunk binds at its carrier: its account, at the
+/// domain the carrier knows it by.
+///
+/// The realm a carrier challenges with names the domain it wants in the
+/// account, so it is preferred; then the trunk's own `from_domain`, which
+/// is the domain its calls go out as; then the host the REGISTER is sent
+/// to. A trunk with no credentials has no account.
+fn account_uri(trunk: &Trunk) -> Option<String> {
+    let credentials = trunk.credentials.as_ref()?;
+    let domain = credentials
+        .realm
+        .clone()
+        .or_else(|| trunk.from_domain.clone())
+        .or_else(|| trunk.hosts.first().cloned())?;
+    Some(format!("sip:{}@{}", credentials.username, domain))
 }
 
 /// Build a registrar URI from a trunk's configuration.
 ///
 /// Uses `sips:` for TLS transports and `sip:` otherwise. Only includes
 /// the port if it differs from the transport's default.
-fn build_registrar_uri(trunk: &TrunkConfig) -> Option<String> {
+fn build_registrar_uri(trunk: &Trunk) -> Option<String> {
     let host = trunk.hosts.first()?;
     let scheme = if trunk.transport.protocol == TransportType::Tls {
         "sips"
@@ -202,326 +386,341 @@ fn build_registrar_uri(trunk: &TrunkConfig) -> Option<String> {
     }
 }
 
-/// Background task that maintains REGISTER bindings for all configured trunks.
+/// What the registration loop needs beside the trunks themselves.
+pub struct TrunkRegistrationContext {
+    pub registrar: Arc<TrunkRegistrar>,
+    pub trunks: Arc<TrunkSet>,
+    pub health: Arc<TrunkHealthMonitor>,
+    pub uac: Arc<SipUserAgentClient>,
+    pub ownership: Arc<dyn TrunkOwnership>,
+    pub events: Option<Arc<dyn EventPublisher>>,
+    pub node_id: String,
+}
+
+/// Background task that keeps the REGISTER bindings of every registering
+/// trunk this node routes by.
 ///
-/// Ticks every 5 seconds. On each tick:
-/// 1. Checks if shutdown has been signalled — if so, sends REGISTER with
-///    expires=0 for all registered trunks (best-effort) and returns.
-/// 2. For each trunk that needs (re-)registration, sends REGISTER and
-///    records the result.
+/// Ticks every 5 seconds. On each tick it re-reads the trunk set (a trunk
+/// created or edited while the node runs is picked up here), tells its
+/// peers what it has loaded, and then for each trunk either keeps the
+/// binding — this node owns it — or gives up one it is holding, because
+/// another node owns it now.
 ///
-/// Spawn with `tokio::spawn`. Runs until shutdown is signalled.
+/// Spawn with `tokio::spawn`. Runs until shutdown is signalled, then
+/// de-registers what it holds.
 pub async fn run_trunk_registration(
-    registrar: Arc<TrunkRegistrar>,
-    health: Arc<TrunkHealthMonitor>,
-    uac: Arc<SipUserAgentClient>,
+    ctx: TrunkRegistrationContext,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) {
-    info!(
-        trunks = registrar.trunk_names().len(),
-        "Starting trunk registration task"
-    );
+    info!(node_id = %ctx.node_id, "Starting trunk registration task");
 
     let mut ticker = tokio::time::interval(Duration::from_secs(5));
 
     loop {
         ticker.tick().await;
 
-        // Check for shutdown signal
         if *shutdown.borrow_and_update() {
             info!("Shutdown signalled, de-registering trunks");
-            deregister_all(&registrar, &uac).await;
+            deregister_all(&ctx).await;
             return;
         }
 
-        for name in registrar.trunk_names() {
-            if !registrar.needs_registration(&name) {
+        // What this node has loaded, and what its peers should know of it.
+        let tracked = ctx.registrar.track(&ctx.trunks.all());
+        ctx.ownership.advertise(tracked.clone());
+
+        for id in tracked {
+            if !ctx.ownership.registers(&id) {
+                // Another node holds this one now. Give ours up rather
+                // than leave the carrier with two bindings for one
+                // account, and stop refreshing.
+                if ctx.registrar.holds_binding(&id) {
+                    info!(
+                        trunk = %ctx.registrar.name_of(&id).unwrap_or_default(),
+                        "Another node registers this trunk now, releasing the binding"
+                    );
+                    deregister(&ctx, &id).await;
+                    ctx.registrar.mark_unregistered(&id);
+                }
                 continue;
             }
-
-            let uri = match registrar.registrar_uri(&name) {
-                Some(uri) => uri,
-                None => continue,
-            };
-            let expires = registrar.configured_expiry(&name).unwrap_or(3600);
-
-            registrar.mark_pending(&name);
-
-            debug!(trunk = %name, uri = %uri, expires, "Sending REGISTER");
-
-            match tokio::time::timeout(Duration::from_secs(10), uac.register(&uri, expires)).await {
-                Ok(Ok(response)) => {
-                    let code = response.start_line().code();
-                    if (200..300).contains(&code) {
-                        info!(trunk = %name, code, "Trunk registered successfully");
-                        registrar.record_registered(&name, expires);
-                        health.record_success(&name);
-                    } else {
-                        let reason = format!("{} {}", code, response.start_line().reason());
-                        warn!(trunk = %name, code, "Trunk registration rejected");
-                        registrar.record_failed(&name, reason);
-                        health.record_failure(&name);
-                    }
-                }
-                Ok(Err(e)) => {
-                    warn!(trunk = %name, error = %e, "Trunk registration failed");
-                    registrar.record_failed(&name, e.to_string());
-                    health.record_failure(&name);
-                }
-                Err(_) => {
-                    warn!(trunk = %name, "Trunk registration timed out (10s)");
-                    registrar.record_failed(&name, "timeout".to_string());
-                    health.record_failure(&name);
-                }
+            if !ctx.registrar.needs_registration(&id) {
+                continue;
             }
+            register_one(&ctx, &id).await;
         }
     }
 }
 
-/// Best-effort de-registration: sends REGISTER with expires=0 for all
-/// trunks currently in `Registered` state.
-async fn deregister_all(registrar: &TrunkRegistrar, uac: &SipUserAgentClient) {
-    for name in registrar.trunk_names() {
-        if registrar.registration_state(&name) != Some(RegistrationState::Registered) {
+/// Send one trunk's REGISTER and record what came back.
+async fn register_one(ctx: &TrunkRegistrationContext, id: &str) {
+    let Some(uri) = ctx.registrar.registrar_uri(id) else {
+        return;
+    };
+    let name = ctx.registrar.name_of(id).unwrap_or_else(|| id.to_string());
+    let expires = ctx.registrar.configured_expiry(id).unwrap_or(3600);
+    let account = ctx.registrar.account(id);
+
+    ctx.registrar.mark_pending(id);
+    debug!(trunk = %name, uri = %uri, expires, account = ?account, "Sending REGISTER");
+
+    let sent = tokio::time::timeout(
+        Duration::from_secs(10),
+        send_register(ctx, id, &uri, expires),
+    )
+    .await;
+
+    match sent {
+        Ok(Ok(response)) => {
+            let code = response.start_line().code();
+            if (200..300).contains(&code) {
+                info!(trunk = %name, code, account = ?account, "Trunk registered successfully");
+                ctx.registrar.record_registered(id, expires);
+                ctx.health.record_success(id);
+                publish(
+                    ctx,
+                    TrunkEvent::Registered {
+                        trunk_id: id.to_string(),
+                        trunk_name: name,
+                        tenant_id: ctx.registrar.tenant_of(id),
+                        account,
+                        expires_secs: expires,
+                        node_id: ctx.node_id.clone(),
+                        timestamp: SystemTime::now(),
+                    },
+                )
+                .await;
+            } else {
+                let reason = format!("{} {}", code, response.start_line().reason());
+                warn!(trunk = %name, code, "Trunk registration rejected");
+                fail(ctx, id, &name, account, reason).await;
+            }
+        }
+        Ok(Err(e)) => {
+            warn!(trunk = %name, error = %e, "Trunk registration failed");
+            fail(ctx, id, &name, account, e.to_string()).await;
+        }
+        Err(_) => {
+            warn!(trunk = %name, "Trunk registration timed out (10s)");
+            fail(ctx, id, &name, account, "timeout".to_string()).await;
+        }
+    }
+}
+
+/// The REGISTER itself: as the trunk's own account when it has one, and
+/// as this node otherwise.
+async fn send_register(
+    ctx: &TrunkRegistrationContext,
+    id: &str,
+    uri: &str,
+    expires: u32,
+) -> anyhow::Result<sip_core::Response> {
+    match (ctx.registrar.account(id), ctx.registrar.credentials(id)) {
+        (Some(account), credentials) => {
+            ctx.uac
+                .register_as(&account, uri, expires, credentials)
+                .await
+        }
+        (None, _) => ctx.uac.register(uri, expires).await,
+    }
+}
+
+async fn fail(
+    ctx: &TrunkRegistrationContext,
+    id: &str,
+    name: &str,
+    account: Option<String>,
+    reason: String,
+) {
+    ctx.registrar.record_failed(id, reason.clone());
+    ctx.health.record_failure(id);
+    publish(
+        ctx,
+        TrunkEvent::RegistrationFailed {
+            trunk_id: id.to_string(),
+            trunk_name: name.to_string(),
+            tenant_id: ctx.registrar.tenant_of(id),
+            account,
+            reason,
+            node_id: ctx.node_id.clone(),
+            timestamp: SystemTime::now(),
+        },
+    )
+    .await;
+}
+
+async fn publish(ctx: &TrunkRegistrationContext, event: TrunkEvent) {
+    if let Some(events) = &ctx.events {
+        if let Err(e) = events.publish(PlatformEvent::Trunk(event)).await {
+            debug!(error = %e, "Could not publish trunk event");
+        }
+    }
+}
+
+/// Best-effort de-registration of one trunk: REGISTER with expires=0.
+async fn deregister(ctx: &TrunkRegistrationContext, id: &str) {
+    let Some(uri) = ctx.registrar.registrar_uri(id) else {
+        return;
+    };
+    let name = ctx.registrar.name_of(id).unwrap_or_else(|| id.to_string());
+    debug!(trunk = %name, "Sending de-registration (expires=0)");
+
+    match tokio::time::timeout(Duration::from_secs(3), send_register(ctx, id, &uri, 0)).await {
+        Ok(Ok(response)) => {
+            info!(trunk = %name, code = response.start_line().code(), "Trunk de-registered");
+        }
+        Ok(Err(e)) => warn!(trunk = %name, error = %e, "Trunk de-registration failed"),
+        Err(_) => warn!(trunk = %name, "Trunk de-registration timed out (3s)"),
+    }
+}
+
+/// Best-effort de-registration of everything this node holds.
+async fn deregister_all(ctx: &TrunkRegistrationContext) {
+    for id in ctx.registrar.trunk_ids() {
+        if ctx.registrar.registration_state(&id) != Some(RegistrationState::Registered) {
             continue;
         }
-        let uri = match registrar.registrar_uri(&name) {
-            Some(uri) => uri,
-            None => continue,
-        };
-
-        debug!(trunk = %name, "Sending de-registration (expires=0)");
-
-        match tokio::time::timeout(Duration::from_secs(3), uac.register(&uri, 0)).await {
-            Ok(Ok(response)) => {
-                let code = response.start_line().code();
-                info!(trunk = %name, code, "Trunk de-registered");
-            }
-            Ok(Err(e)) => {
-                error!(trunk = %name, error = %e, "Trunk de-registration failed");
-            }
-            Err(_) => {
-                warn!(trunk = %name, "Trunk de-registration timed out (3s)");
-            }
-        }
-        registrar.mark_unregistered(&name);
+        deregister(ctx, &id).await;
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::trunk::TrunkTransport;
+    use fcp_core::trunk::TrunkCredentials;
+    use fcp_core::{Trunk, TrunkId};
 
-    fn make_trunk(name: &str, register: bool, register_expiry: Option<u32>) -> TrunkConfig {
-        TrunkConfig {
-            name: name.to_string(),
-            register,
-            register_expiry,
-            hosts: vec!["sip.carrier.com".to_string()],
-            ..Default::default()
-        }
+    fn trunk(name: &str, register: bool) -> Trunk {
+        let mut t = Trunk::new(name.to_string(), TenantId::new());
+        t.tenant_id = None;
+        t.id = TrunkId::platform(name);
+        t.hosts = vec!["carrier.example".to_string()];
+        t.register = register;
+        t
     }
 
-    #[test]
-    fn test_new_only_registering_trunks() {
-        let trunks = vec![
-            make_trunk("reg-trunk", true, Some(3600)),
-            make_trunk("ip-auth-trunk", false, None),
-            make_trunk("reg-trunk-2", true, None),
-        ];
-        let registrar = TrunkRegistrar::new(&trunks);
-        let mut names = registrar.trunk_names();
-        names.sort();
-        assert_eq!(names, vec!["reg-trunk", "reg-trunk-2"]);
+    fn with_credentials(mut t: Trunk, user: &str, realm: Option<&str>) -> Trunk {
+        t.credentials = Some(TrunkCredentials {
+            username: user.to_string(),
+            password: "secret".to_string(),
+            realm: realm.map(str::to_owned),
+        });
+        t
     }
 
+    /// Only the trunks that ask to register are tracked, and a trunk the
+    /// node no longer routes by is forgotten.
     #[test]
-    fn test_needs_registration_unregistered() {
-        let trunks = vec![make_trunk("t", true, None)];
-        let registrar = TrunkRegistrar::new(&trunks);
-        assert!(registrar.needs_registration("t"));
+    fn it_tracks_the_registering_trunks_and_forgets_the_rest() {
+        let registrar = TrunkRegistrar::new();
+        let registering = Arc::new(trunk("carrier-a", true));
+        let plain = Arc::new(trunk("carrier-b", false));
+
+        let ids = registrar.track(&[Arc::clone(&registering), Arc::clone(&plain)]);
+        assert_eq!(ids, vec![registering.key()]);
+        assert!(registrar.has_registerable_trunks());
+
+        let ids = registrar.track(&[plain]);
+        assert!(ids.is_empty());
+        assert!(!registrar.has_registerable_trunks());
     }
 
+    /// A disabled trunk holds no binding.
     #[test]
-    fn test_needs_registration_recently_registered() {
-        let trunks = vec![make_trunk("t", true, Some(3600))];
-        let registrar = TrunkRegistrar::new(&trunks);
-        // Register with full expiry — should not need re-registration yet
-        registrar.record_registered("t", 3600);
-        assert!(!registrar.needs_registration("t"));
+    fn a_disabled_trunk_is_not_registered() {
+        let registrar = TrunkRegistrar::new();
+        let mut t = trunk("carrier-a", true);
+        t.enabled = false;
+        assert!(registrar.track(&[Arc::new(t)]).is_empty());
     }
 
+    /// The account is the trunk's own: its credentials at the realm the
+    /// carrier challenges with, then its from-domain, then the host.
     #[test]
-    fn test_needs_registration_expired() {
-        let trunks = vec![make_trunk("t", true, Some(3600))];
-        let registrar = TrunkRegistrar::new(&trunks);
-        // Simulate an already-expired registration by recording 0s expiry
-        registrar.record_registered("t", 0);
-        assert!(registrar.needs_registration("t"));
-    }
-
-    #[test]
-    fn test_needs_registration_failed() {
-        let trunks = vec![make_trunk("t", true, None)];
-        let registrar = TrunkRegistrar::new(&trunks);
-        registrar.record_failed("t", "401 Unauthorized".to_string());
-        assert!(registrar.needs_registration("t"));
-    }
-
-    #[test]
-    fn test_needs_registration_pending() {
-        let trunks = vec![make_trunk("t", true, None)];
-        let registrar = TrunkRegistrar::new(&trunks);
-        registrar.mark_pending("t");
-        assert!(!registrar.needs_registration("t"));
-    }
-
-    #[test]
-    fn test_record_registered_sets_state() {
-        let trunks = vec![make_trunk("t", true, None)];
-        let registrar = TrunkRegistrar::new(&trunks);
-        registrar.record_registered("t", 1800);
+    fn the_account_is_the_trunks_own() {
+        let realm = with_credentials(trunk("a", true), "acct-4471", Some("sip.carrier.net"));
         assert_eq!(
-            registrar.registration_state("t"),
+            account_uri(&realm).as_deref(),
+            Some("sip:acct-4471@sip.carrier.net")
+        );
+
+        let mut domain = with_credentials(trunk("b", true), "acct-9", None);
+        domain.from_domain = Some("tenant.example".to_string());
+        assert_eq!(
+            account_uri(&domain).as_deref(),
+            Some("sip:acct-9@tenant.example")
+        );
+
+        let host = with_credentials(trunk("c", true), "acct-1", None);
+        assert_eq!(
+            account_uri(&host).as_deref(),
+            Some("sip:acct-1@carrier.example")
+        );
+    }
+
+    /// A trunk with no credentials has no account to be, and registers as
+    /// this node did before.
+    #[test]
+    fn a_trunk_without_credentials_has_no_account() {
+        assert_eq!(account_uri(&trunk("a", true)), None);
+    }
+
+    /// Two tenants' "carrier-a" are two registrations, not one.
+    #[test]
+    fn two_tenants_trunks_of_one_name_are_two_registrations() {
+        let registrar = TrunkRegistrar::new();
+        let mut one = trunk("carrier-a", true);
+        one.id = TrunkId::new();
+        one.tenant_id = Some(TenantId::new());
+        let mut two = trunk("carrier-a", true);
+        two.id = TrunkId::new();
+        two.tenant_id = Some(TenantId::new());
+
+        let ids = registrar.track(&[Arc::new(one), Arc::new(two)]);
+        assert_eq!(ids.len(), 2, "{ids:?}");
+        assert_ne!(ids[0], ids[1]);
+    }
+
+    /// Re-reading the set keeps a binding in place but takes the edit: a
+    /// trunk whose expiry changed does not lose its registration for it.
+    #[test]
+    fn re_reading_the_set_keeps_the_binding_and_takes_the_edit() {
+        let registrar = TrunkRegistrar::new();
+        let mut t = trunk("carrier-a", true);
+        t.register_expiry = Some(3600);
+        let id = t.key();
+        registrar.track(&[Arc::new(t.clone())]);
+        registrar.record_registered(&id, 3600);
+
+        t.register_expiry = Some(600);
+        registrar.track(&[Arc::new(t)]);
+
+        assert_eq!(
+            registrar.registration_state(&id),
             Some(RegistrationState::Registered)
         );
-        assert!(registrar.last_error("t").is_none());
+        assert_eq!(registrar.configured_expiry(&id), Some(600));
     }
 
+    /// A fresh binding is not refreshed; one near its expiry is.
     #[test]
-    fn test_record_failed_sets_state_and_error() {
-        let trunks = vec![make_trunk("t", true, None)];
-        let registrar = TrunkRegistrar::new(&trunks);
-        registrar.record_failed("t", "403 Forbidden".to_string());
-        assert_eq!(
-            registrar.registration_state("t"),
-            Some(RegistrationState::Failed)
-        );
-        assert_eq!(registrar.last_error("t").as_deref(), Some("403 Forbidden"));
+    fn a_binding_is_refreshed_near_its_expiry() {
+        let registrar = TrunkRegistrar::new();
+        let t = Arc::new(trunk("carrier-a", true));
+        let id = t.key();
+        registrar.track(&[t]);
+
+        assert!(registrar.needs_registration(&id), "never registered");
+        registrar.record_registered(&id, 3600);
+        assert!(!registrar.needs_registration(&id), "fresh");
+        registrar.record_registered(&id, 30);
+        assert!(registrar.needs_registration(&id), "about to expire");
     }
 
+    /// A node on its own registers everything it loaded.
     #[test]
-    fn test_mark_unregistered_clears() {
-        let trunks = vec![make_trunk("t", true, None)];
-        let registrar = TrunkRegistrar::new(&trunks);
-        registrar.record_registered("t", 3600);
-        registrar.mark_unregistered("t");
-        assert_eq!(
-            registrar.registration_state("t"),
-            Some(RegistrationState::Unregistered)
-        );
-        assert!(registrar.last_error("t").is_none());
-    }
-
-    #[test]
-    fn test_registrar_uri_construction_udp() {
-        let trunk = TrunkConfig {
-            name: "t".into(),
-            register: true,
-            hosts: vec!["sip.carrier.com".into()],
-            transport: TrunkTransport {
-                protocol: TransportType::Udp,
-                port: None,
-                verify_tls: false,
-            },
-            ..Default::default()
-        };
-        let uri = build_registrar_uri(&trunk).unwrap();
-        assert_eq!(uri, "sip:sip.carrier.com");
-    }
-
-    #[test]
-    fn test_registrar_uri_construction_tls() {
-        let trunk = TrunkConfig {
-            name: "t".into(),
-            register: true,
-            hosts: vec!["sip.carrier.com".into()],
-            transport: TrunkTransport {
-                protocol: TransportType::Tls,
-                port: None,
-                verify_tls: true,
-            },
-            ..Default::default()
-        };
-        let uri = build_registrar_uri(&trunk).unwrap();
-        assert_eq!(uri, "sips:sip.carrier.com");
-    }
-
-    #[test]
-    fn test_registrar_uri_construction_custom_port() {
-        let trunk = TrunkConfig {
-            name: "t".into(),
-            register: true,
-            hosts: vec!["sip.carrier.com".into()],
-            transport: TrunkTransport {
-                protocol: TransportType::Udp,
-                port: Some(5080),
-                verify_tls: false,
-            },
-            ..Default::default()
-        };
-        let uri = build_registrar_uri(&trunk).unwrap();
-        assert_eq!(uri, "sip:sip.carrier.com:5080");
-    }
-
-    #[test]
-    fn test_registrar_uri_construction_default_port_not_included() {
-        let trunk = TrunkConfig {
-            name: "t".into(),
-            register: true,
-            hosts: vec!["sip.carrier.com".into()],
-            transport: TrunkTransport {
-                protocol: TransportType::Tls,
-                port: Some(5061), // default for TLS
-                verify_tls: true,
-            },
-            ..Default::default()
-        };
-        let uri = build_registrar_uri(&trunk).unwrap();
-        assert_eq!(uri, "sips:sip.carrier.com");
-    }
-
-    #[test]
-    fn test_registrar_uri_no_hosts() {
-        let trunk = TrunkConfig {
-            name: "t".into(),
-            register: true,
-            hosts: vec![],
-            ..Default::default()
-        };
-        assert!(build_registrar_uri(&trunk).is_none());
-    }
-
-    #[test]
-    fn test_has_registerable_trunks() {
-        let trunks_with_reg = vec![make_trunk("t", true, None)];
-        assert!(TrunkRegistrar::new(&trunks_with_reg).has_registerable_trunks());
-
-        let trunks_no_reg = vec![make_trunk("t", false, None)];
-        assert!(!TrunkRegistrar::new(&trunks_no_reg).has_registerable_trunks());
-
-        assert!(!TrunkRegistrar::new(&[]).has_registerable_trunks());
-    }
-
-    #[test]
-    fn test_configured_expiry_defaults() {
-        let trunks = vec![
-            make_trunk("with-expiry", true, Some(1800)),
-            make_trunk("default-expiry", true, None),
-        ];
-        let registrar = TrunkRegistrar::new(&trunks);
-        assert_eq!(registrar.configured_expiry("with-expiry"), Some(1800));
-        assert_eq!(registrar.configured_expiry("default-expiry"), Some(3600));
-    }
-
-    #[test]
-    fn test_unknown_trunk_returns_none() {
-        let registrar = TrunkRegistrar::new(&[]);
-        assert!(registrar.registration_state("nonexistent").is_none());
-        assert!(!registrar.needs_registration("nonexistent"));
-        assert!(registrar.registrar_uri("nonexistent").is_none());
-        assert!(registrar.configured_expiry("nonexistent").is_none());
-        assert!(registrar.last_error("nonexistent").is_none());
+    fn alone_a_node_owns_what_it_loaded() {
+        let alone = AloneOnThisNode;
+        assert!(alone.registers("trunk-anything"));
     }
 }

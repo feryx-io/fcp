@@ -239,6 +239,7 @@ mod tests {
             draining,
             region: region.map(String::from),
             video_budget: vec![],
+            registering_trunks: Vec::new(),
         }
     }
 

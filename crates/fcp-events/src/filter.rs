@@ -37,6 +37,7 @@ pub enum EventType {
     Billing,
     Cdr,
     Compliance,
+    Trunk,
 }
 
 impl EventFilter {
@@ -104,6 +105,7 @@ impl EventFilter {
                 PlatformEvent::Billing(_) => EventType::Billing,
                 PlatformEvent::Cdr(_) => EventType::Cdr,
                 PlatformEvent::Compliance(_) => EventType::Compliance,
+                PlatformEvent::Trunk(_) => EventType::Trunk,
             };
 
             if !types.contains(&event_type) {
