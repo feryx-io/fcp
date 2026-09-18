@@ -703,6 +703,8 @@ export interface SipTrunk {
   priority: number
   weight: number
   hosts: string[]
+  /** Where the carrier's calls come from: addresses and CIDR ranges. Empty means the hosts. */
+  inbound_sources: string[]
   transport_protocol: string // "udp" | "tcp" | "tls"
   transport_port: number
   verify_tls: boolean
@@ -750,6 +752,7 @@ export interface CreateTrunkRequest {
   priority?: number
   weight?: number
   hosts?: string[]
+  inbound_sources?: string[]
   transport_protocol?: string
   transport_port?: number
   verify_tls?: boolean

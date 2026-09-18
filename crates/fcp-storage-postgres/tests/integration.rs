@@ -1698,6 +1698,31 @@ fn webhook(tenant_id: TenantId, secret: &str) -> fcp_core::storage::WebhookEndpo
     }
 }
 
+/// Where a trunk's carrier sends from reads back through every trunk
+/// SELECT (`docs/TENANT_TRUNKS.md` §7) — a column one of them forgets would
+/// read as "the trunk's hosts" and admit the wrong carrier.
+#[tokio::test]
+async fn a_trunks_inbound_sources_round_trip() {
+    let db = require_db!();
+    let s = db.storage();
+    let a = tenant("a");
+    s.put_tenant(a.clone()).await.unwrap();
+
+    let mut t = trunk(a.id, "carrier", "pw");
+    t.inbound_sources = vec!["203.0.113.0/24".to_string(), "198.51.100.7".to_string()];
+    let id = t.id.clone();
+    s.put_trunk(t.clone()).await.unwrap();
+
+    let by_id = s.get_trunk(&id).await.unwrap().unwrap();
+    assert_eq!(by_id.inbound_sources, t.inbound_sources);
+    assert_eq!(by_id.direction, fcp_core::TrunkDirection::Bidirectional);
+    let listed = s.list_trunks(&a.id).await.unwrap();
+    assert_eq!(listed[0].inbound_sources, t.inbound_sources);
+    let all = s.list_all_trunks().await.unwrap();
+    let mine = all.iter().find(|x| x.id == id).unwrap();
+    assert_eq!(mine.inbound_sources, t.inbound_sources);
+}
+
 #[tokio::test]
 async fn meetings_round_trip_video_settings() {
     let db = require_db!();

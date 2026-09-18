@@ -31,6 +31,7 @@ pub mod service;
 pub mod settings;
 pub mod transport;
 pub mod trunk_egress;
+pub mod trunk_ingress;
 pub mod uac;
 
 // Re-export shared config validation helper

@@ -549,6 +549,7 @@ async fn main() -> Result<()> {
     // empty at startup and filled later, so the provider always exists.
     let trunk_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>;
     let trunk_set = Arc::new(fcp_sbc_core::TrunkSet::platform_only(config.trunks.clone()));
+    trunk_set.resolve_names().await;
     let trunk_health_monitor = Arc::new(TrunkHealthMonitor::new(&config.trunks));
     let trunk_health: Option<Arc<TrunkHealthMonitor>> = Some(Arc::clone(&trunk_health_monitor));
     let outbound_route_provider: Option<Arc<dyn fcp_sip::OutboundRouteProvider>> = {
@@ -1124,6 +1125,9 @@ async fn main() -> Result<()> {
     )?)
     .with_client_address_vouching(config.e911.vouch_client_address)
     .with_header_rules(header_rules.clone())
+    .with_inbound_trunks(Some(
+        Arc::clone(&trunk_set) as Arc<dyn fcp_sip::trunk_ingress::InboundTrunks>
+    ))
     .with_call_signer(call_signer.clone())
     .with_call_recorder(Arc::clone(&call_recorder));
     #[cfg(feature = "storage-redis")]

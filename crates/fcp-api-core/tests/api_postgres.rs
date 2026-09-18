@@ -1935,6 +1935,66 @@ async fn trunks_crud_hides_secrets_and_respects_deployment_mode() {
     app.finish().await;
 }
 
+/// Where a carrier's calls come from, and which way a new trunk carries
+/// calls (`docs/TENANT_TRUNKS.md` §7).
+#[tokio::test]
+async fn a_trunk_names_where_its_carriers_calls_come_from() {
+    let app = require_app!(DeploymentMode::Carrier);
+
+    let created = app
+        .admin(
+            Method::POST,
+            "/api/v1/trunks",
+            Some(json!({
+                "name": "carrier",
+                "hosts": ["sip.carrier.example.net"],
+                "inbound_sources": ["203.0.113.0/24", " 198.51.100.7 ", ""],
+            })),
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.text);
+    assert_eq!(
+        created.json["inbound_sources"],
+        json!(["203.0.113.0/24", "198.51.100.7"]),
+        "trimmed, blanks dropped"
+    );
+    // A new trunk carries calls both ways unless it says otherwise:
+    // inbound admission honours direction now.
+    assert_eq!(created.json["direction"], "bidirectional");
+    let id = created.json["id"].as_str().unwrap().to_string();
+
+    let got = app
+        .admin(Method::GET, &format!("/api/v1/trunks/{id}"), None)
+        .await;
+    assert_eq!(got.json["inbound_sources"], created.json["inbound_sources"]);
+
+    let refused = app
+        .admin(
+            Method::PATCH,
+            &format!("/api/v1/trunks/{id}"),
+            Some(json!({ "inbound_sources": ["sip.carrier.example.net"] })),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.text);
+    assert!(
+        refused.text.contains("not an IP address or CIDR range"),
+        "{}",
+        refused.text
+    );
+
+    let cleared = app
+        .admin(
+            Method::PATCH,
+            &format!("/api/v1/trunks/{id}"),
+            Some(json!({ "inbound_sources": [] })),
+        )
+        .await;
+    assert_eq!(cleared.status, StatusCode::OK, "{}", cleared.text);
+    assert_eq!(cleared.json["inbound_sources"], json!([]));
+
+    app.finish().await;
+}
+
 #[tokio::test]
 async fn trunks_are_closed_to_tenant_admins_in_enterprise_mode() {
     let app = require_app!(DeploymentMode::Enterprise);

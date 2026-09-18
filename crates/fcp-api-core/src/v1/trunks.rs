@@ -37,6 +37,7 @@ pub struct TrunkResponse {
     pub priority: i32,
     pub weight: i32,
     pub hosts: Vec<String>,
+    pub inbound_sources: Vec<String>,
     pub transport_protocol: String,
     pub transport_port: i32,
     pub verify_tls: bool,
@@ -83,6 +84,7 @@ impl From<Trunk> for TrunkResponse {
             priority: t.priority as i32,
             weight: t.weight as i32,
             hosts: t.hosts,
+            inbound_sources: t.inbound_sources,
             // The JSON this API has always answered with, from the one
             // trunk model (`docs/TENANT_TRUNKS.md` §4).
             transport_protocol: t.transport.protocol.to_string().to_lowercase(),
@@ -164,6 +166,8 @@ pub struct CreateTrunkRequest {
     #[serde(default)]
     pub hosts: Option<Vec<String>>,
     #[serde(default)]
+    pub inbound_sources: Option<Vec<String>>,
+    #[serde(default)]
     pub transport_protocol: Option<String>,
     #[serde(default)]
     pub transport_port: Option<i32>,
@@ -218,6 +222,7 @@ pub struct UpdateTrunkRequest {
     pub priority: Option<i32>,
     pub weight: Option<i32>,
     pub hosts: Option<Vec<String>>,
+    pub inbound_sources: Option<Vec<String>>,
     pub transport_protocol: Option<String>,
     pub transport_port: Option<i32>,
     pub verify_tls: Option<bool>,
@@ -308,6 +313,7 @@ struct TrunkFields {
     priority: Option<i32>,
     weight: Option<i32>,
     hosts: Option<Vec<String>>,
+    inbound_sources: Option<Vec<String>>,
     transport_protocol: Option<String>,
     transport_port: Option<i32>,
     verify_tls: Option<bool>,
@@ -357,6 +363,20 @@ fn apply_trunk_fields(trunk: &mut Trunk, fields: TrunkFields) -> Result<(), ApiE
     }
     if let Some(hosts) = fields.hosts {
         trunk.hosts = hosts;
+    }
+    if let Some(sources) = fields.inbound_sources {
+        // Where the carrier's calls come from (`docs/TENANT_TRUNKS.md`
+        // §7); stored as written, refused if any is not an address or a
+        // range.
+        let sources: Vec<String> = sources
+            .into_iter()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        for source in &sources {
+            fcp_core::trunk::parse_inbound_source(source).map_err(ApiError::BadRequest)?;
+        }
+        trunk.inbound_sources = sources;
     }
     if let Some(proto) = &fields.transport_protocol {
         trunk.transport.protocol = match proto.to_ascii_lowercase().as_str() {
@@ -486,6 +506,7 @@ impl From<CreateTrunkRequest> for TrunkFields {
             priority: r.priority,
             weight: r.weight,
             hosts: r.hosts,
+            inbound_sources: r.inbound_sources,
             transport_protocol: r.transport_protocol,
             transport_port: r.transport_port,
             verify_tls: r.verify_tls,
@@ -526,6 +547,7 @@ impl From<UpdateTrunkRequest> for TrunkFields {
             priority: r.priority,
             weight: r.weight,
             hosts: r.hosts,
+            inbound_sources: r.inbound_sources,
             transport_protocol: r.transport_protocol,
             transport_port: r.transport_port,
             verify_tls: r.verify_tls,

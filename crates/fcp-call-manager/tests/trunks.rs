@@ -739,6 +739,109 @@ async fn a_trunk_that_asks_for_stir_shaken_gets_a_signed_call() {
 /// The claims of the PASSporT in an `Identity` header (RFC 8225), read
 /// without verifying it: the signature is the carrier's business, the
 /// claims are this test's.
+/// A number `tenant` owns, as a carrier would dial it, answered by a flow
+/// of that tenant's that answers and waits: which tenant's call it became
+/// is then on its record.
+async fn seed_answered_number(stack: &Stack, tenant: TenantId, e164: &str) {
+    use fcp_core::storage::{LineBindingStore, PhoneNumberStore};
+    let flow_id = format!("answer-{e164}");
+    let flow: fcp_flow::FlowDefinition = serde_json::from_value(serde_json::json!({
+        "id": flow_id,
+        "name": "Answer",
+        "version": 1,
+        "initial_node": "answer",
+        "enabled": true,
+        "tenant_id": tenant.to_string(),
+        "nodes": {
+            "answer": {"id": "answer", "name": "Answer", "type": "answer", "next": "wait"},
+            "wait": {"id": "wait", "name": "Wait", "type": "pause", "duration": 30, "next": "done"},
+            "done": {"id": "done", "name": "Hang up", "type": "hangup"}
+        }
+    }))
+    .expect("flow fixture deserializes");
+    fcp_flow::FlowStore::insert_flow(stack.seed.storage(), flow)
+        .await
+        .expect("seed flow");
+    let number = fcp_core::PhoneNumber::new(e164.to_string(), tenant).expect("valid number");
+    let mut binding =
+        fcp_core::LineBinding::new(number.id, None, fcp_core::BindingType::Ivr, tenant);
+    binding.flow_id = Some(flow_id);
+    stack
+        .seed
+        .storage()
+        .put_phone_number(number)
+        .await
+        .expect("seed number");
+    stack
+        .seed
+        .storage()
+        .put_line_binding(binding)
+        .await
+        .expect("seed binding");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_carriers_call_is_the_tenant_its_trunk_says() {
+    // One carrier, from one address, serving two tenants — the case a
+    // carrier's address alone cannot settle, so the number does.
+    let carrier = Carrier::new("shared-address").await;
+    let mut stack = stack_or_skip!(&[]);
+
+    let acme = stack.seed.tenant_id;
+    let globex = stack.seed.tenant("globex", "globex.e2e.local").await;
+    let both_ways = |trunk: &mut fcp_core::Trunk| {
+        trunk.direction = fcp_core::TrunkDirection::Bidirectional;
+    };
+    let acme_trunk = stack
+        .seed
+        .trunk_with(acme, "acme-in", carrier.port(), both_ways)
+        .await;
+    let globex_trunk = stack
+        .seed
+        .trunk_with(globex, "globex-in", carrier.port(), both_ways)
+        .await;
+
+    // Each tenant's number is answered by a flow of that tenant's.
+    seed_answered_number(&stack, acme, "+15125550111").await;
+    seed_answered_number(&stack, globex, "+15125550222").await;
+    tokio::time::sleep(REFRESHED).await;
+
+    // The carrier's calls are addressed to this node, as a carrier's are:
+    // nothing in them says which tenant they are for.
+    let from_carrier = Phone::new("carrier-caller", "x", "carrier.example", stack.sip)
+        .await
+        .expect("carrier phone binds");
+    for number in ["+15125550111", "+15125550222"] {
+        let call = from_carrier.call(number).await.unwrap();
+        if call.answered(SOON).await.is_err() {
+            let why = format!("{number} was not answered; the call is {:?}", call.phase());
+            stack.fail(&why).await;
+        }
+        assert_eq!(call.hangup().await.unwrap(), 200);
+    }
+
+    // A number neither owns, from an address both take calls from, is
+    // nobody's call.
+    let call = from_carrier.call("+15125550333").await.unwrap();
+    assert_eq!(call.failed(SOON).await, Some(404));
+
+    let records = stack.seed.cdrs(None, 2, SOON).await;
+    let record_for = |tenant: TenantId| {
+        records
+            .iter()
+            .find(|r| r.tenant_id == tenant)
+            .unwrap_or_else(|| panic!("a record for {tenant}: {records:#?}"))
+    };
+    assert_eq!(record_for(acme).trunk_id, Some(acme_trunk), "{records:#?}");
+    assert_eq!(
+        record_for(globex).trunk_id,
+        Some(globex_trunk),
+        "{records:#?}"
+    );
+
+    stack.finish().await;
+}
+
 /// A call from a tenant user out on a trunk that takes DTMF as `mode`,
 /// answered at both ends: the caller's phone, its call and the carrier's
 /// leg.

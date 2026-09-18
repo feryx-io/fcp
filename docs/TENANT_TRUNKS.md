@@ -257,6 +257,51 @@ That makes the existing admission check tenant-correct rather than
 tenant-shaped: today it looks up the trunks of the tenant it already
 guessed; with this it finds the trunk first and takes the tenant from it.
 
+**Settled when phase 4 was built (2026-09-18).** The paragraph above left
+four questions open; each was put to the user with a recommendation, and
+every recommendation was taken.
+
+1. **Where a carrier's calls come from.** A trunk gains
+   `inbound_sources`: addresses and CIDR ranges, since a carrier often
+   sends from addresses it does not receive on. Empty means the trunk's
+   `hosts`, with names resolved when the node refreshes its trunks, off
+   the call path.
+2. **Two tenants on one carrier address.** Among the tenants whose trunks
+   match the source, the call is the one that owns the dialled number. When
+   only one tenant's trunks match, it is that tenant's call whatever the
+   number. When several match and none owns the number, the call is
+   refused (`404`).
+3. **Direction.** Inbound honours it: an `upstream` trunk takes no calls.
+   Nothing honoured direction before, and the API's default for a new
+   trunk was `upstream`. So migration 074 moves every stored `upstream`
+   trunk to `bidirectional`, and the API's default becomes
+   `bidirectional`, as a `[[trunks]]` entry's already was.
+4. **Authentication.** A trunk's credentials are the ones this node
+   presents to the carrier, and carriers rarely answer a challenge, so
+   there is no inbound digest. A registering trunk is recognised by the
+   account the call is addressed to: the Request-URI user is its
+   `credentials.username`. That is what separates two tenants on one
+   carrier.
+
+What follows from §§5 and 13 without a question:
+
+- **The order.** A trusted edge naming its caller comes first. Next, a
+  device registered at the address the call came from: it is that
+  device, whoever else shares the address (phones behind an SBC that is
+  also a platform trunk, every test phone on the loopback). Then the
+  trunk. Then the domain, as before.
+- **A platform trunk** carries any tenant's numbers, so a call on one is
+  the call of whoever owns the dialled number. When nobody owns it, the
+  request's own addressing decides, as before.
+- **A carrier's call is not sent back out to a carrier.** A number owned
+  here with nothing bound to it and nobody registered gets `404` when the
+  call arrived on a trunk, rather than going out on a trunk (§5). A
+  carrier that routes the number here would send it straight back.
+- **Limits** are the trunk's own `max_concurrent_calls` and `cps_limit`,
+  shared with its outbound calls (carriers sell channels, not
+  directions), per node (§13.3).
+- **Header rules** the trunk names run on its inbound requests too (§6).
+
 ## 8. Cluster
 
 - **Registration.** A registering trunk is owned by one node: the lowest
@@ -544,7 +589,47 @@ One PR per phase, reviewed before the next starts.
 
    **Phase 3 is complete.**
 4. **Inbound.** The trunk decides the tenant; per-trunk inbound
-   authentication and limits; admission rewritten on the match.
+   authentication and limits; admission rewritten on the match. Its open
+   questions were settled when it was built (§7), and it was split like
+   phase 3.
+
+   **4a — whose call it is.** *Done (v0.25.192).*
+
+   - **The trunk decides.** Each node's `TrunkSet` keeps an index of where
+     every trunk that takes calls takes them from: its `inbound_sources`,
+     else its hosts with names resolved at each refresh. The index is
+     sorted most specific range first. A carrier's INVITE is matched
+     against it after the trusted edge and the registered-device check,
+     and before the domain. `choose_inbound` (`fcp_sip::trunk_ingress`)
+     picks the trunk and the tenant as §7 says. An `upstream` or disabled
+     trunk is never a candidate.
+   - **Admission is the match.** A source that matches a trunk is
+     admitted; one that matches none is refused (`403`), as before. A node
+     with no trunk set (the IVR, voicemail and conference servers) still
+     admits by its tenants' stored trunks. The old check looked only at
+     the trunks of the tenant the domain had guessed, compared hosts as
+     strings, never resolved a name and ignored direction.
+   - **The record** names the trunk an inbound call arrived on
+     (`trunk_id`, `trunk_name`). The call remembers it too
+     (`arrived_on_trunk`): a carrier's call to a number owned here that
+     nothing answers gets `404` rather than going back out to a carrier.
+   - **The model:** `inbound_sources` on the trunk, `/v1/trunks` and the
+     admin UI (addresses and CIDR ranges, refused otherwise); migration
+     074 adds the column, moves stored `upstream` trunks to
+     `bidirectional` and makes that the default.
+   - On the floor: one carrier on one address serves two tenants. Each
+     tenant's number is answered by that tenant's flow, and each record
+     names that tenant's trunk, though the Request-URI names only this
+     node's address. A number neither tenant owns is refused.
+   - **Not yet:** a registering trunk is matched by the account a call is
+     addressed to, but every trunk still registers under this node's own
+     identity. The match works for a carrier that addresses the account,
+     and fully once phase 5 registers each trunk as itself.
+
+   **4b — the trunk's limits and rules on the way in.** Inbound calls
+   counted against the trunk's `max_concurrent_calls` and `cps_limit`, and
+   refused with `503` past them; the header rules the trunk names run on
+   its inbound requests.
 5. **Cluster.** One node registers a registering trunk; health per node;
    failover across nodes; the events.
 6. **Emergency and policy.** `emergency_capable` on tenant trunks closes

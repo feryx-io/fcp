@@ -583,6 +583,10 @@ pub struct SipMessageHandler {
     /// What signs the calls a trunk asks to have signed (RFC 8224);
     /// `None` on a node with no signing key.
     call_signer: Option<Arc<dyn crate::trunk_egress::TrunkCallSigner>>,
+    /// The trunks this node takes carriers' calls on, which decide whose
+    /// call each is (`docs/TENANT_TRUNKS.md` §7); `None` on a node that
+    /// admits by its tenants' stored trunks as before.
+    inbound_trunks: Option<Arc<dyn crate::trunk_ingress::InboundTrunks>>,
     /// Conference calls whose B-leg is being moved to another conference
     /// node (phase 5b), so a second REFER while one is in flight is refused.
     conference_migrations: Arc<dashmap::DashMap<fcp_b2bua_core::CallId, ()>>,
@@ -931,6 +935,7 @@ impl SipMessageHandler {
             emergency_fallbacks: Arc::new(dashmap::DashMap::new()),
             b_leg_srtp: Arc::new(dashmap::DashMap::new()),
             header_rules: None,
+            inbound_trunks: None,
             call_signer: None,
             conference_migrations: Arc::new(dashmap::DashMap::new()),
         };
@@ -1012,6 +1017,16 @@ impl SipMessageHandler {
         rules: Option<Arc<dyn crate::trunk_egress::TrunkHeaderRules>>,
     ) -> Self {
         self.header_rules = rules;
+        self
+    }
+
+    /// The trunks this node takes carriers' calls on
+    /// (`docs/TENANT_TRUNKS.md` §7).
+    pub fn with_inbound_trunks(
+        mut self,
+        trunks: Option<Arc<dyn crate::trunk_ingress::InboundTrunks>>,
+    ) -> Self {
+        self.inbound_trunks = trunks;
         self
     }
 
@@ -1491,6 +1506,95 @@ impl SipMessageHandler {
         TrunkBindings::Routed(bindings)
     }
 
+    /// Whether an INVITE comes from a device registered here: its From
+    /// AoR has a binding at the address it came from.
+    async fn is_registered_device(
+        &self,
+        request: &sip_core::Request,
+        peer_ip: std::net::IpAddr,
+    ) -> bool {
+        if let Some(registrar) = &self.registrar {
+            let from_header = sip_parse::header(request.headers(), "From");
+            let from_aor = from_header.and_then(|h| {
+                let s = h.as_str();
+                // Extract URI from name-addr: "Name" <sip:user@host> or sip:user@host
+                let uri = if let Some(start) = s.find('<') {
+                    let end = s.find('>').unwrap_or(s.len());
+                    &s[start + 1..end]
+                } else {
+                    s.split(';').next().unwrap_or(s)
+                };
+                let cleaned = uri.trim_start_matches("sip:").trim_start_matches("sips:");
+                if cleaned.contains('@') {
+                    Some(format!("sip:{}", cleaned))
+                } else {
+                    None
+                }
+            });
+            if let Some(aor) = from_aor {
+                registrar
+                    .get_registrations(&aor)
+                    .await
+                    .map(|regs| {
+                        regs.iter()
+                            .any(|binding| binding.contact().contains(&peer_ip.to_string()))
+                    })
+                    .unwrap_or(false)
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    }
+
+    /// The trunk a carrier's INVITE arrived on, and whose call that makes it
+    /// (`docs/TENANT_TRUNKS.md` §7); `None` when this node has no trunk set.
+    async fn inbound_trunk(
+        &self,
+        request: &sip_core::Request,
+        peer_ip: std::net::IpAddr,
+    ) -> Option<crate::trunk_ingress::InboundChoice> {
+        let candidates = self.inbound_trunks.as_ref()?.inbound_from(peer_ip);
+        if candidates.is_empty() {
+            return Some(crate::trunk_ingress::InboundChoice::NoTrunk);
+        }
+        let request_user = request
+            .uri()
+            .as_sip()
+            .and_then(|u| u.user().map(str::to_string));
+        // The dialled number is the Request-URI's user, or the To's when the
+        // carrier addresses the account a trunk registered.
+        let to_user = sip_parse::header(request.headers(), "To").and_then(|to| {
+            let to = to.as_str();
+            let uri = to
+                .split_once('<')
+                .and_then(|(_, rest)| rest.split_once('>').map(|(u, _)| u))
+                .unwrap_or(to);
+            let uri = uri.trim_start_matches("sip:").trim_start_matches("sips:");
+            uri.split_once('@').map(|(u, _)| u.to_string())
+        });
+        let mut number_owner = None;
+        if let Some(storage) = &self.storage {
+            let max_digits = self.b2bua_config.max_extension_digits;
+            for user in request_user.iter().chain(to_user.iter()) {
+                let number = normalize_dialed_number(user, max_digits);
+                if !is_e164_number(&number) {
+                    continue;
+                }
+                if let Ok(Some(owned)) = storage.get_phone_number_by_e164(&number).await {
+                    number_owner = Some(owned.tenant_id);
+                    break;
+                }
+            }
+        }
+        Some(crate::trunk_ingress::choose_inbound(
+            &candidates,
+            request_user.as_deref(),
+            number_owner,
+        ))
+    }
+
     async fn resolve_runtime_tenant(
         &self,
         request: &sip_core::Request,
@@ -1908,6 +2012,31 @@ impl SipMessageHandler {
         // A trusted edge placing a call for one of a tenant's users names
         // them; that is the call's tenant and caller.
         let edge_caller = self.trusted_edges.caller(request, peer.ip());
+        // A registered device is itself, whoever else shares its address;
+        // otherwise a carrier's call is whose the trunk it arrived on says
+        // (`docs/TENANT_TRUNKS.md` §7), before the domain is looked at.
+        let is_registered_device =
+            edge_caller.is_none() && self.is_registered_device(request, peer.ip()).await;
+        let inbound = if edge_caller.is_none() && !is_registered_device {
+            self.inbound_trunk(request, peer.ip()).await
+        } else {
+            None
+        };
+        if let Some(crate::trunk_ingress::InboundChoice::Ambiguous) = &inbound {
+            info!(
+                source = %peer,
+                "Rejecting INVITE: several tenants' trunks take calls from this source and the \
+                 number is none of theirs"
+            );
+            let response = self.create_simple_response(request, 404, "Not Found");
+            handle.send_final(response).await;
+            return Ok(());
+        }
+        let inbound_trunk = inbound.as_ref().and_then(|c| c.trunk().cloned());
+        let trunk_tenant = match &inbound {
+            Some(crate::trunk_ingress::InboundChoice::Tenant { tenant, .. }) => Some(*tenant),
+            _ => None,
+        };
         let tenant_id = if let Some(edge) = &edge_caller {
             debug!(
                 source = %peer,
@@ -1916,6 +2045,14 @@ impl SipMessageHandler {
                 "INVITE placed by a trusted edge for a tenant user"
             );
             edge.tenant_id
+        } else if let (Some(tenant), Some(trunk)) = (trunk_tenant, &inbound_trunk) {
+            debug!(
+                source = %peer,
+                tenant_id = %tenant,
+                trunk = %trunk.name,
+                "INVITE arrived on a trunk; the call is the trunk's tenant's"
+            );
+            tenant
         } else if let Some(domain) = extract_tenant_from_invite(request) {
             if fcp_core::is_host_literal(&domain) {
                 // IP literal or localhost — use the default tenant directly.
@@ -2031,8 +2168,9 @@ impl SipMessageHandler {
             return Ok(());
         };
 
-        // Trunk admission control: check if source IP is allowed
-        // Local registered devices are always allowed; external sources must match an enabled trunk
+        // Trunk admission control: an external source is a trusted edge, a
+        // registered device, or a carrier arriving on a trunk this node
+        // takes calls on (`docs/TENANT_TRUNKS.md` §7).
         if let Some(storage) = &self.storage {
             let peer_ip = peer.ip();
             let local_ip: std::net::IpAddr = self
@@ -2041,46 +2179,16 @@ impl SipMessageHandler {
                 .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
             let is_local = peer_ip == local_ip || peer_ip.is_loopback();
 
-            if !is_local && edge_caller.is_none() {
-                // Check if the source is a registered device by matching source IP
-                // against registered contacts
-                let is_registered_device = if let Some(registrar) = &self.registrar {
-                    let from_header = sip_parse::header(request.headers(), "From");
-                    let from_aor = from_header.and_then(|h| {
-                        let s = h.as_str();
-                        // Extract URI from name-addr: "Name" <sip:user@host> or sip:user@host
-                        let uri = if let Some(start) = s.find('<') {
-                            let end = s.find('>').unwrap_or(s.len());
-                            &s[start + 1..end]
-                        } else {
-                            s.split(';').next().unwrap_or(s)
-                        };
-                        let cleaned = uri.trim_start_matches("sip:").trim_start_matches("sips:");
-                        if cleaned.contains('@') {
-                            Some(format!("sip:{}", cleaned))
-                        } else {
-                            None
-                        }
-                    });
-                    if let Some(aor) = from_aor {
-                        registrar
-                            .get_registrations(&aor)
-                            .await
-                            .map(|regs| {
-                                regs.iter()
-                                    .any(|binding| binding.contact().contains(&peer_ip.to_string()))
-                            })
-                            .unwrap_or(false)
-                    } else {
-                        false
-                    }
-                } else {
+            if !is_local && edge_caller.is_none() && !is_registered_device {
+                let trunk_allowed = if inbound_trunk.is_some() {
+                    true
+                } else if self.inbound_trunks.is_some() {
                     false
-                };
-
-                if !is_registered_device {
+                } else {
+                    // A node without a trunk set admits by its tenants'
+                    // stored trunks, as it always has.
                     let peer_ip_str = peer_ip.to_string();
-                    let trunk_allowed = match storage.list_trunks(&tenant_id).await {
+                    match storage.list_trunks(&tenant_id).await {
                         Ok(trunks) => trunks.iter().any(|t| {
                             t.enabled
                                 && t.hosts.iter().any(|h| {
@@ -2092,24 +2200,24 @@ impl SipMessageHandler {
                             warn!(error = %e, tenant_id = %tenant_id, "Failed to query trunks for admission check, denying");
                             false
                         }
-                    };
-
-                    if !trunk_allowed {
-                        info!(
-                            source = %peer,
-                            tenant_id = %tenant_id,
-                            "Rejecting INVITE: source IP does not match any enabled trunk"
-                        );
-                        let response = self.create_simple_response(
-                            request,
-                            403,
-                            "Forbidden - no trunk configured for source",
-                        );
-                        handle.send_final(response).await;
-                        return Ok(());
                     }
-                    debug!(source = %peer, tenant_id = %tenant_id, "INVITE admitted via trunk");
+                };
+
+                if !trunk_allowed {
+                    info!(
+                        source = %peer,
+                        tenant_id = %tenant_id,
+                        "Rejecting INVITE: source IP does not match any enabled trunk"
+                    );
+                    let response = self.create_simple_response(
+                        request,
+                        403,
+                        "Forbidden - no trunk configured for source",
+                    );
+                    handle.send_final(response).await;
+                    return Ok(());
                 }
+                debug!(source = %peer, tenant_id = %tenant_id, "INVITE admitted via trunk");
             }
         }
 
@@ -2215,6 +2323,12 @@ impl SipMessageHandler {
         call.a_leg_invite_tx = Some(handle.key().clone());
         call.max_duration = billing_max_duration;
         call.emergency = emergency.clone();
+        // The record names the trunk an inbound call arrived on.
+        if let Some(trunk) = &inbound_trunk {
+            call.trunk_name = Some(trunk.name.clone());
+            call.trunk_id = Some(trunk.trunk_id());
+            call.arrived_on_trunk = Some(trunk.trunk_id());
+        }
         // A caller transferred here carries the call it left, from the
         // Refer-To this B2BUA relayed (see handle_refer).
         call.correlation_id = sip_parse::header(request.headers(), TRANSFERRED_FROM_HEADER)
@@ -4292,9 +4406,30 @@ impl SipMessageHandler {
                                     "No line binding found for phone number, trying direct registrar lookup"
                                 );
 
+                                // A carrier's call to a number of ours that
+                                // nothing answers is not sent back out to a
+                                // carrier, which would send it straight back.
+                                let from_a_carrier = self
+                                    .call_manager
+                                    .get_call(&call_id)
+                                    .is_some_and(|c| c.arrived_on_trunk.is_some());
                                 if let Some(registrar) = &self.registrar {
                                     match registrar.get_registrations(destination_aor).await {
                                         Ok(bindings) if !bindings.is_empty() => bindings,
+                                        _ if from_a_carrier => {
+                                            info!(call_id = %call_id, phone_number = %destination_aor, "A carrier's call to a number of ours that nothing answers");
+                                            let response = self.create_simple_response(
+                                                request,
+                                                404,
+                                                "Not Found",
+                                            );
+                                            a_leg_handle.send_final(response).await;
+                                            let _ = self.call_manager.terminate_call(
+                                                &call_id,
+                                                Some("Number has nothing bound to it".to_string()),
+                                            );
+                                            return Ok(());
+                                        }
                                         // Nobody here answers this number: it is an
                                         // outbound call, and goes out on a trunk.
                                         _ => match self
