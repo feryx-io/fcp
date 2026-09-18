@@ -191,6 +191,11 @@ impl TrunkSet {
         all
     }
 
+    /// The trunk with `key` ([`Trunk::key`]), if this node knows it.
+    pub fn find(&self, key: &str) -> Option<Arc<Trunk>> {
+        self.all().into_iter().find(|t| t.key() == key)
+    }
+
     /// This node's own trunks.
     pub fn platform(&self) -> &[Arc<Trunk>] {
         &self.platform

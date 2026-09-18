@@ -9,6 +9,9 @@ use fcp_events::{CallEvent, EventPublisher, PlatformEvent};
 use std::sync::Arc;
 use tracing::{debug, info};
 
+/// What a [`CallManager`] tells of each call it ends or forgets.
+pub type OnEnded = Arc<dyn Fn(&CallId) + Send + Sync>;
+
 /// Call manager service.
 ///
 /// This service manages the lifecycle of all active calls in the B2BUA.
@@ -39,6 +42,11 @@ pub struct CallManager {
     /// The region this node advertises, stamped on every record.
     region: Option<String>,
 
+    /// Told of every call this manager ends or forgets, after its record
+    /// leaves: what the node counted against the call (a trunk's channels,
+    /// `docs/TENANT_TRUNKS.md` §7) is released here, wherever the call ended.
+    on_ended: Option<OnEnded>,
+
     /// Emergency calls' audit records as their inserts land: the record id
     /// once written, so the call's ending completes the right row however
     /// short the call was.
@@ -56,6 +64,7 @@ impl CallManager {
             billing: None,
             cdr: None,
             region: None,
+            on_ended: None,
             emergency_records: Arc::new(DashMap::new()),
         }
     }
@@ -72,6 +81,7 @@ impl CallManager {
             billing: Some(billing),
             cdr: Some(cdr),
             region: None,
+            on_ended: None,
             emergency_records: Arc::new(DashMap::new()),
         }
     }
@@ -125,6 +135,7 @@ impl CallManager {
             billing: Some(billing),
             cdr: Some(cdr),
             region: None,
+            on_ended: None,
             emergency_records: Arc::new(DashMap::new()),
         }
     }
@@ -138,6 +149,7 @@ impl CallManager {
             node_id: None,
             cdr: None,
             region: None,
+            on_ended: None,
             billing: None,
             emergency_records: Arc::new(DashMap::new()),
         }
@@ -172,6 +184,11 @@ impl CallManager {
         self.node_id.as_deref()
     }
 
+    /// Be told of every call this manager ends or forgets.
+    pub fn set_on_ended(&mut self, on_ended: OnEnded) {
+        self.on_ended = Some(on_ended);
+    }
+
     /// The region this node advertises; on every record it writes.
     pub fn set_region(&mut self, region: Option<String>) {
         self.region = region;
@@ -204,6 +221,9 @@ impl CallManager {
     /// node's leg).
     pub fn discard_call(&self, call_id: &CallId) {
         self.calls.remove(call_id);
+        if let Some(on_ended) = &self.on_ended {
+            on_ended(call_id);
+        }
     }
 
     /// Record why a call is ending before the ending completes: the BYE
@@ -645,6 +665,9 @@ impl CallManager {
 
         // Remove from active calls
         self.calls.remove(call_id);
+        if let Some(on_ended) = &self.on_ended {
+            on_ended(call_id);
+        }
 
         Ok(())
     }

@@ -626,10 +626,47 @@ One PR per phase, reviewed before the next starts.
      identity. The match works for a carrier that addresses the account,
      and fully once phase 5 registers each trunk as itself.
 
-   **4b — the trunk's limits and rules on the way in.** Inbound calls
-   counted against the trunk's `max_concurrent_calls` and `cps_limit`, and
-   refused with `503` past them; the header rules the trunk names run on
-   its inbound requests.
+   **4b — the trunk's limits and rules on the way in.** *Done
+   (v0.25.193).*
+
+   - **One count per trunk, both directions.** A trunk's
+     `max_concurrent_calls` and `cps_limit` are its carrier's, and a
+     carrier sells channels, not directions. A carrier's call counts
+     against its trunk when it is admitted; past either limit it gets
+     `503` with `Retry-After: 1`, unless it is an emergency call. An
+     outbound call counts when the trunk answers it. The handler never
+     learns when a failover attempt that did not answer has gone, so
+     counting at the INVITE would hold that attempt's channel for the
+     whole call. A call ringing on a trunk is not counted yet; the router
+     still skips a trunk that is full.
+   - **Released wherever the call ends.** `TrunkCalls` (`fcp-sbc-core`)
+     keeps a ledger of what each call was counted against. The
+     `CallManager` tells it of every call it ends or discards
+     (`set_on_ended`), so every path that ends a call releases what it
+     held.
+   - **A latent bug fixed on the way:** the router counted a call on its
+     primary route's trunk each time it resolved routes, and only the SBC
+     ever released that count. On a call manager (and the IVR, voicemail
+     and conference servers) a trunk with `max_concurrent_calls` set
+     stopped being chosen once that many calls had ever left on it. Those
+     nodes now leave counting to the handler, or count nothing
+     (`TrunkRouter::without_call_counting`). The call manager's
+     `cps_limit`, which `NoCpsLimit` had ignored, is enforced by
+     `TrunkCps`: the calls started on a trunk in the current second, in
+     either direction.
+   - **Ingress rules.** The header rules a trunk names run on the INVITE
+     it brings in, once the trunk is known and before anything else reads
+     the request. The call sees the request as they leave it. A rule may
+     not change what ties the request to its transaction: Via, Call-ID and
+     CSeq are put back as they arrived, with a warning, so the responses
+     still match what the carrier sent. The trunk itself is identified from
+     the request as it arrived. Only the INVITE is rewritten, not the
+     requests later in its dialog.
+   - On the wire: a trunk with one channel carries Alice's call out, and
+     refuses the carrier's call in with `503` while that call lasts. Once
+     it ends, the carrier's next call takes the channel and a second is
+     refused. A carrier's national caller number reaches the phone as
+     E.164, rewritten by the ingress rule its trunk names.
 5. **Cluster.** One node registers a registering trunk; health per node;
    failover across nodes; the events.
 6. **Emergency and policy.** `emergency_capable` on tenant trunks closes

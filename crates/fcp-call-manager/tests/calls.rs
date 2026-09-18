@@ -1100,10 +1100,12 @@ record_calls = true
         stack.fail("the queue did not record", &alice_phone).await;
     };
 
-    // They talk over each other: the recording has both at once.
-    alice_call.media().play_tone(440.0, 2000);
+    // They talk over each other: the recording has both at once. Both tones
+    // run past the hangup, so wherever the recorded window falls it is inside
+    // the overlap rather than beside it.
+    alice_call.media().play_tone(440.0, 6000);
     tokio::time::sleep(Duration::from_millis(400)).await;
-    bob_call.media().play_tone(880.0, 1000);
+    bob_call.media().play_tone(880.0, 6000);
     assert!(bob_call.media().heard(440, SOON).await);
     assert!(alice_call.media().heard(880, SOON).await);
     tokio::time::sleep(Duration::from_secs(1)).await;
@@ -1128,7 +1130,10 @@ record_calls = true
         .filter(|frame| {
             let low = fcp_testkit::media::goertzel_ratio(frame, 440);
             let high = fcp_testkit::media::goertzel_ratio(frame, 880);
-            low > 0.2 && high > 0.2 && low + high > 0.7
+            // One tone on its own reads about 0.87 (the ratio leaks into
+            // neighbouring bins), so two mixed tones can never sum to much
+            // more than that: 0.7 measured 0.71 here and nothing on CI.
+            low > 0.2 && high > 0.2 && low + high > 0.55
         })
         .count();
     assert!(
@@ -1183,5 +1188,73 @@ async fn a_number_that_records_its_calls_records_them_without_an_announcement_wh
         fcp_core::recording::CallRecordingSource::Number
     );
     assert_eq!(rows[0].consent, fcp_core::RecordingConsent::NotRequired);
+    stack.finish().await;
+}
+
+/// A flow that answers and then hangs up: the node ends the call it
+/// answered itself. That BYE goes out from inside the flow executor's own
+/// chain, deep enough that it overflowed the worker's stack and aborted
+/// the whole node — the call was never ended and its record never written.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_flow_that_hangs_up_ends_the_call_it_answered() {
+    use fcp_core::storage::{LineBindingStore, PhoneNumberStore};
+
+    let stack = stack_or_skip!();
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let flow: fcp_flow::FlowDefinition = serde_json::from_value(serde_json::json!({
+        "id": "answer-then-hangup",
+        "name": "Answer then hang up",
+        "version": 1,
+        "initial_node": "answer",
+        "enabled": true,
+        "tenant_id": stack.seed.tenant_id.to_string(),
+        "nodes": {
+            "answer": {"id": "answer", "name": "Answer", "type": "answer", "next": "wait"},
+            "wait": {"id": "wait", "name": "Wait", "type": "pause", "duration": 1, "next": "done"},
+            "done": {"id": "done", "name": "Hang up", "type": "hangup"}
+        }
+    }))
+    .expect("flow fixture deserializes");
+    fcp_flow::FlowStore::insert_flow(stack.seed.storage(), flow)
+        .await
+        .expect("seed flow");
+    let number = fcp_core::PhoneNumber::new("+15125550777".to_string(), stack.seed.tenant_id)
+        .expect("valid number");
+    let mut binding = fcp_core::LineBinding::new(
+        number.id,
+        None,
+        fcp_core::BindingType::Ivr,
+        stack.seed.tenant_id,
+    );
+    binding.flow_id = Some("answer-then-hangup".to_string());
+    stack
+        .seed
+        .storage()
+        .put_phone_number(number)
+        .await
+        .expect("seed number");
+    stack
+        .seed
+        .storage()
+        .put_line_binding(binding)
+        .await
+        .expect("seed binding");
+
+    let phone = stack.phone(&alice).await;
+    let call = phone.call("+15125550777").await.unwrap();
+    call.answered(SOON).await.unwrap();
+    assert!(call.ended(SOON).await, "the flow never hung the call up");
+    let cdr = stack.cdrs(1, SOON).await.remove(0);
+    assert!(
+        cdr["to_uri"]
+            .as_str()
+            .is_some_and(|to| to.contains("+15125550777")),
+        "the record is this call's: {cdr}"
+    );
+    // A flow answering is an answer: the record says so, and it has the
+    // time and the duration that go with one.
+    assert_eq!(cdr["disposition"], "Answered", "{cdr}");
+    assert!(!cdr["answer_time_epoch"].is_null(), "{cdr}");
+    assert!(!cdr["call_duration_ms"].is_null(), "{cdr}");
     stack.finish().await;
 }

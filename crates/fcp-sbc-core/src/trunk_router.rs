@@ -30,6 +30,10 @@ pub struct TrunkRouter {
     lcr: Option<LcrRouteTable>,
     lcr_config: LcrConfig,
     quality: Option<Arc<TrunkQualityTracker>>,
+    /// Whether choosing a route counts a call on its trunk. The SBC's does,
+    /// and releases it when the call ends; a node whose handler counts the
+    /// calls its trunks carry ([`crate::TrunkCalls`]) turns this off.
+    counts_calls: bool,
 }
 
 impl TrunkRouter {
@@ -45,6 +49,7 @@ impl TrunkRouter {
             lcr: None,
             lcr_config: LcrConfig::default(),
             quality: None,
+            counts_calls: true,
         }
     }
 
@@ -62,6 +67,7 @@ impl TrunkRouter {
             lcr: None,
             lcr_config: LcrConfig::default(),
             quality: None,
+            counts_calls: true,
         }
     }
 
@@ -83,7 +89,16 @@ impl TrunkRouter {
             lcr,
             lcr_config,
             quality: Some(quality),
+            counts_calls: true,
         }
+    }
+
+    /// Leave counting the calls a trunk carries to the node's handler,
+    /// which releases each when its call ends. Selection still honours the
+    /// counts, and still records calls against each trunk's CPS.
+    pub fn without_call_counting(mut self) -> Self {
+        self.counts_calls = false;
+        self
     }
 
     /// The trunks this router routes by.
@@ -111,6 +126,7 @@ impl TrunkRouter {
             lcr,
             lcr_config,
             quality: Some(quality),
+            counts_calls: true,
         }
     }
 
@@ -559,7 +575,9 @@ impl TrunkRouter {
     /// Paired with the Terminated-event decrement in the SBC hooks, which is
     /// keyed by the call's recorded trunk name.
     fn record_call_on(&self, trunk_key: &str) {
-        self.health.call_started(trunk_key);
+        if self.counts_calls {
+            self.health.call_started(trunk_key);
+        }
         self.cps.record_trunk_call(trunk_key);
     }
 

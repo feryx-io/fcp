@@ -587,6 +587,9 @@ pub struct SipMessageHandler {
     /// call each is (`docs/TENANT_TRUNKS.md` §7); `None` on a node that
     /// admits by its tenants' stored trunks as before.
     inbound_trunks: Option<Arc<dyn crate::trunk_ingress::InboundTrunks>>,
+    /// What each trunk carries on this node, against its limits (§7);
+    /// `None` on a node that does not count.
+    trunk_calls: Option<Arc<dyn crate::trunk_ingress::TrunkCallCounter>>,
     /// Conference calls whose B-leg is being moved to another conference
     /// node (phase 5b), so a second REFER while one is in flight is refused.
     conference_migrations: Arc<dashmap::DashMap<fcp_b2bua_core::CallId, ()>>,
@@ -936,6 +939,7 @@ impl SipMessageHandler {
             b_leg_srtp: Arc::new(dashmap::DashMap::new()),
             header_rules: None,
             inbound_trunks: None,
+            trunk_calls: None,
             call_signer: None,
             conference_migrations: Arc::new(dashmap::DashMap::new()),
         };
@@ -1027,6 +1031,16 @@ impl SipMessageHandler {
         trunks: Option<Arc<dyn crate::trunk_ingress::InboundTrunks>>,
     ) -> Self {
         self.inbound_trunks = trunks;
+        self
+    }
+
+    /// What counts the calls each trunk carries against its limits
+    /// (`docs/TENANT_TRUNKS.md` §7).
+    pub fn with_trunk_calls(
+        mut self,
+        calls: Option<Arc<dyn crate::trunk_ingress::TrunkCallCounter>>,
+    ) -> Self {
+        self.trunk_calls = calls;
         self
     }
 
@@ -1271,6 +1285,21 @@ impl SipMessageHandler {
     /// now that the answer is here.
     fn take_b_leg_srtp(&self, call_id: &fcp_b2bua_core::CallId) -> Option<fcp_media::SrtpOffer> {
         self.b_leg_srtp.remove(call_id).map(|(_, offer)| offer)
+    }
+
+    /// Count the call against the trunk that answered it, if a trunk did.
+    fn count_answering_trunk(&self, call_id: &fcp_b2bua_core::CallId) {
+        let Some(counter) = &self.trunk_calls else {
+            return;
+        };
+        if let Some(trunk) = self
+            .call_manager
+            .get_call(call_id)
+            .as_ref()
+            .and_then(carrying_trunk)
+        {
+            counter.carried(&call_id.to_string(), &trunk);
+        }
     }
 
     /// Settle how each leg of an anchored trunk call takes DTMF, once the
@@ -2033,6 +2062,12 @@ impl SipMessageHandler {
             return Ok(());
         }
         let inbound_trunk = inbound.as_ref().and_then(|c| c.trunk().cloned());
+        // The rules the trunk names run on what it brought in; the call
+        // sees the request as they leave it (`docs/TENANT_TRUNKS.md` §7).
+        let rewritten = inbound_trunk.as_ref().and_then(|trunk| {
+            crate::trunk_ingress::apply_ingress_rules(self.header_rules.as_ref(), trunk, request)
+        });
+        let request = rewritten.as_ref().unwrap_or(request);
         let trunk_tenant = match &inbound {
             Some(crate::trunk_ingress::InboundChoice::Tenant { tenant, .. }) => Some(*tenant),
             _ => None,
@@ -2336,6 +2371,39 @@ impl SipMessageHandler {
 
         // Store call in CallManager
         let call_id = self.call_manager.create_call(call);
+
+        // A carrier's call counts against the trunk it arrived on, which may
+        // be at its limit (`docs/TENANT_TRUNKS.md` §7). An emergency call is
+        // never refused for it.
+        if let (Some(trunk), Some(counter), None) = (&inbound_trunk, &self.trunk_calls, &emergency)
+        {
+            if let Err(limit) = counter.admit(&call_id.to_string(), trunk) {
+                let (reason, detail) = match limit {
+                    crate::trunk_ingress::TrunkLimit::Concurrency => {
+                        ("at its call limit", "Trunk at its concurrent call limit")
+                    }
+                    crate::trunk_ingress::TrunkLimit::CallsPerSecond => (
+                        "over its calls per second",
+                        "Trunk over its calls per second",
+                    ),
+                };
+                info!(
+                    call_id = %call_id,
+                    trunk = %trunk.name,
+                    source = %peer,
+                    "Rejecting INVITE: the trunk it arrived on is {reason}"
+                );
+                let mut response = self.create_simple_response(request, 503, "Service Unavailable");
+                let _ = response
+                    .headers_mut()
+                    .push(SmolStr::new("Retry-After"), SmolStr::new("1"));
+                handle.send_final(response).await;
+                let _ = self
+                    .call_manager
+                    .terminate_call(&call_id, Some(detail.to_string()));
+                return Ok(());
+            }
+        }
         if let Some(max_duration) = billing_max_duration {
             self.spawn_balance_watchdog(call_id, tenant_id, max_duration);
         }
@@ -2661,10 +2729,11 @@ impl SipMessageHandler {
                                     }
                                 }
 
-                                // Send 200 OK
-                                handle.send_final(response.clone()).await;
-
-                                // Create A-leg dialog from the INVITE request and 200 OK response
+                                // The dialog before the 200 OK: the caller may hang up
+                                // the moment it sees the answer, and a BYE that arrives
+                                // before the dialog is on the call finds nothing to end
+                                // (`find_by_dialog_call_id`) — the call is left for the
+                                // flow to trip over and its record is never written.
                                 if let Some(a_leg_dialog) = sip_dialog::Dialog::new_uas(
                                     &request,
                                     &response,
@@ -2679,16 +2748,22 @@ impl SipMessageHandler {
                                     // Insert dialog into dialog manager
                                     let _ = dialog_manager.insert(a_leg_dialog.clone());
 
-                                    // Update call with dialog
+                                    // Update call with dialog. `establish` and not the
+                                    // state alone: the answer time is what makes the
+                                    // record an answered call with a duration, and a
+                                    // flow answering is an answer like any other.
                                     let _ = call_manager.update_call(&call_id, |call| {
                                         call.a_leg.dialog = Some(a_leg_dialog.clone());
-                                        call.state = fcp_b2bua_core::CallState::Established;
+                                        call.establish();
                                     });
 
                                     info!(call_id = %call_id, "A-leg dialog stored in call");
                                 } else {
                                     error!(call_id = %call_id, "Failed to create A-leg dialog from 200 OK");
                                 }
+
+                                // Send 200 OK
+                                handle.send_final(response.clone()).await;
 
                                 Ok(())
                             })
@@ -4035,8 +4110,9 @@ impl SipMessageHandler {
                                                             }
                                                         }
 
-                                                        handle.send_final(response.clone()).await;
-
+                                                        // The dialog before the 200 OK: a caller
+                                                        // that hangs up on the answer must find the
+                                                        // call to end it (see the same order above).
                                                         if let Some(a_leg_dialog) =
                                                             sip_dialog::Dialog::new_uas(
                                                                 &request,
@@ -4053,11 +4129,18 @@ impl SipMessageHandler {
                                                         {
                                                             let _ = dialog_manager
                                                                 .insert(a_leg_dialog.clone());
-                                                            let _ = call_manager.update_call(&call_id, |call| {
-                                                            call.a_leg.dialog = Some(a_leg_dialog.clone());
-                                                            call.state = fcp_b2bua_core::CallState::Established;
-                                                        });
+                                                            // `establish` for the answer time, as above.
+                                                            let _ = call_manager.update_call(
+                                                                &call_id,
+                                                                |call| {
+                                                                    call.a_leg.dialog =
+                                                                        Some(a_leg_dialog.clone());
+                                                                    call.establish();
+                                                                },
+                                                            );
                                                         }
+
+                                                        handle.send_final(response.clone()).await;
 
                                                         Ok(())
                                                     })
@@ -4083,47 +4166,36 @@ impl SipMessageHandler {
                                                         hangup_media_manager.clone();
                                                     Box::pin(async move {
                                                         info!(call_id = %call_id, "IVR Hangup callback executing");
-                                                        if let Some(call_entry) =
-                                                            call_manager.get_call(&call_id)
-                                                        {
-                                                            if call_entry.media_anchored {
-                                                                if let (
-                                                                    Some(ref media_session_id),
-                                                                    Some(ref media_mgr),
-                                                                ) = (
-                                                                    &call_entry.media_session_id,
-                                                                    &media_manager,
-                                                                ) {
-                                                                    let _ = media_mgr
-                                                                        .terminate_session(
-                                                                            media_session_id,
-                                                                        )
-                                                                        .await;
-                                                                }
-                                                            }
-                                                            // BYE A-leg (caller)
-                                                            if let Some(dialog) =
-                                                                call_entry.a_leg.dialog.clone()
+                                                        // On a task of its own, and awaited so nothing
+                                                        // changes but the stack it runs on. The flow
+                                                        // executor polls this callback deep inside its
+                                                        // own chain and the BYE below is deeper still:
+                                                        // together they overflow a worker's stack and
+                                                        // abort the process. A spawned task is polled
+                                                        // from the top of one.
+                                                        let teardown = tokio::spawn(async move {
+                                                            if let Some(call_entry) =
+                                                                call_manager.get_call(&call_id)
                                                             {
-                                                                if let Some(ref uac) = uac_opt {
-                                                                    match uac.bye(&dialog).await {
-                                                                        Ok(_) => {
-                                                                            dialog_manager.remove(
-                                                                                dialog.id(),
-                                                                            );
-                                                                        }
-                                                                        Err(e) => {
-                                                                            error!(call_id = %call_id, error = %e, "Failed to send A-leg BYE");
-                                                                        }
+                                                                if call_entry.media_anchored {
+                                                                    if let (
+                                                                        Some(ref media_session_id),
+                                                                        Some(ref media_mgr),
+                                                                    ) = (
+                                                                        &call_entry
+                                                                            .media_session_id,
+                                                                        &media_manager,
+                                                                    ) {
+                                                                        let _ = media_mgr
+                                                                            .terminate_session(
+                                                                                media_session_id,
+                                                                            )
+                                                                            .await;
                                                                     }
                                                                 }
-                                                            }
-                                                            // BYE B-leg (callee from Dial node)
-                                                            if let Some(ref b_leg) =
-                                                                call_entry.b_leg
-                                                            {
+                                                                // BYE A-leg (caller)
                                                                 if let Some(dialog) =
-                                                                    b_leg.dialog.clone()
+                                                                    call_entry.a_leg.dialog.clone()
                                                                 {
                                                                     if let Some(ref uac) = uac_opt {
                                                                         match uac.bye(&dialog).await
@@ -4135,15 +4207,47 @@ impl SipMessageHandler {
                                                                                     );
                                                                             }
                                                                             Err(e) => {
-                                                                                error!(call_id = %call_id, error = %e, "Failed to send B-leg BYE");
+                                                                                error!(call_id = %call_id, error = %e, "Failed to send A-leg BYE");
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                                // BYE B-leg (callee from Dial node)
+                                                                if let Some(ref b_leg) =
+                                                                    call_entry.b_leg
+                                                                {
+                                                                    if let Some(dialog) =
+                                                                        b_leg.dialog.clone()
+                                                                    {
+                                                                        if let Some(ref uac) =
+                                                                            uac_opt
+                                                                        {
+                                                                            match uac
+                                                                                .bye(&dialog)
+                                                                                .await
+                                                                            {
+                                                                                Ok(_) => {
+                                                                                    dialog_manager
+                                                                                        .remove(
+                                                                                            dialog
+                                                                                                .id(
+                                                                                                ),
+                                                                                        );
+                                                                                }
+                                                                                Err(e) => {
+                                                                                    error!(call_id = %call_id, error = %e, "Failed to send B-leg BYE");
+                                                                                }
                                                                             }
                                                                         }
                                                                     }
                                                                 }
                                                             }
+                                                            let _ = call_manager
+                                                                .terminate_call(&call_id, reason);
+                                                        });
+                                                        if let Err(e) = teardown.await {
+                                                            error!(call_id = %call_id, error = %e, "Hangup teardown did not finish");
                                                         }
-                                                        let _ = call_manager
-                                                            .terminate_call(&call_id, reason);
                                                         Ok(())
                                                     })
                                                 });
@@ -6634,6 +6738,10 @@ impl SipMessageHandler {
                 return Ok(());
             }
 
+            // The trunk that answered carries the call from now on
+            // (`docs/TENANT_TRUNKS.md` §7).
+            self.count_answering_trunk(&call_id);
+
             // Set B-leg remote endpoint on the media session (before SDP rewriting)
             if let Some(ref original_sdp) = b_leg_sdp {
                 let media_session_id = self.call_manager.get_call(&call_id).and_then(|call| {
@@ -7348,6 +7456,10 @@ impl SipMessageHandler {
                 );
                 return Ok(());
             }
+
+            // The trunk that answered carries the call from now on
+            // (`docs/TENANT_TRUNKS.md` §7).
+            self.count_answering_trunk(&call_id);
 
             // Set B-leg remote endpoint on the media session (before SDP rewriting)
             if let Some(ref original_sdp) = b_leg_sdp {

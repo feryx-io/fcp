@@ -195,6 +195,21 @@ message_type = "Request"
 action_type = "Add"
 header_name = "X-Should-Not-Appear"
 value = "no"
+
+# What a carrier's calls need on the way in: its national numbers made
+# E.164 (`docs/TENANT_TRUNKS.md` §7).
+[[header_manipulation.rules]]
+name = "carrier-national-to-e164"
+priority = 30
+direction = "Ingress"
+message_type = "Request"
+methods = ["INVITE"]
+
+[[header_manipulation.rules.actions]]
+action_type = "Modify"
+header_name = "From"
+pattern = "sip:0([0-9]+)@"
+value = "sip:+1$1@"
 {trunks}
 "#,
             db = db.url(),
@@ -839,6 +854,102 @@ async fn a_carriers_call_is_the_tenant_its_trunk_says() {
         "{records:#?}"
     );
 
+    stack.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_carriers_call_runs_the_ingress_rules_its_trunk_names() {
+    let mut stack = stack_or_skip!(&[]);
+    let acme = stack.seed.tenant_id;
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    // The carrier sends from the loopback; the trunk takes its calls and
+    // names the rule that makes its numbers E.164.
+    stack
+        .seed
+        .trunk_with(acme, "national-carrier", 9, |trunk| {
+            trunk.direction = fcp_core::TrunkDirection::Bidirectional;
+            trunk.header_rules = vec!["carrier-national-to-e164".to_string()];
+        })
+        .await;
+    tokio::time::sleep(REFRESHED).await;
+    let alice_phone = stack.phone(&alice).await;
+
+    let from_carrier = Phone::new("05125550999", "x", "carrier.example", stack.sip)
+        .await
+        .expect("carrier phone binds");
+    let call = from_carrier.call("1001").await.unwrap();
+    let Some(incoming) = alice_phone.incoming(SOON).await else {
+        let why = format!("Alice never rang; the call is {:?}", call.phase());
+        stack.fail(&why).await;
+    };
+    assert!(
+        incoming.from.contains("+15125550999"),
+        "the caller as the trunk's rule leaves it: {}",
+        incoming.from
+    );
+    let leg = incoming.answer().await.unwrap();
+    call.answered(SOON).await.unwrap();
+    assert_eq!(call.hangup().await.unwrap(), 200);
+    assert!(leg.ended(SOON).await);
+
+    stack.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_trunks_channels_are_shared_by_its_calls_in_and_out() {
+    let carrier = Carrier::new("one-channel").await;
+    let mut stack = stack_or_skip!(&[]);
+    let acme = stack.seed.tenant_id;
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    stack
+        .seed
+        .trunk_with(acme, "one-channel", carrier.port(), |trunk| {
+            trunk.direction = fcp_core::TrunkDirection::Bidirectional;
+            trunk.max_concurrent_calls = 1;
+        })
+        .await;
+    tokio::time::sleep(REFRESHED).await;
+    let alice_phone = stack.phone(&alice).await;
+    let from_carrier = Phone::new("carrier-caller", "x", "carrier.example", stack.sip)
+        .await
+        .expect("carrier phone binds");
+
+    // Alice's call out takes the trunk's one channel...
+    let out = alice_phone
+        .call_with_headers("+15125559999", &Caller::new(acme, "alice").headers())
+        .await
+        .unwrap();
+    let Some(incoming) = carrier.phone.incoming(SOON).await else {
+        let why = format!("the carrier never rang; the call is {:?}", out.phase());
+        stack.fail(&why).await;
+    };
+    let out_leg = incoming.answer().await.unwrap();
+    out.answered(SOON).await.unwrap();
+
+    // ...so the carrier's call in finds none.
+    let refused = from_carrier.call("1001").await.unwrap();
+    assert_eq!(refused.failed(SOON).await, Some(503));
+
+    // When it ends, the channel is free again, in either direction.
+    assert_eq!(out.hangup().await.unwrap(), 200);
+    assert!(out_leg.ended(SOON).await);
+    let call = from_carrier.call("1001").await.unwrap();
+    let Some(incoming) = alice_phone.incoming(SOON).await else {
+        let why = format!(
+            "the freed channel was not reused; the call is {:?}",
+            call.phase()
+        );
+        stack.fail(&why).await;
+    };
+    let leg = incoming.answer().await.unwrap();
+    call.answered(SOON).await.unwrap();
+
+    // And while that call holds it, a second one in is refused too.
+    let second = from_carrier.call("1001").await.unwrap();
+    assert_eq!(second.failed(SOON).await, Some(503));
+
+    assert_eq!(call.hangup().await.unwrap(), 200);
+    assert!(leg.ended(SOON).await);
     stack.finish().await;
 }
 
