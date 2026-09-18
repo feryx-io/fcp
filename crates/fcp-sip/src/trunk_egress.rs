@@ -13,6 +13,20 @@ use sip_core::SipUri;
 /// RFC 4028 §4: a session interval below 90 seconds is not asked for.
 pub const MIN_SESSION_EXPIRES: u32 = 90;
 
+/// The STIR/SHAKEN signing a trunk asks for (`docs/TENANT_TRUNKS.md` §6,
+/// RFC 8224). The key and the certificate it names are the node's; which
+/// calls are signed, and at what attestation, is the trunk's to say.
+pub trait TrunkCallSigner: Send + Sync {
+    /// The `Identity` header value for a call from `orig_tn` to `dest_tn`,
+    /// or `None` when this node cannot sign it.
+    fn identity(
+        &self,
+        orig_tn: &str,
+        dest_tn: &str,
+        attestation: fcp_core::trunk::AttestationLevel,
+    ) -> Option<String>;
+}
+
 /// The header manipulation rules a trunk names (`docs/TENANT_TRUNKS.md`
 /// §6). The engine that compiles and runs them is the SBC's, in
 /// `fcp-sbc-core`; a node that has one hands it to its handler, and a node
@@ -94,6 +108,32 @@ impl TrunkEgress {
             headers: Vec::new(),
             offer_telephone_event: true,
             header_rules: Vec::new(),
+        }
+    }
+
+    /// Sign the call this leg carries, when the trunk asks for it
+    /// (RFC 8224). The `Identity` header covers the numbers as the carrier
+    /// will see them — after the trunk's caller ID and its digit plan —
+    /// because those are the numbers it will verify.
+    ///
+    /// A trunk that asks for signing on a node with no signer, or a call
+    /// with no number at one end, goes out unsigned: an `Identity` header
+    /// that does not match the call is worse than none.
+    pub fn sign(
+        &mut self,
+        trunk: &Trunk,
+        signer: Option<&std::sync::Arc<dyn TrunkCallSigner>>,
+        orig_tn: &str,
+        dest_tn: &str,
+    ) {
+        if trunk.stir_shaken.sign_mode != fcp_core::trunk::StirSignMode::Enabled {
+            return;
+        }
+        let (Some(signer), false, false) = (signer, orig_tn.is_empty(), dest_tn.is_empty()) else {
+            return;
+        };
+        if let Some(identity) = signer.identity(orig_tn, dest_tn, trunk.stir_shaken.attestation) {
+            self.headers.push(("Identity".to_string(), identity));
         }
     }
 
@@ -293,6 +333,64 @@ mod tests {
             header(&egress, "Session-Expires").is_none(),
             "a trunk that asks for no timer is sent none"
         );
+    }
+
+    /// A signer that says yes to everything, so the test is about what the
+    /// trunk asks for rather than about cryptography.
+    struct FakeSigner;
+
+    impl TrunkCallSigner for FakeSigner {
+        fn identity(
+            &self,
+            orig_tn: &str,
+            dest_tn: &str,
+            attestation: fcp_core::trunk::AttestationLevel,
+        ) -> Option<String> {
+            Some(format!(
+                "signed {orig_tn}->{dest_tn} attest={attestation:?}"
+            ))
+        }
+    }
+
+    fn signer() -> std::sync::Arc<dyn TrunkCallSigner> {
+        std::sync::Arc::new(FakeSigner)
+    }
+
+    #[test]
+    fn a_trunk_is_signed_only_when_it_asks_to_be() {
+        use fcp_core::trunk::{AttestationLevel, StirSignMode, TrunkStirShakenConfig};
+
+        let mut trunk = trunk();
+        let signing = std::sync::Arc::clone(&signer());
+
+        // A trunk that says nothing is not signed.
+        let mut egress = TrunkEgress::of(&trunk, None, false);
+        egress.sign(&trunk, Some(&signing), "15125550100", "15125559999");
+        assert!(header(&egress, "Identity").is_none());
+
+        // One that asks is, over the numbers the carrier will see.
+        trunk.stir_shaken = TrunkStirShakenConfig {
+            sign_mode: StirSignMode::Enabled,
+            attestation: AttestationLevel::B,
+            ..Default::default()
+        };
+        let mut egress = TrunkEgress::of(&trunk, None, false);
+        egress.sign(&trunk, Some(&signing), "15125550100", "15125559999");
+        assert_eq!(
+            header(&egress, "Identity"),
+            Some("signed 15125550100->15125559999 attest=B")
+        );
+
+        // A node with no signer sends the call unsigned rather than
+        // claiming an attestation it cannot make.
+        let mut egress = TrunkEgress::of(&trunk, None, false);
+        egress.sign(&trunk, None, "15125550100", "15125559999");
+        assert!(header(&egress, "Identity").is_none());
+
+        // And a call with no number at one end cannot be signed at all.
+        let mut egress = TrunkEgress::of(&trunk, None, false);
+        egress.sign(&trunk, Some(&signing), "15125550100", "");
+        assert!(header(&egress, "Identity").is_none());
     }
 
     #[test]

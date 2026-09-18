@@ -21,6 +21,15 @@ const REFRESHED: Duration = Duration::from_secs(4);
 /// A carrier that is not meant to ring is given this long to prove it.
 const NEVER: Duration = Duration::from_secs(2);
 
+/// A fresh P-256 key, PEM-encoded, for the node to sign test calls with.
+fn signing_key_pem() -> String {
+    use p256::pkcs8::EncodePrivateKey;
+    let key = p256::SecretKey::random(&mut rand::thread_rng());
+    key.to_pkcs8_pem(p256::pkcs8::LineEnding::LF)
+        .expect("PEM")
+        .to_string()
+}
+
 /// A carrier: a scripted phone that answers whatever the node sends it.
 struct Carrier {
     name: &'static str,
@@ -94,6 +103,11 @@ impl Stack {
         let rtp_start = allocate_port_pair().rtp_port;
         let dir = tempfile::tempdir().expect("tempdir");
         let trunks: String = platform.iter().map(|c| c.platform_trunk_toml()).collect();
+        // A signing key of this node's own, so a trunk that asks for
+        // STIR/SHAKEN has something to sign with (`docs/TENANT_TRUNKS.md`
+        // §6). Made on the spot: it signs test calls and nothing else.
+        let key_path = dir.path().join("stir-signing-key.pem");
+        std::fs::write(&key_path, signing_key_pem()).expect("write the signing key");
         let config = format!(
             r#"
 [service]
@@ -147,6 +161,11 @@ trusted_edges = ["127.0.0.0/8"]
 
 # The rules a trunk may name (`docs/TENANT_TRUNKS.md` §6). They are the
 # node's; which of them run on a call is the trunk's to say.
+[stir_shaken]
+enabled = true
+signing_key_path = "{key_path}"
+signing_cert_url = "https://certs.example/cert.pem"
+
 [header_manipulation]
 enabled = true
 
@@ -181,6 +200,7 @@ value = "no"
             db = db.url(),
             rtp_end = rtp_start + 60,
             dir = dir.path().display(),
+            key_path = key_path.display(),
         );
         let service =
             Service::start("call-manager", BIN, &config, &loopback(http, "/health")).await;
@@ -651,4 +671,80 @@ async fn a_trunk_runs_the_header_rules_it_names_and_no_others() {
     assert!(leg.ended(SOON).await);
 
     stack.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_trunk_that_asks_for_stir_shaken_gets_a_signed_call() {
+    let carrier = Carrier::new("signed-carrier").await;
+    let mut stack = stack_or_skip!(&[]);
+
+    let acme = stack.seed.tenant_id;
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    stack
+        .seed
+        .trunk_with(acme, "signed-carrier", carrier.port(), |trunk| {
+            trunk.caller_id_override = Some("+15125550100".to_string());
+            trunk.stir_shaken = fcp_core::trunk::TrunkStirShakenConfig {
+                sign_mode: fcp_core::trunk::StirSignMode::Enabled,
+                attestation: fcp_core::trunk::AttestationLevel::A,
+                ..Default::default()
+            };
+        })
+        .await;
+    tokio::time::sleep(REFRESHED).await;
+
+    let alice_phone = stack.phone(&alice).await;
+    let alice_caller = Caller::new(acme, "alice");
+    let call = alice_phone
+        .call_with_headers("+15125559999", &alice_caller.headers())
+        .await
+        .unwrap();
+    let Some(incoming) = carrier.phone.incoming(SOON).await else {
+        let why = format!("the carrier never rang; the call is {:?}", call.phase());
+        stack.fail(&why).await;
+    };
+
+    let Some(identity) = incoming.header("Identity") else {
+        let why = format!(
+            "a trunk that asks for STIR/SHAKEN sent no Identity header; it sent {:?}",
+            incoming.headers_named("Identity")
+        );
+        stack.fail(&why).await;
+    };
+    assert!(identity.contains("ppt=shaken"), "Identity: {identity}");
+    assert!(identity.contains("alg=ES256"), "Identity: {identity}");
+    assert!(
+        identity.contains("info=<https://certs.example/cert.pem>"),
+        "the header names the certificate this node signs with: {identity}"
+    );
+    // The PASSporT covers the numbers the carrier sees: the trunk's own
+    // caller ID, not the extension behind it.
+    let claims = passport_claims(&identity);
+    assert_eq!(claims["attest"], "A", "{claims}");
+    assert_eq!(
+        claims["orig"]["tn"], "15125550100",
+        "RFC 8225 §5.2.1: orig.tn is one number, as a string: {claims}"
+    );
+    assert_eq!(claims["dest"]["tn"][0], "15125559999", "{claims}");
+
+    let leg = incoming.answer().await.unwrap();
+    call.answered(SOON).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert_eq!(call.hangup().await.unwrap(), 200);
+    assert!(leg.ended(SOON).await);
+
+    stack.finish().await;
+}
+
+/// The claims of the PASSporT in an `Identity` header (RFC 8225), read
+/// without verifying it: the signature is the carrier's business, the
+/// claims are this test's.
+fn passport_claims(identity: &str) -> serde_json::Value {
+    use base64::Engine;
+    let token = identity.split(';').next().unwrap_or(identity).trim();
+    let payload = token.split('.').nth(1).expect("a JWS has three parts");
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload)
+        .expect("the payload is base64url");
+    serde_json::from_slice(&bytes).expect("the payload is JSON")
 }
