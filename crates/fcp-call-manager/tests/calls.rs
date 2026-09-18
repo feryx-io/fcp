@@ -1190,3 +1190,66 @@ async fn a_number_that_records_its_calls_records_them_without_an_announcement_wh
     assert_eq!(rows[0].consent, fcp_core::RecordingConsent::NotRequired);
     stack.finish().await;
 }
+
+/// A flow that answers and then hangs up: the node ends the call it
+/// answered itself. That BYE goes out from inside the flow executor's own
+/// chain, deep enough that it overflowed the worker's stack and aborted
+/// the whole node — the call was never ended and its record never written.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_flow_that_hangs_up_ends_the_call_it_answered() {
+    use fcp_core::storage::{LineBindingStore, PhoneNumberStore};
+
+    let stack = stack_or_skip!();
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let flow: fcp_flow::FlowDefinition = serde_json::from_value(serde_json::json!({
+        "id": "answer-then-hangup",
+        "name": "Answer then hang up",
+        "version": 1,
+        "initial_node": "answer",
+        "enabled": true,
+        "tenant_id": stack.seed.tenant_id.to_string(),
+        "nodes": {
+            "answer": {"id": "answer", "name": "Answer", "type": "answer", "next": "wait"},
+            "wait": {"id": "wait", "name": "Wait", "type": "pause", "duration": 1, "next": "done"},
+            "done": {"id": "done", "name": "Hang up", "type": "hangup"}
+        }
+    }))
+    .expect("flow fixture deserializes");
+    fcp_flow::FlowStore::insert_flow(stack.seed.storage(), flow)
+        .await
+        .expect("seed flow");
+    let number = fcp_core::PhoneNumber::new("+15125550777".to_string(), stack.seed.tenant_id)
+        .expect("valid number");
+    let mut binding = fcp_core::LineBinding::new(
+        number.id,
+        None,
+        fcp_core::BindingType::Ivr,
+        stack.seed.tenant_id,
+    );
+    binding.flow_id = Some("answer-then-hangup".to_string());
+    stack
+        .seed
+        .storage()
+        .put_phone_number(number)
+        .await
+        .expect("seed number");
+    stack
+        .seed
+        .storage()
+        .put_line_binding(binding)
+        .await
+        .expect("seed binding");
+
+    let phone = stack.phone(&alice).await;
+    let call = phone.call("+15125550777").await.unwrap();
+    call.answered(SOON).await.unwrap();
+    assert!(call.ended(SOON).await, "the flow never hung the call up");
+    let cdr = stack.cdrs(1, SOON).await.remove(0);
+    assert!(
+        cdr["to_uri"]
+            .as_str()
+            .is_some_and(|to| to.contains("+15125550777")),
+        "the record is this call's: {cdr}"
+    );
+    stack.finish().await;
+}
