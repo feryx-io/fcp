@@ -2971,6 +2971,31 @@ mod tests {
         assert!(video_a.release_content("alice"));
         assert!(video_a.content_holder().is_none());
         assert!(video_b.release_content_with(&trunk_b, forge_conference::video::ContentStop::Ended));
+        // Aborting her sender does not empty the pipes: a frame of hers
+        // still in node A takes node B's floor back for the trunk the
+        // moment it lands, and a content packet is all a claim is. Here
+        // that stale hold would stand until the 30 s idle expiry, so
+        // withdraw it again until Bob's own claim is the one that sticks
+        // — what the peers tell each other for real (7d).
+        let settled = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if video_b.content_holder().as_deref() == Some("bob")
+                    && video_a.content_holder().as_deref() == Some(trunk_a.as_str())
+                {
+                    return;
+                }
+                video_b.release_content_with(&trunk_b, forge_conference::video::ContentStop::Ended);
+                video_a.release_content("alice");
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        assert!(
+            settled.is_ok(),
+            "the floor never passed to bob: node B holds {:?}, node A {:?}",
+            video_b.content_holder(),
+            video_a.content_holder()
+        );
         frame_matching(&alice_phone, "with bob's screen on node A", |h| {
             h.resolution() == Resolution::new(160, 90) && h.luma(80, 45) == 30
         })
