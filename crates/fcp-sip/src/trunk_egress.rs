@@ -38,6 +38,10 @@ pub trait TrunkCallSigner: Send + Sync {
 pub trait TrunkHeaderRules: Send + Sync {
     /// Apply the egress rules `names` names to a request going out.
     fn apply_egress(&self, names: &[String], request: &mut sip_core::Request);
+
+    /// Apply the ingress rules `names` names to a request that arrived on
+    /// the trunk (`docs/TENANT_TRUNKS.md` §7).
+    fn apply_ingress(&self, names: &[String], request: &mut sip_core::Request);
 }
 
 /// The INVITE a trunk wants, over the one the B2BUA would have sent.

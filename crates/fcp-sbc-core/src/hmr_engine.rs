@@ -191,8 +191,18 @@ impl HeaderManipulationEngine {
     /// compiled them (by priority), to a request leaving on a trunk this
     /// engine was not built from — a tenant's trunk, which names its rules
     /// itself (`docs/TENANT_TRUNKS.md` §6). Names it does not know are
-    /// logged once and skipped.
+    /// logged and skipped.
     pub fn apply_request_egress_named(&self, req: &mut Request, names: &[String]) {
+        self.apply_request_named(req, names, HmrDirection::Egress);
+    }
+
+    /// As [`Self::apply_request_egress_named`], for a request that arrived
+    /// on such a trunk (`docs/TENANT_TRUNKS.md` §7).
+    pub fn apply_request_ingress_named(&self, req: &mut Request, names: &[String]) {
+        self.apply_request_named(req, names, HmrDirection::Ingress);
+    }
+
+    fn apply_request_named(&self, req: &mut Request, names: &[String], direction: HmrDirection) {
         if names.is_empty() {
             return;
         }
@@ -211,7 +221,7 @@ impl HeaderManipulationEngine {
         let rules: Vec<&CompiledRule> = indices
             .into_iter()
             .map(|idx| &self.rules[idx])
-            .filter(|rule| matches!(rule.direction, HmrDirection::Both | HmrDirection::Egress))
+            .filter(|rule| rule.direction == HmrDirection::Both || rule.direction == direction)
             .collect();
         self.apply_rules_to_request(req, &rules);
     }
@@ -314,6 +324,10 @@ impl HeaderManipulationEngine {
 impl fcp_sip::trunk_egress::TrunkHeaderRules for HeaderManipulationEngine {
     fn apply_egress(&self, names: &[String], request: &mut Request) {
         self.apply_request_egress_named(request, names);
+    }
+
+    fn apply_ingress(&self, names: &[String], request: &mut Request) {
+        self.apply_request_ingress_named(request, names);
     }
 }
 

@@ -18,8 +18,7 @@ use fcp_events::{EventFilter, EventPublisher, EventSubscriber, InMemoryEventBus}
 use fcp_media::{BackendType, MediaConfig};
 use fcp_routing::{RoutingService, YamlRoutingStore};
 use fcp_sbc_core::{
-    CpsChecker, NoCpsLimit, TrunkCredentialProvider, TrunkHealthMonitor, TrunkRegistrar,
-    TrunkRouter,
+    CpsChecker, TrunkCredentialProvider, TrunkHealthMonitor, TrunkRegistrar, TrunkRouter,
 };
 use fcp_sip::flow_handler::FlowCallHandler;
 use fcp_sip::prelude::*;
@@ -552,13 +551,24 @@ async fn main() -> Result<()> {
     trunk_set.resolve_names().await;
     let trunk_health_monitor = Arc::new(TrunkHealthMonitor::new(&config.trunks));
     let trunk_health: Option<Arc<TrunkHealthMonitor>> = Some(Arc::clone(&trunk_health_monitor));
+    // A trunk's channels and calls per second are its carrier's: its
+    // inbound and outbound calls count against the same limits, released
+    // when each call ends (`docs/TENANT_TRUNKS.md` §7).
+    let trunk_cps = Arc::new(fcp_sbc_core::TrunkCps::new(Arc::clone(&trunk_set)));
+    let trunk_calls = Arc::new(fcp_sbc_core::TrunkCalls::new(
+        Arc::clone(&trunk_health_monitor),
+        Arc::clone(&trunk_cps),
+    ));
     let outbound_route_provider: Option<Arc<dyn fcp_sip::OutboundRouteProvider>> = {
-        let cps: Arc<dyn CpsChecker> = Arc::new(NoCpsLimit);
-        let router = Arc::new(TrunkRouter::with_trunk_set(
-            Arc::clone(&trunk_set),
-            Arc::clone(&trunk_health_monitor),
-            cps,
-        ));
+        let cps: Arc<dyn CpsChecker> = trunk_cps.clone();
+        let router = Arc::new(
+            TrunkRouter::with_trunk_set(
+                Arc::clone(&trunk_set),
+                Arc::clone(&trunk_health_monitor),
+                cps,
+            )
+            .without_call_counting(),
+        );
 
         // Read the tenants' trunks now, and again whenever they change.
         fcp_sbc_core::spawn_trunk_refresh(
@@ -681,6 +691,12 @@ async fn main() -> Result<()> {
             .context("Failed to start the CDR spool")?
     };
     call_manager_inner.set_cdr_writer(cdr_writer.clone());
+    {
+        let trunk_calls = Arc::clone(&trunk_calls);
+        call_manager_inner.set_on_ended(Arc::new(move |call_id| {
+            fcp_sip::trunk_ingress::TrunkCallCounter::ended(&*trunk_calls, &call_id.to_string())
+        }));
+    }
     let call_manager = Arc::new(call_manager_inner);
 
     // 15a. Wire cluster active-call counter to CallManager
@@ -1127,6 +1143,9 @@ async fn main() -> Result<()> {
     .with_header_rules(header_rules.clone())
     .with_inbound_trunks(Some(
         Arc::clone(&trunk_set) as Arc<dyn fcp_sip::trunk_ingress::InboundTrunks>
+    ))
+    .with_trunk_calls(Some(
+        Arc::clone(&trunk_calls) as Arc<dyn fcp_sip::trunk_ingress::TrunkCallCounter>
     ))
     .with_call_signer(call_signer.clone())
     .with_call_recorder(Arc::clone(&call_recorder));

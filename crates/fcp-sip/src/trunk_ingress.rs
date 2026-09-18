@@ -11,6 +11,93 @@ use std::collections::HashSet;
 use std::net::IpAddr;
 use std::sync::Arc;
 
+/// Which of a trunk's limits a call would pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrunkLimit {
+    /// `max_concurrent_calls`.
+    Concurrency,
+    /// `cps_limit`.
+    CallsPerSecond,
+}
+
+/// The calls each trunk carries on this node (`docs/TENANT_TRUNKS.md` §7):
+/// its `max_concurrent_calls` and `cps_limit`, shared by the calls it
+/// brings in and the calls it takes out, per node (§13.3).
+pub trait TrunkCallCounter: Send + Sync {
+    /// Admit `call` arriving on `trunk`, and count it, unless that would
+    /// take the trunk past one of its limits.
+    fn admit(&self, call: &str, trunk: &Trunk) -> Result<(), TrunkLimit>;
+
+    /// Count `call` as carried by `trunk` — an outbound leg it answered,
+    /// which its selection already checked against its limits.
+    fn carried(&self, call: &str, trunk: &Trunk);
+
+    /// `call` has ended: release whatever it was counted against.
+    fn ended(&self, call: &str);
+}
+
+/// The headers that tie a request to its transaction and dialog: a trunk's
+/// ingress rules may not change them, or the responses this node sends
+/// would not match what the carrier sent.
+const TRANSACTION_HEADERS: [&str; 5] = ["Via", "v", "Call-ID", "i", "CSeq"];
+
+/// Run the ingress rules `trunk` names on a request that arrived on it
+/// (`docs/TENANT_TRUNKS.md` §7). `None` when it names none or this node has
+/// no rules; otherwise the request as the call should see it, with the
+/// headers that identify its transaction as they arrived.
+pub fn apply_ingress_rules(
+    rules: Option<&Arc<dyn crate::trunk_egress::TrunkHeaderRules>>,
+    trunk: &Trunk,
+    request: &sip_core::Request,
+) -> Option<sip_core::Request> {
+    if trunk.header_rules.is_empty() {
+        return None;
+    }
+    let mut rewritten = request.clone();
+    rules?.apply_ingress(&trunk.header_rules, &mut rewritten);
+    keep_transaction(request, &mut rewritten);
+    Some(rewritten)
+}
+
+/// Put back the Via, Call-ID and CSeq `original` arrived with: the Vias
+/// first, as they came, then everything the rules left, then the rest.
+fn keep_transaction(original: &sip_core::Request, rewritten: &mut sip_core::Request) {
+    let named = |h: &sip_core::Header, names: &[&str]| {
+        names.iter().any(|n| h.name().eq_ignore_ascii_case(n))
+    };
+    let is_transaction = |h: &sip_core::Header| named(h, &TRANSACTION_HEADERS);
+    let is_via = |h: &sip_core::Header| named(h, &["Via", "v"]);
+    let unchanged = original
+        .headers()
+        .iter()
+        .filter(|h| is_transaction(h))
+        .eq(rewritten.headers().iter().filter(|h| is_transaction(h)));
+    if unchanged {
+        return;
+    }
+    tracing::warn!(
+        "A trunk's ingress rule changed Via, Call-ID or CSeq; those are kept as they arrived"
+    );
+    let kept: Vec<sip_core::Header> = original
+        .headers()
+        .iter()
+        .filter(|h| is_via(h))
+        .chain(rewritten.headers().iter().filter(|h| !is_transaction(h)))
+        .chain(
+            original
+                .headers()
+                .iter()
+                .filter(|h| is_transaction(h) && !is_via(h)),
+        )
+        .cloned()
+        .collect();
+    let headers = rewritten.headers_mut();
+    headers.clear();
+    for header in kept {
+        let _ = headers.push_header(header);
+    }
+}
+
 /// The trunks a node takes inbound calls on.
 pub trait InboundTrunks: Send + Sync {
     /// The trunks a call from `source` may have arrived on: enabled, not
@@ -121,6 +208,58 @@ pub fn choose_inbound(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct Rewrites;
+    impl crate::trunk_egress::TrunkHeaderRules for Rewrites {
+        fn apply_egress(&self, _: &[String], _: &mut sip_core::Request) {}
+        fn apply_ingress(&self, _: &[String], request: &mut sip_core::Request) {
+            let h = request.headers_mut();
+            h.remove("Call-ID");
+            h.remove("Via");
+            let _ = h.push("X-Carrier-Account", "acct-7");
+            let _ = h.replace_first("P-Asserted-Identity", "<sip:+15125550100@carrier.example>");
+        }
+    }
+
+    fn arrived() -> sip_core::Request {
+        let raw = "INVITE sip:+15125550111@10.0.0.1 SIP/2.0\r\n\
+            Via: SIP/2.0/UDP 203.0.113.9:5060;branch=z9hG4bKabc\r\n\
+            From: <sip:+15125550999@carrier.example>;tag=1\r\n\
+            To: <sip:+15125550111@10.0.0.1>\r\n\
+            Call-ID: abc@203.0.113.9\r\n\
+            CSeq: 1 INVITE\r\n\
+            P-Asserted-Identity: <sip:0123@carrier.example>\r\n\
+            Content-Length: 0\r\n\r\n";
+        sip_parse::parse_request(&bytes::Bytes::from(raw)).expect("parses")
+    }
+
+    #[test]
+    fn ingress_rules_change_the_call_but_not_its_transaction() {
+        let mut t = inbound("carrier", Some(TenantId::new()));
+        let rules: Arc<dyn crate::trunk_egress::TrunkHeaderRules> = Arc::new(Rewrites);
+        let request = arrived();
+        assert!(
+            apply_ingress_rules(Some(&rules), &t, &request).is_none(),
+            "names none"
+        );
+
+        t.header_rules = vec!["carrier-in".to_string()];
+        assert!(
+            apply_ingress_rules(None, &t, &request).is_none(),
+            "no engine"
+        );
+        let rewritten = apply_ingress_rules(Some(&rules), &t, &request).unwrap();
+        let h = rewritten.headers();
+        assert_eq!(h.get("X-Carrier-Account"), Some("acct-7"));
+        assert_eq!(
+            h.get("P-Asserted-Identity"),
+            Some("<sip:+15125550100@carrier.example>")
+        );
+        assert_eq!(h.get("Via"), request.headers().get("Via"));
+        assert_eq!(h.get("Call-ID"), Some("abc@203.0.113.9"));
+        assert_eq!(h.get("CSeq"), Some("1 INVITE"));
+        assert_eq!(h.iter().next().map(|h| h.name()), Some("Via"), "Via first");
+    }
 
     fn inbound(name: &str, tenant: Option<TenantId>) -> Trunk {
         let mut t = match tenant {

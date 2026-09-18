@@ -259,6 +259,21 @@ impl TrunkHealthMonitor {
         }
     }
 
+    /// Count a call on a trunk unless it already carries `max` (0: no
+    /// limit). Check and count are one step, so two calls racing for the
+    /// last channel cannot both have it.
+    pub fn try_call_started(&self, trunk: &str, max: u32) -> bool {
+        let Some(entry) = self.state.get(&self.key_of(trunk)) else {
+            return true;
+        };
+        entry
+            .concurrent_calls
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                (max == 0 || current < max as u64).then_some(current + 1)
+            })
+            .is_ok()
+    }
+
     /// Decrement concurrent calls for a trunk.
     pub fn call_ended(&self, trunk: &str) {
         if let Some(entry) = self.state.get(&self.key_of(trunk)) {

@@ -328,11 +328,12 @@ async fn main() -> Result<()> {
         let trunk_set = Arc::new(fcp_sbc_core::TrunkSet::platform_only(config.trunks.clone()));
         let health = Arc::new(TrunkHealthMonitor::new(&config.trunks));
         let cps: Arc<dyn CpsChecker> = Arc::new(NoCpsLimit);
-        let router = Arc::new(TrunkRouter::with_trunk_set(
-            Arc::clone(&trunk_set),
-            Arc::clone(&health),
-            cps,
-        ));
+        // This node never releases a call it counted on a trunk, so it
+        // counts none rather than filling the trunk's channels for good.
+        let router = Arc::new(
+            TrunkRouter::with_trunk_set(Arc::clone(&trunk_set), Arc::clone(&health), cps)
+                .without_call_counting(),
+        );
 
         // Read the tenants' trunks now, and again whenever they change
         fcp_sbc_core::spawn_trunk_refresh(
