@@ -56,6 +56,67 @@ pub enum PlatformEvent {
 
     /// Compliance event: legal holds (`docs/COMPLIANCE_FOLLOWUPS.md` §5)
     Compliance(ComplianceEvent),
+
+    /// Trunk event: what a carrier's trunk is doing on this node
+    /// (`docs/TENANT_TRUNKS.md` §9)
+    Trunk(TrunkEvent),
+}
+
+/// What a trunk is doing, on the node it is doing it on.
+///
+/// A registering trunk is held by one node of a cluster
+/// (`docs/TENANT_TRUNKS.md` §8), so these say which node as well as which
+/// trunk: two nodes reporting the same trunk is how a split is seen.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum TrunkEvent {
+    /// The carrier accepted this node's REGISTER for the trunk.
+    Registered {
+        trunk_id: String,
+        trunk_name: String,
+        /// The platform's own trunks have no tenant.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tenant_id: Option<TenantId>,
+        /// The account bound at the carrier, when the trunk has one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        account: Option<String>,
+        /// How long the binding holds, in seconds.
+        expires_secs: u32,
+        node_id: String,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// The REGISTER was rejected, timed out or could not be sent.
+    RegistrationFailed {
+        trunk_id: String,
+        trunk_name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tenant_id: Option<TenantId>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        account: Option<String>,
+        /// What the carrier said, or what went wrong here.
+        reason: String,
+        node_id: String,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+}
+
+impl TrunkEvent {
+    pub fn timestamp(&self) -> SystemTime {
+        match self {
+            TrunkEvent::Registered { timestamp, .. }
+            | TrunkEvent::RegistrationFailed { timestamp, .. } => *timestamp,
+        }
+    }
+
+    pub fn tenant_id(&self) -> Option<&TenantId> {
+        match self {
+            TrunkEvent::Registered { tenant_id, .. }
+            | TrunkEvent::RegistrationFailed { tenant_id, .. } => tenant_id.as_ref(),
+        }
+    }
 }
 
 /// Call lifecycle events.
@@ -1461,6 +1522,10 @@ impl PlatformEvent {
                 CdrEvent::Written { .. } => "cdr.written",
                 CdrEvent::Archived { .. } => "cdr.archived",
             },
+            PlatformEvent::Trunk(e) => match e {
+                TrunkEvent::Registered { .. } => "trunk.registered",
+                TrunkEvent::RegistrationFailed { .. } => "trunk.registration_failed",
+            },
             PlatformEvent::Compliance(e) => match e {
                 ComplianceEvent::HoldPlaced { .. } => "compliance.hold_placed",
                 ComplianceEvent::HoldReleased { .. } => "compliance.hold_released",
@@ -1572,6 +1637,7 @@ impl PlatformEvent {
                 | ComplianceEvent::HoldReleased { tenant_id, .. }
                 | ComplianceEvent::SubjectRequestCompleted { tenant_id, .. },
             ) => Some(tenant_id),
+            PlatformEvent::Trunk(e) => e.tenant_id(),
             PlatformEvent::Recording(
                 RecordingEvent::Started { tenant_id, .. }
                 | RecordingEvent::Completed { tenant_id, .. }
@@ -1605,6 +1671,7 @@ impl PlatformEvent {
             PlatformEvent::Cdr(CdrEvent::Written { call_id, .. }) => Some(call_id),
             PlatformEvent::Cdr(CdrEvent::Archived { .. }) => None,
             PlatformEvent::Compliance(_) => None,
+            PlatformEvent::Trunk(_) => None,
         }
     }
 
@@ -1633,6 +1700,7 @@ impl PlatformEvent {
                 | ComplianceEvent::HoldReleased { timestamp, .. }
                 | ComplianceEvent::SubjectRequestCompleted { timestamp, .. },
             ) => *timestamp,
+            PlatformEvent::Trunk(event) => event.timestamp(),
         }
     }
 }

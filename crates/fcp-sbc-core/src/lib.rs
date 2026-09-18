@@ -67,6 +67,9 @@ pub use trunk_auth::TrunkCredentialProvider;
 pub use trunk_calls::{TrunkCalls, TrunkCps};
 pub use trunk_health::TrunkHealthMonitor;
 pub use trunk_refresh::{refresh_trunks, spawn_trunk_refresh, TRUNK_ENTITY};
-pub use trunk_registration::{run_trunk_registration, RegistrationState, TrunkRegistrar};
+pub use trunk_registration::{
+    run_trunk_registration, AloneOnThisNode, ClusterOwnership, RegistrationState, TrunkOwnership,
+    TrunkRegistrar, TrunkRegistrationContext,
+};
 pub use trunk_router::TrunkRouter;
 pub use trunk_set::TrunkSet;

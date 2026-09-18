@@ -301,6 +301,7 @@ async fn main() -> Result<()> {
                 draining: false,
                 region: fcp_cluster::resolve_region(config.cluster.region.as_deref()),
                 video_budget: Vec::new(),
+                registering_trunks: Vec::new(),
             };
             let cm =
                 fcp_cluster::ClusterManager::new(redis.clone(), member)
@@ -313,7 +314,7 @@ async fn main() -> Result<()> {
                     );
             let _handle = cm.start();
             info!("Cluster membership started");
-            Some(cm)
+            Some(Arc::new(cm))
         } else {
             warn!("cluster.enabled = true but redis_url is not set; cluster disabled");
             None
@@ -357,19 +358,30 @@ async fn main() -> Result<()> {
             Arc::clone(&uac),
         ));
 
-        // Spawn trunk registration task (this node's own trunks)
-        let trunk_registrar = Arc::new(TrunkRegistrar::new(&config.trunks));
-        if trunk_registrar.has_registerable_trunks() {
+        // Keep the REGISTER bindings of every registering trunk this node
+        // routes by — its own and the tenants' — one node to a trunk
+        // (`docs/TENANT_TRUNKS.md` §8). The task runs whatever the node
+        // starts with: a tenant's trunk arrives after startup.
+        let trunk_registrar = Arc::new(TrunkRegistrar::new());
+        {
             let (tx, rx) = tokio::sync::watch::channel(false);
-            let reg = Arc::clone(&trunk_registrar);
-            let reg_health = Arc::clone(&health);
-            let reg_uac = Arc::clone(&uac);
+            let ownership: Arc<dyn fcp_sbc_core::TrunkOwnership> = match _cluster_manager.as_ref() {
+                Some(cm) => Arc::new(fcp_sbc_core::ClusterOwnership::new(Arc::clone(cm))),
+                None => Arc::new(fcp_sbc_core::AloneOnThisNode),
+            };
             tokio::spawn(fcp_sbc_core::run_trunk_registration(
-                reg, reg_health, reg_uac, rx,
+                fcp_sbc_core::TrunkRegistrationContext {
+                    registrar: Arc::clone(&trunk_registrar),
+                    trunks: Arc::clone(&trunk_set),
+                    health: Arc::clone(&health),
+                    uac: Arc::clone(&uac),
+                    ownership,
+                    events: Some(Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>),
+                    node_id: config.service.node_id.clone(),
+                },
+                rx,
             ));
             trunk_shutdown_tx = Some(tx);
-        } else {
-            trunk_shutdown_tx = None;
         }
 
         info!(

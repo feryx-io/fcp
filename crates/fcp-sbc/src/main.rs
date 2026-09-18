@@ -227,7 +227,7 @@ async fn main() -> Result<()> {
     let sbc_metrics = Arc::new(SbcRuntimeMetrics::new());
 
     // 11b. Create TrunkRegistrar and shutdown channel for graceful de-registration
-    let trunk_registrar = Arc::new(TrunkRegistrar::new(&sbc_config.trunks));
+    let trunk_registrar = Arc::new(TrunkRegistrar::new());
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
     // 12. Compute effective media IP and create media stack for NAT/SDP rewriting
@@ -508,7 +508,7 @@ async fn main() -> Result<()> {
             reg_store,
             None, // no credential store — SBC does not authenticate registrations itself
             Some(sbc_config.external_domain.clone()),
-            sbc_hooks,
+            Arc::clone(&sbc_hooks),
             false, // SBC does not authenticate registrations itself
         )
         .with_default_tenant_id(sbc_config.default_tenant_id),
@@ -758,6 +758,7 @@ async fn main() -> Result<()> {
                             deploy_config.cluster.region.as_deref(),
                         ),
                         video_budget: Vec::new(),
+                        registering_trunks: Vec::new(),
                     };
                     let cm = fcp_cluster::ClusterManager::new(redis, member).with_intervals(
                         deploy_config.cluster.heartbeat_interval_secs,
@@ -805,14 +806,22 @@ async fn main() -> Result<()> {
 
     // Spawn trunk registration task (maintains REGISTER bindings for trunks
     // that require registration with their remote peers)
-    if trunk_registrar.has_registerable_trunks() {
-        let reg = Arc::clone(&trunk_registrar);
-        let reg_health = Arc::clone(&trunk_health);
-        let reg_uac = Arc::clone(&uac);
+    {
+        // The SBC is the platform's edge and routes by the platform's
+        // trunks alone (`docs/TENANT_TRUNKS.md` §13.8), so it is the only
+        // node that loaded them: it owns every binding it holds.
+        let ctx = fcp_sbc_core::TrunkRegistrationContext {
+            registrar: Arc::clone(&trunk_registrar),
+            trunks: Arc::clone(&trunk_set),
+            health: Arc::clone(&trunk_health),
+            uac: Arc::clone(&uac),
+            ownership: Arc::new(fcp_sbc_core::AloneOnThisNode),
+            events: Some(Arc::clone(&sbc_hooks)),
+            node_id: "sbc".to_string(),
+        };
         let reg_shutdown = shutdown_rx.clone();
         tokio::spawn(async move {
-            trunk_registration::run_trunk_registration(reg, reg_health, reg_uac, reg_shutdown)
-                .await;
+            trunk_registration::run_trunk_registration(ctx, reg_shutdown).await;
         });
     }
 

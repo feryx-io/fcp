@@ -78,6 +78,21 @@ pub enum CallPhase {
     Ended,
 }
 
+/// A REGISTER this phone was sent, as a carrier's registrar sees one.
+#[derive(Debug, Clone)]
+pub struct SeenRegistration {
+    /// The account being bound, from the `To` header.
+    pub account: String,
+    /// Who sent it, from `From`.
+    pub from: String,
+    /// Where the binding points, from `Contact`.
+    pub contact: String,
+    /// How long it asks for, from `Expires` (0 is a de-registration).
+    pub expires: u32,
+    /// The username in `Authorization`, when the request carried one.
+    pub auth_username: Option<String>,
+}
+
 /// One call's shared state: its dialog, media and phase.
 struct CallState {
     call_id: String,
@@ -100,6 +115,12 @@ struct Inner {
     follow_refers: std::sync::atomic::AtomicBool,
     /// Where the server is, for bare-number targets.
     server: SocketAddr,
+    /// Every REGISTER this phone has been sent, in order — a carrier's
+    /// registrar, for a test that asks who registered and as whom.
+    registrations: std::sync::Mutex<Vec<SeenRegistration>>,
+    /// The realm to challenge a REGISTER with before accepting it; unset
+    /// (the default) takes every REGISTER as it comes.
+    challenge_realm: std::sync::Mutex<Option<String>>,
 }
 
 impl Inner {
@@ -434,6 +455,8 @@ impl Phone {
             incoming: incoming_tx,
             calls: DashMap::new(),
             uas: OnceLock::new(),
+            registrations: std::sync::Mutex::new(Vec::new()),
+            challenge_realm: std::sync::Mutex::new(None),
             uac: OnceLock::new(),
             auto_answer: std::sync::atomic::AtomicBool::new(false),
             follow_refers: std::sync::atomic::AtomicBool::new(false),
@@ -572,6 +595,41 @@ impl Phone {
             .map_err(|e| anyhow!("body: {e}"))?;
         }
         self.inner.place_call_with_body(target, body, extra).await
+    }
+
+    /// Every REGISTER this phone has accepted, in order: a carrier's view
+    /// of who is bound here and as whom.
+    pub fn registrations(&self) -> Vec<SeenRegistration> {
+        self.inner
+            .registrations
+            .lock()
+            .expect("registrations")
+            .clone()
+    }
+
+    /// Wait until `want` accepts the registrations seen so far; `false` at
+    /// the deadline.
+    pub async fn registrations_settle(
+        &self,
+        within: Duration,
+        want: impl Fn(&[SeenRegistration]) -> bool,
+    ) -> bool {
+        let deadline = tokio::time::Instant::now() + within;
+        loop {
+            if want(&self.registrations()) {
+                return true;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    /// Challenge every REGISTER with this realm before accepting it, as a
+    /// carrier does, so a test can see which credentials answered.
+    pub fn challenge_registrations(&self, realm: &str) {
+        *self.inner.challenge_realm.lock().expect("challenge realm") = Some(realm.to_string());
     }
 
     /// The next incoming call; `None` at the deadline.
@@ -1123,6 +1181,73 @@ impl UasRequestHandler for Handler {
             call_id,
             body: String::from_utf8_lossy(request.body()).to_string(),
         });
+        Ok(())
+    }
+
+    /// A carrier's registrar: record the binding and accept it, or
+    /// challenge it once when the phone was told a realm, so a test can
+    /// see which credentials answered.
+    async fn on_register(
+        &self,
+        request: &Request,
+        handle: ServerTransactionHandle,
+        _ctx: &TransportContext,
+    ) -> anyhow::Result<()> {
+        let header = |name: &str| {
+            sip_parse::header(request.headers(), name)
+                .map(|v| v.to_string())
+                .unwrap_or_default()
+        };
+        let authorization =
+            sip_parse::header(request.headers(), "Authorization").map(|v| v.to_string());
+        let auth_username = authorization.as_deref().and_then(|a| {
+            a.split("username=").nth(1).map(|rest| {
+                rest.trim_start_matches('"')
+                    .split('"')
+                    .next()
+                    .unwrap_or_default()
+                    .to_string()
+            })
+        });
+        let seen = SeenRegistration {
+            account: header("To"),
+            from: header("From"),
+            contact: header("Contact"),
+            expires: header("Expires").trim().parse().unwrap_or(0),
+            auth_username,
+        };
+        let challenge = self
+            .0
+            .challenge_realm
+            .lock()
+            .expect("challenge realm")
+            .clone();
+        // Challenge the first send of a series and take the answer: what
+        // a carrier does, and what proves whose credentials answered.
+        let response = match (&challenge, &seen.auth_username) {
+            (Some(realm), None) => {
+                let mut unauthorized =
+                    UserAgentServer::create_response(request, 401, "Unauthorized");
+                let _ = unauthorized.headers_mut().push(
+                    smol_str::SmolStr::new("WWW-Authenticate"),
+                    smol_str::SmolStr::new(format!(
+                        "Digest realm=\"{realm}\", nonce=\"{}\", algorithm=MD5",
+                        uuid::Uuid::new_v4().simple()
+                    )),
+                );
+                unauthorized
+            }
+            _ => UserAgentServer::create_response(request, 200, "OK"),
+        };
+        let accepted = response.start_line().code() == 200;
+        if accepted {
+            self.0
+                .registrations
+                .lock()
+                .expect("registrations")
+                .push(seen);
+        }
+        handle.send_final(response).await;
         Ok(())
     }
 

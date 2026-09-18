@@ -52,6 +52,15 @@ pub struct ClusterMember {
     /// `docs/MULTI_REGION.md`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub region: Option<String>,
+    /// The registering trunks this node has loaded
+    /// (`docs/TENANT_TRUNKS.md` §8), by trunk id. A trunk one node reads
+    /// from its own `[[trunks]]` may be on no other node, so a node cannot
+    /// tell from the store alone who else could register it; each node
+    /// says what it has and the owner is picked from that. Empty on nodes
+    /// with no registering trunks and on records written by older
+    /// versions.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub registering_trunks: Vec<String>,
     /// Video capacity left per device, advertised by conference nodes
     /// (`docs/VIDEO_CONFERENCING.md` §9.3). Placement prefers, for a video
     /// room, the node with the most left on a device that has the room's
@@ -189,6 +198,13 @@ pub struct ClusterManager {
     /// Set by [`set_video_budget`](Self::set_video_budget); published with
     /// every heartbeat.
     video_budget: Arc<std::sync::RwLock<Vec<VideoDeviceBudget>>>,
+    /// Set by [`set_registering_trunks`](Self::set_registering_trunks);
+    /// published with every heartbeat.
+    registering_trunks: Arc<std::sync::RwLock<Vec<String>>>,
+    /// True once the discovery loop has looked for peers at least once.
+    /// Before that this node knows of none, and must not conclude from
+    /// that silence that it is alone.
+    discovered: Arc<AtomicBool>,
 }
 
 impl ClusterManager {
@@ -196,6 +212,7 @@ impl ClusterManager {
     pub fn new(storage: RedisStorage, self_info: ClusterMember) -> Self {
         let (shutdown_tx, _) = watch::channel(false);
         let self_info_budget = self_info.video_budget.clone();
+        let self_info_trunks = self_info.registering_trunks.clone();
         Self {
             storage,
             self_info,
@@ -207,6 +224,8 @@ impl ClusterManager {
             active_calls_counter: Arc::new(AtomicUsize::new(0)),
             draining: Arc::new(AtomicBool::new(false)),
             video_budget: Arc::new(std::sync::RwLock::new(self_info_budget)),
+            registering_trunks: Arc::new(std::sync::RwLock::new(self_info_trunks)),
+            discovered: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -235,6 +254,8 @@ impl ClusterManager {
         let active_calls_counter = Arc::clone(&self.active_calls_counter);
         let draining = Arc::clone(&self.draining);
         let video_budget = Arc::clone(&self.video_budget);
+        let registering_trunks = Arc::clone(&self.registering_trunks);
+        let discovered = Arc::clone(&self.discovered);
 
         info!(
             node_id = %self_info.node_id,
@@ -260,6 +281,10 @@ impl ClusterManager {
                 self_info.active_calls = active_calls_counter.load(Ordering::Relaxed);
                 self_info.draining = draining.load(Ordering::Relaxed);
                 self_info.video_budget = video_budget.read().map(|b| b.clone()).unwrap_or_default();
+                self_info.registering_trunks = registering_trunks
+                    .read()
+                    .map(|t| t.clone())
+                    .unwrap_or_default();
 
                 // Publish heartbeat
                 if let Err(e) = publish_heartbeat(&storage, &self_info, ttl).await {
@@ -277,6 +302,9 @@ impl ClusterManager {
                 {
                     error!(error = %e, "Failed to discover cluster members");
                 }
+                // Whatever it found, this node has now looked: an empty
+                // membership from here on means it really is alone.
+                discovered.store(true, Ordering::Relaxed);
             }
         })
     }
@@ -295,6 +323,11 @@ impl ClusterManager {
             .read()
             .map(|b| b.clone())
             .unwrap_or_default();
+        info.registering_trunks = self
+            .registering_trunks
+            .read()
+            .map(|t| t.clone())
+            .unwrap_or_default();
         publish_heartbeat(&self.storage, &info, self.heartbeat_ttl_secs).await?;
         info!(node_id = %info.node_id, draining, "Cluster draining flag published");
         Ok(())
@@ -309,6 +342,91 @@ impl ClusterManager {
     /// A handle a background task can write the budget through.
     pub fn video_budget_handle(&self) -> VideoBudgetHandle {
         VideoBudgetHandle(Arc::clone(&self.video_budget))
+    }
+
+    /// Say which registering trunks this node has loaded; the heartbeat
+    /// loop publishes them with the next beat and
+    /// [`registers_trunk`](Self::registers_trunk) answers from what every
+    /// node has published.
+    /// Returns whether this changed what the node had said before, which
+    /// is when [`publish_now`](Self::publish_now) is worth the write.
+    pub fn set_registering_trunks(&self, trunk_ids: Vec<String>) -> bool {
+        match self.registering_trunks.write() {
+            Ok(mut held) if *held != trunk_ids => {
+                *held = trunk_ids;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Publish this node's heartbeat at once rather than on the next beat.
+    ///
+    /// A node that has just loaded a registering trunk has a claim to it
+    /// that its peers cannot see until it beats, and a peer that does not
+    /// see the claim takes the trunk for its own: the sooner the claim is
+    /// out, the narrower that window.
+    pub async fn publish_now(&self) {
+        let mut info = self.self_info.clone();
+        info.active_calls = self.active_calls_counter.load(Ordering::Relaxed);
+        info.draining = self.draining.load(Ordering::Relaxed);
+        info.video_budget = self
+            .video_budget
+            .read()
+            .map(|b| b.clone())
+            .unwrap_or_default();
+        info.registering_trunks = self
+            .registering_trunks
+            .read()
+            .map(|t| t.clone())
+            .unwrap_or_default();
+        if let Err(e) = publish_heartbeat(&self.storage, &info, self.heartbeat_ttl_secs).await {
+            warn!(error = %e, "Failed to publish cluster heartbeat");
+        }
+    }
+
+    /// Which node registers `trunk_id`: of the nodes that have loaded it,
+    /// the lowest node id (`docs/TENANT_TRUNKS.md` §8), preferring one
+    /// that is not draining — a node on its way out gives the binding up
+    /// while it still has peers, but keeps it rather than let it lapse
+    /// when it is the last one that can hold it.
+    ///
+    /// `None` when no live node has loaded the trunk.
+    pub fn trunk_owner(&self, trunk_id: &str) -> Option<String> {
+        if !self.discovered.load(Ordering::Relaxed) {
+            // A node that has not yet looked for its peers would take
+            // every trunk it loaded for its own and register a second
+            // binding at the carrier for one another node already holds.
+            return None;
+        }
+        let mine = self
+            .registering_trunks
+            .read()
+            .map(|t| t.iter().any(|id| id == trunk_id))
+            .unwrap_or(false);
+        pick_trunk_owner(
+            trunk_id,
+            mine.then(|| {
+                (
+                    self.self_info.node_id.as_str(),
+                    self.draining.load(Ordering::Relaxed),
+                )
+            }),
+            self.members.iter().map(|m| m.value().clone()),
+        )
+    }
+
+    /// Whether this node is the one that registers `trunk_id`. False for a
+    /// trunk it has not loaded.
+    pub fn registers_trunk(&self, trunk_id: &str) -> bool {
+        self.trunk_owner(trunk_id)
+            .is_some_and(|owner| owner == self.self_info.node_id)
+    }
+
+    /// How often this node beats, in seconds; what a caller waits on to
+    /// know its advertisement has reached its peers and theirs it.
+    pub fn heartbeat_interval_secs(&self) -> u64 {
+        self.heartbeat_interval_secs
     }
 
     /// Whether this node is draining.
@@ -553,6 +671,29 @@ async fn discover_members(
     Ok(())
 }
 
+/// Who registers `trunk_id`: the lowest node id of those that loaded it,
+/// preferring a node that is not draining. `me` is this node when it
+/// loaded the trunk itself, and `peers` every other node that is live.
+fn pick_trunk_owner(
+    trunk_id: &str,
+    me: Option<(&str, bool)>,
+    peers: impl Iterator<Item = ClusterMember>,
+) -> Option<String> {
+    // Ordered (draining, node_id): a node still taking work outranks one
+    // on its way out, and the lowest id settles it either way.
+    let mut best: Option<(bool, String)> = me.map(|(id, draining)| (draining, id.to_string()));
+    for peer in peers {
+        if !peer.registering_trunks.iter().any(|id| id == trunk_id) {
+            continue;
+        }
+        let candidate = (peer.draining, peer.node_id);
+        if best.as_ref().is_none_or(|held| candidate < *held) {
+            best = Some(candidate);
+        }
+    }
+    best.map(|(_, node_id)| node_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -571,6 +712,7 @@ mod tests {
             draining: false,
             region: region.map(str::to_owned),
             video_budget: Vec::new(),
+            registering_trunks: Vec::new(),
         }
     }
 
@@ -679,5 +821,101 @@ mod tests {
         assert_eq!(back.region.as_deref(), Some("eu-west"));
         assert!(back.in_region("eu-west"));
         assert!(!back.in_region("us-east"));
+    }
+}
+
+#[cfg(test)]
+mod trunk_owner_tests {
+    use super::*;
+
+    fn advertiser(node_id: &str, trunks: &[&str], draining: bool) -> ClusterMember {
+        ClusterMember {
+            node_id: node_id.to_string(),
+            node_type: "call_manager".to_string(),
+            http_address: "127.0.0.1:8080".parse().unwrap(),
+            sip_address: "127.0.0.1:5060".parse().unwrap(),
+            sip_tls_address: None,
+            capabilities: Vec::new(),
+            active_calls: 0,
+            started_at: 0,
+            version: "test".to_string(),
+            draining,
+            region: None,
+            video_budget: Vec::new(),
+            registering_trunks: trunks.iter().map(|t| t.to_string()).collect(),
+        }
+    }
+
+    /// Of the nodes that loaded the trunk, the lowest id registers it.
+    #[test]
+    fn the_lowest_node_id_that_loaded_it_registers_it() {
+        let peers = vec![
+            advertiser("node-a", &["trunk-1"], false),
+            advertiser("node-c", &["trunk-1"], false),
+        ];
+        let owner = pick_trunk_owner("trunk-1", Some(("node-b", false)), peers.into_iter());
+        assert_eq!(owner.as_deref(), Some("node-a"));
+    }
+
+    /// A node that did not load it is not a candidate, however low its id.
+    #[test]
+    fn a_node_that_did_not_load_it_is_not_a_candidate() {
+        let peers = vec![advertiser("node-b", &["trunk-1"], false)];
+        // This node has not loaded it, so it offers itself as no candidate.
+        let owner = pick_trunk_owner("trunk-1", None, peers.into_iter());
+        assert_eq!(owner.as_deref(), Some("node-b"));
+
+        // And a peer that loaded some other trunk is no candidate either.
+        let peers = vec![advertiser("node-a", &["trunk-9"], false)];
+        let owner = pick_trunk_owner("trunk-1", Some(("node-b", false)), peers.into_iter());
+        assert_eq!(owner.as_deref(), Some("node-b"));
+    }
+
+    /// The owner going away leaves the trunk to the next-lowest node that
+    /// has it: what failover comes to, driven by the heartbeat expiring.
+    #[test]
+    fn the_next_node_takes_it_when_the_owner_goes() {
+        let peers = vec![advertiser("node-a", &["trunk-1"], false)];
+        assert_eq!(
+            pick_trunk_owner("trunk-1", Some(("node-b", false)), peers.into_iter()).as_deref(),
+            Some("node-a")
+        );
+        assert_eq!(
+            pick_trunk_owner("trunk-1", Some(("node-b", false)), std::iter::empty()).as_deref(),
+            Some("node-b"),
+            "the heartbeat expired and the trunk is node-b's now"
+        );
+    }
+
+    /// A draining node hands the binding over while it has a peer that can
+    /// hold it, and keeps it when it is the last one that can — a lapsed
+    /// binding is worse than one held by a node on its way out.
+    #[test]
+    fn draining_gives_the_binding_up_but_not_the_last_one() {
+        let peers = vec![advertiser("node-z", &["trunk-1"], false)];
+        assert_eq!(
+            pick_trunk_owner("trunk-1", Some(("node-a", true)), peers.into_iter()).as_deref(),
+            Some("node-z")
+        );
+        assert_eq!(
+            pick_trunk_owner("trunk-1", Some(("node-a", true)), std::iter::empty()).as_deref(),
+            Some("node-a")
+        );
+    }
+
+    /// Two draining nodes still settle it the same way.
+    #[test]
+    fn the_lowest_id_settles_it_between_draining_nodes_too() {
+        let peers = vec![advertiser("node-a", &["trunk-1"], true)];
+        assert_eq!(
+            pick_trunk_owner("trunk-1", Some(("node-b", true)), peers.into_iter()).as_deref(),
+            Some("node-a")
+        );
+    }
+
+    /// Nobody has it: nobody registers it.
+    #[test]
+    fn a_trunk_no_live_node_loaded_has_no_owner() {
+        assert_eq!(pick_trunk_owner("trunk-1", None, std::iter::empty()), None);
     }
 }

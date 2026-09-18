@@ -240,6 +240,7 @@ async fn main() -> Result<()> {
                         draining: false,
                         region: fcp_cluster::resolve_region(config.cluster.region.as_deref()),
                         video_budget: Vec::new(),
+                        registering_trunks: Vec::new(),
                     };
                     let cm = fcp_cluster::ClusterManager::new(redis, member)
                         .with_intervals(

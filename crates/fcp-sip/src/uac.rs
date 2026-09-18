@@ -234,6 +234,24 @@ impl SipUserAgentClient {
         self.inner.register(registrar_uri, Some(expires)).await
     }
 
+    /// REGISTER an account other than this node's own — a carrier trunk's
+    /// (`docs/TENANT_TRUNKS.md` §8) — answering a challenge with that
+    /// account's own credentials. `Contact` still names this node: the
+    /// binding points here.
+    pub async fn register_as(
+        &self,
+        account: &str,
+        registrar_uri: &str,
+        expires: u32,
+        credentials: Option<(String, String)>,
+    ) -> Result<sip_core::Response> {
+        let account = sip_core::SipUri::parse(account)
+            .map_err(|e| anyhow::anyhow!("trunk account {account}: {e}"))?;
+        self.inner
+            .register_as(&account, registrar_uri, Some(expires), credentials)
+            .await
+    }
+
     /// Send an in-dialog UPDATE.
     pub async fn send_update(
         &self,

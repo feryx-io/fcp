@@ -341,6 +341,7 @@ mod tests {
             draining: false,
             region: None,
             video_budget: Vec::new(),
+            registering_trunks: Vec::new(),
         }
     }
 
