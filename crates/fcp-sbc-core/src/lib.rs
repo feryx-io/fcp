@@ -70,7 +70,7 @@ pub use trunk_calls::{TrunkCalls, TrunkCps};
 pub use trunk_health::TrunkHealthMonitor;
 pub use trunk_refresh::{
     refresh_routing_rules, refresh_trunks, spawn_routing_rule_refresh, spawn_trunk_refresh,
-    ROUTING_RULE_ENTITY, TRUNK_ENTITY,
+    LCR_ROUTE_ENTITY, ROUTING_RULE_ENTITY, TRUNK_ENTITY,
 };
 pub use trunk_registration::{
     run_trunk_registration, AloneOnThisNode, ClusterOwnership, RegistrationState, TrunkOwnership,

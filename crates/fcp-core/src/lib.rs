@@ -23,6 +23,7 @@ pub mod forwarding;
 pub mod geographic;
 pub mod identifiers;
 pub mod join_token;
+pub mod lcr_route;
 pub mod legal_hold;
 pub mod line_binding;
 pub mod meeting;
@@ -106,6 +107,7 @@ pub const CALLER_USER_HEADER: &str = "X-FCP-Caller-User";
 /// call reached it from the edge (`docs/E911_BLOCK_2.md` §6.2). Believed
 /// only from `[e911] trusted_edges`, and never forwarded further.
 pub const CLIENT_ADDRESS_HEADER: &str = "X-FCP-Client-Address";
+pub use crate::lcr_route::{LcrRoute, LcrRouteId};
 pub use crate::line_binding::{BindingType, DeviceBinding, LineBinding, RingStrategy};
 pub use crate::meeting::Meeting;
 pub use crate::migration_ticket::{

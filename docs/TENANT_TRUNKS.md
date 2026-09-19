@@ -898,6 +898,48 @@ One PR per phase, reviewed before the next starts.
      caller hears. With the split disabled the test fails at the first of
      those.
 
+   **6c-2 — a tenant's least-cost routes.** *Done (v0.25.204).*
+
+   - **The table.** `lcr_routes` (migration 076): a tenant's prefix, one of
+     its own trunks by id, a cost per minute (`NUMERIC(18,6)`, ordering
+     only — it is what the carrier charges, not what the tenant is
+     charged), a priority for ties and an enabled flag; a route goes with
+     its trunk (`ON DELETE CASCADE`), and a prefix is priced once per
+     trunk. `/v1/lcr-routes` (list with `?trunk_id=`, create, get, patch,
+     delete) takes the trunk permissions, checks the prefix (digits, an
+     optional leading `+`), the cost and the priority, refuses a trunk that
+     is not the tenant's own, and announces each change as
+     `system.config_changed { entity_type: "lcr_route" }`.
+   - **On each node** the tenant's routes are read with the tenants'
+     trunks (`TrunkSet::set_tenant_lcr`, refreshed on a trunk or route
+     change and on the backstop); a route naming a trunk that is not its
+     own tenant's is not in force, and a table that cannot be read leaves
+     the last in force.
+   - **Selection, in two parts** (`TrunkRouter::select_trunks_ordered`):
+     the tenant's own trunks — by its routes when one matches the dialled
+     number (longest prefix, then cost, then priority, cut at
+     `max_failover_attempts + 1`), else its ordinary choice by priority and
+     weight — then the platform's, by the node's `[lcr]` when a route
+     matches, else the ordinary choice, unless the tenant refused them.
+     Tried one at a time, as 6c-1 made them.
+   - **Two defects fixed on the way.** Ordinary selection put the tenant's
+     trunks and the platform's in one pool, so a platform trunk with a
+     better priority outranked the tenant's own (§5 says the tenant's come
+     first); and the node's `[lcr]` matched routes to trunks by name across
+     everything a tenant could use, so a tenant trunk sharing a platform
+     trunk's name was priced by the platform's table. The node's table now
+     prices only the platform's trunks.
+   - **What a rule left** (6b) is ordered the same way: the priced members
+     of the group first, the rest behind them by priority.
+   - The call manager builds no node `[lcr]` (only the SBC does, which
+     loads no tenant trunks), so on a call manager a tenant's table is the
+     only least-cost routing there is.
+   - **On the floor**: a UK number leaves on the tenant's cheapest carrier
+     though the others outrank it, the next by cost takes it when the
+     cheapest answers 503, and an unpriced number takes the ordinary
+     choice; and a tenant's trunk carries its calls ahead of a platform
+     trunk with a better priority.
+
 ## 13. Open questions
 
 Each with a recommendation; every recommendation was taken on 2026-09-16.

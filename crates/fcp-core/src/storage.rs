@@ -1643,6 +1643,37 @@ pub trait TrunkStore: Send + Sync {
         let _ = trunk_name;
         Ok(crate::TrunkStats::default())
     }
+
+    // ── Least-cost routes (`docs/TENANT_TRUNKS.md` §12, phase 6c) ──────
+    //
+    // Defaulted like `list_all_trunks`: a store without them has none, and
+    // every tenant's calls take the ordinary choice.
+
+    async fn get_lcr_route(&self, id: &crate::LcrRouteId) -> Result<Option<crate::LcrRoute>> {
+        let _ = id;
+        Ok(None)
+    }
+
+    /// A tenant's routes, by prefix then cost.
+    async fn list_lcr_routes(&self, tenant_id: &crate::TenantId) -> Result<Vec<crate::LcrRoute>> {
+        let _ = tenant_id;
+        Ok(Vec::new())
+    }
+
+    /// Every tenant's routes, for a node building what it routes by.
+    async fn list_all_lcr_routes(&self) -> Result<Vec<crate::LcrRoute>> {
+        Ok(Vec::new())
+    }
+
+    async fn put_lcr_route(&self, route: crate::LcrRoute) -> Result<()> {
+        let _ = route;
+        Err(anyhow::anyhow!("this store keeps no least-cost routes"))
+    }
+
+    async fn delete_lcr_route(&self, id: &crate::LcrRouteId) -> Result<()> {
+        let _ = id;
+        Err(anyhow::anyhow!("this store keeps no least-cost routes"))
+    }
 }
 
 /// Routing rule storage operations.
@@ -3819,6 +3850,26 @@ impl TrunkStore for DynStorage {
 
     async fn get_trunk_stats(&self, trunk_name: &str) -> Result<crate::TrunkStats> {
         self.trunk_store.get_trunk_stats(trunk_name).await
+    }
+
+    async fn get_lcr_route(&self, id: &crate::LcrRouteId) -> Result<Option<crate::LcrRoute>> {
+        self.trunk_store.get_lcr_route(id).await
+    }
+
+    async fn list_lcr_routes(&self, tenant_id: &crate::TenantId) -> Result<Vec<crate::LcrRoute>> {
+        self.trunk_store.list_lcr_routes(tenant_id).await
+    }
+
+    async fn list_all_lcr_routes(&self) -> Result<Vec<crate::LcrRoute>> {
+        self.trunk_store.list_all_lcr_routes().await
+    }
+
+    async fn put_lcr_route(&self, route: crate::LcrRoute) -> Result<()> {
+        self.trunk_store.put_lcr_route(route).await
+    }
+
+    async fn delete_lcr_route(&self, id: &crate::LcrRouteId) -> Result<()> {
+        self.trunk_store.delete_lcr_route(id).await
     }
 }
 

@@ -1860,3 +1860,141 @@ async fn a_calls_trunk_routes_are_tried_one_at_a_time() {
 
     stack.finish().await;
 }
+
+/// A tenant's least-cost routes send the numbers they price out on the
+/// cheapest of its trunks, and a number they do not price takes the
+/// ordinary choice; when the cheapest carrier refuses, the next one by
+/// cost is tried (`docs/TENANT_TRUNKS.md` §12, phase 6c).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_tenants_least_cost_routes_choose_its_carrier_and_its_failover() {
+    let everyday = Carrier::new("everyday-carrier").await;
+    let cheap = Carrier::new("cheap-carrier").await;
+    let backup = Carrier::new("backup-carrier").await;
+    let mut stack = stack_or_skip!(&[]);
+
+    let acme = stack.seed.tenant_id;
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    stack
+        .seed
+        .trunk_with(acme, "everyday-carrier", everyday.port(), |t| {
+            t.priority = 1
+        })
+        .await;
+    // Both ranked well below the everyday carrier: only their prices
+    // bring a call to them.
+    let cheap_trunk = stack
+        .seed
+        .trunk_with(acme, "cheap-carrier", cheap.port(), |t| t.priority = 90)
+        .await;
+    let backup_trunk = stack
+        .seed
+        .trunk_with(acme, "backup-carrier", backup.port(), |t| t.priority = 90)
+        .await;
+    stack
+        .seed
+        .lcr_route(acme, "+44", &cheap_trunk, "0.010")
+        .await;
+    stack
+        .seed
+        .lcr_route(acme, "+44", &backup_trunk, "0.020")
+        .await;
+    tokio::time::sleep(REFRESHED).await;
+
+    let alice_phone = stack.phone(&alice).await;
+
+    // A UK number leaves on the cheapest carrier.
+    let call = alice_phone.call("+442079460000").await.unwrap();
+    let Some(incoming) = cheap.phone.incoming(SOON).await else {
+        let why = format!(
+            "the cheapest carrier never rang; the call is {:?}",
+            call.phase()
+        );
+        stack.fail(&why).await;
+    };
+    let leg = incoming.answer().await.unwrap();
+    call.answered(SOON).await.unwrap();
+    assert!(everyday.phone.incoming(NEVER).await.is_none());
+    assert_eq!(call.hangup().await.unwrap(), 200);
+    assert!(leg.ended(SOON).await);
+
+    // When it refuses, the next by cost takes the call.
+    let call = alice_phone.call("+442079460001").await.unwrap();
+    let Some(incoming) = cheap.phone.incoming(SOON).await else {
+        let why = format!(
+            "the cheapest carrier never rang; the call is {:?}",
+            call.phase()
+        );
+        stack.fail(&why).await;
+    };
+    incoming.reject(503, "Service Unavailable").await.unwrap();
+    let Some(incoming) = backup.phone.incoming(SOON).await else {
+        let why = format!(
+            "the next carrier by cost never rang after the cheapest refused; the call is {:?}",
+            call.phase()
+        );
+        stack.fail(&why).await;
+    };
+    let leg = incoming.answer().await.unwrap();
+    call.answered(SOON).await.unwrap();
+    assert_eq!(call.hangup().await.unwrap(), 200);
+    assert!(leg.ended(SOON).await);
+
+    // A number no route prices takes the ordinary choice.
+    let call = alice_phone.call("+15125550100").await.unwrap();
+    let Some(incoming) = everyday.phone.incoming(SOON).await else {
+        let why = format!(
+            "the everyday carrier never rang; the call is {:?}",
+            call.phase()
+        );
+        stack.fail(&why).await;
+    };
+    let leg = incoming.answer().await.unwrap();
+    call.answered(SOON).await.unwrap();
+    assert_eq!(call.hangup().await.unwrap(), 200);
+    assert!(leg.ended(SOON).await);
+
+    stack.finish().await;
+}
+
+/// A tenant's own trunk carries its call ahead of a platform trunk with a
+/// better priority: priority orders trunks within an owner, and the
+/// tenant's are the carrier it bought (`docs/TENANT_TRUNKS.md` §5).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_tenants_own_trunk_outranks_a_better_ranked_platform_trunk() {
+    let shared = Carrier::new("shared-carrier").await;
+    let acme_carrier = Carrier::new("acme-carrier").await;
+    // The platform's trunk has priority 1.
+    let mut stack = stack_or_skip!(&[&shared]);
+
+    let acme = stack.seed.tenant_id;
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    stack
+        .seed
+        .trunk_with(acme, "acme-carrier", acme_carrier.port(), |t| {
+            t.priority = 50
+        })
+        .await;
+    tokio::time::sleep(REFRESHED).await;
+
+    let alice_phone = stack.phone(&alice).await;
+    for number in ["+15125550100", "+15125550101", "+15125550102"] {
+        let call = alice_phone.call(number).await.unwrap();
+        let Some(incoming) = acme_carrier.phone.incoming(SOON).await else {
+            let why = format!(
+                "the tenant's own carrier never rang for {number}; the call is {:?}",
+                call.phase()
+            );
+            stack.fail(&why).await;
+        };
+        let leg = incoming.answer().await.unwrap();
+        call.answered(SOON).await.unwrap();
+        assert_eq!(call.hangup().await.unwrap(), 200);
+        assert!(leg.ended(SOON).await);
+    }
+    assert!(
+        shared.phone.incoming(NEVER).await.is_none(),
+        "the platform's trunk is failover, not first choice"
+    );
+
+    stack.finish().await;
+}

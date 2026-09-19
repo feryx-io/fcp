@@ -4691,6 +4691,27 @@ fn parse_stir_sign(value: Option<String>) -> fcp_core::trunk::StirSignMode {
     }
 }
 
+/// The columns a least-cost route is read from, named so a column added to
+/// the table is a column added here (`docs/TENANT_TRUNKS.md` §12, phase 6c).
+const LCR_ROUTE_COLS: &str = "id, tenant_id, prefix, trunk_id, cost_per_minute, priority, \
+     enabled, description, created_at, updated_at";
+
+fn row_to_lcr_route(row: sqlx::postgres::PgRow) -> Result<fcp_core::LcrRoute> {
+    let tenant: String = row.get("tenant_id");
+    Ok(fcp_core::LcrRoute {
+        id: fcp_core::LcrRouteId::from_string(row.get("id")),
+        tenant_id: TenantId::from_str(&tenant)?,
+        prefix: row.get("prefix"),
+        trunk_id: TrunkId::from_string(row.get("trunk_id")),
+        cost_per_minute: row.get::<fcp_core::billing::Decimal, _>("cost_per_minute"),
+        priority: row.get::<i32, _>("priority").max(0) as u32,
+        enabled: row.get("enabled"),
+        description: row.get("description"),
+        created_at: datetime_to_system_time(row.get("created_at")),
+        updated_at: datetime_to_system_time(row.get("updated_at")),
+    })
+}
+
 #[async_trait]
 impl TrunkStore for PostgresStorage {
     async fn get_trunk(&self, id: &TrunkId) -> Result<Option<Trunk>> {
@@ -4931,6 +4952,75 @@ impl TrunkStore for PostgresStorage {
     async fn delete_trunk(&self, id: &TrunkId) -> Result<()> {
         sqlx::query("DELETE FROM trunks WHERE id = $1")
             .bind(id.to_string())
+            .execute(self.writes())
+            .await?;
+        Ok(())
+    }
+
+    async fn get_lcr_route(&self, id: &fcp_core::LcrRouteId) -> Result<Option<fcp_core::LcrRoute>> {
+        let row = sqlx::query(&format!(
+            "SELECT {LCR_ROUTE_COLS} FROM lcr_routes WHERE id = $1"
+        ))
+        .bind(id.as_str())
+        .fetch_optional(self.reads())
+        .await?;
+        row.map(row_to_lcr_route).transpose()
+    }
+
+    async fn list_lcr_routes(&self, tenant_id: &TenantId) -> Result<Vec<fcp_core::LcrRoute>> {
+        let rows = sqlx::query(&format!(
+            "SELECT {LCR_ROUTE_COLS} FROM lcr_routes WHERE tenant_id = $1
+             ORDER BY prefix, cost_per_minute, priority, id"
+        ))
+        .bind(tenant_id.to_string())
+        .fetch_all(self.reads())
+        .await?;
+        rows.into_iter().map(row_to_lcr_route).collect()
+    }
+
+    async fn list_all_lcr_routes(&self) -> Result<Vec<fcp_core::LcrRoute>> {
+        let rows = sqlx::query(&format!(
+            "SELECT {LCR_ROUTE_COLS} FROM lcr_routes
+             ORDER BY tenant_id, prefix, cost_per_minute, priority, id"
+        ))
+        .fetch_all(self.reads())
+        .await?;
+        rows.into_iter().map(row_to_lcr_route).collect()
+    }
+
+    async fn put_lcr_route(&self, route: fcp_core::LcrRoute) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO lcr_routes
+                (id, tenant_id, prefix, trunk_id, cost_per_minute, priority, enabled,
+                 description, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+             ON CONFLICT (id) DO UPDATE SET
+                prefix = EXCLUDED.prefix,
+                trunk_id = EXCLUDED.trunk_id,
+                cost_per_minute = EXCLUDED.cost_per_minute,
+                priority = EXCLUDED.priority,
+                enabled = EXCLUDED.enabled,
+                description = EXCLUDED.description,
+                updated_at = EXCLUDED.updated_at",
+        )
+        .bind(route.id.as_str())
+        .bind(route.tenant_id.to_string())
+        .bind(&route.prefix)
+        .bind(route.trunk_id.as_str())
+        .bind(route.cost_per_minute)
+        .bind(route.priority as i32)
+        .bind(route.enabled)
+        .bind(&route.description)
+        .bind(system_time_to_datetime(route.created_at))
+        .bind(system_time_to_datetime(route.updated_at))
+        .execute(self.writes())
+        .await?;
+        Ok(())
+    }
+
+    async fn delete_lcr_route(&self, id: &fcp_core::LcrRouteId) -> Result<()> {
+        sqlx::query("DELETE FROM lcr_routes WHERE id = $1")
+            .bind(id.as_str())
             .execute(self.writes())
             .await?;
         Ok(())

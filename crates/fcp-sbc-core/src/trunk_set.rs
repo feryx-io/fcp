@@ -11,9 +11,11 @@
 //! Inbound, the set answers the other question (§7): which trunks a call
 //! from this address may have arrived on, and so whose call it is.
 
+use crate::lcr::{LcrRouteEntry, LcrRouteTable};
 use fcp_core::storage::{TenantStore, TrunkStore};
 use fcp_core::{TenantId, Trunk};
 use ipnetwork::IpNetwork;
+use rust_decimal::prelude::ToPrimitive;
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::sync::{Arc, RwLock};
@@ -56,6 +58,9 @@ pub struct TrunkSet {
     inbound: RwLock<Vec<(IpNetwork, Arc<Trunk>)>>,
     /// The addresses of trunk hosts given by name, as of the last refresh.
     resolved: RwLock<HashMap<String, Vec<IpAddr>>>,
+    /// Each tenant's least-cost routes, keyed by trunk id
+    /// (`docs/TENANT_TRUNKS.md` §12, phase 6c).
+    lcr: RwLock<HashMap<TenantId, Arc<LcrRouteTable>>>,
 }
 
 impl TrunkSet {
@@ -68,6 +73,7 @@ impl TrunkSet {
             tenants: RwLock::new(HashMap::new()),
             inbound: RwLock::new(Vec::new()),
             resolved: RwLock::new(HashMap::new()),
+            lcr: RwLock::new(HashMap::new()),
         };
         set.rebuild_inbound();
         set
@@ -201,6 +207,61 @@ impl TrunkSet {
         &self.platform
     }
 
+    /// `tenant`'s least-cost routes, when it has any in force. Each entry's
+    /// `trunk_name` is a trunk id: a tenant's routes name its trunks by id.
+    pub fn lcr_for(&self, tenant: TenantId) -> Option<Arc<LcrRouteTable>> {
+        self.lcr.read().ok()?.get(&tenant).cloned()
+    }
+
+    /// Replace what is known of the tenants' least-cost routes. A route
+    /// that is disabled, or names a trunk that is not its own tenant's, is
+    /// not in force. Returns how many are.
+    pub fn set_tenant_lcr(&self, routes: Vec<fcp_core::LcrRoute>) -> usize {
+        let owned: HashSet<(TenantId, String)> = match self.tenants.read() {
+            Ok(tenants) => tenants
+                .iter()
+                .flat_map(|(tenant, entry)| {
+                    entry
+                        .trunks
+                        .iter()
+                        .map(move |t| (*tenant, t.trunk_id().to_string()))
+                })
+                .collect(),
+            Err(_) => HashSet::new(),
+        };
+        let mut by_tenant: HashMap<TenantId, Vec<LcrRouteEntry>> = HashMap::new();
+        for route in routes.into_iter().filter(|r| r.enabled) {
+            if !owned.contains(&(route.tenant_id, route.trunk_id.to_string())) {
+                debug!(
+                    route = %route.id,
+                    trunk = %route.trunk_id,
+                    "A least-cost route names a trunk that is not its tenant's; not in force"
+                );
+                continue;
+            }
+            by_tenant
+                .entry(route.tenant_id)
+                .or_default()
+                .push(LcrRouteEntry {
+                    prefix: route.prefix,
+                    trunk_name: route.trunk_id.to_string(),
+                    cost_per_minute: route.cost_per_minute.to_f64().unwrap_or(f64::MAX),
+                    priority: route.priority,
+                    enabled: true,
+                });
+        }
+        let count = by_tenant.values().map(Vec::len).sum();
+        let tables = by_tenant
+            .into_iter()
+            .map(|(tenant, entries)| (tenant, Arc::new(LcrRouteTable::new(&entries))))
+            .collect();
+        match self.lcr.write() {
+            Ok(mut lcr) => *lcr = tables,
+            Err(e) => warn!(error = %e, "Trunk set lock poisoned; least-cost routes not refreshed"),
+        }
+        count
+    }
+
     /// How many tenants have trunks here.
     pub fn tenant_count(&self) -> usize {
         self.tenants.read().map(|t| t.len()).unwrap_or(0)
@@ -259,6 +320,18 @@ impl TrunkSet {
             .map(|t| (t.id, t.platform_trunk_fallback))
             .collect();
         let count = self.set_tenant_trunks(trunks, &fallback);
+        // After the trunks: a route is in force only for a trunk of its own
+        // tenant's that this node now knows.
+        // A table that cannot be read leaves the last one in force: the
+        // trunks are current either way.
+        match store.list_all_lcr_routes().await {
+            Ok(routes) => {
+                self.set_tenant_lcr(routes);
+            }
+            Err(e) => {
+                warn!(error = %e, "Could not read the tenants' least-cost routes; keeping the last")
+            }
+        }
         self.resolve_names().await;
         debug!(
             trunks = count,
