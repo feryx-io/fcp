@@ -138,6 +138,10 @@ pub struct ApiState {
 
     /// Trunk health monitoring map (populated by background health probe task).
     pub trunk_health: Option<crate::trunk_health::TrunkHealthMap>,
+    /// Where the view each node has of its trunks is read from
+    /// (`docs/TENANT_TRUNKS.md` §9). Absent on a deployment with no
+    /// cluster, where this server's own probes are the only view there is.
+    pub trunk_reports: Option<Arc<dyn crate::TrunkNodeReports>>,
 
     /// Deployment mode for permission evaluation (Enterprise, ServiceProvider, Carrier).
     pub deployment_mode: fcp_core::permissions::DeploymentMode,
@@ -198,6 +202,7 @@ impl ApiState {
             provisioning_auth_token: None,
             provisioning_require_https: true,
             trunk_health: None,
+            trunk_reports: None,
             deployment_mode: fcp_core::permissions::DeploymentMode::default(),
             e911_validator: Arc::new(fcp_core::e911::BasicAddressValidator),
             call_recordings_dir: None,
@@ -320,6 +325,12 @@ impl ApiState {
     /// Set the deployment mode for permission evaluation.
     pub fn with_deployment_mode(mut self, mode: fcp_core::permissions::DeploymentMode) -> Self {
         self.deployment_mode = mode;
+        self
+    }
+
+    /// Where to read what each node sees of its trunks.
+    pub fn with_trunk_reports(mut self, reports: Arc<dyn crate::TrunkNodeReports>) -> Self {
+        self.trunk_reports = Some(reports);
         self
     }
 

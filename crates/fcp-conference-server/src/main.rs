@@ -689,6 +689,10 @@ async fn main() -> Result<()> {
             Arc::clone(&health),
             Arc::clone(&trunk_set),
             Arc::clone(&uac),
+            fcp_sbc_core::HealthAnnouncer::new(
+                Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>,
+                config.service.node_id.clone(),
+            ),
         ));
 
         // Keep the REGISTER bindings of every registering trunk this node

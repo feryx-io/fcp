@@ -22,6 +22,24 @@ pub enum TrunkHealthStatus {
     Unknown,
 }
 
+impl TrunkHealthStatus {
+    /// The lowercase word an API and a log use for this status.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Healthy => "healthy",
+            Self::Degraded => "degraded",
+            Self::Down => "down",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+impl std::fmt::Display for TrunkHealthStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// SBC metrics collection configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]

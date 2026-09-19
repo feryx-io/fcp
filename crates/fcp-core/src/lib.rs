@@ -51,6 +51,7 @@ pub mod tenant;
 pub mod time;
 pub mod transport;
 pub mod trunk;
+pub mod trunk_report;
 pub mod voicemail;
 
 // Re-export commonly used types

@@ -119,27 +119,33 @@ impl TrunkHealthMonitor {
     /// Record a failure for the given trunk.
     ///
     /// If consecutive failures reach `max_failures`, transitions to `Down`.
-    pub fn record_failure(&self, trunk: &str) {
-        if let Some(mut entry) = self.state.get_mut(&self.key_of(trunk)) {
-            entry.consecutive_failures += 1;
-            entry.last_failure = Some(Instant::now());
-            if entry.consecutive_failures >= entry.max_failures {
-                entry.status = TrunkHealthStatus::Down;
-            } else if entry.consecutive_failures >= entry.max_failures / 2 {
-                entry.status = TrunkHealthStatus::Degraded;
-            }
+    /// Returns what the status was before, when this changed it: a caller
+    /// with somewhere to announce it (`trunk.health_changed`) has the one
+    /// place that knows a change happened.
+    pub fn record_failure(&self, trunk: &str) -> Option<TrunkHealthStatus> {
+        let mut entry = self.state.get_mut(&self.key_of(trunk))?;
+        let was = entry.status;
+        entry.consecutive_failures += 1;
+        entry.last_failure = Some(Instant::now());
+        if entry.consecutive_failures >= entry.max_failures {
+            entry.status = TrunkHealthStatus::Down;
+        } else if entry.consecutive_failures >= entry.max_failures / 2 {
+            entry.status = TrunkHealthStatus::Degraded;
         }
+        (entry.status != was).then_some(was)
     }
 
     /// Record a success for the given trunk.
     ///
-    /// Resets failure count and transitions to `Healthy`.
-    pub fn record_success(&self, trunk: &str) {
-        if let Some(mut entry) = self.state.get_mut(&self.key_of(trunk)) {
-            entry.consecutive_failures = 0;
-            entry.last_success = Some(Instant::now());
-            entry.status = TrunkHealthStatus::Healthy;
-        }
+    /// Resets failure count and transitions to `Healthy`. Returns what the
+    /// status was before, when this changed it.
+    pub fn record_success(&self, trunk: &str) -> Option<TrunkHealthStatus> {
+        let mut entry = self.state.get_mut(&self.key_of(trunk))?;
+        let was = entry.status;
+        entry.consecutive_failures = 0;
+        entry.last_success = Some(Instant::now());
+        entry.status = TrunkHealthStatus::Healthy;
+        (entry.status != was).then_some(was)
     }
 
     /// Returns `true` if the trunk is healthy (not `Down` and not admin-disabled).
@@ -163,8 +169,9 @@ impl TrunkHealthMonitor {
     }
 
     /// Auto-recover Degraded trunks whose last failure is older than
-    /// `recovery_interval_secs`. Returns names of recovered trunks.
-    pub fn check_degraded_recovery(&self) -> Vec<String> {
+    /// `recovery_interval_secs`. Returns the key and the name of each, the
+    /// key for what reports the trunk and the name for what reads the log.
+    pub fn check_degraded_recovery(&self) -> Vec<(String, String)> {
         let now = Instant::now();
         let mut keys = Vec::new();
         for mut entry in self.state.iter_mut() {
@@ -183,8 +190,12 @@ impl TrunkHealthMonitor {
                 keys.push(entry.key().clone());
             }
         }
-        // Names, because this is what the logs and the operator read.
-        keys.iter().map(|key| self.name_of(key)).collect()
+        keys.into_iter()
+            .map(|key| {
+                let name = self.name_of(&key);
+                (key, name)
+            })
+            .collect()
     }
 
     /// Get the current health status for a trunk.
@@ -634,7 +645,10 @@ mod tests {
         assert!(monitor.is_degraded("trunk-a"));
         // recovery_interval_secs=0 means recover immediately
         let recovered = monitor.check_degraded_recovery();
-        assert_eq!(recovered, vec!["trunk-a".to_string()]);
+        assert_eq!(
+            recovered.iter().map(|(_, n)| n.clone()).collect::<Vec<_>>(),
+            vec!["trunk-a".to_string()]
+        );
         assert_eq!(monitor.status("trunk-a"), Some(TrunkHealthStatus::Healthy));
     }
 

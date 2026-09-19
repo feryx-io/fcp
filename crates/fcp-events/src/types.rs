@@ -87,6 +87,24 @@ pub enum TrunkEvent {
         timestamp: SystemTime,
     },
 
+    /// What this node's probes make of the trunk changed. Health is per
+    /// node (`docs/TENANT_TRUNKS.md` §8): another node may still reach a
+    /// carrier this one cannot, so the event names which node found what.
+    HealthChanged {
+        trunk_id: String,
+        trunk_name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tenant_id: Option<TenantId>,
+        /// `healthy`, `degraded` or `down`.
+        status: String,
+        /// What it was before, so a consumer sees the direction.
+        previous: String,
+        consecutive_failures: u32,
+        node_id: String,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
     /// The REGISTER was rejected, timed out or could not be sent.
     RegistrationFailed {
         trunk_id: String,
@@ -107,14 +125,16 @@ impl TrunkEvent {
     pub fn timestamp(&self) -> SystemTime {
         match self {
             TrunkEvent::Registered { timestamp, .. }
-            | TrunkEvent::RegistrationFailed { timestamp, .. } => *timestamp,
+            | TrunkEvent::RegistrationFailed { timestamp, .. }
+            | TrunkEvent::HealthChanged { timestamp, .. } => *timestamp,
         }
     }
 
     pub fn tenant_id(&self) -> Option<&TenantId> {
         match self {
             TrunkEvent::Registered { tenant_id, .. }
-            | TrunkEvent::RegistrationFailed { tenant_id, .. } => tenant_id.as_ref(),
+            | TrunkEvent::RegistrationFailed { tenant_id, .. }
+            | TrunkEvent::HealthChanged { tenant_id, .. } => tenant_id.as_ref(),
         }
     }
 }
@@ -1525,6 +1545,7 @@ impl PlatformEvent {
             PlatformEvent::Trunk(e) => match e {
                 TrunkEvent::Registered { .. } => "trunk.registered",
                 TrunkEvent::RegistrationFailed { .. } => "trunk.registration_failed",
+                TrunkEvent::HealthChanged { .. } => "trunk.health_changed",
             },
             PlatformEvent::Compliance(e) => match e {
                 ComplianceEvent::HoldPlaced { .. } => "compliance.hold_placed",

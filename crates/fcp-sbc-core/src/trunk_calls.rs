@@ -15,6 +15,7 @@ use crate::cps::CpsChecker;
 use crate::trunk_health::TrunkHealthMonitor;
 use crate::trunk_set::TrunkSet;
 use dashmap::DashMap;
+use fcp_core::trunk_report::TrunkOutcome;
 use fcp_core::Trunk;
 use fcp_sip::trunk_ingress::{TrunkCallCounter, TrunkLimit};
 use std::sync::Arc;
@@ -113,14 +114,17 @@ impl TrunkCallCounter for TrunkCalls {
         // since the last probe) is met now, so its calls are counted.
         self.health.track(&[Arc::new(trunk.clone())]);
         let key = trunk.key();
+        note(trunk, &key, TrunkOutcome::Attempted);
         if !self
             .health
             .try_call_started(&key, trunk.max_concurrent_calls)
         {
+            note(trunk, &key, TrunkOutcome::RejectedCapacity);
             return Err(TrunkLimit::Concurrency);
         }
         if !self.cps.try_record(&key, trunk.cps_limit, TrunkCps::now()) {
             self.health.call_ended(&key);
+            note(trunk, &key, TrunkOutcome::RejectedCps);
             return Err(TrunkLimit::CallsPerSecond);
         }
         self.count(call, key);
@@ -130,6 +134,10 @@ impl TrunkCallCounter for TrunkCalls {
     fn carried(&self, call: &str, trunk: &Trunk) {
         self.health.track(&[Arc::new(trunk.clone())]);
         let key = trunk.key();
+        // A call the trunk answered was a call it was offered: both, so
+        // the two series can be read against each other (§9).
+        note(trunk, &key, TrunkOutcome::Attempted);
+        note(trunk, &key, TrunkOutcome::Answered);
         self.health.call_started(&key);
         self.count(call, key);
     }
@@ -141,6 +149,15 @@ impl TrunkCallCounter for TrunkCalls {
             }
         }
     }
+}
+
+/// One call's outcome on a trunk, for `/metrics` (§9).
+fn note(trunk: &Trunk, key: &str, outcome: TrunkOutcome) {
+    fcp_core::trunk_report::TrunkCounters::global().note(
+        key,
+        trunk.tenant_id.map(|t| t.to_string()).as_deref(),
+        outcome,
+    );
 }
 
 #[cfg(test)]

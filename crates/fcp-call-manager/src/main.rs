@@ -560,6 +560,10 @@ async fn main() -> Result<()> {
         Arc::clone(&trunk_health_monitor),
         Arc::clone(&trunk_cps),
     ));
+    // What this node's bindings are doing, for the registration task and
+    // for what the node answers about its trunks (`docs/TENANT_TRUNKS.md`
+    // §9).
+    let trunk_registrar = Arc::new(TrunkRegistrar::new());
     let outbound_route_provider: Option<Arc<dyn fcp_sip::OutboundRouteProvider>> = {
         let cps: Arc<dyn CpsChecker> = trunk_cps.clone();
         let router = Arc::new(
@@ -581,18 +585,37 @@ async fn main() -> Result<()> {
         )
         .await;
 
+        // Say what this node sees of its trunks, so `/v1/trunks` can show
+        // every node's view at once (`docs/TENANT_TRUNKS.md` §9).
+        #[cfg(feature = "storage-redis")]
+        if let Some(ref redis) = redis_storage {
+            tokio::spawn(fcp_sbc_core::run_trunk_reporting(
+                Arc::new(fcp_cluster::TrunkRegistry::new(
+                    redis.clone(),
+                    config.service.node_id.clone(),
+                )),
+                Arc::clone(&trunk_set),
+                Arc::clone(&trunk_health_monitor),
+                Some(Arc::clone(&trunk_registrar)),
+                Duration::from_secs(10),
+            ));
+        }
+
         // Probe every trunk the node routes by, the tenants' included
         tokio::spawn(fcp_sbc_core::run_health_probes(
             Arc::clone(&trunk_health_monitor),
             Arc::clone(&trunk_set),
             Arc::clone(&uac),
+            fcp_sbc_core::HealthAnnouncer::new(
+                Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>,
+                config.service.node_id.clone(),
+            ),
         ));
 
         // Keep the REGISTER bindings of every registering trunk this node
         // routes by — its own and the tenants' — one node to a trunk
         // (`docs/TENANT_TRUNKS.md` §8). The task runs whatever the node
         // starts with: a tenant's trunk arrives after startup.
-        let trunk_registrar = Arc::new(TrunkRegistrar::new());
         {
             let (tx, rx) = tokio::sync::watch::channel(false);
             #[cfg(feature = "storage-redis")]
@@ -1372,6 +1395,9 @@ async fn main() -> Result<()> {
         call_recorder: Arc::clone(&call_recorder),
         trunks: config.trunks.clone(),
         trunk_health,
+        trunk_set: Some(Arc::clone(&trunk_set)),
+        trunk_registrar: Some(Arc::clone(&trunk_registrar)),
+        node_id: config.service.node_id.clone(),
     });
     let http_bind = config.http.bind_address;
     tokio::spawn(async move {

@@ -306,6 +306,27 @@ impl TrunkRouter {
             || self.health.concurrent_calls(&key) < trunk.max_concurrent_calls as u64;
         let within_cps = self.cps.is_trunk_within_cps(&key);
 
+        // A trunk passed over for its limits is the one thing here worth
+        // counting: it is why a call this node could otherwise place went
+        // somewhere else, or nowhere (§9). Being disabled or unreachable
+        // is already visible in the trunk's own state.
+        if dir_match && enabled && healthy {
+            let outcome = if !has_capacity {
+                Some(fcp_core::trunk_report::TrunkOutcome::RejectedCapacity)
+            } else if !within_cps {
+                Some(fcp_core::trunk_report::TrunkOutcome::RejectedCps)
+            } else {
+                None
+            };
+            if let Some(outcome) = outcome {
+                fcp_core::trunk_report::TrunkCounters::global().note(
+                    &key,
+                    trunk.tenant_id.map(|t| t.to_string()).as_deref(),
+                    outcome,
+                );
+            }
+        }
+
         dir_match && enabled && healthy && has_capacity && within_cps
     }
 

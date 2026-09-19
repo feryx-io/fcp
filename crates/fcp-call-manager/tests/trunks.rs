@@ -91,6 +91,8 @@ struct Stack {
     db: Option<TestDatabase>,
     seed: Seed,
     sip: SocketAddr,
+    /// Where this node answers `GET /trunks` and `/metrics`.
+    http: u16,
     _dir: tempfile::TempDir,
 }
 
@@ -117,12 +119,13 @@ impl Stack {
         redis: Option<&str>,
         platform: &[&Carrier],
     ) -> Option<Self> {
-        let (service, sip, dir) = spawn_node(db.url(), node_id, redis, platform).await;
+        let (service, sip, http, dir) = spawn_node(db.url(), node_id, redis, platform).await;
         Some(Self {
             service: Some(service),
             db: Some(db),
             seed,
             sip,
+            http,
             _dir: dir,
         })
     }
@@ -176,7 +179,7 @@ async fn spawn_node(
     node_id: &str,
     redis: Option<&str>,
     platform: &[&Carrier],
-) -> (Service, SocketAddr, tempfile::TempDir) {
+) -> (Service, SocketAddr, u16, tempfile::TempDir) {
     let sip_port = free_port();
     let http = free_port();
     let rtp_start = allocate_port_pair().rtp_port;
@@ -309,7 +312,12 @@ value = "sip:+1$1@"
         key_path = key_path.display(),
     );
     let service = Service::start("call-manager", BIN, &config, &loopback(http, "/health")).await;
-    (service, SocketAddr::from(([127, 0, 0, 1], sip_port)), dir)
+    (
+        service,
+        SocketAddr::from(([127, 0, 0, 1], sip_port)),
+        http,
+        dir,
+    )
 }
 
 macro_rules! stack_or_skip {
@@ -1195,7 +1203,7 @@ async fn one_node_of_a_cluster_registers_a_trunk_and_another_takes_it_over() {
 
     // A second node on the same database and the same Redis: both load
     // the trunk, and both would have registered it before this phase.
-    let (second, second_sip, _second_dir) = spawn_node(
+    let (second, second_sip, _second_http, _second_dir) = spawn_node(
         first.db.as_ref().expect("the test database").url(),
         "e2e-trunks-b",
         Some(&redis),
@@ -1290,4 +1298,114 @@ fn live_binding(carrier: &Phone) -> Option<String> {
         "two nodes hold a binding for one trunk at once: {live:?}"
     );
     live.pop()
+}
+
+/// A node answers for the trunks it routes by (`docs/TENANT_TRUNKS.md`
+/// §9): its own probes, its own calls, its own binding. The tenants'
+/// trunks are in there beside the platform's, which is what this endpoint
+/// adds over `/emergency/trunks`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_node_says_what_it_sees_of_its_trunks() {
+    let carrier = Carrier::new("seen-carrier").await;
+    let stack = stack_or_skip!(&[&carrier]);
+    let acme = stack.seed.tenant_id;
+    let tenant_trunk = stack
+        .seed
+        .trunk_with(acme, "tenants-own", carrier.port(), |trunk| {
+            trunk.register = true;
+        })
+        .await;
+    tokio::time::sleep(REFRESHED).await;
+
+    let (code, body) =
+        fcp_testkit::smoke::http_get(&fcp_testkit::smoke::loopback(stack.http, "/trunks"))
+            .await
+            .expect("the node answers");
+    assert_eq!(code, 200, "{body}");
+    let seen: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(seen["node_id"], "e2e-trunks", "{seen}");
+    assert_eq!(seen["routes_by_trunks"], true, "{seen}");
+
+    let trunks = seen["trunks"].as_array().cloned().unwrap_or_default();
+    let names: Vec<&str> = trunks.iter().filter_map(|t| t["name"].as_str()).collect();
+    assert!(
+        names.contains(&"tenants-own") && names.contains(&"seen-carrier"),
+        "the tenants' trunks beside the platform's: {names:?}"
+    );
+
+    let tenants = trunks
+        .iter()
+        .find(|t| t["name"] == "tenants-own")
+        .expect("the tenant's trunk");
+    assert_eq!(tenants["trunk_id"], tenant_trunk.to_string(), "{tenants}");
+    assert_eq!(tenants["tenant_id"], acme.to_string(), "{tenants}");
+    assert!(
+        tenants["registration"].is_string(),
+        "a registering trunk says what its binding is doing: {tenants}"
+    );
+    let platform = trunks
+        .iter()
+        .find(|t| t["name"] == "seen-carrier")
+        .expect("the platform's trunk");
+    assert!(
+        platform["tenant_id"].is_null(),
+        "the platform's trunk is nobody's: {platform}"
+    );
+    assert!(
+        platform["registration"].is_null(),
+        "and it does not register: {platform}"
+    );
+    stack.finish().await;
+}
+
+/// The calls a trunk carried, refused for capacity and answered are
+/// counted per trunk and tenant on `/metrics` (§9).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn what_a_trunk_carried_is_counted_per_trunk_and_tenant() {
+    let carrier = Carrier::new("counted-carrier").await;
+    let mut stack = stack_or_skip!(&[]);
+    let acme = stack.seed.tenant_id;
+    let trunk_id = stack
+        .seed
+        .trunk_with(acme, "counted", carrier.port(), |trunk| {
+            trunk.max_concurrent_calls = 1;
+        })
+        .await;
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    tokio::time::sleep(REFRESHED).await;
+    let alice_phone = stack.phone(&alice).await;
+
+    // One call out takes the trunk's only channel; the second is refused
+    // for capacity, which is the pair of outcomes §9 asks for.
+    let first = alice_phone.call("+15125557001").await.unwrap();
+    let Some(incoming) = carrier.phone.incoming(SOON).await else {
+        stack.fail("the carrier was not called").await;
+    };
+    let carried = incoming.answer().await.unwrap();
+    first.answered(SOON).await.unwrap();
+    let second = alice_phone.call("+15125557002").await.unwrap();
+    assert_eq!(second.failed(SOON).await, Some(503), "the channel is taken");
+
+    let (code, metrics) =
+        fcp_testkit::smoke::http_get(&fcp_testkit::smoke::loopback(stack.http, "/metrics"))
+            .await
+            .expect("the node answers");
+    assert_eq!(code, 200);
+    let want = format!("trunk_id=\"{trunk_id}\",tenant=\"{acme}\"");
+    assert!(
+        metrics.contains(&format!("{want},outcome=\"attempted\"}} 1")),
+        "the call the trunk took: {metrics}"
+    );
+    assert!(
+        metrics.contains(&format!("{want},outcome=\"rejected_capacity\"}} 1")),
+        "and one was refused for capacity: {metrics}"
+    );
+    assert!(
+        metrics.contains(&format!("{want},outcome=\"answered\"}} 1")),
+        "and one was carried: {metrics}"
+    );
+
+    assert_eq!(first.hangup().await.unwrap(), 200);
+    assert!(carried.ended(SOON).await);
+    stack.finish().await;
 }
