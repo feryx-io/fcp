@@ -219,8 +219,9 @@ promises and block 2 could not deliver. A tenant with no emergency-capable
 trunk of its own still reaches the platform's: nobody's 911 call fails
 because their tenant's carrier list is short.
 
-**Failover** is unchanged in shape: the ordered list is tried in turn, and
-the record names the trunk that answered.
+**Failover**: the ordered list is tried in turn, and the record names the
+trunk that answered. (It was not, until phase 6c-1: an ordinary call with
+more than one trunk route rang every carrier at once. See §12, phase 6.)
 
 ## 6. What the trunk does to the call
 
@@ -867,6 +868,35 @@ One PR per phase, reviewed before the next starts.
      flow hung up (`a_flow_that_hangs_up_ends_the_call_it_answered`).
      `start_flow` now runs the flow on a task of its own and awaits it;
      the same flow fits in 1.5 MB.
+
+   **Carriers one at a time, decided 2026-09-19.** Building 6c found that
+   an ordinary call with more than one trunk route rang every carrier at
+   once: the B2BUA sent its routes down the parallel-forking path built
+   for a user's ring group, so a call priced on the SBC's `[lcr]`
+   (`max_failover_attempts = 2` by default) reached the callee up to three
+   times, and so did a 6b rule naming a trunk group. Only emergency calls
+   went one route at a time. The user chose to fix it first, in its own
+   PR, with per-tenant LCR after it: 6c-1, then 6c-2.
+
+   **6c-1 — one carrier at a time.** *Done (v0.25.203).*
+
+   - **A call whose targets are all trunk routes sends its INVITE to the
+     first only**, keeping the rest per call (`TrunkFallback`, beside the
+     emergency path's `EmergencyFallback`); a user's registered devices
+     still ring together. The per-target INVITE is one method
+     (`send_b_leg_invite`) for both.
+   - **The next route is tried when the carrier failed**: a refusal of
+     ours (401, 403, 407), 408, 488, any 5xx, no final response at all, or
+     silence until the forking timeout. A carrier that rang has delivered
+     the call, and a busy, a decline, a number that does not exist, a
+     callee who is away or a cancel is the callee's answer, which another
+     carrier would only deliver again (`carrier_failed`). The record names
+     the trunk the call is on as it moves, and the one that answered.
+   - **On the floor**: a rule naming a two-carrier group — the second
+     never rings while the first does, takes the call when the first
+     answers 503, and is not tried when the first answers 486, which the
+     caller hears. With the split disabled the test fails at the first of
+     those.
 
 ## 13. Open questions
 
