@@ -5035,15 +5035,34 @@ fn row_to_routing_rule(row: sqlx::postgres::PgRow) -> Result<RoutingRule> {
         time_window_timezone: row
             .try_get::<String, _>("time_window_timezone")
             .unwrap_or_else(|_| "UTC".to_string()),
+        // An action that does not read is an error, not an `allow`: a
+        // rule decides calls.
         action: action_str
             .parse::<RoutingAction>()
-            .unwrap_or(RoutingAction::Allow),
+            .map_err(|e| anyhow::anyhow!(e))?,
         target_trunk_id: row.try_get("target_trunk_id")?,
         target_trunk_group: row.try_get("target_trunk_group")?,
         reason: row.try_get("reason")?,
         created_at: datetime_to_system_time(created_at),
         updated_at: datetime_to_system_time(updated_at),
     })
+}
+
+/// Rows that read as rules. Since phase 6b a rule decides calls, so a row
+/// that does not read is said out loud rather than dropped quietly.
+fn rows_to_routing_rules(rows: Vec<sqlx::postgres::PgRow>) -> Vec<RoutingRule> {
+    rows.into_iter()
+        .filter_map(|row| {
+            let id: Option<String> = row.try_get("id").ok();
+            match row_to_routing_rule(row) {
+                Ok(rule) => Some(rule),
+                Err(e) => {
+                    tracing::error!(rule_id = ?id, error = %e, "A stored routing rule does not read; it is skipped");
+                    None
+                }
+            }
+        })
+        .collect()
 }
 
 #[async_trait]
@@ -5065,11 +5084,14 @@ impl RoutingRuleStore for PostgresStorage {
                 .bind(tenant_id.to_string())
                 .fetch_all(self.reads())
                 .await?;
-        let rules = rows
-            .into_iter()
-            .filter_map(|r| row_to_routing_rule(r).ok())
-            .collect();
-        Ok(rules)
+        Ok(rows_to_routing_rules(rows))
+    }
+
+    async fn list_all_routing_rules(&self) -> Result<Vec<RoutingRule>> {
+        let rows = sqlx::query("SELECT * FROM routing_rules ORDER BY tenant_id, priority, name")
+            .fetch_all(self.reads())
+            .await?;
+        Ok(rows_to_routing_rules(rows))
     }
 
     async fn put_routing_rule(&self, rule: RoutingRule) -> Result<()> {

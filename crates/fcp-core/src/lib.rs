@@ -129,7 +129,7 @@ pub use crate::routing::{
     RoutingTarget,
 };
 pub use crate::routing_engine::DefaultRoutingEngine;
-pub use crate::routing_rule::{RoutingAction, RoutingRule, RoutingRuleId};
+pub use crate::routing_rule::{RoutingAction, RoutingRule, RoutingRuleId, TrunkTarget};
 pub use crate::service::{Service, ServiceManager};
 pub use crate::sip_handler::{
     InviteContext, InviteHandler, InviteResponse, SipError, SipResponseCode, SipResult,

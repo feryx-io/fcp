@@ -6642,3 +6642,137 @@ async fn deleting_a_tenant_is_a_request_refused_under_a_hold() {
     );
     app.finish().await;
 }
+
+/// A tenant's routing rules decide its calls on every call manager
+/// (`docs/TENANT_TRUNKS.md` §12, phase 6b), so managing them takes the
+/// trunk permissions, a rule is checked as a node will compile it, a trunk
+/// it names must be the tenant's own, and every change is announced.
+#[tokio::test]
+async fn routing_rules_are_checked_owned_and_announced() {
+    // Carrier mode, where a tenant admin manages the tenant's trunks.
+    let app = require_app!(DeploymentMode::Carrier);
+
+    let ours = app
+        .admin(
+            Method::POST,
+            "/api/v1/trunks",
+            Some(json!({ "name": "intl", "hosts": ["sip.carrier.example.net"] })),
+        )
+        .await;
+    assert_eq!(ours.status, StatusCode::CREATED, "{}", ours.text);
+    let ours = ours.json["id"].as_str().unwrap().to_string();
+    let theirs = app
+        .admin_in(
+            app.tenant_b,
+            Method::POST,
+            "/api/v1/trunks",
+            Some(json!({ "name": "intl", "hosts": ["sip.other.example.net"] })),
+        )
+        .await;
+    assert_eq!(theirs.status, StatusCode::CREATED, "{}", theirs.text);
+    let theirs = theirs.json["id"].as_str().unwrap().to_string();
+
+    let rule = |extra: Value| {
+        let mut body = json!({ "name": "international", "priority": 10, "enabled": true });
+        body.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        body
+    };
+    let refused = |text: &str, needle: &str| {
+        assert!(text.contains(needle), "expected '{needle}' in: {text}");
+    };
+
+    // What a node would refuse to compile is refused here.
+    for (body, needle) in [
+        (
+            rule(json!({ "action": "allow", "destination_pattern": "([" })),
+            "destination",
+        ),
+        (
+            rule(json!({ "action": "allow", "time_window_days": ["Someday"] })),
+            "Someday",
+        ),
+        (
+            rule(json!({ "action": "allow", "source_ip_ranges": ["10.0.0.0/33"] })),
+            "10.0.0.0/33",
+        ),
+        (
+            rule(json!({ "action": "route_to_trunk" })),
+            "must name a trunk",
+        ),
+        // Another tenant's trunk, however it is named.
+        (
+            rule(json!({ "action": "route_to_trunk", "target_trunk_id": theirs })),
+            "not one of this tenant's trunks",
+        ),
+    ] {
+        let res = app
+            .admin(Method::POST, "/api/v1/routing/rules", Some(body))
+            .await;
+        assert_eq!(res.status, StatusCode::BAD_REQUEST, "{}", res.text);
+        refused(&res.text, needle);
+    }
+
+    // A good one is stored and announced, so nodes re-read the rules now.
+    let mut events = fcp_events::EventSubscriber::subscribe(
+        app.event_bus.as_ref(),
+        fcp_events::EventFilter::new(),
+    )
+    .await
+    .expect("subscribe");
+    let created = app
+        .admin(
+            Method::POST,
+            "/api/v1/routing/rules",
+            Some(rule(json!({
+                "action": "route_to_trunk",
+                "destination_pattern": "^\\+44",
+                "target_trunk_id": ours,
+                "time_window_days": ["Monday", "Friday"],
+                "time_window_start": "09:00",
+                "time_window_end": "17:00",
+                "time_window_timezone": "Europe/London",
+            }))),
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.text);
+    let announced =
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match events.next().await {
+                    Some(PlatformEvent::System(SystemEvent::ConfigChanged {
+                        entity_type, ..
+                    })) if entity_type == "routing_rule" => return true,
+                    Some(_) => continue,
+                    None => return false,
+                }
+            }
+        })
+        .await;
+    assert_eq!(announced, Ok(true), "the change is announced");
+
+    // An end user may neither read nor write the rules.
+    app.create_user_with_role("phone-user", "end_user").await;
+    let jwt = app.login("phone-user", PASSWORD).await.json["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let listed = app
+        .send_as(&jwt, Method::GET, "/api/v1/routing/rules", None)
+        .await;
+    assert_eq!(listed.status, StatusCode::FORBIDDEN, "{}", listed.text);
+    let written = app
+        .send_as(
+            &jwt,
+            Method::POST,
+            "/api/v1/routing/rules",
+            Some(rule(
+                json!({ "action": "deny", "destination_pattern": ".*" }),
+            )),
+        )
+        .await;
+    assert_eq!(written.status, StatusCode::FORBIDDEN, "{}", written.text);
+
+    app.finish().await;
+}

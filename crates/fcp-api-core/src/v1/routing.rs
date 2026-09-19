@@ -1,15 +1,24 @@
 //! Routing rule management API endpoints.
+//!
+//! A tenant's rules decide its calls on every call manager
+//! (`docs/TENANT_TRUNKS.md` §12, phase 6b): managing them takes the same
+//! permissions as managing its trunks, a rule is checked here the way a
+//! node compiles it, and every change is announced so nodes re-read the
+//! rules at once.
 
+use crate::auth::AuthIdentity;
 use crate::error::ApiError;
 use crate::state::ApiState;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
-    Json,
+    Extension, Json,
 };
-use fcp_core::storage::RoutingRuleStore;
-use fcp_core::{RoutingAction, RoutingRule, RoutingRuleId};
+use fcp_core::permissions::Permission;
+use fcp_core::storage::{RoutingRuleStore, TrunkStore};
+use fcp_core::{RoutingAction, RoutingRule, RoutingRuleId, TenantId, TrunkTarget};
+use fcp_events::{PlatformEvent, SystemEvent};
 use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
 use tracing::info;
@@ -130,8 +139,10 @@ pub struct UpdateRoutingRuleRequest {
 
 pub async fn list_routing_rules(
     State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
     tenant: crate::auth::TenantContext,
 ) -> Result<impl IntoResponse, ApiError> {
+    crate::auth::check_permission(&identity, Permission::TrunkRead, state.deployment_mode)?;
     let storage = require_storage!(state);
     let rules = storage
         .list_routing_rules(&tenant.0)
@@ -144,9 +155,11 @@ pub async fn list_routing_rules(
 
 pub async fn get_routing_rule(
     State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
     tenant: crate::auth::TenantContext,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
+    crate::auth::check_permission(&identity, Permission::TrunkRead, state.deployment_mode)?;
     let storage = require_storage!(state);
     let rule = storage
         .get_routing_rule(&RoutingRuleId::from_string(id))
@@ -159,9 +172,11 @@ pub async fn get_routing_rule(
 
 pub async fn create_routing_rule(
     State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
     tenant: crate::auth::TenantContext,
     Json(req): Json<CreateRoutingRuleRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
+    crate::auth::check_permission(&identity, Permission::TrunkUpdate, state.deployment_mode)?;
     let storage = require_storage!(state);
 
     if req.name.trim().is_empty() {
@@ -199,22 +214,27 @@ pub async fn create_routing_rule(
     rule.target_trunk_group = req.target_trunk_group;
     rule.reason = req.reason;
 
+    check_rule(storage.as_ref(), &rule).await?;
+
     info!(rule_name = %rule.name, rule_id = %rule.id, "Creating routing rule");
 
     storage
         .put_routing_rule(rule.clone())
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to create routing rule: {}", e)))?;
+    announce_rule_change(&state, &rule.id.to_string(), rule.tenant_id).await;
 
     Ok((StatusCode::CREATED, Json(RoutingRuleResponse::from(rule))))
 }
 
 pub async fn update_routing_rule(
     State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
     tenant: crate::auth::TenantContext,
     Path(id): Path<String>,
     Json(req): Json<UpdateRoutingRuleRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
+    crate::auth::check_permission(&identity, Permission::TrunkUpdate, state.deployment_mode)?;
     let storage = require_storage!(state);
     let rule_id = RoutingRuleId::from_string(id);
 
@@ -282,6 +302,7 @@ pub async fn update_routing_rule(
     }
 
     rule.updated_at = SystemTime::now();
+    check_rule(storage.as_ref(), &rule).await?;
 
     info!(rule_name = %rule.name, rule_id = %rule.id, "Updating routing rule");
 
@@ -289,15 +310,18 @@ pub async fn update_routing_rule(
         .put_routing_rule(rule.clone())
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to update routing rule: {}", e)))?;
+    announce_rule_change(&state, &rule.id.to_string(), rule.tenant_id).await;
 
     Ok(Json(RoutingRuleResponse::from(rule)))
 }
 
 pub async fn delete_routing_rule(
     State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
     tenant: crate::auth::TenantContext,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
+    crate::auth::check_permission(&identity, Permission::TrunkUpdate, state.deployment_mode)?;
     let storage = require_storage!(state);
     let rule_id = RoutingRuleId::from_string(id);
 
@@ -314,6 +338,7 @@ pub async fn delete_routing_rule(
         .delete_routing_rule(&rule_id)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to delete routing rule: {}", e)))?;
+    announce_rule_change(&state, &rule.id.to_string(), rule.tenant_id).await;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -327,4 +352,42 @@ fn ensure_rule_visible_to_tenant(
     } else {
         Err(ApiError::NotFound("Routing rule not found".to_string()))
     }
+}
+
+/// Check a rule the way every node will compile it, and that a trunk it
+/// names is this tenant's own: a rule may not send a tenant's calls out on
+/// another tenant's carrier, nor name the platform's trunks one by one
+/// (a trunk group is how a rule reaches those).
+async fn check_rule<S>(storage: &S, rule: &RoutingRule) -> Result<(), ApiError>
+where
+    S: TrunkStore + ?Sized,
+{
+    fcp_policy::tenant_rules::validate(rule).map_err(ApiError::BadRequest)?;
+    if let Some(TrunkTarget::Trunk(id)) = rule.trunk_target() {
+        let owned = storage
+            .get_trunk(&id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("Failed to read trunk: {}", e)))?
+            .is_some_and(|trunk| trunk.tenant_id == Some(rule.tenant_id));
+        if !owned {
+            return Err(ApiError::BadRequest(format!(
+                "target_trunk_id '{id}' is not one of this tenant's trunks"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Tell every node that a rule changed, so the ones deciding calls re-read
+/// the rules now rather than at the next backstop tick.
+async fn announce_rule_change(state: &ApiState, entity_id: &str, tenant_id: TenantId) {
+    let _ = state
+        .event_bus
+        .publish(PlatformEvent::System(SystemEvent::ConfigChanged {
+            entity_type: "routing_rule".to_string(),
+            entity_id: entity_id.to_string(),
+            tenant_id,
+            timestamp: SystemTime::now(),
+        }))
+        .await;
 }

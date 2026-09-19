@@ -13,6 +13,7 @@ ipnetwork = "0.20"
 fcp-sip = { path = "../fcp-sip" }
 fcp-media = { path = "../fcp-media" }
 fcp-events = { path = "../fcp-events" }
+fcp-policy = { path = "../fcp-policy" }
 fcp-billing = { path = "../fcp-billing" }
 fcp-flow = { path = "../fcp-flow" }
 fcp-queue = { path = "../fcp-queue" }

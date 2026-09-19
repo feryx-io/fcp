@@ -374,6 +374,11 @@ pub struct Call {
     /// The trunk a carrier's call arrived on (`docs/TENANT_TRUNKS.md` §7).
     pub arrived_on_trunk: Option<fcp_core::TrunkId>,
 
+    /// Where a tenant's `route_to_trunk` rule confined this call: when it
+    /// goes out to a carrier, only this trunk or trunk group may carry it
+    /// (`docs/TENANT_TRUNKS.md` §12, phase 6b).
+    pub trunk_target: Option<fcp_core::TrunkTarget>,
+
     /// Flow ID if this call is executing a flow
     pub flow_id: Option<String>,
 
@@ -505,6 +510,7 @@ impl Call {
             route_trunks: Vec::new(),
             dtmf_carriage: None,
             arrived_on_trunk: None,
+            trunk_target: None,
             flow_id: None,
             flow_current_node: None,
             trunk_name: None,
@@ -607,6 +613,7 @@ impl Call {
             route_trunks: Vec::new(),
             dtmf_carriage: None,
             arrived_on_trunk: None,
+            trunk_target: None,
             flow_id: None,
             flow_current_node: None,
             trunk_name: None,

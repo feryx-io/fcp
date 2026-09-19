@@ -107,6 +107,23 @@ impl Stack {
         Self::start_as("e2e-trunks", None, platform).await
     }
 
+    /// As [`Stack::start`], with `extra` appended to the node's
+    /// configuration.
+    async fn start_with(platform: &[&Carrier], extra: &str) -> Option<Self> {
+        let db = TestDatabase::create().await?;
+        let seed = Seed::new(db.url(), REALM).await;
+        let (service, sip, http, dir) =
+            spawn_node(db.url(), "e2e-trunks", None, platform, extra).await;
+        Some(Self {
+            service: Some(service),
+            db: Some(db),
+            seed,
+            sip,
+            http,
+            _dir: dir,
+        })
+    }
+
     /// As [`Stack::start`], with a node id of its own and, when a cluster
     /// is wanted, the Redis every node of it shares.
     async fn start_as(node_id: &str, redis: Option<&str>, platform: &[&Carrier]) -> Option<Self> {
@@ -122,7 +139,7 @@ impl Stack {
         redis: Option<&str>,
         platform: &[&Carrier],
     ) -> Option<Self> {
-        let (service, sip, http, dir) = spawn_node(db.url(), node_id, redis, platform).await;
+        let (service, sip, http, dir) = spawn_node(db.url(), node_id, redis, platform, "").await;
         Some(Self {
             service: Some(service),
             db: Some(db),
@@ -182,6 +199,7 @@ async fn spawn_node(
     node_id: &str,
     redis: Option<&str>,
     platform: &[&Carrier],
+    extra: &str,
 ) -> (Service, SocketAddr, u16, tempfile::TempDir) {
     let sip_port = free_port();
     let http = free_port();
@@ -297,6 +315,7 @@ header_name = "From"
 pattern = "sip:0([0-9]+)@"
 value = "sip:+1$1@"
 {trunks}
+{extra}
 "#,
         db = db_url,
         node_id = node_id,
@@ -1211,6 +1230,7 @@ async fn one_node_of_a_cluster_registers_a_trunk_and_another_takes_it_over() {
         "e2e-trunks-b",
         Some(&redis),
         &[],
+        "",
     )
     .await;
 
@@ -1534,6 +1554,218 @@ async fn the_platforms_emergency_trunk_carries_anyones_911_call() {
         "an ordinary call from a tenant that refused the platform's trunks"
     );
     assert_eq!(ordinary.hangup().await.unwrap(), 200);
+    assert!(leg.ended(SOON).await);
+
+    stack.finish().await;
+}
+
+/// A tenant's `route_to_trunk` rule sends the calls it matches out on the
+/// group it names, however the ordinary choice would have ranked it, and
+/// leaves the calls it does not match to the ordinary choice
+/// (`docs/TENANT_TRUNKS.md` §12, phase 6b).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_tenants_rule_sends_its_calls_out_on_the_trunk_group_it_names() {
+    let everyday = Carrier::new("everyday-carrier").await;
+    let intl = Carrier::new("intl-carrier").await;
+    let mut stack = stack_or_skip!(&[]);
+
+    let acme = stack.seed.tenant_id;
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    stack
+        .seed
+        .trunk_with(acme, "everyday-carrier", everyday.port(), |t| {
+            t.priority = 1;
+        })
+        .await;
+    // Ranked well below the everyday carrier: only the rule sends a call
+    // here.
+    stack
+        .seed
+        .trunk_with(acme, "intl-carrier", intl.port(), |t| {
+            t.priority = 90;
+            t.trunk_group = Some("intl".into());
+        })
+        .await;
+    stack
+        .seed
+        .routing_rule(acme, "international", |r| {
+            r.action = fcp_core::RoutingAction::RouteToTrunk;
+            r.destination_pattern = Some(r"^\+44".into());
+            r.target_trunk_group = Some("intl".into());
+        })
+        .await;
+    tokio::time::sleep(REFRESHED).await;
+
+    let alice_phone = stack.phone(&alice).await;
+
+    // A UK number matches the rule.
+    let call = alice_phone.call("+442079460000").await.unwrap();
+    let Some(incoming) = intl.phone.incoming(SOON).await else {
+        let why = format!(
+            "the group the rule names never rang; the call is {:?}",
+            call.phase()
+        );
+        stack.fail(&why).await;
+    };
+    let leg = incoming.answer().await.unwrap();
+    call.answered(SOON).await.unwrap();
+    assert!(
+        everyday.phone.incoming(NEVER).await.is_none(),
+        "the ordinary choice is not tried for a call the rule matched"
+    );
+    assert_eq!(call.hangup().await.unwrap(), 200);
+    assert!(leg.ended(SOON).await);
+
+    // A US number does not: the ordinary choice carries it.
+    let call = alice_phone.call("+15125550100").await.unwrap();
+    let Some(incoming) = everyday.phone.incoming(SOON).await else {
+        let why = format!(
+            "the everyday carrier never rang for a call no rule matched; the call is {:?}",
+            call.phase()
+        );
+        stack.fail(&why).await;
+    };
+    let leg = incoming.answer().await.unwrap();
+    call.answered(SOON).await.unwrap();
+    assert_eq!(call.hangup().await.unwrap(), 200);
+    assert!(leg.ended(SOON).await);
+
+    stack.finish().await;
+}
+
+/// When the trunk a rule names cannot take the call, the call is refused
+/// rather than sent out on something the tenant did not name: a rule that
+/// routes a call somewhere means only there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_call_whose_named_trunk_cannot_take_it_is_refused_not_rerouted() {
+    let everyday = Carrier::new("everyday-carrier").await;
+    let mut stack = stack_or_skip!(&[]);
+
+    let acme = stack.seed.tenant_id;
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    stack
+        .seed
+        .trunk(acme, "everyday-carrier", everyday.port())
+        .await;
+    // The trunk the rule names, switched off.
+    let parked = stack
+        .seed
+        .trunk_with(acme, "parked-carrier", free_port(), |t| t.enabled = false)
+        .await;
+    stack
+        .seed
+        .routing_rule(acme, "via-parked", |r| {
+            r.action = fcp_core::RoutingAction::RouteToTrunk;
+            r.target_trunk_id = Some(parked.to_string());
+        })
+        .await;
+    tokio::time::sleep(REFRESHED).await;
+
+    let alice_phone = stack.phone(&alice).await;
+    let call = alice_phone.call("+15125550100").await.unwrap();
+    assert_eq!(
+        call.failed(SOON).await,
+        Some(503),
+        "the call is refused as unavailable; it is {:?}",
+        call.phase()
+    );
+    assert!(
+        everyday.phone.incoming(NEVER).await.is_none(),
+        "nothing the rule did not name carries the call"
+    );
+
+    stack.finish().await;
+}
+
+/// A tenant's deny rule refuses the calls it matches — and no rule refuses
+/// an emergency call, however broadly it is written.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_tenants_deny_rule_refuses_calls_but_never_an_emergency_call() {
+    let platform_psap = Carrier::new("platform-psap").await;
+    let mut stack = stack_or_skip!(&[&platform_psap]);
+
+    let acme = stack.seed.tenant_id;
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    stack
+        .seed
+        .routing_rule(acme, "bar-everything", |r| {
+            r.action = fcp_core::RoutingAction::Deny;
+            r.destination_pattern = Some(".*".into());
+            r.reason = Some("Outbound calling suspended".into());
+        })
+        .await;
+    tokio::time::sleep(REFRESHED).await;
+
+    let alice_phone = stack.phone(&alice).await;
+    let barred = alice_phone.call("+15125550100").await.unwrap();
+    assert_eq!(
+        barred.failed(SOON).await,
+        Some(403),
+        "the rule refuses it; it is {:?}",
+        barred.phase()
+    );
+    assert!(
+        platform_psap.phone.incoming(NEVER).await.is_none(),
+        "a refused call rings nothing"
+    );
+
+    let emergency = alice_phone.call("911").await.unwrap();
+    let Some(incoming) = platform_psap.phone.incoming(SOON).await else {
+        let why = format!(
+            "a deny rule stopped a 911 call; the call is {:?}",
+            emergency.phase()
+        );
+        stack.fail(&why).await;
+    };
+    let leg = incoming.answer().await.unwrap();
+    emergency.answered(SOON).await.unwrap();
+    assert_eq!(emergency.hangup().await.unwrap(), 200);
+    assert!(leg.ended(SOON).await);
+
+    stack.finish().await;
+}
+
+/// The node's own YAML policy — the platform's — no longer stands between
+/// a caller and 911: emergency detection comes first, and no policy of
+/// either kind applies to an emergency call. A policy file that knows no
+/// users refuses every ordinary call, and the emergency call still goes
+/// out.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_nodes_policy_never_refuses_an_emergency_call() {
+    let platform_psap = Carrier::new("platform-psap").await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let policy = dir.path().join("routing.yaml");
+    std::fs::write(&policy, "users: []\npolicies: []\n").expect("write the policy");
+    let extra = format!(
+        "\n[routing]\nrules_file = \"{}\"\nhot_reload = false\n",
+        policy.display()
+    );
+    let Some(mut stack) = Stack::start_with(&[&platform_psap], &extra).await else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let alice_phone = stack.phone(&alice).await;
+
+    let ordinary = alice_phone.call("+15125550100").await.unwrap();
+    assert!(
+        ordinary.failed(SOON).await.is_some(),
+        "a policy that knows no one refuses an ordinary call; it is {:?}",
+        ordinary.phase()
+    );
+    assert!(platform_psap.phone.incoming(NEVER).await.is_none());
+
+    let emergency = alice_phone.call("911").await.unwrap();
+    let Some(incoming) = platform_psap.phone.incoming(SOON).await else {
+        let why = format!(
+            "the node's policy stopped a 911 call; the call is {:?}",
+            emergency.phase()
+        );
+        stack.fail(&why).await;
+    };
+    let leg = incoming.answer().await.unwrap();
+    emergency.answered(SOON).await.unwrap();
+    assert_eq!(emergency.hangup().await.unwrap(), 200);
     assert!(leg.ended(SOON).await);
 
     stack.finish().await;
