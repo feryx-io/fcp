@@ -18,7 +18,7 @@ import type {
   Registration,
   SipTrunk, CreateTrunkRequest, TrunkStatsResponse,
   TrunkSummary, TrunkDetail, QualityMetrics,
-  RoutingRule, CreateRoutingRuleRequest,
+  RoutingRule, CreateRoutingRuleRequest, RoutePreview, LcrRoute, CreateLcrRouteRequest,
   FlowResponse, CreateFlowRequest, UpdateFlowRequest, ListFlowsResponse, ListFlowsQuery,
   SystemStatus,
   PortRequest, CreatePortRequest,
@@ -412,12 +412,27 @@ export const trunkStatus = {
 
 // Routing / Policy Rules
 export const routing = {
+  /** What a live call manager would do with this tenant's call to `to`. */
+  preview: (to: string, from?: string) => {
+    const params = new URLSearchParams({ to })
+    if (from) params.set('from', from)
+    return apiClient.get<RoutePreview>(`/routing/preview?${params.toString()}`)
+  },
   list: () => apiClient.get<RoutingRule[]>('/routing/rules'),
   get: (id: string) => apiClient.get<RoutingRule>(`/routing/rules/${encodeURIComponent(id)}`),
   create: (data: CreateRoutingRuleRequest) => apiClient.post<RoutingRule>('/routing/rules', data),
   update: (id: string, data: Partial<CreateRoutingRuleRequest>) =>
     apiClient.patch<RoutingRule>(`/routing/rules/${encodeURIComponent(id)}`, data),
   delete: (id: string) => apiClient.delete<void>(`/routing/rules/${encodeURIComponent(id)}`),
+}
+
+// Least-cost routes (`docs/TENANT_TRUNKS.md` §12, phase 6c)
+export const lcrRoutes = {
+  list: () => apiClient.get<LcrRoute[]>('/lcr-routes'),
+  create: (data: CreateLcrRouteRequest) => apiClient.post<LcrRoute>('/lcr-routes', data),
+  update: (id: string, data: Partial<CreateLcrRouteRequest>) =>
+    apiClient.patch<LcrRoute>(`/lcr-routes/${encodeURIComponent(id)}`, data),
+  delete: (id: string) => apiClient.delete<void>(`/lcr-routes/${encodeURIComponent(id)}`),
 }
 
 // IVR Flows

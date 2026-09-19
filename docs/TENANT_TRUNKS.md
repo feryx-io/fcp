@@ -940,6 +940,56 @@ One PR per phase, reviewed before the next starts.
      choice; and a tenant's trunk carries its calls ahead of a platform
      trunk with a better priority.
 
+   **6d — the admin UI, decided 2026-09-19.** Three questions, every
+   recommendation taken: "what routes" is a **live route preview** asked of
+   a call manager (its own policy, rules, least-cost routes, trunks and
+   health — exactly what it would do), not a copy of its logic in the API;
+   routing rules get **their own permission**, held by tenant admins in
+   every mode; and one PR.
+
+   **6d — what routes, and what each node sees.** *Done (v0.25.205).*
+
+   - **Route preview.** `GET /routes/preview?tenant=…&to=…[&from=…]
+     [&source_ip=…]` on each call manager (behind its `[http] api_token`)
+     runs an INVITE's decisions in order without placing anything:
+     emergency detection (an emergency number shows the emergency path's
+     trunks and that no rule applies), the node's YAML policy, the tenant's
+     rules, then the trunks in the order they would be tried, each with
+     its owner, health and — when a least-cost route placed it — the
+     prefix and cost and whose table; the tenant's other trunks are listed
+     as `not_offered`, so an empty answer explains itself. fcp-admin's
+     `GET /v1/routing/preview` (`routing_rule_read`) asks the node
+     `[call_manager] url` names, else a healthy, non-draining call manager
+     from cluster membership, and answers 503 with the reason when it
+     cannot (`RoutePreviewer`).
+   - **Rules permission.** `routing_rule_read` / `routing_rule_manage`,
+     held by tenant and telecom admins in every mode (read-only may read):
+     an enterprise tenant admin bars premium numbers without trunk rights.
+     A rule that routes to a trunk — written, turned into one, turned from
+     one, or deleted — also takes `trunk_update`.
+   - **The admin UI.** The Routing Rules page says how rules apply and
+     tests a number (the preview: outcome, the decisions, the trunks in
+     order with prices, what was not offered); its edits now clear a field
+     emptied (they omitted it, and the API keeps what it is not sent — a
+     pattern or a trunk target, once set, could not be removed); API errors
+     are shown; a trunk group is free text, since a group can name the
+     platform's trunks. A **Least-Cost Routes** page manages
+     `/v1/lcr-routes`. The Trunks page shows each node's view of a trunk
+     (health, whether it routes to it, its calls, its registration), the
+     calls across nodes and the trunk's least-cost routes; `/v1/trunks` now
+     names the node on each view, which it dropped.
+   - **Found on the way:** with `[api] auth_enabled = false` no caller had
+     an identity, so every endpoint that checks a permission — trunks,
+     compliance, emergency and more — answered 500 while the rest of the
+     API was open. A caller is now the platform when authentication is
+     off, as the endpoints without a check already treated it.
+   - **Tested**: the preview on a running node (a least-cost route, a deny
+     rule, an unpriced number, 911); the admin's proxy against a stand-in
+     node (what it is asked, its token, its refusal passed on); enterprise
+     permissions; the per-node naming.
+
+   **Phase 6 is complete, and with it the tenant trunks project.**
+
 ## 13. Open questions
 
 Each with a recommendation; every recommendation was taken on 2026-09-16.

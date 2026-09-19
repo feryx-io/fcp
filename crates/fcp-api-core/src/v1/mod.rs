@@ -622,6 +622,7 @@ pub fn router() -> Router<ApiState> {
                 .delete(lcr_routes::delete_lcr_route),
         )
         // Routing Rules
+        .route("/routing/preview", get(routing::preview_routing))
         .route(
             "/routing/rules",
             get(routing::list_routing_rules).post(routing::create_routing_rule),

@@ -40,6 +40,7 @@ mod queue_audio;
 mod queue_handler;
 mod queue_recording;
 mod queue_runtime_config;
+mod route_preview;
 mod storage;
 
 use cli::Cli;
@@ -565,6 +566,7 @@ async fn main() -> Result<()> {
     // §9).
     let trunk_registrar = Arc::new(TrunkRegistrar::new());
     let tenant_rules = Arc::new(fcp_policy::TenantRuleSet::new());
+    let preview_router: Option<Arc<TrunkRouter>>;
     let outbound_route_provider: Option<Arc<dyn fcp_sip::OutboundRouteProvider>> = {
         let cps: Arc<dyn CpsChecker> = trunk_cps.clone();
         let router = Arc::new(
@@ -676,6 +678,7 @@ async fn main() -> Result<()> {
                  (docs/E911.md)"
             );
         }
+        preview_router = Some(Arc::clone(&router));
         Some(router as Arc<dyn fcp_sip::OutboundRouteProvider>)
     };
 
@@ -1162,7 +1165,7 @@ async fn main() -> Result<()> {
         local_addr,
         config.media.rtp_port_start,
         registrar.as_ref().map(Arc::clone),
-        routing_service, // routing service from config
+        routing_service.clone(), // routing service from config
         Arc::clone(&call_manager),
         Some(Arc::clone(&uac)),
         Some(Arc::clone(&dyn_storage)),
@@ -1409,6 +1412,9 @@ async fn main() -> Result<()> {
         trunk_health,
         trunk_set: Some(Arc::clone(&trunk_set)),
         trunk_registrar: Some(Arc::clone(&trunk_registrar)),
+        trunk_router: preview_router.clone(),
+        tenant_rules: Some(Arc::clone(&tenant_rules)),
+        routing_service: routing_service.clone(),
         node_id: config.service.node_id.clone(),
     });
     let http_bind = config.http.bind_address;

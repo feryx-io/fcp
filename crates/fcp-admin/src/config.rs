@@ -38,6 +38,10 @@ pub struct AdminConfig {
     #[serde(default)]
     pub conference: ConferenceConfig,
 
+    /// The call manager a route preview is asked of
+    #[serde(default)]
+    pub call_manager: CallManagerConfig,
+
     /// Directory for voicemail greetings (used by greeting upload/download endpoints)
     #[serde(default)]
     pub voicemail_greetings_dir: Option<String>,
@@ -512,6 +516,22 @@ impl Default for ClusterConfig {
 
 /// Conference server configuration.
 ///
+/// The call manager the route preview asks what it would do with a call
+/// (`docs/TENANT_TRUNKS.md` §12, phase 6d). Without `url`, a healthy,
+/// non-draining call manager is found through `[cluster]`; with neither,
+/// the preview answers 503.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct CallManagerConfig {
+    /// Base URL of a call manager's HTTP API
+    /// Example: "http://fcp-call-manager:8080"
+    #[serde(default)]
+    pub url: Option<String>,
+
+    /// Its `[http] api_token`, when it has one — the preview is behind it.
+    #[serde(default)]
+    pub auth_token: Option<String>,
+}
+
 /// Live room controls (video layout, pin, spotlight, participant video,
 /// dial-out) are proxied to one conference server's HTTP API. Any
 /// conference node will do: it applies an operation when it hosts the

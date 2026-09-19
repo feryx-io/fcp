@@ -51,6 +51,13 @@ pub struct AppState {
     pub trunk_set: Option<Arc<fcp_sbc_core::TrunkSet>>,
     /// What this node's REGISTER bindings are doing.
     pub trunk_registrar: Option<Arc<fcp_sbc_core::TrunkRegistrar>>,
+    /// What chooses this node's trunks, for a route preview
+    /// (`docs/TENANT_TRUNKS.md` §12, phase 6d).
+    pub trunk_router: Option<Arc<fcp_sbc_core::TrunkRouter>>,
+    /// Every tenant's own routing rules, as this node decides them.
+    pub tenant_rules: Option<Arc<fcp_policy::TenantRuleSet>>,
+    /// The node's own YAML policy, when it has one.
+    pub routing_service: Option<Arc<fcp_routing::RoutingService>>,
     pub node_id: String,
 }
 
@@ -162,6 +169,13 @@ async fn trunks_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse
 pub async fn run_http_server(bind_addr: SocketAddr, state: Arc<AppState>) -> anyhow::Result<()> {
     let protected = Router::new()
         .route("/status", get(status_handler))
+        // What this node would do with a call, for the admin API's route
+        // preview (`docs/TENANT_TRUNKS.md` §12, phase 6d): it names tenants'
+        // carriers, so it takes the token.
+        .route(
+            "/routes/preview",
+            get(crate::route_preview::route_preview_handler),
+        )
         .route("/calls", get(calls_handler))
         .route(
             "/calls/:id/recording/start",

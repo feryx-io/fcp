@@ -11,6 +11,11 @@ use std::time::SystemTime;
 /// What one node sees of one trunk.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TrunkNodeView {
+    /// The node this is the view of. Absent inside a node's own report,
+    /// which names its node once; set where views of one trunk from many
+    /// nodes are gathered, as `/v1/trunks` does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_id: Option<String>,
     pub trunk_id: String,
     pub name: String,
     /// The platform's own trunks have no tenant.

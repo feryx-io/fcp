@@ -77,5 +77,5 @@ pub use trunk_registration::{
     TrunkRegistrar, TrunkRegistrationContext,
 };
 pub use trunk_report::{node_view, run_trunk_reporting};
-pub use trunk_router::TrunkRouter;
+pub use trunk_router::{PriceSource, RoutePrice, TrunkRouter};
 pub use trunk_set::TrunkSet;

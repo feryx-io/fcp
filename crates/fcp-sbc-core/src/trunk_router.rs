@@ -454,6 +454,38 @@ impl TrunkRouter {
         ordered
     }
 
+    /// What `destination` costs on `trunk` by the table that orders it — the
+    /// tenant's own routes for a tenant's trunk, the node's `[lcr]` for a
+    /// platform trunk — at the longest prefix that prices it there. `None`
+    /// when no route does, and the trunk was placed by the ordinary choice
+    /// (`docs/TENANT_TRUNKS.md` §12, phase 6d: what a route preview shows).
+    pub fn price_for(
+        &self,
+        tenant: Option<fcp_core::TenantId>,
+        trunk: &TrunkConfig,
+        destination: &str,
+    ) -> Option<RoutePrice> {
+        let digits = LcrRouteTable::digits_of(destination);
+        let find = |table: &LcrRouteTable, key: &str, source: PriceSource| {
+            table
+                .find_routes_ordered(destination)
+                .into_iter()
+                .find(|route| route.trunk_name == key)
+                .map(|route| RoutePrice {
+                    prefix: digits.chars().take(route.prefix_len).collect(),
+                    cost_per_minute: route.cost_per_minute,
+                    source,
+                })
+        };
+        match trunk.tenant_id {
+            Some(_) => {
+                let table = tenant.and_then(|t| self.trunks.lcr_for(t))?;
+                find(&table, &trunk.trunk_id().to_string(), PriceSource::Tenant)
+            }
+            None => find(self.lcr.as_ref()?, &trunk.name, PriceSource::Node),
+        }
+    }
+
     /// Check if a trunk passes standard eligibility filters.
     fn is_trunk_eligible(&self, trunk: &TrunkConfig, direction: TrunkDirection) -> bool {
         // Direction match
@@ -803,6 +835,25 @@ impl TrunkRouter {
         configured(&own, own_table.as_deref(), &|t| t.trunk_id().to_string())
             || configured(&platform, self.lcr.as_ref(), &|t| t.name.clone())
     }
+}
+
+/// Where a route's price came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PriceSource {
+    /// The tenant's own least-cost routes (`/v1/lcr-routes`).
+    Tenant,
+    /// The node's `[lcr]`, for the platform's trunks.
+    Node,
+}
+
+/// What a destination costs on one trunk, and by whose table.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct RoutePrice {
+    /// The prefix of the destination that priced it.
+    pub prefix: String,
+    pub cost_per_minute: f64,
+    pub source: PriceSource,
 }
 
 #[async_trait::async_trait]
