@@ -54,7 +54,8 @@ impl Carrier {
     }
 
     /// This carrier as one of the node's own `[[trunks]]` — the
-    /// platform's, shared by every tenant that has none of its own.
+    /// platform's, shared by every tenant that has none of its own. A
+    /// carrier whose name says `psap` takes emergency calls.
     fn platform_trunk_toml(&self) -> String {
         format!(
             r#"
@@ -67,6 +68,7 @@ weight = 100
 priority = 1
 register = false
 max_concurrent_calls = 0
+emergency_capable = {emergency}
 
 [trunks.transport]
 protocol = "Udp"
@@ -81,6 +83,7 @@ health_check_interval_secs = 60
 "#,
             name = self.name,
             port = self.port(),
+            emergency = self.name.contains("psap"),
         )
     }
 }
@@ -1407,5 +1410,131 @@ async fn what_a_trunk_carried_is_counted_per_trunk_and_tenant() {
 
     assert_eq!(first.hangup().await.unwrap(), 200);
     assert!(carried.ended(SOON).await);
+    stack.finish().await;
+}
+
+/// A tenant's own emergency-capable trunk carries its 911 call, ahead of
+/// the platform's (`docs/TENANT_TRUNKS.md` §5, `docs/E911_BLOCK_2.md`
+/// §12.1): the carrier the tenant bought is the one its emergency calls
+/// leave on, and the record says which trunk that was by id.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_tenants_911_call_leaves_on_its_own_emergency_trunk() {
+    let platform_psap = Carrier::new("platform-psap").await;
+    let acme_psap = Carrier::new("acme-psap").await;
+    let mut stack = stack_or_skip!(&[&platform_psap]);
+
+    let acme = stack.seed.tenant_id;
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    // A worse priority than the platform's trunk, so what decides is whose
+    // trunk it is and not the number beside it.
+    let acme_trunk = stack
+        .seed
+        .trunk_with(acme, "acme-psap", acme_psap.port(), |t| {
+            t.emergency_capable = true;
+            t.priority = 50;
+        })
+        .await;
+    tokio::time::sleep(REFRESHED).await;
+
+    let alice_phone = stack.phone(&alice).await;
+    let call = alice_phone.call("911").await.unwrap();
+    let Some(incoming) = acme_psap.phone.incoming(SOON).await else {
+        let why = format!(
+            "the tenant's emergency trunk never rang; the call is {:?}",
+            call.phase()
+        );
+        stack.fail(&why).await;
+    };
+    let leg = incoming.answer().await.unwrap();
+    call.answered(SOON).await.unwrap();
+    assert!(
+        platform_psap.phone.incoming(NEVER).await.is_none(),
+        "the platform's emergency trunk is the last resort, not the first"
+    );
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert_eq!(call.hangup().await.unwrap(), 200);
+    assert!(leg.ended(SOON).await);
+
+    let records = stack
+        .seed
+        .emergency_calls(1, SOON, |r| r.ended_at.is_some())
+        .await;
+    assert_eq!(records[0].trunk_id, Some(acme_trunk), "{records:#?}");
+    assert_eq!(records[0].trunk_name.as_deref(), Some("acme-psap"));
+
+    stack.finish().await;
+}
+
+/// A tenant with no emergency trunk of its own reaches the platform's,
+/// even having refused the platform's trunks for its ordinary calls: that
+/// is a billing and routing preference, and nobody's 911 call fails for
+/// it (`docs/TENANT_TRUNKS.md` §13 question 6).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_platforms_emergency_trunk_carries_anyones_911_call() {
+    let platform_psap = Carrier::new("platform-psap").await;
+    let globex_carrier = Carrier::new("globex-carrier").await;
+    let mut stack = stack_or_skip!(&[&platform_psap]);
+
+    let globex = stack.seed.tenant("globex", "globex.e2e.local").await;
+    let bob = stack.seed.user_in(globex, "bob", "bob-pw", "2001").await;
+    stack.seed.platform_trunk_fallback(globex, false).await;
+    // Globex's own carrier, which does not take emergency calls.
+    stack
+        .seed
+        .trunk(globex, "globex-carrier", globex_carrier.port())
+        .await;
+    tokio::time::sleep(REFRESHED).await;
+
+    let bob_phone = stack.edge_phone(&bob).await;
+    let bob_caller = Caller::new(globex, "bob");
+    let call = bob_phone
+        .call_with_headers("911", &bob_caller.headers())
+        .await
+        .unwrap();
+    let Some(incoming) = platform_psap.phone.incoming(SOON).await else {
+        let why = format!(
+            "the platform's emergency trunk never rang for a tenant that refused the \
+             platform's trunks; the call is {:?}",
+            call.phase()
+        );
+        stack.fail(&why).await;
+    };
+    let leg = incoming.answer().await.unwrap();
+    call.answered(SOON).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert_eq!(call.hangup().await.unwrap(), 200);
+    assert!(leg.ended(SOON).await);
+
+    let records = stack
+        .seed
+        .emergency_calls_in(globex, 1, SOON, |r| r.ended_at.is_some())
+        .await;
+    assert_eq!(
+        records[0].trunk_id,
+        Some(fcp_core::TrunkId::platform("platform-psap")),
+        "{records:#?}"
+    );
+
+    // Its ordinary calls still keep off the platform's trunks.
+    let ordinary = bob_phone
+        .call_with_headers("+15125550100", &bob_caller.headers())
+        .await
+        .unwrap();
+    let Some(incoming) = globex_carrier.phone.incoming(SOON).await else {
+        let why = format!(
+            "Globex's own carrier never rang; the call is {:?}",
+            ordinary.phase()
+        );
+        stack.fail(&why).await;
+    };
+    let leg = incoming.answer().await.unwrap();
+    ordinary.answered(SOON).await.unwrap();
+    assert!(
+        platform_psap.phone.incoming(NEVER).await.is_none(),
+        "an ordinary call from a tenant that refused the platform's trunks"
+    );
+    assert_eq!(ordinary.hangup().await.unwrap(), 200);
+    assert!(leg.ended(SOON).await);
+
     stack.finish().await;
 }

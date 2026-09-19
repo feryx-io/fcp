@@ -180,30 +180,63 @@ impl TrunkRouter {
     ///
     /// Returns trunks in preference order for failover. The caller should
     /// try each trunk in order until one succeeds or all are exhausted.
-    /// Trunks for an emergency call: every eligible `emergency_capable`
-    /// trunk first (by priority, then weight), followed by the normal
-    /// ordered choice so a 911 call still goes out when nothing is flagged.
+    /// Trunks for an emergency call (`docs/TENANT_TRUNKS.md` §5,
+    /// `docs/E911_BLOCK_2.md` §12.1): the tenant's own `emergency_capable`
+    /// trunks first, then the platform's, then the ordinary ordered choice
+    /// so a 911 call still goes out when nothing is flagged at all.
     ///
-    /// The flagged set is the node's own trunks only. What a tenant's
-    /// `emergency_capable` means — and the rule that the platform's trunks
-    /// are the last resort for anyone's 911 call — is phase 6's
-    /// (`docs/TENANT_TRUNKS.md` §12, `docs/E911_BLOCK_2.md` §12.1); until
-    /// then a tenant's trunks reach an emergency call only as the ordinary
-    /// route below, which is what they did before they routed at all.
+    /// The tenant's come first because they are the carrier that tenant
+    /// bought, and their order among themselves is priority then weight.
+    /// The platform's follow **whatever the tenant said about falling back
+    /// to them**: `platform_trunk_fallback = false` is a billing and
+    /// routing preference for ordinary calls, and nobody's 911 call should
+    /// fail because their own carrier list is short or their own carrier is
+    /// down.
     pub fn select_emergency_trunks_ordered(
         &self,
         tenant: Option<fcp_core::TenantId>,
         direction: TrunkDirection,
         destination: &str,
     ) -> Vec<Arc<TrunkConfig>> {
-        let trunks = self.trunks.platform().to_vec();
-        let mut flagged: Vec<Arc<TrunkConfig>> = trunks
+        let eligible =
+            |t: &Arc<TrunkConfig>| t.emergency_capable && self.is_trunk_eligible(t, direction);
+        let by_preference = |trunks: &mut Vec<Arc<TrunkConfig>>| {
+            trunks.sort_by_key(|t| (t.priority, std::cmp::Reverse(t.weight)))
+        };
+
+        // The tenant's own, in their own order.
+        let mut ordered: Vec<Arc<TrunkConfig>> = match tenant {
+            Some(_) => {
+                let mut theirs: Vec<Arc<TrunkConfig>> = self
+                    .trunks
+                    .for_tenant(tenant)
+                    .into_iter()
+                    .filter(|t| t.tenant_id.is_some() && eligible(t))
+                    .collect();
+                by_preference(&mut theirs);
+                theirs
+            }
+            None => Vec::new(),
+        };
+
+        // Then the platform's, asked for directly rather than through the
+        // tenant's fallback preference.
+        let mut platform: Vec<Arc<TrunkConfig>> = self
+            .trunks
+            .platform()
             .iter()
-            .filter(|t| t.emergency_capable && self.is_trunk_eligible(t, direction))
+            .filter(|t| eligible(t))
             .cloned()
             .collect();
-        flagged.sort_by_key(|t| (t.priority, std::cmp::Reverse(t.weight)));
-        let mut ordered = flagged;
+        by_preference(&mut platform);
+        for trunk in platform {
+            if !ordered.iter().any(|t| t.key() == trunk.key()) {
+                ordered.push(trunk);
+            }
+        }
+
+        // And last, whatever would have carried an ordinary call: a
+        // deployment that flagged nothing still places the call.
         for trunk in self.select_trunks_ordered(tenant, direction, destination) {
             if !ordered.iter().any(|t| t.key() == trunk.key()) {
                 ordered.push(trunk);
@@ -732,6 +765,18 @@ mod tests {
             failover: TrunkFailover::default(),
             ..Default::default()
         }
+    }
+
+    use crate::trunk_set::TrunkSet;
+    use std::collections::HashMap;
+
+    /// A trunk belonging to `tenant`, as the store gives one.
+    fn tenant_trunk(name: &str, tenant: fcp_core::TenantId) -> TrunkConfig {
+        let mut trunk = fcp_core::Trunk::new(name.to_string(), tenant);
+        trunk.enabled = true;
+        trunk.direction = TrunkDirection::Upstream;
+        trunk.hosts = vec!["sip.example.com".into()];
+        trunk
     }
 
     fn no_cps() -> Arc<dyn CpsChecker> {
@@ -1395,5 +1440,105 @@ mod tests {
         let routes = router.resolve_emergency_ordered(None, "sip:911@pbx").await;
         assert_eq!(routes.len(), 1);
         assert_eq!(routes[0].trunk_name().as_deref(), Some("regular"));
+    }
+
+    /// A tenant's own emergency trunk carries its 911 call, ahead of the
+    /// platform's (`docs/E911_BLOCK_2.md` §12.1): the carrier that tenant
+    /// bought is the one its emergency calls leave on.
+    #[test]
+    fn a_tenants_own_emergency_trunk_comes_first() {
+        let tenant = fcp_core::TenantId::new();
+        let mut platform = make_trunk("platform-911", 1, 1, TrunkDirection::Upstream);
+        platform.emergency_capable = true;
+        let mut theirs = tenant_trunk("tenants-911", tenant);
+        theirs.emergency_capable = true;
+        // A worse priority than the platform's, to prove whose trunk it is
+        // that decides and not the number beside it.
+        theirs.priority = 50;
+
+        let set = Arc::new(TrunkSet::platform_only(vec![platform]));
+        set.set_tenant_trunks(vec![theirs], &HashMap::new());
+        let health = Arc::new(TrunkHealthMonitor::new(&[]));
+        health.track(&set.all());
+        let router = TrunkRouter::with_trunk_set(Arc::clone(&set), health, no_cps());
+
+        let names: Vec<String> = router
+            .select_emergency_trunks_ordered(Some(tenant), TrunkDirection::Upstream, "sip:911@pbx")
+            .into_iter()
+            .map(|t| t.name.clone())
+            .collect();
+        assert_eq!(names[0], "tenants-911", "{names:?}");
+        assert_eq!(names[1], "platform-911", "{names:?}");
+    }
+
+    /// A tenant with no emergency trunk of its own reaches the platform's,
+    /// even having refused the platform's trunks for its ordinary calls: a
+    /// billing preference is not a reason to fail a 911 call.
+    #[test]
+    fn the_platforms_emergency_trunks_are_the_last_resort_for_anyone() {
+        let tenant = fcp_core::TenantId::new();
+        let mut platform = make_trunk("platform-911", 1, 1, TrunkDirection::Upstream);
+        platform.emergency_capable = true;
+        // The tenant's own carrier, which is not emergency-capable.
+        let theirs = tenant_trunk("tenants-ordinary", tenant);
+
+        let set = Arc::new(TrunkSet::platform_only(vec![platform]));
+        let mut fallback = HashMap::new();
+        fallback.insert(tenant, false);
+        set.set_tenant_trunks(vec![theirs], &fallback);
+        let health = Arc::new(TrunkHealthMonitor::new(&[]));
+        health.track(&set.all());
+        let router = TrunkRouter::with_trunk_set(Arc::clone(&set), health, no_cps());
+
+        let names: Vec<String> = router
+            .select_emergency_trunks_ordered(Some(tenant), TrunkDirection::Upstream, "sip:911@pbx")
+            .into_iter()
+            .map(|t| t.name.clone())
+            .collect();
+        assert_eq!(
+            names.first().map(String::as_str),
+            Some("platform-911"),
+            "the platform's trunk carries it: {names:?}"
+        );
+
+        // And an ordinary call still respects what the tenant asked for.
+        let ordinary: Vec<String> = router
+            .select_trunks_ordered(
+                Some(tenant),
+                TrunkDirection::Upstream,
+                "sip:+15125550100@pbx",
+            )
+            .into_iter()
+            .map(|t| t.name.clone())
+            .collect();
+        assert!(
+            !ordinary.iter().any(|n| n == "platform-911"),
+            "the tenant refused the platform's trunks for these: {ordinary:?}"
+        );
+    }
+
+    /// Another tenant's emergency trunk is not a candidate, however well
+    /// flagged: a trunk carries its own tenant's calls.
+    #[test]
+    fn another_tenants_emergency_trunk_is_not_a_candidate() {
+        let mine = fcp_core::TenantId::new();
+        let theirs = fcp_core::TenantId::new();
+        let mut ours = tenant_trunk("ours-911", mine);
+        ours.emergency_capable = true;
+        let mut not_ours = tenant_trunk("theirs-911", theirs);
+        not_ours.emergency_capable = true;
+
+        let set = Arc::new(TrunkSet::platform_only(Vec::new()));
+        set.set_tenant_trunks(vec![ours, not_ours], &HashMap::new());
+        let health = Arc::new(TrunkHealthMonitor::new(&[]));
+        health.track(&set.all());
+        let router = TrunkRouter::with_trunk_set(Arc::clone(&set), health, no_cps());
+
+        let names: Vec<String> = router
+            .select_emergency_trunks_ordered(Some(mine), TrunkDirection::Upstream, "sip:911@pbx")
+            .into_iter()
+            .map(|t| t.name.clone())
+            .collect();
+        assert_eq!(names, vec!["ours-911".to_string()], "{names:?}");
     }
 }

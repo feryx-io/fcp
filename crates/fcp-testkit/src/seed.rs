@@ -184,11 +184,23 @@ impl Seed {
         within: std::time::Duration,
         ready: impl Fn(&EmergencyCallRecord) -> bool,
     ) -> Vec<EmergencyCallRecord> {
+        self.emergency_calls_in(self.tenant_id, n, within, ready)
+            .await
+    }
+
+    /// As [`Seed::emergency_calls`], for another tenant's calls.
+    pub async fn emergency_calls_in(
+        &self,
+        tenant: TenantId,
+        n: usize,
+        within: std::time::Duration,
+        ready: impl Fn(&EmergencyCallRecord) -> bool,
+    ) -> Vec<EmergencyCallRecord> {
         let store = PostgresEmergencyStore::new(self.storage.pool().clone());
         let deadline = tokio::time::Instant::now() + within;
         loop {
             let records = store
-                .list_emergency_calls(&self.tenant_id, 100)
+                .list_emergency_calls(&tenant, 100)
                 .await
                 .expect("list emergency calls");
             if records.len() >= n && records.iter().all(&ready) {

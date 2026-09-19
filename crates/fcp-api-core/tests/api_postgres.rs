@@ -4913,6 +4913,7 @@ async fn e911_config_readiness_validation_and_audit() {
         callback_number: Some("+15185550100".to_string()),
         location: None,
         trunk_name: Some("e911-trunk".to_string()),
+        trunk_id: None,
         outcome: "placed".to_string(),
         placed_at: SystemTime::now(),
         notified: false,
@@ -4962,6 +4963,7 @@ async fn e911_config_readiness_validation_and_audit() {
             id,
             &fcp_core::e911::EmergencyCompletion {
                 trunk_name: Some("e911-backup".to_string()),
+                trunk_id: Some(fcp_core::TrunkId::from_string("trunk-e911-backup".into())),
                 outcome: "answered".to_string(),
                 sip_status: Some(200),
                 answered_at: Some(answered),
@@ -4980,6 +4982,11 @@ async fn e911_config_readiness_validation_and_audit() {
     assert_eq!(calls.json[0]["outcome"], "answered", "{}", calls.text);
     assert_eq!(calls.json[0]["sip_status"], 200, "{}", calls.text);
     assert_eq!(calls.json[0]["trunk_name"], "e911-backup", "{}", calls.text);
+    assert_eq!(
+        calls.json[0]["trunk_id"], "trunk-e911-backup",
+        "names are unique only within a tenant, so the record says which trunk: {}",
+        calls.text
+    );
     assert!(!calls.json[0]["answered_at"].is_null(), "{}", calls.text);
     assert!(!calls.json[0]["ended_at"].is_null(), "{}", calls.text);
     assert_eq!(calls.json[0]["duration_secs"], 42, "{}", calls.text);

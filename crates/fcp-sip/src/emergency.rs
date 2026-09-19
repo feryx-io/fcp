@@ -445,6 +445,7 @@ pub fn placement_record(
         callback_number: info.callback_number.clone(),
         location: info.location.clone(),
         trunk_name: None,
+        trunk_id: None,
         outcome: "placed".to_string(),
         placed_at: std::time::SystemTime::now(),
         notified: false,

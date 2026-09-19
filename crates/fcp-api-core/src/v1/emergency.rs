@@ -603,6 +603,8 @@ pub struct EmergencyCallResponse {
     pub callback_number: Option<String>,
     pub location: Option<LocationResponse>,
     pub trunk_name: Option<String>,
+    /// Which trunk carried it; a name is unique only within its tenant.
+    pub trunk_id: Option<String>,
     pub outcome: String,
     pub placed_at: u64,
     pub notified: bool,
@@ -634,6 +636,7 @@ impl From<EmergencyCallRecord> for EmergencyCallResponse {
             callback_number: r.callback_number,
             location: r.location.map(Into::into),
             trunk_name: r.trunk_name,
+            trunk_id: r.trunk_id.map(|t| t.to_string()),
             outcome: r.outcome,
             placed_at: unix_secs(r.placed_at),
             notified: r.notified,

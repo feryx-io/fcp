@@ -71,17 +71,27 @@ fn agent_not_found(agent_id: &str) -> Json<serde_json::Value> {
     Json(serde_json::json!({"error": format!("Agent '{}' not found", agent_id)}))
 }
 
-/// The trunks this node routes emergency calls to, in the order it tries
-/// them: its emergency-capable `[[trunks]]` (`docs/E911_BLOCK_2.md` §12.1).
-/// A tenant's own trunks carry its ordinary calls (`docs/TENANT_TRUNKS.md`);
-/// whether one of them may carry an emergency call is phase 6's, so they
-/// are not listed here yet.
+/// The trunks this node may route emergency calls to: its own
+/// emergency-capable `[[trunks]]` and every tenant's
+/// (`docs/E911_BLOCK_2.md` §12.1, `docs/TENANT_TRUNKS.md` §5). A call tries
+/// its own tenant's first and the platform's after them, so the list is by
+/// priority then weight across all of them and each names its tenant.
 async fn emergency_trunks_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let mut trunks: Vec<&fcp_sbc_core::TrunkConfig> = state
-        .trunks
-        .iter()
-        .filter(|t| t.emergency_capable)
-        .collect();
+    // Every emergency-capable trunk this node routes by, the tenants'
+    // included: since `docs/TENANT_TRUNKS.md` phase 6 a tenant's own trunk
+    // carries its 911 calls, so a list of the node's `[[trunks]]` alone no
+    // longer answers "what would carry an emergency call from here".
+    let all: Vec<std::sync::Arc<fcp_sbc_core::TrunkConfig>> = match state.trunk_set.as_ref() {
+        Some(set) => set.all(),
+        None => state
+            .trunks
+            .iter()
+            .cloned()
+            .map(std::sync::Arc::new)
+            .collect(),
+    };
+    let mut trunks: Vec<&std::sync::Arc<fcp_sbc_core::TrunkConfig>> =
+        all.iter().filter(|t| t.emergency_capable).collect();
     trunks.sort_by_key(|t| (t.priority, std::cmp::Reverse(t.weight)));
     let listed: Vec<serde_json::Value> = trunks
         .iter()
@@ -89,10 +99,15 @@ async fn emergency_trunks_handler(State(state): State<Arc<AppState>>) -> impl In
             let healthy = state
                 .trunk_health
                 .as_ref()
-                .map(|h| h.is_healthy(&t.name))
+                .map(|h| h.is_healthy(&t.key()))
                 .unwrap_or(true);
             serde_json::json!({
                 "name": t.name,
+                "trunk_id": t.key(),
+                // Whose trunk it is: a tenant's own carries that tenant's
+                // emergency calls ahead of the platform's, which carry
+                // anyone's.
+                "tenant_id": t.tenant_id.map(|id| id.to_string()),
                 "enabled": t.enabled,
                 "healthy": healthy,
                 "priority": t.priority,
@@ -105,13 +120,13 @@ async fn emergency_trunks_handler(State(state): State<Arc<AppState>>) -> impl In
             && state
                 .trunk_health
                 .as_ref()
-                .map(|h| h.is_healthy(&t.name))
+                .map(|h| h.is_healthy(&t.key()))
                 .unwrap_or(true)
     });
     Json(serde_json::json!({
         "trunks": listed,
         "routable": routable,
-        "configured_trunks": state.trunks.len(),
+        "configured_trunks": all.len(),
     }))
 }
 

@@ -322,6 +322,7 @@ impl CallManager {
             // own outcome; the call's answer was the flow's.
             Some(leg) => fcp_core::e911::EmergencyCompletion {
                 trunk_name: call.trunk_name.clone(),
+                trunk_id: call.trunk_id.clone(),
                 outcome: leg.outcome.clone(),
                 sip_status: leg.sip_status,
                 answered_at: leg.answered_at,
@@ -331,6 +332,7 @@ impl CallManager {
             },
             None => fcp_core::e911::EmergencyCompletion {
                 trunk_name: call.trunk_name.clone(),
+                trunk_id: call.trunk_id.clone(),
                 outcome: disposition,
                 sip_status,
                 answered_at: call.established_at,
@@ -364,6 +366,7 @@ impl CallManager {
                 outcome: completion.outcome.clone(),
                 sip_status: completion.sip_status,
                 trunk_name: completion.trunk_name.clone(),
+                trunk_id: completion.trunk_id.as_ref().map(|t| t.to_string()),
                 delivery: completion.delivery.clone(),
                 duration_ms: completion
                     .answered_at
