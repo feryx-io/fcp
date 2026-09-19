@@ -445,6 +445,27 @@ struct EmergencyFallback {
     headers: Option<sip_core::Headers>,
 }
 
+/// The trunk routes an ordinary call has not tried yet
+/// (`docs/TENANT_TRUNKS.md` §5): a call to carriers goes to one at a time,
+/// the next when a carrier fails — never to two carriers at once, which
+/// would ring the callee twice.
+struct TrunkFallback {
+    /// The routes not tried yet, in order.
+    remaining: std::collections::VecDeque<TargetContact>,
+    sdp: Option<String>,
+    headers: Option<sip_core::Headers>,
+    from: Option<sip_core::SipUri>,
+    display_name: Option<String>,
+}
+
+/// Whether a final response says the carrier failed rather than the
+/// callee answered: what the next carrier might do better. A busy, a
+/// decline, a number that does not exist or a callee who is away is the
+/// callee's answer, and another carrier would only deliver it again.
+fn carrier_failed(code: u16) -> bool {
+    matches!(code, 401 | 403 | 407 | 408 | 488 | 500..=599)
+}
+
 /// What became of a notification call (`docs/E911_BLOCK_2.md` §8.1).
 /// Only [`AnnouncementOutcome::Answered`] told anybody anything.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -612,6 +633,9 @@ pub struct SipMessageHandler {
     sip_call_id_map: Arc<dashmap::DashMap<String, String>>,
     /// Emergency calls' untried routes (see [`EmergencyFallback`]).
     emergency_fallbacks: Arc<dashmap::DashMap<fcp_b2bua_core::CallId, EmergencyFallback>>,
+    /// Ordinary calls' trunk routes not tried yet (`docs/TENANT_TRUNKS.md`
+    /// §5).
+    trunk_fallbacks: Arc<dashmap::DashMap<fcp_b2bua_core::CallId, TrunkFallback>>,
     /// The SRTP this node offered on a call's B-leg, kept until the answer
     /// names the key the far end sends with (`docs/TENANT_TRUNKS.md` §6).
     b_leg_srtp: Arc<dashmap::DashMap<fcp_b2bua_core::CallId, fcp_media::SrtpOffer>>,
@@ -977,6 +1001,7 @@ impl SipMessageHandler {
             sip_trace_tx: None,
             sip_call_id_map: Arc::new(dashmap::DashMap::new()),
             emergency_fallbacks: Arc::new(dashmap::DashMap::new()),
+            trunk_fallbacks: Arc::new(dashmap::DashMap::new()),
             b_leg_srtp: Arc::new(dashmap::DashMap::new()),
             header_rules: None,
             inbound_trunks: None,
@@ -6456,180 +6481,42 @@ impl SipMessageHandler {
             return Ok(());
         }
 
+        // A call to carriers tries its trunk routes one at a time, the next
+        // when a carrier fails (`docs/TENANT_TRUNKS.md` §5): ringing two
+        // carriers at once rings the callee twice. A user's registered
+        // devices still ring together.
+        if target_contacts.len() > 1 && self.all_trunk_routes(&call_id, &target_contacts) {
+            let remaining: std::collections::VecDeque<TargetContact> =
+                target_contacts.drain(1..).collect();
+            info!(
+                call_id = %call_id,
+                routes = remaining.len() + 1,
+                "Trying the call's trunk routes one at a time"
+            );
+            self.trunk_fallbacks.insert(
+                call_id,
+                TrunkFallback {
+                    remaining,
+                    sdp: a_leg_sdp.clone(),
+                    headers: emergency_headers.clone(),
+                    from: caller_from_uri.clone(),
+                    display_name: caller_display_name.clone(),
+                },
+            );
+        }
+
         // Create outbound INVITEs to all target contacts in PARALLEL
         // This prevents TLS connection timeouts from blocking other B-legs
         // For TLS contacts with flow tokens (RFC 5626), use the existing connection
         let mut invite_futures = Vec::new();
         for target_contact in &target_contacts {
-            let uac_clone = Arc::clone(&uac);
-            let target_uri_clone = target_contact.uri.clone();
-            let a_leg_sdp_clone = a_leg_sdp.clone();
-            let call_id_clone = call_id;
-            let flow_token_clone = target_contact.flow_token.clone();
-            let egress = target_contact.egress.clone();
-            let header_rules = self.header_rules.clone();
-            let emergency_headers_clone = emergency_headers.clone();
-            let flow_registry_clone = Arc::clone(&self.flow_registry);
-            let sip_call_id_map_clone = Arc::clone(&self.sip_call_id_map);
-            let sip_trace_tx_clone = self.sip_trace_tx.clone();
-            let local_addr_clone = self.local_addr.clone();
-            let node_id_clone = self.node_id.clone();
-
-            let future = async move {
-                debug!(
-                    call_id = %call_id_clone,
-                    target = %target_uri_clone,
-                    has_sdp = a_leg_sdp_clone.is_some(),
-                    has_flow_token = flow_token_clone.is_some(),
-                    trunk_identity = egress.from.is_some(),
-                    "Creating B-leg INVITE"
-                );
-
-                // The emergency headers, then what the trunk adds
-                // (`docs/TENANT_TRUNKS.md` §6).
-                let mut extra_headers = emergency_headers_clone.clone().unwrap_or_default();
-                for (name, value) in &egress.headers {
-                    let _ = extra_headers.push(SmolStr::new(name), SmolStr::new(value));
-                }
-                let invite_options = |sdp: Option<&str>| sip_uac::InviteOptions {
-                    body: sdp.map(sip_uac::InviteBody::sdp),
-                    extra_headers: extra_headers.clone(),
-                    from: egress.from_uri(),
-                    // The trunk's own header rules, run on the finished
-                    // INVITE (`docs/TENANT_TRUNKS.md` §6).
-                    filter: egress.request_filter(header_rules.as_ref()),
-                };
-
-                // Add 5-second timeout for each INVITE to prevent TLS hangs
-                let invite_result = if let Some(ref flow_token) = flow_token_clone {
-                    // RFC 5626: Use existing TLS connection via flow token
-                    if let Some(flow_info) = flow_registry_clone.lookup(flow_token) {
-                        info!(
-                            call_id = %call_id_clone,
-                            target = %target_uri_clone,
-                            flow_token = %flow_token,
-                            peer_addr = %flow_info.peer_addr,
-                            "Using RFC 5626 flow for TLS INVITE"
-                        );
-                        // The headers a routed target gets, a flow target
-                        // gets too (the conference call-id, …).
-                        tokio::time::timeout(
-                            std::time::Duration::from_secs(5),
-                            uac_clone.invite_via_flow_with_options(
-                                &target_uri_clone,
-                                invite_options(a_leg_sdp_clone.as_deref()),
-                                flow_info.stream,
-                                flow_info.peer_addr,
-                            ),
-                        )
-                        .await
-                    } else {
-                        warn!(
-                            call_id = %call_id_clone,
-                            flow_token = %flow_token,
-                            "Flow token not found or connection closed, falling back to normal INVITE"
-                        );
-                        tokio::time::timeout(
-                            std::time::Duration::from_secs(5),
-                            uac_clone.invite_with_options(
-                                &target_uri_clone,
-                                invite_options(a_leg_sdp_clone.as_deref()),
-                            ),
-                        )
-                        .await
-                    }
-                } else {
-                    // Normal INVITE (UDP/TCP without flow)
-                    tokio::time::timeout(
-                        std::time::Duration::from_secs(5),
-                        uac_clone.invite_with_options(
-                            &target_uri_clone,
-                            invite_options(a_leg_sdp_clone.as_deref()),
-                        ),
-                    )
-                    .await
-                };
-
-                match invite_result {
-                    Ok(Ok(call)) => {
-                        // Register B-leg SIP Call-ID → FCP CallId mapping for trace correlation
-                        let b_leg_invite = call.invite_request().await;
-                        if let Some(b_leg_cid) =
-                            sip_parse::header(b_leg_invite.headers(), "Call-ID")
-                        {
-                            sip_call_id_map_clone
-                                .insert(b_leg_cid.as_str().to_string(), call_id_clone.to_string());
-                        }
-
-                        // Log outbound B-leg INVITE for SIP trace
-                        if let Some(ref trace_tx) = sip_trace_tx_clone {
-                            let b_req = call.invite_request().await;
-                            let raw_bytes = sip_parse::serialize_request(&b_req);
-                            let raw_str = String::from_utf8_lossy(&raw_bytes);
-                            let from_uri = sip_parse::header(b_req.headers(), "From")
-                                .map(|s| s.as_str().to_string())
-                                .unwrap_or_default();
-                            let to_uri = sip_parse::header(b_req.headers(), "To")
-                                .map(|s| s.as_str().to_string())
-                                .unwrap_or_default();
-                            let sip_cid = sip_parse::header(b_req.headers(), "Call-ID")
-                                .map(|s| s.as_str().to_string())
-                                .unwrap_or_default();
-                            let cseq = sip_parse::header(b_req.headers(), "CSeq")
-                                .map(|s| s.as_str().to_string())
-                                .unwrap_or_default();
-                            let trace = fcp_core::SipTraceMessage {
-                                id: 0,
-                                call_id: call_id_clone.to_string(),
-                                sip_call_id: sip_cid,
-                                tenant_id: "_system".to_string(),
-                                timestamp: std::time::SystemTime::now(),
-                                direction: "outbound".to_string(),
-                                method_or_status: "INVITE".to_string(),
-                                cseq,
-                                from_uri,
-                                to_uri,
-                                source_addr: local_addr_clone.clone(),
-                                dest_addr: target_uri_clone.to_string(),
-                                transport: if flow_token_clone.is_some() {
-                                    "tcp".to_string()
-                                } else {
-                                    "udp".to_string()
-                                },
-                                raw_message: raw_str.to_string(),
-                                node_id: Some(node_id_clone.clone()),
-                            };
-                            let _ = trace_tx.try_send(trace);
-                        }
-
-                        info!(
-                            call_id = %call_id_clone,
-                            target = %target_uri_clone,
-                            via_flow = flow_token_clone.is_some(),
-                            "B-leg INVITE sent"
-                        );
-                        Some((target_uri_clone, Arc::new(call), flow_token_clone))
-                    }
-                    Ok(Err(e)) => {
-                        warn!(
-                            call_id = %call_id_clone,
-                            target = %target_uri_clone,
-                            error = %e,
-                            "Failed to create B-leg INVITE"
-                        );
-                        None
-                    }
-                    Err(_) => {
-                        warn!(
-                            call_id = %call_id_clone,
-                            target = %target_uri_clone,
-                            "B-leg INVITE timed out (5s)"
-                        );
-                        None
-                    }
-                }
-            };
-            invite_futures.push(future);
+            invite_futures.push(self.send_b_leg_invite(
+                Arc::clone(&uac),
+                target_contact.clone(),
+                a_leg_sdp.clone(),
+                emergency_headers.clone(),
+                call_id,
+            ));
         }
 
         // Wait for all INVITEs to complete (concurrently)
@@ -6688,6 +6575,180 @@ impl SipMessageHandler {
         // Return immediately - responses will be handled in background task
         info!(call_id = %call_id, "Parallel forking in progress, handling responses in background");
         Ok(())
+    }
+
+    /// Send one B-leg INVITE to `target_contact`: through its RFC 5626
+    /// flow when it has one, with the extra headers the call carries and
+    /// what its trunk makes of the leg. `None` when it could not be sent
+    /// within five seconds.
+    async fn send_b_leg_invite(
+        &self,
+        uac_clone: Arc<SipUserAgentClient>,
+        target_contact: TargetContact,
+        a_leg_sdp_clone: Option<String>,
+        emergency_headers_clone: Option<sip_core::Headers>,
+        call_id_clone: fcp_b2bua_core::CallId,
+    ) -> Option<(String, Arc<crate::uac::OutboundCall>, Option<String>)> {
+        let target_uri_clone = target_contact.uri.clone();
+        let flow_token_clone = target_contact.flow_token.clone();
+        let egress = target_contact.egress.clone();
+        let header_rules = self.header_rules.clone();
+        let flow_registry_clone = Arc::clone(&self.flow_registry);
+        let sip_call_id_map_clone = Arc::clone(&self.sip_call_id_map);
+        let sip_trace_tx_clone = self.sip_trace_tx.clone();
+        let local_addr_clone = self.local_addr.clone();
+        let node_id_clone = self.node_id.clone();
+
+        debug!(
+            call_id = %call_id_clone,
+            target = %target_uri_clone,
+            has_sdp = a_leg_sdp_clone.is_some(),
+            has_flow_token = flow_token_clone.is_some(),
+            trunk_identity = egress.from.is_some(),
+            "Creating B-leg INVITE"
+        );
+
+        // The emergency headers, then what the trunk adds
+        // (`docs/TENANT_TRUNKS.md` §6).
+        let mut extra_headers = emergency_headers_clone.clone().unwrap_or_default();
+        for (name, value) in &egress.headers {
+            let _ = extra_headers.push(SmolStr::new(name), SmolStr::new(value));
+        }
+        let invite_options = |sdp: Option<&str>| sip_uac::InviteOptions {
+            body: sdp.map(sip_uac::InviteBody::sdp),
+            extra_headers: extra_headers.clone(),
+            from: egress.from_uri(),
+            // The trunk's own header rules, run on the finished
+            // INVITE (`docs/TENANT_TRUNKS.md` §6).
+            filter: egress.request_filter(header_rules.as_ref()),
+        };
+
+        // Add 5-second timeout for each INVITE to prevent TLS hangs
+        let invite_result = if let Some(ref flow_token) = flow_token_clone {
+            // RFC 5626: Use existing TLS connection via flow token
+            if let Some(flow_info) = flow_registry_clone.lookup(flow_token) {
+                info!(
+                    call_id = %call_id_clone,
+                    target = %target_uri_clone,
+                    flow_token = %flow_token,
+                    peer_addr = %flow_info.peer_addr,
+                    "Using RFC 5626 flow for TLS INVITE"
+                );
+                // The headers a routed target gets, a flow target
+                // gets too (the conference call-id, …).
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    uac_clone.invite_via_flow_with_options(
+                        &target_uri_clone,
+                        invite_options(a_leg_sdp_clone.as_deref()),
+                        flow_info.stream,
+                        flow_info.peer_addr,
+                    ),
+                )
+                .await
+            } else {
+                warn!(
+                    call_id = %call_id_clone,
+                    flow_token = %flow_token,
+                    "Flow token not found or connection closed, falling back to normal INVITE"
+                );
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    uac_clone.invite_with_options(
+                        &target_uri_clone,
+                        invite_options(a_leg_sdp_clone.as_deref()),
+                    ),
+                )
+                .await
+            }
+        } else {
+            // Normal INVITE (UDP/TCP without flow)
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                uac_clone.invite_with_options(
+                    &target_uri_clone,
+                    invite_options(a_leg_sdp_clone.as_deref()),
+                ),
+            )
+            .await
+        };
+
+        match invite_result {
+            Ok(Ok(call)) => {
+                // Register B-leg SIP Call-ID → FCP CallId mapping for trace correlation
+                let b_leg_invite = call.invite_request().await;
+                if let Some(b_leg_cid) = sip_parse::header(b_leg_invite.headers(), "Call-ID") {
+                    sip_call_id_map_clone
+                        .insert(b_leg_cid.as_str().to_string(), call_id_clone.to_string());
+                }
+
+                // Log outbound B-leg INVITE for SIP trace
+                if let Some(ref trace_tx) = sip_trace_tx_clone {
+                    let b_req = call.invite_request().await;
+                    let raw_bytes = sip_parse::serialize_request(&b_req);
+                    let raw_str = String::from_utf8_lossy(&raw_bytes);
+                    let from_uri = sip_parse::header(b_req.headers(), "From")
+                        .map(|s| s.as_str().to_string())
+                        .unwrap_or_default();
+                    let to_uri = sip_parse::header(b_req.headers(), "To")
+                        .map(|s| s.as_str().to_string())
+                        .unwrap_or_default();
+                    let sip_cid = sip_parse::header(b_req.headers(), "Call-ID")
+                        .map(|s| s.as_str().to_string())
+                        .unwrap_or_default();
+                    let cseq = sip_parse::header(b_req.headers(), "CSeq")
+                        .map(|s| s.as_str().to_string())
+                        .unwrap_or_default();
+                    let trace = fcp_core::SipTraceMessage {
+                        id: 0,
+                        call_id: call_id_clone.to_string(),
+                        sip_call_id: sip_cid,
+                        tenant_id: "_system".to_string(),
+                        timestamp: std::time::SystemTime::now(),
+                        direction: "outbound".to_string(),
+                        method_or_status: "INVITE".to_string(),
+                        cseq,
+                        from_uri,
+                        to_uri,
+                        source_addr: local_addr_clone.clone(),
+                        dest_addr: target_uri_clone.to_string(),
+                        transport: if flow_token_clone.is_some() {
+                            "tcp".to_string()
+                        } else {
+                            "udp".to_string()
+                        },
+                        raw_message: raw_str.to_string(),
+                        node_id: Some(node_id_clone.clone()),
+                    };
+                    let _ = trace_tx.try_send(trace);
+                }
+
+                info!(
+                    call_id = %call_id_clone,
+                    target = %target_uri_clone,
+                    via_flow = flow_token_clone.is_some(),
+                    "B-leg INVITE sent"
+                );
+                Some((target_uri_clone, Arc::new(call), flow_token_clone))
+            }
+            Ok(Err(e)) => {
+                warn!(
+                    call_id = %call_id_clone,
+                    target = %target_uri_clone,
+                    error = %e,
+                    "Failed to create B-leg INVITE"
+                );
+                None
+            }
+            Err(_) => {
+                warn!(
+                    call_id = %call_id_clone,
+                    target = %target_uri_clone,
+                    "B-leg INVITE timed out (5s)"
+                );
+                None
+            }
+        }
     }
 
     /// Handle B-leg responses in background task (spawned from forward_invite_to_b_leg)
@@ -7542,11 +7603,13 @@ impl SipMessageHandler {
                 .await;
             }
             self.emergency_fallbacks.remove(&call_id);
+            self.trunk_fallbacks.remove(&call_id);
             return Ok(());
         }
 
         if winning_index.is_some() || cancelled_by_caller {
             self.emergency_fallbacks.remove(&call_id);
+            self.trunk_fallbacks.remove(&call_id);
         }
 
         // CANCEL all non-winning B-legs
@@ -7896,6 +7959,29 @@ impl SipMessageHandler {
                 .await;
             }
 
+            // So does a call to carriers whose carrier failed, as opposed
+            // to the callee answering: a refusal of ours, a server error,
+            // no response at all, or silence until the timeout. A carrier
+            // that rang has delivered the call.
+            let rang = *provisional_sent.lock().await;
+            let failed = match last_failure_code {
+                Some(code) => carrier_failed(code),
+                None => !(fork_timed_out && rang),
+            };
+            if failed {
+                if let Some(next) = self.next_trunk_leg(call_id).await {
+                    return Box::pin(self.handle_parallel_forking(
+                        request,
+                        a_leg_handle,
+                        vec![next],
+                        call_id,
+                        cancel_notify,
+                    ))
+                    .await;
+                }
+            }
+            self.trunk_fallbacks.remove(&call_id);
+
             // All B-legs failed (not due to cancellation) — check CFNA
             let call = self.call_manager.get_call(&call_id);
             let cfna_dest = if let Some(ref call) = call {
@@ -8045,6 +8131,78 @@ impl SipMessageHandler {
                 em.geolocation_error = Some(error);
             }
         });
+    }
+
+    /// Whether every one of `targets` is one of the call's trunk routes.
+    fn all_trunk_routes(
+        &self,
+        call_id: &fcp_b2bua_core::CallId,
+        targets: &[TargetContact],
+    ) -> bool {
+        let Some(call) = self.call_manager.get_call(call_id) else {
+            return false;
+        };
+        !call.route_trunks.is_empty()
+            && targets
+                .iter()
+                .all(|t| answering_trunk(&call.route_trunks, &t.uri).is_some())
+    }
+
+    /// The next trunk route for a call whose carrier failed, sent with the
+    /// call's SDP, headers and caller identity; a route whose INVITE cannot
+    /// be sent gives way to the one after it. `None` when nothing is left.
+    async fn next_trunk_leg(
+        &self,
+        call_id: fcp_b2bua_core::CallId,
+    ) -> Option<(String, Arc<crate::uac::OutboundCall>, Option<String>)> {
+        let uac = Arc::clone(self.uac.as_ref()?);
+        loop {
+            let (target, sdp, headers, from, display_name) = {
+                let mut fallback = self.trunk_fallbacks.get_mut(&call_id)?;
+                match fallback.remaining.pop_front() {
+                    Some(target) => (
+                        target,
+                        fallback.sdp.clone(),
+                        fallback.headers.clone(),
+                        fallback.from.clone(),
+                        fallback.display_name.clone(),
+                    ),
+                    None => {
+                        drop(fallback);
+                        self.trunk_fallbacks.remove(&call_id);
+                        return None;
+                    }
+                }
+            };
+            // The record names the trunk the call is on now; the answer,
+            // if it comes, names it again.
+            let trunk = self
+                .call_manager
+                .get_call(&call_id)
+                .and_then(|c| answering_trunk(&c.route_trunks, &target.uri).cloned());
+            info!(
+                call_id = %call_id,
+                target = %target.uri,
+                trunk = ?trunk.as_ref().map(|t| t.trunk.name.clone()),
+                "The carrier failed; trying the next trunk route"
+            );
+            if let Some(trunk) = trunk {
+                let _ = self.call_manager.update_call(&call_id, |call| {
+                    call.trunk_name = Some(trunk.trunk.name.clone());
+                    call.trunk_id = Some(trunk.id());
+                });
+            }
+            uac.inner().set_display_name(display_name).await;
+            uac.inner().set_from_uri(from).await;
+            let sent = self
+                .send_b_leg_invite(Arc::clone(&uac), target, sdp, headers, call_id)
+                .await;
+            uac.inner().set_display_name(None).await;
+            uac.inner().set_from_uri(None).await;
+            if sent.is_some() {
+                return sent;
+            }
+        }
     }
 
     /// The next emergency attempt for a call whose last one failed (or its
@@ -15152,6 +15310,21 @@ impl ConferenceMigration {
 #[cfg(test)]
 #[allow(unused_must_use)]
 mod tests {
+
+    /// A carrier's failure sends the call to the next route; the callee's
+    /// answer does not (`docs/TENANT_TRUNKS.md` §5).
+    #[test]
+    fn what_counts_as_the_carrier_failing() {
+        for code in [401, 403, 407, 408, 488, 500, 502, 503, 504] {
+            assert!(super::carrier_failed(code), "{code} is the carrier's");
+        }
+        for code in [404, 410, 480, 484, 486, 487, 600, 603, 604] {
+            assert!(
+                !super::carrier_failed(code),
+                "{code} is the callee's answer"
+            );
+        }
+    }
     use super::*;
     use crate::registrar::FcpRegistrar;
 

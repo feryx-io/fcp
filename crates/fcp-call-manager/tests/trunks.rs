@@ -1770,3 +1770,93 @@ async fn the_nodes_policy_never_refuses_an_emergency_call() {
 
     stack.finish().await;
 }
+
+/// A call with several trunk routes goes to one carrier at a time
+/// (`docs/TENANT_TRUNKS.md` §5): the next only when a carrier fails, and
+/// never when the callee has answered — busy is busy on any carrier.
+/// Ringing two carriers at once would ring the callee twice.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_calls_trunk_routes_are_tried_one_at_a_time() {
+    let first = Carrier::new("first-carrier").await;
+    let second = Carrier::new("second-carrier").await;
+    let mut stack = stack_or_skip!(&[]);
+
+    let acme = stack.seed.tenant_id;
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    for (carrier, priority) in [(&first, 1), (&second, 2)] {
+        stack
+            .seed
+            .trunk_with(acme, carrier.name, carrier.port(), |t| {
+                t.priority = priority;
+                t.trunk_group = Some("intl".into());
+            })
+            .await;
+    }
+    stack
+        .seed
+        .routing_rule(acme, "international", |r| {
+            r.action = fcp_core::RoutingAction::RouteToTrunk;
+            r.target_trunk_group = Some("intl".into());
+        })
+        .await;
+    tokio::time::sleep(REFRESHED).await;
+    let alice_phone = stack.phone(&alice).await;
+
+    // The first carrier answers: the second never hears of the call.
+    let call = alice_phone.call("+442079460000").await.unwrap();
+    let Some(incoming) = first.phone.incoming(SOON).await else {
+        let why = format!(
+            "the first carrier never rang; the call is {:?}",
+            call.phase()
+        );
+        stack.fail(&why).await;
+    };
+    assert!(
+        second.phone.incoming(NEVER).await.is_none(),
+        "the second carrier rang while the first was ringing"
+    );
+    let leg = incoming.answer().await.unwrap();
+    call.answered(SOON).await.unwrap();
+    assert_eq!(call.hangup().await.unwrap(), 200);
+    assert!(leg.ended(SOON).await);
+
+    // The first carrier fails: the second takes the call.
+    let call = alice_phone.call("+442079460001").await.unwrap();
+    let Some(incoming) = first.phone.incoming(SOON).await else {
+        let why = format!(
+            "the first carrier never rang; the call is {:?}",
+            call.phase()
+        );
+        stack.fail(&why).await;
+    };
+    incoming.reject(503, "Service Unavailable").await.unwrap();
+    let Some(incoming) = second.phone.incoming(SOON).await else {
+        let why = format!(
+            "the second carrier never rang after the first failed; the call is {:?}",
+            call.phase()
+        );
+        stack.fail(&why).await;
+    };
+    let leg = incoming.answer().await.unwrap();
+    call.answered(SOON).await.unwrap();
+    assert_eq!(call.hangup().await.unwrap(), 200);
+    assert!(leg.ended(SOON).await);
+
+    // The callee is busy: that is the answer, from any carrier.
+    let call = alice_phone.call("+442079460002").await.unwrap();
+    let Some(incoming) = first.phone.incoming(SOON).await else {
+        let why = format!(
+            "the first carrier never rang; the call is {:?}",
+            call.phase()
+        );
+        stack.fail(&why).await;
+    };
+    incoming.reject(486, "Busy Here").await.unwrap();
+    assert_eq!(call.failed(SOON).await, Some(486), "the caller hears busy");
+    assert!(
+        second.phone.incoming(NEVER).await.is_none(),
+        "a busy callee is not tried again on another carrier"
+    );
+
+    stack.finish().await;
+}
