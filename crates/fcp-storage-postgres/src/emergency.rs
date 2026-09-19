@@ -99,6 +99,9 @@ impl PostgresEmergencyStore {
                 .map(serde_json::from_value::<DispatchableLocation>)
                 .transpose()?,
             trunk_name: row.try_get("trunk_name")?,
+            trunk_id: row
+                .get::<Option<String>, _>("trunk_id")
+                .map(fcp_core::TrunkId::from_string),
             outcome: row.try_get("outcome")?,
             placed_at: to_system_time(placed_at),
             notified: row.try_get("notified")?,
@@ -228,8 +231,9 @@ impl EmergencyStore for PostgresEmergencyStore {
             "INSERT INTO emergency_calls
                 (tenant_id, call_id, sip_call_id, caller_uri, caller_username, dialed_number,
                  kind, callback_number, location, location_source, trunk_name, outcome,
-                 placed_at, notified, delivery, location_structured)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+                 placed_at, notified, delivery, location_structured, trunk_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
+                     $17)
              RETURNING id",
         )
         .bind(record.tenant_id.to_string())
@@ -248,6 +252,7 @@ impl EmergencyStore for PostgresEmergencyStore {
         .bind(record.notified)
         .bind(&record.delivery)
         .bind(record.location_structured)
+        .bind(record.trunk_id.as_ref().map(|t| t.to_string()))
         .fetch_one(&self.pool)
         .await?;
         Ok(id)
@@ -260,8 +265,8 @@ impl EmergencyStore for PostgresEmergencyStore {
     ) -> anyhow::Result<Vec<EmergencyCallRecord>> {
         let rows = sqlx::query(
             "SELECT id, tenant_id, call_id, sip_call_id, caller_uri, caller_username,
-                    dialed_number, kind, callback_number, location, trunk_name, outcome,
-                    placed_at, notified, sip_status, answered_at, ended_at, delivery,
+                    dialed_number, kind, callback_number, location, trunk_name, trunk_id,
+                    outcome, placed_at, notified, sip_status, answered_at, ended_at, delivery,
                     location_structured, geolocation_error
              FROM emergency_calls WHERE tenant_id = $1
              ORDER BY placed_at DESC, id DESC LIMIT $2",
@@ -420,7 +425,8 @@ impl EmergencyStore for PostgresEmergencyStore {
             "UPDATE emergency_calls
              SET trunk_name = COALESCE($2, trunk_name), outcome = $3, sip_status = $4,
                  answered_at = $5, ended_at = $6, delivery = $7,
-                 geolocation_error = COALESCE($8, geolocation_error)
+                 geolocation_error = COALESCE($8, geolocation_error),
+                 trunk_id = COALESCE($9, trunk_id)
              WHERE id = $1",
         )
         .bind(id)
@@ -431,6 +437,7 @@ impl EmergencyStore for PostgresEmergencyStore {
         .bind(to_datetime(completion.ended_at))
         .bind(&completion.delivery)
         .bind(&completion.geolocation_error)
+        .bind(completion.trunk_id.as_ref().map(|t| t.to_string()))
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -445,8 +452,8 @@ impl EmergencyStore for PostgresEmergencyStore {
     ) -> anyhow::Result<Option<EmergencyCallRecord>> {
         let row = sqlx::query(
             "SELECT id, tenant_id, call_id, sip_call_id, caller_uri, caller_username,
-                    dialed_number, kind, callback_number, location, trunk_name, outcome,
-                    placed_at, notified, sip_status, answered_at, ended_at, delivery,
+                    dialed_number, kind, callback_number, location, trunk_name, trunk_id,
+                    outcome, placed_at, notified, sip_status, answered_at, ended_at, delivery,
                     location_structured, geolocation_error
              FROM emergency_calls WHERE tenant_id = $1 AND call_id = $2
              ORDER BY id DESC LIMIT 1",

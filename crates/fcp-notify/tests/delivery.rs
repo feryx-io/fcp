@@ -92,6 +92,7 @@ async fn record(store: &Arc<dyn EmergencyStore>, tenant: TenantId, call_id: &str
         callback_number: Some("+15185550100".to_string()),
         location: None,
         trunk_name: None,
+        trunk_id: None,
         outcome: "placed".to_string(),
         placed_at: SystemTime::now(),
         notified: false,

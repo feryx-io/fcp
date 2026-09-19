@@ -65,6 +65,12 @@ impl Carrier {
         }
     }
 
+    /// Where this carrier answers, for a trunk created through the store
+    /// rather than written into the node's TOML.
+    fn port(&self) -> u16 {
+        self.phone.local_addr.port()
+    }
+
     fn trunk_toml(&self) -> String {
         format!(
             r#"
@@ -164,6 +170,11 @@ recording_dir = "{dir}/recordings"
 [logging]
 level = "info"
 format = "compact"
+
+# A trunk a tenant creates while the node runs reaches it on the backstop
+# read, turned right down so a test does not wait a minute for it.
+[trunk_routing]
+refresh_secs = 1
 
 [e911]
 trusted_edges = [{edges}]
@@ -1229,5 +1240,79 @@ format = "compact"
     assert!(told.notified, "the record says somebody was told");
 
     events.stop().await;
+    stack.finish().await;
+}
+
+/// A tenant's own emergency-capable trunk carries its 911 call
+/// (`docs/TENANT_TRUNKS.md` §5, `docs/E911_BLOCK_2.md` §12.1): the carrier
+/// that tenant bought, ahead of the platform's, which until this phase was
+/// the only trunk a 911 call could leave on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_tenants_own_emergency_trunk_carries_its_911_call() {
+    let platform = Carrier::new("psap-platform", 1).await;
+    let tenants = Carrier::new("psap-tenants", 1).await;
+    let mut stack = stack_or_skip!(&[&platform], &[]);
+    let acme = stack.seed.tenant_id;
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    stack.seed.site_for("alice", ALICE_ELIN).await;
+
+    // The tenant's own emergency carrier, created through the store as the
+    // API creates one.
+    stack
+        .seed
+        .trunk_with(acme, "tenants-psap", tenants.port(), |trunk| {
+            trunk.emergency_capable = true;
+            // Worse priority than the platform's, to prove it is whose
+            // trunk it is that decides.
+            trunk.priority = 50;
+        })
+        .await;
+    tokio::time::sleep(Duration::from_secs(4)).await;
+
+    // The node lists both, and says whose each one is.
+    let listed = stack.get("/emergency/trunks").await;
+    let names: Vec<&str> = listed["trunks"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|t| t["name"].as_str()).collect())
+        .unwrap_or_default();
+    assert!(
+        names.contains(&"tenants-psap") && names.contains(&"psap-platform"),
+        "both are listed: {listed}"
+    );
+    let theirs = listed["trunks"]
+        .as_array()
+        .and_then(|a| a.iter().find(|t| t["name"] == "tenants-psap"))
+        .expect("the tenant's trunk");
+    assert_eq!(theirs["tenant_id"], acme.to_string(), "{theirs}");
+
+    // Alice dials 911: it leaves on her tenant's carrier, not the
+    // platform's.
+    let alice_phone = stack.phone(&alice).await;
+    let call = alice_phone.call("911").await.unwrap();
+    let Some(incoming) = tenants.phone.incoming(SOON).await else {
+        let why = format!(
+            "the tenant's emergency carrier was not called; the call is {:?}",
+            call.phase()
+        );
+        stack.fail(&why).await;
+    };
+    assert!(
+        incoming.from.contains(ALICE_ELIN),
+        "as her site's callback number: {}",
+        incoming.from
+    );
+    assert!(
+        platform
+            .phone
+            .incoming(Duration::from_secs(2))
+            .await
+            .is_none(),
+        "the platform's carrier was not called"
+    );
+
+    let answered = incoming.answer().await.unwrap();
+    call.answered(SOON).await.unwrap();
+    assert_eq!(call.hangup().await.unwrap(), 200);
+    assert!(answered.ended(SOON).await);
     stack.finish().await;
 }

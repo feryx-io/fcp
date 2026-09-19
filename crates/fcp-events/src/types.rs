@@ -205,6 +205,9 @@ pub enum CallEvent {
         sip_status: Option<u16>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         trunk_name: Option<String>,
+        /// Which trunk carried it (`docs/TENANT_TRUNKS.md` §5).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trunk_id: Option<String>,
         /// How the location travelled: `elin`, or none.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         delivery: Option<String>,

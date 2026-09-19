@@ -438,8 +438,9 @@ One PR per phase, reviewed before the next starts.
 
    Left for later phases: what the trunk does to the call is still the
    SBC's (phase 3), the registrar keys on the name (phase 5), and
-   `emergency_capable` on a tenant trunk still decides nothing (phase 6),
-   so the emergency-capable list a node offers is still its own trunks'.
+   `emergency_capable` on a tenant trunk still decides nothing (phase 6,
+   done in 6a), so the emergency-capable list a node offers is still its
+   own trunks'.
 3. **The trunk's own behaviour.** Number transform, caller ID and
    from-domain, codecs, SRTP, DTMF, session timer, header rules, outbound
    proxy — applied, and tested on the wire. Split in two when it was built,
@@ -755,7 +756,36 @@ One PR per phase, reviewed before the next starts.
 6. **Emergency and policy.** `emergency_capable` on tenant trunks closes
    block 2 §12.1 (with the platform's trunks as the last resort); routing
    rules gain a "route via trunk / trunk group" action; per-tenant LCR
-   tables; the admin UI shows what routes and what each node sees.
+   tables; the admin UI shows what routes and what each node sees. Split
+   when it was built: 6a is the emergency half, the policy and the UI
+   follow.
+
+   **6a — a tenant's emergency trunks.** *Done (v0.25.201).*
+
+   - **Whose trunk first.** An emergency call tries its own tenant's
+     `emergency_capable` trunks (priority, then weight, among themselves),
+     then the platform's, then whatever would carry an ordinary call — so a
+     deployment that flagged nothing still places it. A tenant's trunk
+     comes ahead of the platform's whatever its priority: priority orders
+     trunks within an owner, not across them.
+   - **The platform's are the last resort for anyone**, including a tenant
+     that set `platform_trunk_fallback = false`. That setting is a billing
+     and routing preference for ordinary calls; the emergency path asks for
+     the platform's trunks directly (§13 question 6). Another tenant's
+     trunk is never a candidate.
+   - **The record says which trunk.** `emergency_calls.trunk_id` (migration
+     075) beside `trunk_name`, on `GET /v1/emergency/calls` and on
+     `call.emergency_completed`: a trunk's name is unique only within its
+     tenant, and a tenant's own trunk now carries these calls.
+   - **`GET /emergency/trunks`** on each call manager lists every
+     emergency-capable trunk the node routes by, tenants' included, each
+     with its `trunk_id` and `tenant_id`, and counts all of them in
+     `configured_trunks`.
+   - **On the floor** (`fcp-call-manager/tests/trunks.rs`): a tenant's 911
+     call leaves on its own emergency trunk though the platform's has the
+     better priority, and a tenant that refused the platform's trunks and
+     has no emergency trunk of its own still reaches the platform's for
+     911 while its ordinary calls keep to its own carrier.
 
 ## 13. Open questions
 

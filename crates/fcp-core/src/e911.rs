@@ -22,7 +22,7 @@
 
 pub mod notify;
 
-use crate::{Device, E911Address, LocationId, PhoneNumber, SiteLocation, TenantId};
+use crate::{Device, E911Address, LocationId, PhoneNumber, SiteLocation, TenantId, TrunkId};
 use async_trait::async_trait;
 use notify::{EmergencyNotification, NotifyContact};
 use serde::{Deserialize, Serialize};
@@ -1203,6 +1203,11 @@ pub struct EmergencyCallRecord {
     /// The trunk the call went out on: the first chosen at placement, the
     /// one that answered once the call completes.
     pub trunk_name: Option<String>,
+    /// Which trunk that is: names are only unique within a tenant, and a
+    /// tenant's own trunk carries its emergency calls
+    /// (`docs/TENANT_TRUNKS.md` §5).
+    #[serde(default)]
+    pub trunk_id: Option<TrunkId>,
     /// `placed` until the call ends, then its disposition: `answered`,
     /// `busy`, `no_answer`, `failed`, `cancelled`.
     pub outcome: String,
@@ -1235,6 +1240,8 @@ pub struct EmergencyCallRecord {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EmergencyCompletion {
     pub trunk_name: Option<String>,
+    #[serde(default)]
+    pub trunk_id: Option<TrunkId>,
     pub outcome: String,
     pub sip_status: Option<u16>,
     pub answered_at: Option<SystemTime>,

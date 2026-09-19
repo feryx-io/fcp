@@ -650,6 +650,9 @@ Each with a recommendation; every recommendation was taken on 2026-09-15.
    emergency-capable trunks each node routes by, and **tenant trunk routing
    becomes its own project** (recommended — it changes all routing, not
    just emergency calls); or (b) make database trunks route in phase 1.
+   *Closed by `docs/TENANT_TRUNKS.md` phase 6a (v0.25.201): a tenant's own
+   emergency-capable trunks carry its emergency calls, the platform's
+   after them for everyone.*
 2. **Network match versus provisioned site.** A network match overrides a
    device's site only for nomadic devices (softphones, mobile, browser)
    unless a network is marked `all` (recommended), or always.
