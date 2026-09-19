@@ -19,6 +19,7 @@ fcp-b2bua-core = { path = "../fcp-b2bua-core" }
 fcp-cdr = { path = "../fcp-cdr" }
 fcp-billing = { path = "../fcp-billing" }
 fcp-routing = { path = "../fcp-routing" }
+fcp-policy = { path = "../fcp-policy" }
 fcp-media = { path = "../fcp-media" }
 fcp-events = { path = "../fcp-events" }
 fcp-flow = { path = "../fcp-flow" }

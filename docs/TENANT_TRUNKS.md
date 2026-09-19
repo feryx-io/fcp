@@ -787,6 +787,87 @@ One PR per phase, reviewed before the next starts.
      has no emergency trunk of its own still reaches the platform's for
      911 while its ordinary calls keep to its own carrier.
 
+   **The rest of phase 6, decided 2026-09-18.** A survey found the rules
+   `/v1/routing/rules` manages — `allow`, `deny` and a `route_to_trunk`
+   naming a trunk or a trunk group, with an API and an admin UI page —
+   stored and read by nothing on the call path: the only policy a call met
+   was the node's YAML file (`[routing] rules_file`), which can only allow
+   or deny, and which ran *before* emergency detection, so a deny rule
+   could refuse a 911 call. LCR was one TOML table per node, matched to
+   trunks by name. Six questions were put, and every recommendation taken:
+
+   1. A node holds every tenant's rules as it holds their trunks: read at
+      startup, again on `system.config_changed { entity_type:
+      "routing_rule" }` (which the API now publishes), and on the backstop
+      tick.
+   2. The node's YAML policy, the platform's, runs first; then the
+      tenant's rules by priority, first match deciding: `deny` refuses
+      (403), `allow` goes on to ordinary routing, `route_to_trunk` confines
+      the call to what it names.
+   3. A rule may name one of the tenant's own trunks by id (the API checks)
+      or a trunk group: the tenant's members, then the platform's unless
+      the tenant refused them. When nothing it names can take the call,
+      the call is refused (503) rather than sent elsewhere; a group is how
+      a rule gets failover.
+   4. No rule, YAML or tenant, applies to an emergency call, and detection
+      moves ahead of both.
+   5. Per-tenant LCR is a new tenant-owned table (`lcr_routes`: prefix,
+      trunk id, cost, priority, enabled) at `/v1/lcr-routes`, cached like
+      rules; a tenant's table orders its own trunks, the node's `[lcr]`
+      stays for the platform's, and LCR orders what a rule has left. Not
+      the billing rate plans, which are what a tenant is charged, not what
+      a carrier costs.
+   6. Three PRs: 6b the rules route, 6c per-tenant LCR, 6d the admin UI.
+
+   **6b — a tenant's rules decide its calls.** *Done (v0.25.202).*
+
+   - **The rules are held and evaluated on each call manager**
+     (`fcp_policy::TenantRuleSet`, kept current by
+     `fcp_sbc_core::spawn_routing_rule_refresh`, which shares its loop with
+     the trunks' refresh). A rule matches a regex over what was dialled —
+     the Request-URI's user part or the whole URI, so `^\+44` works as
+     written — and over the caller the same way, source CIDR ranges, and a
+     time window in the rule's own timezone (days alone mean whole days,
+     times alone every day, an end before the start spans midnight). Every
+     condition a rule sets must hold. Disabled rules are not in force; a
+     stored rule that does not compile is logged and skipped, and a row
+     whose action does not read is an error rather than an `allow`.
+   - **`route_to_trunk` confines the call.** The call carries the rule's
+     target (`Call::trunk_target`); every place an ordinary call looks for
+     a trunk asks for only that target
+     (`OutboundRouteProvider::resolve_targeted_classified`), ordered the
+     tenant's own first, then priority and weight. Nothing outside it is
+     tried: `503` when the target exists but cannot take the call, `404`
+     when it names nothing this node knows. A call the node serves itself
+     — an extension, a DID of ours — is unaffected; the rule decides only
+     which carrier a call leaves on.
+   - **Emergency calls first.** Detection moved ahead of the YAML policy,
+     and neither the node's policy nor a tenant's rules apply to an
+     emergency call.
+   - **The API.** Reading rules takes `trunk_read` and writing them
+     `trunk_update`: the permissions a tenant's trunks already take, since
+     a rule now decides where its calls go (they took no permission at
+     all, so any user of the tenant could write one). A rule is checked as
+     a node compiles it (patterns, CIDRs, days, `HH:MM` times, IANA
+     timezones, a target for `route_to_trunk`), a trunk it names must be
+     the tenant's own, and every create, update and delete publishes the
+     change.
+   - **On the floor** (`fcp-call-manager/tests/trunks.rs`): a rule sends
+     `+44` calls to its trunk group while other calls take the ordinary
+     choice; a rule naming a trunk that is switched off refuses the call
+     with `503` and rings nothing else; a deny-everything rule refuses an
+     ordinary call with `403` and not a 911 call; and a YAML policy that
+     knows no one refuses an ordinary call but not a 911 call.
+   - **Found on the way: a flow ran within 50 KB of overflowing its stack.**
+     A flow a call reaches runs until it waits for the caller — a pause,
+     a hangup and the SIP work behind it — and it ran on the INVITE's own
+     task, under `handle_invite`'s frame. In a debug build that needed
+     2.1 MB of a worker's 2 MB, measured with `RUST_MIN_STACK`, so the
+     little this phase added to `handle_invite` aborted the node when a
+     flow hung up (`a_flow_that_hangs_up_ends_the_call_it_answered`).
+     `start_flow` now runs the flow on a task of its own and awaits it;
+     the same flow fits in 1.5 MB.
+
 ## 13. Open questions
 
 Each with a recommendation; every recommendation was taken on 2026-09-16.

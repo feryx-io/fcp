@@ -412,7 +412,7 @@ impl FlowCallHandler {
     ///
     /// Loads the flow definition and begins execution from the initial node.
     pub async fn start_flow(
-        &self,
+        self: &Arc<Self>,
         call: &mut Call,
         flow_id: String,
         initial_variables: HashMap<String, String>,
@@ -522,8 +522,17 @@ impl FlowCallHandler {
             Some(0),
         );
 
-        // Execute the initial node
-        self.execute_next_node(call.id).await?;
+        // Execute the initial node, on a task of its own, awaited so the
+        // order is unchanged. The flow runs until it waits for the caller —
+        // a pause, a hangup and the SIP work behind it included — and it
+        // used to run on the INVITE's own stack, under `handle_invite`'s
+        // frame, which in a debug build left it within 50 KB of a worker's
+        // 2 MB. A spawned task is polled from the top of a stack.
+        let handler = Arc::clone(self);
+        let call_id = call.id;
+        tokio::spawn(async move { handler.execute_next_node(call_id).await })
+            .await
+            .map_err(|e| anyhow::anyhow!("Flow task did not finish: {e}"))??;
 
         Ok(())
     }

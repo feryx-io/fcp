@@ -374,6 +374,44 @@ pub trait OutboundRouteProvider: Send + Sync {
             RouteResolution::Routes(routes)
         }
     }
+
+    /// Classified resolution for a call a tenant's `route_to_trunk` rule
+    /// has confined to `target` (`docs/TENANT_TRUNKS.md` §12, phase 6b):
+    /// only what the rule names may carry it, and nothing else is tried
+    /// when none of that can. The default keeps the ordinary routes that
+    /// match; a provider that knows its trunks should look past the
+    /// ordinary choice, which may not have ranked the named trunk at all.
+    async fn resolve_targeted_classified(
+        &self,
+        tenant: Option<fcp_core::TenantId>,
+        destination_uri: &str,
+        target: &fcp_core::TrunkTarget,
+    ) -> RouteResolution {
+        let routes: Vec<OutboundRoute> = self
+            .resolve_outbound_ordered(tenant, destination_uri)
+            .await
+            .into_iter()
+            .filter(|r| {
+                r.trunk
+                    .as_ref()
+                    .is_some_and(|t| crate::handler::trunk_is_target(t, target))
+            })
+            .collect();
+        if routes.is_empty() {
+            RouteResolution::Unavailable
+        } else {
+            RouteResolution::Routes(routes)
+        }
+    }
+}
+
+/// Whether `trunk` is what `target` names: the trunk itself, or a member of
+/// the group.
+pub fn trunk_is_target(trunk: &fcp_core::Trunk, target: &fcp_core::TrunkTarget) -> bool {
+    match target {
+        fcp_core::TrunkTarget::Trunk(id) => &trunk.trunk_id() == id,
+        fcp_core::TrunkTarget::Group(group) => trunk.trunk_group.as_deref() == Some(group.as_str()),
+    }
 }
 use sip_transaction::ServerTransactionHandle;
 
@@ -587,6 +625,9 @@ pub struct SipMessageHandler {
     /// call each is (`docs/TENANT_TRUNKS.md` §7); `None` on a node that
     /// admits by its tenants' stored trunks as before.
     inbound_trunks: Option<Arc<dyn crate::trunk_ingress::InboundTrunks>>,
+    /// Every tenant's own routing rules (`docs/TENANT_TRUNKS.md` §12,
+    /// phase 6b); `None` on a node that decides by its YAML policy alone.
+    tenant_rules: Option<Arc<fcp_policy::TenantRuleSet>>,
     /// What each trunk carries on this node, against its limits (§7);
     /// `None` on a node that does not count.
     trunk_calls: Option<Arc<dyn crate::trunk_ingress::TrunkCallCounter>>,
@@ -939,6 +980,7 @@ impl SipMessageHandler {
             b_leg_srtp: Arc::new(dashmap::DashMap::new()),
             header_rules: None,
             inbound_trunks: None,
+            tenant_rules: None,
             trunk_calls: None,
             call_signer: None,
             conference_migrations: Arc::new(dashmap::DashMap::new()),
@@ -1031,6 +1073,13 @@ impl SipMessageHandler {
         trunks: Option<Arc<dyn crate::trunk_ingress::InboundTrunks>>,
     ) -> Self {
         self.inbound_trunks = trunks;
+        self
+    }
+
+    /// Every tenant's own routing rules, decided on this node
+    /// (`docs/TENANT_TRUNKS.md` §12, phase 6b).
+    pub fn with_tenant_rules(mut self, rules: Option<Arc<fcp_policy::TenantRuleSet>>) -> Self {
+        self.tenant_rules = rules;
         self
     }
 
@@ -1478,6 +1527,104 @@ impl SipMessageHandler {
     /// number that is nobody's DID here (`docs/TENANT_TRUNKS.md` §5).
     /// Records the chosen trunk on the call, and the whole ordered list so
     /// failover can name the one that answered.
+    /// What the tenant's own rules decide about this INVITE
+    /// (`docs/TENANT_TRUNKS.md` §12, phase 6b): `Ok` with the trunk target
+    /// a `route_to_trunk` rule confined it to, if one did, or `Err` with the
+    /// reason a `deny` rule refused it. Kept synchronous and out of
+    /// `handle_invite`, whose future is deep enough already: nothing here
+    /// lives across an await.
+    fn tenant_rule_decision(
+        &self,
+        tenant_id: &fcp_core::TenantId,
+        request: &sip_core::Request,
+        peer: SocketAddr,
+    ) -> std::result::Result<Option<fcp_core::TrunkTarget>, String> {
+        let Some(rules) = &self.tenant_rules else {
+            return Ok(None);
+        };
+        let caller = sip_parse::header(request.headers(), "From")
+            .map(|from| {
+                let from = from.as_str();
+                from.split('<')
+                    .nth(1)
+                    .and_then(|s| s.split('>').next())
+                    .unwrap_or(from)
+                    .split(';')
+                    .next()
+                    .unwrap_or(from)
+                    .trim()
+                    .to_string()
+            })
+            .unwrap_or_default();
+        let destination = request.uri().as_str().to_string();
+        let facts = fcp_policy::CallFacts {
+            caller: &caller,
+            destination: &destination,
+            source_ip: peer.ip(),
+        };
+        match rules.evaluate(tenant_id, &facts) {
+            fcp_policy::RuleOutcome::Deny { rule, reason } => {
+                info!(
+                    tenant_id = %tenant_id,
+                    rule = %rule,
+                    destination = %destination,
+                    "Call denied by the tenant's routing rule"
+                );
+                Err(reason)
+            }
+            fcp_policy::RuleOutcome::Route { rule, target } => {
+                debug!(
+                    tenant_id = %tenant_id,
+                    rule = %rule,
+                    target = %target,
+                    "The tenant's routing rule confines this call to a trunk"
+                );
+                Ok(Some(target))
+            }
+            fcp_policy::RuleOutcome::Allow { rule } => {
+                debug!(tenant_id = %tenant_id, rule = %rule, "Call allowed by the tenant's routing rule");
+                Ok(None)
+            }
+            fcp_policy::RuleOutcome::NoMatch => Ok(None),
+        }
+    }
+
+    /// The trunk routes for a call to `destination`, classified: the
+    /// ordinary choice, or only what a tenant's `route_to_trunk` rule named
+    /// when one matched the call (`docs/TENANT_TRUNKS.md` §12, phase 6b).
+    async fn classified_routes(
+        &self,
+        provider: &Arc<dyn OutboundRouteProvider>,
+        call_id: &fcp_b2bua_core::CallId,
+        destination: &str,
+    ) -> RouteResolution {
+        let (tenant, target) = match self.call_manager.get_call(call_id) {
+            Some(call) => (Some(call.tenant_id), call.trunk_target.clone()),
+            None => (None, None),
+        };
+        match target {
+            Some(target) => {
+                let resolution = provider
+                    .resolve_targeted_classified(tenant, destination, &target)
+                    .await;
+                if !matches!(resolution, RouteResolution::Routes(_)) {
+                    warn!(
+                        call_id = %call_id,
+                        destination = %destination,
+                        target = %target,
+                        "The trunk a routing rule names cannot take this call; nothing else may"
+                    );
+                }
+                resolution
+            }
+            None => {
+                provider
+                    .resolve_outbound_classified(tenant, destination)
+                    .await
+            }
+        }
+    }
+
     async fn trunk_bindings(
         &self,
         call_id: &fcp_b2bua_core::CallId,
@@ -1486,10 +1633,7 @@ impl SipMessageHandler {
         let Some(provider) = &self.outbound_route_provider else {
             return TrunkBindings::NoRoute;
         };
-        let routes = match provider
-            .resolve_outbound_classified(self.call_tenant(call_id), destination)
-            .await
-        {
+        let routes = match self.classified_routes(provider, call_id, destination).await {
             RouteResolution::Routes(routes) => routes,
             RouteResolution::Unavailable => return TrunkBindings::Unavailable,
             RouteResolution::NoRoute => return TrunkBindings::NoRoute,
@@ -2256,8 +2400,27 @@ impl SipMessageHandler {
             }
         }
 
-        // Check routing policy if routing service is configured
-        if let Some(routing_service) = &self.routing_service {
+        // Emergency calls (911 and the tenant's emergency/test numbers) are
+        // detected before any admission control: no routing policy or rule
+        // applies to them, they are never rejected for balance, and they
+        // carry the caller's dispatchable location.
+        let emergency = self
+            .detect_emergency(&tenant_id, request, peer, edge_caller.as_ref())
+            .await;
+        if let Some(em) = &emergency {
+            info!(
+                tenant_id = %tenant_id,
+                dialed = %em.dialed,
+                kind = %em.kind,
+                callback = ?em.callback_number,
+                location = ?em.location.as_ref().map(|l| l.summary()),
+                "Emergency call detected"
+            );
+        }
+
+        // Check routing policy if routing service is configured: the
+        // node's own, the platform's.
+        if let (Some(routing_service), None) = (&self.routing_service, &emergency) {
             match self
                 .evaluate_routing_policy(request, routing_service, peer)
                 .await
@@ -2296,24 +2459,24 @@ impl SipMessageHandler {
             }
         }
 
+        // Then the tenant's own rules (`docs/TENANT_TRUNKS.md` §12, phase
+        // 6b): a deny refuses the call, a route_to_trunk confines it to the
+        // trunk or group it names. Never an emergency call's.
+        let trunk_target = match emergency {
+            None => match self.tenant_rule_decision(&tenant_id, request, peer) {
+                Ok(target) => target,
+                Err(reason) => {
+                    let response = self.create_simple_response(request, 403, &reason);
+                    handle.send_final(response).await;
+                    return Ok(());
+                }
+            },
+            Some(_) => None,
+        };
+
         // Balance enforcement: refuse calls the tenant cannot pay for, and
-        // remember how long an affordable call may last.
-        // Emergency calls (911 and the tenant's emergency/test numbers) are
-        // detected before any admission control: they are never rejected for
-        // balance, and they carry the caller's dispatchable location.
-        let emergency = self
-            .detect_emergency(&tenant_id, request, peer, edge_caller.as_ref())
-            .await;
-        if let Some(em) = &emergency {
-            info!(
-                tenant_id = %tenant_id,
-                dialed = %em.dialed,
-                kind = %em.kind,
-                callback = ?em.callback_number,
-                location = ?em.location.as_ref().map(|l| l.summary()),
-                "Emergency call detected"
-            );
-        }
+        // remember how long an affordable call may last. An emergency call
+        // is never refused for balance.
 
         let mut billing_max_duration: Option<Duration> = None;
         if let (Some(billing), None) = (&self.billing, &emergency) {
@@ -2358,6 +2521,7 @@ impl SipMessageHandler {
         call.a_leg_invite_tx = Some(handle.key().clone());
         call.max_duration = billing_max_duration;
         call.emergency = emergency.clone();
+        call.trunk_target = trunk_target;
         // The record names the trunk an inbound call arrived on.
         if let Some(trunk) = &inbound_trunk {
             call.trunk_name = Some(trunk.name.clone());
@@ -4694,11 +4858,8 @@ impl SipMessageHandler {
                             // nothing is configured for the destination, 503 when
                             // routes exist but no trunk is currently available.
                             if let Some(provider) = &self.outbound_route_provider {
-                                let routes = match provider
-                                    .resolve_outbound_classified(
-                                        self.call_tenant(&call_id),
-                                        destination_aor,
-                                    )
+                                let routes = match self
+                                    .classified_routes(provider, &call_id, destination_aor)
                                     .await
                                 {
                                     RouteResolution::Routes(routes) => routes,
@@ -5657,11 +5818,8 @@ impl SipMessageHandler {
                             // nothing is configured for the destination, 503 when
                             // routes exist but no trunk is currently available.
                             if let Some(provider) = &self.outbound_route_provider {
-                                let routes = match provider
-                                    .resolve_outbound_classified(
-                                        self.call_tenant(&call_id),
-                                        destination_aor,
-                                    )
+                                let routes = match self
+                                    .classified_routes(provider, &call_id, destination_aor)
                                     .await
                                 {
                                     RouteResolution::Routes(routes) => routes,

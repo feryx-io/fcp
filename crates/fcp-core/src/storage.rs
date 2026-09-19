@@ -1656,6 +1656,9 @@ pub trait RoutingRuleStore: Send + Sync {
         &self,
         tenant_id: &crate::TenantId,
     ) -> Result<Vec<crate::RoutingRule>>;
+    /// Every tenant's rules: what a node routing calls holds
+    /// (`docs/TENANT_TRUNKS.md` §12, phase 6b).
+    async fn list_all_routing_rules(&self) -> Result<Vec<crate::RoutingRule>>;
     async fn put_routing_rule(&self, rule: crate::RoutingRule) -> Result<()>;
     async fn delete_routing_rule(&self, id: &crate::RoutingRuleId) -> Result<()>;
 }
@@ -3832,6 +3835,9 @@ impl RoutingRuleStore for DynStorage {
         tenant_id: &crate::TenantId,
     ) -> Result<Vec<crate::RoutingRule>> {
         self.routing_rule_store.list_routing_rules(tenant_id).await
+    }
+    async fn list_all_routing_rules(&self) -> Result<Vec<crate::RoutingRule>> {
+        self.routing_rule_store.list_all_routing_rules().await
     }
     async fn put_routing_rule(&self, rule: crate::RoutingRule) -> Result<()> {
         self.routing_rule_store.put_routing_rule(rule).await

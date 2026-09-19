@@ -245,6 +245,42 @@ impl TrunkRouter {
         ordered
     }
 
+    /// Trunks for a call a tenant's `route_to_trunk` rule has confined to
+    /// `target` (`docs/TENANT_TRUNKS.md` §12, phase 6b), in the order to try
+    /// them, and whether the target names any trunk this node knows.
+    ///
+    /// A trunk named by id is taken only if it is one this tenant's calls
+    /// may leave on. A group is its members among those: the tenant's own
+    /// first, then the platform's unless the tenant has refused them, each
+    /// by priority then weight. Nothing outside the target is added — a
+    /// rule that routes a call somewhere means only there, and a group is
+    /// how a rule gets failover.
+    pub fn select_targeted_trunks(
+        &self,
+        tenant: Option<fcp_core::TenantId>,
+        direction: TrunkDirection,
+        target: &fcp_core::TrunkTarget,
+    ) -> (Vec<Arc<TrunkConfig>>, bool) {
+        let mut named: Vec<Arc<TrunkConfig>> = self
+            .trunks
+            .for_tenant(tenant)
+            .into_iter()
+            .filter(|t| fcp_sip::handler::trunk_is_target(t, target))
+            .collect();
+        let known = !named.is_empty();
+        // The tenant's own ahead of the platform's; within each, priority
+        // then weight.
+        named.sort_by_key(|t| {
+            (
+                t.tenant_id.is_none(),
+                t.priority,
+                std::cmp::Reverse(t.weight),
+            )
+        });
+        named.retain(|t| self.is_trunk_eligible(t, direction));
+        (named, known)
+    }
+
     pub fn select_trunks_ordered(
         &self,
         tenant: Option<fcp_core::TenantId>,
@@ -734,6 +770,31 @@ impl OutboundRouteProvider for TrunkRouter {
             return RouteResolution::Routes(routes);
         }
         if self.has_configured_route(tenant, TrunkDirection::Upstream, destination_uri) {
+            RouteResolution::Unavailable
+        } else {
+            RouteResolution::NoRoute
+        }
+    }
+
+    async fn resolve_targeted_classified(
+        &self,
+        tenant: Option<fcp_core::TenantId>,
+        destination_uri: &str,
+        target: &fcp_core::TrunkTarget,
+    ) -> RouteResolution {
+        let (trunks, known) = self.select_targeted_trunks(tenant, TrunkDirection::Upstream, target);
+        let routes: Vec<OutboundRoute> = trunks
+            .iter()
+            .filter_map(|trunk| self.build_outbound_route(trunk, destination_uri))
+            .collect();
+        if let Some(first) = routes.first() {
+            // Only the primary is counted, as for an ordinary call.
+            if let Some(id) = &first.trunk_id() {
+                self.record_call_on(id.as_str());
+            }
+            return RouteResolution::Routes(routes);
+        }
+        if known {
             RouteResolution::Unavailable
         } else {
             RouteResolution::NoRoute
@@ -1540,5 +1601,139 @@ mod tests {
             .map(|t| t.name.clone())
             .collect();
         assert_eq!(names, vec!["ours-911".to_string()], "{names:?}");
+    }
+
+    /// A router over the platform's `platform` and `tenant`'s `theirs`.
+    fn router_over(
+        platform: Vec<TrunkConfig>,
+        theirs: Vec<TrunkConfig>,
+        fallback: &HashMap<fcp_core::TenantId, bool>,
+    ) -> TrunkRouter {
+        let set = Arc::new(TrunkSet::platform_only(platform));
+        set.set_tenant_trunks(theirs, fallback);
+        let health = Arc::new(TrunkHealthMonitor::new(&[]));
+        health.track(&set.all());
+        TrunkRouter::with_trunk_set(set, health, no_cps())
+    }
+
+    fn names(trunks: &[Arc<TrunkConfig>]) -> Vec<String> {
+        trunks.iter().map(|t| t.name.clone()).collect()
+    }
+
+    /// A rule that names one trunk gets that trunk and no other, even one
+    /// the ordinary choice would rank above it (`docs/TENANT_TRUNKS.md`
+    /// §12, phase 6b).
+    #[test]
+    fn a_rule_naming_a_trunk_gets_only_that_trunk() {
+        let tenant = fcp_core::TenantId::new();
+        let mut preferred = tenant_trunk("preferred", tenant);
+        preferred.priority = 1;
+        let mut named = tenant_trunk("named", tenant);
+        named.priority = 90;
+        let target = fcp_core::TrunkTarget::Trunk(named.trunk_id());
+        let router = router_over(
+            vec![make_trunk("platform", 1, 1, TrunkDirection::Upstream)],
+            vec![preferred, named],
+            &HashMap::new(),
+        );
+
+        let (trunks, known) =
+            router.select_targeted_trunks(Some(tenant), TrunkDirection::Upstream, &target);
+        assert!(known);
+        assert_eq!(names(&trunks), vec!["named"]);
+    }
+
+    /// A group is its members: the tenant's own by priority, then the
+    /// platform's in the same group unless the tenant refused them.
+    #[test]
+    fn a_rule_naming_a_group_gets_its_members_the_tenants_first() {
+        let tenant = fcp_core::TenantId::new();
+        let in_group = |mut t: TrunkConfig, priority: u32| {
+            t.trunk_group = Some("intl".into());
+            t.priority = priority;
+            t
+        };
+        let theirs = vec![
+            in_group(tenant_trunk("intl-backup", tenant), 20),
+            in_group(tenant_trunk("intl-primary", tenant), 10),
+            tenant_trunk("domestic", tenant),
+        ];
+        let platform = vec![
+            in_group(
+                make_trunk("platform-intl", 1, 1, TrunkDirection::Upstream),
+                1,
+            ),
+            make_trunk("platform-domestic", 1, 1, TrunkDirection::Upstream),
+        ];
+        let target = fcp_core::TrunkTarget::Group("intl".into());
+
+        let router = router_over(platform.clone(), theirs.clone(), &HashMap::new());
+        let (trunks, _) =
+            router.select_targeted_trunks(Some(tenant), TrunkDirection::Upstream, &target);
+        assert_eq!(
+            names(&trunks),
+            vec!["intl-primary", "intl-backup", "platform-intl"]
+        );
+
+        let mut refused = HashMap::new();
+        refused.insert(tenant, false);
+        let router = router_over(platform, theirs, &refused);
+        let (trunks, _) =
+            router.select_targeted_trunks(Some(tenant), TrunkDirection::Upstream, &target);
+        assert_eq!(names(&trunks), vec!["intl-primary", "intl-backup"]);
+    }
+
+    /// When what the rule names cannot take the call, nothing else is
+    /// offered in its place: 503 when the target exists, 404 when it names
+    /// nothing this node knows.
+    #[tokio::test]
+    async fn a_rules_target_that_cannot_take_the_call_is_not_replaced() {
+        let tenant = fcp_core::TenantId::new();
+        let mut down = tenant_trunk("down", tenant);
+        down.trunk_group = Some("intl".into());
+        down.enabled = false;
+        let router = router_over(
+            vec![make_trunk("platform", 1, 1, TrunkDirection::Upstream)],
+            vec![down, tenant_trunk("other", tenant)],
+            &HashMap::new(),
+        );
+
+        let unavailable = router
+            .resolve_targeted_classified(
+                Some(tenant),
+                "sip:+442079460000@pbx",
+                &fcp_core::TrunkTarget::Group("intl".into()),
+            )
+            .await;
+        assert!(
+            matches!(unavailable, RouteResolution::Unavailable),
+            "{unavailable:?}"
+        );
+
+        let nothing = router
+            .resolve_targeted_classified(
+                Some(tenant),
+                "sip:+442079460000@pbx",
+                &fcp_core::TrunkTarget::Group("nobody-has-this".into()),
+            )
+            .await;
+        assert!(matches!(nothing, RouteResolution::NoRoute), "{nothing:?}");
+    }
+
+    /// A trunk id is taken only among the trunks this tenant's calls may
+    /// leave on: never another tenant's.
+    #[test]
+    fn a_rule_cannot_reach_another_tenants_trunk() {
+        let (mine, theirs) = (fcp_core::TenantId::new(), fcp_core::TenantId::new());
+        let not_mine = tenant_trunk("theirs", theirs);
+        let target = fcp_core::TrunkTarget::Trunk(not_mine.trunk_id());
+        let router = router_over(
+            Vec::new(),
+            vec![tenant_trunk("mine", mine), not_mine],
+            &HashMap::new(),
+        );
+        let (trunks, known) =
+            router.select_targeted_trunks(Some(mine), TrunkDirection::Upstream, &target);
+        assert!(trunks.is_empty() && !known);
     }
 }

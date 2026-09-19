@@ -77,6 +77,26 @@ impl std::str::FromStr for RoutingAction {
     }
 }
 
+/// What a `route_to_trunk` rule sends a call to (`docs/TENANT_TRUNKS.md`
+/// §12, phase 6b): one trunk of the tenant's own, or every trunk in a
+/// group — the tenant's first, then the platform's unless the tenant has
+/// refused them. Only what it names may carry the call.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrunkTarget {
+    Trunk(crate::TrunkId),
+    Group(String),
+}
+
+impl fmt::Display for TrunkTarget {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Trunk(id) => write!(f, "trunk {id}"),
+            Self::Group(group) => write!(f, "trunk group {group}"),
+        }
+    }
+}
+
 /// A routing rule for call policy and trunk selection.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoutingRule {
@@ -119,6 +139,24 @@ pub struct RoutingRule {
 }
 
 impl RoutingRule {
+    /// Where a `route_to_trunk` rule sends its calls. A trunk named by id
+    /// wins over a group when a rule carries both; `None` for any other
+    /// action, or for a rule that names neither.
+    pub fn trunk_target(&self) -> Option<TrunkTarget> {
+        if self.action != RoutingAction::RouteToTrunk {
+            return None;
+        }
+        fn named(s: &Option<String>) -> Option<&str> {
+            s.as_deref().map(str::trim).filter(|s| !s.is_empty())
+        }
+        if let Some(id) = named(&self.target_trunk_id) {
+            return Some(TrunkTarget::Trunk(crate::TrunkId::from_string(
+                id.to_string(),
+            )));
+        }
+        named(&self.target_trunk_group).map(|g| TrunkTarget::Group(g.to_string()))
+    }
+
     pub fn new(name: String, tenant_id: TenantId) -> Self {
         let now = SystemTime::now();
         Self {

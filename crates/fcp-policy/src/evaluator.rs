@@ -307,7 +307,7 @@ impl PolicyEvaluator {
     /// Whether `now_utc` falls inside one window, evaluated in the window's
     /// own timezone. Split out (and given an explicit instant) so tests are
     /// deterministic.
-    fn window_matches_at(
+    pub(crate) fn window_matches_at(
         window: &crate::models::policy::TimeWindow,
         now_utc: chrono::DateTime<chrono::Utc>,
     ) -> bool {

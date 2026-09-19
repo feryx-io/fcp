@@ -268,6 +268,26 @@ impl Seed {
         id
     }
 
+    /// A routing rule of `tenant`'s (`docs/TENANT_TRUNKS.md` §12, phase
+    /// 6b), as the API would store it: enabled, priority 100, `allow`
+    /// until `edit` says otherwise.
+    pub async fn routing_rule(
+        &self,
+        tenant: TenantId,
+        name: &str,
+        edit: impl FnOnce(&mut fcp_core::RoutingRule),
+    ) -> fcp_core::RoutingRuleId {
+        use fcp_core::storage::RoutingRuleStore;
+        let mut rule = fcp_core::RoutingRule::new(name.to_string(), tenant);
+        edit(&mut rule);
+        let id = rule.id.clone();
+        self.storage
+            .put_routing_rule(rule)
+            .await
+            .expect("seed routing rule");
+        id
+    }
+
     /// The storage, for fixtures this helper has no shorthand for.
     pub fn storage(&self) -> &PostgresStorage {
         &self.storage

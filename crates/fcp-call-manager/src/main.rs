@@ -564,6 +564,7 @@ async fn main() -> Result<()> {
     // for what the node answers about its trunks (`docs/TENANT_TRUNKS.md`
     // §9).
     let trunk_registrar = Arc::new(TrunkRegistrar::new());
+    let tenant_rules = Arc::new(fcp_policy::TenantRuleSet::new());
     let outbound_route_provider: Option<Arc<dyn fcp_sip::OutboundRouteProvider>> = {
         let cps: Arc<dyn CpsChecker> = trunk_cps.clone();
         let router = Arc::new(
@@ -580,6 +581,16 @@ async fn main() -> Result<()> {
             Arc::clone(&trunk_set),
             Arc::clone(&dyn_storage),
             Arc::clone(&trunk_health_monitor),
+            Some(Arc::clone(&event_bus) as Arc<dyn fcp_events::EventSubscriber>),
+            Duration::from_secs(config.trunk_routing.refresh_secs.max(1)),
+        )
+        .await;
+
+        // And every tenant's routing rules, which may confine a call to a
+        // trunk or refuse it (`docs/TENANT_TRUNKS.md` §12, phase 6b).
+        fcp_sbc_core::spawn_routing_rule_refresh(
+            Arc::clone(&tenant_rules),
+            Arc::clone(&dyn_storage),
             Some(Arc::clone(&event_bus) as Arc<dyn fcp_events::EventSubscriber>),
             Duration::from_secs(config.trunk_routing.refresh_secs.max(1)),
         )
@@ -1186,6 +1197,7 @@ async fn main() -> Result<()> {
     .with_trunk_calls(Some(
         Arc::clone(&trunk_calls) as Arc<dyn fcp_sip::trunk_ingress::TrunkCallCounter>
     ))
+    .with_tenant_rules(Some(Arc::clone(&tenant_rules)))
     .with_call_signer(call_signer.clone())
     .with_call_recorder(Arc::clone(&call_recorder));
     #[cfg(feature = "storage-redis")]

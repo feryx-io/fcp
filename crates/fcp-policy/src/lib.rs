@@ -20,6 +20,7 @@
 pub mod evaluator;
 pub mod models;
 pub mod storage;
+pub mod tenant_rules;
 
 // Canonical names
 pub use evaluator::PolicyEvaluator;
@@ -30,6 +31,7 @@ pub use models::policy::{
 };
 pub use storage::yaml::YamlRoutingStore;
 pub use storage::RoutingStore;
+pub use tenant_rules::{CallFacts, RuleOutcome, TenantRuleSet};
 
 // Preferred aliases under the crate's own vocabulary. `RoutingStore` /
 // `YamlRoutingStore` keep their historical names for the fcp-routing
