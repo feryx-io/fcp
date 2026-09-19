@@ -800,8 +800,15 @@ async fn main() -> Result<()> {
     let probe_monitor = Arc::clone(&trunk_health);
     let probe_uac = Arc::clone(&uac);
     let probe_trunks = Arc::clone(&trunk_set);
+    let probe_hooks = Arc::clone(&sbc_hooks);
     tokio::spawn(async move {
-        health_probes::run_health_probes(probe_monitor, probe_trunks, probe_uac).await;
+        health_probes::run_health_probes(
+            probe_monitor,
+            probe_trunks,
+            probe_uac,
+            fcp_sbc_core::HealthAnnouncer::new(probe_hooks, "sbc".to_string()),
+        )
+        .await;
     });
 
     // Spawn trunk registration task (maintains REGISTER bindings for trunks

@@ -12,6 +12,7 @@ pub mod conference_registry;
 pub mod membership;
 pub mod node_client;
 pub mod reader;
+pub mod trunk_registry;
 
 pub use call_registry::CallRegistry;
 pub use conference_registry::{
@@ -24,3 +25,4 @@ pub use membership::{
 };
 pub use node_client::NodeClient;
 pub use reader::{ClusterNodeInfo, ClusterNodeStatus, ClusterReader, ClusterStats};
+pub use trunk_registry::TrunkRegistry;

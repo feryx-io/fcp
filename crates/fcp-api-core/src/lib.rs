@@ -16,6 +16,15 @@ pub mod e911_validator;
 pub mod error;
 pub mod state;
 pub mod trunk_health;
+
+/// Where `/v1/trunks` reads what every node sees of a trunk
+/// (`docs/TENANT_TRUNKS.md` §9). The API server does not itself join a
+/// cluster; whatever wires it up hands it something that can read the
+/// views the nodes publish.
+#[async_trait::async_trait]
+pub trait TrunkNodeReports: Send + Sync {
+    async fn reports(&self) -> Vec<fcp_core::trunk_report::TrunkNodeReport>;
+}
 pub mod v1;
 pub mod validation;
 

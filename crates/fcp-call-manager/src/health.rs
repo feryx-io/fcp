@@ -47,6 +47,11 @@ pub struct AppState {
     /// This node's `[[trunks]]`, which outbound and emergency routing use.
     pub trunks: Vec<fcp_sbc_core::TrunkConfig>,
     pub trunk_health: Option<Arc<fcp_sbc_core::TrunkHealthMonitor>>,
+    /// Every trunk this node routes by, the tenants' included.
+    pub trunk_set: Option<Arc<fcp_sbc_core::TrunkSet>>,
+    /// What this node's REGISTER bindings are doing.
+    pub trunk_registrar: Option<Arc<fcp_sbc_core::TrunkRegistrar>>,
+    pub node_id: String,
 }
 
 fn queue_visible_to_service_tenant(
@@ -110,6 +115,34 @@ async fn emergency_trunks_handler(State(state): State<Arc<AppState>>) -> impl In
     }))
 }
 
+/// What this node sees of the trunks it routes by
+/// (`docs/TENANT_TRUNKS.md` §9): its own probes, its own calls and its own
+/// bindings, which is what "health per node" means. Another node answers
+/// this differently, and that disagreement is the point.
+async fn trunks_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let (Some(trunks), Some(health)) = (state.trunk_set.as_ref(), state.trunk_health.as_ref())
+    else {
+        return Json(serde_json::json!({
+            "node_id": state.node_id,
+            "trunks": [],
+            "routes_by_trunks": false,
+        }));
+    };
+    let report = fcp_sbc_core::node_view(
+        &state.node_id,
+        trunks,
+        health,
+        state.trunk_registrar.as_deref(),
+    );
+    let routable = report.trunks.iter().any(|t| t.routable);
+    Json(serde_json::json!({
+        "node_id": report.node_id,
+        "trunks": report.trunks,
+        "routable": routable,
+        "routes_by_trunks": true,
+    }))
+}
+
 /// Run the HTTP health/status/calls server.
 pub async fn run_http_server(bind_addr: SocketAddr, state: Arc<AppState>) -> anyhow::Result<()> {
     let protected = Router::new()
@@ -129,6 +162,7 @@ pub async fn run_http_server(bind_addr: SocketAddr, state: Arc<AppState>) -> any
         .route("/media-sessions", get(media_sessions_handler))
         .route("/transcoding", get(transcoding_handler))
         .route("/emergency/trunks", get(emergency_trunks_handler))
+        .route("/trunks", get(trunks_handler))
         // Queue/Agent management endpoints
         .route(
             "/queues",
@@ -810,6 +844,10 @@ async fn metrics_handler(State(state): State<Arc<AppState>>) -> impl IntoRespons
     if let Some(writer) = state.call_manager.cdr_writer() {
         body.push_str(&writer.prometheus(&format!("node=\"{node}\"")));
     }
+    // Calls by trunk, tenant and outcome (docs/TENANT_TRUNKS.md §9).
+    body.push_str(
+        &fcp_core::trunk_report::TrunkCounters::global().prometheus(&format!("node=\"{node}\"")),
+    );
     // Call recordings by source and consent outcome
     // (docs/COMPLIANCE_FOLLOWUPS.md §9).
     body.push_str(

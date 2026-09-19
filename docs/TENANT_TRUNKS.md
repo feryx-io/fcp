@@ -721,10 +721,37 @@ One PR per phase, reviewed before the next starts.
      one database hold one binding between them, which moves to the
      survivor when the node holding it is killed.
 
-   **5b — what every node sees.** Per-node health published to the cluster,
-   `trunk.health_changed`, `/v1/trunks` gaining the health each node sees
-   and the calls in flight, `GET /trunks` on each node, and the per-trunk
-   metrics (§9).
+   **5b — what every node sees.** *Done (v0.25.200).*
+
+   - **A node answers for itself.** `GET /trunks` on each node lists every
+     trunk it routes by — the tenants' beside the platform's, which is what
+     it adds over `/emergency/trunks` — with this node's own health, its
+     own calls in flight, whether it would route a call there now, and what
+     its REGISTER binding is doing.
+   - **And says so to the cluster.** Each node publishes that view under
+     its own key every ten seconds, and it expires thirty seconds after the
+     last one: the answer is what the live nodes currently see and never a
+     node that has gone.
+   - **`/v1/trunks` shows every node's at once.** A trunk carries the views
+     of the nodes that route by it, the calls in flight across them, and
+     whether any node could place a call — so a carrier one node cannot
+     reach and another can is visible as the disagreement it is, rather
+     than as one server's opinion. A deployment with no Redis answers as it
+     did before, from the API server's own probes.
+   - **`trunk.health_changed`** when a node's probes change their mind,
+     naming the node, what it is now and what it was: health is per node,
+     so an event that did not say which node would be unreadable. Only a
+     change is news.
+   - **Metrics per trunk and tenant** (`fcp_trunk_calls_total` on each
+     node's `/metrics`): attempted and answered, and refused for capacity
+     or for calls per second — counted where the router passes a trunk over
+     for its limits and where a carrier's call is admitted, which are the
+     two places a limit is enforced. `failed_over` is counted where a call
+     gives up on a route and takes the next, which today is the emergency
+     path; the ordinary B-leg's walk through its failover bindings is not
+     yet counted.
+
+   **Phase 5 is complete.**
 6. **Emergency and policy.** `emergency_capable` on tenant trunks closes
    block 2 §12.1 (with the platform's trunks as the last resort); routing
    rules gain a "route via trunk / trunk group" action; per-tenant LCR

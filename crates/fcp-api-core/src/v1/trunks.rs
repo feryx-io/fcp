@@ -69,6 +69,18 @@ pub struct TrunkResponse {
     pub health_status: String,
     pub consecutive_failures: u32,
     pub uptime_secs: Option<u64>,
+    /// What each node that routes by this trunk sees of it
+    /// (`docs/TENANT_TRUNKS.md` §9): a carrier one node cannot reach may
+    /// be reachable from another, and that disagreement is worth showing.
+    /// Empty where no node publishes a view.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub nodes: Vec<fcp_core::trunk_report::TrunkNodeView>,
+    /// Calls on this trunk across every node that reported one.
+    #[serde(default)]
+    pub calls_in_flight: u64,
+    /// Whether any node would route a call to it now.
+    #[serde(default)]
+    pub routable_somewhere: bool,
     pub created_at: SystemTime,
     pub updated_at: SystemTime,
 }
@@ -123,6 +135,9 @@ impl From<Trunk> for TrunkResponse {
             outbound_proxy: t.outbound_proxy,
             trunk_group: t.trunk_group,
             header_rules: (!t.header_rules.is_empty()).then(|| t.header_rules.join(", ")),
+            nodes: Vec::new(),
+            calls_in_flight: 0,
+            routable_somewhere: false,
             health_status: "unknown".to_string(),
             consecutive_failures: 0,
             uptime_secs: None,
@@ -147,6 +162,18 @@ impl TrunkResponse {
                 self.uptime_secs = entry.uptime_secs();
             }
         }
+        self
+    }
+
+    /// Add what each node said about this trunk.
+    fn with_nodes(mut self, reports: &[fcp_core::trunk_report::TrunkNodeReport]) -> Self {
+        self.nodes = reports
+            .iter()
+            .filter_map(|report| report.trunks.iter().find(|v| v.trunk_id == self.id))
+            .cloned()
+            .collect();
+        self.calls_in_flight = self.nodes.iter().map(|v| v.calls_in_flight).sum();
+        self.routable_somewhere = self.nodes.iter().any(|v| v.routable);
         self
     }
 }
@@ -270,9 +297,14 @@ pub async fn list_trunks(
         .map_err(|e| ApiError::Internal(format!("Failed to list trunks: {}", e)))?;
 
     let health_map = &state.trunk_health;
+    let reports = node_reports(&state).await;
     let response: Vec<TrunkResponse> = trunks
         .into_iter()
-        .map(|t| TrunkResponse::from(t).with_health(health_map))
+        .map(|t| {
+            TrunkResponse::from(t)
+                .with_health(health_map)
+                .with_nodes(&reports)
+        })
         .collect();
     Ok(Json(response))
 }
@@ -297,9 +329,21 @@ pub async fn get_trunk(
         return Err(ApiError::NotFound("Trunk not found".to_string()));
     }
 
+    let reports = node_reports(&state).await;
     Ok(Json(
-        TrunkResponse::from(trunk).with_health(&state.trunk_health),
+        TrunkResponse::from(trunk)
+            .with_health(&state.trunk_health)
+            .with_nodes(&reports),
     ))
+}
+
+/// What every node currently says about its trunks; empty where nothing
+/// publishes a view.
+async fn node_reports(state: &ApiState) -> Vec<fcp_core::trunk_report::TrunkNodeReport> {
+    match &state.trunk_reports {
+        Some(source) => source.reports().await,
+        None => Vec::new(),
+    }
 }
 
 /// The fields `/v1/trunks` accepts, applied to the one trunk model
@@ -803,4 +847,93 @@ pub async fn get_trunk_stats(
         .map_err(|e| ApiError::Internal(format!("Failed to get trunk stats: {}", e)))?;
 
     Ok(Json(stats))
+}
+
+#[cfg(test)]
+mod node_view_tests {
+    use super::*;
+    use fcp_core::trunk_report::{TrunkNodeReport, TrunkNodeView};
+    use std::time::SystemTime;
+
+    fn view(trunk_id: &str, health: &str, routable: bool, calls: u64) -> TrunkNodeView {
+        TrunkNodeView {
+            trunk_id: trunk_id.to_string(),
+            name: "carrier-a".to_string(),
+            tenant_id: None,
+            enabled: true,
+            health: health.to_string(),
+            consecutive_failures: 0,
+            calls_in_flight: calls,
+            routable,
+            registration: None,
+            account: None,
+        }
+    }
+
+    fn report(node_id: &str, trunks: Vec<TrunkNodeView>) -> TrunkNodeReport {
+        TrunkNodeReport {
+            node_id: node_id.to_string(),
+            reported_at: SystemTime::now(),
+            trunks,
+        }
+    }
+
+    fn response(id: &str) -> TrunkResponse {
+        let mut trunk = Trunk::new("carrier-a".to_string(), fcp_core::TenantId::new());
+        trunk.id = TrunkId::from_string(id.to_string());
+        TrunkResponse::from(trunk)
+    }
+
+    /// Two nodes that disagree are both shown: one cannot reach the
+    /// carrier, the other can, and the trunk is routable somewhere.
+    #[test]
+    fn every_nodes_view_is_shown_disagreements_included() {
+        let reports = vec![
+            report("node-a", vec![view("trunk-1", "down", false, 0)]),
+            report("node-b", vec![view("trunk-1", "healthy", true, 3)]),
+        ];
+
+        let enriched = response("trunk-1").with_nodes(&reports);
+        assert_eq!(enriched.nodes.len(), 2);
+        assert_eq!(enriched.calls_in_flight, 3, "the calls across the nodes");
+        assert!(enriched.routable_somewhere, "node-b can still place a call");
+    }
+
+    /// A node that does not route by this trunk says nothing about it.
+    #[test]
+    fn a_node_that_does_not_have_it_is_not_listed() {
+        let reports = vec![
+            report("node-a", vec![view("trunk-9", "healthy", true, 1)]),
+            report("node-b", vec![view("trunk-1", "healthy", true, 2)]),
+        ];
+
+        let enriched = response("trunk-1").with_nodes(&reports);
+        assert_eq!(enriched.nodes.len(), 1);
+        assert_eq!(enriched.nodes[0].trunk_id, "trunk-1");
+        assert_eq!(enriched.calls_in_flight, 2);
+    }
+
+    /// Nobody is publishing: the trunk answers as it always did, with no
+    /// per-node section at all rather than an empty claim about nodes.
+    #[test]
+    fn with_no_reports_the_trunk_says_nothing_about_nodes() {
+        let enriched = response("trunk-1").with_nodes(&[]);
+        assert!(enriched.nodes.is_empty());
+        assert_eq!(enriched.calls_in_flight, 0);
+        assert!(!enriched.routable_somewhere);
+    }
+
+    /// Every node has it down: it is routable nowhere, which is what an
+    /// operator needs to see at a glance.
+    #[test]
+    fn a_trunk_no_node_can_reach_is_routable_nowhere() {
+        let reports = vec![
+            report("node-a", vec![view("trunk-1", "down", false, 0)]),
+            report("node-b", vec![view("trunk-1", "down", false, 0)]),
+        ];
+
+        let enriched = response("trunk-1").with_nodes(&reports);
+        assert_eq!(enriched.nodes.len(), 2);
+        assert!(!enriched.routable_somewhere);
+    }
 }

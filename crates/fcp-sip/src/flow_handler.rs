@@ -1107,6 +1107,16 @@ impl FlowCallHandler {
                 sip_code = ?attempt.sip_code,
                 "Emergency route failed; trying the next emergency route"
             );
+            // The route this call has just given up on (§9). The tenant
+            // is the call's, and an emergency route is taken in the
+            // tenant's name whoever owns the trunk.
+            if let Some(trunk_id) = route.as_ref().and_then(|r| r.trunk_id.as_ref()) {
+                fcp_core::trunk_report::TrunkCounters::global().note(
+                    &trunk_id.to_string(),
+                    None,
+                    fcp_core::trunk_report::TrunkOutcome::FailedOver,
+                );
+            }
         }
         if let (Some(_), Some(call_mgr)) = (&emergency, &self.call_manager) {
             let leg = fcp_b2bua_core::EmergencyLeg {

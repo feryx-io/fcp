@@ -32,6 +32,7 @@ pub mod trunk_health;
 pub mod trunk_quality;
 pub mod trunk_refresh;
 pub mod trunk_registration;
+pub mod trunk_report;
 pub mod trunk_router;
 pub mod trunk_set;
 
@@ -61,7 +62,8 @@ pub use trunk_quality::{TrunkQualitySnapshot, TrunkQualityTracker};
 
 // Re-export trunk runtime types for convenience
 pub use cps::{CpsChecker, NoCpsLimit};
-pub use health_probes::run_health_probes;
+pub use fcp_core::trunk_report::{TrunkNodeReport, TrunkNodeView};
+pub use health_probes::{run_health_probes, HealthAnnouncer};
 pub use hmr_engine::HeaderManipulationEngine;
 pub use trunk_auth::TrunkCredentialProvider;
 pub use trunk_calls::{TrunkCalls, TrunkCps};
@@ -71,5 +73,6 @@ pub use trunk_registration::{
     run_trunk_registration, AloneOnThisNode, ClusterOwnership, RegistrationState, TrunkOwnership,
     TrunkRegistrar, TrunkRegistrationContext,
 };
+pub use trunk_report::{node_view, run_trunk_reporting};
 pub use trunk_router::TrunkRouter;
 pub use trunk_set::TrunkSet;

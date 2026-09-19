@@ -94,6 +94,22 @@ fn init_tracing(config: &config::AdminConfig) -> Result<()> {
     Ok(())
 }
 
+/// `/v1/trunks` reading the views the nodes publish to the cluster.
+struct ClusterTrunkReports(fcp_cluster::TrunkRegistry);
+
+#[async_trait::async_trait]
+impl fcp_api_core::TrunkNodeReports for ClusterTrunkReports {
+    async fn reports(&self) -> Vec<fcp_core::trunk_report::TrunkNodeReport> {
+        match self.0.reports().await {
+            Ok(reports) => reports,
+            Err(e) => {
+                warn!(error = %e, "Could not read what the nodes see of their trunks");
+                Vec::new()
+            }
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Parse command-line arguments
@@ -535,6 +551,7 @@ async fn main() -> Result<()> {
     }
 
     // Initialize cluster reader (optional — only when Redis is configured)
+    let mut trunk_reports: Option<std::sync::Arc<dyn fcp_api_core::TrunkNodeReports>> = None;
     let cluster_reader = if let Some(ref redis_url) = config.cluster.redis_url {
         match fcp_storage_redis::RedisStorage::new(fcp_storage_redis::RedisConfig {
             url: redis_url.clone(),
@@ -543,6 +560,13 @@ async fn main() -> Result<()> {
         .await
         {
             Ok(redis_storage) => {
+                // The same Redis carries what each node sees of its trunks
+                // (`docs/TENANT_TRUNKS.md` §9); this server reads them, and
+                // publishes none of its own — it routes no calls.
+                trunk_reports = Some(std::sync::Arc::new(ClusterTrunkReports(
+                    fcp_cluster::TrunkRegistry::new(redis_storage.clone(), "fcp-admin".to_string()),
+                ))
+                    as std::sync::Arc<dyn fcp_api_core::TrunkNodeReports>);
                 let reader = fcp_cluster::ClusterReader::new(redis_storage, 15);
                 info!(redis_url = %redis_url, "Cluster monitoring enabled via Redis");
                 Some(std::sync::Arc::new(reader))
@@ -555,6 +579,13 @@ async fn main() -> Result<()> {
     } else {
         info!("Cluster monitoring disabled (no [cluster] redis_url configured)");
         None
+    };
+
+    // What every node sees of its trunks, once there is somewhere to read
+    // it from.
+    let api_state = match trunk_reports {
+        Some(reports) => api_state.with_trunk_reports(reports),
+        None => api_state,
     };
 
     let cluster_state = cluster_api::ClusterApiState {
