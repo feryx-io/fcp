@@ -20,6 +20,10 @@ use tracing::{debug, info, warn};
 /// trunk is created, changed or deleted.
 pub const TRUNK_ENTITY: &str = "trunk";
 
+/// The `entity_type` the least-cost routes API puts on
+/// `system.config_changed`: a tenant's routes are read with its trunks.
+pub const LCR_ROUTE_ENTITY: &str = "lcr_route";
+
 /// The `entity_type` the routing rules API puts on `system.config_changed`
 /// when a rule is created, changed or deleted.
 pub const ROUTING_RULE_ENTITY: &str = "routing_rule";
@@ -72,7 +76,7 @@ where
     );
     watch_config_changes(
         "Trunk refresh",
-        &[TRUNK_ENTITY],
+        &[TRUNK_ENTITY, LCR_ROUTE_ENTITY],
         events,
         backstop,
         move || {

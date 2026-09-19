@@ -288,6 +288,31 @@ impl Seed {
         id
     }
 
+    /// A least-cost route of `tenant`'s (`docs/TENANT_TRUNKS.md` §12, phase
+    /// 6c): `prefix` on `trunk` at `cost` a minute.
+    pub async fn lcr_route(
+        &self,
+        tenant: TenantId,
+        prefix: &str,
+        trunk: &fcp_core::TrunkId,
+        cost: &str,
+    ) -> fcp_core::LcrRouteId {
+        use fcp_core::storage::TrunkStore;
+        use std::str::FromStr;
+        let route = fcp_core::LcrRoute::new(
+            tenant,
+            prefix,
+            trunk.clone(),
+            fcp_core::billing::Decimal::from_str(cost).expect("a cost"),
+        );
+        let id = route.id.clone();
+        self.storage
+            .put_lcr_route(route)
+            .await
+            .expect("seed least-cost route");
+        id
+    }
+
     /// The storage, for fixtures this helper has no shorthand for.
     pub fn storage(&self) -> &PostgresStorage {
         &self.storage

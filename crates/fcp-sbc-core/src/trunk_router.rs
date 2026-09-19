@@ -151,9 +151,34 @@ impl TrunkRouter {
         tenant: Option<fcp_core::TenantId>,
         direction: TrunkDirection,
     ) -> Option<Arc<TrunkConfig>> {
-        let trunks = self.trunks.for_tenant(tenant);
-        let candidates: Vec<&Arc<TrunkConfig>> = self.filter_candidates(&trunks, direction);
+        // The tenant's own first, then the platform's (`docs/TENANT_TRUNKS.md`
+        // §5): a platform trunk's better priority never outranks the carrier
+        // the tenant bought.
+        let (own, platform) = self.split_for(tenant);
+        self.pick(&own, direction)
+            .or_else(|| self.pick(&platform, direction))
+    }
 
+    /// The trunks `tenant`'s calls may leave on, split into its own and the
+    /// platform's (empty when it refused them).
+    fn split_for(
+        &self,
+        tenant: Option<fcp_core::TenantId>,
+    ) -> (Vec<Arc<TrunkConfig>>, Vec<Arc<TrunkConfig>>) {
+        self.trunks
+            .for_tenant(tenant)
+            .into_iter()
+            .partition(|t| t.tenant_id.is_some())
+    }
+
+    /// The ordinary choice among `pool`: eligible trunks, the healthy ahead
+    /// of the degraded, the best priority, then weighted at random.
+    fn pick(
+        &self,
+        pool: &[Arc<TrunkConfig>],
+        direction: TrunkDirection,
+    ) -> Option<Arc<TrunkConfig>> {
+        let candidates: Vec<&Arc<TrunkConfig>> = self.filter_candidates(pool, direction);
         if candidates.is_empty() {
             return None;
         }
@@ -175,11 +200,112 @@ impl TrunkRouter {
         self.select_from_pool(&pool).cloned()
     }
 
-    /// Select ordered list of trunks for the given destination, applying LCR
-    /// when enabled, falling back to legacy priority/weight selection.
-    ///
-    /// Returns trunks in preference order for failover. The caller should
-    /// try each trunk in order until one succeeds or all are exhausted.
+    /// `pool` ordered by what `table` says `destination` costs on each, or
+    /// `None` when no route in the table matches it. `key` is how a route
+    /// names a trunk: the node's `[lcr]` by name, a tenant's table by id.
+    /// Trunks passed over for eligibility or quality are left out, and the
+    /// list is cut at `max_failover_attempts + 1`.
+    fn lcr_ordered(
+        &self,
+        pool: &[Arc<TrunkConfig>],
+        table: &LcrRouteTable,
+        direction: TrunkDirection,
+        destination: &str,
+        key: impl Fn(&TrunkConfig) -> String,
+    ) -> Option<Vec<Arc<TrunkConfig>>> {
+        // Ordered by prefix length desc, cost asc, priority asc.
+        let matched_routes = table.find_routes_ordered(destination);
+        if matched_routes.is_empty() {
+            return None;
+        }
+
+        let mut candidates: Vec<(&Arc<TrunkConfig>, usize, f64, u32)> = Vec::new();
+        for route in &matched_routes {
+            let Some(trunk) = pool.iter().find(|t| key(t) == route.trunk_name) else {
+                continue;
+            };
+            if !self.is_trunk_eligible(trunk, direction) {
+                continue;
+            }
+
+            // Apply quality filter: skip trunks with ASR < min_asr
+            if self.lcr_config.min_asr > 0.0 {
+                if let Some(ref quality) = self.quality {
+                    let sample_count = quality.total_calls_in_window(&trunk.name);
+                    if sample_count >= MIN_SAMPLES_FOR_QUALITY_FILTER {
+                        let asr = quality.asr(&trunk.name);
+                        if asr < self.lcr_config.min_asr {
+                            continue;
+                        }
+                    }
+                }
+            }
+
+            // A trunk two routes name is tried once, at its best.
+            if candidates.iter().any(|(t, ..)| t.key() == trunk.key()) {
+                continue;
+            }
+            candidates.push((
+                trunk,
+                route.prefix_len,
+                route.cost_per_minute,
+                route.priority,
+            ));
+        }
+
+        // Apply load balancing among equal-cost/equal-priority/equal-prefix candidates
+        self.apply_load_balancing(&mut candidates);
+
+        // Limit to max_failover_attempts + 1
+        let max_results = (self.lcr_config.max_failover_attempts + 1) as usize;
+        candidates.truncate(max_results);
+
+        Some(
+            candidates
+                .into_iter()
+                .map(|(trunk, _, _, _)| Arc::clone(trunk))
+                .collect(),
+        )
+    }
+
+    /// The tenant's own trunks for `destination`, best first: by its
+    /// least-cost routes when one matches (`docs/TENANT_TRUNKS.md` §12,
+    /// phase 6c), else its ordinary choice.
+    fn own_ordered(
+        &self,
+        tenant: Option<fcp_core::TenantId>,
+        own: &[Arc<TrunkConfig>],
+        direction: TrunkDirection,
+        destination: &str,
+    ) -> Vec<Arc<TrunkConfig>> {
+        let table = tenant.and_then(|t| self.trunks.lcr_for(t));
+        match table.and_then(|table| {
+            self.lcr_ordered(own, &table, direction, destination, |t| {
+                t.trunk_id().to_string()
+            })
+        }) {
+            Some(ordered) => ordered,
+            None => self.pick(own, direction).into_iter().collect(),
+        }
+    }
+
+    /// The platform's trunks for `destination`, best first: by the node's
+    /// `[lcr]` when a route matches, else the ordinary choice. The node's
+    /// table names the platform's trunks, by name, and only those.
+    fn platform_ordered(
+        &self,
+        platform: &[Arc<TrunkConfig>],
+        direction: TrunkDirection,
+        destination: &str,
+    ) -> Vec<Arc<TrunkConfig>> {
+        match self.lcr.as_ref().and_then(|table| {
+            self.lcr_ordered(platform, table, direction, destination, |t| t.name.clone())
+        }) {
+            Some(ordered) => ordered,
+            None => self.pick(platform, direction).into_iter().collect(),
+        }
+    }
+
     /// Trunks for an emergency call (`docs/TENANT_TRUNKS.md` §5,
     /// `docs/E911_BLOCK_2.md` §12.1): the tenant's own `emergency_capable`
     /// trunks first, then the platform's, then the ordinary ordered choice
@@ -259,103 +385,73 @@ impl TrunkRouter {
         &self,
         tenant: Option<fcp_core::TenantId>,
         direction: TrunkDirection,
+        destination: &str,
         target: &fcp_core::TrunkTarget,
     ) -> (Vec<Arc<TrunkConfig>>, bool) {
-        let mut named: Vec<Arc<TrunkConfig>> = self
-            .trunks
-            .for_tenant(tenant)
-            .into_iter()
-            .filter(|t| fcp_sip::handler::trunk_is_target(t, target))
-            .collect();
-        let known = !named.is_empty();
-        // The tenant's own ahead of the platform's; within each, priority
-        // then weight.
-        named.sort_by_key(|t| {
-            (
-                t.tenant_id.is_none(),
-                t.priority,
-                std::cmp::Reverse(t.weight),
-            )
-        });
-        named.retain(|t| self.is_trunk_eligible(t, direction));
-        (named, known)
+        let (own, platform) = self.split_for(tenant);
+        let named = |pool: Vec<Arc<TrunkConfig>>| -> Vec<Arc<TrunkConfig>> {
+            pool.into_iter()
+                .filter(|t| fcp_sip::handler::trunk_is_target(t, target))
+                .collect()
+        };
+        let (own, platform) = (named(own), named(platform));
+        let known = !own.is_empty() || !platform.is_empty();
+
+        // Within each part, what the least-cost routes say about this
+        // destination first (phase 6c); then the rest by priority and
+        // weight, so a group keeps its failover past the priced members.
+        let ordered_part = |pool: &[Arc<TrunkConfig>], by_lcr: Vec<Arc<TrunkConfig>>| {
+            let mut rest: Vec<Arc<TrunkConfig>> = pool
+                .iter()
+                .filter(|t| !by_lcr.iter().any(|p| p.key() == t.key()))
+                .filter(|t| self.is_trunk_eligible(t, direction))
+                .cloned()
+                .collect();
+            rest.sort_by_key(|t| (t.priority, std::cmp::Reverse(t.weight)));
+            let mut part = by_lcr;
+            part.extend(rest);
+            part
+        };
+        let own_lcr = tenant
+            .and_then(|t| self.trunks.lcr_for(t))
+            .and_then(|table| {
+                self.lcr_ordered(&own, &table, direction, destination, |t| {
+                    t.trunk_id().to_string()
+                })
+            })
+            .unwrap_or_default();
+        let platform_lcr = self
+            .lcr
+            .as_ref()
+            .and_then(|table| {
+                self.lcr_ordered(&platform, table, direction, destination, |t| t.name.clone())
+            })
+            .unwrap_or_default();
+
+        let mut ordered = ordered_part(&own, own_lcr);
+        ordered.extend(ordered_part(&platform, platform_lcr));
+        (ordered, known)
     }
 
+    /// Trunks for an ordinary call, in the order to try them: the tenant's
+    /// own — by its least-cost routes when one matches the destination,
+    /// else its ordinary choice — then the platform's — by the node's
+    /// `[lcr]` when a route matches, else the ordinary choice — unless the
+    /// tenant refused them (`docs/TENANT_TRUNKS.md` §5, §12 phase 6c).
     pub fn select_trunks_ordered(
         &self,
         tenant: Option<fcp_core::TenantId>,
         direction: TrunkDirection,
         destination: &str,
     ) -> Vec<Arc<TrunkConfig>> {
-        // If LCR disabled or no route table: fall back to legacy single trunk
-        let lcr_table = match &self.lcr {
-            Some(table) => table,
-            None => {
-                return self.select_trunk(tenant, direction).into_iter().collect();
+        let (own, platform) = self.split_for(tenant);
+        let mut ordered = self.own_ordered(tenant, &own, direction, destination);
+        for trunk in self.platform_ordered(&platform, direction, destination) {
+            if !ordered.iter().any(|t| t.key() == trunk.key()) {
+                ordered.push(trunk);
             }
-        };
-
-        // Find matching routes from LCR table (ordered by prefix len desc, cost asc, priority asc)
-        let matched_routes = lcr_table.find_routes_ordered(destination);
-
-        if matched_routes.is_empty() {
-            // No LCR routes match — fall back to legacy selection
-            return self.select_trunk(tenant, direction).into_iter().collect();
         }
-
-        // The trunks this tenant's calls may leave on, its own first.
-        let trunks = self.trunks.for_tenant(tenant);
-
-        // For each matched route, look up the trunk and apply filters
-        let mut candidates: Vec<(&Arc<TrunkConfig>, usize, f64, u32)> = Vec::new();
-
-        for route in &matched_routes {
-            let trunk = match trunks.iter().find(|t| t.name == route.trunk_name) {
-                Some(t) => t,
-                None => continue,
-            };
-
-            // Apply standard filters
-            if !self.is_trunk_eligible(trunk, direction) {
-                continue;
-            }
-
-            // Apply quality filter: skip trunks with ASR < min_asr
-            if self.lcr_config.min_asr > 0.0 {
-                if let Some(ref quality) = self.quality {
-                    let sample_count = quality.total_calls_in_window(&trunk.name);
-                    if sample_count >= MIN_SAMPLES_FOR_QUALITY_FILTER {
-                        let asr = quality.asr(&trunk.name);
-                        if asr < self.lcr_config.min_asr {
-                            continue;
-                        }
-                    }
-                }
-            }
-
-            candidates.push((
-                trunk,
-                route.prefix_len,
-                route.cost_per_minute,
-                route.priority,
-            ));
-        }
-
-        if candidates.is_empty() {
-            return Vec::new();
-        }
-
-        // Apply load balancing among equal-cost/equal-priority/equal-prefix candidates
-        self.apply_load_balancing(&mut candidates);
-
-        // Limit to max_failover_attempts + 1
-        let max_results = (self.lcr_config.max_failover_attempts + 1) as usize;
-        candidates.truncate(max_results);
-
-        candidates
-            .into_iter()
-            .map(|(trunk, _, _, _)| Arc::clone(trunk))
-            .collect()
+        ordered
     }
 
     /// Check if a trunk passes standard eligibility filters.
@@ -686,19 +782,26 @@ impl TrunkRouter {
                 || t.direction == TrunkDirection::Bidirectional
                 || direction == TrunkDirection::Bidirectional
         };
-        let trunks = self.trunks.for_tenant(tenant);
-
-        if let Some(ref table) = self.lcr {
-            let matched = table.find_routes_ordered(destination);
-            if !matched.is_empty() {
-                return matched.iter().any(|route| {
-                    trunks
-                        .iter()
-                        .any(|t| t.name == route.trunk_name && dir_matches(t))
-                });
+        // A part whose table has routes for this destination is configured
+        // for it only through the trunks those routes name.
+        let configured = |pool: &[Arc<TrunkConfig>],
+                          table: Option<&LcrRouteTable>,
+                          key: &dyn Fn(&TrunkConfig) -> String| {
+            if let Some(table) = table {
+                let matched = table.find_routes_ordered(destination);
+                if !matched.is_empty() {
+                    return matched.iter().any(|route| {
+                        pool.iter()
+                            .any(|t| key(t) == route.trunk_name && dir_matches(t))
+                    });
+                }
             }
-        }
-        trunks.iter().any(dir_matches)
+            pool.iter().any(dir_matches)
+        };
+        let (own, platform) = self.split_for(tenant);
+        let own_table = tenant.and_then(|t| self.trunks.lcr_for(t));
+        configured(&own, own_table.as_deref(), &|t| t.trunk_id().to_string())
+            || configured(&platform, self.lcr.as_ref(), &|t| t.name.clone())
     }
 }
 
@@ -782,7 +885,8 @@ impl OutboundRouteProvider for TrunkRouter {
         destination_uri: &str,
         target: &fcp_core::TrunkTarget,
     ) -> RouteResolution {
-        let (trunks, known) = self.select_targeted_trunks(tenant, TrunkDirection::Upstream, target);
+        let (trunks, known) =
+            self.select_targeted_trunks(tenant, TrunkDirection::Upstream, destination_uri, target);
         let routes: Vec<OutboundRoute> = trunks
             .iter()
             .filter_map(|trunk| self.build_outbound_route(trunk, destination_uri))
@@ -1637,8 +1741,12 @@ mod tests {
             &HashMap::new(),
         );
 
-        let (trunks, known) =
-            router.select_targeted_trunks(Some(tenant), TrunkDirection::Upstream, &target);
+        let (trunks, known) = router.select_targeted_trunks(
+            Some(tenant),
+            TrunkDirection::Upstream,
+            "sip:+442079460000@pbx",
+            &target,
+        );
         assert!(known);
         assert_eq!(names(&trunks), vec!["named"]);
     }
@@ -1668,8 +1776,12 @@ mod tests {
         let target = fcp_core::TrunkTarget::Group("intl".into());
 
         let router = router_over(platform.clone(), theirs.clone(), &HashMap::new());
-        let (trunks, _) =
-            router.select_targeted_trunks(Some(tenant), TrunkDirection::Upstream, &target);
+        let (trunks, _) = router.select_targeted_trunks(
+            Some(tenant),
+            TrunkDirection::Upstream,
+            "sip:+442079460000@pbx",
+            &target,
+        );
         assert_eq!(
             names(&trunks),
             vec!["intl-primary", "intl-backup", "platform-intl"]
@@ -1678,8 +1790,12 @@ mod tests {
         let mut refused = HashMap::new();
         refused.insert(tenant, false);
         let router = router_over(platform, theirs, &refused);
-        let (trunks, _) =
-            router.select_targeted_trunks(Some(tenant), TrunkDirection::Upstream, &target);
+        let (trunks, _) = router.select_targeted_trunks(
+            Some(tenant),
+            TrunkDirection::Upstream,
+            "sip:+442079460000@pbx",
+            &target,
+        );
         assert_eq!(names(&trunks), vec!["intl-primary", "intl-backup"]);
     }
 
@@ -1732,8 +1848,196 @@ mod tests {
             vec![tenant_trunk("mine", mine), not_mine],
             &HashMap::new(),
         );
-        let (trunks, known) =
-            router.select_targeted_trunks(Some(mine), TrunkDirection::Upstream, &target);
+        let (trunks, known) = router.select_targeted_trunks(
+            Some(mine),
+            TrunkDirection::Upstream,
+            "sip:+442079460000@pbx",
+            &target,
+        );
         assert!(trunks.is_empty() && !known);
+    }
+
+    /// A tenant's least-cost route to `trunk`.
+    fn lcr_route(
+        tenant: fcp_core::TenantId,
+        prefix: &str,
+        trunk: &TrunkConfig,
+        cost: &str,
+    ) -> fcp_core::LcrRoute {
+        use std::str::FromStr;
+        fcp_core::LcrRoute::new(
+            tenant,
+            prefix,
+            trunk.trunk_id(),
+            rust_decimal::Decimal::from_str(cost).unwrap(),
+        )
+    }
+
+    /// The tenant's own trunks come before the platform's, whatever the
+    /// numbers beside them say: a platform trunk's better priority does not
+    /// outrank the carrier the tenant bought (`docs/TENANT_TRUNKS.md` §5).
+    /// The platform's follow as failover.
+    #[test]
+    fn a_tenants_own_trunk_comes_before_a_better_ranked_platform_trunk() {
+        let tenant = fcp_core::TenantId::new();
+        let mut theirs = tenant_trunk("theirs", tenant);
+        theirs.priority = 50;
+        let router = router_over(
+            vec![make_trunk("platform", 1, 100, TrunkDirection::Upstream)],
+            vec![theirs],
+            &HashMap::new(),
+        );
+        for _ in 0..20 {
+            let ordered = router.select_trunks_ordered(
+                Some(tenant),
+                TrunkDirection::Upstream,
+                "sip:+15125550100@pbx",
+            );
+            assert_eq!(names(&ordered), vec!["theirs", "platform"]);
+            assert_eq!(
+                router
+                    .select_trunk(Some(tenant), TrunkDirection::Upstream)
+                    .map(|t| t.name.clone())
+                    .as_deref(),
+                Some("theirs")
+            );
+        }
+    }
+
+    /// A tenant's least-cost routes order its own trunks for the numbers
+    /// they match — longest prefix, then cost — and a number they do not
+    /// match takes the ordinary choice (`docs/TENANT_TRUNKS.md` §12, 6c).
+    #[test]
+    fn a_tenants_least_cost_routes_order_its_own_trunks() {
+        let tenant = fcp_core::TenantId::new();
+        let mut everyday = tenant_trunk("everyday", tenant);
+        everyday.priority = 1;
+        let mut cheap_uk = tenant_trunk("cheap-uk", tenant);
+        cheap_uk.priority = 90;
+        let mut london = tenant_trunk("london", tenant);
+        london.priority = 90;
+        let routes = vec![
+            lcr_route(tenant, "+44", &everyday, "0.05"),
+            lcr_route(tenant, "+44", &cheap_uk, "0.01"),
+            lcr_route(tenant, "+4420", &london, "0.02"),
+        ];
+        let set = Arc::new(TrunkSet::platform_only(vec![make_trunk(
+            "platform",
+            1,
+            1,
+            TrunkDirection::Upstream,
+        )]));
+        set.set_tenant_trunks(vec![everyday, cheap_uk, london], &HashMap::new());
+        assert_eq!(set.set_tenant_lcr(routes), 3);
+        let health = Arc::new(TrunkHealthMonitor::new(&[]));
+        health.track(&set.all());
+        let router = TrunkRouter::with_trunk_set(set, health, no_cps());
+        let ordered = |dest: &str| {
+            names(&router.select_trunks_ordered(Some(tenant), TrunkDirection::Upstream, dest))
+        };
+
+        // London: the longest prefix first, then the rest of +44 by cost,
+        // then the platform's.
+        assert_eq!(
+            ordered("sip:+442079460000@pbx"),
+            vec!["london", "cheap-uk", "everyday", "platform"]
+        );
+        // Elsewhere in the UK: by cost.
+        assert_eq!(
+            ordered("sip:+441614960000@pbx"),
+            vec!["cheap-uk", "everyday", "platform"]
+        );
+        // No route matches: the ordinary choice, then the platform's.
+        assert_eq!(
+            ordered("sip:+15125550100@pbx"),
+            vec!["everyday", "platform"]
+        );
+    }
+
+    /// A route in force names a trunk of its own tenant's: one naming
+    /// another tenant's trunk, or switched off, is not.
+    #[test]
+    fn a_route_to_another_tenants_trunk_is_not_in_force() {
+        let (mine, theirs) = (fcp_core::TenantId::new(), fcp_core::TenantId::new());
+        let my_trunk = tenant_trunk("mine", mine);
+        let their_trunk = tenant_trunk("theirs", theirs);
+        let mut off = lcr_route(mine, "+1", &my_trunk, "0.01");
+        off.enabled = false;
+        let set = TrunkSet::platform_only(Vec::new());
+        set.set_tenant_trunks(vec![my_trunk.clone(), their_trunk.clone()], &HashMap::new());
+        let in_force = set.set_tenant_lcr(vec![
+            lcr_route(mine, "+44", &their_trunk, "0.01"),
+            off,
+            lcr_route(mine, "+33", &my_trunk, "0.02"),
+        ]);
+        assert_eq!(in_force, 1);
+        assert!(set.lcr_for(mine).is_some());
+        assert!(set.lcr_for(theirs).is_none());
+    }
+
+    /// The node's `[lcr]` prices the platform's trunks, by name, and no
+    /// tenant's trunk that happens to share one.
+    #[test]
+    fn the_nodes_table_does_not_price_a_tenant_trunk_of_the_same_name() {
+        let tenant = fcp_core::TenantId::new();
+        let mut namesake = tenant_trunk("uk-carrier", tenant);
+        namesake.priority = 90;
+        let mut ordinary = tenant_trunk("ordinary", tenant);
+        ordinary.priority = 1;
+        let set = Arc::new(TrunkSet::platform_only(vec![make_trunk(
+            "uk-carrier",
+            1,
+            1,
+            TrunkDirection::Upstream,
+        )]));
+        set.set_tenant_trunks(vec![namesake, ordinary], &HashMap::new());
+        let health = Arc::new(TrunkHealthMonitor::new(&[]));
+        health.track(&set.all());
+        let router = TrunkRouter::with_trunk_set_and_lcr(
+            set,
+            health,
+            no_cps(),
+            lcr_config(),
+            Arc::new(TrunkQualityTracker::new(&[], 3600)),
+        );
+
+        let ordered = router.select_trunks_ordered(
+            Some(tenant),
+            TrunkDirection::Upstream,
+            "sip:+442079460000@pbx",
+        );
+        // The tenant's ordinary choice, then the platform's uk-carrier by
+        // the node's table.
+        assert_eq!(names(&ordered), vec!["ordinary", "uk-carrier"]);
+        assert!(ordered[1].tenant_id.is_none(), "{ordered:?}");
+    }
+
+    /// Within what a rule names, the least-cost routes decide the order,
+    /// and the group's other members stay behind them as failover.
+    #[test]
+    fn least_cost_routes_order_what_a_rule_left() {
+        let tenant = fcp_core::TenantId::new();
+        let in_group = |mut t: TrunkConfig, priority: u32| {
+            t.trunk_group = Some("intl".into());
+            t.priority = priority;
+            t
+        };
+        let first_by_priority = in_group(tenant_trunk("first-by-priority", tenant), 1);
+        let cheapest = in_group(tenant_trunk("cheapest", tenant), 50);
+        let routes = vec![lcr_route(tenant, "+44", &cheapest, "0.001")];
+        let set = Arc::new(TrunkSet::platform_only(Vec::new()));
+        set.set_tenant_trunks(vec![first_by_priority, cheapest], &HashMap::new());
+        set.set_tenant_lcr(routes);
+        let health = Arc::new(TrunkHealthMonitor::new(&[]));
+        health.track(&set.all());
+        let router = TrunkRouter::with_trunk_set(set, health, no_cps());
+
+        let (ordered, _) = router.select_targeted_trunks(
+            Some(tenant),
+            TrunkDirection::Upstream,
+            "sip:+442079460000@pbx",
+            &fcp_core::TrunkTarget::Group("intl".into()),
+        );
+        assert_eq!(names(&ordered), vec!["cheapest", "first-by-priority"]);
     }
 }

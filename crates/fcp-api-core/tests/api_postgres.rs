@@ -6776,3 +6776,156 @@ async fn routing_rules_are_checked_owned_and_announced() {
 
     app.finish().await;
 }
+
+/// A tenant's least-cost routes (`docs/TENANT_TRUNKS.md` §12, phase 6c):
+/// checked, on the tenant's own trunks only, one per prefix and trunk,
+/// announced when they change, gone with their trunk, and closed to an end
+/// user.
+#[tokio::test]
+async fn least_cost_routes_are_checked_owned_and_go_with_their_trunk() {
+    let app = require_app!(DeploymentMode::Carrier);
+
+    let trunk = |name: &str| json!({ "name": name, "hosts": ["sip.carrier.example.net"] });
+    let ours = app
+        .admin(Method::POST, "/api/v1/trunks", Some(trunk("cheap-uk")))
+        .await;
+    assert_eq!(ours.status, StatusCode::CREATED, "{}", ours.text);
+    let ours = ours.json["id"].as_str().unwrap().to_string();
+    let theirs = app
+        .admin_in(
+            app.tenant_b,
+            Method::POST,
+            "/api/v1/trunks",
+            Some(trunk("cheap-uk")),
+        )
+        .await;
+    assert_eq!(theirs.status, StatusCode::CREATED, "{}", theirs.text);
+    let theirs = theirs.json["id"].as_str().unwrap().to_string();
+
+    for (body, needle) in [
+        (
+            json!({ "prefix": "+44x", "trunk_id": ours, "cost_per_minute": 0.01 }),
+            "only digits",
+        ),
+        (
+            json!({ "prefix": "+44", "trunk_id": ours, "cost_per_minute": -0.01 }),
+            "negative",
+        ),
+        (
+            json!({ "prefix": "+44", "trunk_id": theirs, "cost_per_minute": 0.01 }),
+            "not one of this tenant's trunks",
+        ),
+    ] {
+        let res = app
+            .admin(Method::POST, "/api/v1/lcr-routes", Some(body))
+            .await;
+        assert_eq!(res.status, StatusCode::BAD_REQUEST, "{}", res.text);
+        assert!(
+            res.text.contains(needle),
+            "expected '{needle}' in {}",
+            res.text
+        );
+    }
+
+    let mut events = fcp_events::EventSubscriber::subscribe(
+        app.event_bus.as_ref(),
+        fcp_events::EventFilter::new(),
+    )
+    .await
+    .expect("subscribe");
+    let created = app
+        .admin(
+            Method::POST,
+            "/api/v1/lcr-routes",
+            Some(json!({
+                "prefix": "+44",
+                "trunk_id": ours,
+                "cost_per_minute": 0.012,
+                "description": "UK via the cheap carrier",
+            })),
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.text);
+    assert_eq!(created.json["priority"], 100, "{}", created.text);
+    assert_eq!(created.json["cost_per_minute"], 0.012, "{}", created.text);
+    let id = created.json["id"].as_str().unwrap().to_string();
+    let announced =
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match events.next().await {
+                    Some(PlatformEvent::System(SystemEvent::ConfigChanged {
+                        entity_type, ..
+                    })) if entity_type == "lcr_route" => return true,
+                    Some(_) => continue,
+                    None => return false,
+                }
+            }
+        })
+        .await;
+    assert_eq!(announced, Ok(true), "the change is announced");
+
+    // A second route for the same prefix on the same trunk is a conflict.
+    let again = app
+        .admin(
+            Method::POST,
+            "/api/v1/lcr-routes",
+            Some(json!({ "prefix": "+44", "trunk_id": ours, "cost_per_minute": 0.02 })),
+        )
+        .await;
+    assert_eq!(again.status, StatusCode::CONFLICT, "{}", again.text);
+
+    let patched = app
+        .admin(
+            Method::PATCH,
+            &format!("/api/v1/lcr-routes/{id}"),
+            Some(json!({ "cost_per_minute": 0.009, "priority": 5 })),
+        )
+        .await;
+    assert_eq!(patched.status, StatusCode::OK, "{}", patched.text);
+    assert_eq!(patched.json["cost_per_minute"], 0.009, "{}", patched.text);
+    let listed = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/lcr-routes?trunk_id={ours}"),
+            None,
+        )
+        .await;
+    assert_eq!(
+        listed.json.as_array().map(Vec::len),
+        Some(1),
+        "{}",
+        listed.text
+    );
+
+    // Another tenant cannot see it.
+    let hidden = app
+        .admin_in(
+            app.tenant_b,
+            Method::GET,
+            &format!("/api/v1/lcr-routes/{id}"),
+            None,
+        )
+        .await;
+    assert_eq!(hidden.status, StatusCode::NOT_FOUND, "{}", hidden.text);
+
+    // An end user may not read or write them.
+    app.create_user_with_role("phone-user", "end_user").await;
+    let jwt = app.login("phone-user", PASSWORD).await.json["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let denied = app
+        .send_as(&jwt, Method::GET, "/api/v1/lcr-routes", None)
+        .await;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN, "{}", denied.text);
+
+    // A route goes with its trunk.
+    let gone = app
+        .admin(Method::DELETE, &format!("/api/v1/trunks/{ours}"), None)
+        .await;
+    assert!(gone.status.is_success(), "{}", gone.text);
+    let listed = app.admin(Method::GET, "/api/v1/lcr-routes", None).await;
+    assert_eq!(listed.json, json!([]), "{}", listed.text);
+
+    app.finish().await;
+}

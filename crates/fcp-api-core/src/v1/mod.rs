@@ -20,6 +20,7 @@ pub mod extensions;
 pub mod flow_traces;
 pub mod flows;
 pub mod join_tokens;
+pub mod lcr_routes;
 pub mod line_bindings;
 pub mod locations;
 pub mod media;
@@ -609,6 +610,17 @@ pub fn router() -> Router<ApiState> {
             get(api_tokens::list_api_tokens).post(api_tokens::create_api_token),
         )
         .route("/api-tokens/:id", delete(api_tokens::delete_api_token))
+        // Least-cost routes (`docs/TENANT_TRUNKS.md` §12, phase 6c)
+        .route(
+            "/lcr-routes",
+            get(lcr_routes::list_lcr_routes).post(lcr_routes::create_lcr_route),
+        )
+        .route(
+            "/lcr-routes/:id",
+            get(lcr_routes::get_lcr_route)
+                .patch(lcr_routes::update_lcr_route)
+                .delete(lcr_routes::delete_lcr_route),
+        )
         // Routing Rules
         .route(
             "/routing/rules",
