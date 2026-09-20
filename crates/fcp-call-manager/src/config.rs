@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::net::SocketAddr;
 use std::path::Path;
-use tracing::info;
+use tracing::{info, warn};
 
 /// Call manager server configuration.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -42,6 +42,12 @@ pub struct CallManagerConfig {
     /// Call handling configuration
     #[serde(default)]
     pub calls: CallsSection,
+
+    /// What this node will carry, and what it refuses
+    /// (`docs/CAPACITY_AND_SURVIVABILITY.md` §4). Every limit is unset —
+    /// unlimited — until a deployment writes one down.
+    #[serde(default)]
+    pub admission: AdmissionSection,
 
     /// Media/RTP configuration
     #[serde(default)]
@@ -421,12 +427,76 @@ impl Default for LoggingSection {
     }
 }
 
+impl CallManagerConfig {
+    /// The limits this node keeps (`docs/CAPACITY_AND_SURVIVABILITY.md`
+    /// §10): `[admission]`, with the older `[calls] max_concurrent_calls`
+    /// honoured when it is set and `[admission]` names no call limit. A
+    /// node that sets neither is capped by neither.
+    pub fn admission(&self) -> fcp_sbc_core::AdmissionConfig {
+        let mut cfg = self.admission.resolve();
+        if cfg.max_concurrent_calls == 0 {
+            if let Some(legacy) = self.calls.max_concurrent_calls.filter(|l| *l != 0) {
+                warn!(
+                    max_concurrent_calls = legacy,
+                    "[calls] max_concurrent_calls is now enforced; write it as                      [admission] max_concurrent_calls"
+                );
+                cfg.max_concurrent_calls = legacy;
+            }
+        }
+        cfg
+    }
+}
+
+/// The limits a node keeps (`docs/CAPACITY_AND_SURVIVABILITY.md` §4).
+///
+/// Every field is optional and unset means unlimited, so a node that
+/// writes `[admission]` for one limit does not silently acquire the
+/// others — which is what would happen if the SBC's own `AdmissionConfig`
+/// defaults were deserialized here.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AdmissionSection {
+    /// Calls this node may start in one second.
+    pub max_cps: Option<u32>,
+    /// Calls this node may carry at once.
+    pub max_concurrent_calls: Option<u32>,
+    /// Registrations this node may hold.
+    pub max_concurrent_registrations: Option<u32>,
+    /// REGISTERs a second from one source address. A challenged
+    /// registration is two REGISTERs, so a limit of `n` admits `n / 2`
+    /// registrations a second from one address.
+    pub max_register_cps_per_source: Option<u32>,
+    /// REGISTERs a second for one AOR, across addresses.
+    pub max_register_cps_per_aor: Option<u32>,
+    /// Seconds to put in `Retry-After` when refusing.
+    pub retry_after_secs: Option<u64>,
+}
+
+impl AdmissionSection {
+    /// The controller's configuration: what this section says, and no
+    /// limit anywhere it says nothing.
+    fn resolve(&self) -> fcp_sbc_core::AdmissionConfig {
+        let mut cfg = fcp_sbc_core::AdmissionConfig::unlimited();
+        cfg.max_cps = self.max_cps.unwrap_or(0);
+        cfg.max_concurrent_calls = self.max_concurrent_calls.unwrap_or(0);
+        cfg.max_concurrent_registrations = self.max_concurrent_registrations.unwrap_or(0);
+        cfg.max_register_cps_per_source = self.max_register_cps_per_source.unwrap_or(0);
+        cfg.max_register_cps_per_aor = self.max_register_cps_per_aor.unwrap_or(0);
+        if let Some(secs) = self.retry_after_secs {
+            cfg.retry_after_secs = secs.clamp(1, 3600);
+        }
+        cfg
+    }
+}
+
 /// Call handling configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CallsSection {
-    /// Maximum concurrent calls
-    #[serde(default = "default_max_concurrent_calls")]
-    pub max_concurrent_calls: u32,
+    /// Maximum concurrent calls. Until v0.25.207 this was parsed and never
+    /// enforced; a node that sets it now means it, and the limit is read as
+    /// `[admission] max_concurrent_calls`. Unset is no limit.
+    #[serde(default)]
+    pub max_concurrent_calls: Option<u32>,
 
     /// Max ring time before 408 timeout (seconds)
     #[serde(default = "default_call_timeout")]
@@ -441,10 +511,6 @@ pub struct CallsSection {
     pub enable_refer: bool,
 }
 
-fn default_max_concurrent_calls() -> u32 {
-    1000
-}
-
 fn default_call_timeout() -> u32 {
     60
 }
@@ -456,7 +522,7 @@ fn default_true() -> bool {
 impl Default for CallsSection {
     fn default() -> Self {
         Self {
-            max_concurrent_calls: default_max_concurrent_calls(),
+            max_concurrent_calls: None,
             call_timeout_seconds: default_call_timeout(),
             enable_sdp: true,
             enable_refer: true,
@@ -731,7 +797,7 @@ pub fn load_config(config_path: Option<&Path>) -> Result<CallManagerConfig> {
         auth_enabled = config.registrar.auth_enabled,
         realm = %config.registrar.realm,
         http_bind = %config.http.bind_address,
-        max_calls = config.calls.max_concurrent_calls,
+        max_calls = config.admission().max_concurrent_calls,
         rtp_ports = format!("{}-{}", config.media.rtp_port_start, config.media.rtp_port_end),
         trunks = config.trunks.len(),
         "Configuration loaded"
@@ -842,7 +908,8 @@ mod tests {
         assert_eq!(config.storage.database_url, "postgresql://localhost/fcp");
         assert_eq!(config.http.bind_address, "127.0.0.1:8084".parse().unwrap());
         assert!(config.http.api_token.is_none());
-        assert_eq!(config.calls.max_concurrent_calls, 1000);
+        assert_eq!(config.calls.max_concurrent_calls, None);
+        assert_eq!(config.admission().max_concurrent_calls, 0);
         assert_eq!(config.calls.call_timeout_seconds, 60);
         assert!(config.calls.enable_sdp);
         assert!(config.calls.enable_refer);
@@ -972,7 +1039,9 @@ url = "https://hooks.example.com/all-events"
         assert_eq!(config.registrar.realm, "test.local");
         assert_eq!(config.registrar.default_expires, 1800);
         assert_eq!(config.http.bind_address.port(), 9090);
-        assert_eq!(config.calls.max_concurrent_calls, 500);
+        assert_eq!(config.calls.max_concurrent_calls, Some(500));
+        // An explicit [calls] limit is what the node now keeps.
+        assert_eq!(config.admission().max_concurrent_calls, 500);
         assert!(!config.calls.enable_refer);
         assert_eq!(config.media.rtp_port_start, 20000);
         assert_eq!(config.media.codecs.len(), 3);

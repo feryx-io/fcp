@@ -441,7 +441,7 @@ One PR each, in order.
 
 | Phase | What |
 |---|---|
-| 1 | **The limits that exist, enforced.** `AdmissionController` moves into `fcp-sbc-core`; the call manager (then the IVR, voicemail and presence servers) admits calls and registrations through it; `[admission]` section; `[calls] max_concurrent_calls` honoured as an alias with a warning; the tenant's `max_concurrent_calls` enforced per node; the registrar's rate limiter installed with both keys; 503 + `Retry-After` with a `Reason`; refusal counters by reason; load on `/status` |
+| 1 ✅ v0.25.208 | **The limits that exist, enforced.** `AdmissionController` moves into `fcp-sbc-core`; the call manager (then the IVR, voicemail and presence servers) admits calls and registrations through it; `[admission]` section; `[calls] max_concurrent_calls` honoured as an alias with a warning; the tenant's `max_concurrent_calls` enforced per node; the registrar's rate limiter installed with both keys; 503 + `Retry-After` with a `Reason`; refusal counters by reason; load on `/status` |
 | 2 | **Leaving on purpose.** Shared drain state in `fcp-cluster`; `POST`/`DELETE /drain` and a `/ready` route on every binary's health server; SIGTERM starts a drain; new calls refused, emergency admitted, REGISTER expiry shortened; `drain_wait_secs`, then BYE with `Reason` and a `node_draining` record; `node.draining`/`node.drained` events; drain badge in the admin UI; the rolling-restart procedure in the cluster runbook; test floor T6 |
 | 3 | **The harness.** `fcp-loadgen` on `fcp-testkit`: the four profiles, the measurements, the JSON report, the budget flags; the small CI profile |
 | 4 | **What the numbers say.** Run it on the dev VM: calls per second and concurrent calls to first refusal, latency percentiles, memory per call, registration storm behaviour. Fix what it finds — this is where the defects are — and record the numbers here, in `docs/DEPLOYMENT.md` and in the heartbeat as a published capacity budget, the shape video's already has |
@@ -450,6 +450,40 @@ One PR each, in order.
 Phase 1 stands alone: it is worth shipping even if nothing after it is built,
 because it turns two advertised limits into real ones. Phase 2 is what makes
 an upgrade free. Phases 3–4 are what let anyone say a number out loud.
+
+*Phase 1 shipped 2026-09-20 (v0.25.208).* As designed, with three things
+learned on the way.
+
+**A section is not a field.** `[admission]` was first read straight into
+`fcp_sbc_core::AdmissionConfig`, whose serde default is the SBC's — 100 CPS,
+1000 calls, 5000 registrations. A call manager that wrote the section for one
+limit therefore acquired the other four silently, against decision 8. The
+node now has its own `AdmissionSection` of optional fields that resolve into
+the controller's configuration, unset meaning unlimited; the SBC's own
+defaults are untouched, since they are the SBC's.
+
+**A challenged registration is two REGISTERs.** With `auth_enabled` on, a
+device sends one REGISTER, is challenged, and sends another — so
+`max_register_cps_per_source = 1` refuses every device on its second leg, and
+nothing can ever register. Both legs are still counted, because an attacker
+writes an `Authorization` header as easily as a phone does and the credential
+lookup is what the limit protects; what changed is that the arithmetic is now
+documented where the key is set, and the smallest useful limit is two.
+
+**Zero now means unlimited** in `AdmissionConfig`, where it used to mean
+"refuse everything" (`current >= 0` is always true). No deployment could have
+wanted the old reading — a node configured to carry no calls — and the call
+manager's defaults are zeros throughout.
+
+What the phase did not do: the IVR, voicemail and presence servers keep no
+limits yet. They are wired in phase 2, which touches every binary's health
+server for the drain routes anyway, and none of them is an edge on its own.
+
+What the phase added, beyond the design: `TrunkSet` learnt the tenants'
+`max_concurrent_calls` on the refresh tick it already spends reading every
+tenant, so no new task and no per-INVITE query; `Seed::tenant_call_limit` in
+`fcp-testkit`; and `fcp-call-manager/tests/capacity.rs`, which is T6's first
+half — the drain half arrives with phase 2.
 
 ## 14. Not in scope
 

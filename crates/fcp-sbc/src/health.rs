@@ -1,6 +1,5 @@
 //! HTTP health, readiness, and metrics endpoints for the SBC.
 
-use crate::admission::AdmissionController;
 use crate::metrics::SbcRuntimeMetrics;
 use crate::recording_store::RecordingStore;
 use crate::stir_shaken::{StirMetrics, StirVerifier};
@@ -10,6 +9,7 @@ use axum::http::header;
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::{extract::State, routing::get, Json, Router};
+use fcp_sbc_core::admission::AdmissionController;
 use fcp_sbc_core::trunk_health::TrunkHealthMonitor;
 use fcp_sbc_core::trunk_registration::TrunkRegistrar;
 use std::fmt::Write;
@@ -323,7 +323,7 @@ mod tests {
         metrics.update_snapshot(42, 10, 5);
 
         let state = Arc::new(HealthState {
-            admission: Arc::new(crate::admission::AdmissionController::new(
+            admission: Arc::new(fcp_sbc_core::admission::AdmissionController::new(
                 Default::default(),
             )),
             health_monitor: Arc::new(fcp_sbc_core::trunk_health::TrunkHealthMonitor::new(&[])),

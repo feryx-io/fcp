@@ -163,7 +163,22 @@ record, test floor T6); 3 the harness (`fcp-loadgen` on `fcp-testkit`: register
 storm, call ramp, soak, mixed, with a JSON report and budget assertions);
 4 what the numbers say (run it, fix what it finds, publish a measured capacity
 budget); 5 across the cluster (tenant and trunk limits leased in Redis,
-placement by headroom). Ten open questions, every recommendation taken on
+placement by headroom). Phase 1 done (v0.25.208): the limits that exist, enforced. The admission
+controller moved from the `fcp-sbc` binary into `fcp-sbc-core` (as the HMR
+engine and `StirSigner` did in tenant trunks 3b) and the call manager admits
+through it: an `[admission]` section of optional limits, `[calls]
+max_concurrent_calls` honoured at last with a warning naming the new key, the
+tenant's own `max_concurrent_calls` enforced per node from the tenants the
+trunk set already reads, REGISTER floods refused by source address and by AOR
+before any credential work, and every refusal a `503` with `Retry-After` and
+a `Reason`, counted by reason on `/status` and `/metrics`
+(`fcp_admission_*`). Emergency calls are exempt from all of it. Three defects
+found on the way: `[admission]` read into the SBC's own config type gave a
+call manager the SBC's limits the moment it wrote the section (now its own
+optional-field section); a challenged registration is two REGISTERs, so the
+smallest useful per-source rate is two, not one; and zero, which used to mean
+"refuse everything", now means no limit. `fcp-call-manager/tests/capacity.rs`
+is T6's first half. Ten open questions, every recommendation taken on
 2026-09-20: one admission controller in `fcp-sbc-core` for every routing
 binary; node limits only where a deployment wrote one down; the tenant limit
 per node until phase 5 leases it cluster-wide; a BYE with a `Reason` and a

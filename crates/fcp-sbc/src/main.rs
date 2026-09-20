@@ -17,7 +17,6 @@ use std::time::Duration;
 use tracing::{info, warn};
 
 mod admin;
-mod admission;
 mod cli;
 mod config;
 mod enforcement;
@@ -34,9 +33,9 @@ mod srtp;
 mod stir_shaken;
 mod topology;
 
-use admission::AdmissionController;
 use cli::Cli;
 use enforcement::SbcEnforcementHandler;
+use fcp_sbc_core::admission::AdmissionController;
 use fcp_sbc_core::health_probes;
 use fcp_sbc_core::trunk_auth;
 use fcp_sbc_core::trunk_health::TrunkHealthMonitor;

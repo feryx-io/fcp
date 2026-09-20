@@ -887,7 +887,7 @@ mod tests {
     }
 
     fn test_state_with_trunks(trunks: Vec<fcp_sbc_core::TrunkConfig>) -> Arc<HealthState> {
-        let admission = Arc::new(crate::admission::AdmissionController::new(
+        let admission = Arc::new(fcp_sbc_core::admission::AdmissionController::new(
             Default::default(),
         ));
         let health_monitor = Arc::new(fcp_sbc_core::trunk_health::TrunkHealthMonitor::new(&trunks));

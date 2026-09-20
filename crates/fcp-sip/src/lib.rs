@@ -9,6 +9,7 @@
 //! - Service implementations using fcp-core::Service trait
 
 pub mod adapters;
+pub mod admission;
 pub mod auth;
 pub use fcp_b2bua_core::body;
 pub mod conference;

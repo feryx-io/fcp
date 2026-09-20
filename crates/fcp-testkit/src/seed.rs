@@ -239,6 +239,19 @@ impl Seed {
         self.storage.put_tenant(row).await.expect("seed tenant");
     }
 
+    /// What a tenant may carry at once
+    /// (`docs/CAPACITY_AND_SURVIVABILITY.md` §5).
+    pub async fn tenant_call_limit(&self, tenant: TenantId, limit: Option<u32>) {
+        let mut row = self
+            .storage
+            .get_tenant(&tenant)
+            .await
+            .expect("read tenant")
+            .expect("the tenant exists");
+        row.max_concurrent_calls = limit;
+        self.storage.put_tenant(row).await.expect("seed tenant");
+    }
+
     /// A tenant's own trunk to a carrier the test is running on the
     /// loopback at `port`: one UDP host, no registration, no probing.
     pub async fn trunk(&self, tenant: TenantId, name: &str, port: u16) -> fcp_core::TrunkId {

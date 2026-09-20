@@ -61,6 +61,9 @@ pub struct TrunkSet {
     /// Each tenant's least-cost routes, keyed by trunk id
     /// (`docs/TENANT_TRUNKS.md` §12, phase 6c).
     lcr: RwLock<HashMap<TenantId, Arc<LcrRouteTable>>>,
+    /// What each tenant may carry at once, as of the last refresh
+    /// (`docs/CAPACITY_AND_SURVIVABILITY.md` §5). Absent means no limit.
+    call_limits: RwLock<HashMap<TenantId, u32>>,
 }
 
 impl TrunkSet {
@@ -74,6 +77,7 @@ impl TrunkSet {
             inbound: RwLock::new(Vec::new()),
             resolved: RwLock::new(HashMap::new()),
             lcr: RwLock::new(HashMap::new()),
+            call_limits: RwLock::new(HashMap::new()),
         };
         set.rebuild_inbound();
         set
@@ -305,6 +309,17 @@ impl TrunkSet {
         count
     }
 
+    /// Replace what is known about each tenant's concurrent call limit.
+    /// A tenant that sets none is left out, and so has no limit.
+    pub fn set_tenant_call_limits(&self, limits: HashMap<TenantId, u32>) {
+        match self.call_limits.write() {
+            Ok(mut slot) => *slot = limits,
+            Err(e) => {
+                warn!(error = %e, "Trunk set lock poisoned; tenant call limits not refreshed")
+            }
+        }
+    }
+
     /// Read every tenant's trunks, and what each tenant says about the
     /// platform's.
     pub async fn refresh<S>(&self, store: &S) -> anyhow::Result<usize>
@@ -312,13 +327,19 @@ impl TrunkSet {
         S: TrunkStore + TenantStore + ?Sized,
     {
         let trunks = store.list_all_trunks().await?;
-        let fallback: HashMap<TenantId, bool> = store
-            .list_tenants()
-            .await
-            .unwrap_or_default()
-            .into_iter()
+        let tenants = store.list_tenants().await.unwrap_or_default();
+        let fallback: HashMap<TenantId, bool> = tenants
+            .iter()
             .map(|t| (t.id, t.platform_trunk_fallback))
             .collect();
+        // What each tenant may carry at once comes from the same read
+        // (`docs/CAPACITY_AND_SURVIVABILITY.md` §5).
+        self.set_tenant_call_limits(
+            tenants
+                .iter()
+                .filter_map(|t| t.max_concurrent_calls.map(|limit| (t.id, limit)))
+                .collect(),
+        );
         let count = self.set_tenant_trunks(trunks, &fallback);
         // After the trunks: a route is in force only for a trunk of its own
         // tenant's that this node now knows.
@@ -345,6 +366,18 @@ impl TrunkSet {
 impl fcp_sip::trunk_ingress::InboundTrunks for TrunkSet {
     fn inbound_from(&self, source: IpAddr) -> Vec<Arc<Trunk>> {
         TrunkSet::inbound_from(self, source)
+    }
+}
+
+/// A tenant's concurrent call limit, for the admission controller
+/// (`docs/CAPACITY_AND_SURVIVABILITY.md` §5). The trunk set already reads
+/// every tenant on its refresh tick, so nothing else has to.
+impl crate::admission::TenantCallLimits for TrunkSet {
+    fn max_concurrent_calls(&self, tenant: &TenantId) -> Option<u32> {
+        self.call_limits
+            .read()
+            .ok()
+            .and_then(|limits| limits.get(tenant).copied())
     }
 }
 
