@@ -1318,6 +1318,32 @@ fn process_event_for_state(
                 SystemEvent::NodeLeft { node_id, .. } => {
                     info!(node_id = %node_id, "Node left cluster");
                 }
+                SystemEvent::NodeDraining {
+                    node_id,
+                    calls,
+                    wait_secs,
+                    ..
+                } => {
+                    info!(
+                        node_id = %node_id,
+                        calls = %calls,
+                        wait_secs = %wait_secs,
+                        "Node draining"
+                    );
+                }
+                SystemEvent::NodeDrained {
+                    node_id,
+                    calls_ended,
+                    waited_secs,
+                    ..
+                } => {
+                    info!(
+                        node_id = %node_id,
+                        calls_ended = %calls_ended,
+                        waited_secs = %waited_secs,
+                        "Node drained"
+                    );
+                }
             }
         }
         _ => {

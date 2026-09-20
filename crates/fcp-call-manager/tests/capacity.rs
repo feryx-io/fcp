@@ -30,8 +30,9 @@ struct Stack {
 
 impl Stack {
     /// `None` without a database to test against. `admission` is the
-    /// node's `[admission]` section, written by the test.
-    async fn start(admission: &str) -> Option<Self> {
+    /// node's `[admission]` section and `service` is added to its
+    /// `[service]` one — a second `[service]` table would not parse.
+    async fn start_with(service: &str, admission: &str) -> Option<Self> {
         let db = TestDatabase::create().await?;
         let seed = Seed::new(db.url(), REALM).await;
         let sip_port = free_port();
@@ -42,6 +43,7 @@ impl Stack {
             r#"
 [service]
 node_id = "e2e-capacity"
+{service}
 
 [sip]
 udp_bind = "127.0.0.1:{sip_port}"
@@ -127,6 +129,58 @@ refresh_secs = 1
         serde_json::from_str(&body).unwrap_or_else(|e| panic!("GET {path}: {e}: {body}"))
     }
 
+    /// `GET /ready`: the code and the body.
+    async fn ready(&self) -> (u16, serde_json::Value) {
+        let (code, body) = http_get(&loopback(self.http, "/ready"))
+            .await
+            .expect("GET /ready");
+        (
+            code,
+            serde_json::from_str(&body).unwrap_or(serde_json::Value::Null),
+        )
+    }
+
+    /// `POST` a JSON body: the status and the answer.
+    async fn post(&self, path: &str, body: &str) -> (u16, serde_json::Value) {
+        let (code, text) = fcp_testkit::smoke::http_post(&loopback(self.http, path), body)
+            .await
+            .unwrap_or_else(|e| panic!("POST {path}: {e}"));
+        (
+            code,
+            serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text)),
+        )
+    }
+
+    /// `DELETE` a path: the status and the answer.
+    async fn delete(&self, path: &str) -> (u16, serde_json::Value) {
+        let (code, text) =
+            fcp_testkit::smoke::http_request("DELETE", &loopback(self.http, path), &[], None)
+                .await
+                .unwrap_or_else(|e| panic!("DELETE {path}: {e}"));
+        (
+            code,
+            serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text)),
+        )
+    }
+
+    /// The records at `/cdrs`, once at least `n` are there.
+    async fn cdrs(&self, n: usize, within: Duration) -> Vec<serde_json::Value> {
+        let deadline = tokio::time::Instant::now() + within;
+        loop {
+            let body = self.get("/cdrs").await;
+            let cdrs = body["cdrs"].as_array().cloned().unwrap_or_default();
+            if cdrs.len() >= n {
+                return cdrs;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "{} of {n} CDRs after {within:?}: {body}",
+                cdrs.len()
+            );
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+
     /// The node's own account of what it admitted and refused.
     async fn admission(&self) -> serde_json::Value {
         self.get("/status").await["admission"].clone()
@@ -162,7 +216,10 @@ refresh_secs = 1
 
 macro_rules! stack_or_skip {
     ($admission:expr) => {
-        match Stack::start($admission).await {
+        stack_or_skip!("", $admission)
+    };
+    ($service:expr, $admission:expr) => {
+        match Stack::start_with($service, $admission).await {
             Some(s) => s,
             None => {
                 eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
@@ -379,6 +436,151 @@ async fn the_node_says_what_it_allows() {
     ] {
         assert!(metrics.contains(series), "{series} missing from /metrics");
     }
+
+    stack.finish().await;
+}
+
+/// A draining node keeps the calls it is carrying and refuses new ones,
+/// and a drain called off leaves it serving again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_draining_node_keeps_its_calls_and_takes_no_new_one() {
+    // Long enough that the deadline never arrives during the test.
+    let stack = stack_or_skip!("drain_wait_secs = 300", "");
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let bob = stack.seed.user("bob", "bob-pw", "1002").await;
+    let carol = stack.seed.user("carol", "carol-pw", "1003").await;
+    let dave = stack.seed.user("dave", "dave-pw", "1004").await;
+    let alice_phone = stack.registered(&alice).await;
+    let bob_phone = stack.registered(&bob).await;
+    let carol_phone = stack.registered(&carol).await;
+    let dave_phone = stack.registered(&dave).await;
+
+    let established = alice_phone.call(&bob.extension).await.unwrap();
+    let incoming = bob_phone.incoming(SOON).await.expect("Bob's phone rings");
+    let answered = incoming.answer().await.expect("Bob answers");
+    established.answered(SOON).await.expect("Alice hears Bob");
+
+    assert_eq!(stack.ready().await.0, 200, "serving before the drain");
+    let (code, drain) = stack.post("/drain", "{}").await;
+    assert_eq!(code, 200, "{drain}");
+    assert_eq!(drain["status"], "draining", "{drain}");
+
+    // A load balancer is told to stop choosing this node; a liveness
+    // probe still sees a healthy process.
+    let (ready_code, ready) = stack.ready().await;
+    assert_eq!(ready_code, 503, "{ready}");
+    assert_eq!(ready["draining"], true, "{ready}");
+    assert_eq!(stack.get("/health").await["status"], "healthy");
+    assert_eq!(stack.get("/status").await["draining"], true);
+
+    // New calls are refused, and the callee is never rung.
+    let refused = carol_phone.call(&dave.extension).await.unwrap();
+    match refused.failed(SOON).await {
+        Some(503) => {}
+        other => {
+            stack
+                .fail(&format!("a call to a draining node gave {other:?}"))
+                .await
+        }
+    }
+    assert!(
+        dave_phone.incoming(Duration::from_secs(1)).await.is_none(),
+        "Dave was rung by a node that was draining"
+    );
+    assert_eq!(stack.admission().await["refused"]["draining"], 1);
+
+    // The call already up is untouched: no BYE, and both ends still there.
+    assert!(
+        !established.ended(Duration::from_secs(2)).await,
+        "a drain hung up a call it should have waited for"
+    );
+
+    // A device that registers while the node drains is kept on a short
+    // leash, so it comes back and is placed somewhere that is serving.
+    let eve = stack.seed.user("eve", "eve-pw", "1005").await;
+    let eve_phone = stack.registered(&eve).await;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let registrations = stack.get("/registrations").await;
+    let eve_expiry = registrations["registrations"]
+        .as_array()
+        .expect("registrations")
+        .iter()
+        .find(|r| r["aor"].as_str().is_some_and(|aor| aor.contains("eve")))
+        .and_then(|r| r["expires_at_epoch"].as_u64())
+        .unwrap_or_else(|| panic!("eve is not registered: {registrations}"));
+    assert!(
+        eve_expiry <= now + 70,
+        "a draining node granted {}s, not the 60 it caps at: {registrations}",
+        eve_expiry.saturating_sub(now)
+    );
+    drop(eve_phone);
+
+    // Called off: the node serves again, and the call it kept is still up.
+    let (code, served) = stack.delete("/drain").await;
+    assert_eq!(code, 200, "{served}");
+    assert_eq!(served["status"], "serving", "{served}");
+    assert_eq!(stack.ready().await.0, 200, "serving after the drain is off");
+
+    let again = carol_phone.call(&dave.extension).await.unwrap();
+    let incoming = dave_phone
+        .incoming(SOON)
+        .await
+        .expect("Dave's phone rings once the node serves again");
+    incoming.answer().await.expect("Dave answers");
+    again.answered(SOON).await.expect("Carol hears Dave");
+    assert!(
+        !established.ended(Duration::from_millis(500)).await,
+        "the call kept through the drain was dropped"
+    );
+
+    // Both calls hang up before the node does: this test is about a drain
+    // that was called off, not about what a shutdown does to what is left.
+    answered.hangup().await.expect("Bob hangs up");
+    again.hangup().await.expect("Carol hangs up");
+    stack.finish().await;
+}
+
+/// A call still up when the drain deadline comes is ended with a BYE that
+/// says why, and its record says the node was draining.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_drain_ends_the_calls_left_at_its_deadline() {
+    let stack = stack_or_skip!("drain_wait_secs = 2", "");
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let bob = stack.seed.user("bob", "bob-pw", "1002").await;
+    let alice_phone = stack.registered(&alice).await;
+    let bob_phone = stack.registered(&bob).await;
+
+    let call = alice_phone.call(&bob.extension).await.unwrap();
+    let incoming = bob_phone.incoming(SOON).await.expect("Bob's phone rings");
+    let bob_call = incoming.answer().await.expect("Bob answers");
+    call.answered(SOON).await.expect("Alice hears Bob");
+
+    let (code, _) = stack.post("/drain", "{}").await;
+    assert_eq!(code, 200);
+
+    // Two seconds of grace, then both ends are hung up.
+    assert!(
+        call.ended(SOON).await,
+        "the caller was not hung up at the drain deadline"
+    );
+    assert!(
+        bob_call.ended(SOON).await,
+        "the callee was not hung up at the drain deadline"
+    );
+
+    let cdrs = stack.cdrs(1, SOON).await;
+    let cdr = &cdrs[0];
+    assert_eq!(cdr["disposition"], "Answered", "{cdr}");
+    assert_eq!(cdr["hangup_party"], "System", "{cdr}");
+    assert_eq!(cdr["hangup_cause"], "NormalClearing", "{cdr}");
+    assert_eq!(cdr["sip_reason"], "Node draining", "{cdr}");
+
+    // And the node is still there, drained: a drain is not a shutdown.
+    assert_eq!(stack.ready().await.0, 503);
+    assert_eq!(stack.get("/status").await["active_calls"], 0);
 
     stack.finish().await;
 }

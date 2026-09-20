@@ -540,6 +540,31 @@ pub enum SystemEvent {
         timestamp: SystemTime,
     },
 
+    /// A node began draining: it refuses new calls and is waiting for
+    /// the ones it has (`docs/CAPACITY_AND_SURVIVABILITY.md` §6).
+    NodeDraining {
+        node_id: String,
+        /// Calls it was carrying when the drain began.
+        calls: usize,
+        /// How long it will wait for them before hanging up what is left.
+        wait_secs: u64,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// A draining node stopped waiting: every call had ended, or the
+    /// deadline came and the rest were hung up.
+    NodeDrained {
+        node_id: String,
+        /// Calls still up at the deadline, each sent a BYE. Zero when the
+        /// node emptied on its own.
+        calls_ended: usize,
+        /// Seconds the node waited.
+        waited_secs: u64,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
     /// A new node joined the cluster (discovered via heartbeat).
     NodeJoined {
         node_id: String,
@@ -1448,6 +1473,8 @@ impl PlatformEvent {
                 SystemEvent::Stopping { .. } => "system.stopping",
                 SystemEvent::HealthCheck { .. } => "system.health_check",
                 SystemEvent::ConfigChanged { .. } => "system.config_changed",
+                SystemEvent::NodeDraining { .. } => "system.node_draining",
+                SystemEvent::NodeDrained { .. } => "system.node_drained",
                 SystemEvent::NodeJoined { .. } => "system.node_joined",
                 SystemEvent::NodeLeft { .. } => "system.node_left",
             },
@@ -1649,6 +1676,8 @@ impl PlatformEvent {
                 SystemEvent::Started { .. }
                 | SystemEvent::Stopping { .. }
                 | SystemEvent::HealthCheck { .. }
+                | SystemEvent::NodeDraining { .. }
+                | SystemEvent::NodeDrained { .. }
                 | SystemEvent::NodeJoined { .. }
                 | SystemEvent::NodeLeft { .. } => None,
             },
@@ -1874,6 +1903,8 @@ impl SystemEvent {
             | SystemEvent::Stopping { timestamp, .. }
             | SystemEvent::HealthCheck { timestamp, .. }
             | SystemEvent::ConfigChanged { timestamp, .. }
+            | SystemEvent::NodeDraining { timestamp, .. }
+            | SystemEvent::NodeDrained { timestamp, .. }
             | SystemEvent::NodeJoined { timestamp, .. }
             | SystemEvent::NodeLeft { timestamp, .. } => *timestamp,
         }

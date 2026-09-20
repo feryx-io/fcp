@@ -28,6 +28,9 @@ pub enum SystemCause {
     ParkExpired,
     /// A participant was moved to another conference node.
     Migration,
+    /// The node was draining and the call was still up at the deadline
+    /// (`docs/CAPACITY_AND_SURVIVABILITY.md` §6).
+    NodeDraining,
     /// Anything else the platform decided.
     Other,
 }

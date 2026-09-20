@@ -159,6 +159,13 @@ pub struct ServiceSection {
 
     #[serde(default = "default_tenant_id")]
     pub default_tenant_id: fcp_core::TenantId,
+
+    /// How long a drain waits for the calls this node is carrying before
+    /// it ends what is left (`docs/CAPACITY_AND_SURVIVABILITY.md` §6).
+    /// Zero — the default — is the behaviour every node had before there
+    /// was a drain: SIGTERM stops the node where it stands.
+    #[serde(default)]
+    pub drain_wait_secs: u64,
 }
 
 fn default_service_type() -> String {
@@ -179,6 +186,7 @@ impl Default for ServiceSection {
             service_type: default_service_type(),
             node_id: default_node_id(),
             default_tenant_id: default_tenant_id(),
+            drain_wait_secs: 0,
         }
     }
 }
@@ -468,6 +476,10 @@ pub struct AdmissionSection {
     pub max_register_cps_per_source: Option<u32>,
     /// REGISTERs a second for one AOR, across addresses.
     pub max_register_cps_per_aor: Option<u32>,
+    /// The longest registration a draining node grants, so a device comes
+    /// back soon and is placed on a node that is serving. Zero keeps what
+    /// the device asked for; unset is 60 seconds.
+    pub drain_register_expiry_secs: Option<u32>,
     /// Seconds to put in `Retry-After` when refusing.
     pub retry_after_secs: Option<u64>,
 }
@@ -484,6 +496,9 @@ impl AdmissionSection {
         cfg.max_register_cps_per_aor = self.max_register_cps_per_aor.unwrap_or(0);
         if let Some(secs) = self.retry_after_secs {
             cfg.retry_after_secs = secs.clamp(1, 3600);
+        }
+        if let Some(secs) = self.drain_register_expiry_secs {
+            cfg.drain_register_expiry_secs = secs;
         }
         cfg
     }

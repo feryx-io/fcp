@@ -92,7 +92,20 @@ impl Service {
         unsafe {
             libc::kill(pid, libc::SIGTERM);
         }
-        let outcome = tokio::time::timeout(Duration::from_secs(20), self.child.wait()).await;
+        // A node with a long `drain_wait_secs` waits for the calls it is
+        // carrying (`docs/CAPACITY_AND_SURVIVABILITY.md` §6); a second
+        // signal is what tells it not to. A test that wanted the drain
+        // waited for has already waited by the time it stops the service.
+        let outcome = match tokio::time::timeout(Duration::from_secs(5), self.child.wait()).await {
+            Ok(result) => Ok(result),
+            Err(_) => {
+                // SAFETY: as above.
+                unsafe {
+                    libc::kill(pid, libc::SIGTERM);
+                }
+                tokio::time::timeout(Duration::from_secs(15), self.child.wait()).await
+            }
+        };
         let logs = self.drain_logs().await;
         match outcome {
             Ok(Ok(status)) if status.success() => logs,

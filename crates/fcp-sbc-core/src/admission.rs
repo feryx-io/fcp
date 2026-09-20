@@ -17,7 +17,7 @@ use fcp_sip::admission::{NodeAdmission, Refusal};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::net::IpAddr;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 use tokio::sync::oneshot;
@@ -66,6 +66,12 @@ pub struct AdmissionConfig {
     /// Maximum REGISTERs per second for one AOR (0: no limit).
     pub max_register_cps_per_aor: u32,
 
+    /// The longest registration a draining node grants, in seconds
+    /// (`docs/CAPACITY_AND_SURVIVABILITY.md` §6): a device comes back
+    /// soon and is placed on a node that is serving. Zero keeps the
+    /// expiry the device asked for.
+    pub drain_register_expiry_secs: u32,
+
     /// Per-trunk CPS overrides.
     pub per_trunk_cps: Vec<TrunkCpsLimit>,
 
@@ -93,6 +99,7 @@ impl Default for AdmissionConfig {
             max_concurrent_registrations: 5000,
             max_register_cps_per_source: 0,
             max_register_cps_per_aor: 0,
+            drain_register_expiry_secs: 60,
             per_trunk_cps: Vec::new(),
             overload_action: AdmissionAction::Reject,
             include_retry_after: true,
@@ -333,6 +340,9 @@ pub struct AdmissionController {
     tenant_calls: DashMap<TenantId, u64>,
     /// REGISTERs per second, by source address and by AOR.
     register_rate: PerSecond,
+    /// Whether this node is leaving service (§6). Set by a drain, cleared
+    /// when one is called off.
+    draining: AtomicBool,
 }
 
 impl AdmissionController {
@@ -357,6 +367,7 @@ impl AdmissionController {
             ledger: DashMap::new(),
             tenant_calls: DashMap::new(),
             register_rate: PerSecond::default(),
+            draining: AtomicBool::new(false),
         }
     }
 
@@ -375,6 +386,18 @@ impl AdmissionController {
         }
     }
 
+    /// Begin or call off a drain: a draining node refuses new calls and
+    /// shortens the registrations it grants
+    /// (`docs/CAPACITY_AND_SURVIVABILITY.md` §6).
+    pub fn set_draining(&self, draining: bool) {
+        self.draining.store(draining, Ordering::Relaxed);
+    }
+
+    /// Whether this node is leaving service.
+    pub fn is_draining(&self) -> bool {
+        self.draining.load(Ordering::Relaxed)
+    }
+
     /// Try to admit a new call. Returns `true` if allowed.
     ///
     /// Checks the concurrent call limit, then the CPS window. A limit of
@@ -384,7 +407,11 @@ impl AdmissionController {
     }
 
     /// The node's own limits, in the order they are cheapest to check.
+    /// A node on its way out of service takes nothing new at all.
     fn check_node(&self) -> Result<(), Refusal> {
+        if self.is_draining() {
+            return Err(Refusal::Draining);
+        }
         let cfg = self.config.read().unwrap();
 
         let max_calls = cfg.max_concurrent_calls as u64;
@@ -773,6 +800,21 @@ impl NodeAdmission for AdmissionController {
             .map(|c| c.retry_after_secs)
             .unwrap_or(5)
             .max(1)
+    }
+
+    fn draining(&self) -> bool {
+        self.is_draining()
+    }
+
+    fn register_expiry_cap(&self) -> Option<u32> {
+        if !self.is_draining() {
+            return None;
+        }
+        self.config
+            .read()
+            .ok()
+            .map(|c| c.drain_register_expiry_secs)
+            .filter(|secs| *secs != 0)
     }
 }
 
@@ -1349,5 +1391,55 @@ mod node_admission_tests {
         let text = AdmissionCounters::global().prometheus("node=\"n1\"");
         assert!(text.contains("fcp_admission_refused_total{node=\"n1\",reason=\"node_calls\""));
         assert!(text.contains("fcp_admission_calls_admitted_total{node=\"n1\""));
+    }
+}
+
+/// A node on its way out of service
+/// (`docs/CAPACITY_AND_SURVIVABILITY.md` §6).
+#[cfg(test)]
+mod drain_tests {
+    use super::*;
+
+    /// A draining node refuses new calls whatever its limits allow, and
+    /// takes them again the moment the drain is called off.
+    #[test]
+    fn a_draining_node_takes_no_new_call() {
+        let ctrl = AdmissionController::new(AdmissionConfig::unlimited());
+        let tenant = TenantId::new();
+        assert!(ctrl.admit("before", &tenant).is_ok());
+
+        ctrl.set_draining(true);
+        assert_eq!(ctrl.admit("during", &tenant), Err(Refusal::Draining));
+        // The call it was already carrying is untouched.
+        assert_eq!(ctrl.concurrent_calls(), 1);
+
+        ctrl.set_draining(false);
+        assert!(ctrl.admit("after", &tenant).is_ok());
+    }
+
+    /// A draining node keeps its devices, on a short registration; a
+    /// serving node caps nothing.
+    #[test]
+    fn a_draining_node_shortens_the_registration_it_grants() {
+        let ctrl = AdmissionController::new(AdmissionConfig {
+            drain_register_expiry_secs: 60,
+            ..AdmissionConfig::unlimited()
+        });
+        let source: IpAddr = "198.51.100.11".parse().unwrap();
+        assert_eq!(ctrl.register_expiry_cap(), None);
+
+        ctrl.set_draining(true);
+        assert_eq!(ctrl.register_expiry_cap(), Some(60));
+        // And the REGISTER itself is still answered: a device that is
+        // moving needs somewhere to move from.
+        assert!(ctrl.admit_register(source, "sip:alice@example.com").is_ok());
+
+        // A deployment that would rather not shorten anything says zero.
+        let ctrl = AdmissionController::new(AdmissionConfig {
+            drain_register_expiry_secs: 0,
+            ..AdmissionConfig::unlimited()
+        });
+        ctrl.set_draining(true);
+        assert_eq!(ctrl.register_expiry_cap(), None);
     }
 }
