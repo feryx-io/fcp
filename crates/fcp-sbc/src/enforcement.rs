@@ -835,10 +835,8 @@ mod tests {
         rate_limiter: Option<Arc<RateLimiterSet>>,
         hmr_engine: Option<Arc<HeaderManipulationEngine>>,
     ) -> SbcEnforcementHandler {
-        let dispatcher = Arc::new(fcp_sip::transport::RealTransportDispatcher::new(None));
-        let rate_limiter = rate_limiter.unwrap_or_else(|| Arc::new(RateLimiterSet::disabled()));
         let admission = Arc::new(fcp_sbc_core::admission::AdmissionController::new(admission));
-        build_test_handler_with(inner, security, admission, Some(rate_limiter), hmr_engine)
+        build_test_handler_with(inner, security, admission, rate_limiter, hmr_engine)
     }
 
     /// As [`build_test_handler`], with a controller the test has already

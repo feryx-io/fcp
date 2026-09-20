@@ -309,12 +309,26 @@ async fn a_registration_flood_is_refused() {
     // each is challenged and answered.
     let stack = stack_or_skip!("[admission]\nmax_register_cps_per_source = 4");
     let alice = stack.seed.user("alice", "alice-pw", "1001").await;
-    let phone = stack.phone(&alice).await;
 
-    let mut codes = Vec::new();
+    // Six devices at once, twelve REGISTERs: a flood is concurrent, and a
+    // burst sent one after another would spread over as many seconds as a
+    // slow machine takes and never reach the limit at all.
+    let mut phones = Vec::new();
     for _ in 0..6 {
-        codes.push(phone.register().await.expect("REGISTER is answered"));
+        phones.push(stack.phone(&alice).await);
     }
+    let answers = tokio::join!(
+        phones[0].register(),
+        phones[1].register(),
+        phones[2].register(),
+        phones[3].register(),
+        phones[4].register(),
+        phones[5].register(),
+    );
+    let codes = [
+        answers.0, answers.1, answers.2, answers.3, answers.4, answers.5,
+    ]
+    .map(|answer| answer.expect("REGISTER is answered"));
     assert!(
         codes.contains(&503),
         "a flood from one address was never refused: {codes:?}"
@@ -326,13 +340,13 @@ async fn a_registration_flood_is_refused() {
         "{admission}"
     );
 
-    // And the limit is a rate, not a ban: a second later the device is
-    // registered again.
+    // And the limit is a rate, not a ban: once the flood is over, a
+    // device registers again.
     tokio::time::sleep(Duration::from_secs(1)).await;
     assert_eq!(
-        phone.register().await.expect("REGISTER is answered"),
+        phones[0].register().await.expect("REGISTER is answered"),
         200,
-        "the device was still refused a second later"
+        "the device was still refused once the flood was over"
     );
 
     stack.finish().await;
