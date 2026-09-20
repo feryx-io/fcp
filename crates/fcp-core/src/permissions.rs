@@ -174,6 +174,12 @@ pub enum Permission {
     TrunkUpdate,
     TrunkDelete,
 
+    // Routing rules (`docs/TENANT_TRUNKS.md` §12, phase 6d): the tenant's
+    // own call policy. A rule that routes to a trunk also takes
+    // `TrunkUpdate`, since it names a carrier.
+    RoutingRuleRead,
+    RoutingRuleManage,
+
     // Tenants (Service Provider only)
     TenantCreate,
     TenantRead,
@@ -224,6 +230,8 @@ impl FromStr for Permission {
             "trunk_read" => Ok(Self::TrunkRead),
             "trunk_update" => Ok(Self::TrunkUpdate),
             "trunk_delete" => Ok(Self::TrunkDelete),
+            "routing_rule_read" => Ok(Self::RoutingRuleRead),
+            "routing_rule_manage" => Ok(Self::RoutingRuleManage),
             "tenant_create" => Ok(Self::TenantCreate),
             "tenant_read" => Ok(Self::TenantRead),
             "tenant_update" => Ok(Self::TenantUpdate),
@@ -267,6 +275,8 @@ impl Permission {
             Self::TrunkRead => "trunk_read",
             Self::TrunkUpdate => "trunk_update",
             Self::TrunkDelete => "trunk_delete",
+            Self::RoutingRuleRead => "routing_rule_read",
+            Self::RoutingRuleManage => "routing_rule_manage",
             Self::TenantCreate => "tenant_create",
             Self::TenantRead => "tenant_read",
             Self::TenantUpdate => "tenant_update",
@@ -307,6 +317,8 @@ impl Permission {
             Self::TrunkRead => "View Trunks",
             Self::TrunkUpdate => "Update Trunks",
             Self::TrunkDelete => "Delete Trunks",
+            Self::RoutingRuleRead => "View Routing Rules",
+            Self::RoutingRuleManage => "Manage Routing Rules",
             Self::TenantCreate => "Create Tenants",
             Self::TenantRead => "View Tenants",
             Self::TenantUpdate => "Update Tenants",
@@ -339,6 +351,14 @@ impl UserRole {
                 _,
             ) => true,
             (_, ComplianceManage | LegalHoldManage | SubjectRequestManage | AuditView, _) => false,
+
+            // A tenant's routing rules are its call policy — barring premium
+            // numbers, sending international calls to a trunk group — and
+            // belong to whoever administers the tenant or its telephony, in
+            // every mode; the read-only role may look.
+            (TenantAdmin | TelecomAdmin, RoutingRuleRead | RoutingRuleManage, _) => true,
+            (ReadOnly, RoutingRuleRead, _) => true,
+            (_, RoutingRuleRead | RoutingRuleManage, _) => false,
 
             // TenantAdmin - full admin within a single tenant.
             //
@@ -715,5 +735,31 @@ mod tests {
 
         assert!(!role.has_permission(Permission::TrunkCreate, mode));
         assert!(!role.has_permission(Permission::TrunkRead, mode));
+    }
+
+    /// A tenant's routing rules belong to whoever administers it or its
+    /// telephony, in every mode — including enterprise, where trunks are
+    /// the platform's (`docs/TENANT_TRUNKS.md` §12, phase 6d).
+    #[test]
+    fn routing_rules_belong_to_the_tenants_administrators_in_every_mode() {
+        for mode in [DeploymentMode::Enterprise, DeploymentMode::Carrier] {
+            for role in [UserRole::TenantAdmin, UserRole::TelecomAdmin] {
+                assert!(role.has_permission(Permission::RoutingRuleManage, mode));
+                assert!(role.has_permission(Permission::RoutingRuleRead, mode));
+            }
+            assert!(UserRole::ReadOnly.has_permission(Permission::RoutingRuleRead, mode));
+            assert!(!UserRole::ReadOnly.has_permission(Permission::RoutingRuleManage, mode));
+            for role in [
+                UserRole::EndUser,
+                UserRole::UserAdmin,
+                UserRole::DepartmentAdmin,
+            ] {
+                assert!(!role.has_permission(Permission::RoutingRuleRead, mode));
+            }
+        }
+        assert_eq!(
+            "routing_rule_manage".parse::<Permission>(),
+            Ok(Permission::RoutingRuleManage)
+        );
     }
 }

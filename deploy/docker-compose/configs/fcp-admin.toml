@@ -21,6 +21,14 @@ format = "pretty"
 [events]
 server_url = "http://fcp-events-server:8081/ingest"
 
+[call_manager]
+# The routing page's "Test routing" asks a live call manager what it would
+# do with a call (docs/TENANT_TRUNKS.md §12, phase 6d). Without a url, a
+# healthy call manager is found through [cluster]; with neither, the test
+# answers 503. auth_token is the call manager's [http] api_token, if set.
+url = "http://fcp-call-manager:8084"
+# auth_token = "change-me-in-production"
+
 [conference]
 # Live room controls go through this conference server.
 # server_url = "http://localhost:8090"

@@ -1998,3 +1998,100 @@ async fn a_tenants_own_trunk_outranks_a_better_ranked_platform_trunk() {
 
     stack.finish().await;
 }
+
+/// What a node would do with a call, asked without placing it
+/// (`docs/TENANT_TRUNKS.md` §12, phase 6d): the rule that decides it, the
+/// trunks in the order they would be tried with the prices that ordered
+/// them, and the emergency path for an emergency number.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_node_previews_what_it_would_do_with_a_call() {
+    let platform_psap = Carrier::new("platform-psap").await;
+    let everyday = Carrier::new("everyday-carrier").await;
+    let cheap = Carrier::new("cheap-carrier").await;
+    let stack = stack_or_skip!(&[&platform_psap]);
+
+    let acme = stack.seed.tenant_id;
+    stack
+        .seed
+        .trunk_with(acme, "everyday-carrier", everyday.port(), |t| {
+            t.priority = 1
+        })
+        .await;
+    let cheap_trunk = stack
+        .seed
+        .trunk_with(acme, "cheap-carrier", cheap.port(), |t| t.priority = 90)
+        .await;
+    stack
+        .seed
+        .lcr_route(acme, "+44", &cheap_trunk, "0.010")
+        .await;
+    stack
+        .seed
+        .routing_rule(acme, "premium", |r| {
+            r.action = fcp_core::RoutingAction::Deny;
+            r.destination_pattern = Some(r"^\+1900".into());
+            r.reason = Some("Premium numbers are barred".into());
+        })
+        .await;
+    tokio::time::sleep(REFRESHED).await;
+
+    let preview = |to: &str| {
+        let path = format!(
+            "/routes/preview?tenant={acme}&to={}",
+            to.replace('+', "%2B")
+        );
+        let http = stack.http;
+        async move {
+            let (code, body) = fcp_testkit::smoke::http_get(&loopback(http, &path))
+                .await
+                .expect("the node answers");
+            assert_eq!(code, 200, "{body}");
+            serde_json::from_str::<serde_json::Value>(&body).expect("JSON")
+        }
+    };
+
+    // A UK number: what the tenant's routes price, then the platform's.
+    // Its unpriced carrier is not offered a number its routes price — as
+    // the node's own `[lcr]` works — and the preview says so.
+    let uk = preview("+442079460000").await;
+    assert_eq!(uk["outcome"], "routes", "{uk}");
+    assert_eq!(uk["rule"]["decision"], "no_match", "{uk}");
+    let names: Vec<&str> = uk["routes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, vec!["cheap-carrier", "platform-psap"], "{uk}");
+    assert_eq!(uk["routes"][0]["price"]["prefix"], "+44", "{uk}");
+    assert_eq!(uk["routes"][0]["price"]["source"], "tenant", "{uk}");
+    assert_eq!(uk["routes"][0]["price"]["cost_per_minute"], 0.01, "{uk}");
+    assert!(uk["routes"][1].get("price").is_none(), "{uk}");
+    assert_eq!(uk["routes"][1]["owner"], "platform", "{uk}");
+    assert_eq!(uk["not_offered"][0]["name"], "everyday-carrier", "{uk}");
+
+    // A US number no route prices: the tenant's ordinary choice.
+    let us = preview("+15125550100").await;
+    assert_eq!(us["routes"][0]["name"], "everyday-carrier", "{us}");
+
+    // A premium number: the tenant's rule refuses it.
+    let premium = preview("+19005550100").await;
+    assert_eq!(premium["outcome"], "refused", "{premium}");
+    assert_eq!(premium["status"], 403, "{premium}");
+    assert_eq!(premium["rule"]["rule"], "premium", "{premium}");
+    assert_eq!(
+        premium["rule"]["reason"], "Premium numbers are barred",
+        "{premium}"
+    );
+
+    // 911 takes the emergency path, which no rule touches.
+    let emergency = preview("911").await;
+    assert_eq!(emergency["emergency"], "live", "{emergency}");
+    assert_eq!(
+        emergency["routes"][0]["name"], "platform-psap",
+        "{emergency}"
+    );
+    assert_eq!(emergency["rule"]["decision"], "not_applied", "{emergency}");
+
+    stack.finish().await;
+}

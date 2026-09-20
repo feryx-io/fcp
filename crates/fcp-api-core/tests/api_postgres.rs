@@ -6929,3 +6929,84 @@ async fn least_cost_routes_are_checked_owned_and_go_with_their_trunk() {
 
     app.finish().await;
 }
+
+/// Routing rules belong to the tenant's administrators in every mode
+/// (`docs/TENANT_TRUNKS.md` §12, phase 6d): in enterprise mode, where the
+/// trunks are the platform's, a tenant admin writes allow and deny rules,
+/// but not a rule that routes to a trunk — that names a carrier. The route
+/// preview answers 503 when there is no call manager to ask.
+#[tokio::test]
+async fn enterprise_tenant_admins_manage_rules_but_not_carriers() {
+    let app = require_app!(DeploymentMode::Enterprise);
+    app.create_user_with_role("ent-admin", "tenant_admin").await;
+    let jwt = app.login("ent-admin", PASSWORD).await.json["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let deny = app
+        .send_as(
+            &jwt,
+            Method::POST,
+            "/api/v1/routing/rules",
+            Some(json!({
+                "name": "no-premium",
+                "priority": 10,
+                "enabled": true,
+                "action": "deny",
+                "destination_pattern": "^\\+1900",
+            })),
+        )
+        .await;
+    assert_eq!(deny.status, StatusCode::CREATED, "{}", deny.text);
+    let listed = app
+        .send_as(&jwt, Method::GET, "/api/v1/routing/rules", None)
+        .await;
+    assert_eq!(listed.status, StatusCode::OK, "{}", listed.text);
+
+    let routed = app
+        .send_as(
+            &jwt,
+            Method::POST,
+            "/api/v1/routing/rules",
+            Some(json!({
+                "name": "via-group",
+                "priority": 20,
+                "enabled": true,
+                "action": "route_to_trunk",
+                "target_trunk_group": "intl",
+            })),
+        )
+        .await;
+    assert_eq!(routed.status, StatusCode::FORBIDDEN, "{}", routed.text);
+
+    // Turning the deny rule into a trunk route is refused the same way.
+    let id = deny.json["id"].as_str().unwrap();
+    let turned = app
+        .send_as(
+            &jwt,
+            Method::PATCH,
+            &format!("/api/v1/routing/rules/{id}"),
+            Some(json!({ "action": "route_to_trunk", "target_trunk_group": "intl" })),
+        )
+        .await;
+    assert_eq!(turned.status, StatusCode::FORBIDDEN, "{}", turned.text);
+
+    // No call manager to ask: 503, not a guess.
+    let preview = app
+        .send_as(
+            &jwt,
+            Method::GET,
+            "/api/v1/routing/preview?to=%2B442079460000",
+            None,
+        )
+        .await;
+    assert_eq!(
+        preview.status,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "{}",
+        preview.text
+    );
+
+    app.finish().await;
+}

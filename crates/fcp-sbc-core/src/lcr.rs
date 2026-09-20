@@ -235,6 +235,11 @@ impl LcrRouteTable {
         Self { entries }
     }
 
+    /// The part of `destination` a prefix is matched against.
+    pub fn digits_of(destination: &str) -> &str {
+        Self::extract_digits(destination)
+    }
+
     /// Extract the digit portion from a SIP URI or raw number for prefix matching.
     ///
     /// Examples:

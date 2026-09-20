@@ -18,7 +18,7 @@ import {
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
-import { trunks } from '@/api/endpoints'
+import { lcrRoutes, trunks } from '@/api/endpoints'
 import type { SipTrunk, CreateTrunkRequest, TrunkStatsResponse } from '@/types'
 
 const healthBadge = (status: string) => {
@@ -525,6 +525,10 @@ function Sparkline({ data, width = 120, height = 28 }: { data: number[]; width?:
 }
 
 function TrunkDetailView({ trunk, stats, onEdit }: { trunk: SipTrunk; stats?: TrunkStatsResponse; onEdit: () => void }) {
+  // What this trunk is priced at (`docs/TENANT_TRUNKS.md` §12, phase 6c).
+  const { data: allRoutes = [] } = useQuery({ queryKey: ['lcr-routes'], queryFn: lcrRoutes.list })
+  const priced = allRoutes.filter((r) => r.trunk_id === trunk.id)
+  const nodes = trunk.nodes ?? []
   return (
     <div className="space-y-4">
       {/* Stats bar */}
@@ -582,7 +586,49 @@ function TrunkDetailView({ trunk, stats, onEdit }: { trunk: SipTrunk; stats?: Tr
         {trunk.outbound_proxy && <Field label="Outbound Proxy" value={trunk.outbound_proxy} />}
         {trunk.trunk_group && <Field label="Group" value={trunk.trunk_group} />}
         {trunk.verify_tls && trunk.transport_protocol === 'tls' && <Field label="TLS Verify" value="Enabled" />}
+        {nodes.length > 0 && <Field label="Calls now" value={`${trunk.calls_in_flight ?? 0} across ${nodes.length} node${nodes.length === 1 ? '' : 's'}`} />}
       </div>
+
+      {nodes.length > 0 && (
+        <div>
+          <p className="text-xs text-muted-foreground mb-1">
+            What each node sees — each probes the carrier itself, so they can disagree
+          </p>
+          <div className="space-y-1">
+            {nodes.map((view) => (
+              <div key={view.node_id ?? view.trunk_id} className="flex flex-wrap items-center gap-2 text-sm bg-muted rounded px-2 py-1">
+                <span className="font-mono">{view.node_id ?? 'node'}</span>
+                <Badge variant={healthBadge(view.health)}>{view.health}</Badge>
+                {!view.routable && <Badge variant="destructive">not routing to it</Badge>}
+                <span className="text-xs text-muted-foreground">{view.calls_in_flight} call{view.calls_in_flight === 1 ? '' : 's'}</span>
+                {view.registration && (
+                  <span className="text-xs text-muted-foreground">
+                    registration: {view.registration}{view.account ? ` as ${view.account}` : ''}
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {nodes.length === 0 && (
+        <p className="text-xs text-muted-foreground">
+          No node reports its view of this trunk: health above is this server's own probe.
+        </p>
+      )}
+
+      {priced.length > 0 && (
+        <div>
+          <p className="text-xs text-muted-foreground mb-1">Least-cost routes on this trunk</p>
+          <div className="space-y-1">
+            {priced.map((r) => (
+              <p key={r.id} className="font-mono text-sm bg-muted rounded px-2 py-1">
+                {r.prefix} at {r.cost_per_minute}/min{r.enabled ? '' : ' (disabled)'}
+              </p>
+            ))}
+          </div>
+        </div>
+      )}
 
       {trunk.hosts.length > 0 && (
         <div>
@@ -853,8 +899,8 @@ function TrunkForm({ form, onSubmit, isSubmitting, submitLabel = 'Create Trunk' 
                 <Label htmlFor="emergency_capable">Emergency calls</Label>
               </div>
               <p className="text-xs text-muted-foreground">
-                Kept with the trunk, and shown on the emergency pages. Calls are routed by each
-                node's own trunks until tenant trunks route (docs/E911.md).
+                Your emergency-capable trunks carry your 911 calls first; the platform's follow if
+                none of yours can take one. No routing rule applies to an emergency call.
               </p>
             </div>
           </div>

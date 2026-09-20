@@ -169,8 +169,17 @@ impl TrunkResponse {
     fn with_nodes(mut self, reports: &[fcp_core::trunk_report::TrunkNodeReport]) -> Self {
         self.nodes = reports
             .iter()
-            .filter_map(|report| report.trunks.iter().find(|v| v.trunk_id == self.id))
-            .cloned()
+            .filter_map(|report| {
+                report
+                    .trunks
+                    .iter()
+                    .find(|v| v.trunk_id == self.id)
+                    .map(|view| fcp_core::trunk_report::TrunkNodeView {
+                        // Which node said it: the view alone does not.
+                        node_id: Some(report.node_id.clone()),
+                        ..view.clone()
+                    })
+            })
             .collect();
         self.calls_in_flight = self.nodes.iter().map(|v| v.calls_in_flight).sum();
         self.routable_somewhere = self.nodes.iter().any(|v| v.routable);
@@ -857,6 +866,7 @@ mod node_view_tests {
 
     fn view(trunk_id: &str, health: &str, routable: bool, calls: u64) -> TrunkNodeView {
         TrunkNodeView {
+            node_id: None,
             trunk_id: trunk_id.to_string(),
             name: "carrier-a".to_string(),
             tenant_id: None,
@@ -895,6 +905,16 @@ mod node_view_tests {
 
         let enriched = response("trunk-1").with_nodes(&reports);
         assert_eq!(enriched.nodes.len(), 2);
+        let said: Vec<Option<&str>> = enriched
+            .nodes
+            .iter()
+            .map(|v| v.node_id.as_deref())
+            .collect();
+        assert_eq!(
+            said,
+            vec![Some("node-a"), Some("node-b")],
+            "each view names its node"
+        );
         assert_eq!(enriched.calls_in_flight, 3, "the calls across the nodes");
         assert!(enriched.routable_somewhere, "node-b can still place a call");
     }

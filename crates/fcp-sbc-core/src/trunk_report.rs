@@ -46,6 +46,7 @@ fn view_of(
         .map(|s| s.to_string())
         .unwrap_or_else(|| "unknown".to_string());
     TrunkNodeView {
+        node_id: None,
         trunk_id: key.clone(),
         name: trunk.name.clone(),
         tenant_id: trunk.tenant_id.map(|t| t.to_string()),

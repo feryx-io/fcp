@@ -44,6 +44,7 @@ impl TransportDispatcher for NoopDispatcher {
 mod cli;
 mod cluster_api;
 mod config;
+mod route_preview;
 mod storage;
 mod subject_requests;
 
@@ -586,6 +587,19 @@ async fn main() -> Result<()> {
     let api_state = match trunk_reports {
         Some(reports) => api_state.with_trunk_reports(reports),
         None => api_state,
+    };
+
+    // A route preview is asked of a live call manager
+    // (`docs/TENANT_TRUNKS.md` §12, phase 6d).
+    let api_state = match route_preview::CallManagerPreviewer::new(
+        config.call_manager.clone(),
+        cluster_reader.clone(),
+    ) {
+        Some(previewer) => api_state.with_route_previewer(std::sync::Arc::new(previewer)),
+        None => {
+            info!("No call manager to ask for route previews ([call_manager] url or [cluster])");
+            api_state
+        }
     };
 
     let cluster_state = cluster_api::ClusterApiState {

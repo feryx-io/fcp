@@ -1,9 +1,11 @@
 //! Routing rule management API endpoints.
 //!
 //! A tenant's rules decide its calls on every call manager
-//! (`docs/TENANT_TRUNKS.md` §12, phase 6b): managing them takes the same
-//! permissions as managing its trunks, a rule is checked here the way a
-//! node compiles it, and every change is announced so nodes re-read the
+//! (`docs/TENANT_TRUNKS.md` §12, phase 6b): reading them takes
+//! `routing_rule_read` and writing them `routing_rule_manage` (phase 6d),
+//! and a rule that routes to a trunk — or was one — also takes
+//! `trunk_update`, since it names a carrier. A rule is checked here the way
+//! a node compiles it, and every change is announced so nodes re-read the
 //! rules at once.
 
 use crate::auth::AuthIdentity;
@@ -142,7 +144,11 @@ pub async fn list_routing_rules(
     Extension(identity): Extension<AuthIdentity>,
     tenant: crate::auth::TenantContext,
 ) -> Result<impl IntoResponse, ApiError> {
-    crate::auth::check_permission(&identity, Permission::TrunkRead, state.deployment_mode)?;
+    crate::auth::check_permission(
+        &identity,
+        Permission::RoutingRuleRead,
+        state.deployment_mode,
+    )?;
     let storage = require_storage!(state);
     let rules = storage
         .list_routing_rules(&tenant.0)
@@ -159,7 +165,11 @@ pub async fn get_routing_rule(
     tenant: crate::auth::TenantContext,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    crate::auth::check_permission(&identity, Permission::TrunkRead, state.deployment_mode)?;
+    crate::auth::check_permission(
+        &identity,
+        Permission::RoutingRuleRead,
+        state.deployment_mode,
+    )?;
     let storage = require_storage!(state);
     let rule = storage
         .get_routing_rule(&RoutingRuleId::from_string(id))
@@ -176,7 +186,11 @@ pub async fn create_routing_rule(
     tenant: crate::auth::TenantContext,
     Json(req): Json<CreateRoutingRuleRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    crate::auth::check_permission(&identity, Permission::TrunkUpdate, state.deployment_mode)?;
+    crate::auth::check_permission(
+        &identity,
+        Permission::RoutingRuleManage,
+        state.deployment_mode,
+    )?;
     let storage = require_storage!(state);
 
     if req.name.trim().is_empty() {
@@ -215,6 +229,7 @@ pub async fn create_routing_rule(
     rule.reason = req.reason;
 
     check_rule(storage.as_ref(), &rule).await?;
+    names_a_carrier(&state, &identity, [&rule])?;
 
     info!(rule_name = %rule.name, rule_id = %rule.id, "Creating routing rule");
 
@@ -234,7 +249,11 @@ pub async fn update_routing_rule(
     Path(id): Path<String>,
     Json(req): Json<UpdateRoutingRuleRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    crate::auth::check_permission(&identity, Permission::TrunkUpdate, state.deployment_mode)?;
+    crate::auth::check_permission(
+        &identity,
+        Permission::RoutingRuleManage,
+        state.deployment_mode,
+    )?;
     let storage = require_storage!(state);
     let rule_id = RoutingRuleId::from_string(id);
 
@@ -244,6 +263,7 @@ pub async fn update_routing_rule(
         .map_err(|e| ApiError::Internal(format!("Failed to get routing rule: {}", e)))?
         .ok_or_else(|| ApiError::NotFound("Routing rule not found".to_string()))?;
     ensure_rule_visible_to_tenant(&rule, &tenant)?;
+    let before = rule.clone();
 
     if let Some(name) = req.name {
         rule.name = name;
@@ -303,6 +323,7 @@ pub async fn update_routing_rule(
 
     rule.updated_at = SystemTime::now();
     check_rule(storage.as_ref(), &rule).await?;
+    names_a_carrier(&state, &identity, [&before, &rule])?;
 
     info!(rule_name = %rule.name, rule_id = %rule.id, "Updating routing rule");
 
@@ -321,7 +342,11 @@ pub async fn delete_routing_rule(
     tenant: crate::auth::TenantContext,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    crate::auth::check_permission(&identity, Permission::TrunkUpdate, state.deployment_mode)?;
+    crate::auth::check_permission(
+        &identity,
+        Permission::RoutingRuleManage,
+        state.deployment_mode,
+    )?;
     let storage = require_storage!(state);
     let rule_id = RoutingRuleId::from_string(id);
 
@@ -331,6 +356,7 @@ pub async fn delete_routing_rule(
         .map_err(|e| ApiError::Internal(format!("Failed to get routing rule: {}", e)))?
         .ok_or_else(|| ApiError::NotFound("Routing rule not found".to_string()))?;
     ensure_rule_visible_to_tenant(&rule, &tenant)?;
+    names_a_carrier(&state, &identity, [&rule])?;
 
     info!(rule_name = %rule.name, rule_id = %rule.id, "Deleting routing rule");
 
@@ -390,4 +416,50 @@ async fn announce_rule_change(state: &ApiState, entity_id: &str, tenant_id: Tena
             timestamp: SystemTime::now(),
         }))
         .await;
+}
+
+/// A rule that routes to a trunk names a carrier: writing one, turning one
+/// into something else, or deleting one also takes `trunk_update`.
+fn names_a_carrier<'a>(
+    state: &ApiState,
+    identity: &AuthIdentity,
+    rules: impl IntoIterator<Item = &'a RoutingRule>,
+) -> Result<(), ApiError> {
+    if rules
+        .into_iter()
+        .any(|r| r.action == RoutingAction::RouteToTrunk)
+    {
+        crate::auth::check_permission(identity, Permission::TrunkUpdate, state.deployment_mode)?;
+    }
+    Ok(())
+}
+
+/// `GET /v1/routing/preview?to=…[&from=…][&source_ip=…]`: what a live call
+/// manager would do with this tenant's call — the policy and rule that
+/// decide it and the trunks it would try, in order, each with its price
+/// (`docs/TENANT_TRUNKS.md` §12, phase 6d).
+pub async fn preview_routing(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
+    tenant: crate::auth::TenantContext,
+    axum::extract::Query(query): axum::extract::Query<crate::RoutePreviewQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    crate::auth::check_permission(
+        &identity,
+        Permission::RoutingRuleRead,
+        state.deployment_mode,
+    )?;
+    if query.to.trim().is_empty() {
+        return Err(ApiError::BadRequest("to is required".to_string()));
+    }
+    let previewer = state.route_previewer.as_ref().ok_or_else(|| {
+        ApiError::ServiceUnavailable(
+            "No call manager to ask: configure [call_manager] url, or a cluster".to_string(),
+        )
+    })?;
+    let answer = previewer
+        .preview(tenant.0, &query)
+        .await
+        .map_err(ApiError::ServiceUnavailable)?;
+    Ok(Json(answer))
 }

@@ -25,6 +25,29 @@ pub mod trunk_health;
 pub trait TrunkNodeReports: Send + Sync {
     async fn reports(&self) -> Vec<fcp_core::trunk_report::TrunkNodeReport>;
 }
+
+/// What a call manager would do with a call, asked of a live one
+/// (`docs/TENANT_TRUNKS.md` §12, phase 6d). The API does not route calls,
+/// so it does not guess: whatever wires it up knows how to reach a node.
+#[async_trait::async_trait]
+pub trait RoutePreviewer: Send + Sync {
+    /// The node's answer as it gave it, or why no node could give one.
+    async fn preview(
+        &self,
+        tenant: fcp_core::TenantId,
+        query: &RoutePreviewQuery,
+    ) -> std::result::Result<serde_json::Value, String>;
+}
+
+/// What a route preview asks about.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct RoutePreviewQuery {
+    pub to: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_ip: Option<std::net::IpAddr>,
+}
 pub mod v1;
 pub mod validation;
 
@@ -133,6 +156,16 @@ pub fn create_router_with(
             let config = auth_config.clone();
             auth::validate_bearer_token(config, req, next)
         }));
+    } else {
+        // With authentication off every caller is the platform: the
+        // handlers that check a permission need an identity to check, and
+        // without one they answered 500 where the rest of the API was open.
+        router = router.layer(middleware::from_fn(
+            |mut req: axum::extract::Request, next: middleware::Next| async move {
+                req.extensions_mut().insert(auth::AuthIdentity::StaticToken);
+                next.run(req).await
+            },
+        ));
     }
 
     // Pre-auth, WebSocket, and metrics routes merged AFTER the auth layer

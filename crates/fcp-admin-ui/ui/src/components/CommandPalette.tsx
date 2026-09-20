@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, Users, Phone, MonitorSmartphone, Link2,
   Building2, PhoneCall, FileText, Headphones, Voicemail,
-  Radio, Server, Shield, Workflow, Globe, Key,
+  Radio, Server, Shield, Workflow, Globe, Key, Coins,
   ScrollText, Search, Disc, Siren,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -33,6 +33,7 @@ const commands: CommandItem[] = [
   { label: 'Presence', href: '/admin/presence', icon: Radio, keywords: ['status', 'available', 'busy'] },
   { label: 'SIP Trunks', href: '/admin/trunks', icon: Server, keywords: ['sbc', 'carrier', 'pstn'] },
   { label: 'Routing Rules', href: '/admin/routing', icon: Shield, keywords: ['policy', 'dialplan', 'rules'] },
+  { label: 'Least-Cost Routes', href: '/admin/lcr', icon: Coins, keywords: ['lcr', 'cost', 'rates', 'carriers'] },
   { label: 'IVR Flows', href: '/admin/flows', icon: Workflow, keywords: ['ivr', 'menu', 'builder'] },
   { label: 'Cluster Monitor', href: '/admin/cluster', icon: Globe, keywords: ['nodes', 'health', 'system'] },
   { label: 'Number Porting', href: '/admin/porting', icon: Phone, keywords: ['port', 'transfer', 'carrier'] },

@@ -5,7 +5,7 @@ import {
   Link2, Building2, MapPin, Settings, LogOut, Moon, Sun, Monitor, Menu,
   ChevronLeft, PhoneCall, FileText, Headphones, Voicemail,
   Radio, Activity, Server, Shield, Workflow, Globe, Key,
-  ScrollText, Search, X, FileAudio, Video, Disc, Siren,
+  ScrollText, Search, X, FileAudio, Video, Disc, Siren, Coins,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -54,6 +54,7 @@ const navItems: NavItem[] = [
   // Advanced
   { label: 'SIP Trunks', href: '/admin/trunks', icon: Server, section: 'Advanced' },
   { label: 'Routing Rules', href: '/admin/routing', icon: Shield, section: 'Advanced' },
+  { label: 'Least-Cost Routes', href: '/admin/lcr', icon: Coins, section: 'Advanced' },
   { label: 'IVR Flows', href: '/admin/flows', icon: Workflow, section: 'Advanced' },
   { label: 'Flow Traces', href: '/admin/flow-traces', icon: Activity, section: 'Advanced' },
   { label: 'Cluster', href: '/admin/cluster', icon: Globe, section: 'Advanced' },

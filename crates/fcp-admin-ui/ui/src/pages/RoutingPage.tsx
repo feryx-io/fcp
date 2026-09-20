@@ -4,8 +4,9 @@ import type { ColumnDef } from '@tanstack/react-table'
 import { useForm } from 'react-hook-form'
 import {
   Plus, MoreHorizontal, ArrowUpDown, Shield, ShieldOff, ExternalLink,
-  Pencil, Trash2, RefreshCw,
+  Pencil, Trash2, RefreshCw, Route, Siren,
 } from 'lucide-react'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { DataTable } from '@/components/DataTable'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -22,7 +23,7 @@ import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { routing, trunks } from '@/api/endpoints'
-import type { RoutingRule, CreateRoutingRuleRequest, SipTrunk } from '@/types'
+import type { RoutingRule, CreateRoutingRuleRequest, RoutePreview, RoutePreviewTrunk, SipTrunk } from '@/types'
 
 const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
 
@@ -100,6 +101,27 @@ function ruleToForm(r: RoutingRule): RuleFormData {
   }
 }
 
+/**
+ * An edit sends every field, empty ones as "" — the API clears a field it
+ * is sent empty, and leaves alone one it is not sent, so an edit that
+ * omitted an emptied field could never remove a pattern or a target.
+ */
+function formToUpdate(f: RuleFormData): Partial<CreateRoutingRuleRequest> {
+  const routes = f.action === 'route_to_trunk'
+  return {
+    ...formToRequest(f),
+    description: f.description,
+    destination_pattern: f.destination_pattern,
+    source_pattern: f.source_pattern,
+    time_window_start: f.time_window_start,
+    time_window_end: f.time_window_end,
+    // A rule names one target: a trunk, or else a group.
+    target_trunk_id: routes ? f.target_trunk_id : '',
+    target_trunk_group: routes && !f.target_trunk_id ? f.target_trunk_group : '',
+    reason: f.reason,
+  }
+}
+
 function formToRequest(f: RuleFormData): CreateRoutingRuleRequest {
   return {
     name: f.name,
@@ -126,6 +148,8 @@ export function RoutingPage() {
   const [editRule, setEditRule] = useState<RoutingRule | null>(null)
   const [deleteRule, setDeleteRule] = useState<RoutingRule | null>(null)
 
+  const [error, setError] = useState<string | null>(null)
+
   const createForm = useForm<RuleFormData>({ defaultValues })
   const editForm = useForm<RuleFormData>({ defaultValues })
 
@@ -142,19 +166,23 @@ export function RoutingPage() {
   const createMutation = useMutation({
     mutationFn: (data: CreateRoutingRuleRequest) => routing.create(data),
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['routing-rules'] }); setCreateOpen(false); createForm.reset() },
+    onError: (e: Error) => setError(e.message),
   })
 
   const updateMutation = useMutation({
     mutationFn: ({ id, data }: { id: string; data: Partial<CreateRoutingRuleRequest> }) => routing.update(id, data),
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['routing-rules'] }); setEditRule(null) },
+    onError: (e: Error) => setError(e.message),
   })
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => routing.delete(id),
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['routing-rules'] }); setDeleteRule(null) },
+    onError: (e: Error) => setError(e.message),
   })
 
   const openEdit = (rule: RoutingRule) => {
+    setError(null)
     editForm.reset(ruleToForm(rule))
     setEditRule(rule)
   }
@@ -264,17 +292,40 @@ export function RoutingPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Routing Rules</h1>
-          <p className="text-muted-foreground">Route calls to trunks based on patterns, schedules, and policies</p>
+          <p className="text-muted-foreground">
+            Your call policy: refuse calls, or send them to a trunk, by number, caller, network and time
+          </p>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" onClick={() => refetch()} disabled={isFetching}>
             <RefreshCw className={`mr-2 h-4 w-4 ${isFetching ? 'animate-spin' : ''}`} /> Refresh
           </Button>
-          <Button onClick={() => { createForm.reset(); setCreateOpen(true) }}>
+          <Button onClick={() => { setError(null); createForm.reset(); setCreateOpen(true) }}>
             <Plus className="mr-2 h-4 w-4" /> Add Rule
           </Button>
         </div>
       </div>
+
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base">How rules apply</CardTitle>
+        </CardHeader>
+        <CardContent className="text-sm text-muted-foreground space-y-1">
+          <p>
+            Every call manager applies these rules to your calls as they arrive, lowest priority number first; the
+            first rule that matches decides. <strong>Deny</strong> refuses the call (403). <strong>Allow</strong> lets it
+            route normally. <strong>Route to Trunk</strong> sends it out only on the trunk or trunk group named — if
+            none of those can take it, the call is refused (503) rather than sent elsewhere; name a group for failover.
+          </p>
+          <p>
+            A call no rule matches routes normally. The platform's own policy runs before these rules, and{' '}
+            <strong>no rule applies to an emergency call</strong>. Patterns are regular expressions over the dialled
+            number or caller (<span className="font-mono">^\+44</span> works as written).
+          </p>
+        </CardContent>
+      </Card>
+
+      <RoutePreviewPanel />
 
       {isLoading ? (
         <div className="flex h-32 items-center justify-center text-muted-foreground">Loading...</div>
@@ -289,7 +340,7 @@ export function RoutingPage() {
             <DialogTitle>Create Routing Rule</DialogTitle>
             <DialogDescription>Define how calls are matched and where they're routed.</DialogDescription>
           </DialogHeader>
-          <RuleForm form={createForm} trunkList={trunkList} onSubmit={(d) => createMutation.mutate(formToRequest(d))} isSubmitting={createMutation.isPending} />
+          <RuleForm form={createForm} trunkList={trunkList} error={error} onSubmit={(d) => createMutation.mutate(formToRequest(d))} isSubmitting={createMutation.isPending} />
         </DialogContent>
       </Dialog>
 
@@ -303,7 +354,8 @@ export function RoutingPage() {
           <RuleForm
             form={editForm}
             trunkList={trunkList}
-            onSubmit={(d) => editRule && updateMutation.mutate({ id: editRule.id, data: formToRequest(d) })}
+            error={error}
+            onSubmit={(d) => editRule && updateMutation.mutate({ id: editRule.id, data: formToUpdate(d) })}
             isSubmitting={updateMutation.isPending}
             submitLabel="Save Changes"
           />
@@ -319,6 +371,7 @@ export function RoutingPage() {
               Delete <strong>{deleteRule?.name}</strong>? This cannot be undone.
             </DialogDescription>
           </DialogHeader>
+          {error && <p className="text-sm text-destructive">{error}</p>}
           <DialogFooter>
             <Button variant="outline" onClick={() => setDeleteRule(null)}>Cancel</Button>
             <Button variant="destructive" onClick={() => deleteRule && deleteMutation.mutate(deleteRule.id)}>Delete</Button>
@@ -329,9 +382,10 @@ export function RoutingPage() {
   )
 }
 
-function RuleForm({ form, trunkList, onSubmit, isSubmitting, submitLabel = 'Create Rule' }: {
+function RuleForm({ form, trunkList, error, onSubmit, isSubmitting, submitLabel = 'Create Rule' }: {
   form: ReturnType<typeof useForm<RuleFormData>>
   trunkList: SipTrunk[]
+  error: string | null
   onSubmit: (data: RuleFormData) => void
   isSubmitting: boolean
   submitLabel?: string
@@ -471,20 +525,28 @@ function RuleForm({ form, trunkList, onSubmit, isSubmitting, submitLabel = 'Crea
               </Select>
             </div>
             <div>
-              <Label>Or Trunk Group (failover)</Label>
-              <Select value={watch('target_trunk_group') || '__none__'} onValueChange={(v) => setValue('target_trunk_group', v === '__none__' ? '' : v)}>
-                <SelectTrigger><SelectValue placeholder="Select group..." /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="__none__">None</SelectItem>
-                  {trunkGroups.map((g) => (
-                    <SelectItem key={g} value={g}>{g}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <Label htmlFor="target_trunk_group">Or Trunk Group (failover)</Label>
+              {/* Free text: a group may also name the platform's trunks, which are not listed here. */}
+              <Input
+                id="target_trunk_group"
+                list="trunk-groups"
+                placeholder="e.g. intl"
+                disabled={!!watch('target_trunk_id')}
+                {...register('target_trunk_group')}
+              />
+              <datalist id="trunk-groups">
+                {trunkGroups.map((g) => <option key={g} value={g} />)}
+              </datalist>
             </div>
+            <p className="col-span-2 text-xs text-muted-foreground">
+              A trunk is tried alone. A group's members are tried one at a time — your own first, by your least-cost
+              routes and then priority, then the platform's in the same group unless you refuse the platform's trunks.
+            </p>
           </div>
         )}
       </div>
+
+      {error && <p className="text-sm text-destructive">{error}</p>}
 
       <DialogFooter>
         <Button type="submit" disabled={isSubmitting}>
@@ -492,5 +554,119 @@ function RuleForm({ form, trunkList, onSubmit, isSubmitting, submitLabel = 'Crea
         </Button>
       </DialogFooter>
     </form>
+  )
+}
+
+const outcomeText: Record<RoutePreview['outcome'], string> = {
+  routes: 'Goes out',
+  refused: 'Refused',
+  unavailable: 'No trunk can take it now',
+  no_route: 'Nothing is configured to carry it',
+}
+
+function decisionText(label: string, d: RoutePreview['rule']): string | null {
+  switch (d.decision) {
+    case 'not_applied': return null
+    case 'no_match': return `${label}: no rule matched`
+    case 'allow': return `${label}: allowed${d.rule ? ` by ${d.rule}` : ''}`
+    case 'deny': return `${label}: denied${d.rule ? ` by ${d.rule}` : ''}${d.reason ? ` — ${d.reason}` : ''}`
+    case 'route': return `${label}: ${d.rule} sends it to ${d.target}`
+    case 'error': return `${label}: could not be evaluated${d.reason ? ` — ${d.reason}` : ''}`
+    default: return `${label}: ${d.decision}`
+  }
+}
+
+function PreviewTrunkRow({ trunk, index }: { trunk: RoutePreviewTrunk; index?: number }) {
+  return (
+    <div className="flex flex-wrap items-center gap-2 text-sm">
+      {index !== undefined && <span className="w-5 text-right font-mono text-muted-foreground">{index + 1}.</span>}
+      <span className="font-medium">{trunk.name}</span>
+      <Badge variant={trunk.owner === 'tenant' ? 'default' : 'secondary'}>
+        {trunk.owner === 'tenant' ? 'Yours' : 'Platform'}
+      </Badge>
+      <Badge variant={trunk.health === 'healthy' ? 'success' : trunk.health === 'unknown' ? 'outline' : 'destructive'}>
+        {trunk.health}
+      </Badge>
+      {trunk.price ? (
+        <span className="text-xs text-muted-foreground">
+          {trunk.price.prefix} at {trunk.price.cost_per_minute}/min ({trunk.price.source === 'tenant' ? 'your routes' : "the node's table"})
+        </span>
+      ) : (
+        <span className="text-xs text-muted-foreground">priority {trunk.priority}, weight {trunk.weight}</span>
+      )}
+    </div>
+  )
+}
+
+/**
+ * What a live call manager would do with a call (`GET /v1/routing/preview`):
+ * the node's answer, from its own policy, rules, least-cost routes and
+ * trunks — nothing is dialled.
+ */
+function RoutePreviewPanel() {
+  const [to, setTo] = useState('')
+  const [from, setFrom] = useState('')
+  const preview = useMutation({
+    mutationFn: () => routing.preview(to.trim(), from.trim() || undefined),
+  })
+  const result = preview.data
+  const lines = result
+    ? [decisionText("Platform policy", result.policy), decisionText('Your rules', result.rule)].filter(Boolean)
+    : []
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base flex items-center gap-2"><Route className="h-4 w-4" /> Test routing</CardTitle>
+        <CardDescription>Ask a live call manager what it would do with a call — nothing is dialled.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <form
+          className="flex flex-wrap items-end gap-3"
+          onSubmit={(e) => { e.preventDefault(); if (to.trim()) preview.mutate() }}
+        >
+          <div>
+            <Label htmlFor="preview-to">Number dialled</Label>
+            <Input id="preview-to" className="font-mono w-56" placeholder="+442079460000" value={to} onChange={(e) => setTo(e.target.value)} />
+          </div>
+          <div>
+            <Label htmlFor="preview-from">Caller (optional)</Label>
+            <Input id="preview-from" className="font-mono w-56" placeholder="1001" value={from} onChange={(e) => setFrom(e.target.value)} />
+          </div>
+          <Button type="submit" disabled={!to.trim() || preview.isPending}>
+            {preview.isPending ? 'Asking...' : 'Test'}
+          </Button>
+        </form>
+
+        {preview.error && <p className="text-sm text-destructive">{(preview.error as Error).message}</p>}
+
+        {result && (
+          <div className="space-y-3 rounded-lg border p-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant={result.outcome === 'routes' ? 'success' : 'destructive'}>
+                {outcomeText[result.outcome]}{result.status ? ` (${result.status})` : ''}
+              </Badge>
+              {result.emergency && (
+                <Badge variant="destructive"><Siren className="h-3 w-3 mr-1" /> Emergency number: no rule applies</Badge>
+              )}
+              <span className="text-xs text-muted-foreground">answered by {result.node_id}</span>
+            </div>
+            {lines.map((line) => <p key={line} className="text-sm">{line}</p>)}
+            {result.routes.length > 0 && (
+              <div className="space-y-1">
+                <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Tried in this order, one at a time</p>
+                {result.routes.map((t, i) => <PreviewTrunkRow key={t.trunk_id} trunk={t} index={i} />)}
+              </div>
+            )}
+            {result.not_offered.length > 0 && (
+              <div className="space-y-1">
+                <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Not offered this call</p>
+                {result.not_offered.map((t) => <PreviewTrunkRow key={t.trunk_id} trunk={t} />)}
+              </div>
+            )}
+          </div>
+        )}
+      </CardContent>
+    </Card>
   )
 }

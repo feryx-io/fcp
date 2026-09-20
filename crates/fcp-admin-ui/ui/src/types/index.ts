@@ -733,16 +733,99 @@ export interface SipTrunk {
   trunk_group: string | null
   header_rules: string | null
   /**
-   * Whether this trunk may carry emergency calls. Stored, and shown here,
-   * but platform routing uses each node's TOML trunks until tenant trunks
-   * route (`docs/E911.md`).
+   * Whether this trunk may carry emergency calls: the tenant's own
+   * emergency-capable trunks carry its 911 calls ahead of the platform's
+   * (`docs/TENANT_TRUNKS.md` §5).
    */
   emergency_capable: boolean
   health_status: string // "healthy" | "degraded" | "down" | "disabled" | "unknown"
   consecutive_failures: number
   uptime_secs: number | null
+  /** What each node that routes by this trunk sees of it; absent without a cluster. */
+  nodes?: TrunkNodeView[]
+  /** Calls on this trunk across every node that reported. */
+  calls_in_flight?: number
+  /** Whether any node would route a call to it now. */
+  routable_somewhere?: boolean
   created_at: string
   updated_at: string
+}
+
+/** One node's view of a trunk (`docs/TENANT_TRUNKS.md` §9). */
+export interface TrunkNodeView {
+  node_id?: string
+  trunk_id: string
+  name: string
+  tenant_id?: string
+  enabled: boolean
+  /** "healthy" | "degraded" | "down" | "unknown": this node's own probes. */
+  health: string
+  consecutive_failures: number
+  /** This node's calls on it: capacity is per node. */
+  calls_in_flight: number
+  routable: boolean
+  /** For a registering trunk: "registered" | "pending" | "failed" | "unregistered". */
+  registration?: string
+  account?: string
+}
+
+/** A tenant's least-cost route (`docs/TENANT_TRUNKS.md` §12, phase 6c). */
+export interface LcrRoute {
+  id: string
+  tenant_id: string
+  /** Digits, optionally with a leading "+"; the longest match wins. */
+  prefix: string
+  trunk_id: string
+  /** Orders trunks only: what the carrier charges, not what the tenant is charged. */
+  cost_per_minute: number
+  priority: number
+  enabled: boolean
+  description: string | null
+  created_at: number
+  updated_at: number
+}
+
+export interface CreateLcrRouteRequest {
+  prefix: string
+  trunk_id: string
+  cost_per_minute: number
+  priority?: number
+  enabled?: boolean
+  description?: string
+}
+
+/** One trunk a route preview would offer the call, in order. */
+export interface RoutePreviewTrunk {
+  trunk_id: string
+  name: string
+  owner: 'tenant' | 'platform'
+  priority: number
+  weight: number
+  trunk_group: string | null
+  health: string
+  price?: { prefix: string; cost_per_minute: number; source: 'tenant' | 'node' }
+}
+
+export interface RoutePreviewDecision {
+  /** "allow" | "deny" | "error" | "no_match" | "not_applied" | "route" */
+  decision: string
+  rule?: string
+  reason?: string
+  target?: string
+}
+
+/** What a live call manager would do with a call (`GET /v1/routing/preview`). */
+export interface RoutePreview {
+  node_id: string
+  tenant_id: string
+  destination: string
+  emergency?: string
+  policy: RoutePreviewDecision
+  rule: RoutePreviewDecision
+  outcome: 'routes' | 'refused' | 'unavailable' | 'no_route'
+  status?: number
+  routes: RoutePreviewTrunk[]
+  not_offered: RoutePreviewTrunk[]
 }
 
 export interface CreateTrunkRequest {
