@@ -1,8 +1,7 @@
 # Capacity and Survivability — Design
 
-Status: **proposed** (2026-09-20). Chosen after the tenant trunks project
-closed. The open questions in §12 have recommendations; nothing is built
-until they are settled.
+Status: **agreed** (2026-09-20), every recommendation in §12 taken. Chosen
+after the tenant trunks project closed.
 
 One document for three things a carrier-grade platform is expected to do and
 this one does not: **know what it can carry**, **refuse what it cannot**, and
@@ -377,49 +376,60 @@ node; the tenant page shows concurrent calls against the tenant's limit.
 
 ## 12. Open questions
 
-Each has a recommendation; the design is settled when they are answered.
+Each with a recommendation; every recommendation was taken on 2026-09-20.
+What that settles, in one place: admission is one controller in
+`fcp-sbc-core` that every routing binary calls; a node limit applies only
+where a deployment wrote one down, and the defaults cap nothing; a tenant's
+limit is counted per node until phase 5 leases it across the cluster; a
+drained node BYEs what is left at its deadline with a `Reason` and a
+`node_draining` record; ordinary calls do not migrate between nodes, though
+browser legs may later; a draining registrar answers `200` with a 60-second
+expiry rather than refusing; the harness is a `publish = false` workspace
+member and CI asserts behaviour from it, never a rate; emergency calls are
+exempt from every limit and admitted while draining; and registration rate
+limiting keys on the source address and the AOR at once.
 
-**Q1. Where does admission live?** *Recommend:* move `AdmissionController`
+**Q1. Where does admission live?** *Settled:* move `AdmissionController`
 into `fcp-sbc-core` beside the HMR engine and `StirSigner`, which moved there
 for the same reason in tenant trunks 3b. The SBC keeps its admin API over it.
 
 **Q2. Does enforcing `[calls] max_concurrent_calls` break a deployment that
-set it high and exceeded it?** *Recommend:* enforce it only when explicitly
+set it high and exceeded it?** *Settled:* enforce it only when explicitly
 set, warn at startup for one release naming `[admission]`, and keep the
 default unlimited. A deployment that wrote a number asked for it; a
 deployment that never touched it is not newly capped.
 
-**Q3. Is the tenant limit cluster-wide from the start?** *Recommend:* no —
+**Q3. Is the tenant limit cluster-wide from the start?** *Settled:* no —
 per node in phase 1 (documented as such), cluster-wide in phase 5, once the
 harness can measure what a Redis lease costs on the INVITE path.
 
-**Q4. What happens to calls still up at the drain deadline?** *Recommend:*
+**Q4. What happens to calls still up at the drain deadline?** *Settled:*
 BYE both legs with a `Reason` header, complete the record with `node_draining`,
 release counts. Silence would leave the far ends with zombie dialogs, which is
 the defect being fixed.
 
 **Q5. Do ordinary calls migrate off a draining node, as conference
-participants do?** *Recommend:* no. A conference participant has one leg on
+participants do?** *Settled:* no. A conference participant has one leg on
 the node and a room that exists elsewhere; a B2BUA call has two anchored legs,
 one of them often a carrier, and moving it means a re-INVITE through a new
 node that carriers answer inconsistently. Wait for the call instead. Revisit
 for gateway (browser) legs, where phase 5c already proved the swap.
 
-**Q6. What does a draining registrar answer?** *Recommend:* a `200` with a
+**Q6. What does a draining registrar answer?** *Settled:* a `200` with a
 shortened expiry (default 60 s), not a refusal.
 
-**Q7. Where does the harness live?** *Recommend:* a workspace member
+**Q7. Where does the harness live?** *Settled:* a workspace member
 `fcp-loadgen`, `publish = false`, depending on `fcp-testkit`; not part of any
 release image.
 
-**Q8. Does CI gate on capacity numbers?** *Recommend:* no. CI runs a small
+**Q8. Does CI gate on capacity numbers?** *Settled:* no. CI runs a small
 profile for behaviour; absolute rates are measured on known hardware and
 recorded in this document.
 
 **Q9. Are emergency calls exempt from admission and admitted while
-draining?** *Recommend:* yes to both, matching tenant trunks 4b.
+draining?** *Settled:* yes to both, matching tenant trunks 4b.
 
-**Q10. What key does registration rate limiting use?** *Recommend:* both — a
+**Q10. What key does registration rate limiting use?** *Settled:* both — a
 fast token bucket per source address (catching one looping device or a flood
 from one NAT) and a slower one per AOR (catching one account across
 addresses). siphon-rs's registrar takes a key function, so both are one
