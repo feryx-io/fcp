@@ -141,7 +141,7 @@ six phases, nine open questions with recommendations, every recommendation taken
 **Capacity and survivability** — chosen after tenant trunks closed, from four
 candidates (this, the multi-region leftovers, a ship-and-operate project, and
 an edge-security pass). Design in `docs/CAPACITY_AND_SURVIVABILITY.md`
-(v0.25.206, proposed): what a node can carry, what it refuses, and how it
+(v0.25.206, agreed 2026-09-20): what a node can carry, what it refuses, and how it
 leaves service. The survey behind it found that `[calls] max_concurrent_calls`
 on the call manager is parsed, logged and enforced nowhere; that a tenant's
 `max_concurrent_calls` is stored, served and edited but read by nothing on the
@@ -163,8 +163,16 @@ record, test floor T6); 3 the harness (`fcp-loadgen` on `fcp-testkit`: register
 storm, call ramp, soak, mixed, with a JSON report and budget assertions);
 4 what the numbers say (run it, fix what it finds, publish a measured capacity
 budget); 5 across the cluster (tenant and trunk limits leased in Redis,
-placement by headroom). Ten open questions with recommendations in §12,
-unanswered until the design is reviewed.
+placement by headroom). Ten open questions, every recommendation taken on
+2026-09-20: one admission controller in `fcp-sbc-core` for every routing
+binary; node limits only where a deployment wrote one down; the tenant limit
+per node until phase 5 leases it cluster-wide; a BYE with a `Reason` and a
+`node_draining` record at the drain deadline; no migration of ordinary calls
+off a draining node (browser legs later); a draining registrar shortening the
+REGISTER expiry rather than refusing; CI asserting behaviour from the harness,
+never a rate; emergency calls exempt from every limit and admitted while
+draining; and registration rate limiting keyed on source address and AOR at
+once.
 
 ## Historical documents
 
