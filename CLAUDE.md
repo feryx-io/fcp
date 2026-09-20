@@ -660,7 +660,8 @@ cargo run -p siphond -- --mode registrar
 - **docs/GPU.md**: Video on a GPU — the `video-hwaccel` build, `[conference] video_device`, what runs on the device and what falls back, the saturation budget, placement, the NVIDIA image
 - **docs/GPU_BOX.md**: The GPU development box for video phase 8 — a Spot L4 on GCP under `deploy/gcp-gpu`, up and down per session
 - **docs/TEST_FLOOR.md**: End-to-end tests against the running binaries over real SIP and RTP — the scripted phone in `fcp-testkit`, the seed and binary locator, the five phases
-- **docs/TENANT_TRUNKS.md**: Tenant trunks design (proposed) — why the API's trunks do not carry calls today, one trunk model, selection per tenant with the platform's trunks as the fallback, inbound tenancy from the trunk, six phases
+- **docs/CAPACITY_AND_SURVIVABILITY.md**: Capacity and survivability design (proposed) — the limits the API accepts and the call path ignores, admission on every routing binary, draining a node without dropping calls, the load harness, five phases
+- **docs/TENANT_TRUNKS.md**: Tenant trunks design (complete, v0.25.205) — why the API's trunks do not carry calls today, one trunk model, selection per tenant with the platform's trunks as the fallback, inbound tenancy from the trunk, six phases
 - **docs/CDR_PIPELINE.md**: The dedicated CDR pipeline design — the record, spool then ship, the processor in `fcp-jobs`, rating off the call path, partitions and rollups, the archive sink, the five phases
 - **Phase1 plan.md**: Detailed MVP implementation plan with sprint breakdowns
 - **IMPLEMENTATION_DOCS.md**: Index of implementation documentation for completed features
