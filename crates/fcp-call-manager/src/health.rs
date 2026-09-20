@@ -58,6 +58,9 @@ pub struct AppState {
     pub tenant_rules: Option<Arc<fcp_policy::TenantRuleSet>>,
     /// The node's own YAML policy, when it has one.
     pub routing_service: Option<Arc<fcp_routing::RoutingService>>,
+    /// What this node will carry, and what it is carrying
+    /// (`docs/CAPACITY_AND_SURVIVABILITY.md` §9).
+    pub admission: Arc<fcp_sbc_core::AdmissionController>,
     pub node_id: String,
 }
 
@@ -307,6 +310,8 @@ async fn health_handler() -> Json<serde_json::Value> {
 async fn status_handler(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let uptime = state.start_time.elapsed();
     let call_stats = state.call_manager.stats();
+    let admission_cfg = state.admission.config_snapshot();
+    let refused = |reason| fcp_sbc_core::AdmissionCounters::global().refused_for(reason);
 
     Json(serde_json::json!({
         "status": "healthy",
@@ -318,6 +323,36 @@ async fn status_handler(State(state): State<Arc<AppState>>) -> Json<serde_json::
         "established_calls": call_stats.established,
         "terminated_calls": call_stats.terminated,
         "failed_calls": call_stats.failed,
+        // What this node is carrying against what it allows
+        // (docs/CAPACITY_AND_SURVIVABILITY.md §9). Zero is no limit.
+        "admission": {
+            "concurrent_calls": state.admission.concurrent_calls(),
+            "current_cps": state.admission.current_cps(),
+            "concurrent_registrations": state.admission.concurrent_registrations(),
+            "limits": {
+                "max_cps": admission_cfg.max_cps,
+                "max_concurrent_calls": admission_cfg.max_concurrent_calls,
+                "max_concurrent_registrations": admission_cfg.max_concurrent_registrations,
+                "max_register_cps_per_source": admission_cfg.max_register_cps_per_source,
+                "max_register_cps_per_aor": admission_cfg.max_register_cps_per_aor,
+            },
+            "refused": {
+                "node_cps": refused(fcp_sip::admission::Refusal::NodeCps),
+                "node_calls": refused(fcp_sip::admission::Refusal::NodeCalls),
+                "tenant_calls": refused(fcp_sip::admission::Refusal::TenantCalls),
+                "registrations": refused(fcp_sip::admission::Refusal::Registrations),
+                "register_rate": refused(fcp_sip::admission::Refusal::RegisterRate),
+            },
+            "tenants": state
+                .admission
+                .tenant_calls_snapshot()
+                .into_iter()
+                .map(|(tenant, calls)| serde_json::json!({
+                    "tenant_id": tenant.to_string(),
+                    "concurrent_calls": calls,
+                }))
+                .collect::<Vec<_>>(),
+        },
     }))
 }
 
@@ -877,6 +912,12 @@ async fn metrics_handler(State(state): State<Arc<AppState>>) -> impl IntoRespons
     body.push_str(
         &fcp_core::trunk_report::TrunkCounters::global().prometheus(&format!("node=\"{node}\"")),
     );
+    // What this node admitted and refused, and what it is carrying
+    // (docs/CAPACITY_AND_SURVIVABILITY.md §9).
+    body.push_str(
+        &fcp_sbc_core::AdmissionCounters::global().prometheus(&format!("node=\"{node}\"")),
+    );
+    body.push_str(&admission_gauges(&state.admission, &node));
     // Call recordings by source and consent outcome
     // (docs/COMPLIANCE_FOLLOWUPS.md §9).
     body.push_str(
@@ -893,6 +934,66 @@ async fn metrics_handler(State(state): State<Arc<AppState>>) -> impl IntoRespons
         [("content-type", "text/plain; version=0.0.4; charset=utf-8")],
         body,
     )
+}
+
+/// What this node is carrying against what it allows, so headroom is a
+/// query rather than a look in someone's TOML
+/// (`docs/CAPACITY_AND_SURVIVABILITY.md` §9).
+fn admission_gauges(admission: &fcp_sbc_core::AdmissionController, node: &str) -> String {
+    let cfg = admission.config_snapshot();
+    let mut out = String::from(
+        "# HELP fcp_admission_concurrent_calls Calls this node is carrying.\n\
+         # TYPE fcp_admission_concurrent_calls gauge\n",
+    );
+    out.push_str(&format!(
+        "fcp_admission_concurrent_calls{{node=\"{node}\"}} {}\n",
+        admission.concurrent_calls()
+    ));
+    out.push_str(
+        "# HELP fcp_admission_current_cps Calls started on this node in the last second.\n\
+         # TYPE fcp_admission_current_cps gauge\n",
+    );
+    out.push_str(&format!(
+        "fcp_admission_current_cps{{node=\"{node}\"}} {}\n",
+        admission.current_cps()
+    ));
+    out.push_str(
+        "# HELP fcp_admission_concurrent_registrations Registrations this node holds.\n\
+         # TYPE fcp_admission_concurrent_registrations gauge\n",
+    );
+    out.push_str(&format!(
+        "fcp_admission_concurrent_registrations{{node=\"{node}\"}} {}\n",
+        admission.concurrent_registrations()
+    ));
+    out.push_str(
+        "# HELP fcp_admission_capacity What this node allows. Zero is no limit.\n\
+         # TYPE fcp_admission_capacity gauge\n",
+    );
+    for (limit, value) in [
+        ("max_cps", cfg.max_cps),
+        ("max_concurrent_calls", cfg.max_concurrent_calls),
+        (
+            "max_concurrent_registrations",
+            cfg.max_concurrent_registrations,
+        ),
+    ] {
+        out.push_str(&format!(
+            "fcp_admission_capacity{{node=\"{node}\",limit=\"{limit}\"}} {value}\n"
+        ));
+    }
+    let tenants = admission.tenant_calls_snapshot();
+    if !tenants.is_empty() {
+        out.push_str(
+            "# HELP fcp_tenant_concurrent_calls Calls a tenant is carrying on this node.\n\
+             # TYPE fcp_tenant_concurrent_calls gauge\n",
+        );
+        for (tenant, calls) in tenants {
+            out.push_str(&format!(
+                "fcp_tenant_concurrent_calls{{node=\"{node}\",tenant=\"{tenant}\"}} {calls}\n"
+            ));
+        }
+    }
+    out
 }
 
 /// The CDR pipeline's node side: what the spool holds and what the

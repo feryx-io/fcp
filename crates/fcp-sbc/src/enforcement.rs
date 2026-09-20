@@ -10,10 +10,10 @@
 //! still applied to responses so that trunk-specific header stripping
 //! (e.g. removing `Server` headers) works for both requests and responses.
 
-use crate::admission::AdmissionController;
 use crate::metrics::SbcRuntimeMetrics;
 use crate::stir_shaken::{StirMetrics, StirVerifier, VerificationResult};
 use bytes::Bytes;
+use fcp_sbc_core::admission::AdmissionController;
 use fcp_sbc_core::security::{AclAction, MalformedSipPolicy, SecurityConfig};
 use fcp_sbc_core::stir_shaken::{StirVerifyMode, TrunkStirShakenConfig};
 use fcp_sbc_core::HeaderManipulationEngine;
@@ -229,8 +229,8 @@ impl InboundMessageHandler for SbcEnforcementHandler {
                 self.metrics.record_call_attempt();
                 self.metrics.record_per_ip_call_attempt(peer_ip);
                 match self.admission.try_admit_or_queue() {
-                    crate::admission::AdmitResult::Admitted => {}
-                    crate::admission::AdmitResult::Rejected => {
+                    fcp_sbc_core::admission::AdmitResult::Admitted => {}
+                    fcp_sbc_core::admission::AdmitResult::Rejected => {
                         warn!(%peer, "SBC: admission control rejected (overloaded)");
                         self.metrics.record_admission_rejection();
                         self.metrics.record_per_ip_rejection(peer_ip);
@@ -245,7 +245,7 @@ impl InboundMessageHandler for SbcEnforcementHandler {
                         .await;
                         return Ok(());
                     }
-                    crate::admission::AdmitResult::Queued(rx) => {
+                    fcp_sbc_core::admission::AdmitResult::Queued(rx) => {
                         let cfg = self.admission.config_snapshot();
                         let timeout_dur = std::time::Duration::from_secs(cfg.queue_timeout_secs);
                         match tokio::time::timeout(timeout_dur, rx).await {
@@ -835,9 +835,21 @@ mod tests {
         rate_limiter: Option<Arc<RateLimiterSet>>,
         hmr_engine: Option<Arc<HeaderManipulationEngine>>,
     ) -> SbcEnforcementHandler {
+        let admission = Arc::new(fcp_sbc_core::admission::AdmissionController::new(admission));
+        build_test_handler_with(inner, security, admission, rate_limiter, hmr_engine)
+    }
+
+    /// As [`build_test_handler`], with a controller the test has already
+    /// loaded — a node that is carrying calls or holding registrations.
+    fn build_test_handler_with(
+        inner: Arc<dyn InboundMessageHandler>,
+        security: SecurityConfig,
+        admission: Arc<AdmissionController>,
+        rate_limiter: Option<Arc<RateLimiterSet>>,
+        hmr_engine: Option<Arc<HeaderManipulationEngine>>,
+    ) -> SbcEnforcementHandler {
         let dispatcher = Arc::new(fcp_sip::transport::RealTransportDispatcher::new(None));
         let rate_limiter = rate_limiter.unwrap_or_else(|| Arc::new(RateLimiterSet::disabled()));
-        let admission = Arc::new(crate::admission::AdmissionController::new(admission));
         let metrics = Arc::new(SbcRuntimeMetrics::new());
         SbcEnforcementHandler::new(
             inner,
@@ -1106,12 +1118,15 @@ mod tests {
     #[tokio::test]
     async fn test_admission_invite_503() {
         let (mock, calls) = MockInnerHandler::new();
-        let admission = fcp_sbc_core::AdmissionConfig {
-            max_concurrent_calls: 0, // reject all
+        // Zero is no limit now, so the node is given a limit of one and
+        // the one call it allows (`docs/CAPACITY_AND_SURVIVABILITY.md` §4).
+        let admission = Arc::new(AdmissionController::new(fcp_sbc_core::AdmissionConfig {
+            max_concurrent_calls: 1,
             ..Default::default()
-        };
+        }));
+        admission.call_started();
 
-        let handler = build_test_handler(
+        let handler = build_test_handler_with(
             Arc::new(mock),
             SecurityConfig::default(),
             admission,
@@ -1141,15 +1156,14 @@ mod tests {
     #[tokio::test]
     async fn test_admission_register_503() {
         let (mock, calls) = MockInnerHandler::new();
-        let admission = fcp_sbc_core::AdmissionConfig {
-            max_concurrent_registrations: 0, // reject all
+        // Zero is no limit now: the node allows one registration and
+        // already holds it.
+        let admission = Arc::new(AdmissionController::new(fcp_sbc_core::AdmissionConfig {
+            max_concurrent_registrations: 1,
             ..Default::default()
-        };
-
-        // Seed one registration so the counter exceeds 0
-        // Actually, the check is `current < max`, and max is 0,
-        // so current (0) < 0 is false, so it should reject immediately.
-        let handler = build_test_handler(
+        }));
+        admission.registration_added();
+        let handler = build_test_handler_with(
             Arc::new(mock),
             SecurityConfig::default(),
             admission,

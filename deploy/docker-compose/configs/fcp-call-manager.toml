@@ -20,10 +20,16 @@ max_expires = 86400
 domain_aliases = ["fcp.local", "192.168.1.225"]
 
 [calls]
-max_concurrent_calls = 100
 call_timeout_seconds = 60
 enable_sdp = true
 enable_refer = true
+
+# What this node will carry, and what it refuses with a 503
+# (docs/CAPACITY_AND_SURVIVABILITY.md §4). An unset limit caps nothing.
+# This was [calls] max_concurrent_calls until v0.25.208, when the limits
+# began to be enforced.
+[admission]
+max_concurrent_calls = 100
 
 [media]
 rtp_port_start = 10000

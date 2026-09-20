@@ -9,7 +9,6 @@
 //! Optionally hooks SIPREC recording: when a `SiprecRecorder` is provided,
 //! call events trigger recording session start/stop.
 
-use crate::admission::AdmissionController;
 use crate::local_capture::LocalCaptureManager;
 use crate::metrics::SbcRuntimeMetrics;
 use crate::siprec::SiprecRecorder;
@@ -17,6 +16,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use dashmap::DashMap;
 use fcp_events::{CallEvent, EventPublisher, PlatformEvent, RegistrationEvent};
+use fcp_sbc_core::admission::AdmissionController;
 use fcp_sbc_core::trunk_health::TrunkHealthMonitor;
 use fcp_sbc_core::trunk_quality::TrunkQualityTracker;
 use std::sync::Arc;

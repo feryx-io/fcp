@@ -37,7 +37,10 @@ pub mod trunk_router;
 pub mod trunk_set;
 
 // Re-export config types for convenience
-pub use admission::{AdmissionAction, AdmissionConfig, TrunkCpsLimit};
+pub use admission::{
+    AdmissionAction, AdmissionConfig, AdmissionController, AdmissionCounters, AdmitResult,
+    TenantCallLimits, TrunkCpsLimit,
+};
 pub use config::{SbcConfig, SbcStorageConfig};
 pub use hmr::{
     HeaderManipulationConfig, HmrAction, HmrActionType, HmrCondition, HmrDirection, HmrMessageType,

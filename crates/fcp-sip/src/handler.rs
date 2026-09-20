@@ -655,6 +655,10 @@ pub struct SipMessageHandler {
     /// What each trunk carries on this node, against its limits (§7);
     /// `None` on a node that does not count.
     trunk_calls: Option<Arc<dyn crate::trunk_ingress::TrunkCallCounter>>,
+    /// What this node will carry, and what it refuses
+    /// (`docs/CAPACITY_AND_SURVIVABILITY.md` §5); `None` on a node that
+    /// keeps no limits of its own.
+    admission: Option<Arc<dyn crate::admission::NodeAdmission>>,
     /// Conference calls whose B-leg is being moved to another conference
     /// node (phase 5b), so a second REFER while one is in flight is refused.
     conference_migrations: Arc<dashmap::DashMap<fcp_b2bua_core::CallId, ()>>,
@@ -1007,6 +1011,7 @@ impl SipMessageHandler {
             inbound_trunks: None,
             tenant_rules: None,
             trunk_calls: None,
+            admission: None,
             call_signer: None,
             conference_migrations: Arc::new(dashmap::DashMap::new()),
         };
@@ -1115,6 +1120,16 @@ impl SipMessageHandler {
         calls: Option<Arc<dyn crate::trunk_ingress::TrunkCallCounter>>,
     ) -> Self {
         self.trunk_calls = calls;
+        self
+    }
+
+    /// What this node will carry: its own limits and its tenants'
+    /// (`docs/CAPACITY_AND_SURVIVABILITY.md` §5).
+    pub fn with_admission(
+        mut self,
+        admission: Option<Arc<dyn crate::admission::NodeAdmission>>,
+    ) -> Self {
+        self.admission = admission;
         self
     }
 
@@ -2560,6 +2575,39 @@ impl SipMessageHandler {
 
         // Store call in CallManager
         let call_id = self.call_manager.create_call(call);
+
+        // What this node and this tenant will carry
+        // (`docs/CAPACITY_AND_SURVIVABILITY.md` §5). Checked before the
+        // work of a call, and never for an emergency call.
+        if let (Some(admission), None) = (&self.admission, &emergency) {
+            if let Err(refusal) = admission.admit(&call_id.to_string(), &tenant_id) {
+                info!(
+                    call_id = %call_id,
+                    tenant_id = %tenant_id,
+                    source = %peer,
+                    reason = %refusal.as_str(),
+                    "Refusing INVITE: {}",
+                    refusal.detail()
+                );
+                let mut response = self.create_simple_response(request, 503, "Service Unavailable");
+                let _ = response.headers_mut().push(
+                    SmolStr::new("Retry-After"),
+                    SmolStr::new(admission.retry_after_secs().to_string()),
+                );
+                let _ = response.headers_mut().push(
+                    SmolStr::new("Reason"),
+                    SmolStr::new(format!(
+                        "SIP;cause=503;text=\"{}\"",
+                        refusal.detail().to_ascii_lowercase()
+                    )),
+                );
+                handle.send_final(response).await;
+                let _ = self
+                    .call_manager
+                    .terminate_call(&call_id, Some(refusal.detail().to_string()));
+                return Ok(());
+            }
+        }
 
         // A carrier's call counts against the trunk it arrived on, which may
         // be at its limit (`docs/TENANT_TRUNKS.md` §7). An emergency call is
@@ -10067,6 +10115,37 @@ impl SipMessageHandler {
         peer_addr: std::net::SocketAddr,
     ) -> sip_core::Response {
         debug!(transport = ?transport, has_stream = stream.is_some(), peer = %peer_addr, "Handling REGISTER request");
+
+        // A flood is refused before any credential work, so it never
+        // reaches the store (`docs/CAPACITY_AND_SURVIVABILITY.md` §5).
+        if let Some(admission) = &self.admission {
+            let aor = sip_parse::header(request.headers(), "To")
+                .map(|to| {
+                    let to = to.as_str();
+                    to.split('<')
+                        .nth(1)
+                        .and_then(|s| s.split('>').next())
+                        .unwrap_or(to)
+                        .trim()
+                        .to_string()
+                })
+                .unwrap_or_default();
+            if let Err(refusal) = admission.admit_register(peer_addr.ip(), &aor) {
+                warn!(
+                    aor = %aor,
+                    source = %peer_addr,
+                    reason = %refusal.as_str(),
+                    "Refusing REGISTER: {}",
+                    refusal.detail()
+                );
+                let mut response = self.create_simple_response(request, 503, "Service Unavailable");
+                let _ = response.headers_mut().push(
+                    SmolStr::new("Retry-After"),
+                    SmolStr::new(admission.retry_after_secs().to_string()),
+                );
+                return response;
+            }
+        }
 
         match &self.registrar {
             Some(registrar) => {

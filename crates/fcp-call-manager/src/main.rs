@@ -551,6 +551,27 @@ async fn main() -> Result<()> {
     let trunk_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>;
     let trunk_set = Arc::new(fcp_sbc_core::TrunkSet::platform_only(config.trunks.clone()));
     trunk_set.resolve_names().await;
+    // What this node will carry, and what it refuses
+    // (`docs/CAPACITY_AND_SURVIVABILITY.md` §5). The trunk set reads every
+    // tenant on its refresh tick, so it is where the tenants' own limits
+    // come from.
+    let admission = Arc::new(
+        fcp_sbc_core::AdmissionController::new(config.admission())
+            .with_tenant_limits(Arc::clone(&trunk_set) as Arc<dyn fcp_sbc_core::TenantCallLimits>),
+    );
+    {
+        let limits = config.admission();
+        if limits.caps_anything() {
+            info!(
+                max_cps = limits.max_cps,
+                max_concurrent_calls = limits.max_concurrent_calls,
+                max_concurrent_registrations = limits.max_concurrent_registrations,
+                max_register_cps_per_source = limits.max_register_cps_per_source,
+                max_register_cps_per_aor = limits.max_register_cps_per_aor,
+                "Admission limits in force"
+            );
+        }
+    }
     let trunk_health_monitor = Arc::new(TrunkHealthMonitor::new(&config.trunks));
     let trunk_health: Option<Arc<TrunkHealthMonitor>> = Some(Arc::clone(&trunk_health_monitor));
     // A trunk's channels and calls per second are its carrier's: its
@@ -746,11 +767,37 @@ async fn main() -> Result<()> {
     call_manager_inner.set_cdr_writer(cdr_writer.clone());
     {
         let trunk_calls = Arc::clone(&trunk_calls);
+        let admission = Arc::clone(&admission);
         call_manager_inner.set_on_ended(Arc::new(move |call_id| {
-            fcp_sip::trunk_ingress::TrunkCallCounter::ended(&*trunk_calls, &call_id.to_string())
+            let id = call_id.to_string();
+            fcp_sip::trunk_ingress::TrunkCallCounter::ended(&*trunk_calls, &id);
+            // The place the call held on this node and against its tenant
+            // (`docs/CAPACITY_AND_SURVIVABILITY.md` §5).
+            fcp_sip::admission::NodeAdmission::ended(&*admission, &id);
         }));
     }
     let call_manager = Arc::new(call_manager_inner);
+
+    // 15a0. How many registrations this node holds, for the limit that
+    // bounds them: bindings also expire on their own, so the count comes
+    // from the store rather than from an atomic
+    // (`docs/CAPACITY_AND_SURVIVABILITY.md` §5).
+    if config.admission().max_concurrent_registrations != 0 {
+        let admission = Arc::clone(&admission);
+        let store = Arc::clone(&dyn_storage);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(15));
+            loop {
+                interval.tick().await;
+                match fcp_core::RegistrationStore::registration_count(&*store).await {
+                    Ok(count) => admission.set_registration_count(count as u64),
+                    Err(e) => {
+                        warn!(error = %e, "Could not count registrations for the admission limit")
+                    }
+                }
+            }
+        });
+    }
 
     // 15a. Wire cluster active-call counter to CallManager
     #[cfg(feature = "storage-redis")]
@@ -1200,6 +1247,9 @@ async fn main() -> Result<()> {
     .with_trunk_calls(Some(
         Arc::clone(&trunk_calls) as Arc<dyn fcp_sip::trunk_ingress::TrunkCallCounter>
     ))
+    .with_admission(Some(
+        Arc::clone(&admission) as Arc<dyn fcp_sip::admission::NodeAdmission>
+    ))
     .with_tenant_rules(Some(Arc::clone(&tenant_rules)))
     .with_call_signer(call_signer.clone())
     .with_call_recorder(Arc::clone(&call_recorder));
@@ -1415,6 +1465,7 @@ async fn main() -> Result<()> {
         trunk_router: preview_router.clone(),
         tenant_rules: Some(Arc::clone(&tenant_rules)),
         routing_service: routing_service.clone(),
+        admission: Arc::clone(&admission),
         node_id: config.service.node_id.clone(),
     });
     let http_bind = config.http.bind_address;
