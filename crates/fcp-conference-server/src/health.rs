@@ -54,11 +54,17 @@ pub struct ConferenceState {
     /// Secret peer nodes must present on `/internal` routes; `None`
     /// disables those routes.
     pub cluster_secret: Option<String>,
+    /// Leaving service (`docs/CAPACITY_AND_SURVIVABILITY.md` §6).
+    pub drain: Arc<fcp_sip::drain::Drain>,
 }
 
 /// Public routes (no auth required).
 fn public_router() -> Router<Arc<ConferenceState>> {
-    Router::new().route("/health", get(health_handler))
+    Router::new()
+        .route("/health", get(health_handler))
+        // What a load balancer reads to stop choosing a draining node; it
+        // has no credential to present (§6).
+        .route("/ready", get(ready_handler))
 }
 
 /// Protected routes (auth required when enabled).
@@ -66,6 +72,11 @@ fn protected_router() -> Router<Arc<ConferenceState>> {
     Router::new()
         .route("/status", get(status_handler))
         .route("/metrics", get(metrics_handler))
+        // Leaving service: start a drain, or call one off (§6).
+        .route(
+            "/drain",
+            post(start_drain_handler).delete(stop_drain_handler),
+        )
         // Meeting CRUD (persistent config in DB)
         .route("/meetings", get(list_meetings_handler))
         .route("/meetings", post(create_meeting_handler))
@@ -474,12 +485,43 @@ async fn status_handler(State(state): State<Arc<ConferenceState>>) -> Json<serde
         "active_rooms": active_rooms.len(),
         "total_participants": total_participants,
         "draining": state.conference_handler.is_draining(),
+        "callers": state.conference_handler.node_callers(),
+        "drain_wait_secs": state.drain.wait_secs(),
         "video_capacity": state
             .conference_handler
             .video_capacity()
             .map(|c| c.json())
             .unwrap_or(serde_json::Value::Null),
     }))
+}
+
+/// Whether this node should be sent callers: `503` while it is draining,
+/// so a load balancer or a placement rule stops choosing it before it
+/// stops taking them (`docs/CAPACITY_AND_SURVIVABILITY.md` §6).
+/// `/health` keeps answering `200`, so a liveness probe does not kill the
+/// process mid-drain — or mid-migration.
+async fn ready_handler(State(state): State<Arc<ConferenceState>>) -> impl IntoResponse {
+    drain_answer(fcp_sip::drain::ready_body(&state.drain).await)
+}
+
+/// Start a drain: this node takes no new callers, moves the ones it has
+/// to other nodes (`docs/DISTRIBUTED_CONFERENCING.md` phase 5), waits for
+/// whoever is left until `drain_wait_secs`, and hangs them up saying why.
+/// The node keeps running — a drain is not a shutdown.
+async fn start_drain_handler(State(state): State<Arc<ConferenceState>>) -> impl IntoResponse {
+    drain_answer(fcp_sip::drain::start_body(&state.drain).await)
+}
+
+/// Call a drain off: the node takes callers again, and its rooms — which
+/// the drain never tore down — carry on.
+async fn stop_drain_handler(State(state): State<Arc<ConferenceState>>) -> impl IntoResponse {
+    drain_answer(fcp_sip::drain::stop_body(&state.drain).await)
+}
+
+/// What the shared drain answered, as this router's response.
+fn drain_answer((code, body): (u16, serde_json::Value)) -> impl IntoResponse {
+    let code = StatusCode::from_u16(code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    (code, Json(body))
 }
 
 async fn metrics_handler(State(state): State<Arc<ConferenceState>>) -> impl IntoResponse {

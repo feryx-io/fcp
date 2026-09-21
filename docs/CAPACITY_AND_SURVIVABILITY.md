@@ -448,7 +448,7 @@ One PR each, in order.
 | 2b-1 ✅ v0.25.213 | **The shared drain, and the two nearest binaries.** The call manager's drain lifted out of `fcp-call-manager/src/{drain,health}.rs` into one place every routing binary can hold — `fcp-sip`, where the admission trait already lives — with the "end what is left" step supplied by the binary; then the SBC and the registrar on it: `[admission]` on the registrar, `POST`/`DELETE /drain`, `/ready` answering `503` while draining, the SIGTERM sequence with the second signal, and the shortened REGISTER expiry |
 | 2b-2 ✅ v0.25.214 | **The application servers.** `[admission]` and the drain on the IVR, the voicemail server and the presence server — the three phase 1 left with no limits at all — each ending what it is carrying in its own terms: a caller inside a flow, a message being recorded, a subscription to expire |
 | 2b-3 ✅ v0.25.215 | **The WebRTC gateway.** It has no health server at all, so: one, with `/health`, `/ready` and `/drain`; the `[admission]` section; and a drain that hands sessions to another node the way distributed conferencing's phase 5 migrates participants, rather than only refusing new ones |
-| 2b-4 | **The conference server, the badge and the runbook.** Its own drain — SIGTERM, `set_draining`, `start_draining()`, `drain_wait_secs`, REFER migration — aligned on the shared `draining` state and given `/ready` and `/drain`, without losing the migration; the drain badge and node state on the admin UI's cluster page; the rolling-restart procedure in `docs/CLUSTER_OPERATIONS_RUNBOOK.md` |
+| 2b-4 ✅ v0.25.216 | **The conference server, the badge and the runbook.** Its own drain — SIGTERM, `set_draining`, `start_draining()`, `drain_wait_secs`, REFER migration — aligned on the shared `draining` state and given `/ready` and `/drain`, without losing the migration; the drain badge and node state on the admin UI's cluster page; the rolling-restart procedure in `docs/CLUSTER_OPERATIONS_RUNBOOK.md` |
 | 3 | **The harness.** `fcp-loadgen` on `fcp-testkit`: the four profiles, the measurements, the JSON report, the budget flags; the small CI profile |
 | 4 | **What the numbers say.** Run it on the dev VM: calls per second and concurrent calls to first refusal, latency percentiles, memory per call, registration storm behaviour. Fix what it finds — this is where the defects are — and record the numbers here, in `docs/DEPLOYMENT.md` and in the heartbeat as a published capacity budget, the shape video's already has |
 | 5 | **Across the cluster.** Tenant concurrency and trunk channels leased in Redis with a per-node fallback; placement by headroom among serving nodes in region; load, headroom and limits on the admin UI's cluster and tenant pages |
@@ -682,6 +682,40 @@ the operator token — while forge-api's `/health` stays exactly as it was,
 answering `200` through a drain. And a session that ends lingers in the
 list for a minute so a browser can read why; `carrying()` counts only live
 ones, or a drain would wait out that minute with nothing left to carry.
+
+*Phase 2b-4 shipped 2026-09-21 (v0.25.216).* The node that had a drain
+before the platform did is on the platform's, and phase 2 is done: every
+routing binary answers `/ready` and `/drain`, and leaves service the same
+way.
+
+**What the conference server kept is the part that is its own.** Before
+anyone is waited for, it asks the holder of each caller's leg to move that
+caller to another node (`docs/DISTRIBUTED_CONFERENCING.md` phase 5). That
+needed one addition to the shared sequence: `DrainTarget::on_drain_start`,
+run once new work is refused and before the clock starts, so the wait is
+for whoever could not be moved. A drain cut short — `end_now`, a second
+signal — skips it, because an operator who will not wait will not wait for
+a migration either.
+
+**What it gave up is having a drain of its own.** Its `draining` flag is
+gone; `is_draining()` is the node's admission's answer, so `POST /drain`
+refuses INVITEs exactly as SIGTERM did, `DELETE /drain` lifts the refusal
+(which the old flag could not do, having no way back), and a refusal now
+carries `Retry-After` like every other one on the platform. `[admission]`
+is a section it reads at last, and `end_remaining` hangs the remaining
+callers up with a `Reason` rather than calling the handler's `shutdown()`,
+which tears the rooms down — right for a process that is stopping, wrong
+for a node that has just been told to serve again.
+
+**The operator's two views.** The admin UI's cluster page shows a
+`draining` badge beside each node's status and a count of draining nodes,
+from the `draining` field the heartbeat has carried since distributed
+conferencing phase 4 and nothing had ever displayed. And
+`docs/CLUSTER_OPERATIONS_RUNBOOK.md`, which until now said FCP had no
+drain mode and that a rolling restart drops calls, has the procedure: set
+`drain_wait_secs`, `POST /drain`, watch `/status`, stop, restart, check
+`/ready` — with a table of what each kind of node does with what it is
+carrying, and the load balancer pointed at `/ready` rather than `/health`.
 
 ## 14. Not in scope
 

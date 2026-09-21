@@ -48,6 +48,16 @@ pub trait DrainTarget: Send + Sync {
     /// ended.
     async fn end_remaining(&self) -> usize;
 
+    /// Work this binary does once the node has started refusing and
+    /// before the wait begins. Most have none: they refuse, wait, and end
+    /// what is left. The conference server moves its callers to other
+    /// nodes here, so that the wait is for whoever could not be moved
+    /// (`docs/DISTRIBUTED_CONFERENCING.md` phase 5).
+    ///
+    /// A drain cut short — a second signal, or `end_now` — skips it: an
+    /// operator who will not wait will not wait for a migration either.
+    async fn on_drain_start(&self) {}
+
     /// Tell the cluster this node is leaving, or serving again. A node
     /// that is not in a cluster has nothing to tell.
     async fn advertise(&self, _draining: bool) {}
@@ -222,6 +232,14 @@ impl Drain {
     /// left at the deadline. Returns how many were ended, or `None` if the
     /// drain was called off while waiting.
     pub async fn wait_then_end(&self, generation: u64) -> Option<usize> {
+        // Whatever this binary does before waiting — the conference
+        // server's migration — happens with new work already refused,
+        // and before the clock starts, so the wait is for what is left
+        // after it.
+        self.target.on_drain_start().await;
+        if !self.is_current(generation) {
+            return None;
+        }
         let started = Instant::now();
         let deadline = started + self.wait;
         while self.carrying().await > 0 && Instant::now() < deadline {
@@ -427,6 +445,11 @@ mod tests {
         calls: AtomicUsize,
         ended: AtomicUsize,
         advertised: AtomicUsize,
+        /// How many callers this node moves elsewhere before it waits —
+        /// the conference server's migration, in the test's terms.
+        moves: AtomicUsize,
+        /// How many times it was asked to.
+        moved: AtomicUsize,
     }
 
     #[async_trait]
@@ -441,6 +464,13 @@ mod tests {
         }
         async fn advertise(&self, _draining: bool) {
             self.advertised.fetch_add(1, Ordering::SeqCst);
+        }
+        async fn on_drain_start(&self) {
+            self.moved.fetch_add(1, Ordering::SeqCst);
+            let moves = self.moves.load(Ordering::SeqCst);
+            let left = self.calls.load(Ordering::SeqCst);
+            self.calls
+                .store(left.saturating_sub(moves), Ordering::SeqCst);
         }
     }
 
@@ -478,6 +508,41 @@ mod tests {
 
         assert_eq!(drain.wait_then_end(generation).await, Some(2));
         assert_eq!(node.ended.load(Ordering::SeqCst), 2, "both got their BYE");
+    }
+
+    /// What a binary does before the wait runs once, with new work
+    /// already refused, and what it clears is not waited for
+    /// (`docs/DISTRIBUTED_CONFERENCING.md` phase 5, the conference
+    /// server's migration).
+    #[tokio::test(start_paused = true)]
+    async fn what_a_node_does_before_waiting_runs_first() {
+        let node = Arc::new(Node::default());
+        node.calls.store(1, Ordering::SeqCst);
+        node.moves.store(1, Ordering::SeqCst);
+        let (drain, _) = drain(Arc::clone(&node), 30);
+        let generation = drain.start().await;
+        assert_eq!(node.moved.load(Ordering::SeqCst), 0, "not before the drain");
+
+        assert_eq!(drain.wait_then_end(generation).await, Some(0));
+        assert_eq!(node.moved.load(Ordering::SeqCst), 1, "once");
+        assert_eq!(
+            node.ended.load(Ordering::SeqCst),
+            0,
+            "the one caller left on its own, so nothing was hung up"
+        );
+    }
+
+    /// A drain cut short does not move anyone: `end_now` is what a second
+    /// signal asks for.
+    #[tokio::test(start_paused = true)]
+    async fn ending_now_skips_what_comes_before_the_wait() {
+        let node = Arc::new(Node::default());
+        node.calls.store(2, Ordering::SeqCst);
+        let (drain, _) = drain(Arc::clone(&node), 3600);
+        drain.start().await;
+
+        assert_eq!(drain.end_now().await, 2);
+        assert_eq!(node.moved.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test(start_paused = true)]

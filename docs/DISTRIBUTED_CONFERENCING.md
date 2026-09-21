@@ -413,7 +413,17 @@ still holds, as in phase 2.
 
 ### Taking a node down: draining
 
-On SIGTERM / SIGINT a conference node:
+Since capacity phase 2b-4 (`docs/CAPACITY_AND_SURVIVABILITY.md` §6) this
+is the platform's drain, not the conference server's own: it is the same
+sequence every routing binary runs, and it starts either way —
+
+```bash
+curl -sX POST   http://node:8090/drain   # leave service, node keeps running
+curl -s         http://node:8090/ready   # 503 while draining; /health stays 200
+curl -sX DELETE http://node:8090/drain   # serve again, rooms untouched
+```
+
+— or on SIGTERM / SIGINT, after which the node stops. Either way it:
 
 1. **Advertises `draining`** in cluster membership, published immediately
    and with every later heartbeat. Placement never sends a new
@@ -423,12 +433,17 @@ On SIGTERM / SIGINT a conference node:
 2. **Refuses new callers** (503). Trunk INVITEs from peers are still
    accepted, so the callers already here keep hearing the rest of the
    room until they leave.
-3. **Waits up to `service.drain_wait_secs`** (default 0) for its callers to
-   leave on their own, checking once a second.
-4. **Hangs up whoever remains**: BYEs go out 32 at a time, each bounded
-   to 5 s, under the existing `service.shutdown_timeout_secs`.
-5. **Leaves every room in the registry** (awaited, not fire-and-forget)
-   and removes its heartbeat.
+3. **Moves the callers it can** to other nodes by REFER (phase 5, below),
+   before anyone is waited for.
+4. **Waits up to `service.drain_wait_secs`** (default 0) for whoever is
+   left to leave on their own, checking once a second.
+5. **Hangs up whoever remains**, each with
+   `Reason: SIP;cause=200;text="node draining"` and its record; trunks
+   are left to the teardown.
+6. On a shutdown only: **leaves every room in the registry** (awaited,
+   not fire-and-forget) and removes its heartbeat. A drain called off
+   before the deadline does none of this — the node is serving again,
+   with its rooms as they were.
 
 ```toml
 [service]

@@ -237,7 +237,20 @@ the old session. The heartbeat gained `public_url` (`[http] public_url`)
 because `http_address` is a bind address and no use to a browser, and
 `fcp_cluster::choose_handover_node` picks among serving peers of the same
 kind, in region, least loaded. A `/v1/calls` session is not moved: the far
-end is a phone, and redialling would be a second call. Ten open questions, every recommendation taken on
+end is a phone, and redialling would be a second call. Phase 2b-4 done
+(v0.25.216) and with it phase 2: the conference server — the node that had
+a drain before the platform did — is on the platform's. It keeps the part
+that is its own (REFER its callers to other nodes before waiting, through
+a new `DrainTarget::on_drain_start` hook) and gives up having a drain of
+its own: its `draining` flag is gone, `is_draining()` is the node
+admission's answer, so `POST /drain` refuses INVITEs exactly as SIGTERM
+did and `DELETE /drain` lifts the refusal — which the old flag had no way
+back from — with `Retry-After` on the refusal and `[admission]` read at
+last. The admin UI's cluster page shows a `draining` badge per node and a
+count, from the heartbeat field nothing had ever displayed; and
+`docs/CLUSTER_OPERATIONS_RUNBOOK.md`, which said FCP had no drain mode and
+that a rolling restart drops calls, now carries the procedure and what
+each kind of node does with what it is carrying. Ten open questions, every recommendation taken on
 2026-09-20: one admission controller in `fcp-sbc-core` for every routing
 binary; node limits only where a deployment wrote one down; the tenant limit
 per node until phase 5 leases it cluster-wide; a BYE with a `Reason` and a

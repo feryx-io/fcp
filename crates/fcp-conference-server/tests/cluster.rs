@@ -7,7 +7,7 @@
 
 use fcp_testkit::cluster::{ClusterOptions, ConferenceCluster};
 use fcp_testkit::media::allocate_port_pair;
-use fcp_testkit::smoke::loopback;
+use fcp_testkit::smoke::{http_get, http_request, loopback};
 use fcp_testkit::{bins, free_port, Phone, PhoneEvent, Seed, Service, TestDatabase};
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -346,6 +346,137 @@ carol saw: {carol_saw:#?}
             .await;
     }
 
+    assert_eq!(alice_call.hangup().await.unwrap(), 200);
+    assert_eq!(bob_call.hangup().await.unwrap(), 200);
+    cluster.finish().await;
+}
+
+/// A drain started over HTTP is the same drain SIGTERM runs, and it can
+/// be called off (`docs/CAPACITY_AND_SURVIVABILITY.md` §6, phase 2b-4).
+///
+/// Alice's node is told to leave service while it keeps running: it
+/// answers `503` on `/ready`, says `draining` on `/status`, refuses a new
+/// caller with `503`, and moves Alice to the other node exactly as
+/// stopping it would. Then the drain is called off and the node takes
+/// callers again — with its rooms, and the drain never having touched
+/// them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_drain_over_http_moves_the_callers_and_can_be_called_off() {
+    let mut cluster = cluster_or_skip!();
+    cluster.seed.meeting(ROOM, None, None).await;
+    let alice = cluster.registered_phone("alice", "1001").await;
+    let bob = cluster.registered_phone("bob", "1002").await;
+
+    let alice_call = alice.call(ROOM).await.unwrap();
+    if let Err(e) = alice_call.answered(A_WHILE).await {
+        cluster
+            .fail(&format!("Alice was not admitted: {e}"), &alice)
+            .await;
+    }
+    let (a_node, alice_id) = match cluster.where_is("alice").await {
+        Some(x) => x,
+        None => cluster.fail("Alice is on no node", &alice).await,
+    };
+    let bob_call = bob.call(ROOM).await.unwrap();
+    if let Err(e) = bob_call.answered(A_WHILE).await {
+        cluster
+            .fail(&format!("Bob was not admitted: {e}"), &bob)
+            .await;
+    }
+    let (b_node, _) = match cluster.where_is("bob").await {
+        Some(x) => x,
+        None => cluster.fail("Bob is on no node", &bob).await,
+    };
+    assert_ne!(a_node, b_node, "the room is spread");
+    let draining_http = cluster.nodes.nodes[a_node].http;
+
+    // Serving, then leaving service — the node keeps running throughout.
+    let (code, _) = http_get(&loopback(draining_http, "/ready")).await.unwrap();
+    assert_eq!(code, 200, "the node is serving");
+    let (code, body) = http_request("POST", &loopback(draining_http, "/drain"), &[], Some("{}"))
+        .await
+        .unwrap();
+    assert_eq!(code, 200, "{body}");
+    assert!(body.contains("draining"), "{body}");
+    let (code, _) = http_get(&loopback(draining_http, "/ready")).await.unwrap();
+    assert_eq!(code, 503, "a draining node is not ready for callers");
+    let (code, body) = http_get(&loopback(draining_http, "/status")).await.unwrap();
+    assert_eq!(code, 200);
+    assert!(body.contains("\"draining\":true"), "{body}");
+    let (code, body) = http_get(&loopback(draining_http, "/health")).await.unwrap();
+    assert_eq!(code, 200, "health stays 200 through a drain: {body}");
+
+    // A caller dialling the draining node is refused, not left ringing.
+    let carol = Phone::new("carol", "x", REALM, cluster.nodes.nodes[a_node].sip)
+        .await
+        .unwrap();
+    let carol_call = carol.call(ROOM).await.unwrap();
+    match carol_call.answered(SOON).await {
+        Ok(()) => {
+            cluster
+                .fail("a draining node admitted a new caller", &carol)
+                .await
+        }
+        Err(_) => assert!(
+            matches!(
+                carol_call.phase(),
+                fcp_testkit::phone::CallPhase::Failed(503)
+            ),
+            "a draining node refuses with 503, not {:?}",
+            carol_call.phase()
+        ),
+    }
+
+    // Alice is moved to the other node, without redialling.
+    let deadline = tokio::time::Instant::now() + A_WHILE;
+    loop {
+        if cluster.nodes.nodes[b_node]
+            .participants(ROOM)
+            .await
+            .contains(&alice_id)
+        {
+            break;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            cluster
+                .fail("Alice was never moved off the draining node", &alice)
+                .await;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert_eq!(
+        alice_call.phase(),
+        fcp_testkit::phone::CallPhase::Answered,
+        "Alice's call is still up"
+    );
+    bob_call.media().play_tone(880.0, 8000);
+    if !alice_call.media().heard(880, Duration::from_secs(10)).await {
+        cluster
+            .fail("Alice does not hear Bob after the move", &alice)
+            .await;
+    }
+
+    // Called off: the node serves again.
+    let (code, body) = http_request("DELETE", &loopback(draining_http, "/drain"), &[], None)
+        .await
+        .unwrap();
+    assert_eq!(code, 200, "{body}");
+    assert!(body.contains("serving"), "{body}");
+    let (code, _) = http_get(&loopback(draining_http, "/ready")).await.unwrap();
+    assert_eq!(code, 200, "serving again");
+
+    // And takes callers again: the same phone that was refused gets in.
+    let carol_again = carol.call(ROOM).await.unwrap();
+    if let Err(e) = carol_again.answered(A_WHILE).await {
+        cluster
+            .fail(
+                &format!("the node did not take a caller after the drain was called off: {e}"),
+                &carol,
+            )
+            .await;
+    }
+
+    assert_eq!(carol_again.hangup().await.unwrap(), 200);
     assert_eq!(alice_call.hangup().await.unwrap(), 200);
     assert_eq!(bob_call.hangup().await.unwrap(), 200);
     cluster.finish().await;
