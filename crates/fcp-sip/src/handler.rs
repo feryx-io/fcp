@@ -1720,7 +1720,10 @@ impl SipMessageHandler {
     }
 
     /// Whether an INVITE comes from a device registered here: its From
-    /// AoR has a binding at the address it came from.
+    /// AoR has a live registration *at the address the INVITE came from*
+    /// — the address the REGISTER arrived from where the registrar kept
+    /// one, else the contact's parsed host
+    /// (`crate::registrar::registration_is_at`, `docs/EDGE_SECURITY.md` §2.2).
     async fn is_registered_device(
         &self,
         request: &sip_core::Request,
@@ -1745,14 +1748,25 @@ impl SipMessageHandler {
                 }
             });
             if let Some(aor) = from_aor {
-                registrar
-                    .get_registrations(&aor)
-                    .await
-                    .map(|regs| {
-                        regs.iter()
-                            .any(|binding| binding.contact().contains(&peer_ip.to_string()))
-                    })
-                    .unwrap_or(false)
+                let rows = match registrar.get_registration_rows(&aor).await {
+                    Ok(rows) => rows,
+                    Err(e) => {
+                        debug!(aor = %aor, error = %e, "No registrations to place this INVITE's caller");
+                        return false;
+                    }
+                };
+                let matched = rows
+                    .iter()
+                    .any(|reg| crate::registrar::registration_is_at(reg, peer_ip));
+                if !matched && !rows.is_empty() {
+                    warn!(
+                        aor = %aor,
+                        source = %peer_ip,
+                        bindings = rows.len(),
+                        "INVITE claims a registered user that is registered somewhere else"
+                    );
+                }
+                matched
             } else {
                 false
             }

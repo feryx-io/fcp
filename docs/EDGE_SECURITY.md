@@ -1,7 +1,7 @@
 # Edge Security — Design
 
 Status: **agreed** (2026-09-21), survey done, Q1 and Q3 settled by the
-user; phases not started. Chosen
+user; **phase 1 done** (v0.25.222). Chosen
 after the capacity and survivability project closed.
 
 One document for what an internet-facing FCP node exposes: **who may place
@@ -54,7 +54,7 @@ it, a carrier-grade NAT pool — can place calls **as that user**, at that
 tenant's cost. This is the ordinary toll-fraud shape, and challenging
 INVITEs (RFC 3261 §22) is the ordinary answer.
 
-### 2.2 The registration check matches the peer as a *substring*
+### 2.2 The registration check matches the peer as a *substring* — fixed (phase 1)
 
 ```rust
 regs.iter().any(|binding| binding.contact().contains(&peer_ip.to_string()))
@@ -67,6 +67,17 @@ host at **10.0.0.1** is therefore authorised as the device registered at
 of a LAN. The same holds wherever an address appears inside a contact's
 port or parameters. The check should compare the parsed host of the
 binding, not search the URI text.
+
+Since v0.25.222 it does. `registrar::registration_is_at` places a device
+by the address its REGISTER arrived from where the registrar kept one,
+and otherwise by the contact's **parsed** host, compared as an address
+with IPv4-mapped IPv6 normalised on both sides; a contact whose host is a
+name places nobody, since resolving it would let a device's DNS decide
+who may call. The admission gate reads the stored registration rows
+rather than the bindings built from them
+(`FcpRegistrar::get_registration_rows`), because only the rows carry the
+source address. An INVITE naming a user who is registered *somewhere
+else* is logged before it is refused.
 
 ### 2.3 A peer names the record its call is filed under
 
@@ -136,7 +147,7 @@ One PR each, in order.
 
 | Phase | What |
 |---|---|
-| 1 | **The registration check, and a test that fails today.** Compare the binding contact's parsed host, and prefer the stored `source_address` where there is one (Q3); a contact's port or parameters can no longer authorise a stranger. Cheap, contained, and the clearest defect found. |
+| 1 ✅ | **The registration check, and a test that fails today.** Compare the binding contact's parsed host, and prefer the stored `source_address` where there is one (Q3); a contact's port or parameters can no longer authorise a stranger. Cheap, contained, and the clearest defect found. |
 | 2 | **Authenticate INVITE.** Digest challenge on INVITE for registered users, with the credentials the registrar already uses; `[registrar] auth_invites`, off by default for one release and warned about, then on (Q1). An unauthenticated INVITE is answered `401` with a challenge, not `403` (Q2), so a phone that has lost its credentials can recover. Source-based admission remains for trunks and trusted edges, which have their own proof. |
 | 3 | **One gate for what a peer claims.** `X-FCP-Call-Id` believed only from a trusted edge or an authenticated inter-node peer, the same way its siblings are; an audit of every `X-FCP-*` reader with a test each; the carrier-injected identity headers stripped or re-asserted, never passed through. |
 | 4 | **The edge defended.** Per-source INVITE limits and an IP ACL in the shared handler, so the call manager gets what the SBC has; a malformed-SIP policy; sensible defaults that refuse nothing a working deployment does today. |
@@ -149,7 +160,12 @@ One PR each, in order.
   without credentials.
 - Test floor: a phone that is *not* registered cannot place a call; a
   phone at a neighbouring address cannot place one as its neighbour; a
-  registered phone still can, with digest.
+  registered phone still can, with digest. Noted in phase 1: the floor
+  runs every phone on one host, and the gate admits **any loopback peer**
+  as local before it looks at registrations
+  (`handler.rs`, `is_local`), so source-based refusal cannot be shown
+  there — those two scenarios wait on phase 2, where a digest challenge
+  refuses a caller the floor can actually be. Phase 1's proof is unit.
 - `fcp-loadgen` as the flood generator — the register-storm profile is
   most of one already — asserting that one source's flood does not refuse
   another source's calls.
