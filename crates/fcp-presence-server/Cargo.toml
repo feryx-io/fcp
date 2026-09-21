@@ -22,6 +22,8 @@ path = "src/main.rs"
 fcp-core = { path = "../fcp-core" }
 fcp-sip = { path = "../fcp-sip", features = ["tls", "ws"] }
 fcp-presence = { path = "../fcp-presence" }
+fcp-sbc-core = { path = "../fcp-sbc-core" }
+async-trait = "0.1"
 fcp-events = { path = "../fcp-events" }
 
 # Storage backend

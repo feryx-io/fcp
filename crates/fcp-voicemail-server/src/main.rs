@@ -33,6 +33,7 @@ use tracing::{info, warn};
 
 mod cli;
 mod config;
+mod drain;
 mod health;
 mod storage;
 
@@ -677,6 +678,13 @@ async fn main() -> Result<()> {
         "Voicemail flow routes loaded"
     );
 
+    // 18b. What this node accepts (`docs/CAPACITY_AND_SURVIVABILITY.md`
+    // §5). Every limit is optional: a voicemail server that writes no
+    // `[admission]` section keeps none, as it always did.
+    let admission = Arc::new(fcp_sbc_core::AdmissionController::new(
+        config.admission.resolve(),
+    ));
+
     // 19. Create SipMessageHandler — flow_handler = Some(...)
     let handler = Arc::new(
         SipMessageHandler::new(
@@ -709,8 +717,31 @@ async fn main() -> Result<()> {
             None,          // cluster_parking
             String::new(), // node_id
         )?
-        .with_default_tenant_id(config.service.default_tenant_id),
+        .with_default_tenant_id(config.service.default_tenant_id)
+        .with_admission(Some(
+            Arc::clone(&admission) as Arc<dyn fcp_sip::admission::NodeAdmission>
+        )),
     );
+
+    // 19b. How this node leaves service
+    // (`docs/CAPACITY_AND_SURVIVABILITY.md` §6): the same sequence whether
+    // it starts at `POST /drain` or at SIGTERM, with the messages already
+    // spoken saved before the node stops.
+    #[cfg(feature = "storage-redis")]
+    let announcer = fcp_sbc_core::ClusterAnnouncer::maybe(_cluster_manager.clone());
+    #[cfg(not(feature = "storage-redis"))]
+    let announcer: Option<Arc<dyn fcp_sip::drain::DrainAnnouncer>> = None;
+    let drain = Arc::new(fcp_sip::drain::Drain::new(
+        Arc::clone(&admission) as Arc<dyn fcp_sip::admission::NodeAdmission>,
+        Arc::new(drain::CallersLeavingMessages::new(
+            fcp_sip::drain::NodeCalls::new(Arc::clone(&handler), Arc::clone(&call_manager))
+                .with_announcer(announcer),
+            Arc::clone(&voicemail_service),
+        )) as Arc<dyn fcp_sip::drain::DrainTarget>,
+        Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>,
+        config.service.node_id.clone(),
+        config.service.drain_wait_secs,
+    ));
 
     // 20. Create and start TransportListener
     let udp_bind: std::net::SocketAddr = config
@@ -798,6 +829,7 @@ async fn main() -> Result<()> {
         dyn_storage: Arc::clone(&dyn_storage),
         start_time: Instant::now(),
         api_token: config.http.api_token.clone(),
+        drain: Arc::clone(&drain),
     });
     let http_bind = config.http.bind_address;
     tokio::spawn(async move {
@@ -905,6 +937,18 @@ async fn main() -> Result<()> {
     }
 
     // 26. Graceful shutdown
+
+    // Leave service before stopping (`docs/CAPACITY_AND_SURVIVABILITY.md`
+    // §6): take no new calls, give the callers leaving a message until
+    // `drain_wait_secs` to finish, then hang up what is left — saving each
+    // message spoken so far. With `drain_wait_secs = 0` — the default —
+    // this is what it always was.
+    if config.service.drain_wait_secs > 0 || drain.is_draining() {
+        fcp_sip::drain::drain_for_shutdown(&drain).await;
+    } else {
+        drain.start().await;
+    }
+
     // Shutdown cluster manager
     #[cfg(feature = "storage-redis")]
     if let Some(ref cm) = _cluster_manager {

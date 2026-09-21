@@ -21,6 +21,15 @@ pub struct PresenceServerConfig {
     #[serde(default)]
     pub presence: PresenceSection,
 
+    /// What this node accepts, and what it refuses
+    /// (`docs/CAPACITY_AND_SURVIVABILITY.md` §5). Every limit is optional;
+    /// unset is unlimited, as it was before the section existed. A
+    /// draining node grants subscriptions no longer than
+    /// `drain_register_expiry_secs`, so its watchers come back somewhere
+    /// that is serving.
+    #[serde(default)]
+    pub admission: fcp_sbc_core::AdmissionSection,
+
     #[serde(default)]
     pub http: HttpSection,
 
@@ -53,6 +62,15 @@ pub struct ServiceSection {
 
     #[serde(default = "default_shutdown_timeout_secs")]
     pub shutdown_timeout_secs: u64,
+
+    /// Seconds a drain waits for this node's watchers to subscribe
+    /// somewhere else before it ends the subscriptions it still holds
+    /// (`docs/CAPACITY_AND_SURVIVABILITY.md` §6). A draining node grants
+    /// short subscriptions, so they come back within the minute. Zero —
+    /// the default — is what this binary always did: it stops where it
+    /// stands, telling every watcher as it goes.
+    #[serde(default)]
+    pub drain_wait_secs: u64,
 }
 
 fn default_service_type() -> String {
@@ -78,6 +96,7 @@ impl Default for ServiceSection {
             node_id: default_node_id(),
             default_tenant_id: default_tenant_id(),
             shutdown_timeout_secs: default_shutdown_timeout_secs(),
+            drain_wait_secs: 0,
         }
     }
 }

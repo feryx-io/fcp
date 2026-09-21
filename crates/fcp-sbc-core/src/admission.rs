@@ -810,7 +810,7 @@ impl NodeAdmission for AdmissionController {
         AdmissionController::set_draining(self, draining);
     }
 
-    fn register_expiry_cap(&self) -> Option<u32> {
+    fn drain_expiry_cap(&self) -> Option<u32> {
         if !self.is_draining() {
             return None;
         }
@@ -1430,10 +1430,10 @@ mod drain_tests {
             ..AdmissionConfig::unlimited()
         });
         let source: IpAddr = "198.51.100.11".parse().unwrap();
-        assert_eq!(ctrl.register_expiry_cap(), None);
+        assert_eq!(ctrl.drain_expiry_cap(), None);
 
         ctrl.set_draining(true);
-        assert_eq!(ctrl.register_expiry_cap(), Some(60));
+        assert_eq!(ctrl.drain_expiry_cap(), Some(60));
         // And the REGISTER itself is still answered: a device that is
         // moving needs somewhere to move from.
         assert!(ctrl.admit_register(source, "sip:alice@example.com").is_ok());
@@ -1444,7 +1444,7 @@ mod drain_tests {
             ..AdmissionConfig::unlimited()
         });
         ctrl.set_draining(true);
-        assert_eq!(ctrl.register_expiry_cap(), None);
+        assert_eq!(ctrl.drain_expiry_cap(), None);
     }
 }
 

@@ -92,10 +92,11 @@ pub trait NodeAdmission: Send + Sync {
     /// admission of its own has nothing to refuse with.
     fn set_draining(&self, _draining: bool) {}
 
-    /// The longest registration a draining node grants, in seconds, so a
-    /// device comes back soon and is placed on a node that is serving.
-    /// `None` while the node is serving, and for a deregistration.
-    fn register_expiry_cap(&self) -> Option<u32> {
+    /// The longest binding a draining node grants, in seconds — a
+    /// registration or a subscription — so the device or the watcher comes
+    /// back soon and is placed on a node that is serving. `None` while the
+    /// node is serving; it never applies to a request that asks to leave.
+    fn drain_expiry_cap(&self) -> Option<u32> {
         None
     }
 }
@@ -140,7 +141,7 @@ pub fn register_gate(
     // node that is serving. A deregistration is left exactly as it
     // arrived.
     match admission
-        .register_expiry_cap()
+        .drain_expiry_cap()
         .and_then(|cap| cap_register_expiry(request, cap))
     {
         Some(shortened) => RegisterGate::Shortened(Box::new(shortened)),
@@ -368,7 +369,7 @@ mod register_expiry_tests {
             fn set_draining(&self, draining: bool) {
                 self.draining.store(draining, Ordering::SeqCst);
             }
-            fn register_expiry_cap(&self) -> Option<u32> {
+            fn drain_expiry_cap(&self) -> Option<u32> {
                 self.draining().then_some(60)
             }
         }

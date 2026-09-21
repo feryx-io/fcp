@@ -13,7 +13,7 @@ use fcp_events::filter::EventType;
 use fcp_events::{EventFilter, EventPublisher, EventSubscriber, InMemoryEventBus};
 use fcp_sip::exports::IntegratedUAC;
 use fcp_sip::listener::{InboundMessageHandler, ListenerConfig, TransportListener};
-use fcp_sip::presence::{PresenceHandler, SipPresenceHandler};
+use fcp_sip::presence::SipPresenceHandler;
 use fcp_sip::transport::ConnectionPool;
 use fcp_sip::uac::SipUserAgentClient;
 use fcp_sip::{B2buaConfig, CallManager};
@@ -26,6 +26,7 @@ use std::time::{Duration, Instant};
 use tracing::{info, warn};
 
 mod config;
+mod drain;
 mod http_api;
 mod xcap_server;
 
@@ -252,7 +253,7 @@ async fn main() -> Result<()> {
                         );
                     let _handle = cm.start();
                     info!("Cluster membership started");
-                    Some(cm)
+                    Some(Arc::new(cm))
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "Failed to connect to Redis; cluster disabled");
@@ -282,13 +283,22 @@ async fn main() -> Result<()> {
     ));
     let local_uri = create_local_uri(&config)?;
     let local_addr = derive_local_addr(&config)?;
+    // What this node accepts, and what a draining one grants
+    // (`docs/CAPACITY_AND_SURVIVABILITY.md` §5, §6). Every limit is
+    // optional: a presence server that writes no `[admission]` section
+    // keeps none, as it always did.
+    let admission = Arc::new(fcp_sbc_core::AdmissionController::new(
+        config.admission.resolve(),
+    ));
+    let node_admission: Arc<dyn fcp_sip::admission::NodeAdmission> = Arc::clone(&admission) as _;
     let concrete_presence_handler = Arc::new({
         let handler = SipPresenceHandler::new(
             manager.clone(),
             Arc::clone(&uac),
             config.service.default_tenant_id,
             config.presence.default_subscription_expiry_secs,
-        );
+        )
+        .with_admission(Some(Arc::clone(&node_admission)));
         if config.sip.auth_enabled {
             handler.with_digest_auth(
                 Arc::clone(&dyn_storage) as Arc<dyn fcp_core::CredentialStore>,
@@ -325,8 +335,30 @@ async fn main() -> Result<()> {
             None,
             config.service.node_id.clone(),
         )?
-        .with_default_tenant_id(config.service.default_tenant_id),
+        .with_default_tenant_id(config.service.default_tenant_id)
+        .with_admission(Some(Arc::clone(&node_admission))),
     );
+
+    // How this node leaves service
+    // (`docs/CAPACITY_AND_SURVIVABILITY.md` §6): the same sequence whether
+    // it starts at `POST /drain` or at SIGTERM, and the watchers are what
+    // it waits for.
+    #[cfg(feature = "storage-redis")]
+    let announcer =
+        fcp_sbc_core::ClusterAnnouncer::maybe(_cluster_manager.as_ref().map(Arc::clone));
+    #[cfg(not(feature = "storage-redis"))]
+    let announcer: Option<Arc<dyn fcp_sip::drain::DrainAnnouncer>> = None;
+    let drain = Arc::new(fcp_sip::drain::Drain::new(
+        Arc::clone(&node_admission),
+        Arc::new(drain::Subscriptions::new(
+            manager.clone(),
+            Arc::clone(&concrete_presence_handler),
+            announcer,
+        )) as Arc<dyn fcp_sip::drain::DrainTarget>,
+        Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>,
+        config.service.node_id.clone(),
+        config.service.drain_wait_secs,
+    ));
 
     let udp_bind: std::net::SocketAddr = config
         .sip
@@ -481,6 +513,7 @@ async fn main() -> Result<()> {
     // Start HTTP API
     let app_state = Arc::new(http_api::AppState {
         manager: manager.clone(),
+        drain: Arc::clone(&drain),
         sip_handler: Some(Arc::clone(&concrete_presence_handler)),
         start_time: Instant::now(),
         api_token: config.http.api_token.clone(),
@@ -561,22 +594,20 @@ async fn main() -> Result<()> {
         }
     }
 
+    // Leave service before stopping (`docs/CAPACITY_AND_SURVIVABILITY.md`
+    // §6): take no new subscriptions, grant short ones so the watchers
+    // still here come back on a node that is serving, and tell whoever is
+    // left — `terminated;reason=probation` — at the deadline. With
+    // `drain_wait_secs = 0` — the default — this is what it always was:
+    // every watcher told at once.
+    fcp_sip::drain::drain_for_shutdown(&drain).await;
+
     // Shutdown cluster manager
     #[cfg(feature = "storage-redis")]
     if let Some(ref cm) = _cluster_manager {
         cm.shutdown().await;
     }
 
-    // Graceful shutdown
-    let all_watchers = manager.get_all_watchers_including_winfo();
-    if !all_watchers.is_empty() {
-        if let Err(e) = concrete_presence_handler
-            .send_terminated_notifies(&all_watchers, "probation")
-            .await
-        {
-            warn!(error = %e, "Failed to send shutdown NOTIFYs");
-        }
-    }
     manager.shutdown().await;
     listener.stop().await?;
     http_handle.abort();

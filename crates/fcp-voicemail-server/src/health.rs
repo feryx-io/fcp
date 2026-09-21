@@ -25,15 +25,24 @@ pub struct VoicemailState {
     pub dyn_storage: Arc<DynStorage>,
     pub start_time: Instant,
     pub api_token: Option<String>,
+    /// Leaving service (`docs/CAPACITY_AND_SURVIVABILITY.md` §6).
+    pub drain: Arc<fcp_sip::drain::Drain>,
 }
 
 fn public_router() -> Router<Arc<VoicemailState>> {
-    Router::new().route("/health", get(health_handler))
+    Router::new()
+        .route("/health", get(health_handler))
+        .route("/ready", get(ready_handler))
 }
 
 fn protected_router() -> Router<Arc<VoicemailState>> {
     Router::new()
         .route("/status", get(status_handler))
+        // Leaving service: start a drain, or call one off (§6).
+        .route(
+            "/drain",
+            post(start_drain_handler).delete(stop_drain_handler),
+        )
         .route("/voicemail/routes", get(list_routes_handler))
         .route("/voicemail/routes", post(add_route_handler))
         .route("/voicemail/routes/{did}", delete(remove_route_handler))
@@ -98,16 +107,47 @@ async fn status_handler(State(state): State<Arc<VoicemailState>>) -> Json<serde_
     let uptime = state.start_time.elapsed();
     let call_stats = state.call_manager.stats();
     let routes = state.flow_handler.get_all_routes().await;
+    let draining = state.drain.is_draining();
 
     Json(serde_json::json!({
-        "status": "healthy",
+        "status": if draining { "draining" } else { "healthy" },
         "service": "fcp-voicemail",
         "version": env!("CARGO_PKG_VERSION"),
         "uptime_seconds": uptime.as_secs(),
         "active_calls": call_stats.active,
         "total_calls": call_stats.total,
         "voicemail_routes": routes.len(),
+        "draining": draining,
     }))
+}
+
+/// Whether this node should be sent callers: `503` while it is draining,
+/// so a load balancer stops choosing it before it stops taking them
+/// (`docs/CAPACITY_AND_SURVIVABILITY.md` §6). `/health` keeps answering
+/// `200`, so a liveness probe does not kill the process mid-drain — or
+/// mid-message.
+async fn ready_handler(State(state): State<Arc<VoicemailState>>) -> impl IntoResponse {
+    answer(fcp_sip::drain::ready_body(&state.drain).await)
+}
+
+/// Start a drain: this node takes no new calls, lets the callers leaving a
+/// message finish until `drain_wait_secs`, and then hangs up what is left
+/// — saving each message spoken so far. The node keeps running: a drain is
+/// not a shutdown.
+async fn start_drain_handler(State(state): State<Arc<VoicemailState>>) -> impl IntoResponse {
+    answer(fcp_sip::drain::start_body(&state.drain).await)
+}
+
+/// Call a drain off: the node serves again, and the callers it was
+/// carrying — whom the drain never touched — carry on.
+async fn stop_drain_handler(State(state): State<Arc<VoicemailState>>) -> impl IntoResponse {
+    answer(fcp_sip::drain::stop_body(&state.drain).await)
+}
+
+/// What the shared drain answered, as this router's response.
+fn answer((code, body): (u16, serde_json::Value)) -> (StatusCode, Json<serde_json::Value>) {
+    let code = StatusCode::from_u16(code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    (code, Json(body))
 }
 
 async fn list_routes_handler(State(state): State<Arc<VoicemailState>>) -> Json<serde_json::Value> {

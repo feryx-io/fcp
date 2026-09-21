@@ -499,6 +499,13 @@ async fn main() -> Result<()> {
         "IVR flow routes loaded"
     );
 
+    // 17b. What this node accepts (`docs/CAPACITY_AND_SURVIVABILITY.md`
+    // §5). Every limit is optional: an IVR that writes no `[admission]`
+    // section keeps none, as it always did.
+    let admission = Arc::new(fcp_sbc_core::AdmissionController::new(
+        config.admission.resolve(),
+    ));
+
     // 18. Create SipMessageHandler — THE KEY DIFFERENCE: flow_handler = Some(...)
     let handler = Arc::new(
         SipMessageHandler::new(
@@ -531,8 +538,30 @@ async fn main() -> Result<()> {
             None,          // cluster_parking
             String::new(), // node_id
         )?
-        .with_default_tenant_id(config.service.default_tenant_id),
+        .with_default_tenant_id(config.service.default_tenant_id)
+        .with_admission(Some(
+            Arc::clone(&admission) as Arc<dyn fcp_sip::admission::NodeAdmission>
+        )),
     );
+
+    // 18b. How this node leaves service
+    // (`docs/CAPACITY_AND_SURVIVABILITY.md` §6): the same sequence whether
+    // it starts at `POST /drain` or at SIGTERM, and a caller in a flow is
+    // what it waits for.
+    #[cfg(feature = "storage-redis")]
+    let announcer = fcp_sbc_core::ClusterAnnouncer::maybe(_cluster_manager.clone());
+    #[cfg(not(feature = "storage-redis"))]
+    let announcer: Option<Arc<dyn fcp_sip::drain::DrainAnnouncer>> = None;
+    let drain = Arc::new(fcp_sip::drain::Drain::new(
+        Arc::clone(&admission) as Arc<dyn fcp_sip::admission::NodeAdmission>,
+        Arc::new(
+            fcp_sip::drain::NodeCalls::new(Arc::clone(&handler), Arc::clone(&call_manager))
+                .with_announcer(announcer),
+        ) as Arc<dyn fcp_sip::drain::DrainTarget>,
+        Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>,
+        config.service.node_id.clone(),
+        config.service.drain_wait_secs,
+    ));
 
     // 19. Create and start TransportListener
     let udp_bind: std::net::SocketAddr = config
@@ -619,6 +648,7 @@ async fn main() -> Result<()> {
         flow_handler: Arc::clone(&flow_handler),
         start_time: Instant::now(),
         api_token: config.http.api_token.clone(),
+        drain: Arc::clone(&drain),
     });
     let http_bind = config.http.bind_address;
     tokio::spawn(async move {
@@ -696,6 +726,16 @@ async fn main() -> Result<()> {
     }
 
     // 25. Graceful shutdown
+
+    // Leave service before stopping (`docs/CAPACITY_AND_SURVIVABILITY.md`
+    // §6): take no new calls, give the callers in a flow until
+    // `drain_wait_secs` to finish, then BYE what is left saying why. With
+    // `drain_wait_secs = 0` — the default — this is what it always was.
+    if config.service.drain_wait_secs > 0 || drain.is_draining() {
+        fcp_sip::drain::drain_for_shutdown(&drain).await;
+    } else {
+        drain.start().await;
+    }
 
     // Shutdown cluster manager
     #[cfg(feature = "storage-redis")]
