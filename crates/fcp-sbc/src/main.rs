@@ -733,6 +733,7 @@ async fn main() -> Result<()> {
                             .as_secs(),
                         version: env!("CARGO_PKG_VERSION").to_string(),
                         public_url: None,
+                        capacity: None,
                         draining: false,
                         region: fcp_cluster::resolve_region(
                             deploy_config.cluster.region.as_deref(),

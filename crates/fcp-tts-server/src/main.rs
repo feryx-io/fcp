@@ -311,6 +311,7 @@ async fn start_cluster(config: &TtsServerConfig) {
             .as_secs(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         public_url: None,
+        capacity: None,
         draining: false,
         region: fcp_cluster::resolve_region(config.cluster.region.as_deref()),
         video_budget: Vec::new(),

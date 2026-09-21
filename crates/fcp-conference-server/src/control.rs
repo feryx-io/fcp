@@ -339,6 +339,7 @@ mod tests {
             started_at: 0,
             version: String::new(),
             public_url: None,
+            capacity: None,
             draining: false,
             region: None,
             video_budget: Vec::new(),

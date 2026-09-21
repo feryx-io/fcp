@@ -243,6 +243,7 @@ async fn main() -> Result<()> {
                             .unwrap_or_default()
                             .as_secs(),
                         version: env!("CARGO_PKG_VERSION").to_string(),
+                        capacity: None,
                         draining: false,
                         // Where a draining peer sends its browsers
                         // (`docs/CAPACITY_AND_SURVIVABILITY.md` §6).

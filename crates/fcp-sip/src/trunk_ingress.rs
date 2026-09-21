@@ -23,14 +23,20 @@ pub enum TrunkLimit {
 /// The calls each trunk carries on this node (`docs/TENANT_TRUNKS.md` §7):
 /// its `max_concurrent_calls` and `cps_limit`, shared by the calls it
 /// brings in and the calls it takes out, per node (§13.3).
+#[async_trait::async_trait]
 pub trait TrunkCallCounter: Send + Sync {
     /// Admit `call` arriving on `trunk`, and count it, unless that would
     /// take the trunk past one of its limits.
-    fn admit(&self, call: &str, trunk: &Trunk) -> Result<(), TrunkLimit>;
+    ///
+    /// Asynchronous because a trunk's channels are the carrier's, not
+    /// this node's, so where there is a cluster they are counted across
+    /// it by a lease (`docs/CAPACITY_AND_SURVIVABILITY.md` §7). A node
+    /// with no cluster answers from its own counters without awaiting.
+    async fn admit(&self, call: &str, trunk: &Trunk) -> Result<(), TrunkLimit>;
 
     /// Count `call` as carried by `trunk` — an outbound leg it answered,
     /// which its selection already checked against its limits.
-    fn carried(&self, call: &str, trunk: &Trunk);
+    async fn carried(&self, call: &str, trunk: &Trunk);
 
     /// `call` has ended: release whatever it was counted against.
     fn ended(&self, call: &str);

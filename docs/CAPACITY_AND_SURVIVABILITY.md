@@ -1,11 +1,16 @@
 # Capacity and Survivability — Design
 
-Status: **agreed** (2026-09-20), every recommendation in §12 taken. Chosen
-after the tenant trunks project closed.
+Status: **complete** (2026-09-21), every phase shipped, every
+recommendation in §12 taken. Chosen after the tenant trunks project
+closed.
 
-One document for three things a carrier-grade platform is expected to do and
-this one does not: **know what it can carry**, **refuse what it cannot**, and
-**leave service without dropping calls**.
+One document for three things a carrier-grade platform is expected to do
+and this one did not: **know what it can carry**, **refuse what it
+cannot**, and **leave service without dropping calls**. It does all three
+now: every limit the API accepts is enforced on the call path, a tenant's
+contract and a carrier's channels are counted across the cluster, every
+routing binary drains without dropping a call, and what a node carries is
+measured by a harness in this repository rather than asserted.
 
 Read with `docs/TENANT_TRUNKS.md` (per-trunk limits, §9 observability),
 `docs/DISTRIBUTED_CONFERENCING.md` (draining and participant migration, the
@@ -452,7 +457,7 @@ One PR each, in order.
 | 3 ✅ v0.25.217 | **The harness.** `fcp-loadgen` on `fcp-testkit`: the four profiles, the measurements, the JSON report, the budget flags; the small CI profile |
 | 4 ✅ v0.25.218 | **What the numbers say.** Run it on the dev VM: calls per second and concurrent calls to first refusal, latency percentiles, memory per call, registration storm behaviour. Fix what it finds — this is where the defects are — and record the numbers here, in `docs/DEPLOYMENT.md` and in the heartbeat as a published capacity budget, the shape video's already has |
 | 5a ✅ v0.25.219 | **A tenant's contract, across the cluster.** `fcp_cluster::CallLeases`: a lease per call in Redis, scored by expiry so a dead node's calls fade; `NodeAdmission::admit` becomes async and the controller takes the lease on the way in, falling back to this node's own count when Redis cannot be read; a settling tick gives back what has ended and refreshes what is still up |
-| 5b | **The rest of it.** Trunk channels leased the same way; the heartbeat's `capacity` and `load`; placement by headroom among serving nodes in region; load, headroom and limits on the admin UI's cluster and tenant pages |
+| 5b ✅ v0.25.220 | **The rest of it.** Trunk channels leased the same way; the heartbeat's `capacity` and `load`; placement by headroom among serving nodes in region; load, headroom and limits on the admin UI's cluster and tenant pages |
 | 5 (as written) | **Across the cluster.** Tenant concurrency and trunk channels leased in Redis with a per-node fallback; placement by headroom among serving nodes in region; load, headroom and limits on the admin UI's cluster and tenant pages |
 
 Phase 1 stands alone: it is worth shipping even if nothing after it is built,
@@ -889,6 +894,39 @@ lease's expiry. The queue is bounded: what it drops lapses on its own.
 `[cluster] lease_tenant_calls` is on wherever a cluster is configured —
 the limit becomes correct rather than new, which decision 8 allows — and
 `lease_settle_secs` (5 s) paces the tick.
+
+*Phase 5b shipped 2026-09-21 (v0.25.220), and with it the project.*
+
+**A carrier's channels are the platform's to fill.** `TrunkCallCounter`
+is async now and a trunk's channels take leases like a tenant's calls —
+`leases:trunk:<key>`, the subject 5a left ready. An inbound call takes
+one at admission; an outbound leg the trunk answered takes one when it is
+answered, since it fills a channel just the same. Redis unreadable falls
+back to the per-node count, which is what tenant trunks 4b did and said
+it did.
+
+**The heartbeat says what a node will carry and what it is carrying**, at
+last with the reader that justifies it: `capacity` on `ClusterMember`
+(the `[admission]` limits, plus registrations and calls per second as
+they stand) beside the `active_calls` that was already there.
+
+**Placement prefers room, not idleness.** A node carrying ten calls of a
+hundred has more to give than one carrying two of four, and that is now
+the order — for conference rooms, for the least-loaded queries the queue
+and gateway use, and for the gateway's handover. Three rules keep it
+honest:
+
+- a node with no room left is chosen last;
+- a node that advertises no limit has **unknown** room, not infinite: it
+  is ranked on its calls, exactly as every node was before capacity was
+  published, so a cluster where nothing advertises behaves as it did;
+- ties fall to the fewest calls and then to the node id, so two choosers
+  pick the same node.
+
+**The operator sees it.** The admin API's cluster view carries `capacity`
+and `calls_left`, and the cluster page has a Headroom column: what a node
+will still take against what it allows, with its calls per second and
+registrations under it, and "no limit" where a node advertises none.
 
 ## 14. Not in scope
 

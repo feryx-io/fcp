@@ -1080,6 +1080,19 @@ export interface ClusterNodeInfo {
   region?: string
   /** Video capacity per device, advertised by conference nodes (work units). */
   video_budget?: VideoDeviceBudget[]
+  /** What the node will carry and what it is carrying, when it keeps limits. */
+  capacity?: NodeCapacity
+  /** Calls it will still take; absent when it advertises no limit. */
+  calls_left?: number
+}
+
+/** A node's admission limits and what it is using of them. */
+export interface NodeCapacity {
+  max_concurrent_calls: number
+  max_cps: number
+  max_concurrent_registrations: number
+  registrations: number
+  cps: number
 }
 
 export interface VideoDeviceBudget {

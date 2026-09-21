@@ -18,8 +18,10 @@ use dashmap::DashMap;
 use fcp_core::trunk_report::TrunkOutcome;
 use fcp_core::Trunk;
 use fcp_sip::trunk_ingress::{TrunkCallCounter, TrunkLimit};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tracing::{debug, warn};
 
 /// Calls per second per trunk, from each trunk's own `cps_limit`: the
 /// calls started in the current second, in either direction.
@@ -80,6 +82,10 @@ impl CpsChecker for TrunkCps {
     }
 }
 
+/// How many ended calls' trunk leases may wait for the settling tick
+/// before the oldest are dropped and left to lapse.
+const MAX_PENDING_TRUNK_RELEASES: usize = 10_000;
+
 /// What each trunk carries on this node, and what each call was counted
 /// against.
 pub struct TrunkCalls {
@@ -87,6 +93,75 @@ pub struct TrunkCalls {
     cps: Arc<TrunkCps>,
     /// Call → the trunks it was counted against.
     ledger: DashMap<String, Vec<String>>,
+    /// The cluster's count of each trunk's channels, when this node is in
+    /// a cluster (`docs/CAPACITY_AND_SURVIVABILITY.md` §7). A carrier
+    /// sells channels to the platform, not to a node of it, so without
+    /// this a two-node cluster can offer a trunk twice its channels —
+    /// which tenant trunks 4b counted per node and said so.
+    cluster: std::sync::RwLock<Option<Arc<dyn ClusterTrunkChannels>>>,
+    /// Whether the cluster's count has been unreadable since it last
+    /// worked, so an outage is said once rather than per call.
+    cluster_failing: std::sync::atomic::AtomicBool,
+    /// Leases to give back, for the settling tick: a call ends in a
+    /// callback that cannot await.
+    released: std::sync::Mutex<Vec<(String, String)>>,
+}
+
+/// The cluster's count of one trunk's calls (§7). The same shape the
+/// tenant's contract uses, over `fcp_cluster::CallLeases`.
+#[async_trait::async_trait]
+pub trait ClusterTrunkChannels: Send + Sync {
+    /// Take a lease for this call on this trunk, and say how many the
+    /// trunk carries across the cluster, this one included.
+    async fn take(&self, trunk_key: &str, call: &str) -> anyhow::Result<u64>;
+
+    /// Give a lease back.
+    async fn release(&self, trunk_key: &str, call: &str) -> anyhow::Result<()>;
+
+    /// Put back what this node still carries, with a fresh expiry.
+    async fn refresh(&self, held: &[(String, String)]) -> anyhow::Result<()>;
+}
+
+/// The cluster's count of a trunk's channels, in Redis.
+pub struct RedisTrunkChannels {
+    leases: fcp_cluster::CallLeases,
+}
+
+impl RedisTrunkChannels {
+    pub fn new(leases: fcp_cluster::CallLeases) -> Self {
+        Self { leases }
+    }
+}
+
+#[async_trait::async_trait]
+impl ClusterTrunkChannels for RedisTrunkChannels {
+    async fn take(&self, trunk_key: &str, call: &str) -> anyhow::Result<u64> {
+        self.leases
+            .take(fcp_cluster::LeaseSubject::Trunk(trunk_key), call)
+            .await
+    }
+
+    async fn release(&self, trunk_key: &str, call: &str) -> anyhow::Result<()> {
+        self.leases
+            .release(fcp_cluster::LeaseSubject::Trunk(trunk_key), call)
+            .await
+    }
+
+    async fn refresh(&self, held: &[(String, String)]) -> anyhow::Result<()> {
+        let mut by_trunk: HashMap<&str, Vec<String>> = HashMap::new();
+        for (trunk_key, call) in held {
+            by_trunk
+                .entry(trunk_key.as_str())
+                .or_default()
+                .push(call.clone());
+        }
+        for (trunk_key, calls) in by_trunk {
+            self.leases
+                .refresh(fcp_cluster::LeaseSubject::Trunk(trunk_key), &calls)
+                .await?;
+        }
+        Ok(())
+    }
 }
 
 impl TrunkCalls {
@@ -95,6 +170,81 @@ impl TrunkCalls {
             health,
             cps,
             ledger: DashMap::new(),
+            cluster: std::sync::RwLock::new(None),
+            cluster_failing: std::sync::atomic::AtomicBool::new(false),
+            released: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Count each trunk's channels across the cluster rather than on this
+    /// node alone (§7).
+    pub fn with_cluster(self, cluster: Arc<dyn ClusterTrunkChannels>) -> Self {
+        *self.cluster.write().unwrap() = Some(cluster);
+        self
+    }
+
+    /// Give back the leases of calls that have ended and push out the
+    /// expiry of the ones still up: the tick a node in a cluster runs.
+    pub async fn settle_leases(&self) {
+        let Some(cluster) = self.cluster.read().ok().and_then(|c| c.clone()) else {
+            return;
+        };
+        let releasing = std::mem::take(&mut *self.released.lock().unwrap());
+        for (trunk_key, call) in releasing {
+            if let Err(e) = cluster.release(&trunk_key, &call).await {
+                debug!(error = %e, "a trunk lease could not be given back; it will lapse");
+            }
+        }
+        let held: Vec<(String, String)> = self
+            .ledger
+            .iter()
+            .flat_map(|e| {
+                let call = e.key().clone();
+                e.value()
+                    .iter()
+                    .map(move |key| (key.clone(), call.clone()))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        if !held.is_empty() {
+            if let Err(e) = cluster.refresh(&held).await {
+                debug!(error = %e, "this node's trunk leases were not refreshed");
+            }
+        }
+    }
+
+    /// Take a place for this call on `key` across the cluster. `true`
+    /// when the trunk is already at its channels there. A cluster that
+    /// cannot be read leaves the decision to this node's own count.
+    async fn cluster_full(&self, key: &str, call: &str, channels: u32) -> bool {
+        if channels == 0 {
+            return false;
+        }
+        let Some(cluster) = self.cluster.read().ok().and_then(|c| c.clone()) else {
+            return false;
+        };
+        match cluster.take(key, call).await {
+            Ok(held) => {
+                self.cluster_failing
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
+                if held > channels as u64 {
+                    if let Err(e) = cluster.release(key, call).await {
+                        warn!(error = %e, "could not give back a refused call's trunk lease");
+                    }
+                    return true;
+                }
+                false
+            }
+            Err(e) => {
+                if !self
+                    .cluster_failing
+                    .swap(true, std::sync::atomic::Ordering::Relaxed)
+                {
+                    warn!(error = %e, "the cluster's trunk count is unreadable; \
+                          counting this trunk's calls on this node alone");
+                }
+                false
+            }
         }
     }
 
@@ -108,8 +258,9 @@ impl TrunkCalls {
     }
 }
 
+#[async_trait::async_trait]
 impl TrunkCallCounter for TrunkCalls {
-    fn admit(&self, call: &str, trunk: &Trunk) -> Result<(), TrunkLimit> {
+    async fn admit(&self, call: &str, trunk: &Trunk) -> Result<(), TrunkLimit> {
         // A trunk the health monitor has not met yet (a tenant's, created
         // since the last probe) is met now, so its calls are counted.
         self.health.track(&[Arc::new(trunk.clone())]);
@@ -127,11 +278,21 @@ impl TrunkCallCounter for TrunkCalls {
             note(trunk, &key, TrunkOutcome::RejectedCps);
             return Err(TrunkLimit::CallsPerSecond);
         }
+        // The carrier's channels are the platform's to fill, not this
+        // node's (§7): where there is a cluster, the count is its.
+        if self
+            .cluster_full(&key, call, trunk.max_concurrent_calls)
+            .await
+        {
+            self.health.call_ended(&key);
+            note(trunk, &key, TrunkOutcome::RejectedCapacity);
+            return Err(TrunkLimit::Concurrency);
+        }
         self.count(call, key);
         Ok(())
     }
 
-    fn carried(&self, call: &str, trunk: &Trunk) {
+    async fn carried(&self, call: &str, trunk: &Trunk) {
         self.health.track(&[Arc::new(trunk.clone())]);
         let key = trunk.key();
         // A call the trunk answered was a call it was offered: both, so
@@ -139,10 +300,44 @@ impl TrunkCallCounter for TrunkCalls {
         note(trunk, &key, TrunkOutcome::Attempted);
         note(trunk, &key, TrunkOutcome::Answered);
         self.health.call_started(&key);
+        // A leg the trunk answered fills a channel like any other, so it
+        // takes a lease too — its selection already weighed the limits,
+        // so the count is taken rather than tested.
+        if let Some(cluster) = self.cluster.read().ok().and_then(|c| c.clone()) {
+            if let Err(e) = cluster.take(&key, call).await {
+                debug!(error = %e, "an answered leg's trunk lease was not taken");
+            }
+        }
         self.count(call, key);
     }
 
     fn ended(&self, call: &str) {
+        // Give the cluster its channels back: now if there is a runtime
+        // to do it on, and on the settling tick either way (§7).
+        if let Some(cluster) = self.cluster.read().ok().and_then(|c| c.clone()) {
+            if let Some(keys) = self.ledger.get(call).map(|e| e.value().clone()) {
+                {
+                    let mut released = self.released.lock().unwrap();
+                    for key in &keys {
+                        released.push((key.clone(), call.to_string()));
+                    }
+                    if released.len() > MAX_PENDING_TRUNK_RELEASES {
+                        let overflow = released.len() - MAX_PENDING_TRUNK_RELEASES;
+                        released.drain(..overflow);
+                    }
+                }
+                if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                    let call = call.to_string();
+                    handle.spawn(async move {
+                        for key in keys {
+                            if let Err(e) = cluster.release(&key, &call).await {
+                                debug!(error = %e, "a trunk lease waits for the next tick");
+                            }
+                        }
+                    });
+                }
+            }
+        }
         if let Some((_, keys)) = self.ledger.remove(call) {
             for key in keys {
                 self.health.call_ended(&key);
@@ -181,19 +376,19 @@ mod tests {
         (calls, health)
     }
 
-    #[test]
-    fn a_trunk_at_its_channels_refuses_the_next_call_until_one_ends() {
+    #[tokio::test]
+    async fn a_trunk_at_its_channels_refuses_the_next_call_until_one_ends() {
         let t = trunk(2, 0);
         let (calls, health) = calls_for(&t);
-        assert_eq!(calls.admit("a", &t), Ok(()));
+        assert_eq!(calls.admit("a", &t).await, Ok(()));
         // An outbound call it answered counts against the same channels.
-        calls.carried("b", &t);
-        assert_eq!(calls.admit("c", &t), Err(TrunkLimit::Concurrency));
+        calls.carried("b", &t).await;
+        assert_eq!(calls.admit("c", &t).await, Err(TrunkLimit::Concurrency));
         assert_eq!(health.concurrent_calls(&t.key()), 2);
 
         calls.ended("a");
         assert_eq!(health.concurrent_calls(&t.key()), 1);
-        assert_eq!(calls.admit("c", &t), Ok(()));
+        assert_eq!(calls.admit("c", &t).await, Ok(()));
         calls.ended("b");
         calls.ended("c");
         calls.ended("c"); // ending twice releases once
@@ -201,8 +396,114 @@ mod tests {
         assert_eq!(calls.calls_in_flight(), 0);
     }
 
-    #[test]
-    fn a_trunk_past_its_calls_per_second_refuses_and_holds_no_channel() {
+    /// A carrier's channels across the cluster
+    /// (`docs/CAPACITY_AND_SURVIVABILITY.md` §7): two nodes offering the
+    /// same trunk share its channels rather than each filling them.
+    mod cluster {
+        use super::*;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        #[derive(Default)]
+        struct Channels {
+            held: std::sync::Mutex<HashMap<String, Vec<String>>>,
+            broken: AtomicBool,
+        }
+
+        #[async_trait::async_trait]
+        impl ClusterTrunkChannels for Channels {
+            async fn take(&self, trunk_key: &str, call: &str) -> anyhow::Result<u64> {
+                if self.broken.load(Ordering::SeqCst) {
+                    anyhow::bail!("redis is away");
+                }
+                let mut held = self.held.lock().unwrap();
+                let calls = held.entry(trunk_key.to_string()).or_default();
+                if !calls.iter().any(|c| c == call) {
+                    calls.push(call.to_string());
+                }
+                Ok(calls.len() as u64)
+            }
+
+            async fn release(&self, trunk_key: &str, call: &str) -> anyhow::Result<()> {
+                if self.broken.load(Ordering::SeqCst) {
+                    anyhow::bail!("redis is away");
+                }
+                if let Some(calls) = self.held.lock().unwrap().get_mut(trunk_key) {
+                    calls.retain(|c| c != call);
+                }
+                Ok(())
+            }
+
+            async fn refresh(&self, _held: &[(String, String)]) -> anyhow::Result<()> {
+                Ok(())
+            }
+        }
+
+        /// A node offering `t`, counting its channels across `channels`.
+        fn node(channels: &Arc<Channels>, t: &Trunk) -> TrunkCalls {
+            let (calls, _health) = calls_for(t);
+            calls.with_cluster(Arc::clone(channels) as Arc<dyn ClusterTrunkChannels>)
+        }
+
+        /// One trunk of two channels, two nodes: the second node cannot
+        /// sell the carrier's channels twice.
+        #[tokio::test]
+        async fn channels_are_the_carriers_not_a_nodes() {
+            let channels = Arc::new(Channels::default());
+            let t = trunk(2, 0);
+            let one = node(&channels, &t);
+            let two = node(&channels, &t);
+
+            assert_eq!(one.admit("a", &t).await, Ok(()));
+            assert_eq!(two.admit("b", &t).await, Ok(()), "the other node");
+            assert_eq!(
+                two.admit("c", &t).await,
+                Err(TrunkLimit::Concurrency),
+                "the carrier sold two channels, not four"
+            );
+            assert_eq!(
+                channels.held.lock().unwrap()[&t.key()].len(),
+                2,
+                "the refused call gave its channel back"
+            );
+
+            // The refused call left no channel held on its own node
+            // either, so the node's count and the cluster's agree.
+            one.ended("a");
+            one.settle_leases().await;
+            assert_eq!(two.admit("c", &t).await, Ok(()));
+        }
+
+        /// A leg the trunk answered fills a channel too.
+        #[tokio::test]
+        async fn an_answered_leg_takes_a_channel() {
+            let channels = Arc::new(Channels::default());
+            let t = trunk(2, 0);
+            let one = node(&channels, &t);
+            one.carried("outbound", &t).await;
+            assert_eq!(channels.held.lock().unwrap()[&t.key()].len(), 1);
+        }
+
+        /// Redis being away must not refuse a call: the trunk is then
+        /// counted per node, as tenant trunks 4b did.
+        #[tokio::test]
+        async fn an_unreadable_cluster_falls_back_to_this_node() {
+            let channels = Arc::new(Channels::default());
+            let t = trunk(2, 0);
+            let one = node(&channels, &t);
+            channels.broken.store(true, Ordering::SeqCst);
+
+            assert_eq!(one.admit("a", &t).await, Ok(()));
+            assert_eq!(one.admit("b", &t).await, Ok(()));
+            assert_eq!(
+                one.admit("c", &t).await,
+                Err(TrunkLimit::Concurrency),
+                "this node's own count still holds the line"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_trunk_past_its_calls_per_second_refuses_and_holds_no_channel() {
         let t = trunk(0, 2);
         let (calls, health) = calls_for(&t);
         // Pinned to one second, so the test cannot straddle two.
@@ -218,11 +519,14 @@ mod tests {
         // Through admission, three calls at once on a trunk that takes one a
         // second: the refused ones are not left holding a channel.
         let one_a_second = trunk(0, 1);
-        let refused = (0..3)
-            .filter(|i| {
-                calls.admit(&format!("call-{i}"), &one_a_second) == Err(TrunkLimit::CallsPerSecond)
-            })
-            .count();
+        let mut refused = 0;
+        for i in 0..3 {
+            if calls.admit(&format!("call-{i}"), &one_a_second).await
+                == Err(TrunkLimit::CallsPerSecond)
+            {
+                refused += 1;
+            }
+        }
         assert!(refused >= 1, "one call per second, three at once");
         assert_eq!(
             health.concurrent_calls(&one_a_second.key()) as usize,
