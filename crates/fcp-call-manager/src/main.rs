@@ -35,7 +35,6 @@ mod cli;
 #[cfg(feature = "storage-redis")]
 mod conference_placement;
 mod config;
-mod drain;
 mod health;
 mod queue_audio;
 mod queue_handler;
@@ -1339,12 +1338,16 @@ async fn main() -> Result<()> {
     // Leaving service without dropping calls
     // (`docs/CAPACITY_AND_SURVIVABILITY.md` §6): the same sequence whether
     // it starts at `POST /drain` or at SIGTERM.
-    let drain_target = Arc::new(drain::NodeCalls::new(
-        Arc::clone(&handler),
-        Arc::clone(&call_manager),
-        #[cfg(feature = "storage-redis")]
+    #[cfg(feature = "storage-redis")]
+    let announcer = fcp_sbc_core::ClusterAnnouncer::maybe(
         _cluster_manager.as_ref().map(|(cm, _, _)| Arc::clone(cm)),
-    ));
+    );
+    #[cfg(not(feature = "storage-redis"))]
+    let announcer: Option<Arc<dyn fcp_sip::drain::DrainAnnouncer>> = None;
+    let drain_target = Arc::new(
+        fcp_sip::drain::NodeCalls::new(Arc::clone(&handler), Arc::clone(&call_manager))
+            .with_announcer(announcer),
+    );
     let drain = Arc::new(fcp_sip::drain::Drain::new(
         Arc::clone(&admission) as Arc<dyn fcp_sip::admission::NodeAdmission>,
         drain_target as Arc<dyn fcp_sip::drain::DrainTarget>,

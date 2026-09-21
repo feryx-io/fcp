@@ -446,7 +446,7 @@ One PR each, in order.
 | 1 ✅ v0.25.208 | **The limits that exist, enforced.** `AdmissionController` moves into `fcp-sbc-core`; the call manager (then the IVR, voicemail and presence servers) admits calls and registrations through it; `[admission]` section; `[calls] max_concurrent_calls` honoured as an alias with a warning; the tenant's `max_concurrent_calls` enforced per node; the registrar's rate limiter installed with both keys; 503 + `Retry-After` with a `Reason`; refusal counters by reason; load on `/status` |
 | 2a ✅ v0.25.209 | **Leaving on purpose, on the call manager.** Drain state on the admission controller; `POST`/`DELETE /drain` and a `/ready` route; SIGTERM starts a drain and a second signal cuts it short; new calls refused, emergency admitted, REGISTER expiry shortened; `drain_wait_secs`, then a BYE with a `Reason` and a `node_draining` record; `system.node_draining`/`system.node_drained` events; test floor T6's drain half |
 | 2b-1 ✅ v0.25.213 | **The shared drain, and the two nearest binaries.** The call manager's drain lifted out of `fcp-call-manager/src/{drain,health}.rs` into one place every routing binary can hold — `fcp-sip`, where the admission trait already lives — with the "end what is left" step supplied by the binary; then the SBC and the registrar on it: `[admission]` on the registrar, `POST`/`DELETE /drain`, `/ready` answering `503` while draining, the SIGTERM sequence with the second signal, and the shortened REGISTER expiry |
-| 2b-2 | **The application servers.** `[admission]` and the drain on the IVR, the voicemail server and the presence server — the three phase 1 left with no limits at all — each ending what it is carrying in its own terms: a caller inside a flow, a message being recorded, a subscription to expire |
+| 2b-2 ✅ v0.25.214 | **The application servers.** `[admission]` and the drain on the IVR, the voicemail server and the presence server — the three phase 1 left with no limits at all — each ending what it is carrying in its own terms: a caller inside a flow, a message being recorded, a subscription to expire |
 | 2b-3 | **The WebRTC gateway.** It has no health server at all, so: one, with `/health`, `/ready` and `/drain`; the `[admission]` section; and a drain that hands sessions to another node the way distributed conferencing's phase 5 migrates participants, rather than only refusing new ones |
 | 2b-4 | **The conference server, the badge and the runbook.** Its own drain — SIGTERM, `set_draining`, `start_draining()`, `drain_wait_secs`, REFER migration — aligned on the shared `draining` state and given `/ready` and `/drain`, without losing the migration; the drain badge and node state on the admin UI's cluster page; the rolling-restart procedure in `docs/CLUSTER_OPERATIONS_RUNBOOK.md` |
 | 3 | **The harness.** `fcp-loadgen` on `fcp-testkit`: the four profiles, the measurements, the JSON report, the budget flags; the small CI profile |
@@ -586,6 +586,47 @@ the same section, and 2b-2 needs it three more times, so it moved into
 What this phase did not do: the SBC's `/ready` still reports trunk health as
 advisory rather than refusing readiness on it, since nothing asked for that
 and a node with no healthy trunk can still answer in-dialog requests.
+
+*Phase 2b-2 shipped 2026-09-21 (v0.25.214).* The IVR, the voicemail server
+and the presence server read `[admission]`, answer `/ready` and `/drain`,
+and drain on SIGTERM — and each ends what it is carrying in its own terms.
+
+**The B2BUA target was written three times over, so it moved.** The IVR and
+the voicemail server carry calls exactly as the call manager does: a
+`SipMessageHandler`, a `CallManager`, a BYE on both legs with the drain
+`Reason` and a `node_draining` record. That target is now
+`fcp_sip::drain::NodeCalls`, which all three hold, and
+`fcp-call-manager/src/drain.rs` is gone. What `fcp-sip` cannot hold is the
+heartbeat — `fcp-cluster` is not a dependency of it — so the advertisement
+is a `DrainAnnouncer`, implemented once as `fcp_sbc_core::ClusterAnnouncer`
+beside `ClusterOwnership`, which is already how a binary hands its cluster
+manager to a shared library.
+
+**A message outlives the call it belongs to.** A voicemail recording ends
+when the recorder notices the caller is gone — it looks once a second — and
+only then is the file closed, the message row written and the MWI sent. A
+node that hung up its callers and stopped would lose every message already
+spoken. So `VoicemailService` counts what it is recording
+(`messages_being_recorded`), and the voicemail server's target hangs up and
+then waits, up to ten seconds, for that count to reach zero. It is the one
+place in 2b-2 where "end what is left" is not over when the BYE is sent.
+
+**A watcher is a binding, like a registration.** The presence server drains
+the way the registrar does rather than the way the call manager does: it
+grants short subscriptions while draining — the same
+`[admission] drain_register_expiry_secs`, so the trait method is now
+`drain_expiry_cap` rather than `register_expiry_cap` — and the watchers
+leave on their own as they refresh onto a serving node. Whatever is still
+subscribed at the deadline gets the `terminated;reason=probation` NOTIFY
+this binary has always sent at shutdown, which is now `end_remaining` rather
+than a line in the shutdown path, so `POST /drain` sends it too.
+
+Found on the way: **an unsubscribe was being granted a subscription.** A
+SUBSCRIBE with `Expires: 0` had its expiry clamped into the configured range
+before anything looked at it, so `min_subscription_expiry_secs` (60 by
+default) turned "I am leaving" into a minute more, and neither unsubscribe
+path could ever run. Zero now stays zero — the same rule the register gate
+keeps for a deregistration.
 
 ## 14. Not in scope
 

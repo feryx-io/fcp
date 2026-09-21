@@ -208,7 +208,22 @@ SIGTERM path rather than in the sequence; the refusal and the shortened
 expiry lived in the call manager's handler, so the standalone registrar had
 neither, and both now run one `register_gate` (which also gave the registrar
 `[admission]` and the source address on its bindings); and `AdmissionSection`
-moved into `fcp-sbc-core`, since 2b-2 needs it three more times. Ten open questions, every recommendation taken on
+moved into `fcp-sbc-core`, since 2b-2 needs it three more times. Phase 2b-2
+done (v0.25.214): the IVR, the voicemail server and the presence server read
+`[admission]`, answer `/ready` and `/drain`, and drain on SIGTERM. The B2BUA
+target the IVR and the voicemail server share with the call manager moved
+into `fcp_sip::drain::NodeCalls` (and the heartbeat behind it into
+`fcp_sbc_core::ClusterAnnouncer`, since `fcp-sip` cannot depend on
+`fcp-cluster`), so `fcp-call-manager/src/drain.rs` is gone. The voicemail
+server hangs up and then waits for the messages already spoken to be written:
+a recording ends a second after the caller does, and a node that stopped at
+the BYE would lose the file, the row and the MWI. The presence server drains
+the way the registrar does — short subscriptions while draining, from the
+same cap (`drain_expiry_cap`), then the `terminated;reason=probation` NOTIFY
+to whoever is left, which `POST /drain` now sends as well as SIGTERM. Found
+on the way: a SUBSCRIBE with `Expires: 0` was clamped up to the configured
+minimum, so an unsubscribe was answered with a subscription and neither
+unsubscribe path could run. Ten open questions, every recommendation taken on
 2026-09-20: one admission controller in `fcp-sbc-core` for every routing
 binary; node limits only where a deployment wrote one down; the tenant limit
 per node until phase 5 leases it cluster-wide; a BYE with a `Reason` and a

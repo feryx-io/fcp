@@ -24,6 +24,7 @@ pub mod trunk;
 
 // Shared trunk runtime modules
 pub mod cps;
+pub mod drain;
 pub mod health_probes;
 pub mod lcr;
 pub mod trunk_auth;
@@ -65,6 +66,7 @@ pub use trunk_quality::{TrunkQualitySnapshot, TrunkQualityTracker};
 
 // Re-export trunk runtime types for convenience
 pub use cps::{CpsChecker, NoCpsLimit};
+pub use drain::ClusterAnnouncer;
 pub use fcp_core::trunk_report::{TrunkNodeReport, TrunkNodeView};
 pub use health_probes::{run_health_probes, HealthAnnouncer};
 pub use hmr_engine::HeaderManipulationEngine;

@@ -164,6 +164,10 @@ pub struct SipPresenceHandler {
     publish_limiter: Arc<sip_ratelimit::RateLimiter>,
     /// Optional digest authenticator for SUBSCRIBE/PUBLISH identity checks.
     auth: Option<PresenceDigestAuth>,
+    /// What this node accepts, when it keeps limits: a draining node grants
+    /// short subscriptions so its watchers come back somewhere that is
+    /// serving (`docs/CAPACITY_AND_SURVIVABILITY.md` §6).
+    admission: Option<Arc<dyn crate::admission::NodeAdmission>>,
 }
 
 /// Parsed SUBSCRIBE context for easier dispatch.
@@ -199,7 +203,18 @@ impl SipPresenceHandler {
             subscribe_limiter,
             publish_limiter,
             auth: None,
+            admission: None,
         }
+    }
+
+    /// What this node accepts, so a draining one shortens the
+    /// subscriptions it grants (`docs/CAPACITY_AND_SURVIVABILITY.md` §6).
+    pub fn with_admission(
+        mut self,
+        admission: Option<Arc<dyn crate::admission::NodeAdmission>>,
+    ) -> Self {
+        self.admission = admission;
+        self
     }
 
     pub fn with_digest_auth(
@@ -224,6 +239,7 @@ impl SipPresenceHandler {
             subscribe_limiter: Arc::clone(&self.subscribe_limiter),
             publish_limiter: Arc::clone(&self.publish_limiter),
             auth: self.auth.clone(),
+            admission: self.admission.clone(),
         }
     }
 
@@ -529,9 +545,20 @@ impl SipPresenceHandler {
         Ok(())
     }
 
-    /// Clamp the requested subscription expiry to the configured range.
+    /// The expiry this node grants for what the watcher asked for.
+    ///
+    /// Zero is an unsubscribe and is never lifted into the configured
+    /// range: a watcher leaving must not be handed a subscription, the way
+    /// a device deregistering must not be handed a registration
+    /// (`docs/CAPACITY_AND_SURVIVABILITY.md` §6). A draining node grants no
+    /// more than its drain cap, so the watcher comes back within the minute
+    /// and is placed on a node that is serving.
     fn clamp_subscribe_expires(&self, requested: u32) -> u32 {
-        self.presence.cap_subscription_expiry(requested)
+        granted_subscribe_expiry(
+            requested,
+            self.presence.cap_subscription_expiry(requested),
+            self.admission.as_ref().and_then(|a| a.drain_expiry_cap()),
+        )
     }
 
     /// Compute Subscription-State "active;expires=N" for a watcher.
@@ -1318,9 +1345,65 @@ impl PresenceHandler for SipPresenceHandler {
 // Tests
 // ============================================================================
 
+/// What this node grants a watcher: `configured` is what the presence
+/// configuration allows for what was asked, and `drain_cap` is the ceiling
+/// a draining node puts on any binding it grants
+/// (`docs/CAPACITY_AND_SURVIVABILITY.md` §6), so the watcher refreshes
+/// soon and is placed on a node that is serving.
+///
+/// A request for zero is an unsubscribe and stays zero: a watcher leaving
+/// must not be handed a subscription, the way a device deregistering must
+/// not be handed a registration. The configured range's minimum would
+/// otherwise lift it.
+fn granted_subscribe_expiry(requested: u32, configured: u32, drain_cap: Option<u32>) -> u32 {
+    if requested == 0 {
+        return 0;
+    }
+    match drain_cap {
+        Some(cap) if cap > 0 => configured.min(cap),
+        _ => configured,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What a watcher is granted, serving and draining
+    /// (`docs/CAPACITY_AND_SURVIVABILITY.md` §6).
+    mod subscribe_expiry {
+        use super::*;
+
+        #[test]
+        fn a_serving_node_grants_what_its_configuration_allows() {
+            assert_eq!(granted_subscribe_expiry(3600, 3600, None), 3600);
+            assert_eq!(granted_subscribe_expiry(10, 60, None), 60, "the minimum");
+        }
+
+        #[test]
+        fn a_draining_node_grants_no_more_than_its_cap() {
+            assert_eq!(granted_subscribe_expiry(3600, 3600, Some(60)), 60);
+        }
+
+        #[test]
+        fn a_draining_node_never_lengthens_a_subscription() {
+            assert_eq!(granted_subscribe_expiry(30, 30, Some(60)), 30);
+        }
+
+        #[test]
+        fn a_cap_of_zero_is_no_cap() {
+            assert_eq!(granted_subscribe_expiry(3600, 3600, Some(0)), 3600);
+        }
+
+        /// An unsubscribe is answered as it arrived, draining or not — the
+        /// configured minimum would otherwise turn "I am leaving" into a
+        /// subscription of a minute.
+        #[test]
+        fn an_unsubscribe_is_granted_nothing() {
+            assert_eq!(granted_subscribe_expiry(0, 60, None), 0);
+            assert_eq!(granted_subscribe_expiry(0, 60, Some(60)), 0);
+        }
+    }
 
     #[test]
     fn test_extract_aor_sip_uri() {

@@ -25,6 +25,8 @@ use tracing::warn;
 #[derive(Clone)]
 pub struct AppState {
     pub manager: PresenceManager,
+    /// Leaving service (`docs/CAPACITY_AND_SURVIVABILITY.md` §6).
+    pub drain: Arc<fcp_sip::drain::Drain>,
     pub sip_handler: Option<Arc<SipPresenceHandler>>,
     pub start_time: Instant,
     pub api_token: Option<String>,
@@ -42,9 +44,15 @@ pub struct AppState {
 pub fn router(state: Arc<AppState>, xcap_root: Option<&str>) -> Router {
     let public = Router::new()
         .route("/health", get(health))
-        .route("/v1/health", get(health));
+        .route("/v1/health", get(health))
+        .route("/ready", get(ready));
 
     let mut protected = Router::new()
+        // Leaving service: start a drain, or call one off (§6).
+        .route(
+            "/drain",
+            axum::routing::post(start_drain).delete(stop_drain),
+        )
         .route("/v1/metrics", get(metrics))
         .route("/v1/presence/{aor}", get(get_presence))
         .route("/v1/presence/{aor}", put(update_presence))
@@ -172,7 +180,35 @@ async fn health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     Json(serde_json::json!({
         "status": "ok",
         "uptime_secs": uptime,
+        "draining": state.drain.is_draining(),
     }))
+}
+
+/// Whether this node should be sent watchers: `503` while it is draining,
+/// so a load balancer stops choosing it before it stops taking
+/// subscriptions (`docs/CAPACITY_AND_SURVIVABILITY.md` §6). `/health`
+/// keeps answering `200`, so a liveness probe does not kill the process
+/// mid-drain.
+async fn ready(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    answer(fcp_sip::drain::ready_body(&state.drain).await)
+}
+
+/// Start a drain: this node grants short subscriptions so its watchers
+/// come back somewhere that is serving, waits for them to go, and tells
+/// whoever is left at `drain_wait_secs` that the subscription is over.
+async fn start_drain(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    answer(fcp_sip::drain::start_body(&state.drain).await)
+}
+
+/// Call a drain off: the node subscribes watchers normally again.
+async fn stop_drain(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    answer(fcp_sip::drain::stop_body(&state.drain).await)
+}
+
+/// What the shared drain answered, as this router's response.
+fn answer((code, body): (u16, serde_json::Value)) -> (StatusCode, Json<serde_json::Value>) {
+    let code = StatusCode::from_u16(code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    (code, Json(body))
 }
 
 async fn metrics(State(state): State<Arc<AppState>>, headers: HeaderMap) -> impl IntoResponse {

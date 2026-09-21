@@ -22,10 +22,14 @@ pub struct IvrState {
     pub flow_handler: Arc<FlowCallHandler>,
     pub start_time: Instant,
     pub api_token: Option<String>,
+    /// Leaving service (`docs/CAPACITY_AND_SURVIVABILITY.md` §6).
+    pub drain: Arc<fcp_sip::drain::Drain>,
 }
 
 fn public_router() -> Router<Arc<IvrState>> {
-    Router::new().route("/health", get(health_handler))
+    Router::new()
+        .route("/health", get(health_handler))
+        .route("/ready", get(ready_handler))
 }
 
 fn protected_router() -> Router<Arc<IvrState>> {
@@ -35,6 +39,11 @@ fn protected_router() -> Router<Arc<IvrState>> {
         .route("/flows/routes", post(add_route_handler))
         .route("/flows/routes/{did}", delete(remove_route_handler))
         .route("/flows/active", get(active_flows_handler))
+        // Leaving service: start a drain, or call one off (§6).
+        .route(
+            "/drain",
+            post(start_drain_handler).delete(stop_drain_handler),
+        )
 }
 
 /// Create the IVR health router.
@@ -101,16 +110,46 @@ async fn status_handler(State(state): State<Arc<IvrState>>) -> Json<serde_json::
     let uptime = state.start_time.elapsed();
     let call_stats = state.call_manager.stats();
     let routes = state.flow_handler.get_all_routes().await;
+    let draining = state.drain.is_draining();
 
     Json(serde_json::json!({
-        "status": "healthy",
+        "status": if draining { "draining" } else { "healthy" },
         "service": "fcp-ivr",
         "version": env!("CARGO_PKG_VERSION"),
         "uptime_seconds": uptime.as_secs(),
         "active_calls": call_stats.active,
         "total_calls": call_stats.total,
         "flow_routes": routes.len(),
+        "draining": draining,
     }))
+}
+
+/// Whether this node should be sent calls: `503` while it is draining, so
+/// a load balancer stops choosing it before it stops taking them
+/// (`docs/CAPACITY_AND_SURVIVABILITY.md` §6). `/health` keeps answering
+/// `200`, so a liveness probe does not kill the process mid-drain.
+async fn ready_handler(State(state): State<Arc<IvrState>>) -> impl IntoResponse {
+    answer(fcp_sip::drain::ready_body(&state.drain).await)
+}
+
+/// Start a drain: this node takes no new calls, keeps the callers it has
+/// in their flows until `drain_wait_secs`, and then ends what is left with
+/// a BYE that says why. The node keeps running — a drain is not a
+/// shutdown.
+async fn start_drain_handler(State(state): State<Arc<IvrState>>) -> impl IntoResponse {
+    answer(fcp_sip::drain::start_body(&state.drain).await)
+}
+
+/// Call a drain off: the node serves again, and the callers it was
+/// carrying — whom the drain never touched — carry on.
+async fn stop_drain_handler(State(state): State<Arc<IvrState>>) -> impl IntoResponse {
+    answer(fcp_sip::drain::stop_body(&state.drain).await)
+}
+
+/// What the shared drain answered, as this router's response.
+fn answer((code, body): (u16, serde_json::Value)) -> (StatusCode, Json<serde_json::Value>) {
+    let code = StatusCode::from_u16(code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    (code, Json(body))
 }
 
 async fn list_routes_handler(State(state): State<Arc<IvrState>>) -> Json<serde_json::Value> {

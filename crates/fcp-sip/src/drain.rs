@@ -11,7 +11,9 @@
 //! (§13, 2b-1). What differs per binary is the last step — what "end what
 //! is left" means to it — and that is [`DrainTarget`], which the binary
 //! supplies: a BYE on both legs of every call for the call manager, nothing
-//! but a shorter registration for the registrar.
+//! but a shorter registration for the registrar. The one every B2BUA node
+//! shares — the call manager, the IVR, the voicemail server — is
+//! [`NodeCalls`], which is here rather than in each of them (§13, 2b-2).
 //!
 //! The HTTP bodies are here too, as status and JSON rather than as routes,
 //! so that a binary's own router shape and its own authentication decide
@@ -49,6 +51,91 @@ pub trait DrainTarget: Send + Sync {
     /// Tell the cluster this node is leaving, or serving again. A node
     /// that is not in a cluster has nothing to tell.
     async fn advertise(&self, _draining: bool) {}
+}
+
+/// How a binary tells its cluster that this node is leaving, when it is in
+/// one. `fcp-cluster` is not a dependency of this crate, so what is passed
+/// is an adapter over `ClusterManager` — `fcp_sbc_core::ClusterAnnouncer`,
+/// which every binary that has a cluster manager uses.
+#[async_trait]
+pub trait DrainAnnouncer: Send + Sync {
+    /// Say so in the heartbeat, so nothing places work here while this node
+    /// is leaving.
+    async fn set_draining(&self, draining: bool);
+}
+
+/// The calls a B2BUA node is carrying, ended with a BYE on both legs.
+///
+/// What the call manager, the IVR and the voicemail server all mean by
+/// "what is left": every call the node still has, hung up with an RFC 3326
+/// `Reason` that says the platform ended it, and a record that says the
+/// node was draining. The SBC keeps its own target — it relays calls it
+/// has no `SipMessageHandler` for.
+pub struct NodeCalls {
+    handler: Arc<crate::handler::SipMessageHandler>,
+    call_manager: Arc<crate::CallManager>,
+    announcer: Option<Arc<dyn DrainAnnouncer>>,
+}
+
+impl NodeCalls {
+    pub fn new(
+        handler: Arc<crate::handler::SipMessageHandler>,
+        call_manager: Arc<crate::CallManager>,
+    ) -> Self {
+        Self {
+            handler,
+            call_manager,
+            announcer: None,
+        }
+    }
+
+    /// The cluster this node is in, when it is in one.
+    pub fn with_announcer(mut self, announcer: Option<Arc<dyn DrainAnnouncer>>) -> Self {
+        self.announcer = announcer;
+        self
+    }
+}
+
+#[async_trait]
+impl DrainTarget for NodeCalls {
+    async fn carrying(&self) -> usize {
+        self.call_manager.active_call_count()
+    }
+
+    /// BYE both legs of every call still up, each with a `Reason` and a
+    /// record that says the node was draining.
+    async fn end_remaining(&self) -> usize {
+        let mut ended = 0;
+        for call in self.call_manager.all_calls() {
+            if call.state.is_terminal() {
+                continue;
+            }
+            match self.handler.hangup_call_by_id_saying(
+                &call.id,
+                fcp_cdr::TerminationReason::system(
+                    fcp_cdr::SystemCause::NodeDraining,
+                    "Node draining",
+                ),
+                Some(DRAIN_REASON),
+            ) {
+                Ok(()) => ended += 1,
+                Err(e) => {
+                    warn!(call_id = %call.id, error = %e, "Could not hang up a call on drain")
+                }
+            }
+        }
+        ended
+    }
+
+    /// Say so in the heartbeat, so that placement elsewhere — conference
+    /// rooms, queue dial-out — stops choosing this node within an
+    /// interval. A drain started at `POST /drain` says it as much as one
+    /// started at SIGTERM.
+    async fn advertise(&self, draining: bool) {
+        if let Some(announcer) = &self.announcer {
+            announcer.set_draining(draining).await;
+        }
+    }
 }
 
 /// The node's drain, and what it needs to run one.

@@ -18,6 +18,12 @@ pub struct IvrConfig {
     #[serde(default)]
     pub sip: SipSection,
 
+    /// What this node accepts, and what it refuses
+    /// (`docs/CAPACITY_AND_SURVIVABILITY.md` §5). Every limit is optional;
+    /// unset is unlimited, as it was before the section existed.
+    #[serde(default)]
+    pub admission: fcp_sbc_core::AdmissionSection,
+
     /// Storage configuration
     #[serde(default)]
     pub storage: StorageSection,
@@ -66,6 +72,13 @@ pub struct ServiceSection {
 
     #[serde(default = "default_tenant_id")]
     pub default_tenant_id: fcp_core::TenantId,
+
+    /// Seconds a drain waits for the callers in a flow to finish before
+    /// the node ends what is left
+    /// (`docs/CAPACITY_AND_SURVIVABILITY.md` §6). Zero — the default — is
+    /// what this binary always did: it stops where it stands.
+    #[serde(default)]
+    pub drain_wait_secs: u64,
 }
 
 fn default_service_type() -> String {
@@ -86,6 +99,7 @@ impl Default for ServiceSection {
             service_type: default_service_type(),
             node_id: default_node_id(),
             default_tenant_id: default_tenant_id(),
+            drain_wait_secs: 0,
         }
     }
 }

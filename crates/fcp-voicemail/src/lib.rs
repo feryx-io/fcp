@@ -8,6 +8,7 @@
 //! - Greeting management
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -108,6 +109,23 @@ impl VoicemailConfig {
     }
 }
 
+/// Counts one message being recorded, whatever ends it — the caller, the
+/// maximum duration, a drain, or an error on the way to disk.
+struct RecordingGuard(Arc<AtomicUsize>);
+
+impl RecordingGuard {
+    fn new(counter: &Arc<AtomicUsize>) -> Self {
+        counter.fetch_add(1, Ordering::SeqCst);
+        Self(Arc::clone(counter))
+    }
+}
+
+impl Drop for RecordingGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 /// Voicemail service for managing voicemail messages and mailboxes.
 pub struct VoicemailService {
     /// Storage backend for voicemail data
@@ -121,6 +139,13 @@ pub struct VoicemailService {
 
     /// Configuration
     config: VoicemailConfig,
+
+    /// Messages being recorded right now: a caller is speaking, or their
+    /// recording is being closed and written down. A node that is leaving
+    /// service waits for this to reach zero before it stops, so a message
+    /// already spoken is not lost with the process
+    /// (`docs/CAPACITY_AND_SURVIVABILITY.md` §6).
+    recording_now: Arc<AtomicUsize>,
 }
 
 impl VoicemailService {
@@ -135,6 +160,7 @@ impl VoicemailService {
             media_manager,
             mwi_notifier: None,
             config,
+            recording_now: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -150,7 +176,18 @@ impl VoicemailService {
             media_manager,
             mwi_notifier: Some(mwi_notifier),
             config,
+            recording_now: Arc::new(AtomicUsize::new(0)),
         }
+    }
+
+    /// How many messages are being recorded or written down right now.
+    ///
+    /// What a draining voicemail node is carrying that outlives the call:
+    /// a caller hung up on at the drain deadline is still a message to
+    /// save, and the recording loop notices the call is gone a second
+    /// later (`docs/CAPACITY_AND_SURVIVABILITY.md` §6).
+    pub fn messages_being_recorded(&self) -> usize {
+        self.recording_now.load(Ordering::SeqCst)
     }
 
     /// Records a voicemail message for a mailbox.
@@ -271,6 +308,10 @@ impl VoicemailService {
         );
 
         let recording_start = std::time::Instant::now();
+
+        // From here the caller's voice is on disk but not yet a message:
+        // a node leaving service waits for this to finish.
+        let _recording = RecordingGuard::new(&self.recording_now);
 
         self.media_manager
             .start_recording(
@@ -970,5 +1011,38 @@ mod tests {
         }
 
         std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// A message being recorded is counted from the first sample until the
+    /// row is written, so a node leaving service knows to wait for it
+    /// (`docs/CAPACITY_AND_SURVIVABILITY.md` §6).
+    #[test]
+    fn a_message_being_recorded_is_counted_until_it_is_written() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        assert_eq!(counter.load(Ordering::SeqCst), 0);
+        {
+            let _one = RecordingGuard::new(&counter);
+            assert_eq!(counter.load(Ordering::SeqCst), 1);
+            let _two = RecordingGuard::new(&counter);
+            assert_eq!(counter.load(Ordering::SeqCst), 2, "two callers at once");
+        }
+        assert_eq!(
+            counter.load(Ordering::SeqCst),
+            0,
+            "each one stops counting however its recording ended"
+        );
+    }
+
+    /// A recording that fails on its way to disk stops counting too — the
+    /// guard is dropped by the `?` that carries the error out.
+    #[test]
+    fn a_recording_that_errors_stops_counting() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        fn record(counter: &Arc<AtomicUsize>) -> Result<()> {
+            let _recording = RecordingGuard::new(counter);
+            anyhow::bail!("the session was gone")
+        }
+        assert!(record(&counter).is_err());
+        assert_eq!(counter.load(Ordering::SeqCst), 0);
     }
 }
