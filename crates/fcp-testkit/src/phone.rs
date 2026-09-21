@@ -99,6 +99,20 @@ struct CallState {
     dialog: RwLock<Option<Dialog>>,
     media: Arc<MediaLeg>,
     phase: watch::Sender<CallPhase>,
+    timings: Mutex<CallTimings>,
+}
+
+/// When a call's milestones happened, for a caller measuring a node under
+/// load (`docs/CAPACITY_AND_SURVIVABILITY.md` §8). Times are elapsed from
+/// the INVITE leaving this phone.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CallTimings {
+    /// The first provisional, and what it was: `100`, `180`, `183`.
+    pub first_provisional: Option<(u16, Duration)>,
+    /// The first `18x` — the far end ringing, rather than a proxy's `100`.
+    pub ringing: Option<Duration>,
+    /// The final response, and its code.
+    pub final_response: Option<(u16, Duration)>,
 }
 
 /// What the phone's handler and its tasks share.
@@ -218,11 +232,13 @@ impl Inner {
             dialog: RwLock::new(None),
             media: Arc::clone(&media),
             phase: phase_tx,
+            timings: Mutex::new(CallTimings::default()),
         });
         self.calls.insert(call_id.clone(), Arc::clone(&state));
 
         let inner = Arc::clone(self);
         let st = Arc::clone(&state);
+        let placed = std::time::Instant::now();
         tokio::spawn(async move {
             // Provisionals and the final together: a non-2xx leaves the
             // transaction (and the provisional stream) alive for timer D,
@@ -235,6 +251,14 @@ impl Inner {
                     p = handle.await_provisional() => match p {
                         Some(resp) => {
                             let code = resp.start_line().code();
+                            {
+                                let mut t = st.timings.lock().unwrap();
+                                let at = placed.elapsed();
+                                t.first_provisional.get_or_insert((code, at));
+                                if code > 100 {
+                                    t.ringing.get_or_insert(at);
+                                }
+                            }
                             if code > 100 {
                                 st.phase.send_replace(CallPhase::Ringing);
                                 inner.emit(PhoneEvent::Ringing {
@@ -246,6 +270,20 @@ impl Inner {
                         None => break final_fut.await,
                     },
                 }
+            };
+            match &outcome {
+                Ok(resp) => st
+                    .timings
+                    .lock()
+                    .unwrap()
+                    .final_response
+                    .get_or_insert((resp.start_line().code(), placed.elapsed())),
+                Err(_) => st
+                    .timings
+                    .lock()
+                    .unwrap()
+                    .final_response
+                    .get_or_insert((0, placed.elapsed())),
             };
             match outcome {
                 Ok(resp) if (200..300).contains(&resp.start_line().code()) => {
@@ -544,10 +582,17 @@ impl Phone {
     /// REGISTER at the server (digest handled), returning the final
     /// status code.
     pub async fn register(&self) -> Result<u16> {
+        self.register_for(3600).await
+    }
+
+    /// As [`Phone::register`], asking for `expires` seconds — what a
+    /// device with a short registration does, and what a load run that
+    /// re-registers on expiry needs.
+    pub async fn register_for(&self, expires: u32) -> Result<u16> {
         let target = format!("sip:{}", self.server);
         let resp = tokio::time::timeout(
             Duration::from_secs(10),
-            self.uac().register(target.as_str(), Some(3600)),
+            self.uac().register(target.as_str(), Some(expires)),
         )
         .await
         .context("REGISTER timed out")??;
@@ -678,6 +723,12 @@ impl Call {
 
     pub fn media(&self) -> &MediaLeg {
         &self.state.media
+    }
+
+    /// When this call's milestones happened, measured from the INVITE
+    /// leaving this phone (`docs/CAPACITY_AND_SURVIVABILITY.md` §8).
+    pub fn timings(&self) -> CallTimings {
+        *self.state.timings.lock().unwrap()
     }
 
     pub fn phase(&self) -> CallPhase {
@@ -1053,6 +1104,7 @@ impl UasRequestHandler for Handler {
             dialog: RwLock::new(Some(dialog)),
             media,
             phase: phase_tx,
+            timings: Mutex::new(CallTimings::default()),
         });
         self.0.calls.insert(call_id.clone(), Arc::clone(&state));
         let call = Call {

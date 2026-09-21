@@ -250,7 +250,21 @@ last. The admin UI's cluster page shows a `draining` badge per node and a
 count, from the heartbeat field nothing had ever displayed; and
 `docs/CLUSTER_OPERATIONS_RUNBOOK.md`, which said FCP had no drain mode and
 that a rolling restart drops calls, now carries the procedure and what
-each kind of node does with what it is carrying. Ten open questions, every recommendation taken on
+each kind of node does with what it is carrying. Phase 3 done (v0.25.217):
+`fcp-loadgen`, a workspace member (`publish = false`) driving
+`fcp-testkit`'s scripted phones — real SIP, real RTP — many at a time,
+with the four profiles (register storm, call ramp, soak, mixed), latency
+percentiles per milestone, outcomes by status code, per-leg RTP loss and
+jitter, the node's `/metrics` and `/proc` sampled beside them, a JSON
+report and budget flags that make a run a gate. A soak holds a population
+rather than a rate; the ramp is the profile with a rate, and stops at the
+first rung that refuses, slows or drops. The testkit gained
+`MediaLeg::stream_stats` (RFC 3550 jitter, loss, reordering) and
+`Call::timings`. The harness's first run against a real node found two
+defects in itself — registrations counted as answered calls, and
+answering phones that played nothing, so every leg read as 100 % loss —
+which is what a measuring tool is for. CI runs a six-second soak and a
+five-second storm for behaviour, never a rate. Ten open questions, every recommendation taken on
 2026-09-20: one admission controller in `fcp-sbc-core` for every routing
 binary; node limits only where a deployment wrote one down; the tenant limit
 per node until phase 5 leases it cluster-wide; a BYE with a `Reason` and a

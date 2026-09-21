@@ -449,7 +449,7 @@ One PR each, in order.
 | 2b-2 ✅ v0.25.214 | **The application servers.** `[admission]` and the drain on the IVR, the voicemail server and the presence server — the three phase 1 left with no limits at all — each ending what it is carrying in its own terms: a caller inside a flow, a message being recorded, a subscription to expire |
 | 2b-3 ✅ v0.25.215 | **The WebRTC gateway.** It has no health server at all, so: one, with `/health`, `/ready` and `/drain`; the `[admission]` section; and a drain that hands sessions to another node the way distributed conferencing's phase 5 migrates participants, rather than only refusing new ones |
 | 2b-4 ✅ v0.25.216 | **The conference server, the badge and the runbook.** Its own drain — SIGTERM, `set_draining`, `start_draining()`, `drain_wait_secs`, REFER migration — aligned on the shared `draining` state and given `/ready` and `/drain`, without losing the migration; the drain badge and node state on the admin UI's cluster page; the rolling-restart procedure in `docs/CLUSTER_OPERATIONS_RUNBOOK.md` |
-| 3 | **The harness.** `fcp-loadgen` on `fcp-testkit`: the four profiles, the measurements, the JSON report, the budget flags; the small CI profile |
+| 3 ✅ v0.25.217 | **The harness.** `fcp-loadgen` on `fcp-testkit`: the four profiles, the measurements, the JSON report, the budget flags; the small CI profile |
 | 4 | **What the numbers say.** Run it on the dev VM: calls per second and concurrent calls to first refusal, latency percentiles, memory per call, registration storm behaviour. Fix what it finds — this is where the defects are — and record the numbers here, in `docs/DEPLOYMENT.md` and in the heartbeat as a published capacity budget, the shape video's already has |
 | 5 | **Across the cluster.** Tenant concurrency and trunk channels leased in Redis with a per-node fallback; placement by headroom among serving nodes in region; load, headroom and limits on the admin UI's cluster and tenant pages |
 
@@ -716,6 +716,45 @@ drain mode and that a rolling restart drops calls, has the procedure: set
 `drain_wait_secs`, `POST /drain`, watch `/status`, stop, restart, check
 `/ready` — with a table of what each kind of node does with what it is
 carrying, and the load balancer pointed at `/ready` rather than `/health`.
+
+*Phase 3 shipped 2026-09-21 (v0.25.217).* `fcp-loadgen` is a workspace
+member (`publish = false`) that drives `fcp-testkit`'s scripted phones —
+real SIP, real RTP — many at a time, and reports what the callers saw
+beside what the node said about itself over the same seconds.
+
+The four profiles are as designed, with one correction from writing them:
+**a soak holds a population, not a rate.** `--users` callers each keep one
+call up, hang it up after `--call-seconds` and place another, so the node
+is asked to carry N calls rather than to accept N per second — which is
+what memory per call and media quality over time are measured against. The
+ramp is the profile with a rate, and it stops at the first rung that
+refuses too many, answers too slowly or drops a call; the last rung that
+held is the node's number.
+
+Two things the harness needed from the testkit, both worth having anyway:
+a leg now reports **what the stream sent to it looked like on arrival** —
+RFC 3550 jitter, loss from the sequence numbers, reordering and duplicates
+(`MediaLeg::stream_stats`) — and a call records **when its milestones
+happened** (`Call::timings`), so INVITE→100, →18x and →200 are measured
+from the caller's own socket rather than inferred.
+
+Two defects the harness found in its own first run against a real node,
+which is the point of building it:
+
+- **Registrations were being counted as answered calls.** One outcome map
+  held both, so a storm's `200`s inflated the answered rate. They are
+  counted apart now, and the summary prints them apart.
+- **Nobody was speaking back.** The answering phones auto-answered and
+  played nothing, so every caller's leg reported 100 % loss and the
+  harness would have reported a node with perfect media as broken. The
+  answering side now plays a tone for as long as the caller holds the
+  call, and both legs are measured: the same run then read 0 % loss and
+  0.3 ms of jitter through the B2BUA's relay.
+
+What CI runs is `tests/ci_profile.rs`: a six-second soak and a five-second
+storm against a real call manager, asserting behaviour only — every call
+answered, both legs of every call hearing audio, every REGISTER answered,
+and the node sampled for memory and metrics — never a rate (§12 Q8).
 
 ## 14. Not in scope
 

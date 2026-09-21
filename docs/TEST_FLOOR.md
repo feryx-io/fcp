@@ -121,6 +121,16 @@ Asserting through the API where the API is the product: the call
 manager's `/registrations`, `/calls` and `/cdrs`, the conference
 server's `/conferences/{room}`; through the phone where the phone is.
 
+The same phone, run many at a time, is also the load harness:
+`crates/fcp-loadgen` (`docs/CAPACITY_AND_SURVIVABILITY.md` §8) drives it
+in four profiles and reports what the callers saw beside what the node
+said about itself. Its own `tests/ci_profile.rs` runs the smallest of
+them against a real call manager on every CI run — for behaviour, never
+for a rate — which makes it a test-floor scenario like the rest. The
+measurements it needed are in the phone itself now:
+`MediaLeg::stream_stats` for loss, reordering and RFC 3550 jitter, and
+`Call::timings` for INVITE→100, →18x and →200.
+
 ## Phases
 
 One PR each, in order.
