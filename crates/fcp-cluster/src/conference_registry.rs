@@ -515,6 +515,7 @@ mod tests {
             active_calls: calls,
             started_at: 0,
             version: "test".to_string(),
+            public_url: None,
             draining: false,
             region: None,
             video_budget: Vec::new(),

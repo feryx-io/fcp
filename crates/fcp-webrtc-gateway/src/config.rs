@@ -43,6 +43,12 @@ pub struct GatewayConfig {
     #[serde(default)]
     pub cdr: fcp_cdr::NodeConfig,
 
+    /// What this node accepts, and what it refuses
+    /// (`docs/CAPACITY_AND_SURVIVABILITY.md` §5). Every limit is optional;
+    /// unset is unlimited, as it was before the section existed.
+    #[serde(default)]
+    pub admission: fcp_sbc_core::AdmissionSection,
+
     #[serde(default)]
     pub cluster: ClusterSection,
 
@@ -121,6 +127,15 @@ pub struct ServiceSection {
 
     #[serde(default = "default_shutdown_timeout_secs")]
     pub shutdown_timeout_secs: u64,
+
+    /// Seconds a drain gives the browsers on this node to move to another
+    /// one before it ends what is left
+    /// (`docs/CAPACITY_AND_SURVIVABILITY.md` §6). A room session is told
+    /// where to go and moves itself; a call to a SIP phone has nowhere to
+    /// go and is simply waited for. Zero — the default — is what this
+    /// binary always did: it stops where it stands.
+    #[serde(default)]
+    pub drain_wait_secs: u64,
 }
 
 fn default_service_type() -> String {
@@ -141,6 +156,7 @@ impl Default for ServiceSection {
             service_type: default_service_type(),
             node_id: default_node_id(),
             shutdown_timeout_secs: default_shutdown_timeout_secs(),
+            drain_wait_secs: 0,
         }
     }
 }
@@ -178,6 +194,16 @@ pub struct HttpSection {
     /// (the conference server verifies it); the rate limit bounds abuse.
     #[serde(default)]
     pub public_join: bool,
+
+    /// Where a browser reaches this node — `https://gw2.example.com` —
+    /// advertised in the cluster heartbeat so a draining peer can send
+    /// its browsers here (`docs/CAPACITY_AND_SURVIVABILITY.md` §6).
+    /// `bind_address` is no use for that: it is what the node listens on,
+    /// often `0.0.0.0`. A gateway that sets nothing takes no handovers,
+    /// and its own browsers are told to come back where they are — which
+    /// is right behind a load balancer and wrong without one.
+    #[serde(default)]
+    pub public_url: Option<String>,
 }
 
 fn default_http_bind() -> SocketAddr {
@@ -203,6 +229,7 @@ impl Default for HttpSection {
             serve_join_page: false,
             public_join: false,
             trusted_proxies: Vec::new(),
+            public_url: None,
         }
     }
 }

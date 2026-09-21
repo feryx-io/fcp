@@ -175,7 +175,16 @@ tokens = ["operator-token"]
 
 [cluster]
 enabled = true           # with [storage] redis_url: placement by hosting node, load, region, video budget
+
+[service]
+drain_wait_secs = 300    # how long a drain gives browsers to move (0: stop where it stands)
+
+[admission]
+max_concurrent_calls = 500   # sessions this node will carry; every limit optional, unset is no limit
 ```
+
+`[http] public_url` is what a *draining* gateway hands its browsers
+(below); `bind_address` cannot serve for that, being a bind address.
 
 Two credentials open the gateway's routes. An operator token (`[auth]
 tokens`) opens everything, including forge-api's own `/v1/webrtc/…`
@@ -277,6 +286,47 @@ new leg and swaps it under the running relay. The browser's peer
 connection, SDP and tracks are untouched; the room goes quiet for about
 the time of one INVITE and comes back. The session's `sip_target` then
 names the new node. Nothing in the join page or the client API changes.
+
+## When the gateway itself drains
+
+A gateway session lives in the gateway process — the browser's peer
+connection, the SIP leg and the relay between them — so, unlike a
+conference participant, the platform cannot move it: the browser has to
+join again somewhere else (`docs/CAPACITY_AND_SURVIVABILITY.md` §6).
+
+`POST /drain` (operator token), or SIGTERM, starts it:
+
+- `/ready` answers `503`, so a load balancer stops choosing this node,
+  while `/health` keeps answering `200` — a liveness probe must not kill
+  the process mid-drain. `/status` shows `draining` and what is left.
+- New room joins and calls are refused with `503` and `Retry-After`.
+- **Every room session is told to move**, in the status the browser is
+  already polling:
+
+  ```json
+  { "id": "sess-…", "state": "connected",
+    "handover": { "reason": "node_draining", "url": "https://gw2.example.com" } }
+  ```
+
+  The `url` is a serving gateway from the cluster — same region where
+  possible, least loaded first — that advertises `[http] public_url`.
+  With no such peer the field is absent, and the browser should join
+  again at the address it is already using, which behind a load balancer
+  is a serving node.
+- The built-in join page does exactly that: it joins the named gateway
+  with the same room, name and join token, answers the new offer with the
+  same camera and microphone (a share in progress follows it), and only
+  then leaves the old session. A move that fails — an expired join token,
+  a peer that will not take it — leaves the old session untouched.
+- A `/v1/calls` session is not moved: the far end is a SIP phone, and
+  redialling it from another gateway would be a second call. Those are
+  waited for, and hung up at `[service] drain_wait_secs`.
+- `DELETE /drain` returns the node to service; sessions are untouched
+  throughout.
+
+A client that is not the built-in page should do the same: read
+`handover`, join at `url` (or at its own gateway address), and leave the
+old session once the new one is connected.
 
 ## Not yet
 

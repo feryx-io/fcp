@@ -293,6 +293,7 @@ async fn main() -> Result<()> {
                     .unwrap_or_default()
                     .as_secs(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
+                public_url: None,
                 draining: false,
                 region: fcp_cluster::resolve_region(config.cluster.region.as_deref()),
                 video_budget: Vec::new(),

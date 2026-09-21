@@ -61,6 +61,16 @@ pub struct ClusterMember {
     /// versions.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub registering_trunks: Vec<String>,
+    /// Where a browser reaches this node, when it is browser-facing
+    /// (`[http] public_url` on the WebRTC gateway), e.g.
+    /// `https://gw2.example.com`. The bind address in `http_address` is
+    /// what peers dial inside the cluster; it is often `0.0.0.0` and
+    /// never something to hand a browser. A node that leaves it unset
+    /// takes no handovers from a draining peer
+    /// (`docs/CAPACITY_AND_SURVIVABILITY.md` §6). Absent on nodes that
+    /// are not browser-facing and on records written by older versions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_url: Option<String>,
     /// Video capacity left per device, advertised by conference nodes
     /// (`docs/VIDEO_CONFERENCING.md` §9.3). Placement prefers, for a video
     /// room, the node with the most left on a device that has the room's
@@ -503,6 +513,23 @@ impl ClusterManager {
         self.least_loaded(node_type)
     }
 
+    /// The node a browser on this one should move to, when this node is
+    /// leaving service (`docs/CAPACITY_AND_SURVIVABILITY.md` §6).
+    ///
+    /// A peer of the same kind that is serving, is reachable by a browser
+    /// (it advertises a `public_url`) and is in this node's region when
+    /// any peer there is; the least loaded of those. `None` when no peer
+    /// qualifies, and then the browser is told to come back where it is —
+    /// which is what a load balancer in front of the pool answers.
+    pub fn handover_peer(&self) -> Option<ClusterMember> {
+        choose_handover_node(
+            &self.members(),
+            &self.self_info.node_type,
+            self.region(),
+            &self.self_info.node_id,
+        )
+    }
+
     /// Get the local node info.
     pub fn self_info(&self) -> &ClusterMember {
         &self.self_info
@@ -694,6 +721,48 @@ fn pick_trunk_owner(
     best.map(|(_, node_id)| node_id)
 }
 
+/// Which peer a draining node hands its browsers to
+/// (`docs/CAPACITY_AND_SURVIVABILITY.md` §6).
+///
+/// The candidates are nodes of the same `node_type` that are serving (not
+/// draining), are not this node, and advertise a `public_url` — without
+/// one there is no address to send a browser to. Among them, a node in
+/// `local_region` is preferred, as placement prefers one everywhere else;
+/// among equals, the least loaded, then the lowest node id so two
+/// draining nodes do not both crowd the same peer by accident.
+pub fn choose_handover_node(
+    members: &[ClusterMember],
+    node_type: &str,
+    local_region: Option<&str>,
+    self_node_id: &str,
+) -> Option<ClusterMember> {
+    let candidates: Vec<&ClusterMember> = members
+        .iter()
+        .filter(|m| {
+            m.node_type == node_type
+                && !m.draining
+                && m.node_id != self_node_id
+                && m.public_url.as_ref().is_some_and(|u| !u.trim().is_empty())
+        })
+        .collect();
+    let least_loaded = |from: &[&ClusterMember]| -> Option<ClusterMember> {
+        from.iter()
+            .min_by_key(|m| (m.active_calls, m.node_id.clone()))
+            .map(|m| (*m).clone())
+    };
+    if let Some(region) = local_region {
+        let local: Vec<&ClusterMember> = candidates
+            .iter()
+            .copied()
+            .filter(|m| m.in_region(region))
+            .collect();
+        if let Some(pick) = least_loaded(&local) {
+            return Some(pick);
+        }
+    }
+    least_loaded(&candidates)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -709,10 +778,86 @@ mod tests {
             active_calls: 0,
             started_at: 0,
             version: "test".to_string(),
+            public_url: None,
             draining: false,
             region: region.map(str::to_owned),
             video_budget: Vec::new(),
             registering_trunks: Vec::new(),
+        }
+    }
+
+    /// Where a draining browser-facing node sends its browsers
+    /// (`docs/CAPACITY_AND_SURVIVABILITY.md` §6).
+    mod handover {
+        use super::*;
+
+        fn gateway(
+            id: &str,
+            region: Option<&str>,
+            url: Option<&str>,
+            calls: usize,
+        ) -> ClusterMember {
+            let mut m = member(id, region);
+            m.node_type = "webrtc_gateway".to_string();
+            m.public_url = url.map(str::to_owned);
+            m.active_calls = calls;
+            m
+        }
+
+        #[test]
+        fn the_least_loaded_serving_peer_in_region_is_chosen() {
+            let members = vec![
+                gateway("gw-2", Some("us-east"), Some("https://gw2"), 9),
+                gateway("gw-3", Some("us-east"), Some("https://gw3"), 2),
+                gateway("gw-4", Some("us-west"), Some("https://gw4"), 0),
+            ];
+            let pick =
+                choose_handover_node(&members, "webrtc_gateway", Some("us-east"), "gw-1").unwrap();
+            assert_eq!(pick.node_id, "gw-3", "the emptier of the two in region");
+        }
+
+        /// A node with no peer in its own region still hands over rather
+        /// than dropping the browser.
+        #[test]
+        fn another_region_is_better_than_nowhere() {
+            let members = vec![gateway("gw-4", Some("us-west"), Some("https://gw4"), 0)];
+            let pick =
+                choose_handover_node(&members, "webrtc_gateway", Some("us-east"), "gw-1").unwrap();
+            assert_eq!(pick.node_id, "gw-4");
+        }
+
+        /// A peer that is draining, has no browser-facing address, is of
+        /// another kind, or is this node itself, is no place to send a
+        /// browser.
+        #[test]
+        fn unusable_peers_are_skipped() {
+            let mut draining = gateway("gw-2", Some("us-east"), Some("https://gw2"), 0);
+            draining.draining = true;
+            let mut wrong_kind = gateway("conf-1", Some("us-east"), Some("https://conf1"), 0);
+            wrong_kind.node_type = "conference".to_string();
+            let members = vec![
+                draining,
+                wrong_kind,
+                gateway("gw-3", Some("us-east"), None, 0),
+                gateway("gw-4", Some("us-east"), Some("   "), 0),
+                gateway("gw-1", Some("us-east"), Some("https://gw1"), 0),
+            ];
+            assert!(
+                choose_handover_node(&members, "webrtc_gateway", Some("us-east"), "gw-1").is_none(),
+                "nothing here can take a browser"
+            );
+        }
+
+        /// The field is optional on the wire: a node from before this
+        /// existed simply takes no handovers.
+        #[test]
+        fn a_record_without_the_field_parses_and_takes_none() {
+            let old = r#"{"node_id":"gw-9","node_type":"webrtc_gateway","http_address":"10.0.0.1:8443",
+                "sip_address":"10.0.0.1:5060","capabilities":[],"active_calls":0,"started_at":1,
+                "version":"0.25.0"}"#;
+            let m: ClusterMember = serde_json::from_str(old).unwrap();
+            assert_eq!(m.public_url, None);
+            assert!(choose_handover_node(&[m], "webrtc_gateway", None, "gw-1").is_none());
         }
     }
 
@@ -841,6 +986,7 @@ mod trunk_owner_tests {
             version: "test".to_string(),
             draining,
             region: None,
+            public_url: None,
             video_budget: Vec::new(),
             registering_trunks: trunks.iter().map(|t| t.to_string()).collect(),
         }

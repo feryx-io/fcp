@@ -17,6 +17,7 @@ fn member(id: &str, node_type: &str, region: Option<&str>, calls: usize) -> Clus
         active_calls: calls,
         started_at: 0,
         version: "test".to_string(),
+        public_url: None,
         draining: false,
         region: region.map(str::to_owned),
         video_budget: Vec::new(),

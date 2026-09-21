@@ -82,7 +82,9 @@
 (() => {
   const $ = (id) => document.getElementById(id);
   const params = new URLSearchParams(location.search);
-  const api = params.get('gateway') || location.origin;
+  // Not a constant: a gateway leaving service can send this browser to
+  // another one, and everything after the move talks to that one.
+  let api = params.get('gateway') || location.origin;
   $('room').value = params.get('room') || '';
   $('name').value = params.get('name') || '';
   $('token').value = params.get('token') || '';
@@ -91,6 +93,9 @@
   if (params.has('token')) history.replaceState(null, '', location.pathname + (params.get('room') ? `?room=${encodeURIComponent(params.get('room'))}` : ''));
 
   let session = null;      // { id, session_token }
+  let joined = null;       // what this browser joined with, for a move
+  let moving = false;      // a move to another gateway is in flight
+  let movedAt = 0;         // when the last move was tried, to retry slowly
   let pc = null;
   let local = null;
   let poll = null;
@@ -102,10 +107,10 @@
   const log = (line) => { $('log').textContent += `${new Date().toISOString().slice(11, 19)} ${line}\n`; $('log').scrollTop = $('log').scrollHeight; };
   const setStatus = (el, html) => { $(el).innerHTML = html; };
 
-  async function call(method, path, body, sessionToken) {
+  async function call(method, path, body, sessionToken, base) {
     const headers = { 'Content-Type': 'application/json' };
     if (sessionToken) headers['Authorization'] = `Bearer ${sessionToken}`;
-    const res = await fetch(api + path, { method, headers, body: body ? JSON.stringify(body) : undefined });
+    const res = await fetch((base || api) + path, { method, headers, body: body ? JSON.stringify(body) : undefined });
     const text = await res.text();
     let json = null;
     try { json = text ? JSON.parse(text) : null; } catch (_) {}
@@ -147,6 +152,97 @@
     }
   }
 
+  // Answer one gateway's offer: the peer connection, its tracks and its
+  // candidates, all pointed at the node that made it. Called once when
+  // joining, and again when a node leaving service sends this browser to
+  // another one.
+  async function attach(created, base) {
+    const id = created.id;
+    const token = created.session_token;
+    const conn = new RTCPeerConnection({ iceServers: created.ice_servers || [] });
+    conn.ontrack = (ev) => {
+      // The second video section (mid 2) is the room's shared screen.
+      if (ev.transceiver && ev.transceiver.mid === '2') {
+        log('content track');
+        $('content').srcObject = new MediaStream([ev.track]);
+        // The track goes quiet between shares: show it only while it flows.
+        ev.track.onunmute = () => $('videos').classList.add('sharing');
+        ev.track.onmute = () => $('videos').classList.remove('sharing');
+        return;
+      }
+      log(`remote ${ev.track.kind} track`);
+      if (!$('remote').srcObject) $('remote').srcObject = new MediaStream();
+      $('remote').srcObject.addTrack(ev.track);
+    };
+    conn.onicecandidate = async (ev) => {
+      if (!ev.candidate) return;
+      try { await call('POST', `/v1/rooms/${id}/ice-candidate`, { candidate: ev.candidate.candidate }, token, base); }
+      catch (e) { log(`candidate refused: ${e.message}`); }
+    };
+    conn.onconnectionstatechange = () => log(`peer connection ${conn.connectionState}`);
+    await conn.setRemoteDescription({ type: 'offer', sdp: created.sdp_offer });
+    for (const track of local.getTracks()) conn.addTrack(track, local);
+    // The offer's third section is for a screen. Answering it sendrecv
+    // with no track yet means sharing later is a replaceTrack, not a
+    // renegotiation; a browser without getDisplayMedia leaves it recvonly.
+    let sender = null;
+    const contentTransceiver = conn.getTransceivers().find((t) => t.mid === '2');
+    if (contentTransceiver && navigator.mediaDevices.getDisplayMedia) {
+      contentTransceiver.direction = 'sendrecv';
+      sender = contentTransceiver.sender;
+      $('share').classList.remove('hidden');
+    }
+    const answer = await conn.createAnswer();
+    await conn.setLocalDescription(answer);
+    await call('POST', `/v1/rooms/${id}/answer`, { sdp_answer: answer.sdp }, token, base);
+    return { pc: conn, contentSender: sender };
+  }
+
+  // This gateway is leaving service and has said so in the session's
+  // status (`docs/CAPACITY_AND_SURVIVABILITY.md` §6). Join the room again
+  // — on the gateway it named, or where we are, which behind a load
+  // balancer means a serving node — with the same camera and microphone,
+  // and only then leave the old session, so the room is never left. If
+  // the move fails (an expired join token, a node that will not take us)
+  // the old session is kept: it plays on until that node's deadline.
+  async function moveTo(advice) {
+    // A failed move is retried, but not on every poll: without a named
+    // gateway the browser re-joins where it is, and that is the node
+    // that is leaving until a load balancer says otherwise.
+    if (moving || !session || !joined || Date.now() - movedAt < 10000) return;
+    moving = true;
+    movedAt = Date.now();
+    const target = (advice.url || api).replace(/\/+$/, '');
+    const from = { api, id: session.id, token: session.token };
+    log(`gateway leaving service; joining ${target === api ? 'again' : target}`);
+    setStatus('call-status', 'Moving to another gateway…');
+    try {
+      const created = await call('POST', `/v1/rooms/${encodeURIComponent(joined.room)}/join`,
+        { display_name: joined.name, video: joined.video, join_token: joined.token || null }, null, target);
+      const old = pc;
+      $('remote').srcObject = null;
+      $('content').srcObject = null;
+      $('videos').classList.remove('sharing');
+      const attached = await attach(created, target);
+      api = target;
+      session = { id: created.id, token: created.session_token };
+      pc = attached.pc;
+      contentSender = attached.contentSender;
+      // A share in progress follows the browser to the new node.
+      if (screen && contentSender) {
+        try { await contentSender.replaceTrack(screen.getVideoTracks()[0]); }
+        catch (e) { log(`the share did not follow: ${e.message}`); }
+      }
+      if (old) old.close();
+      try { await call('DELETE', `/v1/rooms/${from.id}`, null, from.token, from.api); }
+      catch (e) { log(`leaving the old gateway: ${e.message}`); }
+      log(`moved to ${api}`);
+    } catch (e) {
+      log(`move failed: ${e.message}; staying on this gateway`);
+    }
+    moving = false;
+  }
+
   async function join() {
     const room = $('room').value.trim();
     const name = $('name').value.trim();
@@ -167,44 +263,12 @@
     try {
       const created = await call('POST', `/v1/rooms/${encodeURIComponent(room)}/join`, { display_name: name, video: wantVideo, join_token: token || null }, null);
       session = { id: created.id, token: created.session_token };
+      joined = { room, name, video: wantVideo, token };
       log(`session ${created.id} created; answering the gateway's offer`);
 
-      pc = new RTCPeerConnection({ iceServers: created.ice_servers || [] });
-      pc.ontrack = (ev) => {
-        // The second video section (mid 2) is the room's shared screen.
-        if (ev.transceiver && ev.transceiver.mid === '2') {
-          log('content track');
-          $('content').srcObject = new MediaStream([ev.track]);
-          // The track goes quiet between shares: show it only while it flows.
-          ev.track.onunmute = () => $('videos').classList.add('sharing');
-          ev.track.onmute = () => $('videos').classList.remove('sharing');
-          return;
-        }
-        log(`remote ${ev.track.kind} track`);
-        if (!$('remote').srcObject) $('remote').srcObject = new MediaStream();
-        $('remote').srcObject.addTrack(ev.track);
-      };
-      pc.onicecandidate = async (ev) => {
-        if (!ev.candidate) return;
-        try { await call('POST', `/v1/rooms/${session.id}/ice-candidate`, { candidate: ev.candidate.candidate }, session.token); }
-        catch (e) { log(`candidate refused: ${e.message}`); }
-      };
-      pc.onconnectionstatechange = () => log(`peer connection ${pc.connectionState}`);
-      await pc.setRemoteDescription({ type: 'offer', sdp: created.sdp_offer });
-      for (const track of local.getTracks()) pc.addTrack(track, local);
-      // The offer's third section is for a screen. Answering it sendrecv
-      // with no track yet means sharing later is a replaceTrack, not a
-      // renegotiation; a browser without getDisplayMedia leaves it recvonly.
-      contentSender = null;
-      const contentTransceiver = pc.getTransceivers().find((t) => t.mid === '2');
-      if (contentTransceiver && navigator.mediaDevices.getDisplayMedia) {
-        contentTransceiver.direction = 'sendrecv';
-        contentSender = contentTransceiver.sender;
-        $('share').classList.remove('hidden');
-      }
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-      await call('POST', `/v1/rooms/${session.id}/answer`, { sdp_answer: answer.sdp }, session.token);
+      const attached = await attach(created, api);
+      pc = attached.pc;
+      contentSender = attached.contentSender;
       log('answer sent; connecting');
       $('setup').classList.add('hidden');
       $('call').classList.remove('hidden');
@@ -231,7 +295,10 @@
       if (info.state === 'terminated' || typeof info.state === 'object') {
         log(`session over: ${typeof info.state === 'object' ? info.state.failed : info.state}`);
         await cleanup(false);
+        return;
       }
+      // The gateway is leaving service: join another one before it goes.
+      if (info.handover) await moveTo(info.handover);
     } catch (e) {
       log(`status: ${e.message}`);
     }
@@ -244,6 +311,7 @@
 
   async function cleanup(tellGateway) {
     if (poll) { clearInterval(poll); poll = null; }
+    joined = null;
     if (tellGateway && session) {
       try { await call('DELETE', `/v1/rooms/${session.id}`, null, session.token); } catch (e) { log(`leave: ${e.message}`); }
     }
