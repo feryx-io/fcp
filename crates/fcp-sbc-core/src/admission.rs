@@ -806,6 +806,10 @@ impl NodeAdmission for AdmissionController {
         self.is_draining()
     }
 
+    fn set_draining(&self, draining: bool) {
+        AdmissionController::set_draining(self, draining);
+    }
+
     fn register_expiry_cap(&self) -> Option<u32> {
         if !self.is_draining() {
             return None;
@@ -1441,5 +1445,54 @@ mod drain_tests {
         });
         ctrl.set_draining(true);
         assert_eq!(ctrl.register_expiry_cap(), None);
+    }
+}
+
+/// The limits a node keeps (`docs/CAPACITY_AND_SURVIVABILITY.md` §4).
+///
+/// Every field is optional and unset means unlimited, so a node that
+/// writes `[admission]` for one limit does not silently acquire the
+/// others — which is what would happen if the SBC's own `AdmissionConfig`
+/// defaults were deserialized here.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AdmissionSection {
+    /// Calls this node may start in one second.
+    pub max_cps: Option<u32>,
+    /// Calls this node may carry at once.
+    pub max_concurrent_calls: Option<u32>,
+    /// Registrations this node may hold.
+    pub max_concurrent_registrations: Option<u32>,
+    /// REGISTERs a second from one source address. A challenged
+    /// registration is two REGISTERs, so a limit of `n` admits `n / 2`
+    /// registrations a second from one address.
+    pub max_register_cps_per_source: Option<u32>,
+    /// REGISTERs a second for one AOR, across addresses.
+    pub max_register_cps_per_aor: Option<u32>,
+    /// The longest registration a draining node grants, so a device comes
+    /// back soon and is placed on a node that is serving. Zero keeps what
+    /// the device asked for; unset is 60 seconds.
+    pub drain_register_expiry_secs: Option<u32>,
+    /// Seconds to put in `Retry-After` when refusing.
+    pub retry_after_secs: Option<u64>,
+}
+
+impl AdmissionSection {
+    /// The controller's configuration: what this section says, and no
+    /// limit anywhere it says nothing.
+    pub fn resolve(&self) -> AdmissionConfig {
+        let mut cfg = AdmissionConfig::unlimited();
+        cfg.max_cps = self.max_cps.unwrap_or(0);
+        cfg.max_concurrent_calls = self.max_concurrent_calls.unwrap_or(0);
+        cfg.max_concurrent_registrations = self.max_concurrent_registrations.unwrap_or(0);
+        cfg.max_register_cps_per_source = self.max_register_cps_per_source.unwrap_or(0);
+        cfg.max_register_cps_per_aor = self.max_register_cps_per_aor.unwrap_or(0);
+        if let Some(secs) = self.retry_after_secs {
+            cfg.retry_after_secs = secs.clamp(1, 3600);
+        }
+        if let Some(secs) = self.drain_register_expiry_secs {
+            cfg.drain_register_expiry_secs = secs;
+        }
+        cfg
     }
 }

@@ -196,7 +196,19 @@ implementation (`fcp-sip`) and puts the SBC and the registrar on it, 2b-2 the
 IVR, voicemail and presence servers, 2b-3 the WebRTC gateway (which has no
 health server yet, and whose sessions want handing over rather than
 refusing), 2b-4 the conference server's own drain aligned on the shared
-state, the admin UI's drain badge and the rolling-restart runbook. Ten open questions, every recommendation taken on
+state, the admin UI's drain badge and the rolling-restart runbook. Phase 2b-1
+done (v0.25.213): `fcp_sip::drain` is the sequence every routing binary runs,
+with a `DrainTarget` per binary saying what it carries and how to end it —
+calls and a BYE for the call manager, the relayed calls for the SBC, the
+devices registered for the registrar, which ends nothing because a
+registration lapses. `/ready`, `POST /drain` and `DELETE /drain` answer the
+same JSON on all three (the SBC's behind its API token). Found on the way: a
+drain started over HTTP never told the cluster, because 2a advertised in the
+SIGTERM path rather than in the sequence; the refusal and the shortened
+expiry lived in the call manager's handler, so the standalone registrar had
+neither, and both now run one `register_gate` (which also gave the registrar
+`[admission]` and the source address on its bindings); and `AdmissionSection`
+moved into `fcp-sbc-core`, since 2b-2 needs it three more times. Ten open questions, every recommendation taken on
 2026-09-20: one admission controller in `fcp-sbc-core` for every routing
 binary; node limits only where a deployment wrote one down; the tenant limit
 per node until phase 5 leases it cluster-wide; a BYE with a `Reason` and a

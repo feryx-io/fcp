@@ -19,6 +19,7 @@ use tracing::{info, warn};
 mod admin;
 mod cli;
 mod config;
+mod drain;
 mod enforcement;
 mod health;
 mod hmr_dispatcher;
@@ -703,27 +704,6 @@ async fn main() -> Result<()> {
             health_bind
         );
     }
-    let health_state = Arc::new(HealthState {
-        admission: Arc::clone(&admission),
-        health_monitor: Arc::clone(&trunk_health),
-        metrics: Arc::clone(&sbc_metrics),
-        call_manager: Arc::clone(&call_manager),
-        trunk_configs: sbc_config.trunks.clone(),
-        trunk_registrar: Some(Arc::clone(&trunk_registrar)),
-        uac: Some(Arc::clone(&uac)),
-        dialog_manager: Arc::clone(&dialog_manager_ref),
-        recording_store,
-        quality_tracker: quality_tracker.clone(),
-        lcr_routes: sbc_config.lcr.routes.clone(),
-        stir_metrics: stir_metrics.clone(),
-        stir_verifier: stir_verifier.clone(),
-        api_token: cli.health_api_token.clone(),
-    });
-    tokio::spawn(async move {
-        if let Err(e) = health::run_health_server(health_bind, health_state).await {
-            tracing::error!(%e, "SBC health server exited");
-        }
-    });
 
     // Initialize cluster membership (if configured)
     #[cfg(feature = "storage-redis")]
@@ -765,7 +745,7 @@ async fn main() -> Result<()> {
                     );
                     let _handle = cm.start();
                     info!("Cluster membership started");
-                    Some(cm)
+                    Some(Arc::new(cm))
                 }
                 Err(e) => {
                     warn!(error = %e, "Failed to connect to Redis; cluster disabled");
@@ -779,6 +759,53 @@ async fn main() -> Result<()> {
     } else {
         None
     };
+
+    // 21b. Leaving service without dropping calls
+    // (`docs/CAPACITY_AND_SURVIVABILITY.md` §6): the same sequence the call
+    // manager runs, from the same place, whether it starts at `POST /drain`
+    // or at SIGTERM.
+    let node_id = deploy_config
+        .service
+        .node_id
+        .clone()
+        .unwrap_or_else(|| format!("sbc-{}", uuid::Uuid::new_v4()));
+    let drain_target = Arc::new(drain::NodeCalls::new(
+        Arc::clone(&call_manager),
+        Some(Arc::clone(&uac)),
+        Arc::clone(&dialog_manager_ref),
+        #[cfg(feature = "storage-redis")]
+        _cluster_manager.clone(),
+    ));
+    let drain = Arc::new(fcp_sip::drain::Drain::new(
+        Arc::clone(&admission) as Arc<dyn fcp_sip::admission::NodeAdmission>,
+        drain_target as Arc<dyn fcp_sip::drain::DrainTarget>,
+        Arc::clone(&sbc_hooks),
+        node_id,
+        deploy_config.service.drain_wait_secs,
+    ));
+
+    let health_state = Arc::new(HealthState {
+        admission: Arc::clone(&admission),
+        health_monitor: Arc::clone(&trunk_health),
+        metrics: Arc::clone(&sbc_metrics),
+        call_manager: Arc::clone(&call_manager),
+        trunk_configs: sbc_config.trunks.clone(),
+        trunk_registrar: Some(Arc::clone(&trunk_registrar)),
+        uac: Some(Arc::clone(&uac)),
+        dialog_manager: Arc::clone(&dialog_manager_ref),
+        recording_store,
+        quality_tracker: quality_tracker.clone(),
+        lcr_routes: sbc_config.lcr.routes.clone(),
+        stir_metrics: stir_metrics.clone(),
+        stir_verifier: stir_verifier.clone(),
+        api_token: cli.health_api_token.clone(),
+        drain: Arc::clone(&drain),
+    });
+    tokio::spawn(async move {
+        if let Err(e) = health::run_health_server(health_bind, health_state).await {
+            tracing::error!(%e, "SBC health server exited");
+        }
+    });
 
     // 22. Spawn metrics snapshot background task
     let metrics_admission = Arc::clone(&admission);
@@ -899,6 +926,17 @@ async fn main() -> Result<()> {
         _ = sigterm.recv() => {
             info!("Received SIGTERM, initiating graceful shutdown...");
         }
+    }
+
+    // Leave service first (`docs/CAPACITY_AND_SURVIVABILITY.md` §6): tell
+    // the cluster, stop taking calls, wait for the ones this node is
+    // relaying, and end what is left with a BYE that says why. With
+    // `drain_wait_secs = 0` — the default — this is what the SBC always
+    // did: it stops where it stands, having said it is going.
+    if deploy_config.service.drain_wait_secs > 0 || drain.is_draining() {
+        fcp_sip::drain::drain_for_shutdown(&drain).await;
+    } else {
+        drain.start().await;
     }
 
     // Shutdown cluster manager

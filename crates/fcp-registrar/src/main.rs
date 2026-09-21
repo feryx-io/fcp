@@ -4,7 +4,13 @@
 //! Returns 405 Method Not Allowed for all other SIP methods.
 
 use anyhow::Result;
-use axum::{extract::State, routing::get, Json, Router};
+use axum::http::StatusCode;
+use axum::response::IntoResponse;
+use axum::{
+    extract::State,
+    routing::{get, post},
+    Json, Router,
+};
 use clap::Parser;
 use fcp_sip::registrar::FcpRegistrar;
 use sip_core::Method;
@@ -31,6 +37,8 @@ use config::RegistrarConfig;
 struct AppState {
     start_time: Instant,
     registrations_handled: AtomicU64,
+    /// Leaving service (`docs/CAPACITY_AND_SURVIVABILITY.md` §6).
+    drain: Arc<fcp_sip::drain::Drain>,
 }
 
 #[tokio::main]
@@ -124,10 +132,28 @@ async fn main() -> Result<()> {
     // 8. Create transaction manager
     let transaction_mgr = Arc::new(TransactionManager::new(transport_dispatcher));
 
+    // 8b. What this node accepts, and how it leaves service
+    // (`docs/CAPACITY_AND_SURVIVABILITY.md` §5, §6). Every limit is
+    // optional: a registrar that writes no `[admission]` section keeps
+    // none, as it always did.
+    let admission = Arc::new(fcp_sbc_core::AdmissionController::new(
+        config.admission.resolve(),
+    ));
+    let drain = Arc::new(fcp_sip::drain::Drain::new(
+        Arc::clone(&admission) as Arc<dyn fcp_sip::admission::NodeAdmission>,
+        Arc::new(RegisteredDevices {
+            storage: Arc::clone(&dyn_storage) as Arc<dyn fcp_core::RegistrationStore>,
+        }) as Arc<dyn fcp_sip::drain::DrainTarget>,
+        Arc::new(fcp_events::InMemoryEventBus::new()),
+        config.service.node_id.clone(),
+        config.service.drain_wait_secs,
+    ));
+
     // 9. Spawn HTTP health server
     let app_state = Arc::new(AppState {
         start_time: Instant::now(),
         registrations_handled: AtomicU64::new(0),
+        drain: Arc::clone(&drain),
     });
     let http_bind = config.http.bind_address;
     tokio::spawn(async move {
@@ -167,6 +193,8 @@ async fn main() -> Result<()> {
         "fcp-registrar ready — listening for REGISTER requests"
     );
 
+    let gate: Arc<dyn fcp_sip::admission::NodeAdmission> = Arc::clone(&admission) as _;
+
     // 11. Set up graceful shutdown signal handling
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
         .expect("Failed to register SIGTERM handler");
@@ -175,7 +203,7 @@ async fn main() -> Result<()> {
     loop {
         tokio::select! {
             Some(packet) = rx.recv() => {
-                handle_packet(&transaction_mgr, &registrar, packet).await;
+                handle_packet(&transaction_mgr, &registrar, &gate, packet).await;
             }
             _ = tokio::signal::ctrl_c() => {
                 info!("Received SIGINT (Ctrl+C), initiating graceful shutdown...");
@@ -188,8 +216,45 @@ async fn main() -> Result<()> {
         }
     }
 
+    // Leave service before stopping (`docs/CAPACITY_AND_SURVIVABILITY.md`
+    // §6): take no new registrations, and give the devices registered here
+    // the wait to come back somewhere that is serving. With
+    // `drain_wait_secs = 0` — the default — this is what it always was.
+    if config.service.drain_wait_secs > 0 || drain.is_draining() {
+        fcp_sip::drain::drain_for_shutdown(&drain).await;
+    } else {
+        drain.start().await;
+    }
+
     info!("Shutdown complete");
     Ok(())
+}
+
+/// What a drain means to a registrar: the devices registered here
+/// (`docs/CAPACITY_AND_SURVIVABILITY.md` §6).
+///
+/// It carries no calls, so there is nothing to hang up. What a drain does
+/// is stop taking new registrations, grant the ones it does take a minute
+/// at most — the shared REGISTER gate does that from
+/// `[admission] drain_register_expiry_secs` — and wait for the devices to
+/// come back somewhere that is serving. They leave on their own as their
+/// registrations lapse, which is why the wait watches the count rather
+/// than ending anything.
+struct RegisteredDevices {
+    storage: Arc<dyn fcp_core::RegistrationStore>,
+}
+
+#[async_trait::async_trait]
+impl fcp_sip::drain::DrainTarget for RegisteredDevices {
+    async fn carrying(&self) -> usize {
+        self.storage.registration_count().await.unwrap_or(0)
+    }
+
+    /// Nothing is ended: a registration that is not renewed expires, and
+    /// the device is already registering elsewhere by then.
+    async fn end_remaining(&self) -> usize {
+        0
+    }
 }
 
 /// Create the FcpRegistrar from configuration and storage.
@@ -220,6 +285,7 @@ fn create_registrar(
 async fn handle_packet(
     transaction_mgr: &Arc<TransactionManager>,
     registrar: &Arc<FcpRegistrar>,
+    admission: &Arc<dyn fcp_sip::admission::NodeAdmission>,
     packet: InboundPacket,
 ) {
     // Try parsing as a request
@@ -242,8 +308,10 @@ async fn handle_packet(
         let handle = transaction_mgr.receive_request(req.clone(), ctx).await;
 
         let registrar = Arc::clone(registrar);
+        let admission = Arc::clone(admission);
+        let peer = packet.peer();
         tokio::spawn(async move {
-            dispatcher::dispatch_request(&req, handle, &registrar).await;
+            dispatcher::dispatch_request(&req, handle, &registrar, Some(&admission), peer).await;
         });
         return;
     }
@@ -309,7 +377,12 @@ fn init_tracing(config: &RegistrarConfig) {
 async fn run_health_server(bind_addr: std::net::SocketAddr, state: Arc<AppState>) -> Result<()> {
     let app = Router::new()
         .route("/health", get(health_handler))
+        .route("/ready", get(ready_handler))
         .route("/status", get(status_handler))
+        .route(
+            "/drain",
+            post(start_drain_handler).delete(stop_drain_handler),
+        )
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(bind_addr).await?;
@@ -330,10 +403,37 @@ async fn status_handler(State(state): State<Arc<AppState>>) -> Json<serde_json::
     let registrations_handled = state.registrations_handled.load(Ordering::Relaxed);
 
     Json(serde_json::json!({
-        "status": "healthy",
+        "status": if state.drain.is_draining() { "draining" } else { "healthy" },
         "service": "fcp-registrar",
         "version": env!("CARGO_PKG_VERSION"),
         "uptime_seconds": uptime.as_secs(),
         "registrations_handled": registrations_handled,
+        "draining": state.drain.is_draining(),
+        "registrations_held": state.drain.carrying().await,
     }))
+}
+
+/// Whether this node should be sent devices: `503` while it is draining,
+/// so a load balancer or a DNS SRV weight stops choosing it
+/// (`docs/CAPACITY_AND_SURVIVABILITY.md` §6). `/health` keeps answering
+/// `200`, so a liveness probe does not kill the process mid-drain.
+async fn ready_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    answer(fcp_sip::drain::ready_body(&state.drain).await)
+}
+
+/// Start a drain: this node grants short registrations so its devices come
+/// back somewhere that is serving, and waits for them to go.
+async fn start_drain_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    answer(fcp_sip::drain::start_body(&state.drain).await)
+}
+
+/// Call a drain off: the node registers devices normally again.
+async fn stop_drain_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    answer(fcp_sip::drain::stop_body(&state.drain).await)
+}
+
+/// What the shared drain answered, as this router's response.
+fn answer((code, body): (u16, serde_json::Value)) -> (StatusCode, Json<serde_json::Value>) {
+    let code = StatusCode::from_u16(code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    (code, Json(body))
 }

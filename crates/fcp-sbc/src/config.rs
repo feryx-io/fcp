@@ -8,6 +8,10 @@ use tracing::info;
 /// Deployment-level wrapper around SbcConfig that adds cluster membership fields.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct SbcDeployConfig {
+    /// How this node names itself and how it leaves service.
+    #[serde(default)]
+    pub service: ServiceSection,
+
     /// Cluster membership configuration.
     #[serde(default)]
     pub cluster: ClusterSection,
@@ -22,6 +26,23 @@ pub struct SbcDeployConfig {
     /// falls back to `SbcConfig::default()` so partial files work.
     #[serde(default)]
     pub core: fcp_sbc_core::SbcConfig,
+}
+
+/// What this node calls itself, and how long it waits for the calls it is
+/// carrying when it leaves service
+/// (`docs/CAPACITY_AND_SURVIVABILITY.md` §6).
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct ServiceSection {
+    /// This node's id in events and in cluster membership. Generated per
+    /// run when unset.
+    #[serde(default)]
+    pub node_id: Option<String>,
+
+    /// Seconds a drain waits for the calls this node is carrying before it
+    /// ends what is left with a BYE that says why. Zero — the default — is
+    /// what the SBC always did: it stops where it stands.
+    #[serde(default)]
+    pub drain_wait_secs: u64,
 }
 
 /// Cluster configuration.

@@ -15,6 +15,7 @@ pub use fcp_b2bua_core::body;
 pub mod conference;
 pub mod conference_migration;
 pub mod config;
+pub mod drain;
 pub mod emergency;
 pub mod exports;
 pub mod flow;

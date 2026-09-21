@@ -19,6 +19,8 @@ pub async fn dispatch_request(
     request: &Request,
     handle: ServerTransactionHandle,
     registrar: &Arc<FcpRegistrar>,
+    admission: Option<&Arc<dyn fcp_sip::admission::NodeAdmission>>,
+    source: std::net::SocketAddr,
 ) {
     let call_id = header(request.headers(), "Call-ID")
         .map(|s| s.to_string())
@@ -26,7 +28,51 @@ pub async fn dispatch_request(
 
     match request.method() {
         Method::Register => {
-            let response = registrar.handle_register(request).await;
+            // What this node accepts, before any credential work, and what
+            // a draining node grants — the gate every registrar on this
+            // platform runs (`docs/CAPACITY_AND_SURVIVABILITY.md` §5, §6).
+            let aor = header(request.headers(), "To")
+                .map(|to| {
+                    let to = to.as_str();
+                    to.split('<')
+                        .nth(1)
+                        .and_then(|s| s.split('>').next())
+                        .unwrap_or(to)
+                        .trim()
+                        .to_string()
+                })
+                .unwrap_or_default();
+            let shortened;
+            let request =
+                match fcp_sip::admission::register_gate(admission, request, source.ip(), &aor) {
+                    fcp_sip::admission::RegisterGate::Pass => request,
+                    fcp_sip::admission::RegisterGate::Shortened(capped) => {
+                        shortened = *capped;
+                        &shortened
+                    }
+                    fcp_sip::admission::RegisterGate::Refuse {
+                        refusal,
+                        retry_after_secs,
+                    } => {
+                        warn!(
+                            call_id = %call_id,
+                            aor = %aor,
+                            source = %source,
+                            reason = %refusal.as_str(),
+                            "Refusing REGISTER: {}",
+                            refusal.detail()
+                        );
+                        handle
+                            .send_final(build_refusal(request, retry_after_secs))
+                            .await;
+                        return;
+                    }
+                };
+            // The binding remembers where the device is, as the call
+            // manager's does (`docs/E911_BLOCK_2.md` §6.2).
+            let response = registrar
+                .handle_register_from(request, None, Some(source))
+                .await;
 
             match response.start_line().code() {
                 200 => info!(call_id = %call_id, "Registration successful"),
@@ -61,6 +107,26 @@ fn build_405_response(request: &Request) -> Response {
 
     Response::new(
         StatusLine::new(405, "Method Not Allowed").expect("valid status line"),
+        headers,
+        Bytes::new(),
+    )
+    .expect("valid response")
+}
+
+/// Build the `503` a refused REGISTER gets: the same answer the call
+/// manager gives, with `Retry-After` so a device that means no harm comes
+/// back rather than giving up (`docs/CAPACITY_AND_SURVIVABILITY.md` §5).
+fn build_refusal(request: &Request, retry_after_secs: u64) -> Response {
+    let mut headers = Headers::new();
+    copy_mandatory_headers(request, &mut headers);
+    let _ = headers.push(
+        SmolStr::new("Retry-After"),
+        SmolStr::new(retry_after_secs.to_string()),
+    );
+    let _ = headers.push(SmolStr::new("Content-Length"), SmolStr::new("0"));
+
+    Response::new(
+        StatusLine::new(503, "Service Unavailable").expect("valid status line"),
         headers,
         Bytes::new(),
     )
