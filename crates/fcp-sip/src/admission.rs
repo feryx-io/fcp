@@ -15,6 +15,9 @@ use std::net::IpAddr;
 /// Why this node would not take the call or the registration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Refusal {
+    /// The node is leaving service and takes no new calls
+    /// (`docs/CAPACITY_AND_SURVIVABILITY.md` §6).
+    Draining,
     /// More calls started in the last second than the node allows.
     NodeCps,
     /// The node is already carrying as many calls as it allows.
@@ -31,6 +34,7 @@ impl Refusal {
     /// The label this refusal is counted under.
     pub fn as_str(&self) -> &'static str {
         match self {
+            Self::Draining => "draining",
             Self::NodeCps => "node_cps",
             Self::NodeCalls => "node_calls",
             Self::TenantCalls => "tenant_calls",
@@ -42,6 +46,7 @@ impl Refusal {
     /// What the far end is told, and what the record says.
     pub fn detail(&self) -> &'static str {
         match self {
+            Self::Draining => "Node draining",
             Self::NodeCps => "Node over its calls per second",
             Self::NodeCalls => "Node at its concurrent call limit",
             Self::TenantCalls => "Tenant at its concurrent call limit",
@@ -70,5 +75,19 @@ pub trait NodeAdmission: Send + Sync {
     /// What to put in `Retry-After` when refusing.
     fn retry_after_secs(&self) -> u64 {
         5
+    }
+
+    /// Whether this node is leaving service. A draining node refuses new
+    /// calls — emergency calls excepted, which never reach admission —
+    /// and keeps the calls it has until its deadline.
+    fn draining(&self) -> bool {
+        false
+    }
+
+    /// The longest registration a draining node grants, in seconds, so a
+    /// device comes back soon and is placed on a node that is serving.
+    /// `None` while the node is serving, and for a deregistration.
+    fn register_expiry_cap(&self) -> Option<u32> {
+        None
     }
 }

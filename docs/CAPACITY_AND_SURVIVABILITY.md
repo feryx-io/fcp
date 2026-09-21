@@ -442,7 +442,8 @@ One PR each, in order.
 | Phase | What |
 |---|---|
 | 1 ✅ v0.25.208 | **The limits that exist, enforced.** `AdmissionController` moves into `fcp-sbc-core`; the call manager (then the IVR, voicemail and presence servers) admits calls and registrations through it; `[admission]` section; `[calls] max_concurrent_calls` honoured as an alias with a warning; the tenant's `max_concurrent_calls` enforced per node; the registrar's rate limiter installed with both keys; 503 + `Retry-After` with a `Reason`; refusal counters by reason; load on `/status` |
-| 2 | **Leaving on purpose.** Shared drain state in `fcp-cluster`; `POST`/`DELETE /drain` and a `/ready` route on every binary's health server; SIGTERM starts a drain; new calls refused, emergency admitted, REGISTER expiry shortened; `drain_wait_secs`, then BYE with `Reason` and a `node_draining` record; `node.draining`/`node.drained` events; drain badge in the admin UI; the rolling-restart procedure in the cluster runbook; test floor T6 |
+| 2a ✅ v0.25.209 | **Leaving on purpose, on the call manager.** Drain state on the admission controller; `POST`/`DELETE /drain` and a `/ready` route; SIGTERM starts a drain and a second signal cuts it short; new calls refused, emergency admitted, REGISTER expiry shortened; `drain_wait_secs`, then a BYE with a `Reason` and a `node_draining` record; `system.node_draining`/`system.node_drained` events; test floor T6's drain half |
+| 2b | **The rest of the fleet.** The same `[admission]` section and the same drain on the SBC, registrar, IVR, voicemail, presence and WebRTC binaries; the conference server's own drain aligned on the shared state and `/ready`; the drain badge in the admin UI; the rolling-restart procedure in `docs/CLUSTER_OPERATIONS_RUNBOOK.md` |
 | 3 | **The harness.** `fcp-loadgen` on `fcp-testkit`: the four profiles, the measurements, the JSON report, the budget flags; the small CI profile |
 | 4 | **What the numbers say.** Run it on the dev VM: calls per second and concurrent calls to first refusal, latency percentiles, memory per call, registration storm behaviour. Fix what it finds — this is where the defects are — and record the numbers here, in `docs/DEPLOYMENT.md` and in the heartbeat as a published capacity budget, the shape video's already has |
 | 5 | **Across the cluster.** Tenant concurrency and trunk channels leased in Redis with a per-node fallback; placement by headroom among serving nodes in region; load, headroom and limits on the admin UI's cluster and tenant pages |
@@ -484,6 +485,47 @@ What the phase added, beyond the design: `TrunkSet` learnt the tenants'
 tenant, so no new task and no per-INVITE query; `Seed::tenant_call_limit` in
 `fcp-testkit`; and `fcp-call-manager/tests/capacity.rs`, which is T6's first
 half — the drain half arrives with phase 2.
+
+*Phase 2a shipped 2026-09-20 (v0.25.209).* The call manager leaves service
+without dropping calls: `POST /drain` or SIGTERM tells the cluster, refuses
+new calls with a `503`, keeps the calls already up, and at
+`[service] drain_wait_secs` ends what is left with
+`Reason: SIP;cause=200;text="node draining"` and a record whose cause is
+`node_draining`. `/ready` answers `503` while draining so a load balancer
+stops choosing the node, while `/health` keeps answering `200` so a liveness
+probe does not kill the process mid-drain. `DELETE /drain` returns it to
+service with every call it was carrying untouched. A device that registers
+while the node drains gets at most `drain_register_expiry_secs` (60), so it
+comes back soon and is placed somewhere that is serving.
+
+Four things learned:
+
+**A BYE could not say why.** `sip-uac` had no way to put a header on a BYE,
+so the far end could not tell the platform's hangup from a party's.
+siphon-rs v2026.09.20 (sip-uac 0.7.5) adds `bye_with_headers` and
+`bye_via_flow_with_headers`, which refuse to overwrite a header the dialog
+owns.
+
+**A second signal has to mean something.** A node with a long
+`drain_wait_secs` and a call still up ignores SIGTERM for as long as the wait
+lasts — which is right until an operator wants it gone, or a container
+runtime's grace period runs out and SIGKILL takes the calls with no BYE and
+no record. A second SIGTERM or SIGINT now ends what is left immediately, with
+the same BYE and the same record.
+
+**The `Expires` header is not the only place a device asks.** Shortening a
+registration means the header *and* each Contact's `expires` parameter, and
+a contact that names its own expiry does not need the header at all
+(RFC 3261 §10.2.4) — the first cut of this rewrote registrations that were
+already short. A deregistration (`Expires: 0`, `expires=0`, or `Contact: *`)
+is answered exactly as it arrived: a device leaving must not be handed a
+registration.
+
+**The drain state belongs where the refusals are.** The design put it in
+`fcp-cluster`; it went on the admission controller instead, which every
+routing binary already holds from phase 1 and which is where a refused call
+is counted. The cluster advertisement is still `ClusterManager::set_draining`,
+which the conference server has used since distributed conferencing phase 4.
 
 ## 14. Not in scope
 

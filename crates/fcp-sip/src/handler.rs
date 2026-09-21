@@ -10147,6 +10147,26 @@ impl SipMessageHandler {
             }
         }
 
+        // A draining node keeps its devices, but not for long: it grants a
+        // short registration so each one comes back soon and is placed on
+        // a node that is serving (`docs/CAPACITY_AND_SURVIVABILITY.md` §6).
+        // A deregistration is left exactly as it arrived.
+        let capped;
+        let request = match self
+            .admission
+            .as_ref()
+            .and_then(|admission| admission.register_expiry_cap())
+        {
+            Some(cap) => match cap_register_expiry(request, cap) {
+                Some(shortened) => {
+                    capped = shortened;
+                    &capped
+                }
+                None => request,
+            },
+            None => request,
+        };
+
         match &self.registrar {
             Some(registrar) => {
                 // For TLS connections with a stream, register a flow token (RFC 5626)
@@ -10366,6 +10386,21 @@ impl SipMessageHandler {
         is_a_leg: bool,
         flow_token: Option<String>,
     ) {
+        self.spawn_bye_with_reason(uac, dialog, call_id, is_a_leg, flow_token, None)
+    }
+
+    /// As [`spawn_bye_with_retry`](Self::spawn_bye_with_retry), with an
+    /// RFC 3326 `Reason` on the BYE: what the platform tells the far end
+    /// when it, rather than a party, ends the call.
+    fn spawn_bye_with_reason(
+        &self,
+        uac: Arc<SipUserAgentClient>,
+        dialog: sip_dialog::Dialog,
+        call_id: fcp_b2bua_core::CallId,
+        is_a_leg: bool,
+        flow_token: Option<String>,
+        sip_reason: Option<String>,
+    ) {
         let dialog_manager = Arc::clone(&self.dialog_manager);
         let call_manager = self.call_manager.clone();
         let stm = Arc::clone(&self.session_timer_manager);
@@ -10389,8 +10424,21 @@ impl SipMessageHandler {
                             peer_addr = %flow_info.peer_addr,
                             "Sending BYE via RFC 5626 flow (TLS connection reuse)"
                         );
-                        uac.bye_via_flow(&dialog, flow_info.stream, flow_info.peer_addr)
-                            .await
+                        match &sip_reason {
+                            Some(reason) => {
+                                uac.bye_via_flow_with_reason(
+                                    &dialog,
+                                    flow_info.stream,
+                                    flow_info.peer_addr,
+                                    reason,
+                                )
+                                .await
+                            }
+                            None => {
+                                uac.bye_via_flow(&dialog, flow_info.stream, flow_info.peer_addr)
+                                    .await
+                            }
+                        }
                     } else {
                         tracing::warn!(
                             call_id = %call_id,
@@ -10400,7 +10448,10 @@ impl SipMessageHandler {
                         uac.bye(&dialog).await
                     }
                 } else {
-                    uac.bye(&dialog).await
+                    match &sip_reason {
+                        Some(reason) => uac.bye_with_reason(&dialog, reason).await,
+                        None => uac.bye(&dialog).await,
+                    }
                 };
                 match bye_result {
                     Ok(ref bye_response) => {
@@ -13589,6 +13640,19 @@ impl SipMessageHandler {
         call_id: &fcp_b2bua_core::CallId,
         reason: fcp_cdr::TerminationReason,
     ) -> Result<()> {
+        self.hangup_call_by_id_saying(call_id, reason, None)
+    }
+
+    /// As [`hangup_call_by_id_with`](Self::hangup_call_by_id_with), with
+    /// an RFC 3326 `Reason` on both legs' BYEs, so the far ends can tell
+    /// the platform's hangup from a party's
+    /// (`docs/CAPACITY_AND_SURVIVABILITY.md` §6).
+    pub fn hangup_call_by_id_saying(
+        &self,
+        call_id: &fcp_b2bua_core::CallId,
+        reason: fcp_cdr::TerminationReason,
+        sip_reason: Option<&str>,
+    ) -> Result<()> {
         let call = self
             .call_manager
             .get_call(call_id)
@@ -13598,22 +13662,24 @@ impl SipMessageHandler {
 
         if let Some(uac) = &self.uac {
             if let Some(dialog) = &call.a_leg.dialog {
-                self.spawn_bye_with_retry(
+                self.spawn_bye_with_reason(
                     Arc::clone(uac),
                     dialog.clone(),
                     *call_id,
                     true,
                     None, // A-leg doesn't use flow tokens
+                    sip_reason.map(str::to_string),
                 );
             }
             if let Some(b_leg) = &call.b_leg {
                 if let Some(dialog) = &b_leg.dialog {
-                    self.spawn_bye_with_retry(
+                    self.spawn_bye_with_reason(
                         Arc::clone(uac),
                         dialog.clone(),
                         *call_id,
                         false,
                         b_leg.flow_token.clone(),
+                        sip_reason.map(str::to_string),
                     );
                 }
             }
@@ -16316,5 +16382,194 @@ mod tests {
         assert!(!is_voicemail);
         let result = format!("sip:{}@{}", destination, host);
         assert_eq!(result, "sip:5001@pbx.local");
+    }
+}
+
+/// A REGISTER with its expiry shortened to `cap` seconds, or `None` when
+/// it already asks for no more than that — or asks to deregister, which a
+/// draining node answers exactly as it arrived
+/// (`docs/CAPACITY_AND_SURVIVABILITY.md` §6).
+///
+/// Both places a device may ask are shortened: the `Expires` header and
+/// each Contact's `expires` parameter. A request that names neither gets
+/// an `Expires` header, since the registrar's own default may be longer.
+fn cap_register_expiry(request: &sip_core::Request, cap: u32) -> Option<sip_core::Request> {
+    let header_expiry = sip_parse::header(request.headers(), "Expires")
+        .and_then(|v| v.as_str().trim().parse::<u32>().ok());
+    // A deregistration: `Expires: 0`, or a wildcard contact.
+    if header_expiry == Some(0)
+        || request
+            .headers()
+            .get_all("Contact")
+            .any(|c| c.trim() == "*" || contact_expires(c) == Some(0))
+    {
+        return None;
+    }
+
+    let contacts: Vec<String> = request
+        .headers()
+        .get_all("Contact")
+        .map(|c| c.to_string())
+        .collect();
+    // A REGISTER with no Contact asks what this node holds; it grants
+    // nothing, so there is nothing to shorten.
+    if contacts.is_empty() {
+        return None;
+    }
+    let contact_over_cap = contacts
+        .iter()
+        .any(|c| contact_expires(c).is_some_and(|secs| secs > cap));
+    // A contact of its own binds for its own `expires` (RFC 3261 §10.2.4),
+    // so the header matters only to a contact that names none — and then
+    // the registrar's default, which may be longer, is what the header
+    // has to beat.
+    let header_over_cap = match header_expiry {
+        Some(secs) => secs > cap,
+        None => contacts.iter().any(|c| contact_expires(c).is_none()),
+    };
+    if !header_over_cap && !contact_over_cap {
+        return None;
+    }
+
+    let mut shortened = request.clone();
+    let headers = shortened.headers_mut();
+    if header_over_cap {
+        let _ = headers.set_or_push(SmolStr::new("Expires"), SmolStr::new(cap.to_string()));
+    }
+    if contact_over_cap {
+        headers.remove("Contact");
+        for contact in contacts {
+            let capped = match contact_expires(&contact) {
+                Some(secs) if secs > cap => {
+                    let parts: Vec<String> = contact
+                        .split(';')
+                        .map(|part| {
+                            if part.trim().to_ascii_lowercase().starts_with("expires=") {
+                                format!("expires={cap}")
+                            } else {
+                                part.to_string()
+                            }
+                        })
+                        .collect();
+                    parts.join(";")
+                }
+                _ => contact,
+            };
+            let _ = headers.push(SmolStr::new("Contact"), SmolStr::new(capped));
+        }
+    }
+    Some(shortened)
+}
+
+/// The `expires` parameter of one Contact header value, when it has one.
+fn contact_expires(contact: &str) -> Option<u32> {
+    contact.split(';').find_map(|part| {
+        let part = part.trim();
+        part.get(..8)
+            .filter(|prefix| prefix.eq_ignore_ascii_case("expires="))
+            .and_then(|_| part[8..].trim().parse::<u32>().ok())
+    })
+}
+
+/// What a draining node does to the registration a device asks for
+/// (`docs/CAPACITY_AND_SURVIVABILITY.md` §6).
+#[cfg(test)]
+mod register_expiry_tests {
+    use super::cap_register_expiry;
+
+    fn register(headers: &[(&str, &str)]) -> sip_core::Request {
+        let mut raw = String::from("REGISTER sip:example.com SIP/2.0\r\n");
+        raw.push_str("Via: SIP/2.0/UDP 198.51.100.5:5060;branch=z9hG4bK1\r\n");
+        raw.push_str("From: <sip:alice@example.com>;tag=a\r\n");
+        raw.push_str("To: <sip:alice@example.com>\r\n");
+        raw.push_str("Call-ID: reg-1\r\n");
+        raw.push_str("CSeq: 1 REGISTER\r\n");
+        for (name, value) in headers {
+            raw.push_str(&format!("{name}: {value}\r\n"));
+        }
+        raw.push_str("Content-Length: 0\r\n\r\n");
+        sip_parse::parse_request(&bytes::Bytes::from(raw)).expect("a REGISTER")
+    }
+
+    /// An hour becomes a minute, in the header and in the contact.
+    #[test]
+    fn a_long_registration_is_shortened() {
+        let request = register(&[
+            ("Contact", "<sip:alice@198.51.100.5:5060>;expires=3600"),
+            ("Expires", "3600"),
+        ]);
+        let capped = cap_register_expiry(&request, 60).expect("shortened");
+        assert_eq!(capped.headers().get("Expires"), Some("60"));
+        assert_eq!(
+            capped.headers().get("Contact"),
+            Some("<sip:alice@198.51.100.5:5060>;expires=60")
+        );
+    }
+
+    /// A device that asks for less than the cap is left alone, and so is
+    /// one that asks for exactly it.
+    #[test]
+    fn a_short_registration_is_left_alone() {
+        assert!(cap_register_expiry(&register(&[("Expires", "30")]), 60).is_none());
+        assert!(cap_register_expiry(&register(&[("Expires", "60")]), 60).is_none());
+        assert!(cap_register_expiry(
+            &register(&[("Contact", "<sip:alice@198.51.100.5:5060>;expires=45")]),
+            60
+        )
+        .is_none());
+    }
+
+    /// A request that names no expiry at all gets one: the registrar's
+    /// own default may be longer than the cap.
+    #[test]
+    fn a_registration_that_names_no_expiry_gets_the_cap() {
+        let request = register(&[("Contact", "<sip:alice@198.51.100.5:5060>")]);
+        let capped = cap_register_expiry(&request, 60).expect("shortened");
+        assert_eq!(capped.headers().get("Expires"), Some("60"));
+    }
+
+    /// A deregistration is answered exactly as it arrived, however it is
+    /// written: a device leaving must not be given a registration.
+    #[test]
+    fn a_deregistration_is_untouched() {
+        assert!(cap_register_expiry(
+            &register(&[
+                ("Contact", "<sip:alice@198.51.100.5:5060>"),
+                ("Expires", "0")
+            ]),
+            60
+        )
+        .is_none());
+        assert!(cap_register_expiry(
+            &register(&[("Contact", "<sip:alice@198.51.100.5:5060>;expires=0")]),
+            60
+        )
+        .is_none());
+        assert!(
+            cap_register_expiry(&register(&[("Contact", "*"), ("Expires", "0")]), 60).is_none()
+        );
+    }
+
+    /// Several contacts: each one's own expiry is shortened, and the
+    /// others are kept as they were.
+    #[test]
+    fn every_contact_is_shortened() {
+        let request = register(&[
+            ("Contact", "<sip:alice@198.51.100.5:5060>;expires=3600"),
+            (
+                "Contact",
+                "<sip:alice@198.51.100.6:5060>;q=0.5;expires=1800",
+            ),
+            ("Expires", "3600"),
+        ]);
+        let capped = cap_register_expiry(&request, 60).expect("shortened");
+        let contacts: Vec<&str> = capped.headers().get_all("Contact").collect();
+        assert_eq!(
+            contacts,
+            vec![
+                "<sip:alice@198.51.100.5:5060>;expires=60",
+                "<sip:alice@198.51.100.6:5060>;q=0.5;expires=60",
+            ]
+        );
     }
 }

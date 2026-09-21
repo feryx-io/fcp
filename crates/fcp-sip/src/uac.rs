@@ -220,6 +220,37 @@ impl SipUserAgentClient {
             .await
     }
 
+    /// Send a BYE that says why the platform, rather than a party, ended
+    /// the call: an RFC 3326 `Reason`
+    /// (`docs/CAPACITY_AND_SURVIVABILITY.md` §6).
+    pub async fn bye_with_reason(
+        &self,
+        dialog: &Dialog,
+        reason: &str,
+    ) -> Result<sip_core::Response> {
+        self.inner
+            .bye_with_headers(dialog, &[("Reason", reason)])
+            .await
+    }
+
+    /// [`bye_with_reason`](Self::bye_with_reason) over an existing
+    /// connection (RFC 5626 flow support).
+    pub async fn bye_via_flow_with_reason(
+        &self,
+        dialog: &Dialog,
+        flow_stream: tokio::sync::mpsc::Sender<bytes::Bytes>,
+        peer_addr: std::net::SocketAddr,
+        reason: &str,
+    ) -> Result<sip_core::Response> {
+        self.inner
+            .bye_via_flow_with_headers(
+                dialog,
+                Flow::new(flow_stream, peer_addr),
+                &[("Reason", reason)],
+            )
+            .await
+    }
+
     /// Send REGISTER request.
     ///
     /// # Arguments

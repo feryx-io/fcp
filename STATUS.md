@@ -5,7 +5,7 @@ Update this file when feature status changes; keep other docs describing scope, 
 
 - **Last reviewed:** 2026-09-01 (full code audit against ARCHITECTURE-v0.2.md)
 - **Version:** v0.25.206 · 39 workspace crates
-- **Submodules:** siphon-rs `v2026.09.18` · forge-media `v2026.09.17` (both at their repos' current release tips)
+- **Submodules:** siphon-rs `v2026.09.20` · forge-media `v2026.09.17` (both at their repos' current release tips)
 - **Health:** CI green (fmt, clippy `-D warnings`, tests, cargo-audit) · 0 Dependabot alerts · 0 future-incompat warnings
 
 ## Phase scoreboard
@@ -178,7 +178,19 @@ call manager the SBC's limits the moment it wrote the section (now its own
 optional-field section); a challenged registration is two REGISTERs, so the
 smallest useful per-source rate is two, not one; and zero, which used to mean
 "refuse everything", now means no limit. `fcp-call-manager/tests/capacity.rs`
-is T6's first half. Ten open questions, every recommendation taken on
+is T6's first half. Phase 2a done (v0.25.209): the call manager leaves service without dropping
+calls. `POST /drain` or SIGTERM tells the cluster, refuses new calls with a
+`503`, keeps the calls already up, and at `[service] drain_wait_secs` ends
+what is left with `Reason: SIP;cause=200;text="node draining"` and a record
+whose cause is `node_draining`; `/ready` answers `503` while draining (a
+load balancer stops choosing the node) while `/health` stays `200` (a
+liveness probe does not kill it mid-drain); `DELETE /drain` returns it to
+service untouched; a device registering while the node drains gets at most
+60 seconds so it comes back somewhere that is serving; `system.node_draining`
+and `system.node_drained` are published. siphon-rs v2026.09.20 (sip-uac
+0.7.5) added `bye_with_headers`, since a BYE had no way to say why. A second
+SIGTERM now cuts a long drain short rather than letting SIGKILL take the
+calls with no BYE and no record. Ten open questions, every recommendation taken on
 2026-09-20: one admission controller in `fcp-sbc-core` for every routing
 binary; node limits only where a deployment wrote one down; the tenant limit
 per node until phase 5 leases it cluster-wide; a BYE with a `Reason` and a

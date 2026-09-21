@@ -61,6 +61,8 @@ pub struct AppState {
     /// What this node will carry, and what it is carrying
     /// (`docs/CAPACITY_AND_SURVIVABILITY.md` §9).
     pub admission: Arc<fcp_sbc_core::AdmissionController>,
+    /// Leaving service without dropping calls (§6).
+    pub drain: Arc<crate::drain::Drain>,
     pub node_id: String,
 }
 
@@ -252,6 +254,11 @@ pub async fn run_http_server(bind_addr: SocketAddr, state: Arc<AppState>) -> any
         )
         // Prometheus metrics endpoint
         .route("/metrics", get(metrics_handler))
+        // Leaving service: start a drain, or call one off (§6).
+        .route(
+            "/drain",
+            post(start_drain_handler).delete(stop_drain_handler),
+        )
         // Internal cluster endpoints (authenticated via cluster secret)
         .route("/internal/hangup", post(internal_hangup_handler))
         .route("/internal/supervisor", post(internal_supervisor_handler))
@@ -263,6 +270,10 @@ pub async fn run_http_server(bind_addr: SocketAddr, state: Arc<AppState>) -> any
 
     let app = Router::new()
         .route("/health", get(health_handler))
+        // Whether this node should be sent work
+        // (`docs/CAPACITY_AND_SURVIVABILITY.md` §6). A load balancer reads
+        // it without a token, as it reads `/health`.
+        .route("/ready", get(ready_handler))
         // Callback endpoints
         // WebSocket wallboard (real-time queue stats)
         .route("/ws/wallboard", get(wallboard_ws_handler))
@@ -325,6 +336,7 @@ async fn status_handler(State(state): State<Arc<AppState>>) -> Json<serde_json::
         "failed_calls": call_stats.failed,
         // What this node is carrying against what it allows
         // (docs/CAPACITY_AND_SURVIVABILITY.md §9). Zero is no limit.
+        "draining": state.drain.is_draining(),
         "admission": {
             "concurrent_calls": state.admission.concurrent_calls(),
             "current_cps": state.admission.current_cps(),
@@ -342,6 +354,7 @@ async fn status_handler(State(state): State<Arc<AppState>>) -> Json<serde_json::
                 "tenant_calls": refused(fcp_sip::admission::Refusal::TenantCalls),
                 "registrations": refused(fcp_sip::admission::Refusal::Registrations),
                 "register_rate": refused(fcp_sip::admission::Refusal::RegisterRate),
+                "draining": refused(fcp_sip::admission::Refusal::Draining),
             },
             "tenants": state
                 .admission
@@ -354,6 +367,69 @@ async fn status_handler(State(state): State<Arc<AppState>>) -> Json<serde_json::
                 .collect::<Vec<_>>(),
         },
     }))
+}
+
+/// Whether this node should be sent work: `200` while it is serving,
+/// `503` while it is draining, so a load balancer stops choosing it
+/// before it stops taking calls (`docs/CAPACITY_AND_SURVIVABILITY.md`
+/// §6). `/health` keeps answering `200` throughout, so a liveness probe
+/// does not kill the process mid-drain.
+async fn ready_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let draining = state.drain.is_draining();
+    let body = Json(serde_json::json!({
+        "ready": !draining,
+        "draining": draining,
+        "active_calls": state.call_manager.active_call_count(),
+    }));
+    let code = if draining {
+        StatusCode::SERVICE_UNAVAILABLE
+    } else {
+        StatusCode::OK
+    };
+    (code, body)
+}
+
+/// Start a drain: this node takes no new calls, keeps the ones it has
+/// until `drain_wait_secs`, and then ends what is left with a BYE that
+/// says why. The node keeps running — a drain is not a shutdown.
+async fn start_drain_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    if state.drain.is_draining() {
+        return (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "status": "draining",
+                "already": true,
+                "active_calls": state.call_manager.active_call_count(),
+            })),
+        );
+    }
+    let drain = Arc::clone(&state.drain);
+    let generation = drain.start().await;
+    let calls = state.call_manager.active_call_count();
+    tokio::spawn(async move {
+        drain.wait_then_end(generation).await;
+    });
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "status": "draining",
+            "active_calls": calls,
+            "wait_secs": state.drain.wait_secs(),
+        })),
+    )
+}
+
+/// Call a drain off: the node serves again, and the calls it was carrying
+/// — which the drain never touched — carry on.
+async fn stop_drain_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    state.drain.stop();
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "status": "serving",
+            "active_calls": state.call_manager.active_call_count(),
+        })),
+    )
 }
 
 async fn calls_handler(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
