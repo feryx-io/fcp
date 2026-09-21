@@ -451,7 +451,9 @@ One PR each, in order.
 | 2b-4 ✅ v0.25.216 | **The conference server, the badge and the runbook.** Its own drain — SIGTERM, `set_draining`, `start_draining()`, `drain_wait_secs`, REFER migration — aligned on the shared `draining` state and given `/ready` and `/drain`, without losing the migration; the drain badge and node state on the admin UI's cluster page; the rolling-restart procedure in `docs/CLUSTER_OPERATIONS_RUNBOOK.md` |
 | 3 ✅ v0.25.217 | **The harness.** `fcp-loadgen` on `fcp-testkit`: the four profiles, the measurements, the JSON report, the budget flags; the small CI profile |
 | 4 ✅ v0.25.218 | **What the numbers say.** Run it on the dev VM: calls per second and concurrent calls to first refusal, latency percentiles, memory per call, registration storm behaviour. Fix what it finds — this is where the defects are — and record the numbers here, in `docs/DEPLOYMENT.md` and in the heartbeat as a published capacity budget, the shape video's already has |
-| 5 | **Across the cluster.** Tenant concurrency and trunk channels leased in Redis with a per-node fallback; placement by headroom among serving nodes in region; load, headroom and limits on the admin UI's cluster and tenant pages |
+| 5a ✅ v0.25.219 | **A tenant's contract, across the cluster.** `fcp_cluster::CallLeases`: a lease per call in Redis, scored by expiry so a dead node's calls fade; `NodeAdmission::admit` becomes async and the controller takes the lease on the way in, falling back to this node's own count when Redis cannot be read; a settling tick gives back what has ended and refreshes what is still up |
+| 5b | **The rest of it.** Trunk channels leased the same way; the heartbeat's `capacity` and `load`; placement by headroom among serving nodes in region; load, headroom and limits on the admin UI's cluster and tenant pages |
+| 5 (as written) | **Across the cluster.** Tenant concurrency and trunk channels leased in Redis with a per-node fallback; placement by headroom among serving nodes in region; load, headroom and limits on the admin UI's cluster and tenant pages |
 
 Phase 1 stands alone: it is worth shipping even if nothing after it is built,
 because it turns two advertised limits into real ones. Phase 2 is what makes
@@ -837,6 +839,56 @@ readers — placement by headroom, the admin UI's headroom column — arrive
 in phase 5, and this platform's own history (the limits that did nothing,
 §2.1) argues against shipping a field with no reader. It goes with its
 reader.
+
+*Phase 5a shipped 2026-09-21 (v0.25.219).* A tenant's
+`max_concurrent_calls` is counted across the cluster, so the contract is
+with the platform rather than with whichever node the call reached.
+
+**The lease.** One sorted set per subject in Redis — `leases:tenant:<id>`,
+and `leases:trunk:<id>` ready for 5b — holding call ids scored by when
+the lease expires. A call takes its lease as it is admitted and gets back
+the cluster's count with itself included, so two nodes admitting at once
+cannot both believe they were under the limit. Taking the same call twice
+counts once, which makes a retried INVITE safe. The score is what keeps
+it honest without a caretaker: a node that dies cannot release anything,
+so every read drops what has expired before counting, and a node refreshes
+what it still holds on a tick — a long call keeps its place, a dead node's
+calls fade.
+
+**`admit` is async now.** The lease is a round trip on the INVITE path,
+which is why §12 Q3 put this phase after the harness existed to measure
+it. What that cost the trait was one `#[async_trait]`; what it cost the
+call path is measured below.
+
+**What it costs, measured** (§12 Q3's precondition). The same ramp, twice,
+against the same node — once counting per node, once leasing across the
+cluster, with Redis on loopback:
+
+| | INVITE → `200 OK`, 302 calls |
+|---|---|
+| per-node count | p50 3.8 ms, p90 6.0 ms, p99 22.1 ms |
+| cluster-leased | p50 3.8 ms, p90 5.4 ms, p99 8.4 ms |
+
+The round trip is below what this measurement can see: the medians are
+identical and the p99 difference runs the wrong way, which makes it noise
+rather than a cost. What it does not measure is Redis across a network —
+there the lease costs whatever that Redis costs, and a deployment whose
+Redis is far away should watch that latency rather than trust this table.
+
+**Redis being away must never fail a call.** The count then falls back to
+this node's own — which is exactly what phase 1 enforced, so a cluster
+that loses Redis degrades to per-node limits rather than to none, and
+says so once rather than per call.
+
+**A call ends in a callback that cannot await** (the call manager's
+`set_on_ended`), so a released lease is queued and given back by the
+settling tick, and also released at once where there is a runtime to
+spawn on. Releasing twice is harmless; never releasing is covered by the
+lease's expiry. The queue is bounded: what it drops lapses on its own.
+
+`[cluster] lease_tenant_calls` is on wherever a cluster is configured —
+the limit becomes correct rather than new, which decision 8 allows — and
+`lease_settle_secs` (5 s) paces the tick.
 
 ## 14. Not in scope
 

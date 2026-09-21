@@ -7,6 +7,7 @@
 //! - Each node may advertise a deployment region; placement prefers the
 //!   caller's region (`docs/MULTI_REGION.md`)
 
+pub mod call_leases;
 pub mod call_registry;
 pub mod conference_registry;
 pub mod membership;
@@ -14,6 +15,7 @@ pub mod node_client;
 pub mod reader;
 pub mod trunk_registry;
 
+pub use call_leases::{CallLeases, LeaseSubject, DEFAULT_LEASE_TTL_SECS};
 pub use call_registry::CallRegistry;
 pub use conference_registry::{
     choose_conference_node, ConferenceHost, ConferenceRegistry, RoomRecord, VideoNeed,

@@ -281,7 +281,18 @@ calls/s; a rung's rate counting the drain after it; a run's rate counting
 its own setup; a refused caller spinning instead of waiting). Left open
 with their evidence: two calls in 2210 answered 480, three silent legs in
 4419. The heartbeat's capacity and load fields wait for phase 5, which
-brings their reader. Ten open questions, every recommendation taken on
+brings their reader. Phase 5 split in two on 2026-09-21 after 5a's size
+showed: 5a the tenant's contract counted across the cluster, 5b trunk
+channels, the heartbeat's capacity and load, placement by headroom and
+the admin UI. Phase 5a done (v0.25.219): `fcp_cluster::CallLeases` holds
+a lease per call in a Redis sorted set scored by expiry, so a dead node's
+calls fade rather than holding a tenant's contract for ever; `admit` is
+async and the controller takes the lease on the way in, gives it back
+when the call ends (queued for a settling tick, since a call ends in a
+callback that cannot await) and refreshes what is still up. Redis being
+unreachable falls back to this node's own count — phase 1's behaviour,
+not no behaviour. `[cluster] lease_tenant_calls` is on wherever a cluster
+is configured. Ten open questions, every recommendation taken on
 2026-09-20: one admission controller in `fcp-sbc-core` for every routing
 binary; node limits only where a deployment wrote one down; the tenant limit
 per node until phase 5 leases it cluster-wide; a BYE with a `Reason` and a

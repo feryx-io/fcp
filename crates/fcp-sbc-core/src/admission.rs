@@ -21,7 +21,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 use tokio::sync::oneshot;
-use tracing::warn;
+use tracing::{debug, warn};
+
+/// How many ended calls' leases may wait for the settling tick before
+/// the oldest are dropped and left to lapse on their own.
+const MAX_PENDING_RELEASES: usize = 10_000;
 
 /// Action to take when the SBC is overloaded.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -172,6 +176,71 @@ impl AdmissionConfig {
             if entry.trunk_name.contains('\r') || entry.trunk_name.contains('\n') {
                 return Err("per_trunk_cps trunk_name must not contain CR/LF characters".into());
             }
+        }
+        Ok(())
+    }
+}
+
+/// The cluster's count of a tenant's calls
+/// (`docs/CAPACITY_AND_SURVIVABILITY.md` §7).
+///
+/// A tenant's `max_concurrent_calls` is a contract with the platform, so
+/// counting it on one node lets a two-node cluster carry twice it. A
+/// node with this takes a lease as each call is admitted and gives it
+/// back when the call ends; a node without one counts its own calls, as
+/// phase 1 did.
+#[async_trait::async_trait]
+pub trait ClusterCallCount: Send + Sync {
+    /// Take a lease for this call and say how many the tenant holds
+    /// across the cluster, this one included.
+    async fn take(&self, tenant: &TenantId, call_id: &str) -> anyhow::Result<u64>;
+
+    /// Give a lease back.
+    async fn release(&self, tenant: &TenantId, call_id: &str) -> anyhow::Result<()>;
+
+    /// Put the calls this node still holds back, with a fresh expiry: a
+    /// call longer than the lease keeps its place, and a lease lost to an
+    /// outage comes back when Redis does.
+    async fn refresh(&self, held: &[(TenantId, String)]) -> anyhow::Result<()>;
+}
+
+/// The cluster's count, in Redis (`fcp_cluster::CallLeases`).
+pub struct RedisCallLeases {
+    leases: fcp_cluster::CallLeases,
+}
+
+impl RedisCallLeases {
+    pub fn new(leases: fcp_cluster::CallLeases) -> Self {
+        Self { leases }
+    }
+}
+
+#[async_trait::async_trait]
+impl ClusterCallCount for RedisCallLeases {
+    async fn take(&self, tenant: &TenantId, call_id: &str) -> anyhow::Result<u64> {
+        let id = tenant.to_string();
+        self.leases
+            .take(fcp_cluster::LeaseSubject::Tenant(&id), call_id)
+            .await
+    }
+
+    async fn release(&self, tenant: &TenantId, call_id: &str) -> anyhow::Result<()> {
+        let id = tenant.to_string();
+        self.leases
+            .release(fcp_cluster::LeaseSubject::Tenant(&id), call_id)
+            .await
+    }
+
+    async fn refresh(&self, held: &[(TenantId, String)]) -> anyhow::Result<()> {
+        let mut by_tenant: HashMap<TenantId, Vec<String>> = HashMap::new();
+        for (tenant, call_id) in held {
+            by_tenant.entry(*tenant).or_default().push(call_id.clone());
+        }
+        for (tenant, call_ids) in by_tenant {
+            let id = tenant.to_string();
+            self.leases
+                .refresh(fcp_cluster::LeaseSubject::Tenant(&id), &call_ids)
+                .await?;
         }
         Ok(())
     }
@@ -343,6 +412,20 @@ pub struct AdmissionController {
     /// Whether this node is leaving service (§6). Set by a drain, cleared
     /// when one is called off.
     draining: AtomicBool,
+    /// The cluster's count of each tenant's calls, when this node is in a
+    /// cluster (§7). Without it the tenant limit is counted per node.
+    cluster_calls: RwLock<Option<Arc<dyn ClusterCallCount>>>,
+    /// Whether the cluster's count has been unreadable since the last
+    /// time it worked, so a Redis outage is said once rather than per
+    /// call.
+    cluster_failing: AtomicBool,
+    /// Leases to give back. A call ends in a callback that cannot await
+    /// (the call manager's `set_on_ended`), so the release is handed to
+    /// [`settle_leases`](AdmissionController::settle_leases) — and, when
+    /// there is a runtime to spawn on, done at once as well. Releasing
+    /// twice is harmless; never releasing is covered by the lease's own
+    /// expiry.
+    released: Mutex<Vec<(TenantId, String)>>,
 }
 
 impl AdmissionController {
@@ -368,7 +451,52 @@ impl AdmissionController {
             tenant_calls: DashMap::new(),
             register_rate: PerSecond::default(),
             draining: AtomicBool::new(false),
+            cluster_calls: RwLock::new(None),
+            cluster_failing: AtomicBool::new(false),
+            released: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Count each tenant's calls across the cluster rather than on this
+    /// node alone (§7). Without it — no cluster, or no Redis — the count
+    /// is this node's own, which is what phase 1 enforced.
+    pub fn with_cluster_calls(self, cluster: Arc<dyn ClusterCallCount>) -> Self {
+        *self.cluster_calls.write().unwrap() = Some(cluster);
+        self
+    }
+
+    /// Give back the leases of calls that have ended, and push the
+    /// expiry of the ones still up: the tick a node in a cluster runs
+    /// every few seconds (§7).
+    ///
+    /// It is the whole of the lease's housekeeping: what a sync callback
+    /// could not await, and what keeps a call longer than the lease from
+    /// losing its place.
+    pub async fn settle_leases(&self) {
+        let Some(cluster) = self.cluster_calls.read().ok().and_then(|c| c.clone()) else {
+            return;
+        };
+        let releasing = std::mem::take(&mut *self.released.lock().unwrap());
+        for (tenant, call_id) in releasing {
+            if let Err(e) = cluster.release(&tenant, &call_id).await {
+                debug!(error = %e, "a lease could not be given back; it will lapse");
+            }
+        }
+        let held = self.held_leases();
+        if !held.is_empty() {
+            if let Err(e) = cluster.refresh(&held).await {
+                debug!(error = %e, "the leases this node holds were not refreshed");
+            }
+        }
+    }
+
+    /// The calls this node holds and whose they are, for the tick that
+    /// puts their leases back (`ClusterCallCount::refresh`).
+    pub fn held_leases(&self) -> Vec<(TenantId, String)> {
+        self.ledger
+            .iter()
+            .map(|e| (*e.value(), e.key().clone()))
+            .collect()
     }
 
     /// Where the tenants' own limits are read from — the trunk set, which
@@ -563,6 +691,17 @@ impl AdmissionController {
         self.concurrent_registrations.load(Ordering::Relaxed)
     }
 
+    /// Take a place for this tenant from this node's own count. `true`
+    /// when the tenant is already at its limit here.
+    fn take_local(&self, tenant: &TenantId, limit: u32) -> bool {
+        let mut count = self.tenant_calls.entry(*tenant).or_insert(0);
+        if *count >= limit as u64 {
+            return true;
+        }
+        *count += 1;
+        false
+    }
+
     /// Calls in flight for one tenant.
     pub fn tenant_concurrent_calls(&self, tenant: &TenantId) -> u64 {
         self.tenant_calls.get(tenant).map(|n| *n).unwrap_or(0)
@@ -703,8 +842,9 @@ impl crate::cps::CpsChecker for AdmissionController {
 /// The call path's view: a place taken when a call starts and given back
 /// when it ends, with the tenant's own limit checked alongside the node's
 /// (`docs/CAPACITY_AND_SURVIVABILITY.md` §5).
+#[async_trait::async_trait]
 impl NodeAdmission for AdmissionController {
-    fn admit(&self, call_id: &str, tenant: &TenantId) -> Result<(), Refusal> {
+    async fn admit(&self, call_id: &str, tenant: &TenantId) -> Result<(), Refusal> {
         let label = tenant.to_string();
 
         // The node's limits first: they are this node's survival, and the
@@ -714,31 +854,60 @@ impl NodeAdmission for AdmissionController {
             return Err(refusal);
         }
 
-        // Then the tenant's own, which is a contract rather than a
-        // capacity. Counted per node until it is leased across the cluster
-        // (§7, phase 5).
+        // Then the tenant's own, which is a contract with the platform
+        // rather than a capacity of this node — so where there is a
+        // cluster, the count is the cluster's (§7).
         let limit = self
             .tenant_limits
             .read()
             .ok()
             .and_then(|l| l.as_ref().and_then(|l| l.max_concurrent_calls(tenant)));
-        if let Some(limit) = limit.filter(|l| *l != 0) {
-            let over = {
-                let mut count = self.tenant_calls.entry(*tenant).or_insert(0);
-                if *count >= limit as u64 {
-                    true
-                } else {
-                    *count += 1;
-                    false
+        let cluster = self.cluster_calls.read().ok().and_then(|c| c.clone());
+        let over = match (limit.filter(|l| *l != 0), cluster) {
+            // A limit, and a cluster to count it across: the lease is
+            // taken on the way in and counted with this call included.
+            (Some(limit), Some(cluster)) => {
+                match cluster.take(tenant, call_id).await {
+                    Ok(held) => {
+                        self.cluster_failing.store(false, Ordering::Relaxed);
+                        let over = held > limit as u64;
+                        if over {
+                            // Give back what this call took, or the
+                            // refusal would count against the tenant
+                            // until the lease lapsed.
+                            if let Err(e) = cluster.release(tenant, call_id).await {
+                                warn!(error = %e, "could not give back a refused call's lease");
+                            }
+                        } else {
+                            *self.tenant_calls.entry(*tenant).or_insert(0) += 1;
+                        }
+                        over
+                    }
+                    // Redis is unreachable. A call must not fail because
+                    // the count is unreadable: fall back to this node's
+                    // own, which is what phase 1 enforced, and say so
+                    // once rather than per call.
+                    Err(e) => {
+                        if !self.cluster_failing.swap(true, Ordering::Relaxed) {
+                            warn!(error = %e, "the cluster's call count is unreadable; \
+                                  counting this tenant's calls on this node alone");
+                        }
+                        self.take_local(tenant, limit)
+                    }
                 }
-            };
-            if over {
-                self.unrecord_cps();
-                AdmissionCounters::global().note_refused(Refusal::TenantCalls, &label);
-                return Err(Refusal::TenantCalls);
             }
-        } else {
-            *self.tenant_calls.entry(*tenant).or_insert(0) += 1;
+            // A limit and no cluster: this node's count, as before.
+            (Some(limit), None) => self.take_local(tenant, limit),
+            // No limit: count the call and admit it.
+            (None, _) => {
+                *self.tenant_calls.entry(*tenant).or_insert(0) += 1;
+                false
+            }
+        };
+        if over {
+            self.unrecord_cps();
+            AdmissionCounters::global().note_refused(Refusal::TenantCalls, &label);
+            return Err(Refusal::TenantCalls);
         }
 
         self.ledger.insert(call_id.to_string(), *tenant);
@@ -751,6 +920,28 @@ impl NodeAdmission for AdmissionController {
         let Some((_, tenant)) = self.ledger.remove(call_id) else {
             return;
         };
+        // Give the cluster its place back: now if there is a runtime to
+        // do it on, and on the settling tick either way (§7).
+        if let Some(cluster) = self.cluster_calls.read().ok().and_then(|c| c.clone()) {
+            {
+                let mut released = self.released.lock().unwrap();
+                released.push((tenant, call_id.to_string()));
+                // A node whose settling tick never runs must not grow a
+                // queue for ever; what is dropped lapses on its own.
+                if released.len() > MAX_PENDING_RELEASES {
+                    let overflow = released.len() - MAX_PENDING_RELEASES;
+                    released.drain(..overflow);
+                }
+            }
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                let call_id = call_id.to_string();
+                handle.spawn(async move {
+                    if let Err(e) = cluster.release(&tenant, &call_id).await {
+                        debug!(error = %e, "a lease will be given back on the next tick");
+                    }
+                });
+            }
+        }
         if let Some(mut count) = self.tenant_calls.get_mut(&tenant) {
             *count = count.saturating_sub(1);
         }
@@ -1266,28 +1457,28 @@ mod node_admission_tests {
 
     /// A node that writes no limit down carries whatever arrives — the
     /// behaviour of every call manager before there was a controller (§10).
-    #[test]
-    fn zero_is_no_limit() {
+    #[tokio::test]
+    async fn zero_is_no_limit() {
         let ctrl = controller(0, 0);
         let tenant = TenantId::new();
         for i in 0..500 {
-            assert!(ctrl.admit(&format!("call-{i}"), &tenant).is_ok());
+            assert!(ctrl.admit(&format!("call-{i}"), &tenant).await.is_ok());
         }
         assert_eq!(ctrl.concurrent_calls(), 500);
     }
 
     /// The node's own limit refuses the call past it, and the place is
     /// given back when a call ends.
-    #[test]
-    fn the_node_limit_holds_and_is_released() {
+    #[tokio::test]
+    async fn the_node_limit_holds_and_is_released() {
         let ctrl = controller(2, 0);
         let tenant = TenantId::new();
-        assert!(ctrl.admit("a", &tenant).is_ok());
-        assert!(ctrl.admit("b", &tenant).is_ok());
-        assert_eq!(ctrl.admit("c", &tenant), Err(Refusal::NodeCalls));
+        assert!(ctrl.admit("a", &tenant).await.is_ok());
+        assert!(ctrl.admit("b", &tenant).await.is_ok());
+        assert_eq!(ctrl.admit("c", &tenant).await, Err(Refusal::NodeCalls));
 
         ctrl.ended("a");
-        assert!(ctrl.admit("c", &tenant).is_ok());
+        assert!(ctrl.admit("c", &tenant).await.is_ok());
         // A call that was never admitted releases nothing.
         ctrl.ended("never-admitted");
         assert_eq!(ctrl.concurrent_calls(), 2);
@@ -1295,36 +1486,181 @@ mod node_admission_tests {
 
     /// A tenant at its limit is refused; another tenant on the same node is
     /// not.
-    #[test]
-    fn a_tenants_limit_is_its_own() {
+    /// The tenant's limit across the cluster
+    /// (`docs/CAPACITY_AND_SURVIVABILITY.md` §7): the count that decides
+    /// is the cluster's, and a cluster that cannot be read falls back to
+    /// this node's rather than failing the call.
+    mod cluster {
+        use super::*;
+        use std::sync::atomic::AtomicU64;
+
+        /// A cluster count in memory: what Redis would say, and whether
+        /// it can be reached at all.
+        #[derive(Default)]
+        struct Cluster {
+            held: Mutex<HashMap<String, Vec<String>>>,
+            broken: AtomicBool,
+            takes: AtomicU64,
+        }
+
+        #[async_trait::async_trait]
+        impl ClusterCallCount for Cluster {
+            async fn take(&self, tenant: &TenantId, call_id: &str) -> anyhow::Result<u64> {
+                self.takes.fetch_add(1, Ordering::SeqCst);
+                if self.broken.load(Ordering::SeqCst) {
+                    anyhow::bail!("redis is away");
+                }
+                let mut held = self.held.lock().unwrap();
+                let calls = held.entry(tenant.to_string()).or_default();
+                if !calls.iter().any(|c| c == call_id) {
+                    calls.push(call_id.to_string());
+                }
+                Ok(calls.len() as u64)
+            }
+
+            async fn release(&self, tenant: &TenantId, call_id: &str) -> anyhow::Result<()> {
+                if self.broken.load(Ordering::SeqCst) {
+                    anyhow::bail!("redis is away");
+                }
+                if let Some(calls) = self.held.lock().unwrap().get_mut(&tenant.to_string()) {
+                    calls.retain(|c| c != call_id);
+                }
+                Ok(())
+            }
+
+            async fn refresh(&self, _held: &[(TenantId, String)]) -> anyhow::Result<()> {
+                Ok(())
+            }
+        }
+
+        fn controller(cluster: &Arc<Cluster>, limit: u32) -> AdmissionController {
+            let tenant = TenantId::new();
+            let _ = tenant;
+            AdmissionController::new(AdmissionConfig::unlimited())
+                .with_cluster_calls(Arc::clone(cluster) as Arc<dyn ClusterCallCount>)
+                .with_tenant_limits(Arc::new(Limits(limit)))
+        }
+
+        /// Every tenant has the same limit here.
+        struct Limits(u32);
+
+        impl TenantCallLimits for Limits {
+            fn max_concurrent_calls(&self, _tenant: &TenantId) -> Option<u32> {
+                Some(self.0)
+            }
+        }
+
+        /// Two nodes, one tenant, one contract: the second node sees the
+        /// first node's calls and refuses past the limit.
+        #[tokio::test]
+        async fn the_limit_is_the_clusters_not_the_nodes() {
+            let cluster = Arc::new(Cluster::default());
+            let one = controller(&cluster, 2);
+            let two = controller(&cluster, 2);
+            let tenant = TenantId::new();
+
+            assert!(one.admit("a", &tenant).await.is_ok());
+            assert!(two.admit("b", &tenant).await.is_ok(), "the other node");
+            assert_eq!(
+                two.admit("c", &tenant).await,
+                Err(Refusal::TenantCalls),
+                "two calls is the contract, wherever they are"
+            );
+            // Each node counted one of its own, and the refusal left
+            // nothing behind in the cluster.
+            assert_eq!(one.tenant_concurrent_calls(&tenant), 1);
+            assert_eq!(two.tenant_concurrent_calls(&tenant), 1);
+            assert_eq!(
+                cluster.held.lock().unwrap()[&tenant.to_string()].len(),
+                2,
+                "the refused call gave its lease back"
+            );
+
+            // A call ending on one node frees the contract for the
+            // other, once its node has settled the lease.
+            one.ended("a");
+            one.settle_leases().await;
+            assert!(two.admit("c", &tenant).await.is_ok());
+        }
+
+        /// Redis being away must not fail a call: the tenant is then
+        /// capped per node, which is what phase 1 enforced.
+        #[tokio::test]
+        async fn an_unreadable_cluster_falls_back_to_this_node() {
+            let cluster = Arc::new(Cluster::default());
+            let node = controller(&cluster, 2);
+            let tenant = TenantId::new();
+            cluster.broken.store(true, Ordering::SeqCst);
+
+            assert!(node.admit("a", &tenant).await.is_ok());
+            assert!(node.admit("b", &tenant).await.is_ok());
+            assert_eq!(
+                node.admit("c", &tenant).await,
+                Err(Refusal::TenantCalls),
+                "the node's own count still holds the line"
+            );
+            assert_eq!(node.tenant_concurrent_calls(&tenant), 2);
+        }
+
+        /// A lease is per call, so the same call admitted twice — a
+        /// retried INVITE — does not spend the contract twice.
+        #[tokio::test]
+        async fn one_call_takes_one_lease() {
+            let cluster = Arc::new(Cluster::default());
+            let node = controller(&cluster, 1);
+            let tenant = TenantId::new();
+
+            assert!(node.admit("a", &tenant).await.is_ok());
+            assert!(node.admit("a", &tenant).await.is_ok(), "the same call");
+            assert_eq!(cluster.held.lock().unwrap()[&tenant.to_string()].len(), 1);
+        }
+
+        /// What the node holds, for the tick that puts the leases back.
+        #[tokio::test]
+        async fn the_node_can_say_what_it_holds() {
+            let cluster = Arc::new(Cluster::default());
+            let node = controller(&cluster, 10);
+            let tenant = TenantId::new();
+            node.admit("a", &tenant).await.ok();
+            node.admit("b", &tenant).await.ok();
+            let mut held: Vec<String> = node.held_leases().into_iter().map(|(_, c)| c).collect();
+            held.sort();
+            assert_eq!(held, vec!["a".to_string(), "b".to_string()]);
+            node.ended("a");
+            assert_eq!(node.held_leases().len(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_tenants_limit_is_its_own() {
         let ctrl = controller(0, 0);
         let (small, large) = (TenantId::new(), TenantId::new());
         ctrl.set_tenant_limits(Arc::new(Limits(HashMap::from([(small, 1)]))));
 
-        assert!(ctrl.admit("a", &small).is_ok());
-        assert_eq!(ctrl.admit("b", &small), Err(Refusal::TenantCalls));
-        assert!(ctrl.admit("c", &large).is_ok());
+        assert!(ctrl.admit("a", &small).await.is_ok());
+        assert_eq!(ctrl.admit("b", &small).await, Err(Refusal::TenantCalls));
+        assert!(ctrl.admit("c", &large).await.is_ok());
         assert_eq!(ctrl.tenant_concurrent_calls(&small), 1);
 
         ctrl.ended("a");
         assert_eq!(ctrl.tenant_concurrent_calls(&small), 0);
-        assert!(ctrl.admit("b", &small).is_ok());
+        assert!(ctrl.admit("b", &small).await.is_ok());
     }
 
     /// A call the tenant's limit refuses must not spend the node's second:
     /// the CPS window is put back as it was.
-    #[test]
-    fn a_refused_call_does_not_spend_the_nodes_second() {
+    #[tokio::test]
+    async fn a_refused_call_does_not_spend_the_nodes_second() {
         let ctrl = controller(0, 2);
         let (small, other) = (TenantId::new(), TenantId::new());
         ctrl.set_tenant_limits(Arc::new(Limits(HashMap::from([(small, 1)]))));
 
-        assert!(ctrl.admit("a", &small).is_ok());
-        assert_eq!(ctrl.admit("b", &small), Err(Refusal::TenantCalls));
+        assert!(ctrl.admit("a", &small).await.is_ok());
+        assert_eq!(ctrl.admit("b", &small).await, Err(Refusal::TenantCalls));
         // One call has started this second, not two.
         assert_eq!(ctrl.current_cps(), 1);
-        assert!(ctrl.admit("c", &other).is_ok());
-        assert_eq!(ctrl.admit("d", &other), Err(Refusal::NodeCps));
+        assert!(ctrl.admit("c", &other).await.is_ok());
+        assert_eq!(ctrl.admit("d", &other).await, Err(Refusal::NodeCps));
     }
 
     /// A registration flood is refused by source address and by AOR, and
@@ -1383,13 +1719,13 @@ mod node_admission_tests {
 
     /// Every refusal is counted under its own reason, and the admitted
     /// calls under their tenant.
-    #[test]
-    fn refusals_are_counted_by_reason() {
+    #[tokio::test]
+    async fn refusals_are_counted_by_reason() {
         let ctrl = controller(1, 0);
         let tenant = TenantId::new();
         let before = AdmissionCounters::global().refused_for(Refusal::NodeCalls);
-        assert!(ctrl.admit("a", &tenant).is_ok());
-        assert!(ctrl.admit("b", &tenant).is_err());
+        assert!(ctrl.admit("a", &tenant).await.is_ok());
+        assert!(ctrl.admit("b", &tenant).await.is_err());
         // The counters are the process's, and other tests refuse too.
         assert!(AdmissionCounters::global().refused_for(Refusal::NodeCalls) > before);
         let text = AdmissionCounters::global().prometheus("node=\"n1\"");
@@ -1406,19 +1742,19 @@ mod drain_tests {
 
     /// A draining node refuses new calls whatever its limits allow, and
     /// takes them again the moment the drain is called off.
-    #[test]
-    fn a_draining_node_takes_no_new_call() {
+    #[tokio::test]
+    async fn a_draining_node_takes_no_new_call() {
         let ctrl = AdmissionController::new(AdmissionConfig::unlimited());
         let tenant = TenantId::new();
-        assert!(ctrl.admit("before", &tenant).is_ok());
+        assert!(ctrl.admit("before", &tenant).await.is_ok());
 
         ctrl.set_draining(true);
-        assert_eq!(ctrl.admit("during", &tenant), Err(Refusal::Draining));
+        assert_eq!(ctrl.admit("during", &tenant).await, Err(Refusal::Draining));
         // The call it was already carrying is untouched.
         assert_eq!(ctrl.concurrent_calls(), 1);
 
         ctrl.set_draining(false);
-        assert!(ctrl.admit("after", &tenant).is_ok());
+        assert!(ctrl.admit("after", &tenant).await.is_ok());
     }
 
     /// A draining node keeps its devices, on a short registration; a

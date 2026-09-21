@@ -658,6 +658,21 @@ pub struct ClusterSection {
     #[serde(default)]
     pub cluster_secret: Option<String>,
 
+    /// Count each tenant's concurrent calls across the cluster, by a
+    /// lease per call in Redis, rather than on this node alone
+    /// (`docs/CAPACITY_AND_SURVIVABILITY.md` §7). A tenant's
+    /// `max_concurrent_calls` is a contract with the platform, so this is
+    /// on wherever there is a cluster to count across; turning it off
+    /// leaves the per-node count phase 1 shipped. Redis being unreachable
+    /// falls back to that count by itself.
+    #[serde(default = "default_lease_tenant_calls")]
+    pub lease_tenant_calls: bool,
+
+    /// Seconds between the ticks that give back the leases of calls that
+    /// have ended and push out the expiry of the ones still up.
+    #[serde(default = "default_lease_settle_secs")]
+    pub lease_settle_secs: u64,
+
     /// Heartbeat interval in seconds (default: 5).
     #[serde(default = "default_heartbeat_interval")]
     pub heartbeat_interval_secs: u64,
@@ -679,6 +694,14 @@ pub struct ClusterSection {
     /// Circuit breaker: cooldown in seconds before allowing a probe request.
     #[serde(default = "default_cb_cooldown")]
     pub redis_circuit_breaker_cooldown_secs: u64,
+}
+
+fn default_lease_tenant_calls() -> bool {
+    true
+}
+
+fn default_lease_settle_secs() -> u64 {
+    5
 }
 
 fn default_heartbeat_interval() -> u64 {
@@ -707,6 +730,8 @@ impl Default for ClusterSection {
             enabled: false,
             region: None,
             cluster_secret: None,
+            lease_tenant_calls: default_lease_tenant_calls(),
+            lease_settle_secs: default_lease_settle_secs(),
             heartbeat_interval_secs: default_heartbeat_interval(),
             heartbeat_ttl_secs: default_heartbeat_ttl(),
             call_ttl_secs: default_call_ttl(),

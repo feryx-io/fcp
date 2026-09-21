@@ -2580,7 +2580,7 @@ impl SipMessageHandler {
         // (`docs/CAPACITY_AND_SURVIVABILITY.md` §5). Checked before the
         // work of a call, and never for an emergency call.
         if let (Some(admission), None) = (&self.admission, &emergency) {
-            if let Err(refusal) = admission.admit(&call_id.to_string(), &tenant_id) {
+            if let Err(refusal) = admission.admit(&call_id.to_string(), &tenant_id).await {
                 info!(
                     call_id = %call_id,
                     tenant_id = %tenant_id,
