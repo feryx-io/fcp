@@ -625,6 +625,41 @@ docker-compose exec postgres psql -U fcp -d fcp -c "
 
 ---
 
+## Capacity: what one node carries
+
+Measured 2026-09-21 with `fcp-loadgen` (`docs/CAPACITY_AND_SURVIVABILITY.md`
+§8) against a release-built call manager. **Read the machine before the
+numbers**: a 12-core Azure VM with 2 GB of RAM running Postgres, the node
+and the load generator at once. Every figure below is a floor — the run
+ended before the node did.
+
+| | Measured |
+|---|---|
+| Calls per second | **20/s sustained**, every rung from 2 to 20 held; the ramp ran out of time, not headroom |
+| INVITE → `200 OK` | p50 **4 ms**, p99 **7 ms** at 20 calls/s |
+| Media (B2BUA relay, 4419 legs) | **0.00 % loss**, 0.37 ms mean jitter |
+| Memory per concurrent call | **≈0.3 MiB** (34 MiB idle → 64 MiB with 100 calls up) |
+| CPU at 20 calls/s | 3 % of twelve cores |
+| Registration storm | 300 devices, 1200 registrations, **all answered**, none refused |
+
+What to take from it when sizing: a node's resident memory is roughly
+`35 MiB + 0.3 MiB × concurrent calls` before recordings and conferences,
+the signalling path costs single-digit milliseconds, and the relay does
+not lose packets. What **not** to take from it: a ceiling. Nothing here
+found one, and a real one needs a dedicated box with the load generator
+on a different machine.
+
+To measure your own hardware:
+
+```bash
+# On a machine that is not the node:
+fcp-loadgen --profile call-ramp --sip <node>:5060 --realm <realm>   --users 50 --answer-extension-base 2000   --cps 5 --cps-step 5 --cps-max 200 --rung-seconds 30   --metrics-url http://<node>:8084/metrics --json ramp.json
+```
+
+Keep a single harness process under about 100 phones: past that the
+generator becomes the bottleneck and measures itself (see the storm table
+in §13 of the design document).
+
 ## Performance Tuning
 
 ### For High Call Volume

@@ -264,7 +264,24 @@ first rung that refuses, slows or drops. The testkit gained
 defects in itself — registrations counted as answered calls, and
 answering phones that played nothing, so every leg read as 100 % loss —
 which is what a measuring tool is for. CI runs a six-second soak and a
-five-second storm for behaviour, never a rate. Ten open questions, every recommendation taken on
+five-second storm for behaviour, never a rate. Phase 4 ran (v0.25.218):
+the harness against a release-built call manager on the dev VM (12 cores,
+2 GB, Postgres and the harness on the same box). Every rung from 2 to 20
+calls/s held — 2208 of 2210 answered, INVITE→200 p50 4 ms and p99 7 ms,
+4419 media legs with 0.00 % loss and 0.37 ms jitter, ≈0.3 MiB of node
+memory a call, the node at 3 % CPU — and the ramp ended because the run
+did, not because the node did, so 20 calls/s is a floor and not a
+capacity claim. A 300-device register storm was answered in full. Its
+p50 of 1525 ms turned out to be the harness, not the registrar: the same
+storm at 30 and 100 phones measured 10 ms and 18 ms with the node at 1 %
+CPU throughout, so one process saturates somewhere past 100 phones on
+that box. Four defects found in the harness itself and fixed
+(registrations lapsing mid-run and reading as a capacity cliff at 6
+calls/s; a rung's rate counting the drain after it; a run's rate counting
+its own setup; a refused caller spinning instead of waiting). Left open
+with their evidence: two calls in 2210 answered 480, three silent legs in
+4419. The heartbeat's capacity and load fields wait for phase 5, which
+brings their reader. Ten open questions, every recommendation taken on
 2026-09-20: one admission controller in `fcp-sbc-core` for every routing
 binary; node limits only where a deployment wrote one down; the tenant limit
 per node until phase 5 leases it cluster-wide; a BYE with a `Reason` and a

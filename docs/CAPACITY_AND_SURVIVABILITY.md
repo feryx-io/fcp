@@ -450,7 +450,7 @@ One PR each, in order.
 | 2b-3 ✅ v0.25.215 | **The WebRTC gateway.** It has no health server at all, so: one, with `/health`, `/ready` and `/drain`; the `[admission]` section; and a drain that hands sessions to another node the way distributed conferencing's phase 5 migrates participants, rather than only refusing new ones |
 | 2b-4 ✅ v0.25.216 | **The conference server, the badge and the runbook.** Its own drain — SIGTERM, `set_draining`, `start_draining()`, `drain_wait_secs`, REFER migration — aligned on the shared `draining` state and given `/ready` and `/drain`, without losing the migration; the drain badge and node state on the admin UI's cluster page; the rolling-restart procedure in `docs/CLUSTER_OPERATIONS_RUNBOOK.md` |
 | 3 ✅ v0.25.217 | **The harness.** `fcp-loadgen` on `fcp-testkit`: the four profiles, the measurements, the JSON report, the budget flags; the small CI profile |
-| 4 | **What the numbers say.** Run it on the dev VM: calls per second and concurrent calls to first refusal, latency percentiles, memory per call, registration storm behaviour. Fix what it finds — this is where the defects are — and record the numbers here, in `docs/DEPLOYMENT.md` and in the heartbeat as a published capacity budget, the shape video's already has |
+| 4 ✅ v0.25.218 | **What the numbers say.** Run it on the dev VM: calls per second and concurrent calls to first refusal, latency percentiles, memory per call, registration storm behaviour. Fix what it finds — this is where the defects are — and record the numbers here, in `docs/DEPLOYMENT.md` and in the heartbeat as a published capacity budget, the shape video's already has |
 | 5 | **Across the cluster.** Tenant concurrency and trunk channels leased in Redis with a per-node fallback; placement by headroom among serving nodes in region; load, headroom and limits on the admin UI's cluster and tenant pages |
 
 Phase 1 stands alone: it is worth shipping even if nothing after it is built,
@@ -755,6 +755,88 @@ What CI runs is `tests/ci_profile.rs`: a six-second soak and a five-second
 storm against a real call manager, asserting behaviour only — every call
 answered, both legs of every call hearing audio, every REGISTER answered,
 and the node sampled for memory and metrics — never a rate (§12 Q8).
+
+*Phase 4 ran 2026-09-21 (v0.25.218).* The harness was pointed at a
+release-built call manager and the numbers written down. What it found
+first was four defects in itself, which is the ordinary way of these
+things, and then a clear account of what this hardware can say.
+
+**The machine.** A Microsoft Azure VM, Intel Core Ultra 9 275HX, 12
+cores, **2 GB of RAM**, running Postgres, the node *and* the harness at
+once. That is a development box, not a capacity lab, and the numbers
+below are bounded by it in ways the notes say plainly.
+
+### What the node did
+
+| Measured | Result |
+|---|---|
+| Call ramp, 2 → 20 calls/s, 60 pairs, 10-second calls | **every rung held**: 2208 of 2210 answered, refusals 0.1 % |
+| INVITE → `200 OK` at 20 calls/s | p50 **4 ms**, p90 4 ms, p99 **7 ms**, max 504 ms |
+| INVITE → first provisional | p50 **0 ms**, p99 0 ms |
+| Media through the B2BUA relay, 4419 legs | loss **0.00 %**, jitter mean **0.37 ms**, max 0.64 ms, 3 silent legs |
+| Node memory, 100 calls up | idle **34 MiB**, peak **64 MiB** → **≈0.3 MiB a call** |
+| Node CPU at 20 calls/s | **3 %**, peak 28 % |
+| Register storm, 300 devices, four rounds | 1200 registrations, **every one `200`**, none refused |
+
+The ramp **did not find the node's ceiling**: it ran out of its own
+five-minute budget at 20 calls/s with a p99 of 7 ms and the node at 3 %
+CPU. Twenty calls a second is a floor, not a limit, and no number here
+should be quoted as this platform's capacity.
+
+### What the harness's own limit is
+
+The register storm read p50 1525 ms, p99 3536 ms at 300 phones — and the
+node was at **1 % CPU** while answering every one. Running the same storm
+at three sizes settles where that time goes:
+
+| devices (phones in one harness process) | REGISTER p50 | p99 | node CPU |
+|---|---|---|---|
+| 15 (30) | 10 ms | 43 ms | 1 % |
+| 50 (100) | 18 ms | 37 ms | 1 % |
+| 150 (300) | 1525 ms | 3536 ms | 1 % |
+
+An 85-fold jump in p50 between 100 and 300 phones, with the server idle
+throughout and refusing nothing, is the client saturating: one process
+driving 300 SIP endpoints with their sockets and timers on a 2 GB VM. So:
+**keep a run under about 100 phones per harness process on hardware like
+this, and put the harness on a different machine from the node before
+quoting any number.** The soak's anomalies at 100 pairs — 10 % of calls
+answered `480`, 196 silent legs, an answer p99 of 3.5 s — sit past that
+line and are consistent with the same saturation; the ramp, at 60 pairs,
+was clean.
+
+### The four defects it found in itself
+
+- **Registrations lapsed mid-run.** Phones registered once, for 60
+  seconds, and a ramp outlives that: from the third rung every call came
+  back `480`, which read exactly like a capacity cliff at six calls a
+  second. A refresher now re-registers every phone at half its lifetime,
+  as a device does, and the ramp climbed to 20 calls/s unbroken.
+- **A rung's rate counted the drain after it.** `offer_calls` waits for
+  the last call it placed to end, so a 20-second rung at 2 calls/s
+  reported 1.4. A rung is now measured over the window it offered in.
+- **A run's rate counted its own setup.** Starting and registering the
+  phones was in the denominator; the load has its own clock now.
+- **A refused caller spun.** A soak places another call as each one ends;
+  when they are refused instantly, "as each one ends" is immediately, and
+  100 held calls became 796 offered. A refused caller now waits a second,
+  as a person would.
+
+### Left open
+
+Two calls in 2210 were answered `480` at 8 and 16 calls/s — 0.09 %, both
+while their callee's registration was being refreshed. The binding write
+is an upsert (`ON CONFLICT … DO UPDATE`), so there is no delete-and-insert
+window to blame, and no mechanism has been shown; it is recorded here with
+its evidence rather than diagnosed from a guess. Likewise three silent
+legs in 4419 (0.07 %).
+
+**What phase 4 did not do:** publish a capacity budget in the heartbeat.
+§7 wants `capacity` and `load` there so headroom is computable, but the
+readers — placement by headroom, the admin UI's headroom column — arrive
+in phase 5, and this platform's own history (the limits that did nothing,
+§2.1) argues against shipping a field with no reader. It goes with its
+reader.
 
 ## 14. Not in scope
 
