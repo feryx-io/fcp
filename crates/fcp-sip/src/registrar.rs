@@ -154,6 +154,66 @@ async fn resolve_tenant_for_inputs(
     }
 }
 
+/// Whether a live registration places its device at `peer`.
+///
+/// The address the REGISTER arrived from wins wherever the registrar kept
+/// one (`docs/E911_BLOCK_2.md` §6.2): it is what the network saw, not what
+/// the device claimed. Otherwise the contact's host is parsed and compared
+/// as an address. A contact whose host is a name, not an address, places
+/// nobody — resolving it would let a device's DNS decide who may call.
+///
+/// Searching the contact's *text* for the peer's address, as this check
+/// once did, authorises a stranger: `sip:bob@10.0.0.10:5060` contains the
+/// string `10.0.0.1` (`docs/EDGE_SECURITY.md` §2.2).
+pub fn registration_is_at(registration: &Registration, peer: std::net::IpAddr) -> bool {
+    if let Some(source) = registration
+        .source_address
+        .as_deref()
+        .and_then(fcp_core::e911::parse_address)
+    {
+        return same_address(source, peer);
+    }
+    contact_host(&registration.contact)
+        .map(|host| same_address(host, peer))
+        .unwrap_or(false)
+}
+
+/// The host of a stored contact, when it is an address.
+///
+/// Accepts the forms the store holds: bare, in angle brackets, with URI
+/// parameters, with a port, and IPv6 in brackets.
+fn contact_host(contact: &str) -> Option<std::net::IpAddr> {
+    let uri = contact.trim();
+    let uri = match (uri.find('<'), uri.find('>')) {
+        (Some(start), Some(end)) if start < end => &uri[start + 1..end],
+        _ => uri,
+    };
+    let uri = uri.split(';').next()?.trim();
+    let uri = uri
+        .strip_prefix("sip:")
+        .or_else(|| uri.strip_prefix("sips:"))
+        .unwrap_or(uri);
+    // The user part may itself contain an `@`, so take the last one.
+    let host = match uri.rfind('@') {
+        Some(at) => &uri[at + 1..],
+        None => uri,
+    };
+    let host = host.split('?').next().unwrap_or(host);
+    fcp_core::e911::parse_address(host)
+}
+
+/// Two addresses are the same device address; an IPv4 peer on a
+/// dual-stack socket arrives mapped into IPv6.
+fn same_address(a: std::net::IpAddr, b: std::net::IpAddr) -> bool {
+    fn unmap(ip: std::net::IpAddr) -> std::net::IpAddr {
+        match ip {
+            std::net::IpAddr::V6(v6) => v6.to_ipv4_mapped().map(std::net::IpAddr::V4).unwrap_or(ip),
+            v4 => v4,
+        }
+    }
+    unmap(a) == unmap(b)
+}
+
 /// Adapter that implements siphon-rs LocationStore using FCP RegistrationStore.
 pub struct LocationStoreAdapter {
     store: Arc<dyn RegistrationStore>,
@@ -215,16 +275,26 @@ impl LocationStoreAdapter {
     }
 
     async fn lookup_in_tenant(&self, tenant_id: &TenantId, aor: &str) -> Result<Vec<Binding>> {
+        self.rows_in_tenant(tenant_id, aor)
+            .await?
+            .iter()
+            .map(Self::to_binding)
+            .collect()
+    }
+
+    /// The live registrations for an AOR as stored — the rows behind
+    /// [`LocationStoreAdapter::lookup_in_tenant`], which carry the address
+    /// the REGISTER came from.
+    async fn rows_in_tenant(&self, tenant_id: &TenantId, aor: &str) -> Result<Vec<Registration>> {
         let registrations = self
             .store
             .get_registrations_in_tenant(tenant_id, aor)
             .await?;
         let now = SystemTime::now();
-        registrations
-            .iter()
+        Ok(registrations
+            .into_iter()
             .filter(|r| r.expires_at > now)
-            .map(Self::to_binding)
-            .collect()
+            .collect())
     }
 
     /// Convert FCP Registration to siphon-rs Binding.
@@ -1302,6 +1372,36 @@ impl FcpRegistrar {
         tenant_id: &TenantId,
         aor: &str,
     ) -> Result<Vec<Binding>> {
+        self.get_registration_rows_impl(tenant_id, aor)
+            .await?
+            .iter()
+            .map(LocationStoreAdapter::to_binding)
+            .collect()
+    }
+
+    /// The live registrations for an Address-of-Record as stored.
+    ///
+    /// The rows behind [`FcpRegistrar::get_registrations`], which carry the
+    /// address each REGISTER came from — what places a device
+    /// (`docs/EDGE_SECURITY.md` §2.2).
+    pub async fn get_registration_rows(&self, aor: &str) -> Result<Vec<Registration>> {
+        let tenant_id = resolve_tenant_for_inputs(
+            self.tenant_store.as_ref(),
+            self.credential_store.as_ref(),
+            self.default_tenant_id,
+            Some(aor),
+            None,
+        )
+        .await?;
+
+        self.get_registration_rows_impl(&tenant_id, aor).await
+    }
+
+    async fn get_registration_rows_impl(
+        &self,
+        tenant_id: &TenantId,
+        aor: &str,
+    ) -> Result<Vec<Registration>> {
         // Normalize AOR so lookups match stored keys even if clients send
         // params or percent-encoded users.
         let normalized = match sip_core::Uri::parse(aor) {
@@ -1311,9 +1411,9 @@ impl FcpRegistrar {
         };
 
         // Look up the primary AOR
-        let mut all_bindings = self
+        let mut all_rows = self
             .location_store
-            .lookup_in_tenant(tenant_id, &normalized)
+            .rows_in_tenant(tenant_id, &normalized)
             .await?;
 
         // If domain aliases are configured, check for registrations at aliased domains
@@ -1331,18 +1431,18 @@ impl FcpRegistrar {
                     for alias in &self.domain_aliases {
                         if alias.to_lowercase() != domain_lower {
                             let aliased_aor = format!("sip:{}@{}", user, alias);
-                            if let Ok(mut bindings) = self
+                            if let Ok(mut rows) = self
                                 .location_store
-                                .lookup_in_tenant(tenant_id, &aliased_aor)
+                                .rows_in_tenant(tenant_id, &aliased_aor)
                                 .await
                             {
                                 debug!(
                                     original_aor = %normalized,
                                     aliased_aor = %aliased_aor,
-                                    found = bindings.len(),
+                                    found = rows.len(),
                                     "Found registrations at aliased domain"
                                 );
-                                all_bindings.append(&mut bindings);
+                                all_rows.append(&mut rows);
                             }
                         }
                     }
@@ -1350,7 +1450,7 @@ impl FcpRegistrar {
             }
         }
 
-        Ok(all_bindings)
+        Ok(all_rows)
     }
 
     /// Look up device registrations with domain fallback.
@@ -1497,6 +1597,103 @@ mod tests {
     use super::*;
     use fcp_core::FileBackedStorage;
     use smol_str::SmolStr;
+
+    fn registration_at(contact: &str, source: Option<&str>) -> Registration {
+        Registration {
+            tenant_id: TenantId::nil(),
+            aor: "sip:bob@example.com".to_string(),
+            contact: contact.to_string(),
+            expires_at: SystemTime::now() + std::time::Duration::from_secs(3600),
+            call_id: "call-1".to_string(),
+            cseq: 1,
+            user_agent: None,
+            q: None,
+            registered_at: SystemTime::now(),
+            path: None,
+            flow_token: None,
+            source_address: source.map(str::to_string),
+        }
+    }
+
+    fn ip(s: &str) -> std::net::IpAddr {
+        s.parse().unwrap()
+    }
+
+    #[test]
+    fn a_neighbour_is_not_the_registered_device() {
+        // The everyday shape of a LAN: the contact's text contains the
+        // neighbour's address, so the old substring check authorised it
+        // (`docs/EDGE_SECURITY.md` §2.2).
+        let reg = registration_at("sip:bob@10.0.0.10:5060", None);
+        assert!(reg.contact.contains("10.0.0.1"));
+        assert!(!registration_is_at(&reg, ip("10.0.0.1")));
+        assert!(registration_is_at(&reg, ip("10.0.0.10")));
+    }
+
+    #[test]
+    fn an_address_in_a_port_or_parameter_authorises_nobody() {
+        let reg = registration_at("<sip:bob@10.0.0.10:5060;transport=tcp>", None);
+        // The port spells 5060; a peer at 5.0.6.0 is not the device, and
+        // neither is a peer whose address appears only as a parameter.
+        assert!(!registration_is_at(&reg, ip("5.0.6.0")));
+        let named = registration_at("<sip:bob@10.0.0.10;fcp-note=192.168.1.5>", None);
+        assert!(!registration_is_at(&named, ip("192.168.1.5")));
+        assert!(registration_is_at(&named, ip("10.0.0.10")));
+    }
+
+    #[test]
+    fn the_source_address_wins_over_the_contact() {
+        // A device behind NAT registers a contact naming an address it
+        // does not own; what places it is where the REGISTER came from.
+        let reg = registration_at("sip:bob@192.168.1.50:5060", Some("203.0.113.7:1234"));
+        assert!(registration_is_at(&reg, ip("203.0.113.7")));
+        assert!(!registration_is_at(&reg, ip("192.168.1.50")));
+    }
+
+    #[test]
+    fn a_contact_host_that_is_a_name_places_nobody() {
+        let reg = registration_at("sip:bob@phone.example.com:5060", None);
+        assert!(!registration_is_at(&reg, ip("10.0.0.10")));
+    }
+
+    #[test]
+    fn an_ipv4_peer_mapped_into_ipv6_still_matches() {
+        let reg = registration_at("sip:bob@10.0.0.10:5060", None);
+        assert!(registration_is_at(&reg, ip("::ffff:10.0.0.10")));
+        let mapped = registration_at("sip:bob@example.com", Some("[::ffff:10.0.0.10]:5060"));
+        assert!(registration_is_at(&mapped, ip("10.0.0.10")));
+    }
+
+    #[test]
+    fn ipv6_contacts_are_compared_as_addresses() {
+        let reg = registration_at("<sip:bob@[2001:db8::10]:5060;transport=tcp>", None);
+        assert!(registration_is_at(&reg, ip("2001:db8::10")));
+        assert!(!registration_is_at(&reg, ip("2001:db8::1")));
+    }
+
+    #[test]
+    fn contact_host_reads_the_forms_the_store_holds() {
+        assert_eq!(contact_host("sip:bob@10.0.0.10"), Some(ip("10.0.0.10")));
+        assert_eq!(
+            contact_host("<sip:bob@10.0.0.10:5060>"),
+            Some(ip("10.0.0.10"))
+        );
+        assert_eq!(
+            contact_host("\"Bob\" <sips:bob@10.0.0.10;transport=tls>"),
+            Some(ip("10.0.0.10"))
+        );
+        // A user part with its own `@`.
+        assert_eq!(
+            contact_host("sip:bob@work@10.0.0.10"),
+            Some(ip("10.0.0.10"))
+        );
+        assert_eq!(
+            contact_host("sip:bob@10.0.0.10?Subject=Hi"),
+            Some(ip("10.0.0.10"))
+        );
+        assert_eq!(contact_host("sip:bob@example.com"), None);
+        assert_eq!(contact_host(""), None);
+    }
 
     #[test]
     fn split_aor_strips_uri_parameters_from_host() {

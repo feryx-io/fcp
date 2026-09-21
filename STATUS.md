@@ -333,7 +333,18 @@ presence servers each have something; and the stateful surfaces
 (transaction, dialog, registrar, offer/answer) are unfuzzed. Five phases,
 each ending in a test that fails against today's code; four open
 questions for the user, starting with whether INVITE authentication
-defaults on.
+defaults on. Phase 1 done (v0.25.222): a device is placed by the address
+its REGISTER arrived from where the registrar kept one, and otherwise by
+its contact's *parsed* host, compared as an address rather than searched
+for as text — so a host at 10.0.0.1 is no longer the device at 10.0.0.10,
+and neither a port nor a URI parameter that happens to spell an address
+authorises anyone. A contact whose host is a name places nobody. The
+admission gate reads the stored registration rows rather than the
+bindings built from them, since only the rows carry the source address,
+and an INVITE naming a user registered elsewhere is logged before it is
+refused. Q1 and Q3 settled by the user on 2026-09-21: INVITE
+authentication off for one release with a startup warning, then on; and
+2.2 fixed both ways, parsed host *and* the stored source address.
 
 ## Historical documents
 
