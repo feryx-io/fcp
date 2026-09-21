@@ -75,6 +75,7 @@ socket2 = "0.5"
 uuid = { workspace = true }
 
 fcp-events = { path = "../fcp-events" }
+fcp-sbc-core = { path = "../fcp-sbc-core" }
 fcp-storage-redis = { path = "../fcp-storage-redis", features = ["cdr"], optional = true }
 fcp-cluster = { path = "../fcp-cluster", optional = true }
 

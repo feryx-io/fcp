@@ -223,7 +223,21 @@ same cap (`drain_expiry_cap`), then the `terminated;reason=probation` NOTIFY
 to whoever is left, which `POST /drain` now sends as well as SIGTERM. Found
 on the way: a SUBSCRIBE with `Expires: 0` was clamped up to the configured
 minimum, so an unsubscribe was answered with a subscription and neither
-unsubscribe path could run. Ten open questions, every recommendation taken on
+unsubscribe path could run. Phase 2b-3 done (v0.25.215): the WebRTC
+gateway. It had no FCP health server at all, so `/ready`, `/status` and
+`/drain` joined its own router (`/ready` open for a load balancer, the
+others behind the operator token) while forge-api's `/health` stays as it
+was; `[admission]` and `[service] drain_wait_secs` are new. Its browsers
+cannot be moved by the platform — a session's peer connection, SIP leg and
+relay are all in the one process — so a draining gateway names a peer in
+the session status the browser already polls
+(`"handover": {"reason": "node_draining", "url": "https://gw2…"}`), and the
+join page joins there with the same room, token and camera before leaving
+the old session. The heartbeat gained `public_url` (`[http] public_url`)
+because `http_address` is a bind address and no use to a browser, and
+`fcp_cluster::choose_handover_node` picks among serving peers of the same
+kind, in region, least loaded. A `/v1/calls` session is not moved: the far
+end is a phone, and redialling would be a second call. Ten open questions, every recommendation taken on
 2026-09-20: one admission controller in `fcp-sbc-core` for every routing
 binary; node limits only where a deployment wrote one down; the tenant limit
 per node until phase 5 leases it cluster-wide; a BYE with a `Reason` and a

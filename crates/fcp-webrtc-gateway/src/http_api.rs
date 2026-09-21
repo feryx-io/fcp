@@ -27,6 +27,8 @@ pub const JOIN_PAGE: &str = include_str!("../browser/join.html");
 #[derive(Clone)]
 pub struct ApiState {
     pub sessions: Arc<SessionManager>,
+    /// Leaving service (`docs/CAPACITY_AND_SURVIVABILITY.md` §6).
+    pub drain: Arc<fcp_sip::drain::Drain>,
     /// Operator tokens.
     pub operator_tokens: Arc<Vec<String>>,
     /// Proxies whose `X-Forwarded-For` is believed (`[http] trusted_proxies`).
@@ -82,13 +84,29 @@ impl From<SessionError> for ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
+        // A refusal says when to come back, as every other FCP node does
+        // (`docs/CAPACITY_AND_SURVIVABILITY.md` §5).
+        if let SessionError::Refused {
+            detail,
+            retry_after_secs,
+        } = &self.0
+        {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                [(header::RETRY_AFTER, retry_after_secs.to_string())],
+                Json(serde_json::json!({ "error": detail })),
+            )
+                .into_response();
+        }
         let status = match &self.0 {
             SessionError::BadRequest(_) => StatusCode::BAD_REQUEST,
             SessionError::NotFound(_) => StatusCode::NOT_FOUND,
             SessionError::Conflict(_) => StatusCode::CONFLICT,
             SessionError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
             SessionError::Forbidden(_) => StatusCode::FORBIDDEN,
-            SessionError::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+            SessionError::Unavailable(_) | SessionError::Refused { .. } => {
+                StatusCode::SERVICE_UNAVAILABLE
+            }
         };
         let body = serde_json::json!({ "error": self.0.to_string() });
         (status, Json(body)).into_response()
@@ -132,7 +150,11 @@ fn is_join(path: &str, method: &Method) -> bool {
 pub async fn gateway_auth(State(state): State<ApiState>, req: Request, next: Next) -> Response {
     let path = req.uri().path().to_string();
     let method = req.method().clone();
-    if path == "/join" || method == Method::OPTIONS {
+    // `/join` is the page itself, and `/ready` is what a load balancer
+    // reads to stop choosing a draining node — neither is a credential's
+    // business. `/drain` and `/status` are operator routes and are not
+    // listed here.
+    if path == "/join" || path == "/ready" || method == Method::OPTIONS {
         return next.run(req).await;
     }
     let bearer = req
@@ -316,10 +338,58 @@ async fn hangup_call(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Whether this node should be sent browsers: `503` while it is draining,
+/// so a load balancer stops choosing it before it stops taking them
+/// (`docs/CAPACITY_AND_SURVIVABILITY.md` §6). forge-api's `/health` keeps
+/// answering `200`, so a liveness probe does not kill the process
+/// mid-drain.
+async fn ready(State(state): State<ApiState>) -> Response {
+    drain_answer(fcp_sip::drain::ready_body(&state.drain).await)
+}
+
+/// `GET /status` — what this node is carrying and whether it is leaving.
+async fn status(State(state): State<ApiState>) -> Response {
+    let draining = state.drain.is_draining();
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "status": if draining { "draining" } else { "healthy" },
+            "service": "fcp-webrtc-gw",
+            "version": env!("CARGO_PKG_VERSION"),
+            "sessions": state.sessions.live_count().await,
+            "draining": draining,
+            "drain_wait_secs": state.drain.wait_secs(),
+        })),
+    )
+        .into_response()
+}
+
+/// `POST /drain` — this node takes no new sessions, tells the browsers in
+/// rooms where to go, and at `drain_wait_secs` ends what is left. Behind
+/// the operator token, with the gateway's other operator routes.
+async fn start_drain(State(state): State<ApiState>) -> Response {
+    drain_answer(fcp_sip::drain::start_body(&state.drain).await)
+}
+
+/// `DELETE /drain` — the node serves again, and the sessions it was
+/// carrying, which the drain never touched, carry on.
+async fn stop_drain(State(state): State<ApiState>) -> Response {
+    drain_answer(fcp_sip::drain::stop_body(&state.drain).await)
+}
+
+/// What the shared drain answered, as this router's response.
+fn drain_answer((code, body): (u16, serde_json::Value)) -> Response {
+    let code = StatusCode::from_u16(code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    (code, Json(body)).into_response()
+}
+
 /// The router for rooms, calls and the join page, with its auth applied.
 pub fn routes(state: ApiState) -> Router {
     Router::new()
         .route("/join", get(join_page))
+        .route("/ready", get(ready))
+        .route("/status", get(status))
+        .route("/drain", post(start_drain).delete(stop_drain))
         .route("/v1/rooms", get(list_rooms))
         .route("/v1/rooms/{room}/join", post(join_room))
         .route("/v1/rooms/{id}", get(get_room).delete(leave_room))

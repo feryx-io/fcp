@@ -447,7 +447,7 @@ One PR each, in order.
 | 2a ✅ v0.25.209 | **Leaving on purpose, on the call manager.** Drain state on the admission controller; `POST`/`DELETE /drain` and a `/ready` route; SIGTERM starts a drain and a second signal cuts it short; new calls refused, emergency admitted, REGISTER expiry shortened; `drain_wait_secs`, then a BYE with a `Reason` and a `node_draining` record; `system.node_draining`/`system.node_drained` events; test floor T6's drain half |
 | 2b-1 ✅ v0.25.213 | **The shared drain, and the two nearest binaries.** The call manager's drain lifted out of `fcp-call-manager/src/{drain,health}.rs` into one place every routing binary can hold — `fcp-sip`, where the admission trait already lives — with the "end what is left" step supplied by the binary; then the SBC and the registrar on it: `[admission]` on the registrar, `POST`/`DELETE /drain`, `/ready` answering `503` while draining, the SIGTERM sequence with the second signal, and the shortened REGISTER expiry |
 | 2b-2 ✅ v0.25.214 | **The application servers.** `[admission]` and the drain on the IVR, the voicemail server and the presence server — the three phase 1 left with no limits at all — each ending what it is carrying in its own terms: a caller inside a flow, a message being recorded, a subscription to expire |
-| 2b-3 | **The WebRTC gateway.** It has no health server at all, so: one, with `/health`, `/ready` and `/drain`; the `[admission]` section; and a drain that hands sessions to another node the way distributed conferencing's phase 5 migrates participants, rather than only refusing new ones |
+| 2b-3 ✅ v0.25.215 | **The WebRTC gateway.** It has no health server at all, so: one, with `/health`, `/ready` and `/drain`; the `[admission]` section; and a drain that hands sessions to another node the way distributed conferencing's phase 5 migrates participants, rather than only refusing new ones |
 | 2b-4 | **The conference server, the badge and the runbook.** Its own drain — SIGTERM, `set_draining`, `start_draining()`, `drain_wait_secs`, REFER migration — aligned on the shared `draining` state and given `/ready` and `/drain`, without losing the migration; the drain badge and node state on the admin UI's cluster page; the rolling-restart procedure in `docs/CLUSTER_OPERATIONS_RUNBOOK.md` |
 | 3 | **The harness.** `fcp-loadgen` on `fcp-testkit`: the four profiles, the measurements, the JSON report, the budget flags; the small CI profile |
 | 4 | **What the numbers say.** Run it on the dev VM: calls per second and concurrent calls to first refusal, latency percentiles, memory per call, registration storm behaviour. Fix what it finds — this is where the defects are — and record the numbers here, in `docs/DEPLOYMENT.md` and in the heartbeat as a published capacity budget, the shape video's already has |
@@ -627,6 +627,61 @@ before anything looked at it, so `min_subscription_expiry_secs` (60 by
 default) turned "I am leaving" into a minute more, and neither unsubscribe
 path could ever run. Zero now stays zero — the same rule the register gate
 keeps for a deregistration.
+
+*Phase 2b-3 shipped 2026-09-21 (v0.25.215).* The gateway refuses,
+advertises and ends like every other node — and, alone among them, hands
+its browsers to a peer.
+
+**A browser cannot be moved by the platform.** A conference participant
+has one leg here and a room that exists elsewhere, so the node can REFER
+it away (distributed conferencing phase 5), and a gateway's *SIP* leg can
+be swapped under a live peer connection (phase 5c). A gateway's browser is
+the other way round: the peer connection, the SIP leg and the relay
+between them are all in this process, and nothing outside it can take them
+over. So the browser has to join again somewhere else, and all a draining
+gateway can do is tell it where — which it does through the session status
+the browser is already polling every two seconds:
+
+```json
+{ "id": "sess-…", "state": "connected",
+  "handover": { "reason": "node_draining", "url": "https://gw2.example.com" } }
+```
+
+The built-in join page acts on it: it joins that gateway with the same
+room, name and join token, answers the new offer with the same camera and
+microphone (a share in progress follows by `replaceTrack`), and only then
+leaves the old session — so the room is never without it. A move that
+fails, because the join token has expired or the peer will not take it,
+leaves the old session exactly as it was: it plays on until the deadline.
+
+**Where a browser goes is not in the heartbeat's addresses.**
+`ClusterMember.http_address` is a bind address — usually `0.0.0.0` — and
+useless to a browser, so the heartbeat gained `public_url`
+(`[http] public_url`, `#[serde(default)]`, absent everywhere else).
+`fcp_cluster::choose_handover_node` picks among peers of the same node
+type that are serving, are not this node, and advertise one: in this
+node's region if any is there, least loaded first — and "least loaded" now
+means something for a gateway, which advertises its live session count in
+the heartbeat as the call manager advertises its calls. With no cluster, or
+no peer that qualifies, the `url` is simply absent and the browser re-joins
+where it is — which behind a load balancer whose health check reads
+`/ready` is a serving node, and without one is the node that is leaving.
+That is the honest limit of a handover, and it is why `public_url` is
+worth setting.
+
+**Rooms move; calls to a phone do not.** A browser on `/v1/calls` has a
+SIP phone at the far end and nothing that holds it but this node's dialog;
+re-dialling from another gateway would be a second call to a person who is
+already on one. Those sessions are waited for and hung up at the deadline,
+like a B2BUA call (§12 Q5).
+
+Two smaller things: the gateway has no health server of its own, so
+`/ready`, `/status` and `/drain` joined its own router — `/ready` open,
+since a load balancer reads it without a credential, the other two behind
+the operator token — while forge-api's `/health` stays exactly as it was,
+answering `200` through a drain. And a session that ends lingers in the
+list for a minute so a browser can read why; `carrying()` counts only live
+ones, or a drain would wait out that minute with nothing left to carry.
 
 ## 14. Not in scope
 

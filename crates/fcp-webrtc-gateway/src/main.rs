@@ -12,6 +12,8 @@
 //! - `/v1/webrtc/connections/{id}/answer`, `/ice-candidate` — the browser's
 //!   half of a session's signalling (from forge-api)
 //! - `/health`, `/v1/sessions`, `/v1/metrics` — from forge-api
+//! - `/ready`, `/status`, `/drain` — leaving service
+//!   (`docs/CAPACITY_AND_SURVIVABILITY.md` §6)
 
 use anyhow::{Context, Result};
 use axum::middleware as axum_middleware;
@@ -242,15 +244,19 @@ async fn main() -> Result<()> {
                             .as_secs(),
                         version: env!("CARGO_PKG_VERSION").to_string(),
                         draining: false,
+                        // Where a draining peer sends its browsers
+                        // (`docs/CAPACITY_AND_SURVIVABILITY.md` §6).
+                        public_url: config.http.public_url.clone(),
                         region: fcp_cluster::resolve_region(config.cluster.region.as_deref()),
                         video_budget: Vec::new(),
                         registering_trunks: Vec::new(),
                     };
-                    let cm = fcp_cluster::ClusterManager::new(redis.clone(), member)
-                        .with_intervals(
+                    let cm = Arc::new(
+                        fcp_cluster::ClusterManager::new(redis.clone(), member).with_intervals(
                             config.cluster.heartbeat_interval_secs,
                             config.cluster.heartbeat_ttl_secs,
-                        );
+                        ),
+                    );
                     let _handle = cm.start();
                     info!("Cluster membership started");
                     cluster_placement = Some(fcp_webrtc_gateway::placement::ClusterPlacement {
@@ -324,13 +330,37 @@ async fn main() -> Result<()> {
         outbound_proxy: config.sip.outbound_proxy.clone(),
         emergency: config.e911.classifier(),
     };
+    // What this node accepts, and what it refuses
+    // (`docs/CAPACITY_AND_SURVIVABILITY.md` §5). Every limit is optional:
+    // a gateway that writes no `[admission]` section keeps none, as it
+    // always did.
+    let admission = Arc::new(fcp_sbc_core::AdmissionController::new(
+        config.admission.resolve(),
+    ));
+    // Where a browser is sent when this node leaves service (§6): a
+    // serving gateway from the cluster, or nowhere in particular, which
+    // tells the browser to come back where it is.
+    #[cfg(feature = "storage-redis")]
+    let handover: Arc<dyn fcp_webrtc_gateway::session::HandoverAdvice> =
+        match _cluster_manager.as_ref() {
+            Some(cm) => Arc::new(fcp_webrtc_gateway::drain::ClusterHandover::new(Arc::clone(
+                cm,
+            ))),
+            None => Arc::new(fcp_webrtc_gateway::drain::NoHandover),
+        };
+    #[cfg(not(feature = "storage-redis"))]
+    let handover: Arc<dyn fcp_webrtc_gateway::session::HandoverAdvice> =
+        Arc::new(fcp_webrtc_gateway::drain::NoHandover);
+
     let mut session_manager = SessionManager::new(
         uac,
         app_state.webrtc_manager.clone(),
         PortPool::new(relay_ports),
         placement,
         session_cfg,
-    );
+    )
+    .with_admission(Arc::clone(&admission) as Arc<dyn fcp_sip::admission::NodeAdmission>)
+    .with_handover(handover);
     // Session records (docs/CDR_PIPELINE.md): through the spool to the
     // Redis stream, the only sink a node without a database has.
     #[cfg(feature = "storage-redis")]
@@ -351,6 +381,44 @@ async fn main() -> Result<()> {
         });
     }
     let sessions = Arc::new(session_manager);
+
+    // How this node leaves service (`docs/CAPACITY_AND_SURVIVABILITY.md`
+    // §6): the same sequence whether it starts at `POST /drain` or at
+    // SIGTERM. The browsers in rooms are told where to go as they poll;
+    // whatever is left at the deadline is hung up.
+    #[cfg(feature = "storage-redis")]
+    let announcer =
+        fcp_sbc_core::ClusterAnnouncer::maybe(_cluster_manager.as_ref().map(Arc::clone));
+    #[cfg(not(feature = "storage-redis"))]
+    let announcer: Option<Arc<dyn fcp_sip::drain::DrainAnnouncer>> = None;
+    let drain = Arc::new(fcp_sip::drain::Drain::new(
+        Arc::clone(&admission) as Arc<dyn fcp_sip::admission::NodeAdmission>,
+        Arc::new(fcp_webrtc_gateway::drain::GatewaySessions::new(
+            Arc::clone(&sessions),
+            announcer,
+        )) as Arc<dyn fcp_sip::drain::DrainTarget>,
+        Arc::new(fcp_events::InMemoryEventBus::new()),
+        config.service.node_id.clone(),
+        config.service.drain_wait_secs,
+    ));
+
+    // What this node is carrying, in the heartbeat: a draining peer picks
+    // the emptiest gateway to hand its browsers to, and conference
+    // placement reads the same field
+    // (`docs/CAPACITY_AND_SURVIVABILITY.md` §7).
+    #[cfg(feature = "storage-redis")]
+    if let Some(cm) = _cluster_manager.as_ref().map(Arc::clone) {
+        let sessions = Arc::clone(&sessions);
+        let every = Duration::from_secs(config.cluster.heartbeat_interval_secs.max(1));
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(every);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tick.tick().await;
+                cm.update_active_calls(sessions.live_count().await);
+            }
+        });
+    }
 
     // 10. Inbound SIP: responses to our INVITEs, BYE from the far end.
     let sip_bind: std::net::SocketAddr = config
@@ -392,6 +460,7 @@ async fn main() -> Result<()> {
     );
     let gateway_router = http_api::routes(http_api::ApiState {
         sessions: Arc::clone(&sessions),
+        drain: Arc::clone(&drain),
         operator_tokens: Arc::new(config.auth.tokens.clone()),
         trusted_proxies: Arc::new(config.http.trusted_proxies.clone()),
         public_join: config.http.public_join,
@@ -447,12 +516,18 @@ async fn main() -> Result<()> {
         config.http.bind_address
     );
     info!("  Health:     http://{}/health", config.http.bind_address);
+    info!(
+        "  Ready:      http://{}/ready  (503 while draining)",
+        config.http.bind_address
+    );
 
     // 12. Serve with graceful shutdown
     let shutdown_timeout = Duration::from_secs(config.service.shutdown_timeout_secs);
     let shutdown_notify = Arc::new(Notify::new());
     let shutdown_task = {
         let shutdown_notify = Arc::clone(&shutdown_notify);
+        let drain = Arc::clone(&drain);
+        let drain_wait_secs = config.service.drain_wait_secs;
         tokio::spawn(async move {
             let mut sigterm =
                 tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
@@ -465,6 +540,19 @@ async fn main() -> Result<()> {
                 _ = sigterm.recv() => {
                     info!("Received SIGTERM, initiating graceful shutdown...");
                 }
+            }
+
+            // Leave service before the HTTP server stops
+            // (`docs/CAPACITY_AND_SURVIVABILITY.md` §6): take no new
+            // sessions, and let the browsers in rooms read — from the
+            // status they are already polling — that they should join
+            // another node. That polling is why the drain runs while the
+            // server is still answering. With `drain_wait_secs = 0` —
+            // the default — this is what it always was.
+            if drain_wait_secs > 0 || drain.is_draining() {
+                fcp_sip::drain::drain_for_shutdown(&drain).await;
+            } else {
+                drain.start().await;
             }
 
             if !shutdown_timeout.is_zero() {

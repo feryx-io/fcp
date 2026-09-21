@@ -238,6 +238,7 @@ mod tests {
             version: String::new(),
             draining,
             region: region.map(String::from),
+            public_url: None,
             video_budget: vec![],
             registering_trunks: Vec::new(),
         }

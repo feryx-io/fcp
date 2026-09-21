@@ -20,8 +20,8 @@ pub use conference_registry::{
     CONFERENCE_NODE_TYPE,
 };
 pub use membership::{
-    resolve_region, ClusterManager, ClusterMember, EngineBudget, VideoBudgetHandle,
-    VideoDeviceBudget, VideoEngines,
+    choose_handover_node, resolve_region, ClusterManager, ClusterMember, EngineBudget,
+    VideoBudgetHandle, VideoDeviceBudget, VideoEngines,
 };
 pub use node_client::NodeClient;
 pub use reader::{ClusterNodeInfo, ClusterNodeStatus, ClusterReader, ClusterStats};

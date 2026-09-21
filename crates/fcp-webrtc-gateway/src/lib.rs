@@ -10,8 +10,11 @@
 //! - [`inbound`]: the SIP messages the gateway receives (responses to its
 //!   INVITEs, BYE from the far end)
 //! - [`http_api`]: the `/v1/rooms` and `/v1/calls` routes
+//! - [`drain`]: leaving service — what this node is carrying, and where
+//!   its browsers are told to go
 
 pub mod config;
+pub mod drain;
 pub mod http_api;
 pub mod inbound;
 pub mod placement;

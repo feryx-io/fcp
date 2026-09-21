@@ -41,6 +41,19 @@ impl Gateway {
     /// conference server) or, with `cluster_redis`, through cluster
     /// placement.
     async fn start(conference: SocketAddr, cluster_redis: Option<&str>) -> Self {
+        Self::start_as("e2e-webrtc-gw", None, 0, conference, cluster_redis).await
+    }
+
+    /// The same, under a node id of its own and advertising where a
+    /// browser reaches it — what a draining peer hands its browsers
+    /// (`docs/CAPACITY_AND_SURVIVABILITY.md` §6).
+    async fn start_as(
+        node_id: &str,
+        public_url: Option<&str>,
+        drain_wait_secs: u64,
+        conference: SocketAddr,
+        cluster_redis: Option<&str>,
+    ) -> Self {
         let sip = free_port();
         let http = free_port();
         // The gateway wants 400 ports: a band below the phones' 30000+.
@@ -58,11 +71,13 @@ impl Gateway {
         let config = format!(
             r#"
 [service]
-node_id = "e2e-webrtc-gw"
+node_id = "{node_id}"
 shutdown_timeout_secs = 5
+drain_wait_secs = {drain_wait_secs}
 
 [http]
 bind_address = "127.0.0.1:{http}"
+{public_url}
 
 [auth]
 tokens = ["{OPERATOR}"]
@@ -91,6 +106,10 @@ level = "info"
 format = "compact"
 "#,
             rtp_end = rtp_start + 400,
+            public_url = match public_url {
+                Some(url) => format!("public_url = \"{url}\"\n"),
+                None => String::new(),
+            },
         );
         let service = Service::start("webrtc-gw", BIN, &config, &loopback(http, "/health")).await;
         Self {
@@ -577,6 +596,139 @@ async fn a_browser_survives_its_node_draining() {
         .unwrap_or_else(|| panic!("no record of the leg that arrived: {legs:#?}"));
     assert_ne!(moved.node_id, arrived.node_id);
     consumer.stop().await;
+    db.drop_db().await;
+}
+
+/// The gateway's own drain (`docs/CAPACITY_AND_SURVIVABILITY.md` §6,
+/// phase 2b-3): a browser's session is anchored in the gateway process,
+/// so a node leaving service cannot move it — it tells the browser where
+/// to go instead, and the browser joins the room again there.
+///
+/// Two gateways in one cluster: the browser is on the first, which then
+/// drains. Its session says to move, and names the second's browser-facing
+/// address. The browser joins there — the same room, with the same join
+/// token — hears the phone that is already in the room, and leaves the
+/// first, which is then carrying nothing and stops.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_draining_gateway_hands_its_browsers_to_another() {
+    let Some(db) = TestDatabase::create().await else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let seed = Seed::new(db.url(), REALM).await;
+    seed.meeting(ROOM, None, None).await;
+    let dir = tempfile::tempdir().unwrap();
+    let Some(mut cluster) = ConferenceCluster::start(
+        db.url(),
+        dir.path(),
+        ClusterOptions {
+            nodes: 1,
+            join_secret: Some(JOIN_SECRET.to_string()),
+        },
+    )
+    .await
+    else {
+        eprintln!("skipped: FCP_TEST_REDIS_URL is not set");
+        return;
+    };
+    const GW2_URL: &str = "https://gw2.example.com";
+    let mut leaving = Gateway::start_as(
+        "e2e-gw-leaving",
+        Some("https://gw1.example.com"),
+        30,
+        cluster.nodes[0].sip,
+        Some(&cluster.redis_url),
+    )
+    .await;
+    let mut staying = Gateway::start_as(
+        "e2e-gw-staying",
+        Some(GW2_URL),
+        0,
+        cluster.nodes[0].sip,
+        Some(&cluster.redis_url),
+    )
+    .await;
+    // Long enough for each gateway's heartbeat to reach the other.
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+
+    let scenario = async {
+        let token = join_token(&seed, "web");
+        let browser = Browser::join(&leaving, &token, "web").await?;
+        browser.wait_state(&leaving, "connected", A_WHILE).await?;
+        let bob = Phone::new("bob", "x", REALM, cluster.nodes[0].sip)
+            .await
+            .map_err(|e| e.to_string())?;
+        let bob_call = bob.call(ROOM).await.map_err(|e| e.to_string())?;
+        bob_call.answered(SOON).await.map_err(|e| e.to_string())?;
+
+        // The gateway leaves service.
+        let (code, body) = leaving.api("POST", "/drain", OPERATOR, Some("{}")).await?;
+        if code != 200 || body["status"] != "draining" {
+            return Err(format!("the drain was not started: {code} {body}"));
+        }
+        let (code, _) = leaving.api("GET", "/ready", OPERATOR, None).await?;
+        if code != 503 {
+            return Err(format!("a draining gateway answered /ready with {code}"));
+        }
+
+        // The browser is told to move, and where.
+        let deadline = tokio::time::Instant::now() + A_WHILE;
+        loop {
+            let info = browser.info(&leaving).await?;
+            if info["handover"]["url"] == GW2_URL {
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(format!(
+                    "the session never named a gateway to move to: {info}"
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+
+        // What the join page does with that: join the room on the named
+        // gateway with the same token, then leave the old session.
+        let moved = Browser::join(&staying, &token, "web").await?;
+        moved.wait_state(&staying, "connected", A_WHILE).await?;
+        bob_call.media().play_tone(880.0, 6000);
+        if !moved.heard(880, Duration::from_secs(10)).await {
+            return Err("the browser never heard the room after moving".into());
+        }
+        browser.leave(&leaving).await?;
+
+        // With nothing left to carry, the drained gateway is empty.
+        let deadline = tokio::time::Instant::now() + A_WHILE;
+        loop {
+            let (_, rooms) = leaving.api("GET", "/v1/rooms", OPERATOR, None).await?;
+            let live = rooms["sessions"]
+                .as_array()
+                .map(|s| s.iter().filter(|s| s["state"] == "connected").count())
+                .unwrap_or(0);
+            if live == 0 {
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(format!("the drained gateway still has {live} sessions"));
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+
+        moved.leave(&staying).await?;
+        if bob_call.hangup().await.map_err(|e| e.to_string())? != 200 {
+            return Err("Bob's BYE was refused".into());
+        }
+        Ok::<_, String>(())
+    }
+    .await;
+    if let Err(why) = scenario {
+        let one = leaving.logs().await;
+        let two = staying.logs().await;
+        let nodes = cluster.kill_all().await;
+        panic!("{why}\n{one}\n{two}\n{nodes}");
+    }
+    leaving.service.take().unwrap().stop().await;
+    staying.service.take().unwrap().stop().await;
+    cluster.stop_all().await;
     db.drop_db().await;
 }
 

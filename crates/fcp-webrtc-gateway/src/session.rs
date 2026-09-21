@@ -297,6 +297,11 @@ pub struct SessionInfo {
     /// The conference host or SIP destination the INVITE went to.
     pub sip_target: Option<String>,
     pub stats: RelayStatsSnapshot,
+    /// Set while this node is leaving service: the browser should join
+    /// again — here, if a serving gateway is named
+    /// (`docs/CAPACITY_AND_SURVIVABILITY.md` §6).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub handover: Option<Handover>,
 }
 
 /// An ICE server a browser should use, as `RTCPeerConnection` takes it.
@@ -423,6 +428,9 @@ impl Session {
             srtp: self.srtp,
             sip_target: self.sip_target.clone(),
             stats: self.stats.snapshot(),
+            // Filled in by the manager, which knows whether this node is
+            // leaving service and where a browser should go instead.
+            handover: None,
         }
     }
 
@@ -436,6 +444,13 @@ impl Session {
 
 /// How long a finished session stays listed.
 const LINGER: Duration = Duration::from_secs(60);
+
+/// A new session's id. Made before the session so that this node's place
+/// for it can be taken — or refused — before any work is done for it
+/// (`docs/CAPACITY_AND_SURVIVABILITY.md` §5).
+fn new_session_id() -> String {
+    format!("sess-{}", uuid::Uuid::new_v4())
+}
 
 /// A request the API turns into a status.
 #[derive(Debug, thiserror::Error)]
@@ -452,6 +467,14 @@ pub enum SessionError {
     Forbidden(String),
     #[error("{0}")]
     Unavailable(String),
+    /// This node will not take the session: it is leaving service, or it
+    /// is at a limit (`docs/CAPACITY_AND_SURVIVABILITY.md` §5). `503`
+    /// with `Retry-After`, the answer every FCP node gives.
+    #[error("{detail}")]
+    Refused {
+        detail: String,
+        retry_after_secs: u64,
+    },
 }
 
 /// Room numbers as the conference server accepts them.
@@ -535,6 +558,32 @@ pub struct SessionManager {
     placement: Arc<ConferencePlacement>,
     cfg: SessionConfig,
     cdr: Option<CdrSettings>,
+    /// What this node accepts, and whether it is leaving service
+    /// (`docs/CAPACITY_AND_SURVIVABILITY.md` §5, §6).
+    admission: Option<Arc<dyn fcp_sip::admission::NodeAdmission>>,
+    /// Where a browser should go while this node drains.
+    handover: Option<Arc<dyn HandoverAdvice>>,
+}
+
+/// Where a browser on a draining node is told to go
+/// (`docs/CAPACITY_AND_SURVIVABILITY.md` §6). The gateway's own
+/// implementation reads the cluster; a node without one gives `None` for
+/// the URL, which tells the browser to come back where it is.
+pub trait HandoverAdvice: Send + Sync {
+    /// The browser-facing URL of a serving peer, or `None` when there is
+    /// no peer to name.
+    fn peer_url(&self) -> Option<String>;
+}
+
+/// What a browser is told while this node is leaving service: come back,
+/// here if a peer was found, where you are otherwise.
+#[derive(Debug, Clone, Serialize)]
+pub struct Handover {
+    /// Why the browser is being moved. One value today: `node_draining`.
+    pub reason: &'static str,
+    /// The gateway to join instead, when a serving one is known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
 }
 
 /// Where the gateway's session records go and what they name
@@ -566,7 +615,85 @@ impl SessionManager {
             placement,
             cfg,
             cdr: None,
+            admission: None,
+            handover: None,
         }
+    }
+
+    /// The limits this node keeps, and its drain state.
+    pub fn with_admission(mut self, admission: Arc<dyn fcp_sip::admission::NodeAdmission>) -> Self {
+        self.admission = Some(admission);
+        self
+    }
+
+    /// Where browsers go when this node is leaving service.
+    pub fn with_handover(mut self, handover: Arc<dyn HandoverAdvice>) -> Self {
+        self.handover = Some(handover);
+        self
+    }
+
+    /// Whether this node is leaving service.
+    pub fn is_draining(&self) -> bool {
+        self.admission.as_ref().is_some_and(|a| a.draining())
+    }
+
+    /// Sessions this node is still carrying, of either kind: a browser
+    /// connected or being connected. A session that is over lingers in
+    /// the list for a minute so a browser can read why it ended; a drain
+    /// must not wait for those (`docs/CAPACITY_AND_SURVIVABILITY.md` §6).
+    pub async fn live_count(&self) -> usize {
+        let mut n = 0;
+        for entry in self.sessions.iter() {
+            if !entry.value().read().await.is_over() {
+                n += 1;
+            }
+        }
+        n
+    }
+
+    /// Take this node's place for a session that is starting, or say why
+    /// not (`docs/CAPACITY_AND_SURVIVABILITY.md` §5). An emergency call is
+    /// never refused, on a draining node least of all.
+    fn admit(&self, id: &str, emergency: bool) -> Result<(), SessionError> {
+        let Some(admission) = &self.admission else {
+            return Ok(());
+        };
+        if emergency {
+            return Ok(());
+        }
+        let tenant = self
+            .cdr
+            .as_ref()
+            .and_then(|c| c.default_tenant)
+            .unwrap_or_else(fcp_core::TenantId::nil);
+        admission.admit(id, &tenant).map_err(|refusal| {
+            warn!(session = %id, refusal = refusal.as_str(), "session refused");
+            SessionError::Refused {
+                detail: refusal.detail().to_string(),
+                retry_after_secs: admission.retry_after_secs(),
+            }
+        })
+    }
+
+    /// Give back the place a session held, however it ended.
+    fn release(&self, id: &str) {
+        if let Some(admission) = &self.admission {
+            admission.ended(id);
+        }
+    }
+
+    /// What a browser in a room is told while this node is draining: move,
+    /// and where to. A call to a SIP phone is not told anything — there is
+    /// no second node that holds the far end, so it is waited for instead
+    /// (`docs/CAPACITY_AND_SURVIVABILITY.md` §6).
+    fn handover_for(&self, kind: &SessionKind) -> Option<Handover> {
+        if !kind.is_room() || !self.is_draining() {
+            return None;
+        }
+        Some(Handover {
+            reason: "node_draining",
+            url: self.handover.as_ref().and_then(|h| h.peer_url()),
+        })
     }
 
     /// Where session records go, when they go anywhere.
@@ -616,8 +743,19 @@ impl SessionManager {
             content,
             join_token: req.join_token.filter(|t| !t.is_empty()),
         };
-        let conn = self.new_browser_connection(req.video, content).await?;
-        Ok(self.start(kind, conn).await)
+        // What this node accepts, before it opens a peer connection and
+        // takes ICE ports for it (§5). A draining node refuses here, and
+        // the browser is placed elsewhere.
+        let id = new_session_id();
+        self.admit(&id, false)?;
+        let conn = match self.new_browser_connection(req.video, content).await {
+            Ok(conn) => conn,
+            Err(e) => {
+                self.release(&id);
+                return Err(e);
+            }
+        };
+        Ok(self.start(id, kind, conn).await)
     }
 
     /// Call a SIP destination. With `connection_id` the browser's existing
@@ -677,7 +815,28 @@ impl SessionManager {
             emergency,
             client_address: Some(client_address),
         };
-        let conn = match connection_id.filter(|id| !id.is_empty()) {
+        // What this node accepts (§5). An emergency call is admitted
+        // whatever the limits say and even while draining, as it is
+        // everywhere else on the platform.
+        let session_id = new_session_id();
+        self.admit(&session_id, emergency.is_some())?;
+        let conn = match self.browser_connection_for(connection_id).await {
+            Ok(conn) => conn,
+            Err(e) => {
+                self.release(&session_id);
+                return Err(e);
+            }
+        };
+        Ok(self.start(session_id, kind, conn).await)
+    }
+
+    /// The browser's connection for a call: the one it already has, or a
+    /// new one whose offer the call returns.
+    async fn browser_connection_for(
+        &self,
+        connection_id: Option<&str>,
+    ) -> Result<BrowserConnection, SessionError> {
+        match connection_id.filter(|id| !id.is_empty()) {
             Some(id) => {
                 let peer = self.webrtc.get_connection(id).ok_or_else(|| {
                     SessionError::NotFound(format!("WebRTC connection '{id}' not found"))
@@ -695,17 +854,16 @@ impl SessionManager {
                         guard.dtls_fingerprint().to_string(),
                     )
                 };
-                BrowserConnection {
+                Ok(BrowserConnection {
                     peer,
                     events,
                     offer,
                     fingerprint,
                     ice_ports: None,
-                }
+                })
             }
-            None => self.new_browser_connection(false, false).await?,
-        };
-        Ok(self.start(kind, conn).await)
+            None => self.new_browser_connection(false, false).await,
+        }
     }
 
     /// A peer connection offering the mixer's audio codecs and, if asked,
@@ -814,8 +972,12 @@ impl SessionManager {
         }
     }
 
-    async fn start(self: &Arc<Self>, kind: SessionKind, conn: BrowserConnection) -> CreatedSession {
-        let id = format!("sess-{}", uuid::Uuid::new_v4());
+    async fn start(
+        self: &Arc<Self>,
+        id: String,
+        kind: SessionKind,
+        conn: BrowserConnection,
+    ) -> CreatedSession {
         let connection_id = conn.peer.lock().await.connection_id().to_string();
         let session = Session {
             id: id.clone(),
@@ -1723,6 +1885,7 @@ impl SessionManager {
             self.ports.deallocate(pair).await;
         }
         info!(session = %id, "session over");
+        self.release(&id);
         let sessions = self.sessions.clone();
         tokio::spawn(async move {
             tokio::time::sleep(LINGER).await;
@@ -1952,7 +2115,9 @@ impl SessionManager {
         for entry in self.sessions.iter() {
             let s = entry.value().read().await;
             if s.kind.is_room() == rooms {
-                out.push(s.info());
+                let mut info = s.info();
+                info.handover = self.handover_for(&s.kind);
+                out.push(info);
             }
         }
         out.sort_by(|a, b| {
@@ -1967,7 +2132,13 @@ impl SessionManager {
     pub async fn get(&self, id: &str, rooms: bool) -> Option<SessionInfo> {
         let session = self.sessions.get(id)?.value().clone();
         let s = session.read().await;
-        (s.kind.is_room() == rooms).then(|| s.info())
+        (s.kind.is_room() == rooms).then(|| {
+            let mut info = s.info();
+            // A browser polling its session is how it learns this node is
+            // leaving, and where to go (§6).
+            info.handover = self.handover_for(&s.kind);
+            info
+        })
     }
 
     /// Whether a session of one kind exists.
