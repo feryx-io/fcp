@@ -23,7 +23,7 @@ pub use conference_registry::{
 };
 pub use membership::{
     choose_handover_node, resolve_region, ClusterManager, ClusterMember, EngineBudget,
-    VideoBudgetHandle, VideoDeviceBudget, VideoEngines,
+    NodeCapacity, VideoBudgetHandle, VideoDeviceBudget, VideoEngines,
 };
 pub use node_client::NodeClient;
 pub use reader::{ClusterNodeInfo, ClusterNodeStatus, ClusterReader, ClusterStats};

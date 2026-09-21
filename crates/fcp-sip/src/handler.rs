@@ -1377,7 +1377,7 @@ impl SipMessageHandler {
     }
 
     /// Count the call against the trunk that answered it, if a trunk did.
-    fn count_answering_trunk(&self, call_id: &fcp_b2bua_core::CallId) {
+    async fn count_answering_trunk(&self, call_id: &fcp_b2bua_core::CallId) {
         let Some(counter) = &self.trunk_calls else {
             return;
         };
@@ -1387,7 +1387,7 @@ impl SipMessageHandler {
             .as_ref()
             .and_then(carrying_trunk)
         {
-            counter.carried(&call_id.to_string(), &trunk);
+            counter.carried(&call_id.to_string(), &trunk).await;
         }
     }
 
@@ -2614,7 +2614,7 @@ impl SipMessageHandler {
         // never refused for it.
         if let (Some(trunk), Some(counter), None) = (&inbound_trunk, &self.trunk_calls, &emergency)
         {
-            if let Err(limit) = counter.admit(&call_id.to_string(), trunk) {
+            if let Err(limit) = counter.admit(&call_id.to_string(), trunk).await {
                 let (reason, detail) = match limit {
                     crate::trunk_ingress::TrunkLimit::Concurrency => {
                         ("at its call limit", "Trunk at its concurrent call limit")
@@ -7007,7 +7007,7 @@ impl SipMessageHandler {
 
             // The trunk that answered carries the call from now on
             // (`docs/TENANT_TRUNKS.md` §7).
-            self.count_answering_trunk(&call_id);
+            self.count_answering_trunk(&call_id).await;
 
             // Set B-leg remote endpoint on the media session (before SDP rewriting)
             if let Some(ref original_sdp) = b_leg_sdp {
@@ -7728,7 +7728,7 @@ impl SipMessageHandler {
 
             // The trunk that answered carries the call from now on
             // (`docs/TENANT_TRUNKS.md` §7).
-            self.count_answering_trunk(&call_id);
+            self.count_answering_trunk(&call_id).await;
 
             // Set B-leg remote endpoint on the media session (before SDP rewriting)
             if let Some(ref original_sdp) = b_leg_sdp {

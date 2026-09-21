@@ -71,6 +71,15 @@ pub struct ClusterMember {
     /// are not browser-facing and on records written by older versions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub public_url: Option<String>,
+    /// What this node will carry and what it is carrying
+    /// (`docs/CAPACITY_AND_SURVIVABILITY.md` §7), so headroom is
+    /// computable by anything that reads membership: placement prefers
+    /// the node with the most room rather than the fewest calls, and the
+    /// admin UI shows both. Absent on a node that keeps no limits and on
+    /// records written before this existed — such a node is placed on its
+    /// call count alone, as every node was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capacity: Option<NodeCapacity>,
     /// Video capacity left per device, advertised by conference nodes
     /// (`docs/VIDEO_CONFERENCING.md` §9.3). Placement prefers, for a video
     /// room, the node with the most left on a device that has the room's
@@ -78,6 +87,40 @@ pub struct ClusterMember {
     /// older versions: such a node is neither preferred nor excluded.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub video_budget: Vec<VideoDeviceBudget>,
+}
+
+/// What a node will carry, from its `[admission]` section, and what it
+/// is carrying now (`docs/CAPACITY_AND_SURVIVABILITY.md` §7). Zero means
+/// no limit, as it does in the configuration.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeCapacity {
+    /// `[admission] max_concurrent_calls`.
+    #[serde(default)]
+    pub max_concurrent_calls: u32,
+    /// `[admission] max_cps`.
+    #[serde(default)]
+    pub max_cps: u32,
+    /// `[admission] max_concurrent_registrations`.
+    #[serde(default)]
+    pub max_concurrent_registrations: u32,
+    /// Registrations held now.
+    #[serde(default)]
+    pub registrations: u32,
+    /// Calls started in the last second.
+    #[serde(default)]
+    pub cps: u32,
+}
+
+impl NodeCapacity {
+    /// How many more calls this node will take, given what it is already
+    /// carrying. `None` when it keeps no call limit — room unknown, not
+    /// room infinite, which is why placement treats it apart.
+    pub fn calls_left(&self, active_calls: usize) -> Option<u32> {
+        (self.max_concurrent_calls != 0).then(|| {
+            self.max_concurrent_calls
+                .saturating_sub(active_calls as u32)
+        })
+    }
 }
 
 /// One device's video budget on a node, in work units: one unit is a
@@ -205,6 +248,9 @@ pub struct ClusterManager {
     active_calls_counter: Arc<AtomicUsize>,
     /// Set by [`set_draining`](Self::set_draining); published with every heartbeat.
     draining: Arc<AtomicBool>,
+    /// Set by [`set_capacity`](Self::set_capacity); published with every
+    /// heartbeat so headroom is computable from membership (§7).
+    capacity: Arc<std::sync::RwLock<Option<NodeCapacity>>>,
     /// Set by [`set_video_budget`](Self::set_video_budget); published with
     /// every heartbeat.
     video_budget: Arc<std::sync::RwLock<Vec<VideoDeviceBudget>>>,
@@ -221,6 +267,7 @@ impl ClusterManager {
     /// Create a new cluster manager.
     pub fn new(storage: RedisStorage, self_info: ClusterMember) -> Self {
         let (shutdown_tx, _) = watch::channel(false);
+        let self_info_capacity = self_info.capacity;
         let self_info_budget = self_info.video_budget.clone();
         let self_info_trunks = self_info.registering_trunks.clone();
         Self {
@@ -233,6 +280,7 @@ impl ClusterManager {
             event_publisher: None,
             active_calls_counter: Arc::new(AtomicUsize::new(0)),
             draining: Arc::new(AtomicBool::new(false)),
+            capacity: Arc::new(std::sync::RwLock::new(self_info_capacity)),
             video_budget: Arc::new(std::sync::RwLock::new(self_info_budget)),
             registering_trunks: Arc::new(std::sync::RwLock::new(self_info_trunks)),
             discovered: Arc::new(AtomicBool::new(false)),
@@ -263,6 +311,7 @@ impl ClusterManager {
         let event_publisher = self.event_publisher.clone();
         let active_calls_counter = Arc::clone(&self.active_calls_counter);
         let draining = Arc::clone(&self.draining);
+        let capacity = Arc::clone(&self.capacity);
         let video_budget = Arc::clone(&self.video_budget);
         let registering_trunks = Arc::clone(&self.registering_trunks);
         let discovered = Arc::clone(&self.discovered);
@@ -290,6 +339,7 @@ impl ClusterManager {
                 // Read latest active call count from shared counter
                 self_info.active_calls = active_calls_counter.load(Ordering::Relaxed);
                 self_info.draining = draining.load(Ordering::Relaxed);
+                self_info.capacity = capacity.read().map(|c| *c).unwrap_or_default();
                 self_info.video_budget = video_budget.read().map(|b| b.clone()).unwrap_or_default();
                 self_info.registering_trunks = registering_trunks
                     .read()
@@ -345,6 +395,16 @@ impl ClusterManager {
 
     /// Replace the video budget this node advertises; the heartbeat loop
     /// publishes it with the next beat.
+    /// What this node will carry and what it is carrying, for the next
+    /// heartbeat (`docs/CAPACITY_AND_SURVIVABILITY.md` §7). A node that
+    /// keeps no limits publishes nothing, and placement then has only its
+    /// call count to go on — which is what every node had before.
+    pub fn set_capacity(&self, capacity: Option<NodeCapacity>) {
+        if let Ok(mut held) = self.capacity.write() {
+            *held = capacity;
+        }
+    }
+
     pub fn set_video_budget(&self, budget: Vec<VideoDeviceBudget>) {
         self.video_budget_handle().set(budget);
     }
@@ -461,12 +521,15 @@ impl ClusterManager {
         self.members.get(node_id).map(|e| e.value().clone())
     }
 
-    /// Get the least loaded member of a given type, anywhere in the cluster.
+    /// The member of a given type with the most room, anywhere in the
+    /// cluster (`docs/CAPACITY_AND_SURVIVABILITY.md` §7): room where a
+    /// node advertises what it will carry, fewest calls where it does
+    /// not, which is what this was before.
     pub fn least_loaded(&self, node_type: &str) -> Option<ClusterMember> {
         self.members
             .iter()
             .filter(|e| e.value().node_type == node_type)
-            .min_by_key(|e| (e.value().active_calls, e.value().node_id.clone()))
+            .min_by_key(|e| headroom_key(e.value()))
             .map(|e| e.value().clone())
     }
 
@@ -504,7 +567,7 @@ impl ClusterManager {
                 .members
                 .iter()
                 .filter(|e| e.value().node_type == node_type && e.value().in_region(region))
-                .min_by_key(|e| (e.value().active_calls, e.value().node_id.clone()))
+                .min_by_key(|e| headroom_key(e.value()))
                 .map(|e| e.value().clone());
             if local.is_some() {
                 return local;
@@ -721,6 +784,21 @@ fn pick_trunk_owner(
     best.map(|(_, node_id)| node_id)
 }
 
+/// How a node is ranked for placement: full nodes last, then most room
+/// first, then fewest calls, then by id so two choosers agree
+/// (`docs/CAPACITY_AND_SURVIVABILITY.md` §7). A node that advertises no
+/// capacity has unknown room, not infinite: it is ranked on its calls,
+/// as every node was before capacity was published.
+fn headroom_key(m: &ClusterMember) -> (bool, std::cmp::Reverse<u32>, usize, String) {
+    let headroom = m.capacity.and_then(|c| c.calls_left(m.active_calls));
+    (
+        headroom == Some(0),
+        std::cmp::Reverse(headroom.unwrap_or(0)),
+        m.active_calls,
+        m.node_id.clone(),
+    )
+}
+
 /// Which peer a draining node hands its browsers to
 /// (`docs/CAPACITY_AND_SURVIVABILITY.md` §6).
 ///
@@ -747,7 +825,7 @@ pub fn choose_handover_node(
         .collect();
     let least_loaded = |from: &[&ClusterMember]| -> Option<ClusterMember> {
         from.iter()
-            .min_by_key(|m| (m.active_calls, m.node_id.clone()))
+            .min_by_key(|m| headroom_key(m))
             .map(|m| (*m).clone())
     };
     if let Some(region) = local_region {
@@ -779,10 +857,75 @@ mod tests {
             started_at: 0,
             version: "test".to_string(),
             public_url: None,
+            capacity: None,
             draining: false,
             region: region.map(str::to_owned),
             video_budget: Vec::new(),
             registering_trunks: Vec::new(),
+        }
+    }
+
+    /// Placement by room rather than by load
+    /// (`docs/CAPACITY_AND_SURVIVABILITY.md` §7).
+    mod headroom {
+        use super::*;
+
+        fn node(id: &str, calls: usize, limit: Option<u32>) -> ClusterMember {
+            let mut m = member(id, Some("us-east"));
+            m.active_calls = calls;
+            m.capacity = limit.map(|max_concurrent_calls| NodeCapacity {
+                max_concurrent_calls,
+                ..NodeCapacity::default()
+            });
+            m
+        }
+
+        /// The node with more calls can still have more room, and that
+        /// is what placement is for.
+        #[test]
+        fn room_beats_load() {
+            let small = node("small", 2, Some(4));
+            let large = node("large", 10, Some(100));
+            assert!(
+                headroom_key(&large) < headroom_key(&small),
+                "90 free beats 2 free, though it carries five times the calls"
+            );
+        }
+
+        /// A node with no room left goes last, even against a node whose
+        /// room is unknown.
+        #[test]
+        fn a_full_node_is_chosen_last() {
+            let full = node("full", 4, Some(4));
+            let unknown = node("unknown", 50, None);
+            assert!(headroom_key(&unknown) < headroom_key(&full));
+            assert_eq!(full.capacity.unwrap().calls_left(4), Some(0));
+        }
+
+        /// A node that advertises nothing is ranked on its calls, which
+        /// is what every node was ranked on before.
+        #[test]
+        fn nodes_without_capacity_are_ranked_as_they_always_were() {
+            let quiet = node("quiet", 1, None);
+            let busy = node("busy", 9, None);
+            assert!(headroom_key(&quiet) < headroom_key(&busy));
+        }
+
+        /// Room is what is left, not what was configured.
+        #[test]
+        fn room_is_what_is_left() {
+            let capacity = NodeCapacity {
+                max_concurrent_calls: 10,
+                ..NodeCapacity::default()
+            };
+            assert_eq!(capacity.calls_left(3), Some(7));
+            assert_eq!(capacity.calls_left(10), Some(0));
+            assert_eq!(capacity.calls_left(99), Some(0), "never below none");
+            assert_eq!(
+                NodeCapacity::default().calls_left(3),
+                None,
+                "no limit is unknown room, not infinite room"
+            );
         }
     }
 
@@ -987,6 +1130,7 @@ mod trunk_owner_tests {
             draining,
             region: None,
             public_url: None,
+            capacity: None,
             video_budget: Vec::new(),
             registering_trunks: trunks.iter().map(|t| t.to_string()).collect(),
         }

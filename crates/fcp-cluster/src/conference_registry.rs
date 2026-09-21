@@ -322,9 +322,19 @@ pub fn choose_conference_node(
                     },
                     None => (false, 0),
                 };
+                // Room before load: a node carrying ten calls of a
+                // hundred has more to give than one carrying two of four
+                // (`docs/CAPACITY_AND_SURVIVABILITY.md` §7). A node that
+                // advertises no limit has unknown room rather than
+                // infinite room, so it is neither preferred nor
+                // excluded — it is chosen on its calls, as every node
+                // was before capacity was published.
+                let headroom = m.capacity.and_then(|c| c.calls_left(m.active_calls));
                 (
                     exhausted,
+                    headroom == Some(0),
                     std::cmp::Reverse(left),
+                    std::cmp::Reverse(headroom.unwrap_or(0)),
                     m.active_calls,
                     m.node_id.clone(),
                 )
@@ -516,6 +526,7 @@ mod tests {
             started_at: 0,
             version: "test".to_string(),
             public_url: None,
+            capacity: None,
             draining: false,
             region: None,
             video_budget: Vec::new(),

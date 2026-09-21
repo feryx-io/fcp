@@ -668,6 +668,14 @@ pub struct ClusterSection {
     #[serde(default = "default_lease_tenant_calls")]
     pub lease_tenant_calls: bool,
 
+    /// Count each trunk's channels across the cluster, rather than on
+    /// this node alone (`docs/CAPACITY_AND_SURVIVABILITY.md` §7). A
+    /// carrier sells channels to the platform; counted per node, a
+    /// two-node cluster offers a trunk twice them. Redis being
+    /// unreachable falls back to the per-node count by itself.
+    #[serde(default = "default_lease_tenant_calls")]
+    pub lease_trunk_channels: bool,
+
     /// Seconds between the ticks that give back the leases of calls that
     /// have ended and push out the expiry of the ones still up.
     #[serde(default = "default_lease_settle_secs")]
@@ -731,6 +739,7 @@ impl Default for ClusterSection {
             region: None,
             cluster_secret: None,
             lease_tenant_calls: default_lease_tenant_calls(),
+            lease_trunk_channels: default_lease_tenant_calls(),
             lease_settle_secs: default_lease_settle_secs(),
             heartbeat_interval_secs: default_heartbeat_interval(),
             heartbeat_ttl_secs: default_heartbeat_ttl(),

@@ -292,7 +292,16 @@ when the call ends (queued for a settling tick, since a call ends in a
 callback that cannot await) and refreshes what is still up. Redis being
 unreachable falls back to this node's own count — phase 1's behaviour,
 not no behaviour. `[cluster] lease_tenant_calls` is on wherever a cluster
-is configured. Ten open questions, every recommendation taken on
+is configured. Phase 5b done (v0.25.220) and **the project with it**: a
+trunk's channels take the same leases (`TrunkCallCounter` async too, an
+answered outbound leg counted like an inbound call, the same per-node
+fallback); the heartbeat carries `capacity` — the node's limits, its
+registrations and its calls per second — beside `active_calls`; placement
+prefers room over idleness (a node carrying ten of a hundred beats one
+carrying two of four), with a full node last, a node advertising no limit
+ranked on its calls as before, and ties by node id so two choosers agree;
+and the admin UI's cluster page has a Headroom column reading the same
+fields. Ten open questions, every recommendation taken on
 2026-09-20: one admission controller in `fcp-sbc-core` for every routing
 binary; node limits only where a deployment wrote one down; the tenant limit
 per node until phase 5 leases it cluster-wide; a BYE with a `Reason` and a

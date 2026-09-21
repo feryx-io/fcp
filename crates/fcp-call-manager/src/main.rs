@@ -200,6 +200,7 @@ async fn main() -> Result<()> {
                     .as_secs(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
                 public_url: None,
+                capacity: None,
                 draining: false,
                 region: fcp_cluster::resolve_region(config.cluster.region.as_deref()),
                 video_budget: Vec::new(),
@@ -606,10 +607,37 @@ async fn main() -> Result<()> {
     // inbound and outbound calls count against the same limits, released
     // when each call ends (`docs/TENANT_TRUNKS.md` §7).
     let trunk_cps = Arc::new(fcp_sbc_core::TrunkCps::new(Arc::clone(&trunk_set)));
-    let trunk_calls = Arc::new(fcp_sbc_core::TrunkCalls::new(
-        Arc::clone(&trunk_health_monitor),
-        Arc::clone(&trunk_cps),
-    ));
+    let mut trunk_counter =
+        fcp_sbc_core::TrunkCalls::new(Arc::clone(&trunk_health_monitor), Arc::clone(&trunk_cps));
+    // The carrier sold its channels to the platform, not to this node, so
+    // where there is a cluster they are counted across it
+    // (`docs/CAPACITY_AND_SURVIVABILITY.md` §7).
+    #[cfg(feature = "storage-redis")]
+    if config.cluster.enabled && config.cluster.lease_trunk_channels {
+        if let Some(redis) = redis_storage.clone() {
+            trunk_counter = trunk_counter.with_cluster(Arc::new(
+                fcp_sbc_core::trunk_calls::RedisTrunkChannels::new(fcp_cluster::CallLeases::new(
+                    redis,
+                )),
+            ));
+            info!("Trunk channels are counted across the cluster");
+        }
+    }
+    let trunk_calls = Arc::new(trunk_counter);
+    // The trunk leases' housekeeping, beside the tenants' (§7).
+    #[cfg(feature = "storage-redis")]
+    {
+        let trunk_calls = Arc::clone(&trunk_calls);
+        let every = Duration::from_secs(config.cluster.lease_settle_secs.max(1));
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(every);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tick.tick().await;
+                trunk_calls.settle_leases().await;
+            }
+        });
+    }
     // What this node's bindings are doing, for the registration task and
     // for what the node answers about its trunks (`docs/TENANT_TRUNKS.md`
     // §9).
@@ -827,11 +855,19 @@ async fn main() -> Result<()> {
         });
     }
 
-    // 15a. Wire cluster active-call counter to CallManager
+    // 15a. What this node is carrying and what it will carry, in the
+    // heartbeat: placement elsewhere prefers the node with the most room
+    // rather than the fewest calls, and the admin UI shows both
+    // (`docs/CAPACITY_AND_SURVIVABILITY.md` §7). A node that keeps no
+    // limits publishes no capacity, and is placed on its calls as before.
     #[cfg(feature = "storage-redis")]
     if let Some((ref cm, _, _)) = _cluster_manager {
         let counter = cm.active_calls_counter();
+        let cm = Arc::clone(cm);
         let call_mgr = Arc::clone(&call_manager);
+        let admission = Arc::clone(&admission);
+        let limits = config.admission();
+        let publishes_capacity = limits.caps_anything();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
             loop {
@@ -840,6 +876,13 @@ async fn main() -> Result<()> {
                     call_mgr.active_call_count(),
                     std::sync::atomic::Ordering::Relaxed,
                 );
+                cm.set_capacity(publishes_capacity.then(|| fcp_cluster::NodeCapacity {
+                    max_concurrent_calls: limits.max_concurrent_calls,
+                    max_cps: limits.max_cps,
+                    max_concurrent_registrations: limits.max_concurrent_registrations,
+                    registrations: admission.concurrent_registrations() as u32,
+                    cps: admission.current_cps() as u32,
+                }));
             }
         });
         info!("Cluster active-call counter wired to CallManager");

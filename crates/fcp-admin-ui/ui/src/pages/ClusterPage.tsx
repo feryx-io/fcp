@@ -104,6 +104,51 @@ const columns: ColumnDef<ClusterNodeInfo>[] = [
     ),
   },
   {
+    id: 'headroom',
+    header: ({ column }) => (
+      <Button variant="ghost" onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}>
+        Headroom <ArrowUpDown className="ml-2 h-4 w-4" />
+      </Button>
+    ),
+    // What the node will still take, against what it allows: a node
+    // carrying more calls can have more room than one carrying fewer,
+    // and placement prefers room (docs/CAPACITY_AND_SURVIVABILITY.md §7).
+    accessorFn: (row) => row.calls_left ?? -1,
+    cell: ({ row }) => {
+      const node = row.original
+      const capacity = node.capacity
+      if (!capacity || capacity.max_concurrent_calls === 0) {
+        return (
+          <span
+            className="text-xs text-muted-foreground"
+            title="This node advertises no call limit, so its room is unknown; placement ranks it on its calls."
+          >
+            no limit
+          </span>
+        )
+      }
+      const left = node.calls_left ?? 0
+      const used = capacity.max_concurrent_calls - left
+      const pct = Math.round((used / capacity.max_concurrent_calls) * 100)
+      const tone = pct >= 90 ? 'text-destructive' : pct >= 70 ? 'text-yellow-600' : ''
+      return (
+        <div className="text-xs space-y-0.5">
+          <div className={tone}>
+            <span className="font-mono">{left}</span> free of {capacity.max_concurrent_calls}
+          </div>
+          <div className="text-muted-foreground">
+            {capacity.max_cps > 0 && <span className="mr-2">{capacity.cps}/{capacity.max_cps} cps</span>}
+            {capacity.max_concurrent_registrations > 0 && (
+              <span>
+                {capacity.registrations}/{capacity.max_concurrent_registrations} reg
+              </span>
+            )}
+          </div>
+        </div>
+      )
+    },
+  },
+  {
     id: 'video_budget',
     header: 'Video Budget',
     cell: ({ row }) => {

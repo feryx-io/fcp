@@ -50,6 +50,13 @@ pub struct ClusterNodeInfo {
     /// Video budget per device, when the node advertises one.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub video_budget: Vec<crate::membership::VideoDeviceBudget>,
+    /// What the node will carry and what it is carrying, when it keeps
+    /// limits (`docs/CAPACITY_AND_SURVIVABILITY.md` §7).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capacity: Option<crate::membership::NodeCapacity>,
+    /// Calls this node will still take, when it says what it allows.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub calls_left: Option<u32>,
 }
 
 /// Aggregate statistics across all cluster nodes.
@@ -157,6 +164,10 @@ impl ClusterReader {
                     draining: member.draining,
                     region: member.region,
                     video_budget: member.video_budget,
+                    calls_left: member
+                        .capacity
+                        .and_then(|c| c.calls_left(member.active_calls)),
+                    capacity: member.capacity,
                 });
             }
 
@@ -238,6 +249,8 @@ mod tests {
             started_at: 0,
             version: "test".to_string(),
             status: ClusterNodeStatus::Healthy,
+            capacity: None,
+            calls_left: None,
             uptime_seconds: 0,
             draining: false,
             region: region.map(str::to_owned),
