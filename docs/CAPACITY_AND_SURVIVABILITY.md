@@ -259,11 +259,13 @@ Every refusal increments a counter labelled by reason (`node_cps`,
 heartbeat, `/ready` and admission all follow. This is what makes a drain safe
 to start by hand.
 
-The same sequence, with the same keys, is wired into the SBC, the IVR, the
-voicemail server, the presence server and the WebRTC gateway. The conference
-server keeps its own richer version (it migrates participants first) but takes
-the shared `draining` state and `/ready` so an operator sees one thing
-everywhere.
+The same sequence, with the same keys, is wired into the SBC, the registrar,
+the IVR, the voicemail server, the presence server and the WebRTC gateway —
+from one implementation they all hold, not a copy each (§13, 2b-1). What
+differs per binary is only the last step: what "end what is left" means to
+it. The conference server keeps its own richer version (it migrates
+participants first) but takes the shared `draining` state and `/ready` so an
+operator sees one thing everywhere.
 
 ## 7. The cluster
 
@@ -443,7 +445,10 @@ One PR each, in order.
 |---|---|
 | 1 ✅ v0.25.208 | **The limits that exist, enforced.** `AdmissionController` moves into `fcp-sbc-core`; the call manager (then the IVR, voicemail and presence servers) admits calls and registrations through it; `[admission]` section; `[calls] max_concurrent_calls` honoured as an alias with a warning; the tenant's `max_concurrent_calls` enforced per node; the registrar's rate limiter installed with both keys; 503 + `Retry-After` with a `Reason`; refusal counters by reason; load on `/status` |
 | 2a ✅ v0.25.209 | **Leaving on purpose, on the call manager.** Drain state on the admission controller; `POST`/`DELETE /drain` and a `/ready` route; SIGTERM starts a drain and a second signal cuts it short; new calls refused, emergency admitted, REGISTER expiry shortened; `drain_wait_secs`, then a BYE with a `Reason` and a `node_draining` record; `system.node_draining`/`system.node_drained` events; test floor T6's drain half |
-| 2b | **The rest of the fleet.** The same `[admission]` section and the same drain on the SBC, registrar, IVR, voicemail, presence and WebRTC binaries; the conference server's own drain aligned on the shared state and `/ready`; the drain badge in the admin UI; the rolling-restart procedure in `docs/CLUSTER_OPERATIONS_RUNBOOK.md` |
+| 2b-1 | **The shared drain, and the two nearest binaries.** The call manager's drain lifted out of `fcp-call-manager/src/{drain,health}.rs` into one place every routing binary can hold — `fcp-sip`, where the admission trait already lives — with the "end what is left" step supplied by the binary; then the SBC and the registrar on it: `[admission]` on the registrar, `POST`/`DELETE /drain`, `/ready` answering `503` while draining, the SIGTERM sequence with the second signal, and the shortened REGISTER expiry |
+| 2b-2 | **The application servers.** `[admission]` and the drain on the IVR, the voicemail server and the presence server — the three phase 1 left with no limits at all — each ending what it is carrying in its own terms: a caller inside a flow, a message being recorded, a subscription to expire |
+| 2b-3 | **The WebRTC gateway.** It has no health server at all, so: one, with `/health`, `/ready` and `/drain`; the `[admission]` section; and a drain that hands sessions to another node the way distributed conferencing's phase 5 migrates participants, rather than only refusing new ones |
+| 2b-4 | **The conference server, the badge and the runbook.** Its own drain — SIGTERM, `set_draining`, `start_draining()`, `drain_wait_secs`, REFER migration — aligned on the shared `draining` state and given `/ready` and `/drain`, without losing the migration; the drain badge and node state on the admin UI's cluster page; the rolling-restart procedure in `docs/CLUSTER_OPERATIONS_RUNBOOK.md` |
 | 3 | **The harness.** `fcp-loadgen` on `fcp-testkit`: the four profiles, the measurements, the JSON report, the budget flags; the small CI profile |
 | 4 | **What the numbers say.** Run it on the dev VM: calls per second and concurrent calls to first refusal, latency percentiles, memory per call, registration storm behaviour. Fix what it finds — this is where the defects are — and record the numbers here, in `docs/DEPLOYMENT.md` and in the heartbeat as a published capacity budget, the shape video's already has |
 | 5 | **Across the cluster.** Tenant concurrency and trunk channels leased in Redis with a per-node fallback; placement by headroom among serving nodes in region; load, headroom and limits on the admin UI's cluster and tenant pages |
@@ -451,6 +456,18 @@ One PR each, in order.
 Phase 1 stands alone: it is worth shipping even if nothing after it is built,
 because it turns two advertised limits into real ones. Phase 2 is what makes
 an upgrade free. Phases 3–4 are what let anyone say a number out loud.
+
+*2b split into four on 2026-09-21*, after 2a showed what the work is. 2a
+wrote the drain once, for one binary; six more copies of it would be the
+wrong shape, and two of the six are not copies at all. The order puts the
+extraction first, so nothing is written twice: 2b-1 decides where the shared
+drain lives and what a binary supplies to it (the call manager supplies a BYE
+on both legs and a `node_draining` record; the registrar supplies nothing but
+the shortened expiry), and 2b-2 is then mechanical. 2b-3 and 2b-4 are the two
+that are not: the gateway has no health server to add routes to, and the
+conference server already has a drain of its own that migrates participants,
+which the shared state has to accommodate rather than replace. `fcp-media-server`
+stays out — it has no HTTP server, no signalling and nothing to drain.
 
 *Phase 1 shipped 2026-09-20 (v0.25.208).* As designed, with three things
 learned on the way.
