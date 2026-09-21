@@ -281,8 +281,12 @@ pub struct ConferenceCallHandler {
     conference_subscriptions: DashMap<String, ConferenceSubscription>,
     /// Cached parsed SipUri from local_uri (parsed once at construction, never panics at runtime)
     local_sip_uri: SipUri,
-    /// Set to true during graceful shutdown to reject new INVITEs while draining existing sessions
-    draining: std::sync::atomic::AtomicBool,
+    /// This node's admission, when the binary gave it one: its drain
+    /// state is the node's, set by `POST /drain` as much as by SIGTERM,
+    /// and cleared by `DELETE /drain`
+    /// (`docs/CAPACITY_AND_SURVIVABILITY.md` §6). A handler built without
+    /// one — a test — never refuses for draining.
+    admission: std::sync::RwLock<Option<Arc<dyn fcp_sip::admission::NodeAdmission>>>,
     /// Offer SDES-SRTP on the trunks this node dials (`cluster.trunk_srtp`).
     trunk_srtp: std::sync::atomic::AtomicBool,
     /// Secondary index: room_number → Vec<call_id> for O(1) room-to-session lookups.
@@ -770,7 +774,7 @@ impl ConferenceCallHandler {
             invite_rate: DashMap::new(),
             conference_subscriptions: DashMap::new(),
             local_sip_uri,
-            draining: std::sync::atomic::AtomicBool::new(false),
+            admission: std::sync::RwLock::new(None),
             trunk_srtp: std::sync::atomic::AtomicBool::new(true),
             room_sessions: DashMap::new(),
             node_id,
@@ -881,13 +885,77 @@ impl ConferenceCallHandler {
             .sum()
     }
 
-    pub fn start_draining(&self) {
-        self.draining.store(true, Ordering::Relaxed);
-        info!("Conference handler entering drain mode — rejecting new INVITEs");
+    /// The node's admission, so that this handler refuses INVITEs
+    /// whenever the node is draining, however the drain started
+    /// (`docs/CAPACITY_AND_SURVIVABILITY.md` §6).
+    pub fn set_admission(&self, admission: Arc<dyn fcp_sip::admission::NodeAdmission>) {
+        *self.admission.write().unwrap() = Some(admission);
     }
 
+    /// Whether this node is leaving service. One drain serves the whole
+    /// binary, so this is the node's admission's answer — set by
+    /// `POST /drain` or by SIGTERM, cleared by `DELETE /drain`
+    /// (`docs/CAPACITY_AND_SURVIVABILITY.md` §6). A handler with no
+    /// admission is not draining.
     pub fn is_draining(&self) -> bool {
-        self.draining.load(Ordering::Relaxed)
+        self.admission
+            .read()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|a| a.draining())
+    }
+
+    /// Seconds to put in `Retry-After` when refusing, from the node's
+    /// admission.
+    fn retry_after_secs(&self) -> u64 {
+        self.admission
+            .read()
+            .unwrap()
+            .as_ref()
+            .map_or(5, |a| a.retry_after_secs())
+    }
+
+    /// Hang up every caller still on this node, each told the node is
+    /// draining (RFC 3326), with the record that goes with it. Trunks are
+    /// left alone: they carry the cascaded audio of rooms this node still
+    /// hosts, and the process teardown ends them. How many were hung up
+    /// (`docs/CAPACITY_AND_SURVIVABILITY.md` §6).
+    pub async fn hangup_callers_draining(&self) -> usize {
+        let callers: Vec<(String, Dialog)> = self
+            .sessions
+            .iter()
+            .filter(|e| e.trunk_peer.is_none())
+            .map(|e| (e.key().clone(), e.dialog.clone()))
+            .collect();
+        if callers.is_empty() {
+            return 0;
+        }
+        let ended = callers.len();
+        futures::stream::iter(callers)
+            .for_each_concurrent(SHUTDOWN_BYE_CONCURRENCY, |(call_id, dialog)| async move {
+                match tokio::time::timeout(
+                    BYE_TIMEOUT,
+                    self.uac
+                        .bye_with_reason(&dialog, fcp_sip::drain::DRAIN_REASON),
+                )
+                .await
+                {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(e)) => {
+                        warn!(call_id = %call_id, error = %e, "BYE failed while draining")
+                    }
+                    Err(_) => warn!(call_id = %call_id, "BYE unanswered while draining"),
+                }
+                self.remove_session_for(
+                    &call_id,
+                    fcp_sip::TerminationReason::system(
+                        fcp_sip::SystemCause::NodeDraining,
+                        "Node draining",
+                    ),
+                );
+            })
+            .await;
+        ended
     }
 
     // ---- participant migration (phase 5) ---------------------------------
@@ -5578,11 +5646,14 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         // 0. Reject new calls during shutdown draining. Trunk INVITEs
         // still land: the callers already here must keep hearing the
         // rest of the room until they leave.
-        if self.draining.load(Ordering::Relaxed)
-            && sip_parse::header(request.headers(), TRUNK_NODE_HEADER).is_none()
-        {
-            info!(peer = %peer, "Rejecting INVITE during shutdown drain");
-            let reject = UserAgentServer::create_response(request, 503, "Service Unavailable");
+        if self.is_draining() && sip_parse::header(request.headers(), TRUNK_NODE_HEADER).is_none() {
+            info!(peer = %peer, "Rejecting INVITE: this node is draining");
+            let mut reject = UserAgentServer::create_response(request, 503, "Service Unavailable");
+            // Say when to come back, as every refusal on the platform
+            // does (`docs/CAPACITY_AND_SURVIVABILITY.md` §5).
+            let _ = reject
+                .headers_mut()
+                .push("Retry-After", self.retry_after_secs().to_string());
             handle.send_final(reject).await;
             return Ok(());
         }

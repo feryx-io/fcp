@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 import {
   Server, Activity, Clock, AlertTriangle, Phone,
-  RefreshCw, ArrowUpDown, Info,
+  RefreshCw, ArrowUpDown, Info, LogOut,
 } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -21,6 +21,12 @@ const statusBadge = (status: string) => {
   }
 }
 
+// A node leaving service takes no new work and keeps what it has until
+// its deadline (docs/CAPACITY_AND_SURVIVABILITY.md §6). It is still
+// healthy, so it needs saying separately.
+const DRAINING_TITLE =
+  'Leaving service: taking no new calls, keeping the ones it has until its drain deadline'
+
 const formatNodeType = (t: string) =>
   t.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
 
@@ -36,9 +42,14 @@ const columns: ColumnDef<ClusterNodeInfo>[] = [
     accessorKey: 'status',
     header: 'Status',
     cell: ({ row }) => (
-      <Badge variant={statusBadge(row.original.status)}>
-        {row.original.status}
-      </Badge>
+      <div className="flex flex-wrap items-center gap-1">
+        <Badge variant={statusBadge(row.original.status)}>
+          {row.original.status}
+        </Badge>
+        {row.original.draining && (
+          <Badge variant="warning" title={DRAINING_TITLE}>draining</Badge>
+        )}
+      </div>
     ),
   },
   {
@@ -221,12 +232,18 @@ export function ClusterPage() {
 
           {/* Summary Stats Cards */}
           {stats && (
-            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5">
+            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-6">
               <StatCard icon={Server} label="Total Nodes" value={stats.total_nodes} />
               <StatCard icon={Activity} label="Healthy" value={stats.healthy_nodes} color="text-green-600" />
               <StatCard icon={AlertTriangle} label="Degraded" value={stats.degraded_nodes} color="text-yellow-600" />
               <StatCard icon={AlertTriangle} label="Offline" value={stats.offline_nodes} color="text-red-600" />
               <StatCard icon={Phone} label="Total Active Calls" value={stats.total_active_calls} />
+              <StatCard
+                icon={LogOut}
+                label="Draining"
+                value={nodes.filter((n) => n.draining).length}
+                color={nodes.some((n) => n.draining) ? 'text-yellow-600' : undefined}
+              />
             </div>
           )}
 

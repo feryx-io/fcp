@@ -35,6 +35,7 @@ mod bfcp;
 mod cli;
 mod conference_handler;
 mod control;
+mod drain;
 mod health;
 mod migration;
 mod storage;
@@ -1129,6 +1130,42 @@ async fn main() -> Result<()> {
         Duration::from_secs(config.cluster.migration_timeout_secs),
     );
 
+    // What this node accepts, and how it leaves service
+    // (`docs/CAPACITY_AND_SURVIVABILITY.md` §5, §6). The drain state on
+    // the admission controller is the one the handler refuses INVITEs
+    // by, so `POST /drain` and SIGTERM mean the same thing and
+    // `DELETE /drain` undoes either. Every limit is optional: a node that
+    // writes no `[admission]` section keeps none, as it always did.
+    let admission = Arc::new(fcp_sbc_core::AdmissionController::new(
+        config.admission.resolve(),
+    ));
+    conference_handler
+        .set_admission(Arc::clone(&admission) as Arc<dyn fcp_sip::admission::NodeAdmission>);
+    #[cfg(feature = "storage-redis")]
+    let drain_target = {
+        let migration = _cluster_manager
+            .as_ref()
+            .map(|(cm, registry)| drain::Migration {
+                registry: registry.clone(),
+                members: Arc::clone(cm.members_map()),
+                local_region: fcp_cluster::resolve_region(config.cluster.region.as_deref()),
+                timeout: Duration::from_secs(config.cluster.migration_timeout_secs),
+            });
+        let announcer = fcp_sbc_core::ClusterAnnouncer::maybe(
+            _cluster_manager.as_ref().map(|(cm, _)| Arc::clone(cm)),
+        );
+        drain::Callers::new(Arc::clone(&conference_handler)).with_cluster(migration, announcer)
+    };
+    #[cfg(not(feature = "storage-redis"))]
+    let drain_target = drain::Callers::new(Arc::clone(&conference_handler));
+    let drain = Arc::new(fcp_sip::drain::Drain::new(
+        Arc::clone(&admission) as Arc<dyn fcp_sip::admission::NodeAdmission>,
+        Arc::new(drain_target) as Arc<dyn fcp_sip::drain::DrainTarget>,
+        Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>,
+        config.service.node_id.clone(),
+        config.service.drain_wait_secs,
+    ));
+
     // BFCP floor control for SIP room systems (design §15.6, 7e): one
     // address, UDP and TCP, serving every room's floor.
     if let Some(bind) = config.conference.bfcp_bind {
@@ -1521,6 +1558,7 @@ async fn main() -> Result<()> {
     // 21. Spawn HTTP server (conference API)
     let events_dropped = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let conf_state = Arc::new(health::ConferenceState {
+        drain: Arc::clone(&drain),
         bridge: Arc::clone(&bridge),
         storage: Arc::clone(&dyn_storage),
         conference_handler: Arc::clone(&conference_handler),
@@ -1811,63 +1849,14 @@ async fn main() -> Result<()> {
 
     // 25. Graceful shutdown: drain, then hang up, then leave the cluster.
     //
-    // Tell the cluster first, so placement stops sending participants
-    // here before this node stops taking them; then refuse new callers;
-    // then, if configured, give the callers already here a while to
-    // leave on their own before hanging up whoever remains.
-    #[cfg(feature = "storage-redis")]
-    if let Some((ref cm, _)) = _cluster_manager {
-        if let Err(e) = cm.set_draining(true).await {
-            warn!(error = %e, "Could not advertise draining to the cluster");
-        }
-    }
-    conference_handler.start_draining();
-
-    // Move the callers to other nodes before waiting on them (phase 5).
-    #[cfg(feature = "storage-redis")]
-    if let Some((ref cm, ref registry)) = _cluster_manager {
-        if conference_handler.migration_enabled() {
-            migrate_callers(
-                &conference_handler,
-                registry,
-                cm.members_map(),
-                fcp_cluster::resolve_region(config.cluster.region.as_deref()).as_deref(),
-                Duration::from_secs(config.cluster.migration_timeout_secs),
-            )
-            .await;
-        } else if conference_handler.session_count() > 0 {
-            info!("cluster.secret is not set; callers are not migrated off this node");
-        }
-    }
-
-    if config.service.drain_wait_secs > 0 {
-        let deadline = Instant::now() + Duration::from_secs(config.service.drain_wait_secs);
-        let remaining_callers = || -> usize {
-            conference_handler
-                .active_rooms()
-                .iter()
-                .map(|(room, _)| conference_handler.countable_participants(room))
-                .sum()
-        };
-        let mut callers = remaining_callers();
-        info!(
-            callers,
-            wait_secs = config.service.drain_wait_secs,
-            "Draining: waiting for callers to leave"
-        );
-        while callers > 0 && Instant::now() < deadline {
-            tokio::time::sleep(Duration::from_secs(1)).await;
-            callers = remaining_callers();
-        }
-        if callers > 0 {
-            warn!(
-                callers,
-                "Drain wait elapsed; hanging up the remaining callers"
-            );
-        } else {
-            info!("Drained: every caller has left");
-        }
-    }
+    // One sequence, the same one every routing binary runs
+    // (`docs/CAPACITY_AND_SURVIVABILITY.md` §6), and the same one
+    // `POST /drain` starts: tell the cluster, refuse new callers, move
+    // the ones here to other nodes (phase 5), wait for whoever is left
+    // until `drain_wait_secs`, and hang them up saying why. A drain this
+    // node is already running is taken over rather than restarted, and a
+    // second signal cuts the wait short.
+    fcp_sip::drain::drain_for_shutdown(&drain).await;
 
     // Rooms this node hosts, for the registry once they are gone.
     #[cfg(feature = "storage-redis")]
@@ -1925,125 +1914,6 @@ async fn main() -> Result<()> {
     listener.stop().await?;
     info!("Shutdown complete");
     Ok(())
-}
-
-/// Ask the holder of every caller's leg to move the caller to another
-/// conference node (`docs/DISTRIBUTED_CONFERENCING.md`, phase 5): plan
-/// with the placement rule, REFER a batch at a time, then wait for the
-/// reports, up to `timeout`. Whoever is not moved by then stays for the
-/// drain wait and the hang-up.
-#[cfg(feature = "storage-redis")]
-async fn migrate_callers(
-    handler: &Arc<conference_handler::ConferenceCallHandler>,
-    registry: &fcp_cluster::ConferenceRegistry,
-    members: &Arc<dashmap::DashMap<String, fcp_cluster::ClusterMember>>,
-    local_region: Option<&str>,
-    timeout: Duration,
-) {
-    // Two passes: a caller admitted between the first snapshot and its
-    // REFERs (an INVITE answered just before the SIGTERM) would otherwise
-    // be hung up with the leftovers.
-    for pass in 0..2 {
-        let candidates = handler.migration_candidates().await;
-        if candidates.is_empty() {
-            return;
-        }
-        if pass > 0 {
-            info!(
-                callers = candidates.len(),
-                "Draining: callers admitted since the first pass"
-            );
-        }
-        migrate_once(
-            handler,
-            registry,
-            members,
-            local_region,
-            timeout,
-            candidates,
-        )
-        .await;
-    }
-}
-
-/// One round of the above: plan, REFER, wait for the reports.
-#[cfg(feature = "storage-redis")]
-async fn migrate_once(
-    handler: &Arc<conference_handler::ConferenceCallHandler>,
-    registry: &fcp_cluster::ConferenceRegistry,
-    members: &Arc<dashmap::DashMap<String, fcp_cluster::ClusterMember>>,
-    local_region: Option<&str>,
-    timeout: Duration,
-    candidates: Vec<migration::Candidate>,
-) {
-    use futures::StreamExt;
-    use std::collections::HashMap;
-
-    let mut hosts = HashMap::new();
-    for c in &candidates {
-        let key = (c.tenant_id.to_string(), c.room_number.clone());
-        if hosts.contains_key(&key) {
-            continue;
-        }
-        match registry.hosts(&key.0, &key.1).await {
-            Ok(h) => {
-                hosts.insert(key, h);
-            }
-            Err(e) => {
-                warn!(room = %c.room_number, error = %e, "Registry read failed; the room's hosts are unknown")
-            }
-        }
-    }
-    let members: Vec<fcp_cluster::ClusterMember> =
-        members.iter().map(|e| e.value().clone()).collect();
-    let plan = migration::plan(candidates, &hosts, &members, local_region);
-    info!(
-        callers = plan.assignments.len(),
-        unplaced = plan.unplaced,
-        "Draining: moving callers to other nodes"
-    );
-    if plan.assignments.is_empty() {
-        return;
-    }
-
-    let referred = std::sync::atomic::AtomicUsize::new(0);
-    futures::stream::iter(plan.assignments)
-        .for_each_concurrent(migration::REFER_CONCURRENCY, |a| {
-            let referred = &referred;
-            async move {
-                match handler.refer_to_node(&a.call_id, &a.target).await {
-                    Ok(()) => {
-                        referred.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    }
-                    Err(e) => warn!(
-                        call_id = %a.call_id,
-                        to = %a.target.node_id,
-                        error = %e,
-                        "Caller could not be referred; staying"
-                    ),
-                }
-            }
-        })
-        .await;
-    let referred = referred.into_inner();
-    if referred == 0 {
-        return;
-    }
-
-    // Wait for the reports.
-    let deadline = Instant::now() + timeout;
-    while handler.migrations_pending() > 0 && Instant::now() < deadline {
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    let expired = handler.expire_migrations().len();
-    // The legs reported moved are being dropped; give the BYEs a moment.
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    info!(
-        referred,
-        unreported = expired,
-        remaining = handler.session_count(),
-        "Draining: migration finished"
-    );
 }
 
 /// Create a transport dispatcher with shared TCP pool.

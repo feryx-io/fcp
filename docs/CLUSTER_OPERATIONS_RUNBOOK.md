@@ -126,11 +126,24 @@ Cluster member joined (node_id=cm-prod-02)
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/health` | GET | Basic liveness check (always returns `{"status": "healthy"}`) |
-| `/status` | GET | Detailed status: uptime, call stats, version |
+| `/health` | GET | Basic liveness check (always returns `{"status": "healthy"}`, draining or not) |
+| `/ready` | GET | Whether to send this node work: `200` when serving, `503` while draining |
+| `/status` | GET | Detailed status: uptime, call stats, version, `draining` |
+| `/drain` | POST / DELETE | Leave service, or return to it (`docs/CAPACITY_AND_SURVIVABILITY.md` §6) |
 | `/calls` | GET | List all active calls on this node |
 | `/registrations` | GET | List SIP registrations (optional `?aor=` filter) |
 | `/metrics` | GET | Prometheus metrics in text exposition format |
+
+`/health` and `/ready` answer different questions and are not
+interchangeable: `/health` says the process is alive, `/ready` says it
+should be given new work. A liveness probe pointed at `/ready` kills a
+node in the middle of a drain.
+
+Every routing binary answers all of these: the call manager, the SBC, the
+registrar, the IVR, the voicemail server, the presence server, the WebRTC
+gateway and the conference server. `/drain` needs the operator token where
+the binary has one (the SBC, the IVR, the voicemail server, the presence
+server, the gateway, the conference server); `/ready` never does.
 
 ### Health Check Response
 
@@ -150,7 +163,11 @@ Cluster member joined (node_id=cm-prod-02)
 
 ### Load Balancer Configuration
 
-Point your load balancer health check at `GET /health`. Use 5-second intervals with a 3-failure threshold.
+Point your load balancer at `GET /ready`, with 5-second intervals and a
+3-failure threshold: it turns `503` the moment a node starts draining, so
+new calls stop arriving before the node stops taking them. Point a
+liveness probe (Kubernetes `livenessProbe`, systemd watchdog) at
+`GET /health`, which stays `200` throughout a drain.
 
 ---
 
@@ -198,19 +215,57 @@ Operations tracked: `get`, `set`, `del`, `scan`, `hgetall`, `hset`, `expire`, `p
 
 ### Rolling Restart
 
-Restart nodes one at a time. Each node gracefully removes its heartbeat on shutdown:
+Restart nodes one at a time, and drain each one first so the restart costs
+no calls (`docs/CAPACITY_AND_SURVIVABILITY.md` §6). Set
+`[service] drain_wait_secs` on every node before you need it — it is `0`
+by default, which means "stop where you stand":
 
-```bash
-# On node 1
-kill -TERM $(pidof fcp-call-manager)
-# Wait for "Shutdown complete" in logs
-# Restart node 1
-fcp-call-manager --config node1.toml
-
-# Repeat for node 2, node 3, etc.
+```toml
+[service]
+drain_wait_secs = 300    # wait up to five minutes for calls to end
 ```
 
-Active calls on the shutting-down node will terminate. SIP phones will re-register to surviving nodes if using a DNS-based discovery or SIP load balancer.
+Then, per node:
+
+```bash
+# 1. Leave service. The node stops taking calls, keeps the ones it has,
+#    and says so in its heartbeat, so placement elsewhere skips it.
+curl -sX POST http://node1:8084/drain
+#    -> {"status":"draining","active_calls":12,"wait_secs":300}
+
+# 2. Watch it empty. /ready is 503 from here on; /health stays 200.
+watch -n5 'curl -s http://node1:8084/status | jq "{draining,active_calls}"'
+
+# 3. Stop it once it is empty — or straight away: SIGTERM runs the same
+#    drain, waits drain_wait_secs, then BYEs whatever is left with a
+#    Reason header and writes each record.
+kill -TERM $(pidof fcp-call-manager)
+# Wait for "Shutdown complete" in the logs.
+
+# 4. Restart, and confirm it is serving before moving on.
+fcp-call-manager --config node1.toml
+curl -sf http://node1:8084/ready && echo serving
+
+# Repeat for node 2, node 3, ...
+```
+
+A second SIGTERM during the wait ends the remaining calls immediately —
+each still gets its BYE and its record — which is what to send when a
+container runtime's grace period is about to expire.
+
+What each kind of node does with what it is carrying:
+
+| Node | On a drain |
+|---|---|
+| Call manager, SBC | Keeps its calls until the deadline, then BYEs both legs with `Reason: SIP;cause=200;text="node draining"` and completes each record |
+| Registrar, call manager | Grants registrations of at most `[admission] drain_register_expiry_secs` (60 s), so devices come back on a serving node |
+| IVR, voicemail | Lets callers finish; the voicemail server also waits for the messages already spoken to be written |
+| Presence | Grants short subscriptions, then sends `terminated;reason=probation` to whoever is left |
+| Conference | Moves its callers to other nodes by REFER (`docs/DISTRIBUTED_CONFERENCING.md` phase 5), then waits, then hangs up |
+| WebRTC gateway | Tells each browser in a room to join another gateway (`docs/WEBRTC.md`), waits, then ends what is left |
+
+Emergency calls are admitted on a draining node, as they are past every
+other limit.
 
 ### Add a New Node
 
@@ -225,13 +280,23 @@ Active calls on the shutting-down node will terminate. SIP phones will re-regist
 2. The node removes its heartbeat key on shutdown
 3. Other nodes detect departure within one heartbeat cycle
 
-### Drain a Node
+### Drain a Node (without restarting it)
 
-Currently, FCP does not support a "drain" mode that rejects new calls while finishing existing ones. To drain:
+A drain is not a shutdown: the node keeps running and can be put back.
 
-1. Remove the node from the SIP load balancer (stop sending new calls)
-2. Wait for all active calls to complete: `curl http://node:8084/calls`
-3. Stop the node once `active_calls` reaches 0
+```bash
+curl -sX POST   http://node:8084/drain   # leave service
+curl -s         http://node:8084/status  # {"draining":true,"active_calls":…}
+curl -sX DELETE http://node:8084/drain   # serve again; the calls it kept carry on
+```
+
+`DELETE /drain` before the deadline returns the node to service with
+everything it was carrying untouched — which is what makes starting a
+drain by hand safe. After the deadline the node has ended what was left,
+and calling the drain off only makes it take new calls again.
+
+The admin UI's cluster page shows a `draining` badge per node and a count
+of draining nodes, from the same heartbeat field.
 
 ### Reload Queue Configuration (No Restart)
 

@@ -51,6 +51,13 @@ pub struct ConferenceServerConfig {
 
     #[serde(default)]
     pub cluster: ClusterSection,
+
+    /// What this node accepts, and what it refuses
+    /// (`docs/CAPACITY_AND_SURVIVABILITY.md` §5). Every limit is optional;
+    /// unset is unlimited, as it was before the section existed. Its
+    /// drain state is what the conference handler refuses INVITEs by.
+    #[serde(default)]
+    pub admission: fcp_sbc_core::AdmissionSection,
 }
 
 impl ConferenceServerConfig {
