@@ -190,7 +190,13 @@ service untouched; a device registering while the node drains gets at most
 and `system.node_drained` are published. siphon-rs v2026.09.20 (sip-uac
 0.7.5) added `bye_with_headers`, since a BYE had no way to say why. A second
 SIGTERM now cuts a long drain short rather than letting SIGKILL take the
-calls with no BYE and no record. Ten open questions, every recommendation taken on
+calls with no BYE and no record. Phase 2b, the rest of the fleet, split into
+four on 2026-09-21: 2b-1 lifts the call manager's drain into one shared
+implementation (`fcp-sip`) and puts the SBC and the registrar on it, 2b-2 the
+IVR, voicemail and presence servers, 2b-3 the WebRTC gateway (which has no
+health server yet, and whose sessions want handing over rather than
+refusing), 2b-4 the conference server's own drain aligned on the shared
+state, the admin UI's drain badge and the rolling-restart runbook. Ten open questions, every recommendation taken on
 2026-09-20: one admission controller in `fcp-sbc-core` for every routing
 binary; node limits only where a deployment wrote one down; the tenant limit
 per node until phase 5 leases it cluster-wide; a BYE with a `Reason` and a
