@@ -56,7 +56,12 @@ pub struct Smoke {
     health_url: Option<String>,
     startup_timeout: Duration,
     shutdown_timeout: Duration,
+    #[allow(clippy::type_complexity)]
+    while_up: Option<Box<dyn FnOnce() -> BoxFuture<'static, ()> + Send>>,
 }
+
+/// A probe run against the service while it is up.
+type BoxFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
 
 impl Smoke {
     /// Target a binary; pass `env!("CARGO_BIN_EXE_<name>")`.
@@ -70,7 +75,21 @@ impl Smoke {
             health_url: None,
             startup_timeout: Duration::from_secs(45),
             shutdown_timeout: Duration::from_secs(20),
+            while_up: None,
         }
+    }
+
+    /// Run this once the service is healthy and before it is stopped — the
+    /// routes a test wants to exercise on a running binary, such as
+    /// `/ready` and `/drain`. A panic inside it fails the test, and the
+    /// service is killed as the child is dropped.
+    pub fn while_up<F, Fut>(mut self, probe: F) -> Self
+    where
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = ()> + Send + 'static,
+    {
+        self.while_up = Some(Box::new(move || Box::pin(probe())));
+        self
     }
 
     /// TOML written to a temp file and passed via the config flag.
@@ -182,6 +201,13 @@ impl Smoke {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+
+        // Phase 1b: whatever the test wants to see on a running service.
+        if report.failure.is_none() {
+            if let Some(probe) = self.while_up {
+                probe().await;
+            }
         }
 
         // Phase 2: graceful stop.

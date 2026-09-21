@@ -445,7 +445,7 @@ One PR each, in order.
 |---|---|
 | 1 ✅ v0.25.208 | **The limits that exist, enforced.** `AdmissionController` moves into `fcp-sbc-core`; the call manager (then the IVR, voicemail and presence servers) admits calls and registrations through it; `[admission]` section; `[calls] max_concurrent_calls` honoured as an alias with a warning; the tenant's `max_concurrent_calls` enforced per node; the registrar's rate limiter installed with both keys; 503 + `Retry-After` with a `Reason`; refusal counters by reason; load on `/status` |
 | 2a ✅ v0.25.209 | **Leaving on purpose, on the call manager.** Drain state on the admission controller; `POST`/`DELETE /drain` and a `/ready` route; SIGTERM starts a drain and a second signal cuts it short; new calls refused, emergency admitted, REGISTER expiry shortened; `drain_wait_secs`, then a BYE with a `Reason` and a `node_draining` record; `system.node_draining`/`system.node_drained` events; test floor T6's drain half |
-| 2b-1 | **The shared drain, and the two nearest binaries.** The call manager's drain lifted out of `fcp-call-manager/src/{drain,health}.rs` into one place every routing binary can hold — `fcp-sip`, where the admission trait already lives — with the "end what is left" step supplied by the binary; then the SBC and the registrar on it: `[admission]` on the registrar, `POST`/`DELETE /drain`, `/ready` answering `503` while draining, the SIGTERM sequence with the second signal, and the shortened REGISTER expiry |
+| 2b-1 ✅ v0.25.213 | **The shared drain, and the two nearest binaries.** The call manager's drain lifted out of `fcp-call-manager/src/{drain,health}.rs` into one place every routing binary can hold — `fcp-sip`, where the admission trait already lives — with the "end what is left" step supplied by the binary; then the SBC and the registrar on it: `[admission]` on the registrar, `POST`/`DELETE /drain`, `/ready` answering `503` while draining, the SIGTERM sequence with the second signal, and the shortened REGISTER expiry |
 | 2b-2 | **The application servers.** `[admission]` and the drain on the IVR, the voicemail server and the presence server — the three phase 1 left with no limits at all — each ending what it is carrying in its own terms: a caller inside a flow, a message being recorded, a subscription to expire |
 | 2b-3 | **The WebRTC gateway.** It has no health server at all, so: one, with `/health`, `/ready` and `/drain`; the `[admission]` section; and a drain that hands sessions to another node the way distributed conferencing's phase 5 migrates participants, rather than only refusing new ones |
 | 2b-4 | **The conference server, the badge and the runbook.** Its own drain — SIGTERM, `set_draining`, `start_draining()`, `drain_wait_secs`, REFER migration — aligned on the shared `draining` state and given `/ready` and `/drain`, without losing the migration; the drain badge and node state on the admin UI's cluster page; the rolling-restart procedure in `docs/CLUSTER_OPERATIONS_RUNBOOK.md` |
@@ -543,6 +543,49 @@ registration.
 routing binary already holds from phase 1 and which is where a refused call
 is counted. The cluster advertisement is still `ClusterManager::set_draining`,
 which the conference server has used since distributed conferencing phase 4.
+
+*Phase 2b-1 shipped 2026-09-21 (v0.25.213).* The drain is one
+implementation — `fcp_sip::drain` — that every routing binary holds, and the
+SBC and the registrar are on it.
+
+What a binary supplies is a `DrainTarget`: what it is carrying, how to end
+what is left, and how to tell the cluster. The call manager carries calls and
+ends them with a BYE on both legs; the SBC carries the calls it is relaying
+and ends them the way its admin API's `terminate_call` does, record first;
+the registrar carries the devices registered with it and ends nothing at all
+— a registration that is not renewed lapses, and by then the device has
+registered on a node that is serving. `/ready`, `POST /drain` and
+`DELETE /drain` answer the same JSON everywhere, from the same functions,
+while each binary's router keeps its own shape: the call manager's and the
+registrar's are open on their health servers, the SBC's `/drain` sits behind
+the API token with its other operator routes.
+
+Three things learned:
+
+**A drain over HTTP never told the cluster.** In 2a the advertisement was a
+line in the SIGTERM path rather than part of the sequence, so `POST /drain`
+refused new calls locally while the heartbeat still said this node was
+serving — and conference placement went on choosing it. It is now the
+target's `advertise`, which the sequence itself calls, so both ways in say
+the same thing. A node that stops without draining says it too.
+
+**One REGISTER gate, not two.** The refusal and the shortened expiry lived in
+the call manager's handler, so the standalone registrar had neither. Both now
+run `fcp_sip::admission::register_gate`, which refuses a flood with `503` and
+`Retry-After` and shortens what a draining node grants. The registrar picked
+up two things with it: it passes the source address to the binding, as the
+call manager has since E911 block 2 phase 3, and `[admission]` is a section
+it reads at last.
+
+**`AdmissionSection` was the call manager's.** Phase 1 gave the call manager
+its own optional-field section so that writing `[admission]` for one limit
+did not silently import the SBC's defaults for the rest. The registrar needed
+the same section, and 2b-2 needs it three more times, so it moved into
+`fcp-sbc-core` beside the controller it configures.
+
+What this phase did not do: the SBC's `/ready` still reports trunk health as
+advisory rather than refusing readiness on it, since nothing asked for that
+and a node with no healthy trunk can still answer in-dialog requests.
 
 ## 14. Not in scope
 

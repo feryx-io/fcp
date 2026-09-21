@@ -6,9 +6,14 @@ use crate::stir_shaken::{StirMetrics, StirVerifier};
 use axum::body::Body;
 use axum::extract::Request;
 use axum::http::header;
+use axum::http::StatusCode;
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::{extract::State, routing::get, Json, Router};
+use axum::{
+    extract::State,
+    routing::{get, post},
+    Json, Router,
+};
 use fcp_sbc_core::admission::AdmissionController;
 use fcp_sbc_core::trunk_health::TrunkHealthMonitor;
 use fcp_sbc_core::trunk_registration::TrunkRegistrar;
@@ -32,6 +37,8 @@ pub struct HealthState {
     pub stir_metrics: Option<Arc<StirMetrics>>,
     pub stir_verifier: Option<Arc<StirVerifier>>,
     pub api_token: Option<String>,
+    /// Leaving service (`docs/CAPACITY_AND_SURVIVABILITY.md` §6).
+    pub drain: Arc<fcp_sip::drain::Drain>,
 }
 
 fn extract_bearer_token(value: &str) -> Option<&str> {
@@ -88,6 +95,7 @@ fn public_router() -> Router<Arc<HealthState>> {
 
 fn protected_router() -> Router<Arc<HealthState>> {
     Router::new()
+        .route("/drain", post(start_drain).delete(stop_drain))
         .route("/metrics", get(metrics_snapshot))
         .nest("/admin", crate::admin::admin_router())
 }
@@ -121,14 +129,59 @@ async fn health_check() -> Json<serde_json::Value> {
     }))
 }
 
-async fn readiness_check(State(state): State<Arc<HealthState>>) -> Json<serde_json::Value> {
-    let ready = state.health_monitor.any_healthy();
-    let status = if ready { "ready" } else { "not_ready" };
-    Json(serde_json::json!({
-        "status": status,
-        "service": "fcp-sbc",
-        "trunks_healthy": ready,
-    }))
+/// Whether this node should be sent work. `503` while it is draining, so a
+/// load balancer stops choosing it before it stops taking calls
+/// (`docs/CAPACITY_AND_SURVIVABILITY.md` §6); `/health` keeps answering
+/// `200` throughout, so a liveness probe does not kill the process
+/// mid-drain. Trunk health stays advisory in the body, as it was.
+async fn readiness_check(
+    State(state): State<Arc<HealthState>>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let trunks_healthy = state.health_monitor.any_healthy();
+    let draining = state.drain.is_draining();
+    let carrying = state.drain.carrying().await;
+    let status = if draining {
+        "draining"
+    } else if trunks_healthy {
+        "ready"
+    } else {
+        "not_ready"
+    };
+    let code = if draining {
+        StatusCode::SERVICE_UNAVAILABLE
+    } else {
+        StatusCode::OK
+    };
+    (
+        code,
+        Json(serde_json::json!({
+            "status": status,
+            "service": "fcp-sbc",
+            "trunks_healthy": trunks_healthy,
+            "draining": draining,
+            "active_calls": carrying,
+        })),
+    )
+}
+
+/// Start a drain: this node takes no new calls, keeps the ones it is
+/// relaying until `drain_wait_secs`, and then ends what is left with a BYE
+/// that says why. Behind the API token, with the SBC's other operator
+/// routes — the path is the one every node answers on.
+async fn start_drain(State(state): State<Arc<HealthState>>) -> impl IntoResponse {
+    answer(fcp_sip::drain::start_body(&state.drain).await)
+}
+
+/// Call a drain off: the node serves again, and the calls it was relaying
+/// — which the drain never touched — carry on.
+async fn stop_drain(State(state): State<Arc<HealthState>>) -> impl IntoResponse {
+    answer(fcp_sip::drain::stop_body(&state.drain).await)
+}
+
+/// What the shared drain answered, as this router's response.
+fn answer((code, body): (u16, serde_json::Value)) -> (StatusCode, Json<serde_json::Value>) {
+    let code = StatusCode::from_u16(code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    (code, Json(body))
 }
 
 async fn metrics_snapshot(State(state): State<Arc<HealthState>>) -> impl IntoResponse {
@@ -322,13 +375,18 @@ mod tests {
         metrics.record_security_rejection();
         metrics.update_snapshot(42, 10, 5);
 
+        let drain;
         let state = Arc::new(HealthState {
             admission: Arc::new(fcp_sbc_core::admission::AdmissionController::new(
                 Default::default(),
             )),
             health_monitor: Arc::new(fcp_sbc_core::trunk_health::TrunkHealthMonitor::new(&[])),
             metrics,
-            call_manager: Arc::new(fcp_b2bua_core::CallManager::new()),
+            call_manager: {
+                let cm = Arc::new(fcp_b2bua_core::CallManager::new());
+                drain = crate::drain::test_drain(Arc::clone(&cm));
+                cm
+            },
             trunk_configs: vec![],
             trunk_registrar: None,
             uac: None,
@@ -339,6 +397,7 @@ mod tests {
             stir_metrics: None,
             stir_verifier: None,
             api_token: None,
+            drain,
         });
 
         let resp = metrics_snapshot(State(state)).await.into_response();

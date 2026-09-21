@@ -62,7 +62,7 @@ pub struct AppState {
     /// (`docs/CAPACITY_AND_SURVIVABILITY.md` §9).
     pub admission: Arc<fcp_sbc_core::AdmissionController>,
     /// Leaving service without dropping calls (§6).
-    pub drain: Arc<crate::drain::Drain>,
+    pub drain: Arc<fcp_sip::drain::Drain>,
     pub node_id: String,
 }
 
@@ -375,61 +375,26 @@ async fn status_handler(State(state): State<Arc<AppState>>) -> Json<serde_json::
 /// §6). `/health` keeps answering `200` throughout, so a liveness probe
 /// does not kill the process mid-drain.
 async fn ready_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let draining = state.drain.is_draining();
-    let body = Json(serde_json::json!({
-        "ready": !draining,
-        "draining": draining,
-        "active_calls": state.call_manager.active_call_count(),
-    }));
-    let code = if draining {
-        StatusCode::SERVICE_UNAVAILABLE
-    } else {
-        StatusCode::OK
-    };
-    (code, body)
+    answer(fcp_sip::drain::ready_body(&state.drain).await)
 }
 
 /// Start a drain: this node takes no new calls, keeps the ones it has
 /// until `drain_wait_secs`, and then ends what is left with a BYE that
 /// says why. The node keeps running — a drain is not a shutdown.
 async fn start_drain_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    if state.drain.is_draining() {
-        return (
-            StatusCode::OK,
-            Json(serde_json::json!({
-                "status": "draining",
-                "already": true,
-                "active_calls": state.call_manager.active_call_count(),
-            })),
-        );
-    }
-    let drain = Arc::clone(&state.drain);
-    let generation = drain.start().await;
-    let calls = state.call_manager.active_call_count();
-    tokio::spawn(async move {
-        drain.wait_then_end(generation).await;
-    });
-    (
-        StatusCode::OK,
-        Json(serde_json::json!({
-            "status": "draining",
-            "active_calls": calls,
-            "wait_secs": state.drain.wait_secs(),
-        })),
-    )
+    answer(fcp_sip::drain::start_body(&state.drain).await)
 }
 
 /// Call a drain off: the node serves again, and the calls it was carrying
 /// — which the drain never touched — carry on.
 async fn stop_drain_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    state.drain.stop();
-    (
-        StatusCode::OK,
-        Json(serde_json::json!({
-            "status": "serving",
-            "active_calls": state.call_manager.active_call_count(),
-        })),
-    )
+    answer(fcp_sip::drain::stop_body(&state.drain).await)
+}
+
+/// What the shared drain answered, as this router's response.
+fn answer((code, body): (u16, serde_json::Value)) -> (StatusCode, Json<serde_json::Value>) {
+    let code = StatusCode::from_u16(code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    (code, Json(body))
 }
 
 async fn calls_handler(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {

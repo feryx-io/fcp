@@ -1339,10 +1339,15 @@ async fn main() -> Result<()> {
     // Leaving service without dropping calls
     // (`docs/CAPACITY_AND_SURVIVABILITY.md` §6): the same sequence whether
     // it starts at `POST /drain` or at SIGTERM.
-    let drain = Arc::new(drain::Drain::new(
-        Arc::clone(&admission),
+    let drain_target = Arc::new(drain::NodeCalls::new(
         Arc::clone(&handler),
         Arc::clone(&call_manager),
+        #[cfg(feature = "storage-redis")]
+        _cluster_manager.as_ref().map(|(cm, _, _)| Arc::clone(cm)),
+    ));
+    let drain = Arc::new(fcp_sip::drain::Drain::new(
+        Arc::clone(&admission) as Arc<dyn fcp_sip::admission::NodeAdmission>,
+        drain_target as Arc<dyn fcp_sip::drain::DrainTarget>,
         Arc::clone(&event_publisher),
         config.service.node_id.clone(),
         config.service.drain_wait_secs,
@@ -1898,30 +1903,16 @@ async fn main() -> Result<()> {
     // carrying, and end what is left with a BYE that says why. With
     // `drain_wait_secs = 0` — the default — this is what it always was:
     // the node stops where it stands.
-    #[cfg(feature = "storage-redis")]
-    if let Some((cm, _, _)) = &_cluster_manager {
-        if let Err(e) = cm.set_draining(true).await {
-            warn!(error = %e, "Could not advertise draining to the cluster");
-        }
-    }
     if config.service.drain_wait_secs > 0 || drain.is_draining() {
         // Starting again takes over a drain that `POST /drain` began: its
         // background wait gives up, and the wait here is the one that ends
-        // the calls.
-        let generation = drain.start().await;
-        // A second signal says the operator will not wait: end what is
-        // left now, with the same BYE and the same record.
-        tokio::select! {
-            _ = drain.wait_then_end(generation) => {}
-            _ = sigterm.recv() => {
-                warn!("Second SIGTERM while draining; ending the calls still up");
-                drain.end_now().await;
-            }
-            _ = tokio::signal::ctrl_c() => {
-                warn!("Second SIGINT while draining; ending the calls still up");
-                drain.end_now().await;
-            }
-        }
+        // the calls. A second signal says the operator will not wait, and
+        // ends what is left now with the same BYE and the same record.
+        fcp_sip::drain::drain_for_shutdown(&drain).await;
+    } else {
+        // Nothing to wait for, but the cluster is still told, so nothing
+        // places a call here in the seconds the shutdown takes.
+        drain.start().await;
     }
 
     // Signal cluster manager to shutdown (removes heartbeat key)

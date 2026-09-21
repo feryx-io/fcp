@@ -894,11 +894,13 @@ mod tests {
         let metrics = Arc::new(crate::metrics::SbcRuntimeMetrics::new());
         let call_manager = Arc::new(fcp_b2bua_core::CallManager::new());
 
+        let drain = crate::drain::test_drain(Arc::clone(&call_manager));
         Arc::new(HealthState {
             admission,
             health_monitor,
             metrics,
             call_manager,
+            drain,
             trunk_configs: trunks,
             trunk_registrar: None,
             api_token: None,
