@@ -9,6 +9,7 @@
 //! Emergency calls never reach these checks: the handler skips them, as it
 //! does for a trunk's limits (`docs/TENANT_TRUNKS.md` §7).
 
+use async_trait::async_trait;
 use fcp_core::TenantId;
 use sip_core::Request;
 use smol_str::SmolStr;
@@ -60,12 +61,19 @@ impl Refusal {
 }
 
 /// The limits this node keeps, and the counts behind them.
+#[async_trait]
 pub trait NodeAdmission: Send + Sync {
     /// Take a place for a call that is starting. Released by [`ended`] with
     /// the same `call_id`, however the call ends.
     ///
+    /// Asynchronous because a tenant's limit is a contract with the
+    /// platform rather than with this node, and counting it across the
+    /// cluster is a lease taken in Redis on the way in
+    /// (`docs/CAPACITY_AND_SURVIVABILITY.md` §7). A node with no cluster
+    /// answers from its own map without awaiting anything.
+    ///
     /// [`ended`]: NodeAdmission::ended
-    fn admit(&self, call_id: &str, tenant: &TenantId) -> Result<(), Refusal>;
+    async fn admit(&self, call_id: &str, tenant: &TenantId) -> Result<(), Refusal>;
 
     /// Give back the place a call held. Unknown ids are ignored, so this is
     /// safe to call for a call that was never admitted.
@@ -349,8 +357,9 @@ mod register_expiry_tests {
             refuse: bool,
         }
 
+        #[async_trait]
         impl NodeAdmission for Node {
-            fn admit(&self, _call_id: &str, _tenant: &TenantId) -> Result<(), Refusal> {
+            async fn admit(&self, _call_id: &str, _tenant: &TenantId) -> Result<(), Refusal> {
                 Ok(())
             }
             fn ended(&self, _call_id: &str) {}

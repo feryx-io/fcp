@@ -654,7 +654,7 @@ impl SessionManager {
     /// Take this node's place for a session that is starting, or say why
     /// not (`docs/CAPACITY_AND_SURVIVABILITY.md` §5). An emergency call is
     /// never refused, on a draining node least of all.
-    fn admit(&self, id: &str, emergency: bool) -> Result<(), SessionError> {
+    async fn admit(&self, id: &str, emergency: bool) -> Result<(), SessionError> {
         let Some(admission) = &self.admission else {
             return Ok(());
         };
@@ -666,7 +666,7 @@ impl SessionManager {
             .as_ref()
             .and_then(|c| c.default_tenant)
             .unwrap_or_else(fcp_core::TenantId::nil);
-        admission.admit(id, &tenant).map_err(|refusal| {
+        admission.admit(id, &tenant).await.map_err(|refusal| {
             warn!(session = %id, refusal = refusal.as_str(), "session refused");
             SessionError::Refused {
                 detail: refusal.detail().to_string(),
@@ -747,7 +747,7 @@ impl SessionManager {
         // takes ICE ports for it (§5). A draining node refuses here, and
         // the browser is placed elsewhere.
         let id = new_session_id();
-        self.admit(&id, false)?;
+        self.admit(&id, false).await?;
         let conn = match self.new_browser_connection(req.video, content).await {
             Ok(conn) => conn,
             Err(e) => {
@@ -819,7 +819,7 @@ impl SessionManager {
         // whatever the limits say and even while draining, as it is
         // everywhere else on the platform.
         let session_id = new_session_id();
-        self.admit(&session_id, emergency.is_some())?;
+        self.admit(&session_id, emergency.is_some()).await?;
         let conn = match self.browser_connection_for(connection_id).await {
             Ok(conn) => conn,
             Err(e) => {

@@ -420,8 +420,9 @@ mod tests {
         draining: AtomicBool,
     }
 
+    #[async_trait]
     impl NodeAdmission for Admission {
-        fn admit(&self, _call_id: &str, _tenant: &TenantId) -> Result<(), Refusal> {
+        async fn admit(&self, _call_id: &str, _tenant: &TenantId) -> Result<(), Refusal> {
             if self.draining.load(Ordering::SeqCst) {
                 return Err(Refusal::Draining);
             }
@@ -495,7 +496,7 @@ mod tests {
         let generation = drain.start().await;
         assert!(drain.is_draining(), "the node is leaving service");
         assert_eq!(
-            admission.admit("call-1", &TenantId::new()),
+            admission.admit("call-1", &TenantId::new()).await,
             Err(Refusal::Draining),
             "new calls are refused"
         );
@@ -575,7 +576,7 @@ mod tests {
 
         assert_eq!(wait.await.unwrap(), None, "the wait gave up quietly");
         assert!(!drain.is_draining());
-        assert!(admission.admit("call-2", &TenantId::new()).is_ok());
+        assert!(admission.admit("call-2", &TenantId::new()).await.is_ok());
         assert_eq!(node.carrying().await, 3, "still carrying every call");
         assert_eq!(node.ended.load(Ordering::SeqCst), 0);
     }

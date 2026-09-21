@@ -45,6 +45,13 @@ struct Bench {
 
 impl Bench {
     async fn start(users: u32) -> Option<Self> {
+        Self::start_with(users, None, "").await
+    }
+
+    /// As [`Bench::start`], in a cluster: `redis` goes inside the config's
+    /// own `[storage]` table — a second one would not parse — and `extra`
+    /// adds whole tables of its own.
+    async fn start_with(users: u32, redis: Option<&str>, extra: &str) -> Option<Self> {
         let db = TestDatabase::create().await?;
         let seed = Seed::new(db.url(), REALM).await;
         for i in 0..users {
@@ -77,6 +84,7 @@ realm = "{REALM}"
 
 [storage]
 database_url = "{db}"
+{redis}
 
 [cdr]
 spool_dir = "{dir}/cdr-spool"
@@ -100,8 +108,13 @@ recording_dir = "{dir}/recordings"
 [logging]
 level = "warn"
 format = "compact"
+
+{extra}
 "#,
             db = db.url(),
+            redis = redis
+                .map(|url| format!("redis_url = \"{url}\""))
+                .unwrap_or_default(),
             // Two ports a call, and room for the ramp's bursts.
             rtp_end = rtp_start + 4 * users.max(50) as u16,
             dir = dir.path().display(),
@@ -247,6 +260,53 @@ async fn soak_memory_per_call() {
         (peak - idle).max(0.0) / calls.min(100.0)
     );
     bench.stop().await;
+}
+
+/// What a lease costs on the INVITE path
+/// (`docs/CAPACITY_AND_SURVIVABILITY.md` §7, §12 Q3).
+///
+/// Counting a tenant's calls across the cluster is a Redis round trip as
+/// each call is admitted. The same ramp is run twice against the same
+/// node configuration — once counting across the cluster, once counting
+/// on the node — and the difference is what the lease costs. Needs
+/// `FCP_TEST_REDIS_URL`; without it there is nothing to lease against.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "a measured run: minutes, and only meaningful in release on a quiet box"]
+async fn what_a_lease_costs_on_the_invite_path() {
+    let Ok(redis) = std::env::var("FCP_TEST_REDIS_URL") else {
+        eprintln!("skipped: FCP_TEST_REDIS_URL is not set");
+        return;
+    };
+    for (what, leasing) in [("per-node", false), ("cluster-leased", true)] {
+        let cluster = format!(
+            "[cluster]\nenabled = true\nlease_tenant_calls = {leasing}\n\
+             lease_settle_secs = 2\n"
+        );
+        let Some(bench) = Bench::start_with(20, Some(&redis), &cluster).await else {
+            eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+            return;
+        };
+        let options = RunOptions {
+            duration: Duration::from_secs(60),
+            call_secs: 5,
+            cps: 5.0,
+            cps_step: 5.0,
+            cps_max: 10.0,
+            rung_secs: 20,
+            // The point is the latency, not the ladder: let it climb.
+            stop_refused_fraction: 1.0,
+            stop_p99_ms: f64::MAX,
+            ..bench.options(Profile::CallRamp)
+        };
+        let report = fcp_loadgen::run(options).await.expect("the run");
+        record(&format!("lease-{what}"), &report);
+        let answer = &report.measurements.invite_to_answer;
+        println!(
+            "  {what}: INVITE→200 p50 {:.1}ms p90 {:.1}ms p99 {:.1}ms over {} calls",
+            answer.p50_ms, answer.p90_ms, answer.p99_ms, answer.count
+        );
+        bench.stop().await;
+    }
 }
 
 /// Every device registering at once, and again as they lapse.

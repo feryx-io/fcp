@@ -556,10 +556,37 @@ async fn main() -> Result<()> {
     // (`docs/CAPACITY_AND_SURVIVABILITY.md` §5). The trunk set reads every
     // tenant on its refresh tick, so it is where the tenants' own limits
     // come from.
-    let admission = Arc::new(
-        fcp_sbc_core::AdmissionController::new(config.admission())
-            .with_tenant_limits(Arc::clone(&trunk_set) as Arc<dyn fcp_sbc_core::TenantCallLimits>),
-    );
+    let mut controller = fcp_sbc_core::AdmissionController::new(config.admission())
+        .with_tenant_limits(Arc::clone(&trunk_set) as Arc<dyn fcp_sbc_core::TenantCallLimits>);
+    // A tenant's limit is a contract with the platform, so where there is
+    // a cluster it is counted across it: a lease per call in Redis, and
+    // this node's own count if Redis cannot be read
+    // (`docs/CAPACITY_AND_SURVIVABILITY.md` §7).
+    #[cfg(feature = "storage-redis")]
+    if config.cluster.enabled && config.cluster.lease_tenant_calls {
+        if let Some(redis) = redis_storage.clone() {
+            controller = controller.with_cluster_calls(Arc::new(
+                fcp_sbc_core::admission::RedisCallLeases::new(fcp_cluster::CallLeases::new(redis)),
+            ));
+            info!("Tenant call limits are counted across the cluster");
+        }
+    }
+    let admission = Arc::new(controller);
+    // The lease's housekeeping: give back what has ended, push out what
+    // is still up (§7).
+    #[cfg(feature = "storage-redis")]
+    {
+        let admission = Arc::clone(&admission);
+        let every = Duration::from_secs(config.cluster.lease_settle_secs.max(1));
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(every);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tick.tick().await;
+                admission.settle_leases().await;
+            }
+        });
+    }
     {
         let limits = config.admission();
         if limits.caps_anything() {
