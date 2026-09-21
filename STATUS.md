@@ -312,6 +312,29 @@ never a rate; emergency calls exempt from every limit and admitted while
 draining; and registration rate limiting keyed on source address and AOR at
 once.
 
+**Edge security** — chosen 2026-09-21, after capacity and survivability
+closed. Design proposed in `docs/EDGE_SECURITY.md`: what an
+internet-facing node exposes — who may place a call, what a peer may
+claim, what a flood costs, and what is actually verified where the code
+says "trusted". The survey checked four things sound (inter-node trunks
+require mutual TLS naming the peer; the trusted-edge headers are gated on
+the peer with IPv4-mapped addresses normalised; the TLS verifier is a
+deliberate private-CA-then-public-roots one, not a bypass; REGISTER
+floods are bounded per source and per AOR) and found five wanting: an
+INVITE is authorised by source address and never authenticated, so a host
+sharing an address with a registered device places calls as that user;
+the registration check matches the peer as a *substring* of the contact,
+so a host at 10.0.0.1 passes as the device at 10.0.0.10
+(`fcp-sip/src/handler.rs:1752`); `X-FCP-Call-Id` is believed from any
+peer and names the record a leg is billed under, unlike its gated
+siblings; the call manager — the edge in every default deployment — has
+no IP ACL and no per-source INVITE limit where the SBC, conference and
+presence servers each have something; and the stateful surfaces
+(transaction, dialog, registrar, offer/answer) are unfuzzed. Five phases,
+each ending in a test that fails against today's code; four open
+questions for the user, starting with whether INVITE authentication
+defaults on.
+
 ## Historical documents
 
 Superseded status docs live in [`docs/archive/`](docs/archive/README.md) — they describe
