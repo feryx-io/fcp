@@ -31,10 +31,21 @@ const TELEPHONE_EVENT_PT: u8 = 101;
 /// Samples in one 20 ms frame at 8 kHz, the rate queue recordings use.
 const FRAME: usize = 160;
 
-/// How far one direction may run ahead of a silent other before it is
-/// written against silence: 100 ms, so a phone that sends nothing while
+/// How long a leg must have been quiet before the other is written
+/// against silence: half a second, so a phone that sends nothing while
 /// its user is quiet does not hold the recording back.
-const MAX_LEAD: usize = 5 * FRAME;
+///
+/// It is this long because a loaded node does not hand the recorder the
+/// two directions evenly — it hands it a burst from one leg and then a
+/// burst from the other, a few hundred milliseconds apart. A recording
+/// is not live, so waiting out that gap costs nothing and keeps two
+/// people who talked at once in the file at once.
+const QUIET: Duration = Duration::from_millis(500);
+
+/// The most one direction may hold while it waits for the other: two
+/// seconds, so a leg whose packets stop being delivered altogether cannot
+/// grow the mix without bound.
+const MAX_HELD: usize = 100 * FRAME;
 
 /// One side of a queue call, as the bridge sees it.
 #[derive(Clone)]
@@ -316,23 +327,57 @@ fn rtp_payload(packet: &[u8]) -> Option<(u8, &[u8])> {
 }
 
 /// Two directions of a call mixed into one track as they arrive: a frame
-/// is written once both have one, or once one runs [`MAX_LEAD`] ahead of
-/// the other, which is then taken as silent.
-#[derive(Default)]
+/// is written once both have one, or once the other has been quiet for
+/// [`QUIET`] and is taken as silent.
+///
+/// The wait is on the clock rather than on how much one side has piled
+/// up, because the two directions do not arrive evenly: a loaded node
+/// hands the recorder a burst from one leg and then a burst from the
+/// other, and a mix that wrote whichever side was longest would put two
+/// people who talked over each other into the recording one after the
+/// other.
 pub(crate) struct TwoWayMix {
     a: VecDeque<i16>,
     b: VecDeque<i16>,
+    /// When each direction last delivered audio.
+    last_a: Instant,
+    last_b: Instant,
+}
+
+impl Default for TwoWayMix {
+    fn default() -> Self {
+        Self::starting_at(Instant::now())
+    }
 }
 
 impl TwoWayMix {
+    fn starting_at(now: Instant) -> Self {
+        Self {
+            a: VecDeque::new(),
+            b: VecDeque::new(),
+            last_a: now,
+            last_b: now,
+        }
+    }
+
     pub fn push_a(&mut self, samples: &[i16]) -> Vec<i16> {
-        self.a.extend(samples);
-        self.ready()
+        self.push_a_at(samples, Instant::now())
     }
 
     pub fn push_b(&mut self, samples: &[i16]) -> Vec<i16> {
+        self.push_b_at(samples, Instant::now())
+    }
+
+    fn push_a_at(&mut self, samples: &[i16], now: Instant) -> Vec<i16> {
+        self.a.extend(samples);
+        self.last_a = now;
+        self.ready(now)
+    }
+
+    fn push_b_at(&mut self, samples: &[i16], now: Instant) -> Vec<i16> {
         self.b.extend(samples);
-        self.ready()
+        self.last_b = now;
+        self.ready(now)
     }
 
     /// What is left when the call ends.
@@ -341,11 +386,17 @@ impl TwoWayMix {
         self.take(n)
     }
 
-    fn ready(&mut self) -> Vec<i16> {
+    fn ready(&mut self, now: Instant) -> Vec<i16> {
         let mut out = Vec::new();
         loop {
             let (a, b) = (self.a.len(), self.b.len());
-            if (a >= FRAME && b >= FRAME) || a >= MAX_LEAD || b >= MAX_LEAD {
+            let quiet = |since: Instant, held: usize| {
+                now.saturating_duration_since(since) >= QUIET || held >= MAX_HELD
+            };
+            let both = a >= FRAME && b >= FRAME;
+            let a_alone = a >= FRAME && quiet(self.last_b, a);
+            let b_alone = b >= FRAME && quiet(self.last_a, b);
+            if both || a_alone || b_alone {
                 out.extend(self.take(FRAME));
             } else {
                 return out;
@@ -607,26 +658,60 @@ mod tests {
 
     #[test]
     fn both_directions_are_mixed_frame_by_frame() {
-        let mut mix = TwoWayMix::default();
+        let t0 = Instant::now();
+        let mut mix = TwoWayMix::starting_at(t0);
         assert!(
-            mix.push_a(&[100; FRAME]).is_empty(),
+            mix.push_a_at(&[100; FRAME], t0).is_empty(),
             "waits for the other side"
         );
-        let out = mix.push_b(&[23; FRAME]);
+        let out = mix.push_b_at(&[23; FRAME], t0 + ms(20));
         assert_eq!(out, vec![123; FRAME]);
 
-        // One side silent: it is written against silence once far enough ahead.
+        // One side silent: it is held while the other might still arrive,
+        // then written against silence once that side has been quiet.
         let mut out = Vec::new();
-        for _ in 0..5 {
-            out.extend(mix.push_a(&[7; FRAME]));
+        for i in 1..=5 {
+            out.extend(mix.push_a_at(&[7; FRAME], t0 + ms(20 + 20 * i)));
         }
-        assert_eq!(out, vec![7; FRAME], "the first frame goes at the lead");
-        assert_eq!(mix.finish(), vec![7; 4 * FRAME]);
+        assert!(out.is_empty(), "held while the other side might arrive");
+        let out = mix.push_a_at(&[7; FRAME], t0 + ms(620));
+        assert_eq!(out, vec![7; 6 * FRAME], "written once the other is quiet");
+        assert!(mix.finish().is_empty());
 
         // Loud audio clamps rather than wrapping.
-        let mut mix = TwoWayMix::default();
-        mix.push_a(&[i16::MAX; FRAME]);
-        assert_eq!(mix.push_b(&[i16::MAX; FRAME]), vec![i16::MAX; FRAME]);
+        let mut mix = TwoWayMix::starting_at(t0);
+        mix.push_a_at(&[i16::MAX; FRAME], t0);
+        assert_eq!(mix.push_b_at(&[i16::MAX; FRAME], t0), vec![i16::MAX; FRAME]);
+    }
+
+    #[test]
+    fn a_burst_from_one_leg_is_mixed_with_the_burst_that_follows_it() {
+        // A loaded node hands the recorder a quarter of a second of the
+        // caller at once, then a quarter of a second of the agent. They
+        // talked over each other, so the recording must have them over
+        // each other rather than one after the other.
+        let t0 = Instant::now();
+        let mut mix = TwoWayMix::starting_at(t0);
+        let mut out = Vec::new();
+        for burst in 0..4 {
+            let at = t0 + ms(500 * burst);
+            for _ in 0..12 {
+                out.extend(mix.push_a_at(&[100; FRAME], at));
+            }
+            let at = at + ms(250);
+            for _ in 0..12 {
+                out.extend(mix.push_b_at(&[23; FRAME], at));
+            }
+        }
+        out.extend(mix.finish());
+        let frames = out.len() / FRAME;
+        let together = out.chunks(FRAME).filter(|f| f[0] == 123).count();
+        assert_eq!(frames, 48, "every frame of both bursts is written");
+        assert_eq!(together, frames, "and every frame has both of them");
+    }
+
+    fn ms(n: u64) -> Duration {
+        Duration::from_millis(n)
     }
 
     #[test]

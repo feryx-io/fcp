@@ -697,9 +697,12 @@ One PR per phase, reviewed before the next starts.
      starts, and campaign calls do the same. Its recorder decodes each
      direction in its own leg's codec (G.722 included; telephone events,
      CSRCs, extensions and padding skipped) and mixes frame by frame,
-     writing one side against silence once the other is 100 ms behind. The
-     notice is written over the audio the bridge forwards, in each
-     direction's codec.
+     writing one side against silence only once the other has been quiet
+     for half a second — the wait is on the clock, because a loaded node
+     hands the recorder a burst from one leg and then a burst from the
+     other, and two people who talked at once must not be recorded one
+     after the other. The notice is written over the audio the bridge
+     forwards, in each direction's codec.
    - **Conferences** refuse a room or participant recording under `skip`,
      announce a participant's recording to the room, beep the notice into
      the room, and put the outcome on `conference.recording_started`.

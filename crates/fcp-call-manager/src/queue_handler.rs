@@ -24,6 +24,10 @@ use std::time::{Duration, Instant, SystemTime};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
+/// How long a queue call's recorder is given to write what it still
+/// holds and close its file once the call has ended.
+const RECORDING_FINISH: Duration = Duration::from_secs(5);
+
 /// Supervisor monitoring/coaching mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SupervisorMode {
@@ -1431,9 +1435,23 @@ impl QueueCallHandler {
             }
 
             // Stop recording if active
-            if let Some(rec_handle) = session.recording_handle {
-                rec_handle.abort();
-                if let Some(ref path) = session.recording_path {
+            if let Some(mut rec_handle) = session.recording_handle {
+                // The bridge tasks are gone, so the recorder's senders are
+                // dropped: it writes what it still holds and closes the
+                // file. Cutting it off here instead would lose the last of
+                // the call — as much as a [`QUIET`] window of it.
+                let path = session.recording_path.clone();
+                let ended = call_id.to_string();
+                tokio::spawn(async move {
+                    if tokio::time::timeout(RECORDING_FINISH, &mut rec_handle)
+                        .await
+                        .is_err()
+                    {
+                        warn!(call_id = %ended, "A queue recording did not finish; stopping it");
+                        rec_handle.abort();
+                    }
+                });
+                if let Some(ref path) = path {
                     info!(call_id = %call_id, path = %path, "Recording stopped");
                 }
                 // Its row closes when the segment's record is stored; close it

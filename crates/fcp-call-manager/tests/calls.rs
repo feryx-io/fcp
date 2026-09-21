@@ -1102,13 +1102,14 @@ record_calls = true
 
     // They talk over each other: the recording has both at once. Both tones
     // run past the hangup, so wherever the recorded window falls it is inside
-    // the overlap rather than beside it.
-    alice_call.media().play_tone(440.0, 6000);
+    // the overlap rather than beside it, and they overlap for seconds so that
+    // a loaded runner's window is still full of it.
+    alice_call.media().play_tone(440.0, 12000);
     tokio::time::sleep(Duration::from_millis(400)).await;
-    bob_call.media().play_tone(880.0, 6000);
+    bob_call.media().play_tone(880.0, 12000);
     assert!(bob_call.media().heard(440, SOON).await);
     assert!(alice_call.media().heard(880, SOON).await);
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
     assert_eq!(alice_call.hangup().await.unwrap(), 200);
     assert!(bob_call.ended(SOON).await);
 
@@ -1125,20 +1126,27 @@ record_calls = true
 
     let (_, samples) = fcp_testkit::wav::read_pcm(&file).unwrap();
     assert!(!fcp_testkit::wav::contains_tone(&samples, PROMPT_HZ));
-    let together = samples
-        .chunks(160)
-        .filter(|frame| {
-            let low = fcp_testkit::media::goertzel_ratio(frame, 440);
-            let high = fcp_testkit::media::goertzel_ratio(frame, 880);
-            // One tone on its own reads about 0.87 (the ratio leaks into
-            // neighbouring bins), so two mixed tones can never sum to much
-            // more than that: 0.7 measured 0.71 here and nothing on CI.
-            low > 0.2 && high > 0.2 && low + high > 0.55
-        })
-        .count();
+    let (mut together, mut caller_alone, mut agent_alone, mut quiet) = (0, 0, 0, 0);
+    for frame in samples.chunks(160) {
+        let low = fcp_testkit::media::goertzel_ratio(frame, 440);
+        let high = fcp_testkit::media::goertzel_ratio(frame, 880);
+        // One tone on its own reads about 0.87 (the ratio leaks into
+        // neighbouring bins), so two mixed tones can never sum to much
+        // more than that: 0.7 measured 0.71 here and nothing on CI.
+        match (low > 0.2, high > 0.2) {
+            (true, true) if low + high > 0.55 => together += 1,
+            (true, false) => caller_alone += 1,
+            (false, true) => agent_alone += 1,
+            (false, false) => quiet += 1,
+            _ => {}
+        }
+    }
+    // Which frames a failure has says what went wrong: the caller's or the
+    // agent's audio missing from the mix, or the two written one after the
+    // other rather than over each other.
     assert!(
         together >= 10,
-        "the caller and the agent overlap in {together} frames of {}",
+        "the caller and the agent overlap in {together} frames of {}:          {caller_alone} have the caller alone, {agent_alone} the agent alone, {quiet} neither",
         samples.len() / 160
     );
     stack.finish().await;
