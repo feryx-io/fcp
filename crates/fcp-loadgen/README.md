@@ -55,6 +55,20 @@ Any of `--max-p99-invite-ms`, `--min-admitted-cps`, `--max-rtp-loss`,
 `--max-p99-register-ms` turns the run into a gate: the summary says which
 held, and the process exits non-zero if one did not.
 
+## How big a run one process can drive
+
+A phone is a SIP endpoint with sockets and timers, and they all live in
+the harness's process. Past roughly **100 phones on a small box** the
+generator becomes the thing being measured: the same register storm,
+against a node that stayed at 1 % CPU and answered every request,
+measured p50 10 ms at 30 phones, 18 ms at 100, and **1525 ms at 300**
+(`docs/CAPACITY_AND_SURVIVABILITY.md` §13, phase 4).
+
+So: keep one process under about 100 phones on hardware like that, run
+several processes for more, and put them on a different machine from the
+node before quoting any number. A run whose latencies rise while the
+node's CPU stays flat is measuring itself.
+
 ## Where the numbers come from
 
 Real runs are manual, on hardware worth naming, and their numbers go in

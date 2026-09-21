@@ -169,6 +169,37 @@ impl Phones {
     }
 }
 
+/// Keep every phone registered for the length of the run.
+///
+/// A registration lapses; a run outlives it. Without this the third rung
+/// of a ramp meets a node with no binding for the callee and every call
+/// comes back `480` — which is what the harness's first measured run
+/// reported as a capacity cliff at six calls a second
+/// (`docs/CAPACITY_AND_SURVIVABILITY.md` §13 phase 4). A device refreshes
+/// halfway through its lifetime; so does this.
+///
+/// The refreshes are counted like any other registration: they are work
+/// the node really does, and the summary keeps them apart from the calls.
+async fn keep_registered(
+    phones: Vec<Arc<Phone>>,
+    opts: Arc<RunOptions>,
+    counters: Arc<Counters>,
+    stop: Arc<AtomicBool>,
+) {
+    let every = Duration::from_secs((opts.register_expiry as u64 / 2).max(1));
+    loop {
+        tokio::time::sleep(every).await;
+        if stop.load(Ordering::Relaxed) {
+            return;
+        }
+        for phone in &phones {
+            let (code, took) = register(phone, opts.register_expiry).await;
+            counters.registered(code);
+            counters.register.record(took);
+        }
+    }
+}
+
 /// Answer the calls that arrive at one phone until the run is over, and
 /// play a tone back on each.
 ///
@@ -230,20 +261,21 @@ async fn register(phone: &Phone, expiry: u32) -> (u16, Duration) {
     (code, began.elapsed())
 }
 
-/// Place one call, hold it, and measure what came back.
+/// Place one call, hold it, and measure what came back. Whether it was
+/// answered, for a caller deciding what to do next.
 async fn one_call(
     phone: Arc<Phone>,
     destination: String,
     opts: Arc<RunOptions>,
     counters: Arc<Counters>,
-) {
+) -> bool {
     counters.offered();
     let call = match phone.call(&destination).await {
         Ok(call) => call,
         Err(e) => {
             debug!(error = %e, "INVITE could not be sent");
             counters.outcome(0);
-            return;
+            return false;
         }
     };
     let answer_within = Duration::from_secs(20);
@@ -267,7 +299,7 @@ async fn one_call(
         None => counters.outcome(0),
     }
     if !answered {
-        return;
+        return false;
     }
 
     // Hold the call with a tone each way, then report what this leg
@@ -290,12 +322,23 @@ async fn one_call(
     });
     if ended_early || call.phase() != CallPhase::Answered {
         counters.dropped();
-        return;
+        return true;
     }
     if let Err(e) = call.hangup().await {
         debug!(error = %e, "BYE failed");
     }
+    true
 }
+
+/// What a caller waits before redialling a call that was not answered.
+///
+/// A soak keeps a population of calls up by placing another as each one
+/// ends. When they are refused instead — the node is full, or the callee
+/// has no binding — "as each one ends" is immediate, and the population
+/// becomes a flood: the harness's own first run offered 796 calls where
+/// 100 were meant to be held (`docs/CAPACITY_AND_SURVIVABILITY.md` §13
+/// phase 4). A refused caller waits, as a person would.
+const REDIAL_PAUSE: Duration = Duration::from_secs(1);
 
 /// Offer calls at `cps` until `stop` says otherwise or `for_` elapses.
 /// Returns when every call it placed has finished.
@@ -389,11 +432,38 @@ pub async fn run(opts: RunOptions) -> Result<Report> {
         })
         .collect();
 
+    // The storm registers as its whole purpose; every other profile has
+    // to keep its devices registered while it does something else.
+    let refresher = (opts.profile != Profile::RegisterStorm).then(|| {
+        let phones: Vec<Arc<Phone>> = phones
+            .callers
+            .iter()
+            .chain(phones.callees.iter())
+            .map(Arc::clone)
+            .collect();
+        tokio::spawn(keep_registered(
+            phones,
+            Arc::clone(&opts),
+            Arc::clone(&counters),
+            Arc::clone(&stop),
+        ))
+    });
+
+    // The load's own clock: rates are what the node was offered while the
+    // run was offering, not counting the phones starting and registering.
+    let load_began = Instant::now();
     match opts.profile {
         Profile::RegisterStorm => register_storm(&phones, &opts, &counters).await,
         Profile::Soak => soak(&phones, &opts, &counters).await,
         Profile::CallRamp => rungs = call_ramp(&phones, &opts, &counters, &stop).await,
         Profile::Mixed => mixed(&phones, &opts, &counters, &stop).await,
+    }
+
+    let load_elapsed = load_began.elapsed();
+    stop.store(true, Ordering::Relaxed);
+    if let Some(refresher) = refresher {
+        refresher.abort();
+        let _ = refresher.await;
     }
 
     // Stop answering, and give the calls already answered their moment
@@ -408,7 +478,7 @@ pub async fn run(opts: RunOptions) -> Result<Report> {
         }
     }
     let elapsed = began.elapsed();
-    let measurements = counters.summarise(elapsed);
+    let measurements = counters.summarise(load_elapsed);
     let budgets = opts.budget.judge(&measurements);
     let samples = sampler.finish().await;
     Ok(Report {
@@ -457,13 +527,16 @@ async fn soak(phones: &Phones, opts: &Arc<RunOptions>, counters: &Arc<Counters>)
         let counters = Arc::clone(counters);
         tasks.push(tokio::spawn(async move {
             while Instant::now() < deadline {
-                one_call(
+                let answered = one_call(
                     Arc::clone(&phone),
                     destination.clone(),
                     Arc::clone(&opts),
                     Arc::clone(&counters),
                 )
                 .await;
+                if !answered {
+                    tokio::time::sleep(REDIAL_PAUSE).await;
+                }
             }
         }));
     }
@@ -492,7 +565,10 @@ async fn call_ramp(
         let for_ = Duration::from_secs(opts.rung_secs).min(left);
         info!(cps, secs = for_.as_secs(), "rung");
         offer_calls(phones, opts, &rung_counters, cps, for_, stop).await;
-        let measurements = rung_counters.summarise(began.elapsed());
+        // Over the window the rung offered in: `offer_calls` waits for the
+        // last call it placed to end, and counting that tail would report
+        // a rate the rung never offered.
+        let measurements = rung_counters.summarise(for_);
         // The run's totals are every rung together.
         counters.absorb(&rung_counters);
         let why = rung_verdict(opts, &measurements);
