@@ -169,6 +169,110 @@ enum Playing {
 }
 
 /// One media leg: the socket, what is being sent, what has been heard.
+/// What a leg heard of the stream sent to it: how much arrived, and what
+/// the network (or the node) did to it on the way
+/// (`docs/CAPACITY_AND_SURVIVABILITY.md` §8). Read with
+/// [`MediaLeg::stream_stats`].
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct StreamStats {
+    /// Packets that arrived, telephone-events included.
+    pub received: u64,
+    /// Packets the far end sent that never did, from the sequence
+    /// numbers: the highest seen minus the first, less what arrived.
+    /// Never negative — a stream with duplicates reports zero rather
+    /// than a gain.
+    pub lost: u64,
+    /// Packets that arrived after a later one had already been seen.
+    pub out_of_order: u64,
+    /// Packets that arrived twice.
+    pub duplicates: u64,
+    /// RFC 3550 §6.4.1 interarrival jitter, in milliseconds, over the
+    /// stream's own clock rate (8 kHz here).
+    pub jitter_ms: f64,
+}
+
+impl StreamStats {
+    /// Loss as a fraction of what was sent (0.0–1.0); zero when nothing
+    /// arrived at all, which the caller sees from `received`.
+    pub fn loss_fraction(&self) -> f64 {
+        let sent = self.received + self.lost;
+        if sent == 0 {
+            return 0.0;
+        }
+        self.lost as f64 / sent as f64
+    }
+}
+
+/// The receiver's running view of one stream, kept per SSRC so a stream
+/// that restarts (a leg swapped under a live call) does not read as a
+/// storm of loss.
+#[derive(Default)]
+struct StreamTally {
+    ssrc: Option<u32>,
+    first_seq: u16,
+    highest_seq: u16,
+    cycles: u64,
+    received: u64,
+    out_of_order: u64,
+    duplicates: u64,
+    seen: HashSet<u32>,
+    /// RFC 3550's jitter, in timestamp units.
+    jitter: f64,
+    last_transit: Option<f64>,
+}
+
+impl StreamTally {
+    /// One packet, by its sequence number and timestamp, arriving now.
+    fn packet(&mut self, ssrc: u32, seq: u16, timestamp: u32, arrival_ms: f64, clock_hz: f64) {
+        if self.ssrc != Some(ssrc) {
+            *self = Self {
+                ssrc: Some(ssrc),
+                first_seq: seq,
+                highest_seq: seq,
+                ..Self::default()
+            };
+        }
+        self.received += 1;
+        let extended = self.cycles + seq as u64;
+        if !self.seen.insert(extended as u32) {
+            self.duplicates += 1;
+        }
+        if seq_newer(seq, self.highest_seq) {
+            // A wrap is a jump backwards of most of the sequence space.
+            if seq < self.highest_seq {
+                self.cycles += u16::MAX as u64 + 1;
+            }
+            self.highest_seq = seq;
+        } else if seq != self.highest_seq {
+            self.out_of_order += 1;
+        }
+        // RFC 3550 §6.4.1: D(i-1,i) smoothed by 1/16.
+        let transit = arrival_ms * clock_hz / 1000.0 - timestamp as f64;
+        if let Some(last) = self.last_transit {
+            let d = (transit - last).abs();
+            self.jitter += (d - self.jitter) / 16.0;
+        }
+        self.last_transit = Some(transit);
+    }
+
+    fn stats(&self, clock_hz: f64) -> StreamStats {
+        let expected = self.cycles + self.highest_seq as u64 + 1 - self.first_seq as u64;
+        StreamStats {
+            received: self.received,
+            lost: expected.saturating_sub(self.received),
+            out_of_order: self.out_of_order,
+            duplicates: self.duplicates,
+            jitter_ms: self.jitter * 1000.0 / clock_hz,
+        }
+    }
+}
+
+/// Whether `seq` is later than `than`, over a 16-bit space that wraps
+/// (RFC 1982 serial arithmetic).
+fn seq_newer(seq: u16, than: u16) -> bool {
+    seq != than && seq.wrapping_sub(than) < u16::MAX / 2
+}
+
 pub struct MediaLeg {
     socket: Arc<RtpSocketPair>,
     pub local_port: u16,
@@ -178,6 +282,8 @@ pub struct MediaLeg {
     heard: Arc<Mutex<Heard>>,
     packets_received: Arc<AtomicU64>,
     packets_sent: Arc<AtomicU64>,
+    /// What the stream sent to this leg looked like on arrival.
+    tally: Arc<Mutex<StreamTally>>,
     dtmf_tx: mpsc::UnboundedSender<char>,
     stop: tokio::sync::watch::Sender<bool>,
 }
@@ -209,6 +315,7 @@ impl MediaLeg {
             heard: Arc::new(Mutex::new(Heard::default())),
             packets_received: Arc::new(AtomicU64::new(0)),
             packets_sent: Arc::new(AtomicU64::new(0)),
+            tally: Arc::new(Mutex::new(StreamTally::default())),
             dtmf_tx,
             stop,
         };
@@ -333,6 +440,13 @@ impl MediaLeg {
 
     pub fn packets_received(&self) -> u64 {
         self.packets_received.load(Ordering::Relaxed)
+    }
+
+    /// What this leg heard of the stream sent to it: loss, reordering and
+    /// jitter, for a run that has to report media quality rather than
+    /// only that a tone arrived (`docs/CAPACITY_AND_SURVIVABILITY.md` §8).
+    pub fn stream_stats(&self) -> StreamStats {
+        self.tally.lock().unwrap().stats(8000.0)
     }
 
     pub fn packets_sent(&self) -> u64 {
@@ -486,6 +600,8 @@ impl MediaLeg {
         let watched = Arc::clone(&self.watched);
         let heard = Arc::clone(&self.heard);
         let received = Arc::clone(&self.packets_received);
+        let tally = Arc::clone(&self.tally);
+        let opened = Instant::now();
         tokio::spawn(async move {
             let mut detector = Rfc2833Detector::new(8000);
             // RFC 4733 §2.5.1.4: the end of an event is sent three times,
@@ -501,6 +617,13 @@ impl MediaLeg {
                     },
                 };
                 received.fetch_add(1, Ordering::Relaxed);
+                tally.lock().unwrap().packet(
+                    pkt.header.ssrc,
+                    pkt.header.sequence_number,
+                    pkt.header.timestamp,
+                    opened.elapsed().as_secs_f64() * 1000.0,
+                    8000.0,
+                );
                 let pt = pkt.header.payload_type();
                 let te = remote
                     .read()

@@ -29,7 +29,8 @@ pub mod smoke;
 pub mod wav;
 
 pub use db::TestDatabase;
-pub use phone::{Call, IncomingCall, Phone, PhoneEvent};
+pub use media::StreamStats;
+pub use phone::{Call, CallTimings, IncomingCall, Phone, PhoneEvent};
 pub use seed::Seed;
 pub use service::Service;
 pub use sinks::{Email, HttpSink, SmtpSink};

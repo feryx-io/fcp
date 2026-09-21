@@ -19,6 +19,12 @@ pub struct Service {
 }
 
 impl Service {
+    /// The process id, while it is running: what a load run samples
+    /// `/proc/<pid>` for (`docs/CAPACITY_AND_SURVIVABILITY.md` §8).
+    pub fn pid(&self) -> Option<u32> {
+        self.child.id()
+    }
+
     /// Start `bin` with `--config <config_toml>` and wait until
     /// `health_url` answers 200 (up to 45 s). Panics, with the process's
     /// output, if it exits or never becomes healthy.
