@@ -586,12 +586,20 @@ async fn main() -> Result<()> {
         .route("/health", get(health_handler))
         .route(
             "/metrics",
-            get(move || {
-                let metrics = metrics_state.clone();
-                async move {
-                    match metrics {
-                        Some(metrics) => metrics.prometheus(),
-                        None => String::new(),
+            get({
+                let bridge_state = state.clone();
+                move || {
+                    let metrics = metrics_state.clone();
+                    let state = bridge_state.clone();
+                    async move {
+                        let mut body = match metrics {
+                            Some(metrics) => metrics.prometheus(),
+                            None => String::new(),
+                        };
+                        // What crosses to each peer region
+                        // (docs/MULTI_REGION_FOLLOWUPS.md §2.4).
+                        body.push_str(&bridge_prometheus(&state));
+                        body
                     }
                 }
             }),
@@ -995,6 +1003,27 @@ async fn status_handler(State(state): State<AppState>) -> impl IntoResponse {
     });
 
     Json(status)
+}
+
+/// The per-peer bridge counters for `/metrics`; empty without a bridge.
+#[cfg(feature = "redis-events")]
+fn bridge_prometheus(state: &AppState) -> String {
+    let region = state
+        .local_region
+        .clone()
+        .unwrap_or_default()
+        .replace('"', "");
+    let labels = if region.is_empty() {
+        String::new()
+    } else {
+        format!("region=\"{region}\"")
+    };
+    fcp_storage_redis::event_bus::peers_prometheus(&bridge_status(state), &labels)
+}
+
+#[cfg(not(feature = "redis-events"))]
+fn bridge_prometheus(_state: &AppState) -> String {
+    String::new()
 }
 
 /// Per-peer bridge status for `/status`; empty without a bridge.

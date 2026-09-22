@@ -20,6 +20,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use tokio::sync::RwLock;
@@ -780,6 +781,96 @@ pub trait TenantStore: Send + Sync {
 }
 
 /// Storage backend for SIP registrations.
+/// How often a registration has been looked up in the store, and why
+/// (`docs/MULTI_REGION_FOLLOWUPS.md` §2.1, phase 1).
+///
+/// Registrations are the one hot-path store that is read from the primary
+/// and never cached, so in a deployment whose primary is in another region
+/// every one of these is a round trip across it. The estimate in the
+/// survey — two per call, times the domain aliases, times the members of a
+/// hunt group — is arithmetic; this makes it a number a deployment can
+/// read off `/status` and graph from `/metrics`, which is what phase 2's
+/// cache will be judged against.
+///
+/// Counting only, deliberately: nothing here changes what a call does.
+#[derive(Debug, Default)]
+pub struct RegistrationReads {
+    /// The address of record was looked up as asked.
+    direct: AtomicU64,
+    /// The same lookup again at one of the node's domain aliases. Every
+    /// alias past the first is another round trip
+    /// (`fcp-sip/src/registrar.rs`, `get_registration_rows_impl`).
+    alias: AtomicU64,
+    /// A read that is not on the call path: REGISTER handling, expiry
+    /// sweeps, deregistration.
+    housekeeping: AtomicU64,
+}
+
+/// Why a registration was read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegistrationRead {
+    /// The address of record as asked for.
+    Direct,
+    /// The same address at one of this node's domain aliases.
+    Alias,
+    /// Not the call path: REGISTER, expiry, deregistration.
+    Housekeeping,
+}
+
+impl RegistrationReads {
+    /// The counts this process has accumulated.
+    pub fn global() -> &'static RegistrationReads {
+        static READS: std::sync::OnceLock<RegistrationReads> = std::sync::OnceLock::new();
+        READS.get_or_init(RegistrationReads::default)
+    }
+
+    /// Note one round trip to the registration store.
+    pub fn note(&self, read: RegistrationRead) {
+        let counter = match read {
+            RegistrationRead::Direct => &self.direct,
+            RegistrationRead::Alias => &self.alias,
+            RegistrationRead::Housekeeping => &self.housekeeping,
+        };
+        counter.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// `(direct, alias, housekeeping)`.
+    pub fn counts(&self) -> (u64, u64, u64) {
+        (
+            self.direct.load(Ordering::Relaxed),
+            self.alias.load(Ordering::Relaxed),
+            self.housekeeping.load(Ordering::Relaxed),
+        )
+    }
+
+    /// Every round trip, whatever the reason.
+    pub fn total(&self) -> u64 {
+        let (direct, alias, housekeeping) = self.counts();
+        direct + alias + housekeeping
+    }
+
+    /// The counts as Prometheus series, so reads-per-call is a query
+    /// against `fcp_calls_total` rather than arithmetic in a document.
+    pub fn prometheus(&self, labels: &str) -> String {
+        let (direct, alias, housekeeping) = self.counts();
+        let sep = if labels.is_empty() { "" } else { "," };
+        let mut out = String::from(
+            "# HELP fcp_registration_reads_total Registration lookups in the store, by reason.\n\
+             # TYPE fcp_registration_reads_total counter\n",
+        );
+        for (reason, n) in [
+            ("direct", direct),
+            ("alias", alias),
+            ("housekeeping", housekeeping),
+        ] {
+            out.push_str(&format!(
+                "fcp_registration_reads_total{{{labels}{sep}reason=\"{reason}\"}} {n}\n"
+            ));
+        }
+        out
+    }
+}
+
 #[async_trait]
 pub trait RegistrationStore: Send + Sync {
     /// Get all registrations for an Address-of-Record.
@@ -4503,5 +4594,65 @@ mod tests {
 
         // Cleanup
         tokio::fs::remove_dir_all(temp_dir).await.ok();
+    }
+}
+
+#[cfg(test)]
+mod registration_read_tests {
+    use super::*;
+
+    #[test]
+    fn a_read_is_counted_under_the_reason_it_was_made_for() {
+        // The global is shared, so this asserts on deltas rather than on
+        // absolute values: another test in the binary may have counted too.
+        let reads = RegistrationReads::default();
+        assert_eq!(reads.counts(), (0, 0, 0));
+        assert_eq!(reads.total(), 0);
+
+        reads.note(RegistrationRead::Direct);
+        reads.note(RegistrationRead::Alias);
+        reads.note(RegistrationRead::Alias);
+        reads.note(RegistrationRead::Housekeeping);
+
+        assert_eq!(reads.counts(), (1, 2, 1));
+        assert_eq!(reads.total(), 4, "every round trip counts once");
+    }
+
+    #[test]
+    fn the_series_carry_the_reason_and_the_labels() {
+        let reads = RegistrationReads::default();
+        reads.note(RegistrationRead::Direct);
+        reads.note(RegistrationRead::Alias);
+
+        let body = reads.prometheus("node=\"cm-1\"");
+        assert!(body.contains("# TYPE fcp_registration_reads_total counter"));
+        assert!(
+            body.contains("fcp_registration_reads_total{node=\"cm-1\",reason=\"direct\"} 1"),
+            "{body}"
+        );
+        assert!(
+            body.contains("fcp_registration_reads_total{node=\"cm-1\",reason=\"alias\"} 1"),
+            "{body}"
+        );
+        // A reason with no reads is still published, so a graph does not
+        // start existing only once something goes wrong.
+        assert!(body.contains("reason=\"housekeeping\"} 0"), "{body}");
+    }
+
+    #[test]
+    fn the_series_are_well_formed_without_labels() {
+        let body = RegistrationReads::default().prometheus("");
+        assert!(
+            body.contains("fcp_registration_reads_total{reason=\"direct\"} 0"),
+            "{body}"
+        );
+        assert!(!body.contains("{,"), "no stray separator: {body}");
+    }
+
+    #[test]
+    fn the_global_is_one_counter() {
+        let before = RegistrationReads::global().total();
+        RegistrationReads::global().note(RegistrationRead::Direct);
+        assert_eq!(RegistrationReads::global().total(), before + 1);
     }
 }

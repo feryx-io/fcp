@@ -452,6 +452,143 @@ acl = { default_action = "Allow", rules = [{ cidr = "127.0.0.1/32", action = "De
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_call_setup_says_how_many_registration_reads_it_costs() {
+    // `docs/MULTI_REGION_FOLLOWUPS.md` §2.1, phase 1. Registrations are
+    // the one hot-path store that is neither cached nor replica-served, so
+    // in a deployment whose primary is in another region each of these is
+    // a round trip across it. The survey estimated the count; this
+    // measures it, and phase 2's cache will be judged against the number.
+    //
+    // A count, not a timing: a loaded CI box says nothing about latency.
+    let stack = stack_or_skip!();
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let bob = stack.seed.user("bob", "bob-pw", "1002").await;
+    let alice_phone = stack.phone(&alice).await;
+    let bob_phone = stack.phone(&bob).await;
+    assert_eq!(alice_phone.register().await.unwrap(), 200);
+    assert_eq!(bob_phone.register().await.unwrap(), 200);
+    bob_phone.auto_answer(true);
+
+    let reads = |body: &serde_json::Value| -> (u64, u64, u64) {
+        let r = &body["registration_reads"];
+        (
+            r["direct"].as_u64().unwrap_or_default(),
+            r["alias"].as_u64().unwrap_or_default(),
+            r["total"].as_u64().unwrap_or_default(),
+        )
+    };
+
+    let before = reads(&stack.get("/status").await);
+    let call = alice_phone.call(&bob.extension).await.unwrap();
+    call.answered(SOON).await.unwrap();
+    assert_eq!(call.hangup().await.unwrap(), 200);
+    let after = reads(&stack.get("/status").await);
+
+    let direct = after.0 - before.0;
+    let alias = after.1 - before.1;
+    let total = after.2 - before.2;
+
+    // What the survey claimed: at least the caller's bindings for
+    // admission and the callee's for routing. If this ever drops to zero
+    // the counter has come unwired, and if it climbs the call path has
+    // grown a lookup nobody noticed.
+    assert!(
+        (2..=6).contains(&direct),
+        "a two-party call made {direct} direct registration reads \
+         (alias {alias}, total {total}); §2.1 expects about two"
+    );
+    // No domain aliases are configured here, so none of them are alias
+    // reads — that multiplication is a deployment's to pay.
+    assert_eq!(
+        alias, 0,
+        "no aliases are configured, so no lookup should be an alias read"
+    );
+    // Housekeeping (REGISTER handling, expiry) is counted apart, so the
+    // total is never less than the call-path reads.
+    assert!(
+        total >= direct + alias,
+        "total {total} is less than the call-path reads ({direct} + {alias})"
+    );
+    eprintln!(
+        "PHASE1 registration reads for one two-party call: \
+         direct={direct} alias={alias} total={total}"
+    );
+
+    // And the same counts are on /metrics, which is what a deployment
+    // actually graphs.
+    let (code, body) = fcp_testkit::smoke::http_request(
+        "GET",
+        &fcp_testkit::smoke::loopback(stack.http, "/metrics"),
+        &[],
+        None,
+    )
+    .await
+    .expect("metrics");
+    assert_eq!(code, 200);
+    assert!(
+        body.contains("fcp_registration_reads_total{") && body.contains("reason=\"direct\""),
+        "the reads are not on /metrics"
+    );
+
+    stack.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn domain_aliases_multiply_every_registration_read() {
+    // The other half of `docs/MULTI_REGION_FOLLOWUPS.md` §2.1: each alias
+    // is its own round trip, so a deployment with aliases pays the §2.1
+    // cost several times over. Estimated in the survey; measured here.
+    let aliases = r#"domain_aliases = ["e2e.local", "alias-one.local", "alias-two.local"]"#;
+    let Some(stack) = Stack::start_registrar(aliases, "", "", 40).await else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let bob = stack.seed.user("bob", "bob-pw", "1002").await;
+    let alice_phone = stack.phone(&alice).await;
+    let bob_phone = stack.phone(&bob).await;
+    assert_eq!(alice_phone.register().await.unwrap(), 200);
+    assert_eq!(bob_phone.register().await.unwrap(), 200);
+    bob_phone.auto_answer(true);
+
+    let counts = |body: &serde_json::Value| -> (u64, u64) {
+        let r = &body["registration_reads"];
+        (
+            r["direct"].as_u64().unwrap_or_default(),
+            r["alias"].as_u64().unwrap_or_default(),
+        )
+    };
+
+    let before = counts(&stack.get("/status").await);
+    let call = alice_phone.call(&bob.extension).await.unwrap();
+    call.answered(SOON).await.unwrap();
+    assert_eq!(call.hangup().await.unwrap(), 200);
+    let after = counts(&stack.get("/status").await);
+
+    let direct = after.0 - before.0;
+    let alias = after.1 - before.1;
+    eprintln!(
+        "PHASE1 with two aliases: direct={direct} alias={alias} \
+         (total {})",
+        direct + alias
+    );
+
+    // Two aliases beside the AOR's own domain: each direct lookup is
+    // followed by a lookup at each of the others.
+    assert!(
+        alias > 0,
+        "aliases are configured but no lookup was counted as an alias read"
+    );
+    assert!(
+        alias >= direct,
+        "with two aliases each lookup should cost at least one more \
+         (direct {direct}, alias {alias})"
+    );
+
+    stack.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_call_is_answered_heard_both_ways_and_recorded() {
     let stack = stack_or_skip!();
     let alice = stack.seed.user("alice", "alice-pw", "1001").await;

@@ -314,7 +314,7 @@ impl LocationStoreAdapter {
     }
 
     async fn lookup_in_tenant(&self, tenant_id: &TenantId, aor: &str) -> Result<Vec<Binding>> {
-        self.rows_in_tenant(tenant_id, aor)
+        self.rows_in_tenant(tenant_id, aor, fcp_core::storage::RegistrationRead::Direct)
             .await?
             .iter()
             .map(Self::to_binding)
@@ -324,7 +324,16 @@ impl LocationStoreAdapter {
     /// The live registrations for an AOR as stored — the rows behind
     /// [`LocationStoreAdapter::lookup_in_tenant`], which carry the address
     /// the REGISTER came from.
-    async fn rows_in_tenant(&self, tenant_id: &TenantId, aor: &str) -> Result<Vec<Registration>> {
+    /// One round trip to the registration store. `read` says why, so
+    /// `/status` can tell a lookup from the alias lookups that follow it
+    /// (`docs/MULTI_REGION_FOLLOWUPS.md` §2.1).
+    async fn rows_in_tenant(
+        &self,
+        tenant_id: &TenantId,
+        aor: &str,
+        read: fcp_core::storage::RegistrationRead,
+    ) -> Result<Vec<Registration>> {
+        fcp_core::storage::RegistrationReads::global().note(read);
         let registrations = self
             .store
             .get_registrations_in_tenant(tenant_id, aor)
@@ -431,6 +440,8 @@ impl AsyncLocationStore for LocationStoreAdapter {
     async fn remove(&self, aor: &str, contact: &str) -> Result<()> {
         // For removal, we need to normalize contacts for matching since rinstance changes
         // Get all registrations for this AOR
+        fcp_core::storage::RegistrationReads::global()
+            .note(fcp_core::storage::RegistrationRead::Housekeeping);
         let registrations = self.store.get_registrations(aor).await?;
 
         debug!(
@@ -490,6 +501,8 @@ impl AsyncLocationStore for LocationStoreAdapter {
     }
 
     async fn lookup(&self, aor: &str) -> Result<Vec<Binding>> {
+        fcp_core::storage::RegistrationReads::global()
+            .note(fcp_core::storage::RegistrationRead::Housekeeping);
         let registrations = self.store.get_registrations(aor).await?;
 
         // Filter out expired registrations
@@ -1533,7 +1546,11 @@ impl FcpRegistrar {
         // Look up the primary AOR
         let mut all_rows = self
             .location_store
-            .rows_in_tenant(tenant_id, &normalized)
+            .rows_in_tenant(
+                tenant_id,
+                &normalized,
+                fcp_core::storage::RegistrationRead::Direct,
+            )
             .await?;
 
         // If domain aliases are configured, check for registrations at aliased domains
@@ -1553,7 +1570,13 @@ impl FcpRegistrar {
                             let aliased_aor = format!("sip:{}@{}", user, alias);
                             if let Ok(mut rows) = self
                                 .location_store
-                                .rows_in_tenant(tenant_id, &aliased_aor)
+                                .rows_in_tenant(
+                                    tenant_id,
+                                    &aliased_aor,
+                                    // The multiplication §2.1 names: every
+                                    // alias past the first is another trip.
+                                    fcp_core::storage::RegistrationRead::Alias,
+                                )
                                 .await
                             {
                                 debug!(
