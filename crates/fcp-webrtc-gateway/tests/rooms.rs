@@ -383,6 +383,9 @@ udp_bind = "127.0.0.1:{sip}"
 tcp_bind = "127.0.0.1:{sip}"
 local_ip = "127.0.0.1"
 local_uri = "sip:conference@127.0.0.1:{sip}"
+# The gateway names the record each browser's leg belongs to
+# (`docs/EDGE_SECURITY.md` §2.3), so the room believes what it says.
+trusted_edges = ["127.0.0.1"]
 
 [storage]
 database_url = "{db_url}"

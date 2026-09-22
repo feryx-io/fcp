@@ -253,6 +253,17 @@ pub struct SipSection {
     #[serde(default)]
     pub tls_bind: Option<String>,
 
+    /// The peers whose `X-FCP-*` claims about a call this node believes,
+    /// as addresses or CIDR ranges (`docs/EDGE_SECURITY.md` §2.3): the
+    /// WebRTC gateway and the call manager, which name the record a leg
+    /// belongs to in `X-FCP-Call-Id`. From any other peer those headers
+    /// are taken away before anything reads them, since a caller who
+    /// chooses the id chooses whose call their leg is billed against.
+    /// Empty believes nobody. Inter-node trunks are not listed here:
+    /// they prove themselves with a client certificate.
+    #[serde(default)]
+    pub trusted_edges: Vec<String>,
+
     /// PEM bundle of the CA(s) that (a) client certificates presented on
     /// the TLS and WSS listeners must chain to and (b) the certificates
     /// of peer nodes this node dials over TLS are accepted under. This is
@@ -325,6 +336,7 @@ impl Default for SipSection {
             tls_cert_path: None,
             tls_key_path: None,
             tls_bind: None,
+            trusted_edges: Vec::new(),
             tls_client_ca_path: None,
             tls_client_auth: default_tls_client_auth(),
             tls_client_cert_path: None,

@@ -380,8 +380,28 @@ request now resolves by its `From`; and the flag is off for one release
 behind a startup warning, so the accepted cost is that a caller who
 cannot answer a challenge cannot dial 911 either, exactly as an
 unadmitted source already could not. The floor test fails with the flag
-off, which is §2.1 in one assertion. Phase 3, one gate for what a peer
-claims, is next.
+off, which is §2.1 in one assertion. Phase 3 done (v0.25.225): one gate
+for what a peer claims. `fcp-sip/src/claims.rs` removes at ingress —
+before anything reads the request — what an untrusted peer has no
+standing to assert, so a reader written later is gated by construction
+rather than by somebody remembering. The audit §2.3 asked for found four
+readers: `X-FCP-Call-Id` naming the record a conference leg is filed
+under, `X-FCP-Transferred-From` naming the call a record is correlated
+with, `P-Asserted-Identity` deciding the name and number a room shows
+for a participant, and the `Alert-Info` / `Call-Info` /
+`X-FCP-Intercom-Mode` trio that is how this platform's own intercom
+makes a phone answer itself. The identity one was demonstrated on the
+floor before the fix: a phone dialling a room with
+`P-Asserted-Identity: <sip:+15125550100@carrier.example>` was listed as
+`+15125550100`. The auto-answer copy is narrower than it looks — it
+happens on the hunt-group and forward-on-no-answer paths, not an
+ordinary call — and was not reproduced end to end, only read in the
+code. Headers with a working gate of their own keep it, and a transfer
+origin naming a call the node actually has still survives from an
+untrusted peer, since a transferred phone carries one legitimately
+(RFC 3261 §19.1.5). The conference server gains `[sip] trusted_edges`,
+which is how the call manager and the gateway beside it keep naming the
+record a leg belongs to. Phase 4, the edge defended, is next.
 
 ## Historical documents
 

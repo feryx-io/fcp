@@ -9,6 +9,14 @@ udp_bind = "0.0.0.0:5060"
 tcp_bind = "0.0.0.0:5060"
 # local_ip = "10.0.0.1"  # Set to your server's LAN IP
 # local_uri = "sip:conference@10.0.0.1:5060"
+# The peers whose X-FCP-* claims about a call this node believes
+# (docs/EDGE_SECURITY.md §2.3), as addresses or CIDR ranges. The call
+# manager and the WebRTC gateway name the record each leg belongs to in
+# X-FCP-Call-Id; from anyone else that header is taken away, since a
+# caller who chooses the id chooses whose call their leg is billed
+# against. Empty believes nobody. Inter-node conference trunks are not
+# listed here — they prove themselves with a client certificate.
+# trusted_edges = ["10.0.0.2", "10.0.0.3"]
 
 [storage]
 database_url = "postgresql://postgres:password@postgres:5432/fcp"

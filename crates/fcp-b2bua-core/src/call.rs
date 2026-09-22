@@ -30,6 +30,12 @@ impl CallId {
     pub fn as_uuid(&self) -> &Uuid {
         &self.0
     }
+
+    /// The call this UUID names, for looking one up from a value that
+    /// arrived as text — a transfer origin, a record id.
+    pub fn from_uuid(uuid: Uuid) -> Self {
+        Self(uuid)
+    }
 }
 
 impl Default for CallId {

@@ -298,6 +298,83 @@ async fn an_invite_is_admitted_by_its_credentials_not_its_address() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_caller_does_not_choose_what_its_record_points_at() {
+    // `docs/EDGE_SECURITY.md` §2.3. `X-FCP-Transferred-From` names the
+    // call a transferred leg came from, and the B2BUA filed it from
+    // whoever sent it. Records are rated, billed, rolled up per tenant
+    // and exported for compliance, so a caller choosing the id chooses
+    // whose call their leg is correlated with. A transfer this node
+    // actually relayed still correlates — that is
+    // `a_blind_transfer_moves_the_caller_to_a_third_phone` — but an
+    // invented id names nothing and is taken away.
+    let stack = stack_or_skip!();
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let bob = stack.seed.user("bob", "bob-pw", "1002").await;
+    let alice_phone = stack.phone(&alice).await;
+    let bob_phone = stack.phone(&bob).await;
+    assert_eq!(alice_phone.register().await.unwrap(), 200);
+    assert_eq!(bob_phone.register().await.unwrap(), 200);
+
+    let invented = "call-11111111-1111-1111-1111-111111111111";
+    let call = alice_phone
+        .call_with_headers(
+            &bob.extension,
+            &[
+                ("X-FCP-Transferred-From", invented),
+                ("X-FCP-Call-Id", invented),
+                ("P-Asserted-Identity", "<sip:+15125550100@carrier.example>"),
+                ("Alert-Info", "<http://x/>;info=alert-autoanswer;delay=0"),
+                ("Call-Info", "<sip:>;answer-after=0"),
+                ("X-FCP-Intercom-Mode", "oneway"),
+            ],
+        )
+        .await
+        .unwrap();
+    let Some(incoming) = bob_phone.incoming(SOON).await else {
+        let why = format!("Bob's phone did not ring; the call is {:?}", call.phase());
+        stack.fail(&why, &alice_phone).await;
+    };
+
+    // Nothing the caller claimed reaches Bob's phone.
+    for claimed in [
+        "Alert-Info",
+        "Call-Info",
+        "X-FCP-Intercom-Mode",
+        "X-FCP-Call-Id",
+        "X-FCP-Transferred-From",
+    ] {
+        assert_eq!(
+            incoming.header(claimed),
+            None,
+            "Bob's phone was told {claimed} by a caller with no standing to say it"
+        );
+    }
+    assert_ne!(
+        incoming.header("P-Asserted-Identity").as_deref(),
+        Some("<sip:+15125550100@carrier.example>"),
+        "a caller is not the network that asserts who is calling"
+    );
+
+    let bob_call = incoming.answer().await.unwrap();
+    call.answered(SOON).await.unwrap();
+    assert_eq!(bob_call.hangup().await.unwrap(), 200);
+
+    // And the record points at nothing, rather than at a call of the
+    // caller's choosing.
+    let records = stack.cdrs(1, SOON).await;
+    let record = records
+        .iter()
+        .find(|r| r["to_uri"].as_str().unwrap_or("").contains(":1002@"))
+        .unwrap_or_else(|| panic!("no record of the call to Bob: {records:#?}"));
+    assert!(
+        record["correlation_id"].is_null(),
+        "the caller filed its record against a call it named: {record}"
+    );
+
+    stack.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_call_is_answered_heard_both_ways_and_recorded() {
     let stack = stack_or_skip!();
     let alice = stack.seed.user("alice", "alice-pw", "1001").await;

@@ -2,8 +2,8 @@
 
 Status: **agreed** (2026-09-21), survey done, Q1 and Q3 settled by the
 user; **phase 1 done** (v0.25.222), **phase 2a done** (v0.25.223),
-**phase 2b done** (v0.25.224). Chosen after the capacity and
-survivability project closed.
+**phase 2b done** (v0.25.224), **phase 3 done** (v0.25.225). Chosen
+after the capacity and survivability project closed.
 
 One document for what an internet-facing FCP node exposes: **who may place
 a call**, **what a peer may claim**, **what a flood costs**, and **what is
@@ -122,7 +122,7 @@ rather than the bindings built from them
 source address. An INVITE naming a user who is registered *somewhere
 else* is logged before it is refused.
 
-### 2.3 A peer names the record its call is filed under
+### 2.3 A peer names the record its call is filed under — fixed (phase 3)
 
 `LegRecord::from_request` reads `X-FCP-Call-Id` from **any** request and
 uses it as the leg's record id
@@ -133,6 +133,65 @@ who chooses the id of a record chooses which call — and whose — their leg
 is correlated with. The header's own documentation says it "correlates
 records and decides nothing else": correlation *is* the thing being
 decided.
+
+The audit phase 3 called for found three more of the same kind, and one
+that is not about records at all:
+
+| Header | Read at | What it decided |
+|---|---|---|
+| `X-FCP-Call-Id` | `conference_handler.rs:168` | which record a conference leg is filed under |
+| `X-FCP-Transferred-From` | `handler.rs:2682` | which call a leg's record is correlated with (`correlation_id`) |
+| `P-Asserted-Identity` | `conference_handler.rs:8458` | the name and number a room shows for a participant |
+| `Alert-Info`, `Call-Info`, `X-FCP-Intercom-Mode` | `handler.rs:3627`, `handler.rs:7992` | how the callee's phone alerts, and the direction of its audio |
+
+The identity one is the sharpest: `extract_caller_info` prefers
+`P-Asserted-Identity` because it is "more trusted on SBC/trunk calls",
+and nothing checked that the peer was an SBC or a trunk. Anyone who could
+dial a room sat in it under any number they liked. Demonstrated on the
+test floor before the fix: a phone dialling with
+`P-Asserted-Identity: <sip:+15125550100@carrier.example>` is listed as
+`+15125550100`.
+
+The last row is narrower than it first looks and worth stating exactly.
+`Alert-Info: <…>;info=alert-autoanswer` and `Call-Info: <sip:>;
+answer-after=0` are what this platform's **own** intercom sends to make a
+phone answer itself (`fcp-pbx/src/intercom.rs`), and
+`collect_outbound_intercom_headers` copies all three from the caller's
+INVITE to the callee — but only on the paths that go through
+`create_outbound_call`, which is hunt groups and forward-on-no-answer,
+not an ordinary call. `is_oneway_intercom_request` is read on the
+ordinary path too and rewrites the callee's leg to `recvonly`. Neither
+was reproduced end to end on the floor; both are plain in the code, and
+neither is something a caller has any standing to say.
+
+Fixed in v0.25.225 by one gate rather than four. `fcp-sip/src/claims.rs`
+names the headers a peer may not assert and removes them at **ingress**,
+before anything reads the request, so a reader written later is gated by
+construction rather than by somebody remembering. It runs in
+`handle_invite` on the call manager and the SBC, and again in the
+conference server's own handler; the conference server gains
+`[sip] trusted_edges`, which is how the call manager and the gateway
+beside it keep naming the record a leg belongs to.
+
+Two things deliberately kept out of the sweep. Headers with a gate of
+their own keep it — `X-FCP-Caller-*` and `X-FCP-Client-Address` against
+`trusted_edges` where they are read, `X-FCP-Trunk-Node` against the
+peer's certificate, `X-FCP-Join` and `X-FCP-Migrate` against their HMAC —
+because those gates work and are tested. And a transfer origin naming a
+call this node actually has survives from an untrusted peer: a blind
+transfer puts the id in the `Refer-To` and the transferred phone copies
+it into its new INVITE (RFC 3261 §19.1.5), so an ordinary phone carries
+one legitimately. An invented id names nothing and goes. A transfer that
+lands on another node of a cluster loses its correlation rather than
+trusting an id nobody there issued.
+
+Costs, accepted: `Alert-Info` and `Call-Info` from an untrusted peer are
+removed outright rather than inspected for auto-answer directives,
+because a blocklist of vendor spellings is the wrong shape for a
+security gate. A deployment that wants a carrier's distinctive ringing
+puts that trunk's address in `trusted_edges` or re-adds the header with
+a header-manipulation rule, which is the same "stripped or re-asserted,
+never passed through" the identity headers get.
 
 ### 2.4 The edge of the default deployment has the fewest defences
 
@@ -236,7 +295,7 @@ One PR each, in order.
 | 1 ✅ | **The registration check, and a test that fails today.** Compare the binding contact's parsed host, and prefer the stored `source_address` where there is one (Q3); a contact's port or parameters can no longer authorise a stranger. Cheap, contained, and the clearest defect found. |
 | 2a ✅ | **The nonce is the node's.** Challenges issued from a tracked `NonceManager`, verified with the nonce-count and the request's identity, `stale=true` where the credentials are right and only the nonce is not — so that the digest phase 2b adds to INVITE is worth adding (§2.7). |
 | 2b ✅ | **Authenticate INVITE.** Digest challenge on INVITE, with the credentials the registrar already uses; `[registrar] auth_invites`, off by default for one release and warned about, then on (Q1). An unauthenticated INVITE is answered `401` with a challenge, not `403` (Q2), so a phone that has lost its credentials can recover. Source-based admission remains for trunks and trusted edges, which have their own proof; loopback loses its bypass, and the digest replaces the registration check for everyone challenged (§2.1). |
-| 3 | **One gate for what a peer claims.** `X-FCP-Call-Id` believed only from a trusted edge or an authenticated inter-node peer, the same way its siblings are; an audit of every `X-FCP-*` reader with a test each; the carrier-injected identity headers stripped or re-asserted, never passed through. |
+| 3 ✅ | **One gate for what a peer claims.** `fcp-sip/src/claims.rs` strips at ingress what an untrusted peer has no standing to assert, so every reader is gated by construction (§2.3): the two record ids, the carrier identity headers, and the auto-answer headers the platform's own intercom uses. Trusted edges and mutual-TLS trunks keep what they send; the conference server gains `[sip] trusted_edges` for the call manager and the gateway beside it. |
 | 4 | **The edge defended.** Per-source INVITE limits and an IP ACL in the shared handler, so the call manager gets what the SBC has; a malformed-SIP policy; sensible defaults that refuse nothing a working deployment does today. |
 | 5 | **The rest of the survey, then fuzzing.** Finish §2.6 and fix what it finds; fuzz targets for the transaction and dialog machines, the registrar and offer/answer, run in CI as the parser's are. |
 
@@ -246,6 +305,11 @@ One PR each, in order.
   substring authorisation, a nonce the node never issued, a captured
   header replayed with another `Contact`, a call id from an untrusted
   peer, an INVITE without credentials.
+- Test floor, phase 3: a caller that names a record gets none — the
+  call manager's `correlation_id` is null rather than the id it invented
+  — and a caller that asserts an identity is shown in the room as the
+  `From` it actually dialled from, not the number it claimed. Both fail
+  with the gate off.
 - Test floor, phase 2b: with `auth_invites` on, a phone that cannot
   answer the challenge cannot place a call as the user it names, while
   that user's own phone — at the same loopback address — can. The test
