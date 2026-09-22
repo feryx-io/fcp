@@ -401,7 +401,32 @@ origin naming a call the node actually has still survives from an
 untrusted peer, since a transferred phone carries one legitimately
 (RFC 3261 §19.1.5). The conference server gains `[sip] trusted_edges`,
 which is how the call manager and the gateway beside it keep naming the
-record a leg belongs to. Phase 4, the edge defended, is next.
+record a leg belongs to. Phase 4 done (v0.25.226): the edge defended.
+The call manager is the edge of every single-binary deployment and had
+none of the defences the SBC has — no address list, no per-source call
+rate, no policy for a message that is not SIP — while `[admission]
+max_cps` is a node-wide budget one source could spend entirely.
+`fcp-sip/src/edge.rs` is the guard, in the shared handler so every binary
+built on it can have the same defences, wired on the call manager from a
+new `[security]` section. Before the parser it checks the address list,
+the message size and whether this is SIP at all, and each of those
+**drops** rather than answering: replying to a denied address confirms
+the port is live and makes the node a reflector. On a parsed request,
+where there is a transaction to answer on, a per-source call rate is
+refused `503` with `Retry-After`, counted only where a call starts so a
+long call is not refused for being put on hold twice.
+`max_invite_cps_per_source` defaults to 20, settled with the user on
+2026-09-22: a bound exists out of the box, several times what a busy
+office behind one NAT peaks at, with `[e911] trusted_edges` exempt since
+an edge carries other people's calls by design. The known cost is a
+carrier trunk above 20 cps from one address, throttled until it is
+listed. The address list is allow-by-default and the malformed policy is
+log-and-drop, which is what the handler already did, so nothing changes
+for a deployment that sets nothing; a typo in a CIDR is a startup error.
+The ACL types moved down from `fcp-sbc-core` into the shared handler so
+there is one implementation, re-exported under the names the SBC's
+configuration has always used. Phase 5, the rest of the survey and then
+fuzzing, is next.
 
 ## Historical documents
 

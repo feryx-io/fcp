@@ -2,8 +2,9 @@
 
 Status: **agreed** (2026-09-21), survey done, Q1 and Q3 settled by the
 user; **phase 1 done** (v0.25.222), **phase 2a done** (v0.25.223),
-**phase 2b done** (v0.25.224), **phase 3 done** (v0.25.225). Chosen
-after the capacity and survivability project closed.
+**phase 2b done** (v0.25.224), **phase 3 done** (v0.25.225), **phase 4
+done** (v0.25.226). Chosen after the capacity and survivability project
+closed.
 
 One document for what an internet-facing FCP node exposes: **who may place
 a call**, **what a peer may claim**, **what a flood costs**, and **what is
@@ -193,7 +194,7 @@ puts that trunk's address in `trusted_edges` or re-adds the header with
 a header-manipulation rule, which is the same "stripped or re-asserted,
 never passed through" the identity headers get.
 
-### 2.4 The edge of the default deployment has the fewest defences
+### 2.4 The edge of the default deployment has the fewest defences — fixed (phase 4)
 
 The call manager is the edge in every single-binary deployment, in
 `deploy/docker-compose` and in the quickstart. It has **no IP ACL** and
@@ -210,6 +211,51 @@ The call manager is the edge in every single-binary deployment, in
 of it; and it is unset by default, so the default deployment has no bound
 at all. The shared handler's `invite_rate`/`reinvite_rate_limit` are
 per-dialog, which bounds one caller's mischief and nothing about the node.
+
+Fixed in v0.25.226. `fcp-sip/src/edge.rs` is the guard, and it lives in
+the **shared handler**, so every binary built on it can have the same
+defences; the call manager wires it from a new `[security]` section. It
+sits in two places, because the two kinds of check can do different
+things:
+
+- **Before the parser, on the bytes**: the address list, the message size
+  and whether this is SIP at all. Each of these **drops**. That is a
+  deliberate difference from the SBC, which answers `403`: replying to an
+  address the node has been told to deny confirms the port is live and
+  makes the node a reflector, and a message that is not SIP has nothing
+  to answer to. The "is this SIP" check is shallow on purpose — a first
+  line that ends in or begins with `SIP/2.0` — because it is not a second
+  parser, it is the cheapest way to tell SIP from a port scan, a TLS
+  hello at the wrong port, or an amplification probe.
+- **On a parsed request, where there is a transaction to answer on**: the
+  per-source call rate, refused `503` with `Retry-After`, the way every
+  other refusal on the platform is (`docs/CAPACITY_AND_SURVIVABILITY.md`
+  §5). Counted only where a call *starts*: a re-INVITE is bounded per
+  dialog already, and counting it here would refuse a long call for being
+  put on hold twice.
+
+`max_invite_cps_per_source` defaults to **20**, settled with the user on
+2026-09-22. A bound now exists out of the box, which is what this section
+complains is missing, and 20 calls a second from one address is several
+times what a busy office behind one NAT peaks at, so it refuses nothing a
+working deployment does. The peers in `[e911] trusted_edges` are exempt,
+because an edge or an inter-node peer carries other people's calls by
+design and its rate is not one device's. The known cost: a carrier trunk
+that legitimately exceeds 20 cps from a single address is throttled until
+it is listed or the limit is raised, and what it gets is a `503` with a
+`Retry-After` rather than a silent drop.
+
+The address list is `Allow` by default with no rules, and the malformed
+policy is log-and-drop, which is exactly what the handler did before
+there was a policy — so nothing changes for a deployment that sets
+nothing. A typo in a CIDR is a startup error rather than a node that
+quietly refuses everyone.
+
+The ACL types are the SBC's, moved down into the shared handler so there
+is one implementation rather than two; `fcp-sbc-core` re-exports them
+under the names its configuration has always used. The SBC keeps its own
+richer pipeline — message size, header counts, URI length, per-method
+limits — which runs before its handler and answers rather than drops.
 
 ### 2.5 The stateful surfaces are not fuzzed
 
@@ -296,7 +342,7 @@ One PR each, in order.
 | 2a ✅ | **The nonce is the node's.** Challenges issued from a tracked `NonceManager`, verified with the nonce-count and the request's identity, `stale=true` where the credentials are right and only the nonce is not — so that the digest phase 2b adds to INVITE is worth adding (§2.7). |
 | 2b ✅ | **Authenticate INVITE.** Digest challenge on INVITE, with the credentials the registrar already uses; `[registrar] auth_invites`, off by default for one release and warned about, then on (Q1). An unauthenticated INVITE is answered `401` with a challenge, not `403` (Q2), so a phone that has lost its credentials can recover. Source-based admission remains for trunks and trusted edges, which have their own proof; loopback loses its bypass, and the digest replaces the registration check for everyone challenged (§2.1). |
 | 3 ✅ | **One gate for what a peer claims.** `fcp-sip/src/claims.rs` strips at ingress what an untrusted peer has no standing to assert, so every reader is gated by construction (§2.3): the two record ids, the carrier identity headers, and the auto-answer headers the platform's own intercom uses. Trusted edges and mutual-TLS trunks keep what they send; the conference server gains `[sip] trusted_edges` for the call manager and the gateway beside it. |
-| 4 | **The edge defended.** Per-source INVITE limits and an IP ACL in the shared handler, so the call manager gets what the SBC has; a malformed-SIP policy; sensible defaults that refuse nothing a working deployment does today. |
+| 4 ✅ | **The edge defended.** `fcp-sip/src/edge.rs` in the shared handler: an address list, a message-size bound and a "is this SIP at all" check before the parser, each dropping rather than answering; a per-source call rate refused `503` on a parsed request. `[security]` on the call manager, `max_invite_cps_per_source = 20` by default, trusted edges exempt (§2.4). |
 | 5 | **The rest of the survey, then fuzzing.** Finish §2.6 and fix what it finds; fuzz targets for the transaction and dialog machines, the registrar and offer/answer, run in CI as the parser's are. |
 
 ## 5. Testing
@@ -305,6 +351,11 @@ One PR each, in order.
   substring authorisation, a nonce the node never issued, a captured
   header replayed with another `Contact`, a call id from an untrusted
   peer, an INVITE without credentials.
+- Test floor, phase 4: eight calls in one second from one address are
+  not all carried — the ones over the limit are refused `503` — and a
+  phone at an address the node denies is answered by nothing at all
+  while the node stays healthy. Both fail with the limit at zero and the
+  rule flipped to `Allow`.
 - Test floor, phase 3: a caller that names a record gets none — the
   call manager's `correlation_id` is null rather than the id it invented
   — and a caller that asserts an identity is shown in the room as the

@@ -536,6 +536,10 @@ pub struct SipMessageHandler {
     default_tenant_id: Option<fcp_core::TenantId>,
     /// Edges whose caller headers are believed (`[e911] trusted_edges`).
     trusted_edges: crate::emergency::TrustedEdges,
+    /// What reaches this node's SIP port, and what a flood of it costs
+    /// (`docs/EDGE_SECURITY.md` §2.4). Absent leaves the handler as it was
+    /// before there was a guard: whatever arrives is parsed.
+    edge_guard: Option<Arc<crate::edge::EdgeGuard>>,
     /// Whether this node tells the next hop where its caller is
     /// (`X-FCP-Client-Address`): an SBC in front of phones does.
     vouch_client_address: bool,
@@ -971,6 +975,7 @@ impl SipMessageHandler {
             storage,
             default_tenant_id: None,
             trusted_edges: Default::default(),
+            edge_guard: None,
             vouch_client_address: false,
             media_manager,
             media_config,
@@ -1140,6 +1145,12 @@ impl SipMessageHandler {
         signer: Option<Arc<dyn crate::trunk_egress::TrunkCallSigner>>,
     ) -> Self {
         self.call_signer = signer;
+        self
+    }
+
+    /// The defences at this node's SIP port (`docs/EDGE_SECURITY.md` §2.4).
+    pub fn with_edge_guard(mut self, guard: Arc<crate::edge::EdgeGuard>) -> Self {
+        self.edge_guard = Some(guard);
         self
     }
 
@@ -1990,6 +2001,28 @@ impl SipMessageHandler {
                     let response = self.handle_reinvite(request).await?;
                     handle.send_final(response).await;
                 } else {
+                    // One source may not spend the whole node's budget
+                    // (`docs/EDGE_SECURITY.md` §2.4). Counted only where a
+                    // call starts: a re-INVITE is bounded per dialog, and
+                    // counting it here would refuse a long call for being
+                    // put on hold twice.
+                    if let Some(guard) = &self.edge_guard {
+                        if let crate::edge::EdgeVerdict::Drop(why) = guard.admit_invite(peer.ip()) {
+                            self.metrics
+                                .inc_counter("fcp_sip_edge_dropped_total", &[("reason", why)]);
+                            let mut response = self.create_simple_response(
+                                request,
+                                503,
+                                "Service Unavailable - source is starting calls too fast",
+                            );
+                            let _ = response
+                                .headers_mut()
+                                .push(SmolStr::new("Retry-After"), SmolStr::new("1"));
+                            handle.send_final(response).await;
+                            return Ok(());
+                        }
+                    }
+
                     // Spawn INVITE handling in separate task to avoid blocking server transaction
                     // This prevents B2BUA from blocking for 32 seconds waiting for B-leg responses
                     let handler = self.clone();
@@ -14119,6 +14152,19 @@ impl InboundMessageHandler for SipMessageHandler {
         stream: Option<mpsc::Sender<Bytes>>,
         peer_identity: Option<Arc<sip_transport::PeerIdentity>>,
     ) -> Result<()> {
+        // What this node accepts at its SIP port
+        // (`docs/EDGE_SECURITY.md` §2.4). Before the parser, and every
+        // refusal here is silent: answering an address the node denies
+        // confirms the port is live and makes it a reflector, and a
+        // message that is not SIP has nothing to answer to.
+        if let Some(guard) = &self.edge_guard {
+            if let crate::edge::EdgeVerdict::Drop(why) = guard.admit_bytes(peer.ip(), &payload) {
+                self.metrics
+                    .inc_counter("fcp_sip_edge_dropped_total", &[("reason", why)]);
+                return Ok(());
+            }
+        }
+
         // Convert transport to string to avoid non-Send issues
         let transport_str = format!("{:?}", transport);
         debug!(

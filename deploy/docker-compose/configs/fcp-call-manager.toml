@@ -9,6 +9,23 @@ sips_bind = "0.0.0.0:5061"
 tls_cert_path = "/app/certs/server.crt"
 tls_key_path = "/app/certs/server.key"
 
+# What reaches this node's SIP port (docs/EDGE_SECURITY.md §2.4). The call
+# manager is the edge of a single-binary deployment, so this is where it is
+# defended. Everything here has a default that refuses nothing: the address
+# list is allow-by-default, and a message that is not SIP is logged and
+# dropped, which is what the handler always did.
+[security]
+# Calls per second one source address may start; 0 is no limit. Peers in
+# [e911] trusted_edges are exempt, since an edge carries other people's
+# calls by design. Raise it for a carrier trunk that legitimately exceeds
+# it from one address — what it gets otherwise is a 503 with a Retry-After.
+max_invite_cps_per_source = 20
+# max_message_bytes = 65536
+# malformed_policy = "log_and_drop"   # or "drop", to stop logging a flood
+# acl = { default_action = "Allow", rules = [
+#   { cidr = "203.0.113.0/24", action = "Deny", description = "a noisy scanner" },
+# ] }
+
 [registrar]
 auth_enabled = true     # Enabled - users created via fcp-admin API can register
 # Challenge INVITE as well as REGISTER (docs/EDGE_SECURITY.md §2.1). Without

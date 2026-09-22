@@ -1310,6 +1310,13 @@ async fn main() -> Result<()> {
     .with_trusted_edges(fcp_sip::emergency::TrustedEdges::parse(
         &config.e911.trusted_edges,
     )?)
+    // What reaches this node's SIP port (`docs/EDGE_SECURITY.md` §2.4).
+    // The edges trusted above carry other people's calls, so the
+    // per-source call rate is not theirs to spend.
+    .with_edge_guard(std::sync::Arc::new(fcp_sip::edge::EdgeGuard::new(
+        config.security.clone(),
+        fcp_sip::emergency::TrustedEdges::parse(&config.e911.trusted_edges)?,
+    )))
     .with_client_address_vouching(config.e911.vouch_client_address)
     .with_header_rules(header_rules.clone())
     .with_inbound_trunks(Some(

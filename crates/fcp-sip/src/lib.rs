@@ -17,6 +17,7 @@ pub mod conference;
 pub mod conference_migration;
 pub mod config;
 pub mod drain;
+pub mod edge;
 pub mod emergency;
 pub mod exports;
 pub mod flow;

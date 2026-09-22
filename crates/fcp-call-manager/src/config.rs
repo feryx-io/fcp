@@ -87,6 +87,12 @@ pub struct CallManagerConfig {
     #[serde(default)]
     pub cluster: ClusterSection,
 
+    /// What reaches this node's SIP port, and what a flood of it costs
+    /// (`docs/EDGE_SECURITY.md` §2.4). The call manager is the edge of
+    /// every single-binary deployment, so this is where it is defended.
+    #[serde(default)]
+    pub security: fcp_sip::edge::EdgeConfig,
+
     /// Emergency calling (`docs/E911.md`, `docs/E911_BLOCK_2.md`).
     #[serde(default)]
     pub e911: E911Section,
@@ -828,6 +834,12 @@ pub fn load_config(config_path: Option<&Path>) -> Result<CallManagerConfig> {
 pub fn validate_config(config: &CallManagerConfig) -> Result<()> {
     validate_http_config(&config.http)?;
     validate_registrar_config(&config.sip, &config.registrar)?;
+    // A typo in the address list is a startup error, not a node that
+    // quietly refuses everyone (`docs/EDGE_SECURITY.md` §2.4).
+    config
+        .security
+        .validate()
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     fcp_pbx::config::validate_config(&config.pbx).map_err(anyhow::Error::msg)?;
     fcp_sip::emergency::TrustedEdges::parse(&config.e911.trusted_edges)
         .map_err(|e| anyhow::anyhow!("[e911] {e}"))?;
