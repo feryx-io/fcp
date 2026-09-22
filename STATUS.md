@@ -447,8 +447,29 @@ configured to; the hazard named rather than fixed (the user's call,
 whatever its outbound trunk declares, so such a trunk should declare B or
 C. Replay: migration tickets are single-use by nonce, join tokens
 deliberately are not — a browser that drops has to come back — and are
-bounded by a lifetime of between a second and a day. Phase 5b, fuzzing
-the stateful surfaces in siphon-rs, is next and closes the project.
+bounded by a lifetime of between a second and a day. Phase 5b done
+(v0.25.228, siphon-rs v2026.09.22), and the project is complete: fuzzing
+the stateful surfaces. The first thing it found was that the parser was
+not fuzzed either — `fuzz/Cargo.toml` inherited two dependencies with
+`{ workspace = true }` while declaring its own `[workspace]`, and carried
+no `[[bin]]` entries, so the crate did not compile and one target had
+rotted against a `parse_request` that now returns `Option`; nothing
+noticed because nothing could build it, and §1 of the design had called
+the parser fuzzed on the strength of the files existing. Four targets
+added for the stateful surfaces — dialog identity and route sets,
+registrar AOR normalisation and binding validation, transaction matching,
+and SDP offer/answer — each asserting the invariant that matters rather
+than only the absence of a panic. The dialog target found a remote panic
+on its first run: `extract_tag` sliced `trimmed[..4]` to test for a `tag=`
+prefix, which panics when the fourth byte is inside a multi-byte
+character, and that is a `From` header every in-dialog request is matched
+through, so any peer could stop the process; `validate_event_package` had
+the same shape on an `Event` header. Both use `get` now and both have
+regression tests. Seeds are generated rather than committed so they
+cannot go stale, which matters more than it sounds — the first unseeded
+run managed seventeen million executions that almost all stopped at the
+request line. A nightly workflow runs every target for ten minutes and
+keeps its corpus between runs.
 
 ## Historical documents
 

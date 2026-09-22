@@ -3,8 +3,9 @@
 Status: **agreed** (2026-09-21), survey done, Q1 and Q3 settled by the
 user; **phase 1 done** (v0.25.222), **phase 2a done** (v0.25.223),
 **phase 2b done** (v0.25.224), **phase 3 done** (v0.25.225), **phase 4
-done** (v0.25.226), **phase 5a done** (v0.25.227). Chosen after the
-capacity and survivability project closed.
+done** (v0.25.226), **phase 5a done** (v0.25.227), **phase 5b done**
+(v0.25.228) — the project is complete. Chosen after the capacity and
+survivability project closed.
 
 One document for what an internet-facing FCP node exposes: **who may place
 a call**, **what a peer may claim**, **what a flood costs**, and **what is
@@ -38,7 +39,9 @@ were checked and hold:
   gate runs before any credential work (capacity phase 1).
 - **The parser is fuzzed**: request, response, URI, headers, Via,
   multipart, CPIM and a serialise round-trip
-  (`external/siphon-rs/fuzz/fuzz_targets/`).
+  (`external/siphon-rs/fuzz/fuzz_targets/`). *Corrected in phase 5b: the
+  targets were there but the crate did not build, so none of them had
+  ever run. They do now, nightly, alongside four more (§2.5).*
 
 ## 2. What is wrong today
 
@@ -257,11 +260,45 @@ under the names its configuration has always used. The SBC keeps its own
 richer pipeline — message size, header counts, URI length, per-method
 limits — which runs before its handler and answers rather than drops.
 
-### 2.5 The stateful surfaces are not fuzzed
+### 2.5 The stateful surfaces are not fuzzed — fixed (phase 5b)
 
 The parser is fuzzed; the transaction and dialog state machines, the
 registrar's binding logic and SDP offer/answer are not. Those are where a
 malformed-but-parseable message does its work.
+
+Two things turned out to be wrong with the first half of that sentence.
+The parser's fuzz targets existed, but `fuzz/Cargo.toml` inherited two
+dependencies with `{ workspace = true }` while declaring its own
+`[workspace]`, and carried no `[[bin]]` entries — so the crate did not
+compile, and one target had rotted against a `parse_request` that returns
+`Option` rather than `Result`. Nothing noticed, because nothing could
+build it. §1 of this document said "the parser is fuzzed" on the strength
+of the files being there; it was not.
+
+Fixed in siphon-rs and pinned here by `v2026.09.22`. Four targets for the
+stateful surfaces — `dialog_from_message`, `registrar_bindings`,
+`transaction_key` and `offer_answer` — each asserting the invariant that
+matters rather than only the absence of a panic: a server transaction key
+never equals a client one for the same request, an AOR normalises
+idempotently, an answer has the same m-lines as its offer and introduces
+no format the offer did not carry.
+
+**The dialog target found a remote panic on its first run.** `extract_tag`
+sliced `trimmed[..4]` to test for a `tag=` prefix, which panics when the
+fourth byte is inside a multi-byte character — `;tag\u{c8}efer1` is
+enough. That is a `From` header, written by whoever sent the message, and
+every in-dialog request is matched through this function: any peer could
+stop the process. `validate_event_package` had the same shape at
+`[..3]` on an `Event` header. Both ask for the prefix with `get` now, and
+both have regression tests, so a nightly fuzzer is not the only thing
+between the bug and a release. The other two sites the sweep found were
+already safe.
+
+Seeds are generated rather than committed, so they cannot go stale
+against the parser, and the nightly workflow keeps its corpus between
+runs. This matters more than it sounds: the first unseeded run of
+`transaction_key` managed seventeen million executions, almost all of
+which stopped at the request line.
 
 ### 2.6 The rest of the survey — done (phase 5a)
 
@@ -411,7 +448,7 @@ One PR each, in order.
 | 3 ✅ | **One gate for what a peer claims.** `fcp-sip/src/claims.rs` strips at ingress what an untrusted peer has no standing to assert, so every reader is gated by construction (§2.3): the two record ids, the carrier identity headers, and the auto-answer headers the platform's own intercom uses. Trusted edges and mutual-TLS trunks keep what they send; the conference server gains `[sip] trusted_edges` for the call manager and the gateway beside it. |
 | 4 ✅ | **The edge defended.** `fcp-sip/src/edge.rs` in the shared handler: an address list, a message-size bound and a "is this SIP at all" check before the parser, each dropping rather than answering; a per-source call rate refused `503` on a parsed request. `[security]` on the call manager, `max_invite_cps_per_source = 20` by default, trusted edges exempt (§2.4). |
 | 5a ✅ | **The rest of the survey.** §2.6 finished: the HTTP surfaces, token strength and what reaches the logs are sound; the carrier's identity headers are already stripped and re-asserted, and the attestation hazard is named. One finding fixed — three binaries compared the API token with `==` — and the nine duplicate copies of the comparison consolidated into `fcp_core::secret`. |
-| 5b | **Fuzzing the stateful surfaces.** Fuzz targets for the transaction and dialog machines, the registrar's bindings and offer/answer — all in the siphon-rs submodule, so a release-tag round trip — with a nightly workflow like the one forge-media already has. |
+| 5b ✅ | **Fuzzing the stateful surfaces.** Four targets in siphon-rs for the transaction and dialog machines, the registrar's bindings and offer/answer, with generated seed corpora and a nightly workflow. The fuzz crate did not build at all, which is why "the parser is fuzzed" was not true; fixing that came first. The dialog target found a remote panic in `extract_tag` on its first run (§2.5). |
 
 ## 5. Testing
 
@@ -419,6 +456,9 @@ One PR each, in order.
   substring authorisation, a nonce the node never issued, a captured
   header replayed with another `Contact`, a call id from an untrusted
   peer, an INVITE without credentials.
+- Phase 5b: twelve fuzz targets, run nightly for ten minutes each with a
+  corpus that persists between runs; the two panics the dialog target
+  found have unit tests of their own.
 - Phase 5a: the shared comparison's own tests, and a smoke test on the
   presence server that a missing token, a wrong token of the same length
   and a token right but for its last byte are each refused while the
