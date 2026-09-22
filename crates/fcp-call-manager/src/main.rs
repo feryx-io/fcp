@@ -2061,7 +2061,8 @@ fn create_registrar(
         config.registrar.auth_enabled,
     )
     .with_tenant_store(Arc::clone(storage) as _)
-    .with_default_tenant_id(config.service.default_tenant_id);
+    .with_default_tenant_id(config.service.default_tenant_id)
+    .with_auth_invites(config.registrar.auth_invites);
 
     // Add domain aliases if configured
     let registrar = if !config.registrar.domain_aliases.is_empty() {

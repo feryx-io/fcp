@@ -11,6 +11,14 @@ tls_key_path = "/app/certs/server.key"
 
 [registrar]
 auth_enabled = true     # Enabled - users created via fcp-admin API can register
+# Challenge INVITE as well as REGISTER (docs/EDGE_SECURITY.md §2.1). Without
+# it a call is authorised by the address it came from, so anything that can
+# source packets from a registered device's address places calls as that
+# user. Off by default for one release, with a warning at startup; a carrier
+# on an enabled trunk and a peer in [e911] trusted_edges are still admitted
+# by source, so an embedded component that INVITEs this node over loopback
+# needs a place in trusted_edges or credentials of its own.
+auth_invites = false
 realm = "fcp.local"
 default_expires = 3600
 min_expires = 60

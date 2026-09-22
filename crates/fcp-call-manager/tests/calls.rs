@@ -41,6 +41,18 @@ impl Stack {
     /// As [`Stack::start_with`], with `media` added to the `[media]`
     /// section. `{dir}` in either names the stack's own directory.
     async fn start_configured(media: &str, extra: &str, rtp_ports: u16) -> Option<Self> {
+        Self::start_registrar("", media, extra, rtp_ports).await
+    }
+
+    /// As [`Stack::start_configured`], with `registrar` added to the
+    /// `[registrar]` section — which cannot go in `extra`, since a second
+    /// `[registrar]` table is not valid TOML.
+    async fn start_registrar(
+        registrar: &str,
+        media: &str,
+        extra: &str,
+        rtp_ports: u16,
+    ) -> Option<Self> {
         let db = TestDatabase::create().await?;
         let seed = Seed::new(db.url(), REALM).await;
         let sip_port = free_port();
@@ -60,6 +72,7 @@ local_ip = "127.0.0.1"
 [registrar]
 auth_enabled = true
 realm = "{REALM}"
+{registrar}
 
 [storage]
 database_url = "{db}"
@@ -93,6 +106,7 @@ format = "compact"
             db = db.url(),
             rtp_end = rtp_start + rtp_ports,
             dir = dir.path().display(),
+            registrar = registrar,
             media = media.replace("{dir}", &dir.path().display().to_string()),
             extra = extra.replace("{dir}", &dir.path().display().to_string()),
         );
@@ -222,6 +236,63 @@ async fn registration_is_digest_authenticated_and_listed() {
     let nobody = Phone::new("nobody", "x", REALM, stack.sip).await.unwrap();
     let code = nobody.register().await.unwrap();
     assert!(!(200..300).contains(&code), "unknown user answered {code}");
+
+    stack.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_invite_is_admitted_by_its_credentials_not_its_address() {
+    // `[registrar] auth_invites` (`docs/EDGE_SECURITY.md` §2.1). Every
+    // phone here shares one address — loopback — which is exactly the
+    // shape the old gate could not tell apart: source-based admission let
+    // all of them place calls as each other. With the flag on, the digest
+    // decides, so the phone that cannot answer a challenge cannot call
+    // while its neighbour at the same address can.
+    let Some(stack) = Stack::start_registrar("auth_invites = true", "", "", 40).await else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let bob = stack.seed.user("bob", "bob-pw", "1002").await;
+    let bob_phone = stack.phone(&bob).await;
+    assert_eq!(bob_phone.register().await.unwrap(), 200);
+    bob_phone.auto_answer(true);
+
+    // A phone at the very same address that cannot prove it is Alice.
+    let impostor = Phone::new(&alice.username, "not-alice-pw", REALM, stack.sip)
+        .await
+        .unwrap();
+    impostor.call(&bob.extension).await.unwrap();
+    let refused = impostor
+        .expect(SOON, |e| matches!(e, PhoneEvent::Failed { .. }))
+        .await;
+    match refused {
+        Some(PhoneEvent::Failed { code, .. }) => assert_eq!(
+            code, 401,
+            "an INVITE without usable credentials is challenged, not refused outright"
+        ),
+        other => {
+            let why = format!("the impostor's call was not refused: {other:?}");
+            stack.fail(&why, &impostor).await;
+        }
+    }
+    assert!(
+        bob_phone
+            .incoming(Duration::from_millis(500))
+            .await
+            .is_none(),
+        "Bob's phone rang for a caller who proved nothing"
+    );
+
+    // Alice herself, from the same address, is let through.
+    let alice_phone = stack.phone(&alice).await;
+    assert_eq!(alice_phone.register().await.unwrap(), 200);
+    let call = alice_phone.call(&bob.extension).await.unwrap();
+    if call.answered(SOON).await.is_err() {
+        let why = format!("Alice's own call did not connect: {:?}", call.phase());
+        stack.fail(&why, &alice_phone).await;
+    }
+    call.hangup().await.unwrap();
 
     stack.finish().await;
 }

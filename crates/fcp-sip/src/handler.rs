@@ -1775,6 +1775,47 @@ impl SipMessageHandler {
         }
     }
 
+    /// Whether an INVITE arrived on a trunk this node takes calls on
+    /// (`docs/TENANT_TRUNKS.md` §7).
+    ///
+    /// A trunk is proof of its own kind: a carrier holds no user's
+    /// password, so a call that arrived on one is never challenged for a
+    /// digest (`docs/EDGE_SECURITY.md` §2.1). Looked up only where the
+    /// answer is needed — an authenticated caller never reaches the
+    /// store.
+    async fn invite_on_trunk(
+        &self,
+        tenant_id: &fcp_core::TenantId,
+        peer_ip: std::net::IpAddr,
+        inbound_trunk: bool,
+    ) -> bool {
+        if inbound_trunk {
+            return true;
+        }
+        if self.inbound_trunks.is_some() {
+            return false;
+        }
+        // A node without a trunk set admits by its tenants' stored
+        // trunks, as it always has.
+        let Some(storage) = &self.storage else {
+            return false;
+        };
+        let peer_ip_str = peer_ip.to_string();
+        match storage.list_trunks(tenant_id).await {
+            Ok(trunks) => trunks.iter().any(|t| {
+                t.enabled
+                    && t.hosts.iter().any(|h| {
+                        let host = h.split(':').next().unwrap_or(h);
+                        host == peer_ip_str
+                    })
+            }),
+            Err(e) => {
+                warn!(error = %e, tenant_id = %tenant_id, "Failed to query trunks for admission check, denying");
+                false
+            }
+        }
+    }
+
     /// The trunk a carrier's INVITE arrived on, and whose call that makes it
     /// (`docs/TENANT_TRUNKS.md` §7); `None` when this node has no trunk set.
     async fn inbound_trunk(
@@ -2401,56 +2442,110 @@ impl SipMessageHandler {
             return Ok(());
         };
 
-        // Trunk admission control: an external source is a trusted edge, a
-        // registered device, or a carrier arriving on a trunk this node
-        // takes calls on (`docs/TENANT_TRUNKS.md` §7).
-        if let Some(storage) = &self.storage {
-            let peer_ip = peer.ip();
-            let local_ip: std::net::IpAddr = self
-                .local_addr
-                .parse()
-                .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
-            let is_local = peer_ip == local_ip || peer_ip.is_loopback();
-
-            if !is_local && edge_caller.is_none() && !is_registered_device {
-                let trunk_allowed = if inbound_trunk.is_some() {
-                    true
-                } else if self.inbound_trunks.is_some() {
-                    false
+        // Who placed this INVITE (`docs/EDGE_SECURITY.md` §2.1).
+        //
+        // A trusted edge vouches with proof of its own, and a carrier
+        // arriving on a trunk holds no user's password, so neither is
+        // challenged. Everything else must carry a digest where
+        // `[registrar] auth_invites` is on — loopback included, since an
+        // internal component is either a trusted edge or holds credentials
+        // of its own. The digest then decides *instead of* the source
+        // address: proving the password is stronger than arriving from a
+        // plausible place, and a phone that has moved has not stopped
+        // being itself.
+        let peer_ip = peer.ip();
+        let is_trusted_edge = edge_caller.is_some() || self.trusted_edges.contains(peer_ip);
+        let invite_auth = match (&self.registrar, is_trusted_edge) {
+            (Some(registrar), false) => registrar.authenticate_invite(request).await,
+            _ => crate::registrar::InviteAuth::NotRequired,
+        };
+        match invite_auth {
+            crate::registrar::InviteAuth::Admitted { username } => {
+                debug!(source = %peer, username = %username, "INVITE authenticated");
+            }
+            crate::registrar::InviteAuth::WrongUser {
+                authenticated,
+                claimed,
+            } => {
+                // Real credentials wearing somebody else's From. A retry
+                // cannot fix that, so it is refused rather than challenged.
+                warn!(
+                    source = %peer,
+                    tenant_id = %tenant_id,
+                    authenticated = %authenticated,
+                    claimed = %claimed,
+                    "Rejecting INVITE: the credentials are not the caller's"
+                );
+                let response = self.create_simple_response(
+                    request,
+                    403,
+                    "Forbidden - credentials do not match the caller",
+                );
+                handle.send_final(response).await;
+                return Ok(());
+            }
+            crate::registrar::InviteAuth::Challenge { stale } => {
+                if self
+                    .invite_on_trunk(&tenant_id, peer_ip, inbound_trunk.is_some())
+                    .await
+                {
+                    debug!(source = %peer, tenant_id = %tenant_id, "INVITE admitted via trunk");
                 } else {
-                    // A node without a trunk set admits by its tenants'
-                    // stored trunks, as it always has.
-                    let peer_ip_str = peer_ip.to_string();
-                    match storage.list_trunks(&tenant_id).await {
-                        Ok(trunks) => trunks.iter().any(|t| {
-                            t.enabled
-                                && t.hosts.iter().any(|h| {
-                                    let host = h.split(':').next().unwrap_or(h);
-                                    host == peer_ip_str
-                                })
-                        }),
-                        Err(e) => {
-                            warn!(error = %e, tenant_id = %tenant_id, "Failed to query trunks for admission check, denying");
-                            false
-                        }
-                    }
-                };
-
-                if !trunk_allowed {
                     info!(
                         source = %peer,
                         tenant_id = %tenant_id,
-                        "Rejecting INVITE: source IP does not match any enabled trunk"
+                        stale,
+                        "Challenging INVITE: it carries no usable credentials"
                     );
-                    let response = self.create_simple_response(
-                        request,
-                        403,
-                        "Forbidden - no trunk configured for source",
-                    );
+                    let response = match self
+                        .registrar
+                        .as_ref()
+                        .map(|r| r.invite_challenge(request, stale))
+                    {
+                        Some(Ok(response)) => response,
+                        other => {
+                            if let Some(Err(e)) = other {
+                                error!(error = %e, "Failed to build an INVITE challenge");
+                            }
+                            self.create_simple_response(request, 500, "Internal Server Error")
+                        }
+                    };
                     handle.send_final(response).await;
                     return Ok(());
                 }
-                debug!(source = %peer, tenant_id = %tenant_id, "INVITE admitted via trunk");
+            }
+            // Nothing to prove: `auth_invites` is off, or this node has no
+            // credentials to check one against. Admission is by source
+            // address, as it was before (`docs/TENANT_TRUNKS.md` §7).
+            crate::registrar::InviteAuth::NotRequired => {
+                if self.storage.is_some() {
+                    let local_ip: std::net::IpAddr = self
+                        .local_addr
+                        .parse()
+                        .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
+                    let is_local = peer_ip == local_ip || peer_ip.is_loopback();
+
+                    if !is_local && edge_caller.is_none() && !is_registered_device {
+                        if !self
+                            .invite_on_trunk(&tenant_id, peer_ip, inbound_trunk.is_some())
+                            .await
+                        {
+                            info!(
+                                source = %peer,
+                                tenant_id = %tenant_id,
+                                "Rejecting INVITE: source IP does not match any enabled trunk"
+                            );
+                            let response = self.create_simple_response(
+                                request,
+                                403,
+                                "Forbidden - no trunk configured for source",
+                            );
+                            handle.send_final(response).await;
+                            return Ok(());
+                        }
+                        debug!(source = %peer, tenant_id = %tenant_id, "INVITE admitted via trunk");
+                    }
+                }
             }
         }
 
