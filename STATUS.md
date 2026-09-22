@@ -361,8 +361,27 @@ rather than looped — and the retransmission check is given the request's
 identity (body, `Contact`, `CSeq`, `Call-ID`, `From`, `To`) so a UDP
 repeat still passes and a replay that changes what the request does does
 not. A nonce lives 300 s and is per node, so a refresh or a request
-landing on another node costs one extra challenge. Phase 2b, the INVITE
-digest itself, is next.
+landing on another node costs one extra challenge. Phase 2b done
+(v0.25.224): an INVITE is challenged under `[registrar] auth_invites`,
+and where it is, the digest decides *instead of* the source address —
+proving the password is stronger than arriving from a plausible place,
+and a phone that has moved has not stopped being itself. A carrier on an
+enabled trunk and a peer in `[e911] trusted_edges` keep source-based
+admission and are never challenged; loopback loses its bypass, which is
+the only version the test floor can prove and the reason an embedded
+component that INVITEs the node needs a place in `trusted_edges` or
+credentials of its own. Alice's password placing a call as Bob is
+refused `403`, since no retry fixes that, while missing or stale
+credentials get `401` and a challenge (Q2). Two defects found on the way:
+the digest store resolved its tenant from the request's `To`, which on an
+INVITE is the callee, so on a multi-tenant edge the caller's credentials
+were looked for in the callee's tenant and never found — a non-REGISTER
+request now resolves by its `From`; and the flag is off for one release
+behind a startup warning, so the accepted cost is that a caller who
+cannot answer a challenge cannot dial 911 either, exactly as an
+unadmitted source already could not. The floor test fails with the flag
+off, which is §2.1 in one assertion. Phase 3, one gate for what a peer
+claims, is next.
 
 ## Historical documents
 

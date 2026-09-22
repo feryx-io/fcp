@@ -1,8 +1,9 @@
 # Edge Security — Design
 
 Status: **agreed** (2026-09-21), survey done, Q1 and Q3 settled by the
-user; **phase 1 done** (v0.25.222), **phase 2a done** (v0.25.223).
-Chosen after the capacity and survivability project closed.
+user; **phase 1 done** (v0.25.222), **phase 2a done** (v0.25.223),
+**phase 2b done** (v0.25.224). Chosen after the capacity and
+survivability project closed.
 
 One document for what an internet-facing FCP node exposes: **who may place
 a call**, **what a peer may claim**, **what a flood costs**, and **what is
@@ -40,7 +41,7 @@ were checked and hold:
 
 ## 2. What is wrong today
 
-### 2.1 An INVITE is authorised by source address, never authenticated
+### 2.1 An INVITE is authorised by source address, never authenticated — fixed (phase 2b)
 
 The call path admits an INVITE when the peer is local, is a trusted edge,
 **matches a registration**, or matches an enabled trunk's host; otherwise
@@ -53,6 +54,48 @@ also uses — the same NAT, the same office LAN, a compromised device beside
 it, a carrier-grade NAT pool — can place calls **as that user**, at that
 tenant's cost. This is the ordinary toll-fraud shape, and challenging
 INVITEs (RFC 3261 §22) is the ordinary answer.
+
+Since v0.25.224 it is challenged, under `[registrar] auth_invites`. What
+the flag changes:
+
+- **The digest decides, instead of the source address.** A carrier
+  arriving on an enabled trunk and a peer in `[e911] trusted_edges` keep
+  source-based admission — a carrier holds no user's password, and an edge
+  vouches with proof of its own — and are never challenged. Everything
+  else must carry credentials. Where they are absent or the nonce is not
+  usable the answer is `401` with a challenge, never `403` (Q2): a phone
+  that has lost its credentials has to be able to recover, and a phone
+  whose nonce has aged out retries silently on `stale=true` (phase 2a).
+  For a challenged caller the registration check of §2.2 no longer
+  applies: proving the password is stronger than arriving from a
+  plausible place, and a phone that has moved has not stopped being
+  itself.
+- **Loopback is no longer special.** `is_local` was an admission decision
+  and is now only a fallback for when the flag is off. This is the strict
+  reading of goal 1, and the only version the test floor can prove, since
+  every phone there runs on one address. An embedded component that
+  INVITEs this node over loopback therefore needs a place in
+  `trusted_edges` or credentials of its own before the flag goes on.
+- **Credentials are the caller's own.** A digest proves a password; it
+  does not say whose `From` the request may wear. Alice's password
+  placing a call as Bob is refused `403` rather than challenged, since no
+  retry fixes it.
+- **The credentials are looked up in the caller's tenant.** The digest
+  store resolved its tenant from the request's `To`, which is the
+  registering user on a REGISTER but the **callee** on an INVITE. On a
+  multi-tenant edge that looked the caller's credentials up in the
+  callee's tenant, found nobody and challenged for ever. A non-REGISTER
+  request now resolves by its `From`.
+
+Costs, accepted: the challenge is applied where the `403` of the old gate
+was, which is *before* emergency detection, so with the flag on a caller
+who cannot answer a challenge cannot dial 911 either. That is what the
+source-based gate already did to an unadmitted source, so it is not a
+regression — but it is the reason Q2's `401` matters, and a deployment
+that wants emergency calls to survive lost credentials should say so
+before the default flips. `auth_invites` lives on the call manager, which
+is the edge of every default deployment; the standalone registrar handles
+no INVITEs and the SBC has its own admission.
 
 ### 2.2 The registration check matches the peer as a *substring* — fixed (phase 1)
 
@@ -192,7 +235,7 @@ One PR each, in order.
 |---|---|
 | 1 ✅ | **The registration check, and a test that fails today.** Compare the binding contact's parsed host, and prefer the stored `source_address` where there is one (Q3); a contact's port or parameters can no longer authorise a stranger. Cheap, contained, and the clearest defect found. |
 | 2a ✅ | **The nonce is the node's.** Challenges issued from a tracked `NonceManager`, verified with the nonce-count and the request's identity, `stale=true` where the credentials are right and only the nonce is not — so that the digest phase 2b adds to INVITE is worth adding (§2.7). |
-| 2b | **Authenticate INVITE.** Digest challenge on INVITE for registered users, with the credentials the registrar already uses; `[registrar] auth_invites`, off by default for one release and warned about, then on (Q1). An unauthenticated INVITE is answered `401` with a challenge, not `403` (Q2), so a phone that has lost its credentials can recover. Source-based admission remains for trunks and trusted edges, which have their own proof. |
+| 2b ✅ | **Authenticate INVITE.** Digest challenge on INVITE, with the credentials the registrar already uses; `[registrar] auth_invites`, off by default for one release and warned about, then on (Q1). An unauthenticated INVITE is answered `401` with a challenge, not `403` (Q2), so a phone that has lost its credentials can recover. Source-based admission remains for trunks and trusted edges, which have their own proof; loopback loses its bypass, and the digest replaces the registration check for everyone challenged (§2.1). |
 | 3 | **One gate for what a peer claims.** `X-FCP-Call-Id` believed only from a trusted edge or an authenticated inter-node peer, the same way its siblings are; an audit of every `X-FCP-*` reader with a test each; the carrier-injected identity headers stripped or re-asserted, never passed through. |
 | 4 | **The edge defended.** Per-source INVITE limits and an IP ACL in the shared handler, so the call manager gets what the SBC has; a malformed-SIP policy; sensible defaults that refuse nothing a working deployment does today. |
 | 5 | **The rest of the survey, then fuzzing.** Finish §2.6 and fix what it finds; fuzz targets for the transaction and dialog machines, the registrar and offer/answer, run in CI as the parser's are. |
@@ -203,6 +246,10 @@ One PR each, in order.
   substring authorisation, a nonce the node never issued, a captured
   header replayed with another `Contact`, a call id from an untrusted
   peer, an INVITE without credentials.
+- Test floor, phase 2b: with `auth_invites` on, a phone that cannot
+  answer the challenge cannot place a call as the user it names, while
+  that user's own phone — at the same loopback address — can. The test
+  fails with the flag off, which is the defect of §2.1 in one assertion.
 - Test floor: a phone that is *not* registered cannot place a call; a
   phone at a neighbouring address cannot place one as its neighbour; a
   registered phone still can, with digest. Noted in phase 1: the floor

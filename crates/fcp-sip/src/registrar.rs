@@ -8,7 +8,7 @@ use fcp_core::{
     is_host_literal, CredentialStore, Registration, RegistrationStore, TenantId, TenantStore,
 };
 use fcp_events::{EventPublisher, PlatformEvent, RegistrationEvent};
-use sip_core::{Request, Response};
+use sip_core::{Method, Request, Response};
 use sip_registrar::{AsyncLocationStore, Binding};
 use smol_str::SmolStr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -200,6 +200,45 @@ fn contact_host(contact: &str) -> Option<std::net::IpAddr> {
     };
     let host = host.split('?').next().unwrap_or(host);
     fcp_core::e911::parse_address(host)
+}
+
+/// What an INVITE's credentials amount to
+/// (`FcpRegistrar::authenticate_invite`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InviteAuth {
+    /// Nothing to prove: `[registrar] auth_invites` is off, or this node
+    /// has no credential store to check a digest against.
+    NotRequired,
+    /// Placed by a user who proved their password on a nonce this node
+    /// issued, and whose `From` is their own.
+    Admitted { username: String },
+    /// No credentials, or a nonce that is not usable. Answered `401` with
+    /// a challenge, never `403`: a phone that has lost its credentials has
+    /// to be able to recover (`docs/EDGE_SECURITY.md` §4, Q2).
+    Challenge { stale: bool },
+    /// Real credentials wearing somebody else's `From`. No retry fixes
+    /// that, so it is refused rather than challenged.
+    WrongUser {
+        authenticated: String,
+        claimed: String,
+    },
+}
+
+/// The address of record a request's `From` names — who it says placed
+/// the request.
+fn from_aor(request: &Request) -> Option<String> {
+    let from = request.headers().get_smol("From")?;
+    let from = sip_parse::parse_from_header(from)?;
+    Some(
+        sip_registrar::normalize_aor(from.inner().uri())
+            .unwrap_or_else(|_| from.inner().uri().to_string()),
+    )
+}
+
+/// The user part of a request's `From` — who the request says placed it —
+/// or `None` when it names no user.
+fn from_user(request: &Request) -> Option<String> {
+    extract_username_from_aor(&from_aor(request)?)
 }
 
 /// Two addresses are the same device address; an IPv4 peer on a
@@ -496,7 +535,16 @@ impl CredentialStoreAdapter {
     }
 
     async fn resolve_tenant(&self, request: &Request, username: &str) -> Result<TenantId> {
-        let aor = extract_aor_from_request(request);
+        // Which address of record names the party proving a password. A
+        // REGISTER's `To` is the registering user, but on any other
+        // request — an INVITE — `To` is the *callee*, and looking the
+        // caller's credentials up in the callee's tenant finds nobody
+        // (`docs/EDGE_SECURITY.md` §2.1).
+        let aor = if *request.method() == Method::Register {
+            extract_aor_from_request(request)
+        } else {
+            from_aor(request)
+        };
         resolve_tenant_for_inputs(
             self.tenant_store.as_ref(),
             Some(&self.store),
@@ -556,6 +604,11 @@ pub struct FcpRegistrar {
     /// Whether authentication is currently enabled (toggleable at runtime).
     auth_enabled: AtomicBool,
 
+    /// Whether an INVITE must carry a digest as well as come from a
+    /// plausible address (`[registrar] auth_invites`,
+    /// `docs/EDGE_SECURITY.md` §2.1).
+    auth_invites: AtomicBool,
+
     /// Credential store for looking up user preferences
     credential_store: Option<Arc<dyn CredentialStore>>,
 
@@ -606,6 +659,7 @@ impl FcpRegistrar {
             location_store,
             authenticator: None,
             auth_enabled: AtomicBool::new(auth_enabled),
+            auth_invites: AtomicBool::new(false),
             credential_store,
             default_expires: 3600,
             min_expires: 60,
@@ -687,6 +741,73 @@ impl FcpRegistrar {
     /// Check whether authentication is currently enabled.
     pub fn is_auth_enabled(&self) -> bool {
         self.auth_enabled.load(Ordering::Relaxed)
+    }
+
+    /// Require a digest on INVITE as well as a plausible source address
+    /// (`[registrar] auth_invites`, `docs/EDGE_SECURITY.md` §2.1).
+    pub fn with_auth_invites(self, required: bool) -> Self {
+        self.auth_invites.store(required, Ordering::Relaxed);
+        self
+    }
+
+    /// Whether an INVITE must prove who it is placed by.
+    ///
+    /// False when the flag is off, and false when this registrar has no
+    /// credential store to check a digest against — a node that cannot
+    /// authenticate anyone must not refuse everyone.
+    pub fn invite_auth_required(&self) -> bool {
+        self.auth_invites.load(Ordering::Relaxed) && self.authenticator.is_some()
+    }
+
+    /// A 401 challenge for an INVITE, carrying a nonce this node issued.
+    ///
+    /// `stale` says the credentials were right and only the nonce was not,
+    /// so the phone retries without prompting anyone (RFC 7616 §3.5).
+    pub fn invite_challenge(&self, request: &Request, stale: bool) -> Result<Response> {
+        let authenticator = self
+            .authenticator
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("no credential store to challenge against"))?;
+        if stale {
+            authenticator.challenge_stale(request)
+        } else {
+            authenticator.challenge(request)
+        }
+    }
+
+    /// Who an INVITE is placed by, on the credentials it carries
+    /// (`docs/EDGE_SECURITY.md` §2.1).
+    ///
+    /// The digest proves a password; it does not say whose `From` the
+    /// request may wear. A user with valid credentials placing a call as
+    /// their neighbour is refused outright rather than challenged, since
+    /// no retry fixes it.
+    pub async fn authenticate_invite(&self, request: &Request) -> InviteAuth {
+        if !self.invite_auth_required() {
+            return InviteAuth::NotRequired;
+        }
+        let Some(authenticator) = self.authenticator.as_ref() else {
+            return InviteAuth::NotRequired;
+        };
+
+        match authenticator.authenticate(request).await {
+            crate::auth::AuthOutcome::Failed => InviteAuth::Challenge { stale: false },
+            crate::auth::AuthOutcome::Stale => InviteAuth::Challenge { stale: true },
+            crate::auth::AuthOutcome::Authenticated { username } => {
+                match from_user(request) {
+                    // A request with no usable `From` user names nobody to
+                    // be, so the credentials stand for themselves.
+                    None => InviteAuth::Admitted { username },
+                    Some(claimed) if claimed.eq_ignore_ascii_case(&username) => {
+                        InviteAuth::Admitted { username }
+                    }
+                    Some(claimed) => InviteAuth::WrongUser {
+                        authenticated: username,
+                        claimed,
+                    },
+                }
+            }
+        }
     }
 
     /// Publish a registration event (fire-and-forget).
@@ -2328,5 +2449,203 @@ mod tests {
             ),
             "<sip:user@host;user=phone;transport=tcp>"
         );
+    }
+
+    // ── INVITE authentication (`docs/EDGE_SECURITY.md` §2.1) ────────────
+
+    /// A user whose HA1 the credential store holds.
+    async fn store_with_alice(dir: &str) -> Arc<FileBackedStorage> {
+        let temp_dir = std::env::temp_dir().join(dir);
+        let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+        let storage = Arc::new(FileBackedStorage::new(temp_dir).await.unwrap());
+        let user = fcp_core::User {
+            id: fcp_core::UserId::new(),
+            username: "alice".to_string(),
+            password: "secret".to_string(),
+            digest_password: None,
+            sip_ha1_hash: Some(fcp_core::storage::password::compute_ha1(
+                "alice",
+                "fcp.local",
+                "secret",
+            )),
+            sip_provisioning_password: None,
+            display_name: Some("Alice".to_string()),
+            tenant_id: fcp_core::TenantId::nil(),
+            role: fcp_core::UserRole::default(),
+            department_id: None,
+            enabled: true,
+            created_at: std::time::SystemTime::now(),
+            updated_at: std::time::SystemTime::now(),
+            media_preferences: fcp_core::MediaPreferences::default(),
+            email: None,
+            password_last_reset: None,
+            phone_number: None,
+            mobile_number: None,
+            pin: None,
+            extension: None,
+            department: None,
+            job_title: None,
+            location: None,
+            location_id: None,
+            language: "en-US".to_string(),
+            timezone: "UTC".to_string(),
+            last_login: None,
+            emergency_contact: fcp_core::EmergencyContact::default(),
+            primary_phone_number_id: None,
+            voicemail_box_id: None,
+            profile_picture: None,
+            account_status: fcp_core::AccountStatus::Active,
+            failed_login_attempts: 0,
+            account_locked_until: None,
+        };
+        storage.put_user(user).await.unwrap();
+        storage
+    }
+
+    fn invite_registrar(storage: Arc<FileBackedStorage>, auth_invites: bool) -> FcpRegistrar {
+        FcpRegistrar::new(
+            storage.clone(),
+            Some(storage as _),
+            Some("fcp.local".to_string()),
+            true,
+        )
+        .with_default_tenant_id(fcp_core::TenantId::nil())
+        .with_auth_invites(auth_invites)
+    }
+
+    /// An INVITE from `from`, carrying a digest over `nonce` when one is
+    /// given.
+    fn invite(from: &str, credentials: Option<(&str, &str)>) -> Request {
+        let uri = "sip:bob@fcp.local";
+        let authorization = credentials.map(|(user, nonce)| {
+            let ha1 = fcp_core::storage::password::compute_ha1(user, "fcp.local", "secret");
+            let ha2 = format!("{:x}", md5::compute(format!("INVITE:{uri}")));
+            let response = format!(
+                "{:x}",
+                md5::compute(format!("{ha1}:{nonce}:00000001:abc123:auth:{ha2}"))
+            );
+            format!(
+                "Digest username=\"{user}\", realm=\"fcp.local\", nonce=\"{nonce}\", \
+                 uri=\"{uri}\", response=\"{response}\", qop=auth, nc=00000001, cnonce=\"abc123\""
+            )
+        });
+        let auth_line = authorization
+            .map(|a| format!("Authorization: {a}\r\n"))
+            .unwrap_or_default();
+        let raw = format!(
+            "INVITE {uri} SIP/2.0\r\n\
+             Via: SIP/2.0/UDP 10.0.0.9:5060;branch=z9hG4bK1\r\n\
+             From: <sip:{from}@fcp.local>;tag=1\r\n\
+             To: <{uri}>\r\n\
+             Call-ID: call-invite-1\r\n\
+             CSeq: 1 INVITE\r\n\
+             Contact: <sip:{from}@10.0.0.9>\r\n\
+             {auth_line}\
+             Content-Length: 0\r\n\r\n"
+        );
+        sip_parse::parse_request(&bytes::Bytes::from(raw)).expect("test INVITE parses")
+    }
+
+    /// The nonce from a challenge this registrar issued.
+    fn issued_nonce(registrar: &FcpRegistrar, request: &Request) -> String {
+        let challenge = registrar
+            .invite_challenge(request, false)
+            .expect("challenge");
+        let header = challenge
+            .headers()
+            .get_smol("WWW-Authenticate")
+            .expect("challenge carries WWW-Authenticate");
+        let (_, rest) = header.as_str().split_once("nonce=\"").expect("a nonce");
+        rest.split('"').next().expect("a closed nonce").to_string()
+    }
+
+    #[tokio::test]
+    async fn an_invite_without_credentials_is_challenged() {
+        // Today's defect: a call is authorised by the address it came
+        // from and never asked who placed it.
+        let storage = store_with_alice("fcp-test-invite-auth-none").await;
+        let registrar = invite_registrar(storage, true);
+        assert_eq!(
+            registrar.authenticate_invite(&invite("alice", None)).await,
+            InviteAuth::Challenge { stale: false }
+        );
+    }
+
+    #[tokio::test]
+    async fn an_invite_with_the_callers_own_credentials_is_admitted() {
+        let storage = store_with_alice("fcp-test-invite-auth-ok").await;
+        let registrar = invite_registrar(storage, true);
+        let nonce = issued_nonce(&registrar, &invite("alice", None));
+        assert_eq!(
+            registrar
+                .authenticate_invite(&invite("alice", Some(("alice", &nonce))))
+                .await,
+            InviteAuth::Admitted {
+                username: "alice".to_string()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn a_nonce_this_node_never_issued_is_challenged_as_stale() {
+        let storage = store_with_alice("fcp-test-invite-auth-stale").await;
+        let registrar = invite_registrar(storage, true);
+        assert_eq!(
+            registrar
+                .authenticate_invite(&invite("alice", Some(("alice", "invented"))))
+                .await,
+            InviteAuth::Challenge { stale: true }
+        );
+    }
+
+    #[tokio::test]
+    async fn credentials_do_not_let_a_caller_wear_another_users_from() {
+        // Alice's password proves Alice. It does not let her place calls
+        // as Bob, at Bob's cost and under Bob's caller id — and no retry
+        // fixes that, so it is refused rather than challenged.
+        let storage = store_with_alice("fcp-test-invite-auth-wrong-user").await;
+        let registrar = invite_registrar(storage, true);
+        let nonce = issued_nonce(&registrar, &invite("bob", None));
+        assert_eq!(
+            registrar
+                .authenticate_invite(&invite("bob", Some(("alice", &nonce))))
+                .await,
+            InviteAuth::WrongUser {
+                authenticated: "alice".to_string(),
+                claimed: "bob".to_string(),
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn nothing_is_required_while_the_flag_is_off() {
+        // One release of source-based admission, warned about at startup
+        // (`docs/EDGE_SECURITY.md` §4, Q1).
+        let storage = store_with_alice("fcp-test-invite-auth-off").await;
+        let registrar = invite_registrar(storage, false);
+        assert_eq!(
+            registrar.authenticate_invite(&invite("alice", None)).await,
+            InviteAuth::NotRequired
+        );
+    }
+
+    #[tokio::test]
+    async fn a_node_that_cannot_check_a_digest_does_not_refuse_everyone() {
+        let temp_dir = std::env::temp_dir().join("fcp-test-invite-auth-no-store");
+        let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+        let storage = Arc::new(FileBackedStorage::new(temp_dir).await.unwrap());
+        let registrar = FcpRegistrar::new(storage, None, Some("fcp.local".to_string()), true)
+            .with_default_tenant_id(fcp_core::TenantId::nil())
+            .with_auth_invites(true);
+        assert!(!registrar.invite_auth_required());
+        assert_eq!(
+            registrar.authenticate_invite(&invite("alice", None)).await,
+            InviteAuth::NotRequired
+        );
+    }
+
+    #[test]
+    fn the_from_user_is_who_the_request_says_placed_it() {
+        assert_eq!(from_user(&invite("alice", None)).as_deref(), Some("alice"));
     }
 }

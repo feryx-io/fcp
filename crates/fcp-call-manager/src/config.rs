@@ -264,6 +264,23 @@ pub struct RegistrarSection {
     #[serde(default = "default_true")]
     pub auth_enabled: bool,
 
+    /// Require a digest on INVITE as well as on REGISTER
+    /// (`docs/EDGE_SECURITY.md` §2.1).
+    ///
+    /// Off by default for one release, with a warning at startup: without
+    /// it a call is authorised by the address it came from, so anything
+    /// that can source packets from a registered device's address — the
+    /// same NAT, the same office LAN, a compromised handset beside it —
+    /// places calls as that user, at that tenant's cost.
+    ///
+    /// When it is on, a carrier arriving on an enabled trunk and a peer in
+    /// `[e911] trusted_edges` are still admitted by source; everything
+    /// else, loopback included, is challenged. An embedded component that
+    /// INVITEs this node over loopback therefore needs a place in
+    /// `trusted_edges` or credentials of its own.
+    #[serde(default)]
+    pub auth_invites: bool,
+
     /// Authentication realm
     #[serde(default = "default_realm")]
     pub realm: String,
@@ -315,6 +332,7 @@ impl Default for RegistrarSection {
             min_expires: default_min_expires(),
             max_expires: default_max_expires(),
             domain_aliases: Vec::new(),
+            auth_invites: false,
         }
     }
 }
@@ -872,6 +890,18 @@ fn validate_registrar_config(sip: &SipSection, registrar: &RegistrarSection) -> 
         anyhow::bail!("sip.wss_bind requires sip.tls_cert_path and sip.tls_key_path");
     }
 
+    // One release of warning before the default flips
+    // (`docs/EDGE_SECURITY.md` §4, Q1).
+    if !registrar.auth_invites {
+        warn!(
+            "registrar.auth_invites is off: an INVITE is authorised by the address it came from \
+             and never asked to prove who placed it, so anything that can source packets from a \
+             registered device's address — the same NAT, the same LAN, a compromised handset \
+             beside it — places calls as that user. Set registrar.auth_invites = true; it becomes \
+             the default in the next release (docs/EDGE_SECURITY.md §2.1)"
+        );
+    }
+
     Ok(())
 }
 
@@ -966,6 +996,7 @@ mod tests {
             min_expires: default_min_expires(),
             max_expires: default_max_expires(),
             domain_aliases: Vec::new(),
+            auth_invites: false,
         };
         assert!(validate_registrar_config(&sip, &registrar).is_err());
 
