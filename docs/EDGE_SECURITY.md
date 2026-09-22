@@ -3,8 +3,8 @@
 Status: **agreed** (2026-09-21), survey done, Q1 and Q3 settled by the
 user; **phase 1 done** (v0.25.222), **phase 2a done** (v0.25.223),
 **phase 2b done** (v0.25.224), **phase 3 done** (v0.25.225), **phase 4
-done** (v0.25.226). Chosen after the capacity and survivability project
-closed.
+done** (v0.25.226), **phase 5a done** (v0.25.227). Chosen after the
+capacity and survivability project closed.
 
 One document for what an internet-facing FCP node exposes: **who may place
 a call**, **what a peer may claim**, **what a flood costs**, and **what is
@@ -263,15 +263,82 @@ The parser is fuzzed; the transaction and dialog state machines, the
 registrar's binding logic and SDP offer/answer are not. Those are where a
 malformed-but-parseable message does its work.
 
-### 2.6 Not yet surveyed
+### 2.6 The rest of the survey — done (phase 5a)
 
-Named so they are not mistaken for clean: the unauthenticated HTTP
-surface of each binary (`/health`, `/ready`, `/join`, `public_join` and
-whatever else); token handling (strength, constant-time comparison —
-present in the gateway, unchecked elsewhere, and what reaches the logs);
-what a *carrier* may inject on a trunk (`P-Asserted-Identity` and the
-caller identity the platform then asserts under STIR/SHAKEN); and replay
-windows on the join token and the migration ticket.
+These were named in the original survey so they would not be mistaken for
+clean. Surveyed in phase 5a, and mostly they *were* clean; what follows
+says so explicitly, because a survey that reports only faults cannot be
+trusted about the faults.
+
+**The unauthenticated HTTP surface of each binary — sound.** Every binary
+that serves an API refuses to bind to a non-loopback address unless a
+token is configured, so the fail-open path (`no token configured → let
+everything through`) is reachable only from localhost. `/health`,
+`/ready` and `/metrics` are deliberately open, as a load balancer and a
+scraper read them without credentials. The WebRTC gateway is the one that
+is *meant* to face browsers: it is fail-closed, with `/join` and `/ready`
+the only routes that need nothing, `/drain` and `/status` behind an
+operator token, and a session's own routes behind that session's token.
+The events server accepts a static token, a hashed `fcp_…` API token or a
+JWT session; `/ingest` is behind all three.
+
+**Token strength — sound.** An API token is 32 bytes from the system CSPRNG,
+base64url, stored only as its SHA-256; a provisioning token is two v4
+UUIDs; join tokens and migration tickets are HMAC-signed. Nothing is
+derived from a timestamp, a counter or a name.
+
+**What reaches the logs — sound.** Nothing logs a secret's value; the lines
+that mention tokens report *whether* one is configured or *that* one
+failed. The one thing to know: the events server and the call manager's
+wallboard accept a token as a `?token=` query parameter, because a
+browser cannot set a header on a WebSocket, and a query string is the
+part of a URL that proxies and access logs keep. That is inherent to
+browser WebSockets rather than a defect here, and the tokens it applies
+to are the ones a deployment can rotate.
+
+**Constant-time comparison — one finding, fixed.** The original survey
+guessed this: "present in the gateway, unchecked elsewhere". Three
+binaries — `fcp-presence-server`, `fcp-ivr` and `fcp-voicemail-server` —
+compared the API token with `==`, which stops at the first byte that
+differs, so how long the answer takes measures how much of the token the
+caller guessed. Nine *other* binaries each carried their own correct copy
+of the same ten-line comparison. Both halves are fixed the same way:
+`fcp_core::secret::constant_time_eq` is the one implementation, the three
+`==` are gone, and the nine copies with them.
+
+**What a carrier may inject on a trunk — sound, with a hazard to name.**
+A carrier's `P-Asserted-Identity` no longer survives ingress: phase 3
+strips it from any peer that is not a trusted edge, and a trunk's header
+rules put back whatever that trunk is entitled to assert, which is the
+"stripped or re-asserted, never passed through" this project asked for.
+What the platform then signs under STIR/SHAKEN is **not** taken from what
+the carrier sent: the attestation is `trunk.stir_shaken.attestation`,
+static per trunk, and the numbers the `Identity` header covers are the
+ones the platform itself puts on the call, after the trunk's caller ID
+and digit plan. So a carrier cannot drive the platform into vouching more
+strongly than it was configured to.
+
+The hazard, named here rather than fixed (settled with the user on
+2026-09-22): because the attestation is static, a call that merely
+*transits* the platform — in one carrier, out another — is signed at
+whatever its outbound trunk declares. If that trunk says `A`, the
+platform is making a full attestation about an originator it never
+authenticated. **A trunk that carries transit traffic should declare `B`
+or `C`.** The platform has, since phase 2b, the information needed to
+choose an attestation by provenance — whether the caller proved a
+password, and whether the tenant owns the number — and doing so would
+make the ceiling automatic rather than advisory. That is a feature with
+regulatory weight, not a defence, so it is recorded here rather than
+built.
+
+**Replay windows — sound, by different means.** A migration ticket is
+single-use: it carries a nonce and the conference server admits it once
+(`migration::UsedTickets`), so a captured ticket moves nobody twice. A
+join token is *not* single-use, and should not be: it is the meeting link,
+and a browser that loses its network has to be able to come back. What
+bounds it is its lifetime — between one second and 24 hours, chosen when
+it is minted — so a leaked link is good until it expires. A deployment
+that hands out links ahead of a meeting should mint them short.
 
 ### 2.7 A digest proves nothing, because the nonce is the client's — fixed (phase 2a)
 
@@ -343,7 +410,8 @@ One PR each, in order.
 | 2b ✅ | **Authenticate INVITE.** Digest challenge on INVITE, with the credentials the registrar already uses; `[registrar] auth_invites`, off by default for one release and warned about, then on (Q1). An unauthenticated INVITE is answered `401` with a challenge, not `403` (Q2), so a phone that has lost its credentials can recover. Source-based admission remains for trunks and trusted edges, which have their own proof; loopback loses its bypass, and the digest replaces the registration check for everyone challenged (§2.1). |
 | 3 ✅ | **One gate for what a peer claims.** `fcp-sip/src/claims.rs` strips at ingress what an untrusted peer has no standing to assert, so every reader is gated by construction (§2.3): the two record ids, the carrier identity headers, and the auto-answer headers the platform's own intercom uses. Trusted edges and mutual-TLS trunks keep what they send; the conference server gains `[sip] trusted_edges` for the call manager and the gateway beside it. |
 | 4 ✅ | **The edge defended.** `fcp-sip/src/edge.rs` in the shared handler: an address list, a message-size bound and a "is this SIP at all" check before the parser, each dropping rather than answering; a per-source call rate refused `503` on a parsed request. `[security]` on the call manager, `max_invite_cps_per_source = 20` by default, trusted edges exempt (§2.4). |
-| 5 | **The rest of the survey, then fuzzing.** Finish §2.6 and fix what it finds; fuzz targets for the transaction and dialog machines, the registrar and offer/answer, run in CI as the parser's are. |
+| 5a ✅ | **The rest of the survey.** §2.6 finished: the HTTP surfaces, token strength and what reaches the logs are sound; the carrier's identity headers are already stripped and re-asserted, and the attestation hazard is named. One finding fixed — three binaries compared the API token with `==` — and the nine duplicate copies of the comparison consolidated into `fcp_core::secret`. |
+| 5b | **Fuzzing the stateful surfaces.** Fuzz targets for the transaction and dialog machines, the registrar's bindings and offer/answer — all in the siphon-rs submodule, so a release-tag round trip — with a nightly workflow like the one forge-media already has. |
 
 ## 5. Testing
 
@@ -351,6 +419,10 @@ One PR each, in order.
   substring authorisation, a nonce the node never issued, a captured
   header replayed with another `Contact`, a call id from an untrusted
   peer, an INVITE without credentials.
+- Phase 5a: the shared comparison's own tests, and a smoke test on the
+  presence server that a missing token, a wrong token of the same length
+  and a token right but for its last byte are each refused while the
+  right one is let through.
 - Test floor, phase 4: eight calls in one second from one address are
   not all carried — the ones over the limit are refused `503` — and a
   phone at an address the node denies is answered by nothing at all

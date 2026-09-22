@@ -247,7 +247,7 @@ impl<S: Ha1CredentialStore> Ha1Authenticator<S> {
             request.body().as_ref(),
         );
 
-        if !constant_time_eq(expected_response.as_bytes(), response.as_bytes()) {
+        if !fcp_core::secret::constant_time_eq(expected_response.as_bytes(), response.as_bytes()) {
             debug!(username = %username, "Refusing credentials: the digest does not match");
             return AuthOutcome::Failed;
         }
@@ -310,19 +310,6 @@ fn request_identity(request: &Request) -> Vec<u8> {
         }
     }
     identity
-}
-
-/// Constant-time string comparison to prevent timing attacks
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-
-    let mut result = 0u8;
-    for (x, y) in a.iter().zip(b.iter()) {
-        result |= x ^ y;
-    }
-    result == 0
 }
 
 #[cfg(test)]

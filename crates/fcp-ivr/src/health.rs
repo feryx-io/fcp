@@ -88,7 +88,9 @@ async fn require_api_token(
         .unwrap_or("");
     let token = auth_header.strip_prefix("Bearer ").unwrap_or(auth_header);
 
-    if !token.is_empty() && token == expected_token {
+    // Compared in time that does not depend on how much of the token the
+    // caller guessed right (`docs/EDGE_SECURITY.md` §2.6).
+    if !token.is_empty() && fcp_core::secret::constant_time_eq(token, expected_token) {
         next.run(request).await
     } else {
         (

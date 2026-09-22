@@ -326,7 +326,7 @@ async fn require_cluster_secret(
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .unwrap_or("");
-    if !constant_time_eq(presented, secret) {
+    if !fcp_core::secret::constant_time_eq(presented, secret) {
         return (
             StatusCode::UNAUTHORIZED,
             Json(serde_json::json!({ "error": "Invalid cluster secret" })),
@@ -334,16 +334,6 @@ async fn require_cluster_secret(
             .into_response();
     }
     next.run(req).await
-}
-
-fn constant_time_eq(a: &str, b: &str) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    a.bytes()
-        .zip(b.bytes())
-        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
-        == 0
 }
 
 /// Run the HTTP API server.

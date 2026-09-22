@@ -71,18 +71,6 @@ fn hash_token(token: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-fn constant_time_compare(left: &str, right: &str) -> bool {
-    if left.len() != right.len() {
-        return false;
-    }
-
-    let mut diff = 0u8;
-    for (left, right) in left.as_bytes().iter().zip(right.as_bytes()) {
-        diff |= left ^ right;
-    }
-    diff == 0
-}
-
 async fn authorize_shared_provisioning_token(
     expected_token: Option<&str>,
     headers: &HeaderMap,
@@ -114,7 +102,8 @@ fn authorize_device_provisioning_token(
     let presented_device_token =
         device_provisioning_token_from_headers(headers).ok_or_else(provisioning_not_found)?;
     let presented_device_token_hash = hash_token(&presented_device_token);
-    if !constant_time_compare(&presented_device_token_hash, expected_device_token_hash) {
+    if !fcp_core::secret::constant_time_eq(&presented_device_token_hash, expected_device_token_hash)
+    {
         return Err(provisioning_not_found());
     }
 
@@ -448,12 +437,12 @@ mod tests {
 
     #[test]
     fn test_constant_time_compare_basics() {
-        assert!(constant_time_compare("abc", "abc"));
-        assert!(!constant_time_compare("abc", "abd"));
+        assert!(fcp_core::secret::constant_time_eq("abc", "abc"));
+        assert!(!fcp_core::secret::constant_time_eq("abc", "abd"));
         assert!(
-            !constant_time_compare("abc", "abcd"),
+            !fcp_core::secret::constant_time_eq("abc", "abcd"),
             "length mismatch must fail"
         );
-        assert!(constant_time_compare("", ""));
+        assert!(fcp_core::secret::constant_time_eq("", ""));
     }
 }

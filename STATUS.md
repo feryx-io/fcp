@@ -425,8 +425,30 @@ log-and-drop, which is what the handler already did, so nothing changes
 for a deployment that sets nothing; a typo in a CIDR is a startup error.
 The ACL types moved down from `fcp-sbc-core` into the shared handler so
 there is one implementation, re-exported under the names the SBC's
-configuration has always used. Phase 5, the rest of the survey and then
-fuzzing, is next.
+configuration has always used. Phase 5a done (v0.25.227): the rest of the
+survey (§2.6), which mostly came back clean and now says so explicitly.
+Every binary that serves an API already refuses a non-loopback bind
+without a token, so the fail-open path is reachable only from localhost;
+the gateway, the one meant to face browsers, is fail-closed with only
+`/join` and `/ready` open. Tokens are strong — 32 CSPRNG bytes stored as
+a SHA-256, HMAC-signed join tokens and migration tickets — and nothing
+logs a secret's value, though a browser WebSocket has to pass its token
+as a query parameter, which is the part of a URL that logs keep. One
+finding: `fcp-presence-server`, `fcp-ivr` and `fcp-voicemail-server`
+compared the API token with `==`, which stops at the first differing
+byte, while nine other binaries each carried their own correct copy of
+the same comparison; `fcp_core::secret::constant_time_eq` is now the one
+implementation and both halves are gone. A carrier's identity headers are
+already handled — phase 3 strips them and a trunk's rules re-assert what
+it is entitled to — and STIR/SHAKEN attestation is static per trunk, so a
+carrier cannot drive the platform into vouching more strongly than it was
+configured to; the hazard named rather than fixed (the user's call,
+2026-09-22) is that a call merely transiting the platform is signed at
+whatever its outbound trunk declares, so such a trunk should declare B or
+C. Replay: migration tickets are single-use by nonce, join tokens
+deliberately are not — a browser that drops has to come back — and are
+bounded by a lifetime of between a second and a day. Phase 5b, fuzzing
+the stateful surfaces in siphon-rs, is next and closes the project.
 
 ## Historical documents
 

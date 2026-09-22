@@ -302,7 +302,9 @@ async fn require_api_token(
         .and_then(extract_bearer_token);
 
     match provided_token {
-        Some(token) if constant_time_compare(token, expected_token) => next.run(request).await,
+        Some(token) if fcp_core::secret::constant_time_eq(token, expected_token) => {
+            next.run(request).await
+        }
         _ => (
             StatusCode::UNAUTHORIZED,
             Json(serde_json::json!({"error": "Invalid or missing authentication token"})),
@@ -1777,17 +1779,6 @@ fn extract_bearer_token(header_value: &str) -> Option<&str> {
         .map(|t| t.trim())
 }
 
-/// Constant-time string comparison to prevent timing attacks.
-fn constant_time_compare(a: &str, b: &str) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    a.bytes()
-        .zip(b.bytes())
-        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
-        == 0
-}
-
 /// WebSocket upgrade handler for real-time wallboard stats.
 ///
 /// Subscribes to `QueueEvent::StatsSnapshot` on the event bus and streams
@@ -1812,7 +1803,7 @@ async fn wallboard_ws_handler(
             .or(query.token);
 
         match provided_token {
-            Some(ref token) if constant_time_compare(token, expected_token) => {
+            Some(ref token) if fcp_core::secret::constant_time_eq(token, expected_token) => {
                 // Auth passed
             }
             _ => {
@@ -2175,7 +2166,7 @@ fn verify_cluster_secret(
 
     let token = auth_header.strip_prefix("Bearer ").unwrap_or(auth_header);
 
-    if constant_time_compare(token, secret) {
+    if fcp_core::secret::constant_time_eq(token, secret) {
         Ok(())
     } else {
         Err((
