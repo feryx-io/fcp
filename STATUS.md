@@ -471,6 +471,43 @@ run managed seventeen million executions that almost all stopped at the
 request line. A nightly workflow runs every target for ten minutes and
 keeps its corpus between runs.
 
+## What is next (chosen 2026-09-22)
+
+**Multi-region leftovers** — chosen after the edge security project
+closed, from the candidates the 2026-09-20 entry named. Survey and design
+in `docs/MULTI_REGION_FOLLOWUPS.md` (v0.25.230): the three **Not covered**
+lists `docs/MULTI_REGION.md` left behind, checked against the code.
+
+What the survey found sound: the replica split is drawn correctly
+(configuration reads to `self.reads()`, writes and must-be-current reads
+to the primary), the hot-path config reads are cached, region-aware
+placement works and prefers the caller's region even when another region
+already hosts the room, and a node with no region is local to nothing so
+a rolling upgrade strands nobody.
+
+What it found wrong: **registrations are the one hot-path store with no
+regional story.** Every other call-path lookup is replica-served or
+cached; registrations are primary-always by design and uncached, so an
+ordinary call in a region that does not hold the primary makes at least
+two cross-region round trips before the callee rings — the caller's
+bindings for admission and the callee's for routing — with a hunt group
+reading once per member and domain aliases multiplying every one of them.
+The Redis registration backend that exists does not fix it: it reads
+`storage.redis_url`, the same Redis cluster membership requires to be
+shared across regions, so it moves registrations from one global store to
+another; and it is implemented only on the call manager, not on the
+standalone registrar or the SBC. Also open: nothing gets a region's
+callers to that region's nodes, a partitioned region cannot tell that its
+*view* is what is broken, and the event bridge forwards everything
+unmeasured.
+
+Four questions settled by the user: registrations get a short-TTL cache
+first and the regional question is deferred to a decision point with
+measurements behind it; regional ingress is a deployment guide, not a
+platform feature; a partition is made visible rather than acted on; and
+the event bridge is measured before it is filtered. Four phases: measure,
+the registration cache, a partition is visible, the deployment guide.
+
 ## Historical documents
 
 Superseded status docs live in [`docs/archive/`](docs/archive/README.md) — they describe
