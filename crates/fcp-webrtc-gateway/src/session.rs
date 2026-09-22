@@ -2013,7 +2013,7 @@ impl SessionManager {
             return false;
         };
         let s = session.read().await;
-        constant_time_eq(s.session_token.as_bytes(), token.as_bytes())
+        fcp_core::secret::constant_time_eq(s.session_token.as_bytes(), token.as_bytes())
     }
 
     // ------------------------------------------------------------ control
@@ -2212,14 +2212,6 @@ async fn open_video_section(
             srtp,
         },
     )))
-}
-
-/// Equal without leaking where they differ.
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
 /// Point a socket pair at the far end and accept media only from there.

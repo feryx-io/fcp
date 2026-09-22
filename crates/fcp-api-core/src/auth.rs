@@ -215,7 +215,7 @@ impl AuthConfig {
 /// Returns the caller's identity if the token is valid, `None` otherwise.
 pub async fn validate_token(token: &str, config: &AuthConfig) -> Option<AuthIdentity> {
     // Fast path: constant-time comparison against static config token
-    if constant_time_compare(token, &config.token) {
+    if fcp_core::secret::constant_time_eq(token, &config.token) {
         return Some(AuthIdentity::StaticToken);
     }
 
@@ -422,23 +422,6 @@ async fn validate_api_token(token: &str, store: &Arc<dyn ApiTokenStore>) -> Opti
     })
 }
 
-/// Constant-time string comparison to prevent timing attacks.
-///
-/// This ensures that the comparison always takes the same amount of time
-/// regardless of where the first difference occurs.
-fn constant_time_compare(a: &str, b: &str) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-
-    let mut result = 0u8;
-    for (byte_a, byte_b) in a.bytes().zip(b.bytes()) {
-        result |= byte_a ^ byte_b;
-    }
-
-    result == 0
-}
-
 /// Tenant context extracted from the authenticated session.
 ///
 /// SECURITY: Does NOT trust the raw X-Tenant-Id header. In a
@@ -517,17 +500,20 @@ mod tests {
     #[test]
     fn test_constant_time_compare() {
         // Same strings
-        assert!(constant_time_compare("secret123", "secret123"));
+        assert!(fcp_core::secret::constant_time_eq("secret123", "secret123"));
 
         // Different strings (same length)
-        assert!(!constant_time_compare("secret123", "secret124"));
+        assert!(!fcp_core::secret::constant_time_eq(
+            "secret123",
+            "secret124"
+        ));
 
         // Different lengths
-        assert!(!constant_time_compare("secret", "secret123"));
-        assert!(!constant_time_compare("secret123", "secret"));
+        assert!(!fcp_core::secret::constant_time_eq("secret", "secret123"));
+        assert!(!fcp_core::secret::constant_time_eq("secret123", "secret"));
 
         // Empty strings
-        assert!(constant_time_compare("", ""));
+        assert!(fcp_core::secret::constant_time_eq("", ""));
     }
 
     #[test]

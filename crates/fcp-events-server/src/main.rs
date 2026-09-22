@@ -775,17 +775,6 @@ fn extract_bearer_token(header_value: &str) -> Option<&str> {
         .map(str::trim)
 }
 
-fn constant_time_compare(a: &str, b: &str) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-
-    a.bytes()
-        .zip(b.bytes())
-        .fold(0u8, |acc, (lhs, rhs)| acc | (lhs ^ rhs))
-        == 0
-}
-
 fn derive_jwt_secret_from_token(auth_token: &str) -> Vec<u8> {
     let mut mac = Hmac::<Sha256>::new_from_slice(b"fcp-jwt-key-derivation")
         .expect("HMAC accepts any key length");
@@ -814,7 +803,7 @@ async fn authenticate_presented_token(
     token: &str,
 ) -> Option<AuthPrincipal> {
     if let Some(expected_token) = auth.expected_token.as_deref() {
-        if constant_time_compare(token, expected_token) {
+        if fcp_core::secret::constant_time_eq(token, expected_token) {
             return Some(AuthPrincipal::StaticAdmin);
         }
     }

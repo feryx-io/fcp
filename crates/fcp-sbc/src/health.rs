@@ -50,18 +50,6 @@ fn extract_bearer_token(value: &str) -> Option<&str> {
     }
 }
 
-fn constant_time_compare(left: &str, right: &str) -> bool {
-    if left.len() != right.len() {
-        return false;
-    }
-
-    let mut diff = 0u8;
-    for (a, b) in left.as_bytes().iter().zip(right.as_bytes()) {
-        diff |= a ^ b;
-    }
-    diff == 0
-}
-
 async fn require_api_token(
     State(state): State<Arc<HealthState>>,
     request: Request<Body>,
@@ -78,7 +66,9 @@ async fn require_api_token(
         .and_then(extract_bearer_token);
 
     match provided_token {
-        Some(token) if constant_time_compare(token, expected_token) => next.run(request).await,
+        Some(token) if fcp_core::secret::constant_time_eq(token, expected_token) => {
+            next.run(request).await
+        }
         _ => (
             axum::http::StatusCode::UNAUTHORIZED,
             Json(serde_json::json!({"error": "Invalid or missing authentication token"})),

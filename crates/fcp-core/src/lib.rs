@@ -40,6 +40,7 @@ pub mod region;
 pub mod routing;
 pub mod routing_engine;
 pub mod routing_rule;
+pub mod secret;
 pub mod service;
 pub mod sip_handler;
 pub mod sip_trace;

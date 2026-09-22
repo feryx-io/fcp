@@ -194,7 +194,7 @@ async fn require_api_token(tokens: Vec<String>, req: Request, next: Next) -> Res
         let token = extract_bearer_token(header).unwrap_or(header).trim();
         if tokens
             .iter()
-            .any(|expected| constant_time_compare(expected, token))
+            .any(|expected| fcp_core::secret::constant_time_eq(expected, token))
         {
             return next.run(req).await;
         }
@@ -259,17 +259,6 @@ fn extract_bearer_token(header_value: &str) -> Option<&str> {
         .strip_prefix("Bearer ")
         .or_else(|| header_value.strip_prefix("bearer "))
         .map(str::trim)
-}
-
-fn constant_time_compare(a: &str, b: &str) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-
-    a.bytes()
-        .zip(b.bytes())
-        .fold(0u8, |acc, (lhs, rhs)| acc | (lhs ^ rhs))
-        == 0
 }
 
 // ---------------------------------------------------------------------------
@@ -435,8 +424,8 @@ mod tests {
 
     #[test]
     fn test_constant_time_compare_requires_exact_match() {
-        assert!(constant_time_compare("secret", "secret"));
-        assert!(!constant_time_compare("secret", "Secret"));
-        assert!(!constant_time_compare("secret", "secret-2"));
+        assert!(fcp_core::secret::constant_time_eq("secret", "secret"));
+        assert!(!fcp_core::secret::constant_time_eq("secret", "Secret"));
+        assert!(!fcp_core::secret::constant_time_eq("secret", "secret-2"));
     }
 }

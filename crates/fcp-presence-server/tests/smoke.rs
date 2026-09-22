@@ -136,3 +136,79 @@ format = "compact"
 
     db.drop_db().await;
 }
+
+/// The API token is required and checked (`docs/EDGE_SECURITY.md` §2.6).
+///
+/// This server compared the token with `==`, which stops at the first byte
+/// that differs — how long the answer takes measures how much of the token
+/// the caller guessed. It now uses `fcp_core::secret::constant_time_eq`,
+/// whose own tests cover the comparison; what this covers is that the
+/// token is still *demanded* and that a wrong one is still refused.
+#[tokio::test]
+async fn a_wrong_api_token_is_refused() {
+    let Some(db) = TestDatabase::create().await else {
+        eprintln!("FCP_TEST_DATABASE_URL not set; skipping fcp-presence-server token test");
+        return;
+    };
+    let sip = free_port();
+    let http = free_port();
+    let config = format!(
+        r#"[service]
+node_id = "token-presence"
+shutdown_timeout_secs = 5
+
+[sip]
+udp_bind = "127.0.0.1:{sip}"
+tcp_bind = "127.0.0.1:{sip}"
+local_ip = "127.0.0.1"
+local_uri = "sip:presence@127.0.0.1:{sip}"
+
+[storage]
+database_url = "{db}"
+
+[http]
+bind_address = "127.0.0.1:{http}"
+api_token = "s3cret-token-value"
+
+[logging]
+level = "info"
+format = "compact"
+"#,
+        db = db.url(),
+    );
+
+    let service =
+        fcp_testkit::Service::start("presence", BIN, &config, &smoke::loopback(http, "/health"))
+            .await;
+
+    let protected = smoke::loopback(http, "/v1/metrics");
+    let ask = |headers: Vec<(&'static str, &'static str)>| {
+        let url = protected.clone();
+        async move {
+            smoke::http_request("GET", &url, &headers, None)
+                .await
+                .expect("request")
+                .0
+        }
+    };
+
+    assert_eq!(ask(vec![]).await, 401, "no token is refused");
+    assert_eq!(
+        ask(vec![("Authorization", "Bearer wrong-token-value")]).await,
+        401,
+        "a wrong token of the same length is refused"
+    );
+    assert_eq!(
+        ask(vec![("Authorization", "Bearer s3cret-token-valu")]).await,
+        401,
+        "a token that is right but for its last byte is refused"
+    );
+    assert_eq!(
+        ask(vec![("Authorization", "Bearer s3cret-token-value")]).await,
+        200,
+        "the right token is let through"
+    );
+
+    service.stop().await;
+    db.drop_db().await;
+}

@@ -122,10 +122,6 @@ fn unauthorized(why: &str) -> Response {
         .into_response()
 }
 
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
-}
-
 /// The session id a path addresses, when it is a session route
 /// (`/v1/rooms/{id}[/…]` or `/v1/calls/{id}[/…]`, but not a join).
 fn session_id_of(path: &str) -> Option<&str> {
@@ -168,7 +164,7 @@ pub async fn gateway_auth(State(state): State<ApiState>, req: Request, next: Nex
         if state
             .operator_tokens
             .iter()
-            .any(|t| constant_time_eq(t.as_bytes(), token.as_bytes()))
+            .any(|t| fcp_core::secret::constant_time_eq(t.as_bytes(), token.as_bytes()))
         {
             return next.run(req).await;
         }
