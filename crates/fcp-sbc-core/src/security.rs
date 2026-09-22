@@ -4,94 +4,12 @@
 //! policy, and size limits for incoming messages.
 
 use serde::{Deserialize, Serialize};
-use std::net::IpAddr;
 
-/// ACL rule action.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum AclAction {
-    /// Allow the traffic.
-    #[default]
-    Allow,
-
-    /// Deny the traffic.
-    Deny,
-}
-
-/// A single IP ACL rule entry.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct IpAclEntry {
-    /// CIDR notation network (e.g. "10.0.0.0/8", "192.168.1.1/32").
-    pub cidr: String,
-
-    /// Action to take when this rule matches.
-    pub action: AclAction,
-
-    /// Optional description for this rule.
-    pub description: Option<String>,
-}
-
-/// IP access control list.
-///
-/// Rules are evaluated in order; the first matching rule wins.
-/// If no rule matches, `default_action` is returned.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct IpAcl {
-    /// Ordered list of ACL rules.
-    pub rules: Vec<IpAclEntry>,
-
-    /// Action when no rule matches.
-    pub default_action: AclAction,
-}
-
-impl Default for IpAcl {
-    fn default() -> Self {
-        Self {
-            rules: Vec::new(),
-            default_action: AclAction::Allow,
-        }
-    }
-}
-
-impl IpAcl {
-    /// Evaluate the ACL for a given IP address.
-    ///
-    /// Returns the action from the first matching rule, or `default_action`
-    /// if no rule matches. Unparseable CIDR entries are skipped.
-    pub fn evaluate(&self, ip: IpAddr) -> AclAction {
-        for entry in &self.rules {
-            if let Ok(network) = entry.cidr.parse::<ipnetwork::IpNetwork>() {
-                if network.contains(ip) {
-                    return entry.action;
-                }
-            }
-        }
-        self.default_action
-    }
-
-    /// Validate all ACL entries.
-    ///
-    /// Returns `Err` if:
-    /// - Any `cidr` value cannot be parsed as an IP network
-    /// - Any `description` contains CR/LF characters
-    pub fn validate(&self, context: &str) -> Result<(), String> {
-        for (i, entry) in self.rules.iter().enumerate() {
-            if entry.cidr.parse::<ipnetwork::IpNetwork>().is_err() {
-                return Err(format!(
-                    "{context}: rule {i} has invalid CIDR: {:?}",
-                    entry.cidr
-                ));
-            }
-            if let Some(ref desc) = entry.description {
-                if desc.contains('\r') || desc.contains('\n') {
-                    return Err(format!(
-                        "{context}: rule {i} description must not contain CR/LF characters"
-                    ));
-                }
-            }
-        }
-        Ok(())
-    }
-}
+// The address list is the edge's, kept in the shared handler so there is
+// one implementation of it rather than two (`docs/EDGE_SECURITY.md` §2.4).
+// Re-exported here because this is where the SBC's configuration has
+// always named it.
+pub use fcp_sip::edge::{AclAction, IpAcl, IpAclEntry};
 
 /// Policy for handling malformed SIP messages.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -189,6 +107,7 @@ impl SecurityConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::IpAddr;
 
     #[test]
     fn test_default() {

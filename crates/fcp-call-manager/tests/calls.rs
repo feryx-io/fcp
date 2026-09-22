@@ -375,6 +375,83 @@ async fn a_caller_does_not_choose_what_its_record_points_at() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn one_source_cannot_spend_the_whole_node() {
+    // `docs/EDGE_SECURITY.md` §2.4. `[admission] max_cps` is a node-wide
+    // budget, so one source could spend all of it, and the handler's own
+    // limiters are per-dialog — they bound one caller's mischief and
+    // nothing about the node. A per-source rate is what the SBC had and
+    // the call manager, the edge of every single-binary deployment, did
+    // not.
+    let Some(stack) = Stack::start_with("[security]\nmax_invite_cps_per_source = 2\n", 40).await
+    else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let bob = stack.seed.user("bob", "bob-pw", "1002").await;
+    let alice_phone = stack.phone(&alice).await;
+    let bob_phone = stack.phone(&bob).await;
+    assert_eq!(alice_phone.register().await.unwrap(), 200);
+    assert_eq!(bob_phone.register().await.unwrap(), 200);
+    bob_phone.auto_answer(true);
+
+    // More calls in one second than the node allows from one address.
+    let mut calls = Vec::new();
+    for _ in 0..8 {
+        calls.push(alice_phone.call(&bob.extension).await.unwrap());
+    }
+
+    // The ones over the limit are refused, and told when to come back.
+    let mut refused = 0;
+    while let Some(event) = alice_phone.next_event(SOON).await {
+        if let PhoneEvent::Failed { code: 503, .. } = event {
+            refused += 1;
+        }
+    }
+    assert!(
+        refused > 0,
+        "eight calls in one second from one address, none refused"
+    );
+    assert!(
+        refused < calls.len(),
+        "the limit refused every call, not just the ones over it"
+    );
+
+    for call in calls {
+        let _ = call.hangup().await;
+    }
+    stack.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_address_the_node_denies_is_told_nothing() {
+    // `docs/EDGE_SECURITY.md` §2.4: the call manager had no address list
+    // at all. A denied peer is dropped rather than answered — replying
+    // confirms the port is live and makes the node a reflector — so the
+    // phone here waits and gets nothing, which is the point.
+    let acl = r#"[security]
+acl = { default_action = "Allow", rules = [{ cidr = "127.0.0.1/32", action = "Deny" }] }
+"#;
+    let Some(stack) = Stack::start_with(acl, 40).await else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let alice_phone = stack.phone(&alice).await;
+
+    assert!(
+        alice_phone.register().await.is_err(),
+        "a denied address was answered"
+    );
+
+    // The node is otherwise alive: it is refusing this address, not ill.
+    let health = stack.get("/health").await;
+    assert_eq!(health["status"], "healthy", "{health}");
+
+    stack.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_call_is_answered_heard_both_ways_and_recorded() {
     let stack = stack_or_skip!();
     let alice = stack.seed.user("alice", "alice-pw", "1001").await;
