@@ -346,9 +346,17 @@ impl SipPresenceHandler {
             return Ok(false);
         };
 
-        match auth.authenticator.verify(request).await {
-            Ok(true) => {}
-            Ok(false) | Err(_) => {
+        match auth.authenticator.authenticate(request).await {
+            crate::auth::AuthOutcome::Authenticated { .. } => {}
+            // A nonce this node did not issue, or one already spent, is
+            // not proof; the client is told to retry against a fresh one.
+            crate::auth::AuthOutcome::Stale => {
+                handle
+                    .send_final(auth.authenticator.challenge_stale(request)?)
+                    .await;
+                return Ok(false);
+            }
+            crate::auth::AuthOutcome::Failed => {
                 handle.send_final(challenge()?).await;
                 return Ok(false);
             }

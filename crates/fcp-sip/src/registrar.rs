@@ -790,21 +790,31 @@ impl FcpRegistrar {
                 }
 
                 // Verify authentication
-                match authenticator.verify(request).await {
-                    Ok(true) => {
+                match authenticator.authenticate(request).await {
+                    crate::auth::AuthOutcome::Authenticated { .. } => {
                         debug!("Authentication successful");
                         // Continue to registration handling
                     }
-                    Ok(false) => {
-                        debug!("Authentication failed, sending 401 challenge");
-                        // Emit registration failed event
-                        self.publish_event(RegistrationEvent::Failed {
-                            aor: aor.clone(),
-                            tenant_id: tenant_id.unwrap_or_else(TenantId::nil),
-                            reason: "authentication_failed".to_string(),
-                            timestamp: SystemTime::now(),
-                        });
-                        return match authenticator.challenge(request) {
+                    // The credentials are right and only the nonce was not
+                    // usable, so the phone retries without prompting anyone.
+                    outcome @ (crate::auth::AuthOutcome::Stale
+                    | crate::auth::AuthOutcome::Failed) => {
+                        let stale = outcome == crate::auth::AuthOutcome::Stale;
+                        debug!(stale, "Authentication failed, sending 401 challenge");
+                        if !stale {
+                            self.publish_event(RegistrationEvent::Failed {
+                                aor: aor.clone(),
+                                tenant_id: tenant_id.unwrap_or_else(TenantId::nil),
+                                reason: "authentication_failed".to_string(),
+                                timestamp: SystemTime::now(),
+                            });
+                        }
+                        let challenge = if stale {
+                            authenticator.challenge_stale(request)
+                        } else {
+                            authenticator.challenge(request)
+                        };
+                        return match challenge {
                             Ok(response) => response,
                             Err(e) => {
                                 tracing::error!("Failed to create auth challenge: {}", e);
@@ -815,17 +825,6 @@ impl FcpRegistrar {
                                 );
                             }
                         };
-                    }
-                    Err(e) => {
-                        tracing::error!("Authentication error: {}", e);
-                        // Emit registration failed event
-                        self.publish_event(RegistrationEvent::Failed {
-                            aor,
-                            tenant_id: tenant_id.unwrap_or_else(TenantId::nil),
-                            reason: format!("authentication_error: {}", e),
-                            timestamp: SystemTime::now(),
-                        });
-                        return self.create_error_response(request, 500, "Internal Server Error");
                     }
                 }
             } else {

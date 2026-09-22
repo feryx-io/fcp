@@ -344,7 +344,25 @@ bindings built from them, since only the rows carry the source address,
 and an INVITE naming a user registered elsewhere is logged before it is
 refused. Q1 and Q3 settled by the user on 2026-09-21: INVITE
 authentication off for one release with a startup warning, then on; and
-2.2 fixed both ways, parsed host *and* the stored source address.
+2.2 fixed both ways, parsed host *and* the stored source address. Phase 2
+split in two once phase 2's survey found the digest itself wanting
+(§2.7): the authenticator took the nonce out of the client's own
+`Authorization` header and never recorded what it had issued, so a
+captured header — one packet, one verbose log line, one compromised
+device — was valid for ever, on a request whose headers said something
+else. Against the registrar that is AoR hijack, since the digest covers
+the method and URI but no header, so a replay naming the attacker's
+`Contact` takes the victim's calls; the presence server's SUBSCRIBE and
+PUBLISH gate took the same header. Phase 2a done (v0.25.223):
+challenges come from a tracked `NonceManager`, the digest is checked
+first and the nonce second — so a client that knows the password is told
+`stale=true` and retries silently while one that does not is refused
+rather than looped — and the retransmission check is given the request's
+identity (body, `Contact`, `CSeq`, `Call-ID`, `From`, `To`) so a UDP
+repeat still passes and a replay that changes what the request does does
+not. A nonce lives 300 s and is per node, so a refresh or a request
+landing on another node costs one extra challenge. Phase 2b, the INVITE
+digest itself, is next.
 
 ## Historical documents
 

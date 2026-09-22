@@ -1,8 +1,8 @@
 # Edge Security — Design
 
 Status: **agreed** (2026-09-21), survey done, Q1 and Q3 settled by the
-user; **phase 1 done** (v0.25.222). Chosen
-after the capacity and survivability project closed.
+user; **phase 1 done** (v0.25.222), **phase 2a done** (v0.25.223).
+Chosen after the capacity and survivability project closed.
 
 One document for what an internet-facing FCP node exposes: **who may place
 a call**, **what a peer may claim**, **what a flood costs**, and **what is
@@ -125,6 +125,49 @@ what a *carrier* may inject on a trunk (`P-Asserted-Identity` and the
 caller identity the platform then asserts under STIR/SHAKEN); and replay
 windows on the join token and the migration ticket.
 
+### 2.7 A digest proves nothing, because the nonce is the client's — fixed (phase 2a)
+
+Found while building phase 2, and the reason it split in two: the survey
+above assumed digest authentication worked where it was used, and it did
+not.
+
+`Ha1Authenticator::verify` took the nonce **out of the client's own
+`Authorization` header** and used it to compute the expected response
+(`fcp-sip/src/auth.rs`). No nonce was ever recorded when a challenge was
+issued, so nothing checked that the node had issued this one, that it had
+not expired, or that its nonce-count had not been seen before — the
+`NonceManager` siphon-rs provides for exactly this was not used.
+
+A digest response covers the method, the request URI and (under
+`qop=auth-int`) the body. It covers **no header**. So a single captured
+`Authorization` — one packet off the wire, one line from a verbose log,
+one compromised device — could be replayed for ever, on a request whose
+headers said something else entirely. Against the registrar that is AoR
+hijack: replay the victim's REGISTER with the attacker's own `Contact`
+and the victim's calls arrive at the attacker. The same header was
+accepted by the presence server's SUBSCRIBE and PUBLISH gate.
+
+Fixed in v0.25.223. Challenges are issued from a `NonceManager` and a
+request is authenticated in two steps: the digest is checked first,
+against the nonce the client used, and only then is the nonce itself
+examined — issued here, still live, nonce-count not walking backwards.
+The order matters. A client that knows the password and has a stale nonce
+is answered `stale=true` and retries silently (RFC 7616 §3.5); a client
+that does not know it is simply refused, so a wrong password cannot loop.
+Because the digest covers no header, the nonce's retransmission check is
+given the request's **identity** — body, `Contact`, `CSeq`, `Call-ID`,
+`From` and `To` — so a genuine UDP retransmission still passes and a
+replay that changes what the request does is not a retransmission.
+
+Costs, accepted: a nonce lives 300 s, so a device that comes back later
+is challenged once more and retries — an extra round trip per
+registration refresh, which every SIP client already implements. Nonces
+are per node and in memory, so a request landing on a different node of a
+cluster is challenged again; that is what an unshared registrar farm
+does. The manager holds 10 000 nonces and evicts the oldest under
+pressure, so a flood costs legitimate clients an extra challenge, not a
+refusal — and REGISTER floods are already bounded per source and per AOR.
+
 ## 3. Goals
 
 1. A call is placed by someone the node has authenticated, not by
@@ -148,7 +191,8 @@ One PR each, in order.
 | Phase | What |
 |---|---|
 | 1 ✅ | **The registration check, and a test that fails today.** Compare the binding contact's parsed host, and prefer the stored `source_address` where there is one (Q3); a contact's port or parameters can no longer authorise a stranger. Cheap, contained, and the clearest defect found. |
-| 2 | **Authenticate INVITE.** Digest challenge on INVITE for registered users, with the credentials the registrar already uses; `[registrar] auth_invites`, off by default for one release and warned about, then on (Q1). An unauthenticated INVITE is answered `401` with a challenge, not `403` (Q2), so a phone that has lost its credentials can recover. Source-based admission remains for trunks and trusted edges, which have their own proof. |
+| 2a ✅ | **The nonce is the node's.** Challenges issued from a tracked `NonceManager`, verified with the nonce-count and the request's identity, `stale=true` where the credentials are right and only the nonce is not — so that the digest phase 2b adds to INVITE is worth adding (§2.7). |
+| 2b | **Authenticate INVITE.** Digest challenge on INVITE for registered users, with the credentials the registrar already uses; `[registrar] auth_invites`, off by default for one release and warned about, then on (Q1). An unauthenticated INVITE is answered `401` with a challenge, not `403` (Q2), so a phone that has lost its credentials can recover. Source-based admission remains for trunks and trusted edges, which have their own proof. |
 | 3 | **One gate for what a peer claims.** `X-FCP-Call-Id` believed only from a trusted edge or an authenticated inter-node peer, the same way its siblings are; an audit of every `X-FCP-*` reader with a test each; the carrier-injected identity headers stripped or re-asserted, never passed through. |
 | 4 | **The edge defended.** Per-source INVITE limits and an IP ACL in the shared handler, so the call manager gets what the SBC has; a malformed-SIP policy; sensible defaults that refuse nothing a working deployment does today. |
 | 5 | **The rest of the survey, then fuzzing.** Finish §2.6 and fix what it finds; fuzz targets for the transaction and dialog machines, the registrar and offer/answer, run in CI as the parser's are. |
@@ -156,8 +200,9 @@ One PR each, in order.
 ## 5. Testing
 
 - Unit, per finding, written to fail against the current code: the
-  substring authorisation, a call id from an untrusted peer, an INVITE
-  without credentials.
+  substring authorisation, a nonce the node never issued, a captured
+  header replayed with another `Contact`, a call id from an untrusted
+  peer, an INVITE without credentials.
 - Test floor: a phone that is *not* registered cannot place a call; a
   phone at a neighbouring address cannot place one as its neighbour; a
   registered phone still can, with digest. Noted in phase 1: the floor
