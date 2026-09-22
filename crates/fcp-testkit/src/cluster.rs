@@ -160,6 +160,11 @@ tls_key_path = "{key}"
 tls_client_ca_path = "{ca}"
 local_ip = "127.0.0.1"
 local_uri = "sip:conference@127.0.0.1:{sip}"
+# The call manager and the gateway beside these nodes name the record
+# each leg belongs to (`docs/EDGE_SECURITY.md` §2.3), so a room here
+# believes what they say. Inter-node trunks need no listing: they prove
+# themselves with a client certificate.
+trusted_edges = ["127.0.0.1"]
 
 [storage]
 database_url = "{db}"

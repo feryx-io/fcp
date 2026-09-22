@@ -857,6 +857,9 @@ async fn main() -> Result<()> {
         config.ai.clone(),
         config.service.node_id.clone(),
     );
+    conference_handler.set_trusted_edges(fcp_sip::emergency::TrustedEdges::parse(
+        &config.sip.trusted_edges,
+    )?);
     conference_handler.set_video_backend(video_backend);
     conference_handler.set_cdr(cdr_writer, region);
     conference_handler.set_video_capacity(Arc::clone(&video_capacity));
@@ -1416,7 +1419,13 @@ async fn main() -> Result<()> {
                 None,          // cluster_parking
                 String::new(), // node_id
             )?
-            .with_default_tenant_id(config.service.default_tenant_id),
+            .with_default_tenant_id(config.service.default_tenant_id)
+            // The same peers the conference handler believes: the SIP
+            // handler dispatches to it, so this is where a claim is
+            // taken away (`docs/EDGE_SECURITY.md` §2.3).
+            .with_trusted_edges(fcp_sip::emergency::TrustedEdges::parse(
+                &config.sip.trusted_edges,
+            )?),
         );
 
     // 19. Create and start TransportListener

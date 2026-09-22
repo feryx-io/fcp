@@ -289,6 +289,11 @@ pub struct ConferenceCallHandler {
     admission: std::sync::RwLock<Option<Arc<dyn fcp_sip::admission::NodeAdmission>>>,
     /// Offer SDES-SRTP on the trunks this node dials (`cluster.trunk_srtp`).
     trunk_srtp: std::sync::atomic::AtomicBool,
+    /// Peers whose claims about a call this node believes
+    /// (`[sip] trusted_edges`, `docs/EDGE_SECURITY.md` §2.3): the WebRTC
+    /// gateway and the call manager, which name the record a leg belongs
+    /// to. Empty believes nobody, which is the safe default.
+    trusted_edges: std::sync::RwLock<fcp_sip::emergency::TrustedEdges>,
     /// Secondary index: room_number → Vec<call_id> for O(1) room-to-session lookups.
     room_sessions: DashMap<String, Vec<String>>,
     /// This node's cluster id: what peers see in our trunk INVITEs and in
@@ -776,6 +781,7 @@ impl ConferenceCallHandler {
             local_sip_uri,
             admission: std::sync::RwLock::new(None),
             trunk_srtp: std::sync::atomic::AtomicBool::new(true),
+            trusted_edges: std::sync::RwLock::new(Default::default()),
             room_sessions: DashMap::new(),
             node_id,
             room_registry: std::sync::RwLock::new(None),
@@ -4505,6 +4511,12 @@ impl ConferenceCallHandler {
         self.trunk_srtp.store(enabled, Ordering::Relaxed);
     }
 
+    /// The peers whose claims about a call this node believes
+    /// (`[sip] trusted_edges`, `docs/EDGE_SECURITY.md` §2.3).
+    pub fn set_trusted_edges(&self, edges: fcp_sip::emergency::TrustedEdges) {
+        *self.trusted_edges.write().expect("trusted edges") = edges;
+    }
+
     /// Codec list this node offers a peer, in preference order: wideband
     /// first, filtered by `allowed_codecs`.
     fn trunk_offer_codecs(&self) -> Vec<(&'static str, u8)> {
@@ -5677,6 +5689,21 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 .handle_trunk_invite(request, handle, peer, peer_identity, &node, tenant)
                 .await;
         }
+
+        // 0a''. What this peer may claim about the call
+        // (`docs/EDGE_SECURITY.md` §2.3). The trunk above proved itself
+        // with a certificate; a caller-facing peer has to be a trusted
+        // edge — the gateway or the call manager, which name the record
+        // the leg belongs to — or its claims are taken away here, before
+        // anything reads them.
+        let trusted = self
+            .trusted_edges
+            .read()
+            .expect("trusted edges")
+            .contains(peer.ip());
+        let unclaimed =
+            fcp_sip::claims::Claims::from(fcp_sip::claims::PeerTrust::of(trusted)).strip(request);
+        let request = unclaimed.as_ref().unwrap_or(request);
 
         // 0b. Per-node participant limit (OOM protection)
         let max_per_node = self.conference_config.read().max_participants_per_node;

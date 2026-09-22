@@ -29,7 +29,17 @@ struct Stack {
 }
 
 impl Stack {
+    /// A conference server that believes nothing any peer claims about a
+    /// call (`docs/EDGE_SECURITY.md` §2.3) — every phone here shares one
+    /// loopback address, so trusting it would trust them all.
     async fn start() -> Option<Self> {
+        Self::start_trusting("").await
+    }
+
+    /// As [`Stack::start`], believing `edges` — what a deployment does
+    /// for the call manager and the gateway beside it, which name the
+    /// record a leg belongs to.
+    async fn start_trusting(edges: &str) -> Option<Self> {
         let db = TestDatabase::create().await?;
         let seed = Seed::new(db.url(), REALM).await;
         let sip_port = free_port();
@@ -46,6 +56,7 @@ udp_bind = "127.0.0.1:{sip_port}"
 tcp_bind = "127.0.0.1:{sip_port}"
 local_ip = "127.0.0.1"
 local_uri = "sip:conference@127.0.0.1:{sip_port}"
+{trusted_edges}
 
 [storage]
 database_url = "{db}"
@@ -68,6 +79,7 @@ format = "compact"
 "#,
             db = db.url(),
             rtp_end = rtp_start + 120,
+            trusted_edges = edges,
             dir = dir.path().display(),
         );
         let service = Service::start("conference", BIN, &config, &loopback(http, "/health")).await;
@@ -483,8 +495,66 @@ async fn mute_by_dtmf_and_by_api_and_a_kick() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_room_is_reached_through_the_call_manager() {
+async fn a_caller_does_not_choose_the_name_the_room_sees() {
+    // `docs/EDGE_SECURITY.md` §2.3. The room took its participant's name
+    // and number from `P-Asserted-Identity` — "more trusted on SBC/trunk
+    // calls", except nothing checked that the peer was an SBC or a trunk.
+    // Anyone who could dial the room could sit in it under any name, and
+    // name the record their leg was filed under besides.
     let stack = stack_or_skip!();
+    stack.seed.meeting(ROOM, None, None).await;
+    let mallory = stack.phone("mallory").await;
+
+    let call = mallory
+        .call_with_headers(
+            ROOM,
+            &[
+                ("P-Asserted-Identity", "<sip:+15125550100@carrier.example>"),
+                ("X-FCP-Call-Id", "call-11111111-1111-1111-1111-111111111111"),
+            ],
+        )
+        .await
+        .expect("INVITE sent");
+    if let Err(e) = call.answered(SOON).await {
+        stack
+            .fail(&format!("mallory was not admitted: {e}"), &mallory)
+            .await;
+    }
+    stack.wait_participants(1).await;
+    // The room knows them as the `From` they actually dialled from —
+    // this panics if it knows them as the identity they asserted.
+    let pid = stack.participant_named("mallory").await;
+    let seen = stack.participant(&pid).await;
+    let caller = seen["caller_id"].as_str().unwrap_or("");
+    assert!(
+        !caller.contains("15125550100"),
+        "the room shows a number the caller asserted: {seen}"
+    );
+
+    assert_eq!(call.hangup().await.unwrap(), 200);
+    stack.wait_participants(0).await;
+
+    // And the leg's record is the room's own, not one the caller named.
+    let legs = stack.seed.cdrs(Some(CdrKind::Conference), 1, SOON).await;
+    assert_ne!(
+        legs[0].call_id.to_string(),
+        "call-11111111-1111-1111-1111-111111111111",
+        "the caller filed its leg against a record it named: {:#?}",
+        legs[0]
+    );
+
+    stack.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_room_is_reached_through_the_call_manager() {
+    // The call manager beside it names the record each leg belongs to in
+    // `X-FCP-Call-Id`, which is believed because it is listed as a
+    // trusted edge (`docs/EDGE_SECURITY.md` §2.3).
+    let Some(stack) = Stack::start_trusting(r#"trusted_edges = ["127.0.0.1"]"#).await else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
     stack.seed.meeting(ROOM, None, None).await;
     let cm = stack.start_call_manager().await;
     let alice_user = stack.seed.user("alice", "alice-pw", "1001").await;

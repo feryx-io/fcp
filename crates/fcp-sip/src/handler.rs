@@ -2271,6 +2271,25 @@ impl SipMessageHandler {
             }
         }
 
+        // What this peer may claim about the call
+        // (`docs/EDGE_SECURITY.md` §2.3). Taken away before anything
+        // reads it, so a reader added later is gated by construction
+        // rather than by somebody remembering. A trusted edge keeps what
+        // it sends; so does a transfer origin naming a call this node
+        // actually has, which is how a transferred phone carries one.
+        let knows_call = |id: &str| {
+            id.parse::<fcp_core::CallId>()
+                .ok()
+                .map(|id| fcp_b2bua_core::CallId::from_uuid(*id.as_uuid()))
+                .is_some_and(|id| self.call_manager.get_call(&id).is_some())
+        };
+        let unclaimed = crate::claims::Claims::from(crate::claims::PeerTrust::of(
+            self.trusted_edges.contains(peer.ip()),
+        ))
+        .knowing_calls(&knows_call)
+        .strip(request);
+        let request = unclaimed.as_ref().unwrap_or(request);
+
         // Resolve the tenant for this INVITE using the tiered strategy:
         //   1. Hostname domain → tenants.sip_domains allowlist
         //   2. Hostname domain → legacy tenant-name fallback (with warning)
