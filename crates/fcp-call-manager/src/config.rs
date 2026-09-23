@@ -670,13 +670,19 @@ pub struct EventsSection {
     #[serde(default)]
     pub use_redis: bool,
 
-    /// Redis Pub/Sub channel name for events (default: "{prefix}events").
-    #[serde(default)]
-    pub redis_channel: Option<String>,
+    /// Not a setting. The call manager publishes to `fcp:events` and
+    /// `fcp:event_stream`, and the events server and `fcp-jobs` read those
+    /// names from their own `fcp:` prefix; this key was parsed and never
+    /// read, so a value here is refused at startup
+    /// (`docs/DEPLOYMENT_GAPS.md` §1.5).
+    #[doc(hidden)]
+    #[serde(default, rename = "redis_channel", skip_serializing)]
+    pub unread_redis_channel: Option<String>,
 
-    /// Redis Stream key for durable events (default: "{prefix}event_stream").
-    #[serde(default)]
-    pub redis_stream_key: Option<String>,
+    /// Not a setting; see `unread_redis_channel`.
+    #[doc(hidden)]
+    #[serde(default, rename = "redis_stream_key", skip_serializing)]
+    pub unread_redis_stream_key: Option<String>,
 
     /// External webhook endpoints to receive event notifications.
     #[serde(default)]
@@ -852,6 +858,7 @@ pub fn load_config(config_path: Option<&Path>) -> Result<CallManagerConfig> {
 
 pub fn validate_config(config: &CallManagerConfig) -> Result<()> {
     validate_http_config(&config.http)?;
+    validate_events_config(&config.events)?;
     validate_registrar_config(&config.sip, &config.registrar)?;
     // A typo in the address list is a startup error, not a node that
     // quietly refuses everyone (`docs/EDGE_SECURITY.md` §2.4).
@@ -862,6 +869,24 @@ pub fn validate_config(config: &CallManagerConfig) -> Result<()> {
     fcp_pbx::config::validate_config(&config.pbx).map_err(anyhow::Error::msg)?;
     fcp_sip::emergency::TrustedEdges::parse(&config.e911.trusted_edges)
         .map_err(|e| anyhow::anyhow!("[e911] {e}"))?;
+    Ok(())
+}
+
+/// A key that was parsed and never read is refused rather than kept: an
+/// operator who set it expected it to do something.
+fn validate_events_config(events: &EventsSection) -> Result<()> {
+    for (key, value) in [
+        ("redis_channel", &events.unread_redis_channel),
+        ("redis_stream_key", &events.unread_redis_stream_key),
+    ] {
+        if value.is_some() {
+            anyhow::bail!(
+                "events.{key} is not a setting and was never read: the call manager publishes to \
+                 fcp:events and fcp:event_stream, which the events server's [event_bus] \
+                 redis_key_prefix and fcp-jobs' key_prefix (both \"fcp:\") name; remove it"
+            );
+        }
+    }
     Ok(())
 }
 
@@ -955,6 +980,26 @@ fn load_config_from_file(path: &Path) -> Result<CallManagerConfig> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_unread_events_keys_are_refused() {
+        let config: CallManagerConfig = toml::from_str(
+            r#"
+[events]
+redis_stream_key = "custom:stream"
+"#,
+        )
+        .unwrap();
+        let err = validate_events_config(&config.events)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("events.redis_stream_key"), "{err}");
+        assert!(err.contains("fcp:event_stream"), "{err}");
+        assert!(validate_events_config(&EventsSection::default()).is_ok());
+        // Not carried into the database config store either.
+        let json = serde_json::to_value(&config.events).unwrap();
+        assert!(json.get("redis_stream_key").is_none());
+    }
 
     #[test]
     fn test_default_config() {

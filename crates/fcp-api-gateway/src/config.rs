@@ -127,17 +127,42 @@ pub struct BackendsConfig {
     pub jobs: Option<BackendService>,
 }
 
+/// Which backend a `BackendService` entry is: each kind serves its
+/// health at a different path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackendKind {
+    /// `fcp-admin`, which mounts `fcp-api-core` at `/api/v1`.
+    Admin,
+    /// `fcp-events-server`.
+    Events,
+    /// `fcp-jobs`.
+    Jobs,
+}
+
+impl BackendKind {
+    /// The health route the backend of this kind actually serves
+    /// (`docs/DEPLOYMENT_GAPS.md` §1.4).
+    pub fn default_health_check_path(self) -> &'static str {
+        match self {
+            BackendKind::Admin => "/api/v1/health",
+            BackendKind::Events | BackendKind::Jobs => "/health",
+        }
+    }
+}
+
 /// Backend service configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct BackendService {
     /// Service URL
     pub url: String,
 
-    /// Health check path
-    #[serde(default = "default_health_check_path")]
-    pub health_check_path: String,
+    /// Health check path. Unset, the kind's own: `/api/v1/health` for the
+    /// admin backend, `/health` for the events server and jobs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health_check_path: Option<String>,
 
-    /// Health check interval (seconds)
+    /// How often the gateway probes this backend in the background; the
+    /// last probe is what `GET /gateway/status` reports (seconds).
     #[serde(
         default = "default_health_check_interval_secs",
         with = "serde_duration"
@@ -149,10 +174,6 @@ pub struct BackendService {
     pub connection_timeout: Duration,
 }
 
-fn default_health_check_path() -> String {
-    "/api/v1/system/health".to_string()
-}
-
 fn default_health_check_interval_secs() -> Duration {
     Duration::from_secs(10)
 }
@@ -161,11 +182,24 @@ fn default_connection_timeout_secs() -> Duration {
     Duration::from_secs(5)
 }
 
+impl BackendService {
+    /// The path this backend is probed at: `health_check_path` if set,
+    /// else the kind's own.
+    pub fn health_check_path(&self, kind: BackendKind) -> String {
+        self.health_check_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| kind.default_health_check_path().to_string())
+    }
+}
+
 impl Default for BackendService {
     fn default() -> Self {
         Self {
             url: "http://localhost:8080".to_string(),
-            health_check_path: default_health_check_path(),
+            health_check_path: None,
             health_check_interval: default_health_check_interval_secs(),
             connection_timeout: default_connection_timeout_secs(),
         }
@@ -429,6 +463,48 @@ mod tests {
         // Should not fail when no config file exists
         let result = load_config(None);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn a_backend_is_probed_at_its_kinds_health_route_unless_told_otherwise() {
+        let backend = BackendService::default();
+        assert_eq!(
+            backend.health_check_path(BackendKind::Admin),
+            "/api/v1/health"
+        );
+        assert_eq!(backend.health_check_path(BackendKind::Events), "/health");
+        assert_eq!(backend.health_check_path(BackendKind::Jobs), "/health");
+
+        let explicit = BackendService {
+            health_check_path: Some("/healthz".to_string()),
+            ..BackendService::default()
+        };
+        assert_eq!(explicit.health_check_path(BackendKind::Admin), "/healthz");
+        let blank = BackendService {
+            health_check_path: Some("  ".to_string()),
+            ..BackendService::default()
+        };
+        assert_eq!(blank.health_check_path(BackendKind::Jobs), "/health");
+
+        let parsed: GatewayConfig = toml::from_str(
+            r#"
+[backends.admin]
+url = "http://admin:8080"
+[backends.events]
+url = "http://events:8081"
+health_check_path = "/ping"
+"#,
+        )
+        .unwrap();
+        assert_eq!(parsed.backends.admin.health_check_path, None);
+        assert_eq!(
+            parsed
+                .backends
+                .events
+                .unwrap()
+                .health_check_path(BackendKind::Events),
+            "/ping"
+        );
     }
 
     #[test]

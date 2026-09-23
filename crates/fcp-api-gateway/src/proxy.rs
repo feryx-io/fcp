@@ -19,6 +19,10 @@ pub struct ProxyState {
 
     /// HTTP client for proxying requests
     pub client: reqwest::Client,
+
+    /// The last probe of every backend, kept by the probe loops
+    /// `main` starts (`crate::health`).
+    pub health: crate::health::BackendHealth,
 }
 
 impl ProxyState {
@@ -28,8 +32,13 @@ impl ProxyState {
             .timeout(config.gateway.request_timeout)
             .build()
             .expect("Failed to create HTTP client");
+        let health = crate::health::BackendHealth::new(&config);
 
-        Self { config, client }
+        Self {
+            config,
+            client,
+            health,
+        }
     }
 }
 

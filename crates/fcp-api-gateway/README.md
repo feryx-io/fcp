@@ -109,7 +109,7 @@ compression_enabled = true
 
 [backends.admin]
 url = "http://localhost:8080"
-health_check_path = "/api/v1/system/health"
+health_check_path = "/api/v1/health"
 health_check_interval = 10
 connection_timeout = 5
 
@@ -150,8 +150,8 @@ See `fcp-api-gateway.toml.example` for comprehensive configuration options.
 #### [backends.admin]
 
 - `url`: Backend service URL (required)
-- `health_check_path`: Health check endpoint (default: "/api/v1/system/health")
-- `health_check_interval`: Check interval in seconds (default: 10)
+- `health_check_path`: Health check endpoint (default: the backend kind's own — `/api/v1/health` for `admin`, `/health` for `events` and `jobs`)
+- `health_check_interval`: How often the backend is probed in the background, in seconds (default: 10); `GET /gateway/status` reports the last probe and its age
 - `connection_timeout`: Connection timeout in seconds (default: 5)
 
 #### [redis]
@@ -524,7 +524,7 @@ grep "Cache miss" fcp-gateway.log | wc -l
 
 ```bash
 # Check backend health directly
-curl http://localhost:8080/api/v1/system/health
+curl http://localhost:8080/api/v1/health
 
 # Check gateway logs for backend errors
 grep "Failed to proxy request" fcp-gateway.log
@@ -585,16 +585,16 @@ cargo run -p fcp-api-gateway
 
 ```bash
 # Test routing
-curl http://localhost:8000/api/v1/system/health
+curl http://localhost:8000/api/v1/health
 
 # Test caching
-curl -I http://localhost:8000/api/v1/system/health
+curl -I http://localhost:8000/api/v1/health
 # First request: X-Cache: MISS
-curl -I http://localhost:8000/api/v1/system/health
+curl -I http://localhost:8000/api/v1/health
 # Second request: X-Cache: HIT
 
 # Test rate limiting
-for i in {1..100}; do curl http://localhost:8000/api/v1/system/health; done
+for i in {1..100}; do curl http://localhost:8000/api/v1/health; done
 ```
 
 ## Comparison

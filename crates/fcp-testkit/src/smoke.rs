@@ -450,7 +450,34 @@ pub async fn http_get(url: &str) -> anyhow::Result<(u16, String)> {
         .and_then(|line| line.split_whitespace().nth(1))
         .and_then(|code| code.parse::<u16>().ok())
         .ok_or_else(|| anyhow::anyhow!("malformed response: {head:?}"))?;
-    Ok((status, body.to_string()))
+    Ok((status, decode_body(head, body)))
+}
+
+/// The body as the server meant it: chunked transfer encoding undone
+/// (a streaming body — anything behind a compression layer, say — is
+/// sent in chunks even to a client that asked for no encoding).
+fn decode_body(head: &str, body: &str) -> String {
+    let chunked = head
+        .lines()
+        .any(|l| l.to_ascii_lowercase().replace(' ', "") == "transfer-encoding:chunked");
+    if !chunked {
+        return body.to_string();
+    }
+    let mut out = String::new();
+    let mut rest = body;
+    while let Some((size_line, after)) = rest.split_once("\r\n") {
+        let size = size_line
+            .split(';')
+            .next()
+            .and_then(|h| usize::from_str_radix(h.trim(), 16).ok())
+            .unwrap_or(0);
+        if size == 0 || after.len() < size {
+            break;
+        }
+        out.push_str(&after[..size]);
+        rest = after[size..].strip_prefix("\r\n").unwrap_or(&after[size..]);
+    }
+    out
 }
 
 /// Convenience for building a loopback URL.
@@ -516,10 +543,26 @@ pub async fn http_request(
         .and_then(|line| line.split_whitespace().nth(1))
         .and_then(|code| code.parse::<u16>().ok())
         .ok_or_else(|| anyhow::anyhow!("malformed response: {head:?}"))?;
-    Ok((status, body.to_string()))
+    Ok((status, decode_body(head, body)))
 }
 
 /// `POST` a JSON body over plain HTTP/1.1: the status and the body.
 pub async fn http_post(url: &str, body: &str) -> anyhow::Result<(u16, String)> {
     http_request("POST", url, &[], Some(body)).await
+}
+
+#[cfg(test)]
+mod chunked_tests {
+    use super::decode_body;
+
+    #[test]
+    fn a_chunked_body_is_reassembled() {
+        let head = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked";
+        let body = "5\r\n{\"a\":\r\n2\r\n1}\r\n0\r\n\r\n";
+        assert_eq!(decode_body(head, body), "{\"a\":1}");
+        assert_eq!(
+            decode_body("HTTP/1.1 200 OK\r\ncontent-length: 2", "ok"),
+            "ok"
+        );
+    }
 }

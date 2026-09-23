@@ -184,6 +184,13 @@ pub fn create_router_with(
         v1::pre_auth_router(enable_signup).layer(audit_layer),
     ));
     router = router.merge(Router::new().nest("/api/v1", v1::ws_router()));
+    // `/api/v1/health` says `ok` and a version and nothing else; it is
+    // what a load balancer or the API gateway probes, and a probe carries
+    // no token (`docs/DEPLOYMENT_GAPS.md` §1.4).
+    router = router.merge(Router::new().nest(
+        "/api/v1",
+        Router::new().route("/health", axum::routing::get(v1::system::health)),
+    ));
 
     router
         .layer(cors)

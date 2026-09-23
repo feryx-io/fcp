@@ -99,8 +99,6 @@ pub fn router() -> Router<ApiState> {
         // Auth session endpoints that require a valid JWT
         .route("/auth/me", get(auth_session::me))
         .route("/auth/refresh", post(auth_session::refresh))
-        // System endpoints (health checks — useful for all users)
-        .route("/health", get(system::health))
         // Self-service (end-user portal)
         .route(
             "/me/profile",

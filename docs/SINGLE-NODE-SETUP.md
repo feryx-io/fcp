@@ -404,7 +404,7 @@ compression_enabled = true
 
 [backends.admin]
 url = "http://localhost:8080"
-health_check_path = "/api/v1/system/health"
+health_check_path = "/api/v1/health"   # the default for the admin backend
 health_check_interval = 10
 connection_timeout = 5
 
@@ -566,7 +566,7 @@ cargo run --release -p fcp-api-gateway -- --config fcp-api-gateway-local.toml
 curl -s http://localhost:8081/health | head -1
 
 # Admin API
-curl -s http://localhost:8080/api/v1/system/health | head -1
+curl -s http://localhost:8080/api/v1/health | head -1
 
 # Call Manager
 curl -s http://localhost:8084/health | head -1

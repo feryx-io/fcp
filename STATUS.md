@@ -620,6 +620,20 @@ without a token, as on every other binary. Its default HTTP bind moves to
 `0.0.0.0` default now binds explicitly and sets the token. The two
 documents that said the call manager's `/drain` was open, or left it off
 the list of binaries needing the token, are corrected.
+Phase 3 done (v0.25.238): configuration that does not do what it says.
+The API gateway's backend health path was a route nothing served, and the
+one that exists sat behind the API's bearer layer, so an authenticated
+admin backend read unhealthy whatever was configured. Now
+`health_check_path` is optional and defaults to each backend kind's own
+route (`/api/v1/health` for the admin, `/health` for the events server
+and jobs), `/api/v1/health` needs no token, and `health_check_interval`
+— parsed and never read — drives a background probe per backend whose
+last result, with its path, HTTP status and age, is what
+`GET /gateway/status` reports; a status request probes nothing itself.
+The call manager's `[events] redis_channel` and `redis_stream_key`, read
+nowhere, are refused at startup with a message naming the events
+server's and `fcp-jobs`' `fcp:` prefix as the only knob. The wrong path
+is gone from the example configs, the compose config and the docs.
 
 ## Historical documents
 

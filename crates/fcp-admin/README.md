@@ -201,7 +201,7 @@ fcp-admin uses the shared fcp-api-core library and provides all FCP v1 API endpo
 - `GET /api/v1/cdrs/{id}` - Get CDR details
 
 ### System
-- `GET /api/v1/system/health` - Health check
+- `GET /api/v1/health` - Health check
 - `GET /api/v1/system/version` - Version information
 
 ## Authentication
@@ -275,7 +275,7 @@ fcp-admin is designed for horizontal scaling:
 - **Stateless**: No session state, safe to add/remove instances
 - **Connection pooling**: Each instance has its own database connection pool
 - **Load balancing**: Use round-robin or least-connections
-- **Health checks**: `GET /api/v1/system/health`
+- **Health checks**: `GET /api/v1/health`
 
 ### Recommended Scaling Strategy
 
@@ -294,7 +294,7 @@ While fcp-admin doesn't expose a `/metrics` endpoint by default (to avoid confli
 
 ```bash
 # Health check
-curl http://localhost:8080/api/v1/system/health
+curl http://localhost:8080/api/v1/health
 
 # Expected response
 {"status":"healthy","version":"0.11.0"}
@@ -343,7 +343,7 @@ grep "connection_pool" fcp-admin.log
 
 ```bash
 # Verify token
-curl -v -H "Authorization: Bearer your-token" http://localhost:8080/api/v1/system/health
+curl -v -H "Authorization: Bearer your-token" http://localhost:8080/api/v1/health
 
 # Check logs for auth errors
 grep "auth" fcp-admin.log

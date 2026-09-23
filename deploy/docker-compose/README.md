@@ -448,7 +448,7 @@ docker compose exec fcp-api-gateway ping -c 3 fcp-admin
 
 **Check admin is healthy:**
 ```bash
-curl http://localhost:8080/api/v1/system/health
+curl http://localhost:8080/api/v1/health
 ```
 
 ### Jobs Not Processing
