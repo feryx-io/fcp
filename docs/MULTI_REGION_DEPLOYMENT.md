@@ -348,7 +348,12 @@ stream — `cdr_stream_pending` grows — and land when the primary is back.
 
 ## 8. Known gaps
 
-Found while writing this guide; none is fixed here.
+Found while writing this guide; none is fixed here. All but the first
+are the subject of `docs/DEPLOYMENT_GAPS.md` (agreed 2026-09-23), which
+checked each against the code and found several worse than stated: a
+trunk's INVITE uses only its first host, HTTP-ingested events do not
+reach a second events server in the same region either, and no binary
+keeps a handle it could ask for the replica's health.
 
 - **One Redis per call manager** (§1). Splitting membership from the
   event bus, or making registrations regional, needs the call manager to
