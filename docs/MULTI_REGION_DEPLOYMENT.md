@@ -151,11 +151,13 @@ region = "ap-south"
 redis_url = "redis://redis.ap-south.internal:6379"
 ```
 
-A webhook fires in the region where the event happened, once. Only
-events that reach Redis cross: the call manager's with `[events]
-use_redis = true`, and `fcp-jobs`'. Events a conference server, IVR or
-voicemail server posts to the events server over HTTP (`/ingest`) go to
-that events server's local subscribers only and **never cross regions**.
+A webhook fires in the region where the event happened, once. Every
+event crosses: the call manager's and `fcp-jobs`' reach Redis directly,
+and what a conference server, IVR, voicemail server or the admin posts to
+the events server over HTTP (`/ingest`) is written by that server to its
+region's stream under the posting node's id (`X-Node-ID`), so every
+events server in the region and every peer region sees it
+(v0.25.239, `docs/DEPLOYMENT_GAPS.md` §1.6).
 
 **CDRs.** Each region runs its own `fcp-jobs` against its own Redis; all
 write the one Postgres.
@@ -367,8 +369,8 @@ keeps a handle it could ask for the replica's health.
   and `/drain`.
 - ~~The SBC's membership node id is random.~~ Fixed (v0.25.236): one
   `[service] node_id` for membership, the drain, its calls and its trunks.
-- **Events ingested over HTTP never cross regions** (§3.2): conference,
-  IVR and voicemail events stay in the region that produced them.
+- ~~Events ingested over HTTP never cross regions.~~ Fixed (v0.25.239):
+  `/ingest` writes to the region's stream when the bus is Redis.
 - **No binary reports its replica's health** on `/status`, though the
   backend probes it every five seconds (`replica_status()`).
 - ~~`fcp-api-gateway`'s default backend health path is not a route the

@@ -463,6 +463,7 @@ async fn main() -> Result<()> {
     )
     .with_events_server_url(events_server_url.clone())
     .with_events_server_auth_token(config.events.auth_token.clone())
+    .with_events_node_id(config.service.node_id.clone())
     .with_conference_server_url(config.conference.server_url.clone())
     .with_conference_server_auth_token(config.conference.auth_token.clone())
     .with_conference_join_secret(config.conference.join_secret.clone())

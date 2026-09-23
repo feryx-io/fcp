@@ -851,10 +851,16 @@ async fn main() -> Result<()> {
     if let Some(ref events_url) = config.events.server_url {
         let events_url = events_url.clone();
         let events_auth_token = config.events.auth_token.clone();
+        let events_node_id = config.service.node_id.clone();
         let event_bus_clone = Arc::clone(&event_bus);
         tokio::spawn(async move {
-            if let Err(e) =
-                run_event_forwarder(event_bus_clone, &events_url, events_auth_token).await
+            if let Err(e) = run_event_forwarder(
+                event_bus_clone,
+                &events_url,
+                events_auth_token,
+                events_node_id,
+            )
+            .await
             {
                 tracing::error!(%e, "Event forwarder task failed");
             }
@@ -1308,6 +1314,7 @@ async fn run_event_forwarder(
     event_bus: Arc<InMemoryEventBus>,
     events_url: &str,
     auth_token: Option<String>,
+    node_id: String,
 ) -> Result<()> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
@@ -1328,8 +1335,11 @@ async fn run_event_forwarder(
                 let client = client.clone();
                 let url = events_url.to_string();
                 let auth_token = auth_token.clone();
+                let node_id = node_id.clone();
                 tokio::spawn(async move {
-                    let mut request = client.post(&url).json(&event);
+                    // Which node raised it: the events server files it
+                    // under this on its stream.
+                    let mut request = client.post(&url).header("X-Node-ID", node_id).json(&event);
                     if let Some(token) = auth_token.as_deref() {
                         request = request.bearer_auth(token);
                     }

@@ -65,6 +65,14 @@ struct AppState {
     /// Cross-region event bridge, when peer regions are configured.
     #[cfg(feature = "redis-events")]
     bridge: Option<Arc<fcp_storage_redis::event_bus::EventBridge>>,
+    /// Where `/ingest` puts what it is given when the bus is Redis: the
+    /// stream every events server in this region consumes and the bridge
+    /// forwards, so an event a conference server, IVR or voicemail server
+    /// posted here reaches every subscriber and every region
+    /// (`docs/DEPLOYMENT_GAPS.md` §1.6). `None` on the in-memory bus,
+    /// where `/ingest` delivers to this process alone.
+    #[cfg(feature = "redis-events")]
+    ingest_bus: Option<Arc<fcp_storage_redis::event_bus::RedisEventBus>>,
 }
 
 #[derive(Clone)]
@@ -454,6 +462,9 @@ async fn main() -> Result<()> {
     // Cross-region event bridge (set below when peer regions are configured).
     #[cfg(feature = "redis-events")]
     let mut event_bridge: Option<Arc<fcp_storage_redis::event_bus::EventBridge>> = None;
+    // Where /ingest writes when the bus is Redis (set below).
+    #[cfg(feature = "redis-events")]
+    let mut ingest_bus: Option<Arc<fcp_storage_redis::event_bus::RedisEventBus>> = None;
 
     // Start Redis stream consumer if configured
     #[cfg(feature = "redis-events")]
@@ -495,8 +506,18 @@ async fn main() -> Result<()> {
                             )
                             .await;
                         });
-                        info!("Redis stream consumer started (replacing HTTP /ingest)");
+                        info!("Redis stream consumer started; HTTP /ingest writes to the stream");
                     }
+
+                    // What /ingest posts goes on the stream in this
+                    // server's region, under the posting node's id.
+                    ingest_bus = Some(Arc::new(
+                        fcp_storage_redis::event_bus::RedisEventBus::new(
+                            redis_storage.clone(),
+                            config.service.node_id.clone(),
+                        )
+                        .with_region(local_region.clone()),
+                    ));
 
                     // Cross-region fan-out: forward this region's events to
                     // every configured peer region.
@@ -551,6 +572,8 @@ async fn main() -> Result<()> {
         local_region: local_region.clone(),
         #[cfg(feature = "redis-events")]
         bridge: event_bridge.clone(),
+        #[cfg(feature = "redis-events")]
+        ingest_bus: ingest_bus.clone(),
     };
 
     // Build router with new endpoints
@@ -1140,45 +1163,74 @@ struct WebSocketAuthQuery {
     token: Option<String>,
 }
 
-/// Ingest a single event from another service (e.g., fcp-call-manager)
-async fn ingest_handler(
-    State(state): State<AppState>,
-    Json(event): Json<PlatformEvent>,
-) -> impl IntoResponse {
-    // Process event for state tracking
-    // Note: source_node_id could be extracted from X-Node-ID header if needed
-    process_event_for_state(
-        &event,
-        &state.call_store,
-        &state.registration_store,
-        &state.node_registry,
-        None,
-    );
+/// The header a posting node names itself in. Without it an ingested
+/// event is filed under `ingest`.
+const NODE_ID_HEADER: &str = "x-node-id";
 
-    // Publish to event bus for WebSocket broadcast
-    let _ = state.event_bus.publish(event).await;
-    StatusCode::ACCEPTED
+fn posting_node(headers: &axum::http::HeaderMap) -> Option<String> {
+    headers
+        .get(NODE_ID_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
 }
 
-/// Ingest a batch of events from another service
-async fn ingest_batch_handler(
-    State(state): State<AppState>,
-    Json(events): Json<Vec<PlatformEvent>>,
-) -> impl IntoResponse {
+/// Ingest events another service posted (a conference server, IVR,
+/// voicemail server or the admin). With Redis as the bus they go on the
+/// stream under the posting node's id, and this server sees them again
+/// through its consumer like any other event — once, and so does every
+/// other events server here and every peer region
+/// (`docs/DEPLOYMENT_GAPS.md` §1.6). With the in-memory bus they reach
+/// this process only. A stream that cannot be written is `503`, so the
+/// poster's retry carries the event rather than this server dropping it.
+async fn ingest_events(
+    state: &AppState,
+    headers: &axum::http::HeaderMap,
+    events: Vec<PlatformEvent>,
+) -> StatusCode {
+    #[cfg(feature = "redis-events")]
+    if let Some(bus) = &state.ingest_bus {
+        let node_id = posting_node(headers).unwrap_or_else(|| "ingest".to_string());
+        return match bus.publish_many_from(&node_id, events).await {
+            Ok(()) => StatusCode::ACCEPTED,
+            Err(e) => {
+                warn!(error = %e, node_id = %node_id, "Ingested events could not be written to the stream");
+                StatusCode::SERVICE_UNAVAILABLE
+            }
+        };
+    }
+
+    let node_id = posting_node(headers);
     for event in events {
-        // Process event for state tracking
         process_event_for_state(
             &event,
             &state.call_store,
             &state.registration_store,
             &state.node_registry,
-            None,
+            node_id.as_deref(),
         );
-
-        // Publish to event bus for WebSocket broadcast
         let _ = state.event_bus.publish(event).await;
     }
     StatusCode::ACCEPTED
+}
+
+/// Ingest a single event from another service.
+async fn ingest_handler(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Json(event): Json<PlatformEvent>,
+) -> impl IntoResponse {
+    ingest_events(&state, &headers, vec![event]).await
+}
+
+/// Ingest a batch of events from another service.
+async fn ingest_batch_handler(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Json(events): Json<Vec<PlatformEvent>>,
+) -> impl IntoResponse {
+    ingest_events(&state, &headers, events).await
 }
 
 /// Query parameters for listing calls
@@ -1615,14 +1667,16 @@ async fn redis_stream_consumer_task(
 
                 for entry in entries {
                     let relayed = entry.envelope.relayed;
+                    let node_id = entry.envelope.node_id;
                     let event = entry.envelope.event;
-                    // Process event for state tracking (same as ingest_handler)
+                    // Process event for state tracking, under the node
+                    // that published it.
                     process_event_for_state(
                         &event,
                         &call_store,
                         &registration_store,
                         &node_registry,
-                        None,
+                        Some(&node_id),
                     );
 
                     // Publish for WebSocket broadcast (and webhooks, if local)
