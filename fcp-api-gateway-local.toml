@@ -9,7 +9,7 @@ compression_enabled = true
 
 [backends.admin]
 url = "http://localhost:8080"
-health_check_path = "/api/v1/system/health"
+health_check_path = "/api/v1/health"   # the default for the admin backend
 health_check_interval = 10
 connection_timeout = 5
 

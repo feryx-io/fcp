@@ -371,10 +371,12 @@ keeps a handle it could ask for the replica's health.
   IVR and voicemail events stay in the region that produced them.
 - **No binary reports its replica's health** on `/status`, though the
   backend probes it every five seconds (`replica_status()`).
-- **`fcp-api-gateway`'s default backend health path**,
-  `/api/v1/system/health`, is not a route the API serves; set
-  `health_check_path` explicitly.
+- ~~`fcp-api-gateway`'s default backend health path is not a route the
+  API serves.~~ Fixed (v0.25.238): the default is each backend kind's
+  own route, the API's `/api/v1/health` needs no token, and the gateway
+  probes in the background at `health_check_interval`.
 - **Trunk SRV**: trunk targets carry an explicit port, so SRV records for
   a carrier are never consulted (§4.3).
-- `[events] redis_channel` and `redis_stream_key` on the call manager are
-  parsed and ignored.
+- ~~`[events] redis_channel` and `redis_stream_key` on the call manager
+  are parsed and ignored.~~ Fixed (v0.25.238): refused at startup, with
+  the prefix named as the knob.

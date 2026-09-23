@@ -105,4 +105,4 @@ format = "json"
 # Deploy 3+ instances with load balancer
 # Each instance connects to same database
 # Use PgBouncer for connection pooling
-# Configure health checks: GET /api/v1/system/health
+# Configure health checks: GET /api/v1/health

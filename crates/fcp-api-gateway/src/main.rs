@@ -32,6 +32,7 @@ use tracing::{info, warn};
 mod cache;
 mod cli;
 mod config;
+mod health;
 mod proxy;
 mod rate_limit;
 
@@ -91,92 +92,10 @@ async fn health_check() -> impl IntoResponse {
     }))
 }
 
-/// Check health of a single backend service.
-async fn check_backend_health(
-    client: &reqwest::Client,
-    backend: &config::BackendService,
-) -> serde_json::Value {
-    let url = format!("{}{}", backend.url, backend.health_check_path);
-    let start = std::time::Instant::now();
-
-    match client
-        .get(&url)
-        .timeout(backend.connection_timeout)
-        .send()
-        .await
-    {
-        Ok(resp) => {
-            let response_time_ms = start.elapsed().as_millis() as u64;
-            let status = if resp.status().is_success() {
-                "healthy"
-            } else {
-                "unhealthy"
-            };
-            json!({
-                "url": backend.url,
-                "status": status,
-                "response_time_ms": response_time_ms
-            })
-        }
-        Err(e) => {
-            let response_time_ms = start.elapsed().as_millis() as u64;
-            let status = if e.is_timeout() {
-                "unreachable"
-            } else {
-                "unhealthy"
-            };
-            json!({
-                "url": backend.url,
-                "status": status,
-                "response_time_ms": response_time_ms
-            })
-        }
-    }
-}
-
-/// Gateway status handler with backend health
+/// Gateway status: the last background probe of every backend
+/// (`crate::health`), never a probe made on request.
 async fn gateway_status(State(proxy_state): State<proxy::ProxyState>) -> impl IntoResponse {
-    let client = &proxy_state.client;
-    let backends_config = &proxy_state.config.backends;
-
-    // Check admin backend health
-    let admin_health = check_backend_health(client, &backends_config.admin).await;
-
-    // Check optional backends
-    let events_health = match &backends_config.events {
-        Some(backend) => check_backend_health(client, backend).await,
-        None => serde_json::Value::Null,
-    };
-    let jobs_health = match &backends_config.jobs {
-        Some(backend) => check_backend_health(client, backend).await,
-        None => serde_json::Value::Null,
-    };
-
-    // Determine overall status: degraded if any configured backend is not healthy
-    let mut degraded = admin_health.get("status").and_then(|s| s.as_str()) != Some("healthy");
-    if let Some(s) = events_health.get("status").and_then(|s| s.as_str()) {
-        if s != "healthy" {
-            degraded = true;
-        }
-    }
-    if let Some(s) = jobs_health.get("status").and_then(|s| s.as_str()) {
-        if s != "healthy" {
-            degraded = true;
-        }
-    }
-
-    let overall_status = if degraded { "degraded" } else { "operational" };
-
-    Json(json!({
-        "status": overall_status,
-        "service": "fcp-api-gateway",
-        "version": env!("CARGO_PKG_VERSION"),
-        "backends": {
-            "admin": admin_health,
-            "events": events_health,
-            "jobs": jobs_health
-        }
-    }))
+    Json(proxy_state.health.report(&proxy_state.config))
 }
 
 #[tokio::main]
@@ -213,6 +132,9 @@ async fn main() -> Result<()> {
     // Create shared state
     let config = Arc::new(config);
     let proxy_state = proxy::ProxyState::new(Arc::clone(&config));
+    proxy_state
+        .health
+        .spawn_probes(proxy_state.client.clone(), Arc::clone(&config));
     let cache_state = cache::CacheState::new(&config.redis, config.cache.clone());
     let rate_limiter_state = rate_limit::RateLimiterState::new(config.rate_limit.clone());
 
