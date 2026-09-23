@@ -552,6 +552,20 @@ and then every 60 s with every command waiting on the retry, so a
 two-second blip stalled a node's membership and events for minutes;
 retries are now at most a second apart and a connection attempt gives up
 after two seconds, and the node is back about a second after the link.
+Phase 4 done (v0.25.234): the deployment guide,
+`docs/MULTI_REGION_DEPLOYMENT.md` — the shape to choose, what each region
+runs, which Redis is shared, SRV and carriers, the cost a region away from
+the primary pays, what a partition looks like, alerts and a checklist.
+Writing it found that a call manager has one Redis for membership, events,
+parking, leases and placement, so a deployment is one cluster on a shared
+Redis or a cluster per region — `docs/MULTI_REGION.md`'s mix of
+global membership and regional events is not configurable on a call
+manager. The guide recommends a cluster per region unless rooms, pickup or
+tenant limits must span regions, and lists nine gaps (a conference server
+advertising `0.0.0.0` when bound there, `fcp-registrar`'s unauthenticated
+`/drain`, the SBC's random membership id, HTTP-ingested events never
+crossing regions, and others). All four phases are done; the decision
+point on regional registrations is next, not a phase.
 
 ## Historical documents
 

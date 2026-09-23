@@ -322,9 +322,10 @@ One PR each, in order.
 | 1 ✅ | **Measure.** A per-peer counter of events and bytes on the `EventBridge` (§2.4, Q4), and a count of registration reads per call setup (§2.1), so the cost is a number rather than arithmetic. Nothing changes behaviour. Result: **2 reads per call, 6 with two aliases** (§2.1). |
 | 2 ✅ | **The registration cache** (Q1). Registrations get the short-TTL cache the other hot-path stores have, invalidated on the node's own writes and on other nodes' registration events, with the TTL as the knob. Measured against phase 1. Result: **a repeat call within the TTL costs 0 round trips, where it cost 2 — and 6 with two aliases** (§2.1). |
 | 3 ✅ | **A partition is visible** (§2.3, Q3). A node that loses every remote region at once while reaching Postgres says so on `/status`, in the admin UI, and as an event. Result: three states — whole, store unreachable, remote regions lost — on `/status`, `/metrics`, the heartbeat record (admin API and UI) and `system.cluster_view_changed`; shutdowns told apart from silence; and a Redis reconnect that took minutes now takes about a second (§2.3). |
-| 4 | **The deployment guide** (§2.2, Q2). A regional runbook: SRV layout per region, which Redis is global and which is regional, what to point a carrier at, what a partition looks like, and the registration cost a region away from the primary still pays. |
+| 4 ✅ | **The deployment guide** (§2.2, Q2). A regional runbook: SRV layout per region, which Redis is global and which is regional, what to point a carrier at, what a partition looks like, and the registration cost a region away from the primary still pays. Result: `docs/MULTI_REGION_DEPLOYMENT.md`. Writing it settled the Redis question the hard way — a call manager has **one** Redis for membership, events, parking, leases and placement, so a deployment is either one cluster on a shared Redis or a cluster per region, never membership-global-and-events-regional; the guide sets out both and recommends the second, and lists nine gaps it found (§8 there). |
 
-**Decision point after phase 2**, not a phase: if the cache does not close
+**Decision point after phase 2** (reached, with phase 4's finding added
+to it), not a phase: if the cache does not close
 the gap phase 1 measures, making registrations regional (per-region Redis,
 a cross-region lookup for the calls that need it, and the same backend
 choice for the standalone registrar and SBC) becomes its own project with
