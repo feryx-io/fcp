@@ -6,6 +6,8 @@ use fcp_testkit::smoke::{self, free_port, Smoke};
 use fcp_testkit::TestDatabase;
 
 const BIN: &str = env!("CARGO_BIN_EXE_fcp-registrar");
+/// `[http] api_token` of the registrar under test.
+const TOKEN: &str = "registrar-operator-token";
 
 #[test]
 fn version_and_help() {
@@ -64,7 +66,9 @@ format = "compact"
 /// registrar says `503` on `/ready` so nothing sends it devices, says so
 /// on `/status`, and serves again when the drain is called off — all while
 /// `/health` keeps answering `200`, so a liveness probe does not kill it
-/// mid-drain.
+/// mid-drain. And the operator routes — `/status`, `/drain` — answer
+/// `401` without `[http] api_token`, while the probes never ask for it
+/// (`docs/DEPLOYMENT_GAPS.md` §1.3).
 #[tokio::test]
 async fn a_draining_registrar_says_so_and_serves_again() {
     let Some(db) = TestDatabase::create().await else {
@@ -94,12 +98,14 @@ database_url = "{db}"
 
 [http]
 bind_address = "127.0.0.1:{http}"
+api_token = "{token}"
 
 [logging]
 level = "info"
 format = "compact"
 "#,
         db = db.url(),
+        token = TOKEN,
     );
 
     let report = Smoke::new(BIN)
@@ -109,17 +115,42 @@ format = "compact"
             let ready = smoke::loopback(http, "/ready");
             let drain = smoke::loopback(http, "/drain");
             let status = smoke::loopback(http, "/status");
+            let bearer = format!("Bearer {TOKEN}");
+            let auth: [(&str, &str); 1] = [("Authorization", &bearer)];
 
             let (code, body) = smoke::http_get(&ready).await.expect("ready answers");
             assert_eq!(code, 200, "serving: {body}");
 
-            let (code, body) = smoke::http_post(&drain, "{}").await.expect("drain starts");
+            // The operator routes want the token; the probes do not.
+            let (code, _) = smoke::http_get(&status).await.expect("status answers");
+            assert_eq!(code, 401, "/status without the token");
+            let (code, _) = smoke::http_post(&drain, "{{}}")
+                .await
+                .expect("drain answers");
+            assert_eq!(code, 401, "/drain without the token");
+            let (code, _) = smoke::http_request(
+                "POST",
+                &drain,
+                &[("Authorization", "Bearer wrong")],
+                Some("{{}}"),
+            )
+            .await
+            .expect("drain answers");
+            assert_eq!(code, 401, "/drain with the wrong token");
+            let (code, _) = smoke::http_get(&ready).await.expect("ready answers");
+            assert_eq!(code, 200, "a refused drain changed nothing");
+
+            let (code, body) = smoke::http_request("POST", &drain, &auth, Some("{{}}"))
+                .await
+                .expect("drain starts");
             assert_eq!(code, 200, "{body}");
             assert!(body.contains("draining"), "{body}");
 
             let (code, body) = smoke::http_get(&ready).await.expect("ready answers");
             assert_eq!(code, 503, "draining: {body}");
-            let (code, body) = smoke::http_get(&status).await.expect("status answers");
+            let (code, body) = smoke::http_request("GET", &status, &auth, None)
+                .await
+                .expect("status answers");
             assert_eq!(code, 200);
             assert!(body.contains("\"draining\":true"), "{body}");
             // A liveness probe must still see a live process.
@@ -128,7 +159,7 @@ format = "compact"
                 .expect("health answers");
             assert_eq!(code, 200, "health stays 200 through a drain");
 
-            let (code, body) = smoke::http_request("DELETE", &drain, &[], None)
+            let (code, body) = smoke::http_request("DELETE", &drain, &auth, None)
                 .await
                 .expect("drain is called off");
             assert_eq!(code, 200, "{body}");

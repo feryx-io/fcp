@@ -243,19 +243,29 @@ impl Default for StorageSection {
 /// HTTP health endpoint configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct HttpSection {
-    /// Bind address for health/status endpoint
+    /// Bind address for the health, status and drain endpoints. Loopback
+    /// by default, like every other binary's; a non-loopback bind needs
+    /// `api_token`.
     #[serde(default = "default_http_bind")]
     pub bind_address: SocketAddr,
+
+    /// Bearer token for the operator routes — `/status` and `/drain`.
+    /// `/health` and `/ready` never need it, so probes stay simple. A
+    /// public bind requires this to be set
+    /// (`docs/DEPLOYMENT_GAPS.md` §1.3).
+    #[serde(default)]
+    pub api_token: Option<String>,
 }
 
 fn default_http_bind() -> SocketAddr {
-    "0.0.0.0:8083".parse().unwrap()
+    "127.0.0.1:8083".parse().unwrap()
 }
 
 impl Default for HttpSection {
     fn default() -> Self {
         Self {
             bind_address: default_http_bind(),
+            api_token: None,
         }
     }
 }
@@ -373,6 +383,28 @@ pub fn validate_config(config: &RegistrarConfig) -> Result<()> {
         );
     }
 
+    validate_http_config(&config.http)?;
+
+    Ok(())
+}
+
+/// The operator routes are behind a token wherever anyone but this host
+/// can reach them: a drain is a change of service, not a probe.
+fn validate_http_config(http: &HttpSection) -> Result<()> {
+    let public_bind = !http.bind_address.ip().is_loopback();
+    let has_token = http
+        .api_token
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|token| !token.is_empty());
+
+    if public_bind && !has_token {
+        anyhow::bail!(
+            "http.api_token must be set when binding the registrar HTTP API to a non-loopback address ({})",
+            http.bind_address
+        );
+    }
+
     Ok(())
 }
 
@@ -409,6 +441,8 @@ mod tests {
         assert_eq!(config.registrar.default_expires, 3600);
         assert_eq!(config.storage.database_url, "postgresql://localhost/fcp");
         assert_eq!(config.http.bind_address.port(), 8083);
+        assert!(config.http.bind_address.ip().is_loopback());
+        assert!(config.http.api_token.is_none());
     }
 
     #[test]
@@ -460,6 +494,22 @@ format = "pretty"
         config.sip.udp_bind = "127.0.0.1:5060".to_string();
         config.sip.tcp_bind = "127.0.0.1:5060".to_string();
         config.sip.sips_bind = "127.0.0.1:5061".to_string();
+        assert!(validate_config(&config).is_ok());
+    }
+
+    #[test]
+    fn a_public_http_bind_requires_the_token() {
+        let mut config = RegistrarConfig::default();
+        assert!(validate_config(&config).is_ok(), "loopback needs no token");
+
+        config.http.bind_address = "0.0.0.0:8083".parse().unwrap();
+        let err = validate_config(&config).unwrap_err().to_string();
+        assert!(err.contains("http.api_token"), "{err}");
+
+        config.http.api_token = Some("   ".to_string());
+        assert!(validate_config(&config).is_err(), "blank is unset");
+
+        config.http.api_token = Some("operator".to_string());
         assert!(validate_config(&config).is_ok());
     }
 }

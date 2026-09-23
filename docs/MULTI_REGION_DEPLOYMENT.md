@@ -362,8 +362,9 @@ keeps a handle it could ask for the replica's health.
 - ~~A conference server advertises its SIP bind address as-is.~~ Fixed
   (v0.25.236): every node's heartbeat carries its bind with an unspecified
   IP replaced by `local_ip`.
-- **`fcp-registrar`'s `/drain` takes no credentials**, unlike every other
-  binary's. Bind its HTTP listener to a private interface.
+- ~~`fcp-registrar`'s `/drain` takes no credentials.~~ Fixed (v0.25.237):
+  `[http] api_token`, required on a non-loopback bind, guards `/status`
+  and `/drain`.
 - ~~The SBC's membership node id is random.~~ Fixed (v0.25.236): one
   `[service] node_id` for membership, the drain, its calls and its trunks.
 - **Events ingested over HTTP never cross regions** (§3.2): conference,
