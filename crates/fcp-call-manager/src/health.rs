@@ -339,6 +339,15 @@ async fn status_handler(State(state): State<Arc<AppState>>) -> Json<serde_json::
         // What this node is carrying against what it allows
         // (docs/CAPACITY_AND_SURVIVABILITY.md §9). Zero is no limit.
         "draining": state.drain.is_draining(),
+        // Registration lookups since start, by reason
+        // (docs/MULTI_REGION_FOLLOWUPS.md §2.1). A region away from the
+        // primary pays a crossing for each.
+        "registration_reads": {
+            "direct": fcp_core::storage::RegistrationReads::global().counts().0,
+            "alias": fcp_core::storage::RegistrationReads::global().counts().1,
+            "housekeeping": fcp_core::storage::RegistrationReads::global().counts().2,
+            "total": fcp_core::storage::RegistrationReads::global().total(),
+        },
         "admission": {
             "concurrent_calls": state.admission.concurrent_calls(),
             "current_cps": state.admission.current_cps(),
@@ -965,6 +974,12 @@ async fn metrics_handler(State(state): State<Arc<AppState>>) -> impl IntoRespons
     // (docs/COMPLIANCE_FOLLOWUPS.md §9).
     body.push_str(
         &fcp_core::compliance::RecordingCounters::global().prometheus(&format!("node=\"{node}\"")),
+    );
+    // Registration lookups in the store, by reason: the one hot-path read
+    // that is neither cached nor replica-served, so each is a crossing in
+    // a region away from the primary (docs/MULTI_REGION_FOLLOWUPS.md §2.1).
+    body.push_str(
+        &fcp_core::storage::RegistrationReads::global().prometheus(&format!("node=\"{node}\"")),
     );
     // Emergency calls by kind, location source and delivery, the location
     // gaps, and the trunks' Geolocation-Error answers

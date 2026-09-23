@@ -220,9 +220,21 @@ async fn events_cross_regions_once_and_never_loop_back() {
     assert_eq!(us_status.region, "eu-west");
     assert!(us_status.connected);
     assert_eq!(us_status.forwarded, 2, "{us_status:?}");
+    // What crossed, in bytes, so a filter is argued for with a graph
+    // (docs/MULTI_REGION_FOLLOWUPS.md §2.4, phase 1). Counted once the
+    // batch lands, so a retry does not inflate it.
+    assert!(
+        us_status.forwarded_bytes > 0,
+        "two envelopes forwarded and no bytes counted: {us_status:?}"
+    );
+    assert!(
+        us_status.forwarded_bytes >= us_status.forwarded * 2,
+        "an envelope is more than a byte: {us_status:?}"
+    );
     assert_eq!(us_status.claimed, 0, "{us_status:?}");
     let eu_status = wait_status(&eu_bridge, |s| s.forwarded == 1, Duration::from_secs(5)).await;
     assert_eq!(eu_status.forwarded, 1, "{eu_status:?}");
+    assert!(eu_status.forwarded_bytes > 0, "{eu_status:?}");
 
     for h in handles {
         h.abort();

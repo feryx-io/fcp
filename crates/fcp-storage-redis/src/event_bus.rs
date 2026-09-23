@@ -531,6 +531,8 @@ pub struct PeerBridgeStatus {
     pub connected: bool,
     /// Envelopes forwarded since start.
     pub forwarded: u64,
+    /// Bytes of those envelopes, as they went on the wire.
+    pub forwarded_bytes: u64,
     /// Entries taken over from consumers that stopped acknowledging.
     pub claimed: u64,
     /// Entries read or claimed that were not forwarded because they were
@@ -548,6 +550,10 @@ struct PeerCounters {
     region: String,
     connected: AtomicBool,
     forwarded: AtomicU64,
+    /// Bytes of forwarded envelopes, as they go on the wire to the peer.
+    /// What `docs/MULTI_REGION_FOLLOWUPS.md` §2.4 asks to be measured
+    /// before anyone argues about a filter.
+    forwarded_bytes: AtomicU64,
     claimed: AtomicU64,
     skipped_relayed: AtomicU64,
     attempts: AtomicU64,
@@ -565,6 +571,7 @@ impl PeerCounters {
             region: self.region.clone(),
             connected: self.connected.load(Ordering::Relaxed),
             forwarded: self.forwarded.load(Ordering::Relaxed),
+            forwarded_bytes: self.forwarded_bytes.load(Ordering::Relaxed),
             claimed: self.claimed.load(Ordering::Relaxed),
             skipped_relayed: self.skipped_relayed.load(Ordering::Relaxed),
             attempts: self.attempts.load(Ordering::Relaxed),
@@ -576,6 +583,57 @@ impl PeerCounters {
                 .clone(),
         }
     }
+}
+
+/// The per-peer bridge counters as Prometheus series
+/// (`docs/MULTI_REGION_FOLLOWUPS.md` §2.4, phase 1).
+///
+/// What crosses the link, per peer region, so a filter is argued for with
+/// a graph rather than a guess.
+pub fn peers_prometheus(peers: &[PeerBridgeStatus], labels: &str) -> String {
+    let sep = if labels.is_empty() { "" } else { "," };
+    let mut out = String::from(
+        "# HELP fcp_event_bridge_forwarded_total Envelopes forwarded to a peer region.\n\
+         # TYPE fcp_event_bridge_forwarded_total counter\n",
+    );
+    for p in peers {
+        out.push_str(&format!(
+            "fcp_event_bridge_forwarded_total{{{labels}{sep}peer=\"{}\"}} {}\n",
+            p.region, p.forwarded
+        ));
+    }
+    out.push_str(
+        "# HELP fcp_event_bridge_forwarded_bytes_total Bytes of those envelopes, as sent.\n\
+         # TYPE fcp_event_bridge_forwarded_bytes_total counter\n",
+    );
+    for p in peers {
+        out.push_str(&format!(
+            "fcp_event_bridge_forwarded_bytes_total{{{labels}{sep}peer=\"{}\"}} {}\n",
+            p.region, p.forwarded_bytes
+        ));
+    }
+    out.push_str(
+        "# HELP fcp_event_bridge_failed_total Forwarding attempts that failed.\n\
+         # TYPE fcp_event_bridge_failed_total counter\n",
+    );
+    for p in peers {
+        out.push_str(&format!(
+            "fcp_event_bridge_failed_total{{{labels}{sep}peer=\"{}\"}} {}\n",
+            p.region, p.failed
+        ));
+    }
+    out.push_str(
+        "# HELP fcp_event_bridge_connected Whether the peer's Redis answered at the last try.\n\
+         # TYPE fcp_event_bridge_connected gauge\n",
+    );
+    for p in peers {
+        out.push_str(&format!(
+            "fcp_event_bridge_connected{{{labels}{sep}peer=\"{}\"}} {}\n",
+            p.region,
+            u8::from(p.connected)
+        ));
+    }
+    out
 }
 
 /// Forwards this region's events to peer regions. See the module docs.
@@ -635,6 +693,7 @@ impl EventBridge {
                     region: p.region.clone(),
                     connected: AtomicBool::new(false),
                     forwarded: AtomicU64::new(0),
+                    forwarded_bytes: AtomicU64::new(0),
                     claimed: AtomicU64::new(0),
                     skipped_relayed: AtomicU64::new(0),
                     attempts: AtomicU64::new(0),
@@ -771,6 +830,7 @@ async fn run_peer(
             let ids: Vec<String> = entries.iter().map(|e| e.id.clone()).collect();
             let mut pipe = redis::pipe();
             let mut n = 0usize;
+            let mut bytes = 0u64;
             for entry in entries {
                 if !forwardable(&entry.envelope) {
                     counters.skipped_relayed.fetch_add(1, Ordering::Relaxed);
@@ -781,6 +841,11 @@ async fn run_peer(
                     entry.envelope,
                     local_region.as_deref(),
                 ))?;
+                // Measured as the envelope the peer receives, and added to
+                // the counter only once the batch lands — a retried batch
+                // is serialised again, and counting it twice would make
+                // §2.4's number bigger the worse the link is.
+                bytes += json.len() as u64;
                 queue_publish(&mut pipe, &peer_channel, &peer_stream, &json);
                 n += 1;
             }
@@ -800,7 +865,7 @@ async fn run_peer(
                     }
                 }
             }
-            Ok::<_, anyhow::Error>((ids, n))
+            Ok::<_, anyhow::Error>((ids, n, bytes))
         }
     };
 
@@ -858,7 +923,7 @@ async fn run_peer(
         // done as far as this group is concerned).
         let mut batch = Some(entries);
         let mut attempt = 0u32;
-        let (ids, n) = until_ok("forwarding a batch", &counters, || {
+        let (ids, n, bytes) = until_ok("forwarding a batch", &counters, || {
             let entries = batch.take().expect("batch retried after success");
             let clone = entries.clone();
             let fut = forward(entries, attempt > 0);
@@ -869,6 +934,7 @@ async fn run_peer(
         .await;
         counters.connected.store(true, Ordering::Relaxed);
         counters.forwarded.fetch_add(n as u64, Ordering::Relaxed);
+        counters.forwarded_bytes.fetch_add(bytes, Ordering::Relaxed);
         if n > 0 {
             info!(peer = %peer.region, forwarded = n, ids = ?ids, "Event bridge: batch forwarded");
         }

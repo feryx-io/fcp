@@ -507,6 +507,18 @@ measurements behind it; regional ingress is a deployment guide, not a
 platform feature; a partition is made visible rather than acted on; and
 the event bridge is measured before it is filtered. Four phases: measure,
 the registration cache, a partition is visible, the deployment guide.
+Phase 1 done (v0.25.231): the cost is a number. Registration lookups are
+counted by reason — direct, alias, housekeeping — on `/status` and as
+`fcp_registration_reads_total` on `/metrics`, and the floor measures a
+two-party call setup at **2 direct reads**, exactly what the survey
+estimated, rising to **6** with two domain aliases configured, since each
+lookup is repeated at every other alias. Housekeeping is counted apart so
+the call-path number is not inflated by REGISTER handling. On the event
+bridge, envelopes per peer were already counted and shown on `/status`;
+bytes were not counted at all and neither was on `/metrics`. Both are now,
+per peer region, with bytes recorded when a batch lands rather than when
+it is queued, so a retried batch does not make the number bigger the worse
+the link is. Nothing changed behaviour.
 
 ## Historical documents
 

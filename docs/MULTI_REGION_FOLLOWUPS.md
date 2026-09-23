@@ -1,7 +1,8 @@
 # Multi-Region — the leftovers
 
 Status: **agreed** (2026-09-22), survey done, all four questions settled
-by the user. Chosen after the edge security project closed.
+by the user; **phase 1 done** (v0.25.231). Chosen after the edge security
+project closed.
 
 `docs/MULTI_REGION.md` shipped three things in v0.25.86–88 and was honest
 about what it left: each of its sections ends with a **Not covered**
@@ -64,6 +65,22 @@ two-party call setup before anything rings, and more than half a second
 for a five-member hunt group — on every call, paid by the region that
 does not hold the primary.
 
+**Measured in phase 1** (`fcp-call-manager/tests/calls.rs`), against the
+counter this phase added:
+
+| Deployment | Reads per two-party call setup |
+|---|---|
+| no domain aliases | **2 direct**, 0 alias |
+| two aliases beside the AOR's own domain | **2 direct + 4 alias = 6** |
+
+So the estimate was right, and the alias multiplication is exactly what it
+looked like: each of the two lookups is repeated at every other alias, so
+two aliases treble the cost of every call. The counter is
+`fcp_registration_reads_total{reason=...}` on `/metrics` and
+`registration_reads` on `/status`, with housekeeping (REGISTER handling,
+expiry, deregistration) counted apart so the call-path number is not
+inflated by it.
+
 **The Redis alternative exists and does not fix it.** There is a
 `RedisRegistrationStore` with native TTL expiry
 (`fcp-storage-redis/src/registration.rs`) and a
@@ -124,8 +141,17 @@ registration churn all cross the link at whatever volume the busiest
 region produces.
 
 `docs/MULTI_REGION.md` calls a per-peer filter "a small addition if
-cross-region volume ever matters". It has not been measured, which is the
+cross-region volume ever matters". It had not been measured, which is the
 first thing to do rather than the last.
+
+**Phase 1 measures it.** Envelopes were already counted per peer and shown
+on the events server's `/status`; bytes were not counted at all and
+neither was on `/metrics`. Both are now, as
+`fcp_event_bridge_forwarded_total`, `fcp_event_bridge_forwarded_bytes_total`,
+`fcp_event_bridge_failed_total` and `fcp_event_bridge_connected`, labelled
+by peer region. Bytes are counted when a batch *lands*, not when it is
+queued, so a retried batch does not make the number bigger the worse the
+link is.
 
 ### 2.5 Regional affinity stops at conference placement
 
@@ -185,7 +211,7 @@ One PR each, in order.
 
 | Phase | What |
 |---|---|
-| 1 | **Measure.** A per-peer counter of events and bytes on the `EventBridge` (§2.4, Q4), and a count of registration reads per call setup (§2.1), so the cost is a number rather than my arithmetic. Nothing changes behaviour. |
+| 1 ✅ | **Measure.** A per-peer counter of events and bytes on the `EventBridge` (§2.4, Q4), and a count of registration reads per call setup (§2.1), so the cost is a number rather than arithmetic. Nothing changes behaviour. Result: **2 reads per call, 6 with two aliases** (§2.1). |
 | 2 | **The registration cache** (Q1). Registrations get the short-TTL cache the other hot-path stores have, invalidated on the node's own writes, with the TTL as the knob. Measured against phase 1. |
 | 3 | **A partition is visible** (§2.3, Q3). A node that loses every remote region at once while reaching Postgres says so on `/status`, in the admin UI, and as an event. |
 | 4 | **The deployment guide** (§2.2, Q2). A regional runbook: SRV layout per region, which Redis is global and which is regional, what to point a carrier at, what a partition looks like, and the registration cost a region away from the primary still pays. |
