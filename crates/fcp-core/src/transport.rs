@@ -556,3 +556,54 @@ mod tests {
         assert!(limiter.allow_request(100));
     }
 }
+
+/// The address a node advertises for a listener bound to `bind`: the bind
+/// as it is when its IP is concrete, otherwise the node's routable address
+/// (`[sip] local_ip`, or what the binary detected) with the bind's port.
+/// Placement, migration and cross-node control send callers to what the
+/// heartbeat says, so a node bound to `0.0.0.0` must not say `0.0.0.0`
+/// (`docs/DEPLOYMENT_GAPS.md` §1.1). With nothing routable known the bind
+/// is advertised as-is — the record is then honest about not knowing.
+pub fn advertised_address(bind: SocketAddr, local_ip: Option<&str>) -> SocketAddr {
+    if !bind.ip().is_unspecified() {
+        return bind;
+    }
+    match local_ip.and_then(|ip| ip.trim().parse::<std::net::IpAddr>().ok()) {
+        Some(ip) => SocketAddr::new(ip, bind.port()),
+        None => bind,
+    }
+}
+
+#[cfg(test)]
+mod advertised_address_tests {
+    use super::advertised_address;
+
+    #[test]
+    fn a_concrete_bind_is_advertised_as_is() {
+        let bind = "10.0.0.5:5060".parse().unwrap();
+        assert_eq!(advertised_address(bind, Some("10.0.0.20")), bind);
+        assert_eq!(advertised_address(bind, None), bind);
+    }
+
+    #[test]
+    fn an_unspecified_bind_takes_local_ip_and_keeps_its_port() {
+        let bind = "0.0.0.0:5074".parse().unwrap();
+        assert_eq!(
+            advertised_address(bind, Some("10.0.0.20")),
+            "10.0.0.20:5074".parse().unwrap()
+        );
+        let v6 = "[::]:5061".parse().unwrap();
+        assert_eq!(
+            advertised_address(v6, Some("2001:db8::7")),
+            "[2001:db8::7]:5061".parse().unwrap()
+        );
+    }
+
+    #[test]
+    fn an_unspecified_bind_with_nothing_routable_stays_unspecified() {
+        let bind = "0.0.0.0:5060".parse().unwrap();
+        assert_eq!(advertised_address(bind, None), bind);
+        assert_eq!(advertised_address(bind, Some("not an ip")), bind);
+        assert_eq!(advertised_address(bind, Some("")), bind);
+    }
+}

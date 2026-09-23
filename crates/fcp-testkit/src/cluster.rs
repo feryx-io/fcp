@@ -31,6 +31,45 @@ pub fn private_redis_url() -> Option<String> {
     ))
 }
 
+/// The heartbeat record a node wrote under `cluster:node:<node_id>` in
+/// the Redis at `redis_url`, as the JSON it wrote (`ClusterMember`), or
+/// `None` while there is no record. What placement, migration and the
+/// admin API read; a test asserts on what a node *says* here.
+pub async fn heartbeat(redis_url: &str, node_id: &str) -> Option<serde_json::Value> {
+    let client = redis::Client::open(redis_url).ok()?;
+    let mut conn = client.get_multiplexed_async_connection().await.ok()?;
+    let json: Option<String> = redis::cmd("GET")
+        .arg(format!("fcp:cluster:node:{node_id}"))
+        .query_async(&mut conn)
+        .await
+        .ok()?;
+    serde_json::from_str(&json?).ok()
+}
+
+/// `heartbeat` polled until `accept` says yes or `within` passes; the
+/// last record seen either way (`None` if there never was one).
+pub async fn heartbeat_when(
+    redis_url: &str,
+    node_id: &str,
+    within: Duration,
+    accept: impl Fn(&serde_json::Value) -> bool,
+) -> Option<serde_json::Value> {
+    let deadline = tokio::time::Instant::now() + within;
+    let mut last = None;
+    loop {
+        if let Some(record) = heartbeat(redis_url, node_id).await {
+            if accept(&record) {
+                return Some(record);
+            }
+            last = Some(record);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return last;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
 /// One conference node.
 pub struct Node {
     pub id: String,

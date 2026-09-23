@@ -285,12 +285,18 @@ async fn main() -> Result<()> {
             let member = fcp_cluster::ClusterMember {
                 node_id: config.service.node_id.clone(),
                 node_type: config.service.service_type.clone(),
-                http_address: config.http.bind_address,
-                sip_address: config
-                    .sip
-                    .udp_bind
-                    .parse()
-                    .unwrap_or_else(|_| "0.0.0.0:5060".parse().unwrap()),
+                http_address: fcp_cluster::advertised_address(
+                    config.http.bind_address,
+                    config.sip.local_ip.as_deref(),
+                ),
+                sip_address: fcp_cluster::advertised_address(
+                    config
+                        .sip
+                        .udp_bind
+                        .parse()
+                        .unwrap_or_else(|_| "0.0.0.0:5060".parse().unwrap()),
+                    config.sip.local_ip.as_deref(),
+                ),
                 sip_tls_address: None,
                 capabilities: vec!["voicemail".to_string(), "mwi".to_string()],
                 active_calls: 0,

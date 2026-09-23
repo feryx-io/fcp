@@ -574,12 +574,12 @@ async fn main() -> Result<()> {
             None, // no flow handler
             sbc_config.b2bua.clone(),
             Some(trunk_router as Arc<dyn fcp_sip::OutboundRouteProvider>),
-            None,          // No PBX handler
-            None,          // No conference handler
-            None,          // No queue handler
-            None,          // presence_handler
-            None,          // cluster_parking
-            String::new(), // node_id
+            None, // No PBX handler
+            None, // No conference handler
+            None, // No queue handler
+            None, // presence_handler
+            None, // cluster_parking
+            deploy_config.service.node_id.clone(),
         )?
         .with_default_tenant_id(sbc_config.default_tenant_id)
         .with_trusted_edges(fcp_sip::emergency::TrustedEdges::parse(
@@ -717,13 +717,15 @@ async fn main() -> Result<()> {
             {
                 Ok(redis) => {
                     let member = fcp_cluster::ClusterMember {
-                        node_id: format!("sbc-{}", uuid::Uuid::new_v4()),
+                        node_id: deploy_config.service.node_id.clone(),
                         node_type: "sbc".to_string(),
-                        http_address: cli
-                            .health_bind
-                            .parse()
-                            .unwrap_or_else(|_| "0.0.0.0:8080".parse().unwrap()),
-                        sip_address: bind_addr,
+                        http_address: fcp_cluster::advertised_address(
+                            cli.health_bind
+                                .parse()
+                                .unwrap_or_else(|_| "0.0.0.0:8080".parse().unwrap()),
+                            Some(&local_ip),
+                        ),
+                        sip_address: fcp_cluster::advertised_address(bind_addr, Some(&local_ip)),
                         sip_tls_address: None,
                         capabilities: vec!["sbc".to_string(), "trunking".to_string()],
                         active_calls: 0,
@@ -767,11 +769,7 @@ async fn main() -> Result<()> {
     // (`docs/CAPACITY_AND_SURVIVABILITY.md` §6): the same sequence the call
     // manager runs, from the same place, whether it starts at `POST /drain`
     // or at SIGTERM.
-    let node_id = deploy_config
-        .service
-        .node_id
-        .clone()
-        .unwrap_or_else(|| format!("sbc-{}", uuid::Uuid::new_v4()));
+    let node_id = deploy_config.service.node_id.clone();
     let drain_target = Arc::new(drain::NodeCalls::new(
         Arc::clone(&call_manager),
         Some(Arc::clone(&uac)),
@@ -853,7 +851,7 @@ async fn main() -> Result<()> {
             uac: Arc::clone(&uac),
             ownership: Arc::new(fcp_sbc_core::AloneOnThisNode),
             events: Some(Arc::clone(&sbc_hooks)),
-            node_id: "sbc".to_string(),
+            node_id: deploy_config.service.node_id.clone(),
         };
         let reg_shutdown = shutdown_rx.clone();
         tokio::spawn(async move {
