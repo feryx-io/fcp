@@ -17,6 +17,7 @@ use std::time::SystemTime;
 use tracing::{debug, info, warn};
 
 use crate::auth::{Ha1Authenticator, Ha1CredentialStore};
+use crate::registration_cache::{Lookup, RegistrationCache};
 
 fn extract_aor_from_request(request: &Request) -> Option<String> {
     let to_header = request.headers().get_smol("To")?;
@@ -256,11 +257,28 @@ fn same_address(a: std::net::IpAddr, b: std::net::IpAddr) -> bool {
 /// Adapter that implements siphon-rs LocationStore using FCP RegistrationStore.
 pub struct LocationStoreAdapter {
     store: Arc<dyn RegistrationStore>,
+    /// Lookups kept for a TTL (`docs/MULTI_REGION_FOLLOWUPS.md` §2.1,
+    /// phase 2). `None` reads the store every time.
+    cache: Option<Arc<RegistrationCache>>,
 }
 
 impl LocationStoreAdapter {
     pub fn new(store: Arc<dyn RegistrationStore>) -> Self {
-        Self { store }
+        Self { store, cache: None }
+    }
+
+    /// The store has changed under `aor` in `tenant_id`.
+    fn invalidate(&self, tenant_id: &TenantId, aor: &str) {
+        if let Some(cache) = &self.cache {
+            cache.invalidate(tenant_id, aor);
+        }
+    }
+
+    /// The store has changed under `aor`, in whichever tenant holds it.
+    fn invalidate_everywhere(&self, aor: &str) {
+        if let Some(cache) = &self.cache {
+            cache.invalidate_everywhere(aor);
+        }
     }
 
     async fn upsert_in_tenant(
@@ -276,10 +294,15 @@ impl LocationStoreAdapter {
         registration.source_address = source_address.map(|a| a.to_string());
         registration.contact =
             crate::registrar::FcpRegistrar::normalize_contact_for_matching(&registration.contact);
-        self.store.put_registration(registration).await
+        let aor = registration.aor.clone();
+        let stored = self.store.put_registration(registration).await;
+        self.invalidate(&tenant_id, &aor);
+        stored
     }
 
     async fn remove_in_tenant(&self, tenant_id: &TenantId, aor: &str, contact: &str) -> Result<()> {
+        fcp_core::storage::RegistrationReads::global()
+            .note(fcp_core::storage::RegistrationRead::Housekeeping);
         let registrations = self
             .store
             .get_registrations_in_tenant(tenant_id, aor)
@@ -293,9 +316,12 @@ impl LocationStoreAdapter {
             let normalized_stored =
                 crate::registrar::FcpRegistrar::normalize_contact_for_matching(&reg.contact);
             if normalized_stored == normalized_requested {
-                self.store
+                let deleted = self
+                    .store
                     .delete_registration_in_tenant(tenant_id, aor, &reg.contact)
-                    .await?;
+                    .await;
+                self.invalidate(tenant_id, aor);
+                deleted?;
                 removed_any = true;
             }
         }
@@ -308,41 +334,70 @@ impl LocationStoreAdapter {
     }
 
     async fn remove_all_in_tenant(&self, tenant_id: &TenantId, aor: &str) -> Result<()> {
-        self.store
+        let deleted = self
+            .store
             .delete_all_registrations_in_tenant(tenant_id, aor)
-            .await
+            .await;
+        self.invalidate(tenant_id, aor);
+        deleted
     }
 
+    /// The bindings a REGISTER's answer lists. Read from the store, never
+    /// the cache — the answer is the store's word on what it now holds —
+    /// and counted as housekeeping, since no call is waiting on it.
     async fn lookup_in_tenant(&self, tenant_id: &TenantId, aor: &str) -> Result<Vec<Binding>> {
-        self.rows_in_tenant(tenant_id, aor, fcp_core::storage::RegistrationRead::Direct)
+        fcp_core::storage::RegistrationReads::global()
+            .note(fcp_core::storage::RegistrationRead::Housekeeping);
+        let now = SystemTime::now();
+        self.store
+            .get_registrations_in_tenant(tenant_id, aor)
             .await?
             .iter()
+            .filter(|r| r.expires_at > now)
             .map(Self::to_binding)
             .collect()
     }
 
-    /// The live registrations for an AOR as stored — the rows behind
-    /// [`LocationStoreAdapter::lookup_in_tenant`], which carry the address
-    /// the REGISTER came from.
-    /// One round trip to the registration store. `read` says why, so
-    /// `/status` can tell a lookup from the alias lookups that follow it
-    /// (`docs/MULTI_REGION_FOLLOWUPS.md` §2.1).
+    /// The live registrations for an AOR, which carry the address the
+    /// REGISTER came from — every lookup a call makes comes through here.
+    ///
+    /// From the cache when it holds a fresh answer, otherwise one round
+    /// trip to the store; `read` says why that trip was made, so `/status`
+    /// can tell a lookup from the alias lookups that follow it
+    /// (`docs/MULTI_REGION_FOLLOWUPS.md` §2.1). Expiry is judged here on
+    /// every call, so a binding that lapses while cached is not used.
     async fn rows_in_tenant(
         &self,
         tenant_id: &TenantId,
         aor: &str,
         read: fcp_core::storage::RegistrationRead,
     ) -> Result<Vec<Registration>> {
-        fcp_core::storage::RegistrationReads::global().note(read);
+        let reads = fcp_core::storage::RegistrationReads::global();
+        let ticket = match self.cache.as_ref().map(|c| c.lookup(tenant_id, aor)) {
+            Some(Lookup::Hit(rows)) => {
+                reads.note_cached();
+                return Ok(Self::live(rows));
+            }
+            Some(Lookup::Miss(ticket)) => Some(ticket),
+            None => None,
+        };
+        reads.note(read);
         let registrations = self
             .store
             .get_registrations_in_tenant(tenant_id, aor)
             .await?;
+        if let (Some(cache), Some(ticket)) = (&self.cache, ticket) {
+            cache.fill(tenant_id, aor, &registrations, ticket);
+        }
+        Ok(Self::live(registrations))
+    }
+
+    fn live(registrations: Vec<Registration>) -> Vec<Registration> {
         let now = SystemTime::now();
-        Ok(registrations
+        registrations
             .into_iter()
             .filter(|r| r.expires_at > now)
-            .collect())
+            .collect()
     }
 
     /// Convert FCP Registration to siphon-rs Binding.
@@ -434,7 +489,10 @@ impl AsyncLocationStore for LocationStoreAdapter {
         // when rinstance changes between client restarts.
         registration.contact =
             crate::registrar::FcpRegistrar::normalize_contact_for_matching(&registration.contact);
-        self.store.put_registration(registration).await
+        let aor = registration.aor.clone();
+        let stored = self.store.put_registration(registration).await;
+        self.invalidate_everywhere(&aor);
+        stored
     }
 
     async fn remove(&self, aor: &str, contact: &str) -> Result<()> {
@@ -481,7 +539,9 @@ impl AsyncLocationStore for LocationStoreAdapter {
                     contact = %reg.contact,
                     "Removing matching registration"
                 );
-                self.store.delete_registration(aor, &reg.contact).await?;
+                let deleted = self.store.delete_registration(aor, &reg.contact).await;
+                self.invalidate_everywhere(aor);
+                deleted?;
                 removed_any = true;
             }
         }
@@ -497,7 +557,9 @@ impl AsyncLocationStore for LocationStoreAdapter {
     }
 
     async fn remove_all(&self, aor: &str) -> Result<()> {
-        self.store.delete_all_registrations(aor).await
+        let deleted = self.store.delete_all_registrations(aor).await;
+        self.invalidate_everywhere(aor);
+        deleted
     }
 
     async fn lookup(&self, aor: &str) -> Result<Vec<Binding>> {
@@ -694,6 +756,40 @@ impl FcpRegistrar {
     pub fn with_domain_aliases(mut self, aliases: Vec<String>) -> Self {
         self.domain_aliases = aliases;
         self
+    }
+
+    /// Keep registration lookups for `ttl`
+    /// (`docs/MULTI_REGION_FOLLOWUPS.md` §2.1, phase 2). A zero TTL keeps
+    /// nothing, which is how this registrar always behaved.
+    ///
+    /// This registrar's own writes invalidate at once. Another node's
+    /// reach this one as registration events, which the binary hands to
+    /// [`FcpRegistrar::forget_registration`]; the TTL bounds what neither
+    /// covers.
+    pub fn with_registration_cache(mut self, ttl: std::time::Duration) -> Self {
+        self.location_store.cache = (!ttl.is_zero()).then(|| {
+            Arc::new(RegistrationCache::new(
+                ttl,
+                RegistrationCache::DEFAULT_MAX_ENTRIES,
+            ))
+        });
+        self
+    }
+
+    /// The registration cache, when there is one.
+    pub fn registration_cache(&self) -> Option<&Arc<RegistrationCache>> {
+        self.location_store.cache.as_ref()
+    }
+
+    /// Another node changed the registrations for `aor`: the next lookup
+    /// here reads the store. A nil tenant — a writer that did not know
+    /// the tenant — forgets the address in every tenant.
+    pub fn forget_registration(&self, tenant_id: &TenantId, aor: &str) {
+        if tenant_id.is_nil() {
+            self.location_store.invalidate_everywhere(aor);
+        } else {
+            self.location_store.invalidate(tenant_id, aor);
+        }
     }
 
     /// Attach a tenant store for tenant-aware REGISTER auth and persistence.
@@ -2286,6 +2382,213 @@ mod tests {
 
         // Cleanup
         tokio::fs::remove_dir_all(temp_dir).await.ok();
+    }
+
+    /// A REGISTER for bob from `contact`, with `expires`.
+    fn bob_register(contact: &str, expires: u32, cseq: u32) -> Request {
+        let mut headers = sip_core::Headers::new();
+        headers.push(
+            SmolStr::new("Via"),
+            SmolStr::new(format!(
+                "SIP/2.0/UDP 192.168.1.206:5060;branch=z9hG4bKcache{cseq}"
+            )),
+        );
+        headers.push(
+            SmolStr::new("From"),
+            SmolStr::new(format!("<sip:bob@example.com>;tag=c{cseq}")),
+        );
+        headers.push(SmolStr::new("To"), SmolStr::new("<sip:bob@example.com>"));
+        headers.push(SmolStr::new("Call-ID"), SmolStr::new("cache@example.com"));
+        headers.push(
+            SmolStr::new("CSeq"),
+            SmolStr::new(format!("{cseq} REGISTER")),
+        );
+        headers.push(
+            SmolStr::new("Contact"),
+            SmolStr::new(format!("<{contact}>;expires={expires}")),
+        );
+        headers.push(SmolStr::new("Expires"), SmolStr::new(expires.to_string()));
+        headers.push(SmolStr::new("Content-Length"), SmolStr::new("0"));
+        Request::new(
+            sip_core::RequestLine::new(
+                sip_core::Method::Register,
+                sip_core::SipUri::parse("sip:example.com").unwrap(),
+            ),
+            headers,
+            bytes::Bytes::new(),
+        )
+        .unwrap()
+    }
+
+    /// A registrar keeping lookups for 30 seconds, on a store of its own.
+    async fn cached_registrar(name: &str) -> (FcpRegistrar, Arc<FileBackedStorage>) {
+        let dir = std::env::temp_dir().join(format!("fcp-test-registration-cache-{name}"));
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+        let storage = Arc::new(FileBackedStorage::new(dir).await.unwrap());
+        let registrar = FcpRegistrar::new(storage.clone(), None, None, false)
+            .with_default_tenant_id(TenantId::nil())
+            .with_registration_cache(std::time::Duration::from_secs(30));
+        (registrar, storage)
+    }
+
+    async fn bob_contacts(registrar: &FcpRegistrar) -> Vec<String> {
+        registrar
+            .get_registration_rows("sip:bob@example.com")
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|r| {
+                r.contact
+                    .trim_start_matches('<')
+                    .trim_end_matches('>')
+                    .to_string()
+            })
+            .collect()
+    }
+
+    /// Another node's REGISTER: straight into the store, past this
+    /// registrar and its cache.
+    async fn registered_elsewhere(storage: &FileBackedStorage, contact: &str) {
+        let mut row = registration_at(contact, None);
+        row.aor = "sip:bob@example.com".to_string();
+        storage.put_registration(row).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_lookup_is_answered_from_the_cache() {
+        // `docs/MULTI_REGION_FOLLOWUPS.md` §2.1, phase 2.
+        let (registrar, storage) = cached_registrar("answered").await;
+        let reg = registrar
+            .handle_register(&bob_register("sip:bob@10.0.0.1:5060", 3600, 1))
+            .await;
+        assert_eq!(reg.start_line().code(), 200);
+
+        assert_eq!(
+            bob_contacts(&registrar).await,
+            vec!["sip:bob@10.0.0.1:5060"]
+        );
+        let misses = registrar.registration_cache().unwrap().stats().misses;
+
+        // A write this node did not make is not seen until the cache is
+        // told — which is what shows the second lookup never reached the
+        // store.
+        registered_elsewhere(&storage, "sip:bob@10.0.0.9:5060").await;
+        assert_eq!(
+            bob_contacts(&registrar).await,
+            vec!["sip:bob@10.0.0.1:5060"]
+        );
+        let stats = registrar.registration_cache().unwrap().stats();
+        assert_eq!(stats.misses, misses, "the second lookup read the store");
+        assert!(stats.hits >= 1);
+    }
+
+    #[tokio::test]
+    async fn this_nodes_own_register_is_seen_by_the_next_lookup() {
+        // A phone that moves re-REGISTERs from its new address; a call
+        // placed here straight after must reach it there.
+        let (registrar, _storage) = cached_registrar("own-register").await;
+        registrar
+            .handle_register(&bob_register("sip:bob@10.0.0.1:5060", 3600, 1))
+            .await;
+        assert_eq!(
+            bob_contacts(&registrar).await,
+            vec!["sip:bob@10.0.0.1:5060"]
+        );
+
+        registrar
+            .handle_register(&bob_register("sip:bob@10.0.0.1:5060", 0, 2))
+            .await;
+        assert!(
+            bob_contacts(&registrar).await.is_empty(),
+            "a deregistration here is seen at once"
+        );
+
+        registrar
+            .handle_register(&bob_register("sip:bob@10.0.0.2:5062", 3600, 3))
+            .await;
+        assert_eq!(
+            bob_contacts(&registrar).await,
+            vec!["sip:bob@10.0.0.2:5062"],
+            "a registration here is seen at once, even after an empty answer was kept"
+        );
+    }
+
+    #[tokio::test]
+    async fn another_nodes_register_is_seen_once_its_event_arrives() {
+        // Nobody is registered, and the empty answer is kept. Another node
+        // takes bob's REGISTER; its event is what tells this one.
+        let (registrar, storage) = cached_registrar("event").await;
+        assert!(bob_contacts(&registrar).await.is_empty());
+        registered_elsewhere(&storage, "sip:bob@10.0.0.9:5060").await;
+        assert!(
+            bob_contacts(&registrar).await.is_empty(),
+            "the empty answer is kept until something says otherwise"
+        );
+
+        registrar.forget_registration(&TenantId::nil(), "sip:bob@example.com");
+        assert_eq!(
+            bob_contacts(&registrar).await,
+            vec!["sip:bob@10.0.0.9:5060"]
+        );
+    }
+
+    #[tokio::test]
+    async fn alias_lookups_are_kept_as_well() {
+        // Most of what an alias costs is lookups that find nobody; a cache
+        // that skipped empty answers would save little of it.
+        let (registrar, _storage) = cached_registrar("aliases").await;
+        let registrar = registrar.with_domain_aliases(vec![
+            "example.com".to_string(),
+            "alias-one.test".to_string(),
+            "alias-two.test".to_string(),
+        ]);
+        registrar
+            .handle_register(&bob_register("sip:bob@10.0.0.1:5060", 3600, 1))
+            .await;
+
+        assert_eq!(bob_contacts(&registrar).await.len(), 1);
+        let first = registrar.registration_cache().unwrap().stats();
+        assert_eq!(bob_contacts(&registrar).await.len(), 1);
+        let second = registrar.registration_cache().unwrap().stats();
+        assert_eq!(
+            second.misses, first.misses,
+            "the second lookup read the store at some alias"
+        );
+        assert_eq!(
+            second.hits - first.hits,
+            3,
+            "one hit for the address and one for each other alias"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_binding_that_lapses_while_kept_is_not_used() {
+        let (registrar, storage) = cached_registrar("lapse").await;
+        let mut row = registration_at("sip:bob@10.0.0.1:5060", None);
+        row.expires_at = SystemTime::now() + std::time::Duration::from_millis(50);
+        storage.put_registration(row).await.unwrap();
+
+        assert_eq!(bob_contacts(&registrar).await.len(), 1);
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+        assert!(
+            bob_contacts(&registrar).await.is_empty(),
+            "expiry is judged at each lookup, not when the answer was kept"
+        );
+    }
+
+    #[tokio::test]
+    async fn without_a_ttl_every_lookup_reads_the_store() {
+        let dir = std::env::temp_dir().join("fcp-test-registration-cache-none");
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+        let storage = Arc::new(FileBackedStorage::new(dir).await.unwrap());
+        let registrar = FcpRegistrar::new(storage.clone(), None, None, false)
+            .with_default_tenant_id(TenantId::nil())
+            .with_registration_cache(std::time::Duration::ZERO);
+        assert!(registrar.registration_cache().is_none());
+
+        assert!(bob_contacts(&registrar).await.is_empty());
+        registered_elsewhere(&storage, "sip:bob@10.0.0.9:5060").await;
+        assert_eq!(bob_contacts(&registrar).await.len(), 1);
     }
 
     #[tokio::test]

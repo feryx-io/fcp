@@ -454,13 +454,18 @@ acl = { default_action = "Allow", rules = [{ cidr = "127.0.0.1/32", action = "De
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_call_setup_says_how_many_registration_reads_it_costs() {
     // `docs/MULTI_REGION_FOLLOWUPS.md` §2.1, phase 1. Registrations are
-    // the one hot-path store that is neither cached nor replica-served, so
-    // in a deployment whose primary is in another region each of these is
-    // a round trip across it. The survey estimated the count; this
-    // measures it, and phase 2's cache will be judged against the number.
+    // read from the primary, so in a deployment whose primary is in
+    // another region each of these is a round trip across it. The survey
+    // estimated the count; this measures it.
     //
     // A count, not a timing: a loaded CI box says nothing about latency.
-    let stack = stack_or_skip!();
+    //
+    // With the cache off: this is the cost without it, which phase 2's
+    // tests (`tests/registrations.rs`) measure the cache against.
+    let Some(stack) = Stack::start_registrar("cache_ttl_secs = 0", "", "", 40).await else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
     let alice = stack.seed.user("alice", "alice-pw", "1001").await;
     let bob = stack.seed.user("bob", "bob-pw", "1002").await;
     let alice_phone = stack.phone(&alice).await;
@@ -538,7 +543,9 @@ async fn domain_aliases_multiply_every_registration_read() {
     // The other half of `docs/MULTI_REGION_FOLLOWUPS.md` §2.1: each alias
     // is its own round trip, so a deployment with aliases pays the §2.1
     // cost several times over. Estimated in the survey; measured here.
-    let aliases = r#"domain_aliases = ["e2e.local", "alias-one.local", "alias-two.local"]"#;
+    // The cache off, as above.
+    let aliases = r#"domain_aliases = ["e2e.local", "alias-one.local", "alias-two.local"]
+cache_ttl_secs = 0"#;
     let Some(stack) = Stack::start_registrar(aliases, "", "", 40).await else {
         eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
         return;

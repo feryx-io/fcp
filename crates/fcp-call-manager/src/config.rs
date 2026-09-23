@@ -310,6 +310,24 @@ pub struct RegistrarSection {
     /// alice@fcp.local and alice@pbx.example.com.
     #[serde(default)]
     pub domain_aliases: Vec<String>,
+
+    /// Seconds a registration lookup is kept before the store is read
+    /// again (`docs/MULTI_REGION_FOLLOWUPS.md` §2.1, phase 2). Zero reads
+    /// the store on every lookup, as this node did before the cache.
+    ///
+    /// A REGISTER or deregistration this node handles is seen by its next
+    /// lookup whatever the TTL. One another node handles is seen when its
+    /// registration event arrives — which needs `[events] use_redis`, and
+    /// in another region the events server's bridge — and within the TTL
+    /// at the latest when no event does: a standalone `fcp-registrar`
+    /// publishes none, so behind one this is how long a phone that has
+    /// just registered can go unfound here.
+    #[serde(default = "default_registration_cache_ttl")]
+    pub cache_ttl_secs: u64,
+}
+
+fn default_registration_cache_ttl() -> u64 {
+    30
 }
 
 fn default_realm() -> String {
@@ -339,6 +357,7 @@ impl Default for RegistrarSection {
             max_expires: default_max_expires(),
             domain_aliases: Vec::new(),
             auth_invites: false,
+            cache_ttl_secs: default_registration_cache_ttl(),
         }
     }
 }
@@ -1009,6 +1028,7 @@ mod tests {
             max_expires: default_max_expires(),
             domain_aliases: Vec::new(),
             auth_invites: false,
+            cache_ttl_secs: default_registration_cache_ttl(),
         };
         assert!(validate_registrar_config(&sip, &registrar).is_err());
 

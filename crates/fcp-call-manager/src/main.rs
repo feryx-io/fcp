@@ -1567,6 +1567,9 @@ async fn main() -> Result<()> {
         admission: Arc::clone(&admission),
         drain: Arc::clone(&drain),
         node_id: config.service.node_id.clone(),
+        registration_cache: registrar
+            .as_ref()
+            .and_then(|r| r.registration_cache().cloned()),
     });
     let http_bind = config.http.bind_address;
     tokio::spawn(async move {
@@ -1771,12 +1774,14 @@ async fn main() -> Result<()> {
         let cached_exts = Arc::clone(&cached_exts);
         let cached_devs = Arc::clone(&cached_devs);
         let event_bus_cache = Arc::clone(&event_bus);
+        let registrations = registrar.clone();
         tokio::spawn(async move {
             run_cache_invalidation_listener(
                 event_bus_cache,
                 cached_creds,
                 cached_exts,
                 cached_devs,
+                registrations,
             )
             .await;
         });
@@ -2082,7 +2087,24 @@ fn create_registrar(
         registrar
     };
 
-    Arc::new(registrar)
+    // Registration lookups kept for a TTL (docs/MULTI_REGION_FOLLOWUPS.md
+    // §2.1, phase 2); other nodes' writes arrive as registration events.
+    let ttl = Duration::from_secs(config.registrar.cache_ttl_secs);
+    if ttl.is_zero() {
+        info!("Registration cache off: every lookup reads the store");
+    } else {
+        info!(
+            ttl_secs = ttl.as_secs(),
+            "Registration lookups cached; other nodes' changes arrive as events"
+        );
+        if !config.events.use_redis {
+            warn!(
+                "registration cache on without [events] use_redis: another node's \
+                 REGISTER is seen here only when the TTL runs out"
+            );
+        }
+    }
+    Arc::new(registrar.with_registration_cache(ttl))
 }
 
 /// Create a transport dispatcher with shared TCP pool.
@@ -3478,13 +3500,32 @@ async fn run_presence_listener(
 /// This ensures that when an admin updates a user, extension, or device via the
 /// API, all nodes' in-memory caches are invalidated so the next lookup fetches
 /// fresh data from the database.
+/// The address whose registrations an event says have changed. A failed
+/// REGISTER changed nothing.
+fn registration_changed(
+    event: &fcp_events::RegistrationEvent,
+) -> Option<(&fcp_core::TenantId, &str)> {
+    use fcp_events::RegistrationEvent as R;
+    match event {
+        R::Registered { aor, tenant_id, .. }
+        | R::Refreshed { aor, tenant_id, .. }
+        | R::Unregistered { aor, tenant_id, .. }
+        | R::Expired { aor, tenant_id, .. } => Some((tenant_id, aor.as_str())),
+        R::Failed { .. } => None,
+    }
+}
+
 async fn run_cache_invalidation_listener(
     event_bus: Arc<InMemoryEventBus>,
     cached_creds: Arc<fcp_core::CachedCredentialStore>,
     cached_exts: Arc<fcp_core::CachedExtensionStore>,
     cached_devs: Arc<fcp_core::CachedDeviceStore>,
+    registrar: Option<Arc<fcp_sip::registrar::FcpRegistrar>>,
 ) {
-    let filter = EventFilter::new().types(vec![EventType::System]);
+    // Registration events are another node's REGISTER: what keeps the
+    // registration cache from answering with what the store no longer
+    // holds (docs/MULTI_REGION_FOLLOWUPS.md §2.1, phase 2).
+    let filter = EventFilter::new().types(vec![EventType::System, EventType::Registration]);
 
     let mut stream = match event_bus.subscribe(filter.clone()).await {
         Ok(s) => s,
@@ -3498,6 +3539,14 @@ async fn run_cache_invalidation_listener(
 
     loop {
         match stream.next().await {
+            Some(fcp_events::PlatformEvent::Registration(event)) => {
+                if let Some(registrar) = &registrar {
+                    if let Some((tenant_id, aor)) = registration_changed(&event) {
+                        registrar.forget_registration(tenant_id, aor);
+                        tracing::debug!(%aor, %tenant_id, "Registration cache: forgot a changed address");
+                    }
+                }
+            }
             Some(event) => {
                 if let fcp_events::PlatformEvent::System(fcp_events::SystemEvent::ConfigChanged {
                     entity_type,

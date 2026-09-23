@@ -780,17 +780,20 @@ pub trait TenantStore: Send + Sync {
     async fn delete_tenant(&self, id: &crate::TenantId) -> Result<()>;
 }
 
-/// Storage backend for SIP registrations.
 /// How often a registration has been looked up in the store, and why
 /// (`docs/MULTI_REGION_FOLLOWUPS.md` §2.1, phase 1).
 ///
-/// Registrations are the one hot-path store that is read from the primary
-/// and never cached, so in a deployment whose primary is in another region
-/// every one of these is a round trip across it. The estimate in the
-/// survey — two per call, times the domain aliases, times the members of a
-/// hunt group — is arithmetic; this makes it a number a deployment can
-/// read off `/status` and graph from `/metrics`, which is what phase 2's
-/// cache will be judged against.
+/// Registrations are read from the primary, so in a deployment whose
+/// primary is in another region every one of these is a round trip across
+/// it. The estimate in the survey — two per call, times the domain
+/// aliases, times the members of a hunt group — is arithmetic; this makes
+/// it a number a deployment can read off `/status` and graph from
+/// `/metrics`.
+///
+/// `direct`, `alias` and `housekeeping` are round trips to the store. A
+/// lookup the registration cache answered (phase 2) is none of them: it is
+/// counted as `cached`, so the round trips a cache saves are the
+/// difference a deployment can see, not an estimate.
 ///
 /// Counting only, deliberately: nothing here changes what a call does.
 #[derive(Debug, Default)]
@@ -804,6 +807,8 @@ pub struct RegistrationReads {
     /// A read that is not on the call path: REGISTER handling, expiry
     /// sweeps, deregistration.
     housekeeping: AtomicU64,
+    /// A lookup the registration cache answered without a round trip.
+    cached: AtomicU64,
 }
 
 /// Why a registration was read.
@@ -834,6 +839,17 @@ impl RegistrationReads {
         counter.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Note one lookup answered from the registration cache — no round
+    /// trip, so it is not in [`RegistrationReads::total`].
+    pub fn note_cached(&self) {
+        self.cached.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Lookups the registration cache answered.
+    pub fn cached(&self) -> u64 {
+        self.cached.load(Ordering::Relaxed)
+    }
+
     /// `(direct, alias, housekeeping)`.
     pub fn counts(&self) -> (u64, u64, u64) {
         (
@@ -843,7 +859,7 @@ impl RegistrationReads {
         )
     }
 
-    /// Every round trip, whatever the reason.
+    /// Every round trip to the store, whatever the reason.
     pub fn total(&self) -> u64 {
         let (direct, alias, housekeeping) = self.counts();
         direct + alias + housekeeping
@@ -867,10 +883,22 @@ impl RegistrationReads {
                 "fcp_registration_reads_total{{{labels}{sep}reason=\"{reason}\"}} {n}\n"
             ));
         }
+        let hits_labels = if labels.is_empty() {
+            String::new()
+        } else {
+            format!("{{{labels}}}")
+        };
+        out.push_str(&format!(
+            "# HELP fcp_registration_cache_hits_total Registration lookups answered from the cache, without a round trip.\n\
+             # TYPE fcp_registration_cache_hits_total counter\n\
+             fcp_registration_cache_hits_total{hits_labels} {}\n",
+            self.cached()
+        ));
         out
     }
 }
 
+/// Storage backend for SIP registrations.
 #[async_trait]
 pub trait RegistrationStore: Send + Sync {
     /// Get all registrations for an Address-of-Record.
@@ -4647,6 +4675,30 @@ mod registration_read_tests {
             "{body}"
         );
         assert!(!body.contains("{,"), "no stray separator: {body}");
+        assert!(
+            body.contains("fcp_registration_cache_hits_total 0"),
+            "{body}"
+        );
+    }
+
+    #[test]
+    fn a_cached_lookup_is_not_a_round_trip() {
+        let reads = RegistrationReads::default();
+        reads.note(RegistrationRead::Direct);
+        reads.note_cached();
+        reads.note_cached();
+
+        assert_eq!(reads.cached(), 2);
+        assert_eq!(
+            reads.total(),
+            1,
+            "the total is round trips to the store; a cache hit made none"
+        );
+        let body = reads.prometheus("node=\"cm-1\"");
+        assert!(
+            body.contains("fcp_registration_cache_hits_total{node=\"cm-1\"} 2"),
+            "{body}"
+        );
     }
 
     #[test]

@@ -13,6 +13,7 @@ use axum::{
 };
 use fcp_core::storage::DeviceStore;
 use fcp_core::{CredentialStore, Registration, RegistrationStore, TenantId};
+use fcp_events::{PlatformEvent, RegistrationEvent};
 use serde::Serialize;
 use std::collections::HashSet;
 
@@ -218,14 +219,37 @@ pub async fn delete_registrations(
         .as_ref()
         .ok_or_else(|| ApiError::NotFound("Registrar not enabled".to_string()))?;
 
-    if platform_wide(identity.as_ref().map(|ext| &ext.0), &headers) {
+    let tenant_id = if platform_wide(identity.as_ref().map(|ext| &ext.0), &headers) {
         storage.delete_all_registrations(&aor).await?;
+        TenantId::nil()
     } else {
         storage
             .delete_all_registrations_in_tenant(&tenant.0, &aor)
             .await?;
-    }
+        tenant.0
+    };
+    announce_removed(&state, tenant_id, &aor, "*").await;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Say that an administrator removed a registration, as the registrar says
+/// a deregistration: a call manager's registration cache forgets the
+/// address on it rather than ringing the removed contact until its TTL
+/// (`docs/MULTI_REGION_FOLLOWUPS.md` §2.1, phase 2). A nil tenant — a
+/// platform-wide removal — is forgotten in every tenant.
+async fn announce_removed(state: &ApiState, tenant_id: TenantId, aor: &str, contact: &str) {
+    let _ = state
+        .event_bus
+        .publish(PlatformEvent::Registration(
+            RegistrationEvent::Unregistered {
+                aor: aor.to_string(),
+                contact: contact.to_string(),
+                tenant_id,
+                reason: "admin".to_string(),
+                timestamp: std::time::SystemTime::now(),
+            },
+        ))
+        .await;
 }
 
 /// Delete a specific registration.
@@ -255,12 +279,15 @@ pub async fn delete_registration(
         .as_ref()
         .ok_or_else(|| ApiError::NotFound("Registrar not enabled".to_string()))?;
 
-    if platform_wide(identity.as_ref().map(|ext| &ext.0), &headers) {
+    let tenant_id = if platform_wide(identity.as_ref().map(|ext| &ext.0), &headers) {
         storage.delete_registration(&aor, &contact).await?;
+        TenantId::nil()
     } else {
         storage
             .delete_registration_in_tenant(&tenant.0, &aor, &contact)
             .await?;
-    }
+        tenant.0
+    };
+    announce_removed(&state, tenant_id, &aor, &contact).await;
     Ok(StatusCode::NO_CONTENT)
 }

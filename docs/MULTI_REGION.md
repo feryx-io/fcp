@@ -47,6 +47,11 @@ encryption keys, presence, queue runtime state, webhooks and delivery
 logs, voicemail, porting, API tokens, provisioning tokens, audit logs, the
 config store's version and audit reads, E911, compliance, traces.
 
+Registrations are read from the primary but no longer on every call: the
+call manager keeps each lookup for `[registrar] cache_ttl_secs` and
+forgets an address when a registration event says it changed
+(`docs/MULTI_REGION_FOLLOWUPS.md` §2.1).
+
 ### Read-after-write
 
 For `max_replica_lag_secs` after a backend instance writes, its own reads

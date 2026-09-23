@@ -519,6 +519,20 @@ bytes were not counted at all and neither was on `/metrics`. Both are now,
 per peer region, with bytes recorded when a batch lands rather than when
 it is queued, so a retried batch does not make the number bigger the worse
 the link is. Nothing changed behaviour.
+Phase 2 done (v0.25.232): the registration cache. The call manager keeps
+each registration lookup — empty answers too, which is most of what an
+alias costs — for `[registrar] cache_ttl_secs` (default 30, zero is off),
+invalidated by its own REGISTERs and deregistrations as the store takes
+them and by other nodes' registration events (the admin API's removals now
+publish one), with a generation on each entry so a lookup that raced a
+write cannot put the old rows back. A repeat call within the TTL costs
+**0 round trips**, where phase 1 measured 2, and 6 with two aliases; the
+first call after a REGISTER still pays. `/status` shows the cache and
+`registration_reads.cached`, `/metrics` `fcp_registration_cache_hits_total`.
+A standalone `fcp-registrar` publishes no events, so behind one a new
+registration reaches a call manager within the TTL. Whether this closes
+§2.1 depends on how much traffic is repeat lookups — the decision point,
+with hits against round trips on `/metrics` as its evidence.
 
 ## Historical documents
 
