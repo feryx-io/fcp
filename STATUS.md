@@ -659,6 +659,23 @@ and `fcp_replica_probe_age_seconds` on `/metrics` where a binary has one.
 The deployment guide's alerts gain "a region reads from the primary" and
 "a replica probe is stuck". The media server is left out: its HTTP is
 forge-media's, and its database is a config store read at startup.
+Phase 6 done (v0.25.241): a trunk's hosts are a failover list. An
+outbound INVITE went to a trunk's first host only, while the probe
+passed if any host answered, so a trunk whose first host was dead read
+healthy while every call to it failed — and the deployment guide's
+advice to list every carrier address in `hosts` bought nothing. Now one
+parser (`fcp_core::trunk::TrunkHost`) reads every host the same way —
+`host`, `host:port`, `[v6]:port` — and the API refuses what it cannot
+read; a trunk yields one route per host in the order written, each on
+its own port or the trunk's, with the hosts this node's last probe found
+down after the rest, and the ordered resolver walks every host of a
+trunk before the next trunk; the probe asks every host and keeps each
+answer, shown as `hosts_down` on the trunk report; `transport_port` is
+nullable (migration 077), unset meaning the transport's default, so a
+TLS trunk is on 5061 in the database, the API and both probes, and the
+TLS trunks stored on 5060 by the old default are unset; the admin-side
+probe says it is UDP. Proved on the floor: one trunk with two hosts, the
+first refusing, the second answering, the other trunk never rung.
 
 ## Historical documents
 

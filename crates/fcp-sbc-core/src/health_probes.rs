@@ -53,7 +53,7 @@ pub async fn run_health_probes(
                 continue;
             }
 
-            let success = probe_trunk_hosts(&uac, trunk).await;
+            let success = probe_trunk_hosts(&uac, trunk, &monitor).await;
             monitor.mark_probed(&key);
 
             let was = if success {
@@ -72,38 +72,57 @@ pub async fn run_health_probes(
     }
 }
 
-/// Probe a trunk by sending OPTIONS to each host in order.
-/// Returns true on the first response indicating reachability: 2xx (success)
-/// or 401/407 (auth required — trunk is alive but demanding credentials).
-async fn probe_trunk_hosts(uac: &SipUserAgentClient, trunk: &TrunkConfig) -> bool {
+/// Probe a trunk by sending OPTIONS to every host, each on its own port
+/// or the trunk's. The trunk is up if any host answered — 2xx, or 401/407
+/// (alive, wanting credentials) — and each host's answer is kept on the
+/// monitor, so a call tries the hosts that answered first
+/// (`docs/DEPLOYMENT_GAPS.md` §1.8).
+async fn probe_trunk_hosts(
+    uac: &SipUserAgentClient,
+    trunk: &TrunkConfig,
+    monitor: &TrunkHealthMonitor,
+) -> bool {
     let transport = map_transport(trunk.transport.protocol);
-    let default_port = trunk.transport.protocol.default_port();
+    let key = trunk.key();
+    let mut any = false;
 
-    for host in &trunk.hosts {
+    for entry in &trunk.hosts {
+        let Ok(host) = fcp_core::trunk::TrunkHost::parse(entry) else {
+            debug!(trunk = %trunk.name, host = %entry, "Trunk host does not parse; not probed");
+            continue;
+        };
         let target = DnsTarget::unchecked_new(
-            host.as_str(),
-            trunk.transport.port.unwrap_or(default_port),
+            host.host.as_str(),
+            host.port_or(&trunk.transport),
             transport,
         );
 
-        match tokio::time::timeout(Duration::from_secs(5), uac.inner().ping_options(target)).await {
-            Ok(Ok(response)) => {
-                let code = response.code();
-                // 2xx = success, 401/407 = trunk is reachable but requires auth
-                if (200..300).contains(&code) || code == 401 || code == 407 {
-                    return true;
+        let up =
+            match tokio::time::timeout(Duration::from_secs(5), uac.inner().ping_options(target))
+                .await
+            {
+                Ok(Ok(response)) => {
+                    let code = response.code();
+                    // 2xx = success, 401/407 = trunk is reachable but requires auth
+                    let up = (200..300).contains(&code) || code == 401 || code == 407;
+                    if !up {
+                        debug!(host = %entry, code, "OPTIONS probe got non-success response");
+                    }
+                    up
                 }
-                debug!(host = %host, code, "OPTIONS probe got non-success response");
-            }
-            Ok(Err(e)) => {
-                debug!(host = %host, error = %e, "OPTIONS probe error");
-            }
-            Err(_) => {
-                debug!(host = %host, "OPTIONS probe timed out (5s)");
-            }
-        }
+                Ok(Err(e)) => {
+                    debug!(host = %entry, error = %e, "OPTIONS probe error");
+                    false
+                }
+                Err(_) => {
+                    debug!(host = %entry, "OPTIONS probe timed out (5s)");
+                    false
+                }
+            };
+        monitor.record_host(&key, entry, up);
+        any |= up;
     }
-    false
+    any
 }
 
 fn map_transport(t: TransportType) -> DnsTransport {

@@ -709,12 +709,28 @@ impl TrunkRouter {
         Some(chosen)
     }
 
-    /// Build an OutboundRoute from a trunk and destination URI.
+    /// The first of a trunk's routes for `destination_uri`.
     fn build_outbound_route(
         &self,
         trunk: &Arc<TrunkConfig>,
         destination_uri: &str,
     ) -> Option<OutboundRoute> {
+        self.build_outbound_routes(trunk, destination_uri)
+            .into_iter()
+            .next()
+    }
+
+    /// A trunk's routes for `destination_uri`, in the order a call tries
+    /// them: the outbound proxy alone when the trunk has one, else one
+    /// route per host in the order `hosts` lists them, with the hosts this
+    /// node's last probe found down moved after the rest
+    /// (`docs/DEPLOYMENT_GAPS.md` §1.8). A route whose INVITE fails gives
+    /// way to the next; the next trunk comes after every host of this one.
+    fn build_outbound_routes(
+        &self,
+        trunk: &Arc<TrunkConfig>,
+        destination_uri: &str,
+    ) -> Vec<OutboundRoute> {
         // Extract user part from destination URI
         let user_part = destination_uri
             .strip_prefix("sip:")
@@ -736,26 +752,48 @@ impl TrunkRouter {
         // one, else its own hosts (`docs/TENANT_TRUNKS.md` §6). A proxy is
         // given as a host, `host:port`, or a whole SIP URI; the dialled
         // number stays the user part, as the proxy routes by it.
-        let (host, port) = match trunk.outbound_proxy.as_deref().map(str::trim) {
-            Some(proxy) if !proxy.is_empty() => proxy_host_port(proxy, trunk),
-            _ => (
-                trunk.hosts.first()?.clone(),
-                trunk
-                    .transport
-                    .port
-                    .unwrap_or_else(|| trunk.transport.protocol.default_port()),
-            ),
+        let targets = match trunk.outbound_proxy.as_deref().map(str::trim) {
+            Some(proxy) if !proxy.is_empty() => vec![proxy_host_port(proxy, trunk)],
+            _ => {
+                let key = trunk.key();
+                host_targets(trunk, |host| self.health.host_is_down(&key, host))
+            }
         };
         let transport_param = match trunk.transport.protocol {
             fcp_core::transport::TransportType::Udp => String::new(),
             other => format!(";transport={}", other.as_str()),
         };
 
-        Some(OutboundRoute {
-            target_uri: format!("sip:{}@{}:{}{}", user_part, host, port, transport_param),
-            trunk: Some(Arc::clone(trunk)),
-        })
+        targets
+            .into_iter()
+            .map(|(host, port)| OutboundRoute {
+                target_uri: format!("sip:{}@{}:{}{}", user_part, host, port, transport_param),
+                trunk: Some(Arc::clone(trunk)),
+            })
+            .collect()
     }
+}
+
+/// A trunk's hosts as dial targets, in order: as `hosts` lists them, each
+/// on its own port or the trunk's, with the hosts `is_down` names (by the
+/// entry as written) after the rest. An entry that does not parse is
+/// skipped — validation refuses it before it is stored, so this is a
+/// `[[trunks]]` typo.
+pub fn host_targets(trunk: &TrunkConfig, is_down: impl Fn(&str) -> bool) -> Vec<(String, u16)> {
+    let parsed: Vec<(&str, fcp_core::trunk::TrunkHost)> = trunk
+        .hosts
+        .iter()
+        .filter_map(|entry| {
+            fcp_core::trunk::TrunkHost::parse(entry)
+                .ok()
+                .map(|h| (entry.as_str(), h))
+        })
+        .collect();
+    let (down, up): (Vec<_>, Vec<_>) = parsed.into_iter().partition(|(entry, _)| is_down(entry));
+    up.into_iter()
+        .chain(down)
+        .map(|(_, h)| (h.uri_host(), h.port_or(&trunk.transport)))
+        .collect()
 }
 
 /// The host and port an outbound proxy names. A proxy may be written as a
@@ -768,10 +806,7 @@ fn proxy_host_port(proxy: &str, trunk: &TrunkConfig) -> (String, u16) {
         .unwrap_or(proxy);
     let proxy = proxy.rsplit('@').next().unwrap_or(proxy);
     let proxy = proxy.split(';').next().unwrap_or(proxy).trim();
-    let default_port = trunk
-        .transport
-        .port
-        .unwrap_or_else(|| trunk.transport.protocol.default_port());
+    let default_port = trunk.transport.effective_port();
     // An IPv6 literal keeps its brackets; its port is what follows them.
     if let Some(rest) = proxy.strip_prefix('[') {
         return match rest.split_once("]:") {
@@ -884,9 +919,10 @@ impl OutboundRouteProvider for TrunkRouter {
         destination_uri: &str,
     ) -> Vec<OutboundRoute> {
         let trunks = self.select_trunks_ordered(tenant, TrunkDirection::Upstream, destination_uri);
+        // Every host of a trunk before the next trunk.
         let routes: Vec<OutboundRoute> = trunks
             .iter()
-            .filter_map(|trunk| self.build_outbound_route(trunk, destination_uri))
+            .flat_map(|trunk| self.build_outbound_routes(trunk, destination_uri))
             .collect();
 
         // Account only the primary route. Previously every failover candidate
@@ -1002,6 +1038,75 @@ mod tests {
     fn make_quality(names: &[&str]) -> Arc<TrunkQualityTracker> {
         let names: Vec<String> = names.iter().map(|s| s.to_string()).collect();
         Arc::new(TrunkQualityTracker::new(&names, 3600))
+    }
+
+    #[test]
+    fn a_trunks_hosts_are_targets_in_order_with_the_down_ones_last() {
+        let mut trunk = make_trunk("carrier", 1, 100, TrunkDirection::Upstream);
+        trunk.hosts = vec![
+            "a.carrier.example".into(),
+            "b.carrier.example:5080".into(),
+            "[2001:db8::1]".into(),
+        ];
+        trunk.transport.protocol = fcp_core::transport::TransportType::Tls;
+        trunk.transport.port = None;
+        let targets = host_targets(&trunk, |_| false);
+        assert_eq!(
+            targets,
+            vec![
+                ("a.carrier.example".to_string(), 5061),
+                ("b.carrier.example".to_string(), 5080),
+                ("[2001:db8::1]".to_string(), 5061),
+            ]
+        );
+        // The first host is down: it is tried last, the rest keep their order.
+        let targets = host_targets(&trunk, |h| h == "a.carrier.example");
+        assert_eq!(
+            targets.iter().map(|(h, _)| h.as_str()).collect::<Vec<_>>(),
+            vec!["b.carrier.example", "[2001:db8::1]", "a.carrier.example"]
+        );
+        // An explicit trunk port applies to the hosts without one.
+        trunk.transport.port = Some(5062);
+        let targets = host_targets(&trunk, |_| false);
+        assert_eq!(targets[0].1, 5062);
+        assert_eq!(targets[1].1, 5080);
+    }
+
+    #[tokio::test]
+    async fn a_trunks_routes_are_one_per_host_in_order() {
+        let mut first = make_trunk("first", 1, 100, TrunkDirection::Upstream);
+        first.hosts = vec!["a.first.example".into(), "b.first.example".into()];
+        let set = Arc::new(TrunkSet::platform_only(vec![first.clone()]));
+        let health = Arc::new(TrunkHealthMonitor::new(&[]));
+        health.track(&set.all());
+        let router = TrunkRouter::with_trunk_set(set, Arc::clone(&health), no_cps());
+        let routes = router
+            .resolve_outbound_ordered(None, "sip:+15125550100@example.com")
+            .await;
+        let targets: Vec<&str> = routes.iter().map(|r| r.target_uri.as_str()).collect();
+        assert_eq!(
+            targets,
+            vec![
+                "sip:+15125550100@a.first.example:5060",
+                "sip:+15125550100@b.first.example:5060",
+            ]
+        );
+        assert!(routes
+            .iter()
+            .all(|r| r.trunk_name().as_deref() == Some("first")));
+        // The first host is down: the second leads, the first is still tried.
+        health.record_host(&first.key(), "a.first.example", false);
+        let routes = router
+            .resolve_outbound_ordered(None, "sip:+15125550100@example.com")
+            .await;
+        assert_eq!(
+            routes[0].target_uri,
+            "sip:+15125550100@b.first.example:5060"
+        );
+        assert_eq!(
+            routes[1].target_uri,
+            "sip:+15125550100@a.first.example:5060"
+        );
     }
 
     #[test]

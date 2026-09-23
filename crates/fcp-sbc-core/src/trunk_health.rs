@@ -31,6 +31,10 @@ struct TrunkHealthState {
 /// and the admin API use take a name and resolve it.
 pub struct TrunkHealthMonitor {
     state: DashMap<String, TrunkHealthState>,
+    /// Per trunk key, the hosts the last probe found down. A trunk's
+    /// health is the trunk's; which of its hosts to try first is this
+    /// (`docs/DEPLOYMENT_GAPS.md` §1.8).
+    hosts_down: DashMap<String, std::collections::BTreeSet<String>>,
     /// Trunks that have been administratively disabled via the admin API,
     /// by key.
     admin_disabled: DashSet<String>,
@@ -63,9 +67,38 @@ impl TrunkHealthMonitor {
         }
         Self {
             state,
+            hosts_down: DashMap::new(),
             admin_disabled: DashSet::new(),
             keys_by_name,
         }
+    }
+
+    /// What the probe found for one host of a trunk: `up` clears it, else
+    /// it is tried after the hosts that answered.
+    pub fn record_host(&self, trunk: &str, host: &str, up: bool) {
+        let key = self.key_of(trunk);
+        let mut down = self.hosts_down.entry(key).or_default();
+        if up {
+            down.remove(host);
+        } else {
+            down.insert(host.to_string());
+        }
+    }
+
+    /// The hosts of `trunk` the last probe found down, as written in the
+    /// trunk's `hosts`.
+    pub fn hosts_down(&self, trunk: &str) -> Vec<String> {
+        self.hosts_down
+            .get(&self.key_of(trunk))
+            .map(|d| d.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// Whether the last probe found `host` of `trunk` down.
+    pub fn host_is_down(&self, trunk: &str, host: &str) -> bool {
+        self.hosts_down
+            .get(&self.key_of(trunk))
+            .is_some_and(|d| d.contains(host))
     }
 
     /// Start watching trunks this monitor has not seen — the tenants'
@@ -745,5 +778,29 @@ mod tests {
         assert!(monitor.is_admin_disabled("carrier-a"));
         monitor.admin_enable("carrier-a");
         assert!(!monitor.is_admin_disabled("carrier-a"));
+    }
+}
+
+#[cfg(test)]
+mod host_tests {
+    use super::*;
+
+    #[test]
+    fn a_host_found_down_is_remembered_until_it_answers() {
+        let trunk = TrunkConfig {
+            name: "carrier".into(),
+            hosts: vec!["a".into(), "b".into()],
+            ..Default::default()
+        };
+        let monitor = TrunkHealthMonitor::new(std::slice::from_ref(&trunk));
+        let key = trunk.key();
+        assert!(monitor.hosts_down(&key).is_empty());
+        monitor.record_host(&key, "a", false);
+        monitor.record_host(&key, "b", true);
+        assert_eq!(monitor.hosts_down(&key), vec!["a".to_string()]);
+        assert!(monitor.host_is_down(&key, "a"));
+        assert!(!monitor.host_is_down(&key, "b"));
+        monitor.record_host(&key, "a", true);
+        assert!(monitor.hosts_down(&key).is_empty());
     }
 }

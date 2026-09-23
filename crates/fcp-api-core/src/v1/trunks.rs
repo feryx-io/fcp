@@ -100,7 +100,7 @@ impl From<Trunk> for TrunkResponse {
             // The JSON this API has always answered with, from the one
             // trunk model (`docs/TENANT_TRUNKS.md` §4).
             transport_protocol: t.transport.protocol.to_string().to_lowercase(),
-            transport_port: t.transport.port.unwrap_or(5060) as i32,
+            transport_port: t.transport.effective_port() as i32,
             verify_tls: t.transport.verify_tls,
             has_credentials: t.credentials.is_some(),
             auth_username: t.credentials.as_ref().map(|c| c.username.clone()),
@@ -415,6 +415,18 @@ fn apply_trunk_fields(trunk: &mut Trunk, fields: TrunkFields) -> Result<(), ApiE
         trunk.weight = weight.max(0) as u32;
     }
     if let Some(hosts) = fields.hosts {
+        // Each entry read the one way every trunk host is — `host`,
+        // `host:port`, `[v6]:port` — and refused otherwise, so a typo is a
+        // 400 here rather than a call that goes nowhere.
+        let hosts: Vec<String> = hosts
+            .into_iter()
+            .map(|h| h.trim().to_string())
+            .filter(|h| !h.is_empty())
+            .collect();
+        for host in &hosts {
+            fcp_core::trunk::TrunkHost::parse(host)
+                .map_err(|e| ApiError::BadRequest(format!("hosts: {e}")))?;
+        }
         trunk.hosts = hosts;
     }
     if let Some(sources) = fields.inbound_sources {
@@ -866,6 +878,7 @@ mod node_view_tests {
 
     fn view(trunk_id: &str, health: &str, routable: bool, calls: u64) -> TrunkNodeView {
         TrunkNodeView {
+            hosts_down: Vec::new(),
             node_id: None,
             trunk_id: trunk_id.to_string(),
             name: "carrier-a".to_string(),

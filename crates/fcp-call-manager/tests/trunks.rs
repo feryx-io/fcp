@@ -1861,6 +1861,84 @@ async fn a_calls_trunk_routes_are_tried_one_at_a_time() {
     stack.finish().await;
 }
 
+/// A trunk's `hosts` are a failover list (`docs/DEPLOYMENT_GAPS.md` §1.8):
+/// a call tries them in order, each on its own port, and a host that
+/// fails gives way to the next host of the same trunk — the second trunk
+/// is not consulted while the first still has a host to try. Every leg
+/// is recorded under the one trunk.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_trunks_hosts_are_tried_in_order_before_the_next_trunk() {
+    let primary = Carrier::new("carrier-primary").await;
+    let secondary = Carrier::new("carrier-secondary").await;
+    let other = Carrier::new("other-carrier").await;
+    let mut stack = stack_or_skip!(&[]);
+
+    let acme = stack.seed.tenant_id;
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let trunk_id = stack
+        .seed
+        .trunk_with(acme, "two-host-carrier", primary.port(), |t| {
+            t.priority = 1;
+            // Two hosts of one carrier, each naming its own port.
+            t.hosts = vec![
+                format!("127.0.0.1:{}", primary.port()),
+                format!("127.0.0.1:{}", secondary.port()),
+            ];
+            t.transport.port = None;
+        })
+        .await;
+    stack
+        .seed
+        .trunk_with(acme, other.name, other.port(), |t| t.priority = 2)
+        .await;
+    tokio::time::sleep(REFRESHED).await;
+    let alice_phone = stack.phone(&alice).await;
+
+    // The first host fails: the second host takes the call, and the
+    // other trunk never hears of it.
+    let call = alice_phone.call("+15125550100").await.unwrap();
+    let Some(incoming) = primary.phone.incoming(SOON).await else {
+        let why = format!("the first host never rang; the call is {:?}", call.phase());
+        stack.fail(&why).await;
+    };
+    assert!(
+        incoming
+            .request_uri()
+            .contains(&format!("127.0.0.1:{}", primary.port())),
+        "{}",
+        incoming.request_uri()
+    );
+    incoming.reject(503, "Service Unavailable").await.unwrap();
+    let Some(incoming) = secondary.phone.incoming(SOON).await else {
+        let why = format!(
+            "the second host never rang after the first failed; the call is {:?}",
+            call.phase()
+        );
+        stack.fail(&why).await;
+    };
+    assert!(
+        incoming
+            .request_uri()
+            .contains(&format!("127.0.0.1:{}", secondary.port())),
+        "{}",
+        incoming.request_uri()
+    );
+    assert!(
+        other.phone.incoming(NEVER).await.is_none(),
+        "the other trunk rang while the first trunk still had a host"
+    );
+    let leg = incoming.answer().await.unwrap();
+    call.answered(SOON).await.unwrap();
+    assert_eq!(call.hangup().await.unwrap(), 200);
+    assert!(leg.ended(SOON).await);
+
+    // The record names the trunk, not the host that answered.
+    let records = stack.seed.cdrs(None, 1, SOON).await;
+    assert_eq!(records[0].trunk_id, Some(trunk_id), "{records:#?}");
+
+    stack.finish().await;
+}
+
 /// A tenant's least-cost routes send the numbers they price out on the
 /// cheapest of its trunks, and a number they do not price takes the
 /// ordinary choice; when the cheapest carrier refuses, the next one by
