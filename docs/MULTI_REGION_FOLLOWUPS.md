@@ -1,8 +1,9 @@
 # Multi-Region — the leftovers
 
-Status: **agreed** (2026-09-22), survey done, all four questions settled
-by the user; **phase 1 done** (v0.25.231). Chosen after the edge security
-project closed.
+Status: **complete** (2026-09-23). Agreed 2026-09-22, survey done, all
+four questions settled by the user; phases 1–4 done (v0.25.231–234); the
+decision point in §5 closed in favour of the cache. Chosen after the edge
+security project closed.
 
 `docs/MULTI_REGION.md` shipped three things in v0.25.86–88 and was honest
 about what it left: each of its sections ends with a **Not covered**
@@ -331,6 +332,23 @@ a cross-region lookup for the calls that need it, and the same backend
 choice for the standalone registrar and SBC) becomes its own project with
 its own design. If it does close it, §2.1 is finished and that project is
 never written.
+
+**Decided 2026-09-23: the cache closes §2.1; the regional project is not
+written.** The evidence on the table: a cold two-party setup pays two
+primary round trips (six with two aliases), a repeat within the TTL pays
+none, and the share of lookups the cache saves is a ratio on `/metrics`
+that only a running deployment can produce
+(`docs/MULTI_REGION_DEPLOYMENT.md` §5 gives the query). Phase 4 made the
+alternative larger than the survey priced it: a call manager has one
+Redis, so regional registrations would need a second Redis on the call
+manager, a backend choice on `fcp-registrar` and `fcp-sbc`, and a
+cross-region lookup for callees registered elsewhere. That is a
+multi-phase project resting on an estimate, against a cache whose worst
+case is one round trip per cold party, bounded by the TTL. If a
+deployment's ratio says the cache is not saving enough, this paragraph is
+where the project starts; until then §2.1 is finished. What follows the
+multi-region leftovers is the list of gaps the deployment guide found
+(`docs/MULTI_REGION_DEPLOYMENT.md` §8), as its own project.
 
 ## 6. Testing
 
