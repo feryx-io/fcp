@@ -1406,10 +1406,16 @@ impl FlowCallHandler {
 
         // Phase 2: Send INVITE and handle responses
 
-        // Parse destination address for TransportContext
-        // Phase 5: Integrate sip-dns crate for RFC 3263 NAPTR/SRV/A resolution
+        // Where the INVITE goes: the route's target, which the trunk
+        // router built with an explicit port — an RFC 3263 target where
+        // the host was given by name (`docs/DEPLOYMENT_GAPS.md` §1.8) —
+        // over the transport the URI names.
+        let transport_kind = transport_of(dest_uri);
         let host = dest_uri.host();
-        let port = dest_uri.port().unwrap_or(5060);
+        let port = dest_uri.port().unwrap_or(match transport_kind {
+            sip_transaction::fsm::TransportKind::Tls => 5061,
+            _ => 5060,
+        });
 
         // For MVP, resolve host to IP address using basic DNS lookup
         let peer_addr: SocketAddr = match tokio::net::lookup_host(format!("{}:{}", host, port))
@@ -1443,12 +1449,12 @@ impl FlowCallHandler {
             "Resolved B-leg destination address"
         );
 
-        // Create transport context (MVP: use UDP)
-        // Phase 5: Parse URI transport param or scheme to select TCP/TLS
-        let ctx = TransportContext::new(
-            sip_transaction::fsm::TransportKind::Udp,
-            peer_addr,
-            None, // No TCP/TLS stream for UDP
+        // TCP and TLS without a stream go through the transport pool.
+        let ctx = TransportContext::new(transport_kind, peer_addr, None).with_server_name(
+            match transport_kind {
+                sip_transaction::fsm::TransportKind::Tls => Some(host.to_string()),
+                _ => None,
+            },
         );
 
         // Create channels for response handling
@@ -4101,5 +4107,54 @@ mod tests {
 
         let no_route = handler.get_flow_for_did("+15559999999").await;
         assert_eq!(no_route, None);
+    }
+}
+
+/// The transport a SIP URI names: `sips:` is TLS, else its `transport`
+/// parameter, else UDP.
+pub(crate) fn transport_of(uri: &sip_core::SipUri) -> sip_transaction::fsm::TransportKind {
+    use sip_transaction::fsm::TransportKind;
+    if uri.is_sips() {
+        return TransportKind::Tls;
+    }
+    match uri
+        .params()
+        .get(&smol_str::SmolStr::new("transport"))
+        .and_then(|v| v.as_ref())
+        .map(|v| v.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("tcp") => TransportKind::Tcp,
+        Some("tls") => TransportKind::Tls,
+        Some("ws") => TransportKind::Ws,
+        Some("wss") => TransportKind::Wss,
+        _ => TransportKind::Udp,
+    }
+}
+
+#[cfg(test)]
+mod transport_of_tests {
+    use super::transport_of;
+    use sip_transaction::fsm::TransportKind;
+
+    #[test]
+    fn the_uri_names_its_transport() {
+        let uri = |s: &str| sip_core::SipUri::parse(s).unwrap();
+        assert_eq!(
+            transport_of(&uri("sip:+1@10.0.0.1:5060")),
+            TransportKind::Udp
+        );
+        assert_eq!(
+            transport_of(&uri("sip:+1@10.0.0.1:5060;transport=tcp")),
+            TransportKind::Tcp
+        );
+        assert_eq!(
+            transport_of(&uri("sip:+1@carrier.example:5061;transport=tls")),
+            TransportKind::Tls
+        );
+        assert_eq!(
+            transport_of(&uri("sips:+1@carrier.example")),
+            TransportKind::Tls
+        );
     }
 }

@@ -756,7 +756,11 @@ impl TrunkRouter {
             Some(proxy) if !proxy.is_empty() => vec![proxy_host_port(proxy, trunk)],
             _ => {
                 let key = trunk.key();
-                host_targets(trunk, |host| self.health.host_is_down(&key, host))
+                host_targets(
+                    trunk,
+                    |target| self.health.host_is_down(&key, target),
+                    |name, transport| self.trunks.srv_targets(name, transport),
+                )
             }
         };
         let transport_param = match trunk.transport.protocol {
@@ -774,26 +778,52 @@ impl TrunkRouter {
     }
 }
 
-/// A trunk's hosts as dial targets, in order: as `hosts` lists them, each
-/// on its own port or the trunk's, with the hosts `is_down` names (by the
-/// entry as written) after the rest. An entry that does not parse is
-/// skipped — validation refuses it before it is stored, so this is a
-/// `[[trunks]]` typo.
-pub fn host_targets(trunk: &TrunkConfig, is_down: impl Fn(&str) -> bool) -> Vec<(String, u16)> {
-    let parsed: Vec<(&str, fcp_core::trunk::TrunkHost)> = trunk
-        .hosts
-        .iter()
-        .filter_map(|entry| {
-            fcp_core::trunk::TrunkHost::parse(entry)
-                .ok()
-                .map(|h| (entry.as_str(), h))
-        })
-        .collect();
-    let (down, up): (Vec<_>, Vec<_>) = parsed.into_iter().partition(|(entry, _)| is_down(entry));
-    up.into_iter()
-        .chain(down)
-        .map(|(_, h)| (h.uri_host(), h.port_or(&trunk.transport)))
-        .collect()
+/// A trunk's hosts as dial targets, in order: as `hosts` lists them,
+/// each host given by name with no port expanded to what RFC 3263 said
+/// it resolves to at the last refresh (`srv`, its SRV targets in priority
+/// order, or its addresses), every other host on its own port or the
+/// trunk's, with the targets `is_down` names — by `host:port` as
+/// [`target_key`] writes it — after the rest. An entry that does not
+/// parse is skipped — validation refuses it before it is stored, so this
+/// is a `[[trunks]]` typo.
+pub fn host_targets(
+    trunk: &TrunkConfig,
+    is_down: impl Fn(&str) -> bool,
+    srv: impl Fn(&str, fcp_core::transport::TransportType) -> Option<Vec<(String, u16)>>,
+) -> Vec<(String, u16)> {
+    let mut targets: Vec<(String, u16)> = Vec::new();
+    for entry in &trunk.hosts {
+        let Ok(host) = fcp_core::trunk::TrunkHost::parse(entry) else {
+            continue;
+        };
+        let is_name = host.host.parse::<std::net::IpAddr>().is_err();
+        match (host.port, is_name) {
+            (None, true) => match srv(&host.host, trunk.transport.protocol) {
+                Some(resolved) if !resolved.is_empty() => {
+                    targets.extend(resolved.into_iter().map(|(h, p)| {
+                        let h = if h.contains(':') && !h.starts_with('[') {
+                            format!("[{h}]")
+                        } else {
+                            h
+                        };
+                        (h, p)
+                    }));
+                }
+                _ => targets.push((host.uri_host(), host.port_or(&trunk.transport))),
+            },
+            _ => targets.push((host.uri_host(), host.port_or(&trunk.transport))),
+        }
+    }
+    let (down, up): (Vec<_>, Vec<_>) = targets
+        .into_iter()
+        .partition(|(h, p)| is_down(&target_key(h, *p)));
+    up.into_iter().chain(down).collect()
+}
+
+/// How a dial target is named where its health is kept: `host:port`, the
+/// host as a URI writes it.
+pub fn target_key(host: &str, port: u16) -> String {
+    format!("{host}:{port}")
 }
 
 /// The host and port an outbound proxy names. A proxy may be written as a
@@ -1050,7 +1080,8 @@ mod tests {
         ];
         trunk.transport.protocol = fcp_core::transport::TransportType::Tls;
         trunk.transport.port = None;
-        let targets = host_targets(&trunk, |_| false);
+        let no_srv = |_: &str, _: fcp_core::transport::TransportType| None;
+        let targets = host_targets(&trunk, |_| false, no_srv);
         assert_eq!(
             targets,
             vec![
@@ -1060,16 +1091,48 @@ mod tests {
             ]
         );
         // The first host is down: it is tried last, the rest keep their order.
-        let targets = host_targets(&trunk, |h| h == "a.carrier.example");
+        let targets = host_targets(&trunk, |t| t == "a.carrier.example:5061", no_srv);
         assert_eq!(
             targets.iter().map(|(h, _)| h.as_str()).collect::<Vec<_>>(),
             vec!["b.carrier.example", "[2001:db8::1]", "a.carrier.example"]
         );
         // An explicit trunk port applies to the hosts without one.
         trunk.transport.port = Some(5062);
-        let targets = host_targets(&trunk, |_| false);
+        let targets = host_targets(&trunk, |_| false, no_srv);
         assert_eq!(targets[0].1, 5062);
         assert_eq!(targets[1].1, 5080);
+    }
+
+    #[test]
+    fn a_host_given_by_name_with_no_port_is_every_target_rfc_3263_gave_it() {
+        let mut trunk = make_trunk("carrier", 1, 100, TrunkDirection::Upstream);
+        trunk.hosts = vec!["sip.carrier.example".into(), "10.0.0.9:5080".into()];
+        let srv = |name: &str, _: fcp_core::transport::TransportType| {
+            (name == "sip.carrier.example").then(|| {
+                vec![
+                    ("edge1.carrier.example".to_string(), 5062),
+                    ("edge2.carrier.example".to_string(), 5062),
+                ]
+            })
+        };
+        let targets = host_targets(&trunk, |_| false, srv);
+        assert_eq!(
+            targets,
+            vec![
+                ("edge1.carrier.example".to_string(), 5062),
+                ("edge2.carrier.example".to_string(), 5062),
+                ("10.0.0.9".to_string(), 5080),
+            ]
+        );
+        // One SRV target down: the other leads, the explicit host after.
+        let targets = host_targets(&trunk, |t| t == "edge1.carrier.example:5062", srv);
+        assert_eq!(
+            targets.iter().map(|(h, _)| h.as_str()).collect::<Vec<_>>(),
+            vec!["edge2.carrier.example", "10.0.0.9", "edge1.carrier.example"]
+        );
+        // Not resolved: the name itself on the default port.
+        let targets = host_targets(&trunk, |_| false, |_, _| None);
+        assert_eq!(targets[0], ("sip.carrier.example".to_string(), 5060));
     }
 
     #[tokio::test]
@@ -1095,7 +1158,7 @@ mod tests {
             .iter()
             .all(|r| r.trunk_name().as_deref() == Some("first")));
         // The first host is down: the second leads, the first is still tried.
-        health.record_host(&first.key(), "a.first.example", false);
+        health.record_host(&first.key(), "a.first.example:5060", false);
         let routes = router
             .resolve_outbound_ordered(None, "sip:+15125550100@example.com")
             .await;

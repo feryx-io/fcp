@@ -53,7 +53,7 @@ pub async fn run_health_probes(
                 continue;
             }
 
-            let success = probe_trunk_hosts(&uac, trunk, &monitor).await;
+            let success = probe_trunk_hosts(&uac, trunk, &monitor, &trunks).await;
             monitor.mark_probed(&key);
 
             let was = if success {
@@ -72,54 +72,57 @@ pub async fn run_health_probes(
     }
 }
 
-/// Probe a trunk by sending OPTIONS to every host, each on its own port
-/// or the trunk's. The trunk is up if any host answered — 2xx, or 401/407
-/// (alive, wanting credentials) — and each host's answer is kept on the
-/// monitor, so a call tries the hosts that answered first
+/// Probe a trunk by sending OPTIONS to every dial target — the hosts as
+/// a call would dial them, RFC 3263 targets included, each on its own
+/// port or the trunk's. The trunk is up if any target answered — 2xx, or
+/// 401/407 (alive, wanting credentials) — and each target's answer is
+/// kept on the monitor, so a call tries the targets that answered first
 /// (`docs/DEPLOYMENT_GAPS.md` §1.8).
 async fn probe_trunk_hosts(
     uac: &SipUserAgentClient,
     trunk: &TrunkConfig,
     monitor: &TrunkHealthMonitor,
+    trunks: &TrunkSet,
 ) -> bool {
     let transport = map_transport(trunk.transport.protocol);
     let key = trunk.key();
     let mut any = false;
 
-    for entry in &trunk.hosts {
-        let Ok(host) = fcp_core::trunk::TrunkHost::parse(entry) else {
-            debug!(trunk = %trunk.name, host = %entry, "Trunk host does not parse; not probed");
-            continue;
-        };
-        let target = DnsTarget::unchecked_new(
-            host.host.as_str(),
-            host.port_or(&trunk.transport),
-            transport,
-        );
+    let targets = crate::trunk_router::host_targets(
+        trunk,
+        |_| false,
+        |name, transport| trunks.srv_targets(name, transport),
+    );
+    for (host, port) in targets {
+        let target_key = crate::trunk_router::target_key(&host, port);
+        let dns_host = host.trim_matches(['[', ']']);
+        let target = DnsTarget::unchecked_new(dns_host, port, transport);
 
-        let up =
-            match tokio::time::timeout(Duration::from_secs(5), uac.inner().ping_options(target))
-                .await
-            {
-                Ok(Ok(response)) => {
-                    let code = response.code();
-                    // 2xx = success, 401/407 = trunk is reachable but requires auth
-                    let up = (200..300).contains(&code) || code == 401 || code == 407;
-                    if !up {
-                        debug!(host = %entry, code, "OPTIONS probe got non-success response");
-                    }
-                    up
+        let up = match tokio::time::timeout(
+            Duration::from_secs(5),
+            uac.inner().ping_options(target),
+        )
+        .await
+        {
+            Ok(Ok(response)) => {
+                let code = response.code();
+                // 2xx = success, 401/407 = trunk is reachable but requires auth
+                let up = (200..300).contains(&code) || code == 401 || code == 407;
+                if !up {
+                    debug!(target = %target_key, code, "OPTIONS probe got non-success response");
                 }
-                Ok(Err(e)) => {
-                    debug!(host = %entry, error = %e, "OPTIONS probe error");
-                    false
-                }
-                Err(_) => {
-                    debug!(host = %entry, "OPTIONS probe timed out (5s)");
-                    false
-                }
-            };
-        monitor.record_host(&key, entry, up);
+                up
+            }
+            Ok(Err(e)) => {
+                debug!(target = %target_key, error = %e, "OPTIONS probe error");
+                false
+            }
+            Err(_) => {
+                debug!(target = %target_key, "OPTIONS probe timed out (5s)");
+                false
+            }
+        };
+        monitor.record_host(&key, &target_key, up);
         any |= up;
     }
     any

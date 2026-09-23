@@ -239,9 +239,11 @@ database and read the same in every region: for those there is no
 per-region preference, and the carrier's own routing decides. A
 trunk's `hosts` are a failover list — tried in order, each on its own
 port or the trunk's, the ones this node's probe found down last
-(v0.25.241) — so list every carrier address there. A trunk's target is
-still built with an explicit port, so RFC 3263 SRV lookup is not used
-for trunk INVITEs.
+(v0.25.241) — and a host given by name with no port is what RFC 3263
+says it is (v0.25.242): its SRV targets in priority order, or its
+addresses, each a route the call tries in turn, on the trunk's own
+transport. A carrier that publishes SRV records is one `hosts` entry,
+its name; every other carrier address is listed.
 
 ## 5. What a region away from the primary pays
 
@@ -384,9 +386,9 @@ keeps a handle it could ask for the replica's health.
   API serves.~~ Fixed (v0.25.238): the default is each backend kind's
   own route, the API's `/api/v1/health` needs no token, and the gateway
   probes in the background at `health_check_interval`.
-- **Trunk SRV**: trunk targets carry an explicit port, so SRV records for
-  a carrier are never consulted (§4.3). A trunk's hosts are a failover
-  list since v0.25.241; SRV is the next phase.
+- ~~Trunk SRV: SRV records for a carrier are never consulted.~~ Fixed
+  (v0.25.242): a host given by name with no port is resolved by RFC 3263
+  at each trunk refresh, and every target is a route (§4.3).
 - ~~`[events] redis_channel` and `redis_stream_key` on the call manager
   are parsed and ignored.~~ Fixed (v0.25.238): refused at startup, with
   the prefix named as the knob.

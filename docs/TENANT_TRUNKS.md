@@ -247,7 +247,12 @@ Applied on the leg that goes out on a trunk, in this order:
    its own port (`host:port`) or the trunk's — unset, the transport's
    default, 5061 for TLS — with the hosts this node's last probe found
    down tried after the rest; a host that fails gives way to the next
-   host before the next trunk is consulted.
+   host before the next trunk is consulted. A host given by name with no
+   port is what RFC 3263 says it is (v0.25.242): asked on the trunk's
+   transport at each refresh — NAPTR, SRV, then A/AAAA — its targets in
+   priority order are each a route, tried in turn like the hosts; a name
+   with no SRV records is its addresses on the default port. A host with
+   a port, or an address, is dialled as written (RFC 3263 §4.1).
 
 Inbound, the same trunk decides the tenant, the admission limits (CPS,
 concurrency) and which HMR rules run.

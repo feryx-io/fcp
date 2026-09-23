@@ -370,20 +370,29 @@ fn account_uri(trunk: &Trunk) -> Option<String> {
 ///
 /// Uses `sips:` for TLS transports and `sip:` otherwise. Only includes
 /// the port if it differs from the transport's default.
+/// The registrar a trunk registers at: its first host, with the port it
+/// names or the trunk's, and — when the port is the transport's default,
+/// so RFC 3263 is asked — the transport named, so the SRV service asked
+/// for is the trunk's own rather than TCP-then-UDP
+/// (`docs/DEPLOYMENT_GAPS.md` §1.8).
 fn build_registrar_uri(trunk: &Trunk) -> Option<String> {
-    let host = trunk.hosts.first()?;
-    let scheme = if trunk.transport.protocol == TransportType::Tls {
-        "sips"
-    } else {
-        "sip"
-    };
+    let host = fcp_core::trunk::TrunkHost::parse(trunk.hosts.first()?).ok()?;
     let default_port = trunk.transport.protocol.default_port();
-    let port = trunk.transport.port.unwrap_or(default_port);
-    if port == default_port {
-        Some(format!("{scheme}:{host}"))
-    } else {
-        Some(format!("{scheme}:{host}:{port}"))
+    let port = host.port_or(&trunk.transport);
+    let uri_host = host.uri_host();
+    if trunk.transport.protocol == TransportType::Tls {
+        return Some(if port == default_port {
+            format!("sips:{uri_host}")
+        } else {
+            format!("sips:{uri_host}:{port}")
+        });
     }
+    let transport = trunk.transport.protocol.as_str();
+    Some(if port == default_port {
+        format!("sip:{uri_host};transport={transport}")
+    } else {
+        format!("sip:{uri_host}:{port};transport={transport}")
+    })
 }
 
 /// What the registration loop needs beside the trunks themselves.
@@ -722,5 +731,42 @@ mod tests {
     fn alone_a_node_owns_what_it_loaded() {
         let alone = AloneOnThisNode;
         assert!(alone.registers("trunk-anything"));
+    }
+}
+
+#[cfg(test)]
+mod registrar_uri_tests {
+    use super::*;
+
+    #[test]
+    fn the_registrar_uri_names_the_transport_when_rfc_3263_is_asked() {
+        let mut trunk = Trunk {
+            name: "carrier".to_string(),
+            ..Default::default()
+        };
+        trunk.hosts = vec!["sip.carrier.example".to_string()];
+        trunk.transport.protocol = TransportType::Udp;
+        trunk.transport.port = None;
+        assert_eq!(
+            build_registrar_uri(&trunk).as_deref(),
+            Some("sip:sip.carrier.example;transport=udp")
+        );
+        trunk.transport.port = Some(5080);
+        assert_eq!(
+            build_registrar_uri(&trunk).as_deref(),
+            Some("sip:sip.carrier.example:5080;transport=udp")
+        );
+        trunk.hosts = vec!["sip.carrier.example:5090".to_string()];
+        assert_eq!(
+            build_registrar_uri(&trunk).as_deref(),
+            Some("sip:sip.carrier.example:5090;transport=udp")
+        );
+        trunk.hosts = vec!["sip.carrier.example".to_string()];
+        trunk.transport.protocol = TransportType::Tls;
+        trunk.transport.port = None;
+        assert_eq!(
+            build_registrar_uri(&trunk).as_deref(),
+            Some("sips:sip.carrier.example")
+        );
     }
 }

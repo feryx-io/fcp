@@ -676,6 +676,21 @@ TLS trunk is on 5061 in the database, the API and both probes, and the
 TLS trunks stored on 5060 by the old default are unset; the admin-side
 probe says it is UDP. Proved on the floor: one trunk with two hosts, the
 first refusing, the second answering, the other trunk never rung.
+Phase 7 done (v0.25.242): SRV for trunks — and the project is complete.
+A trunk host given by name with no port is now what RFC 3263 says it is:
+the trunk set asks the system resolver at each refresh, on the trunk's
+own transport (NAPTR, SRV, then A/AAAA), and every target it gets back —
+the SRV targets in priority order, or the name's addresses — is one
+route the call tries in turn, on a transport error, a timeout or a 503,
+before the next host and the next trunk; the probe asks every target and
+the inbound index takes the carrier's calls from every one. Done without
+the siphon-rs change the design named: phase 6's per-host routes and the
+B2BUA's existing one-at-a-time failover already gave every target its
+turn on all three conditions, which keeping the targets inside one SIP
+transaction would not have. A registering trunk's REGISTER names its
+transport, so a UDP trunk no longer registers over TCP; the flow
+engine's emergency dial takes the transport its route names instead of
+UDP. The deployment guide's last gap bullet is struck.
 
 ## Historical documents
 
