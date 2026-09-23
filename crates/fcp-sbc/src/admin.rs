@@ -896,6 +896,7 @@ mod tests {
 
         let drain = crate::drain::test_drain(Arc::clone(&call_manager));
         Arc::new(HealthState {
+            replica: fcp_storage_postgres::ReplicaHealth::none(),
             admission,
             health_monitor,
             metrics,

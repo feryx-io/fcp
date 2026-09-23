@@ -312,9 +312,10 @@ async fn main() -> Result<()> {
         Arc::new(hooks)
     };
     // 12d. Initialize optional storage for CDR persistence
-    let (dyn_storage, config_store): (
+    let (dyn_storage, config_store, replica_health): (
         Option<Arc<fcp_core::DynStorage>>,
         Option<Arc<dyn fcp_core::config_store::ConfigStore>>,
+        fcp_storage_postgres::ReplicaHealth,
     ) = if sbc_config.storage.enabled {
         let pg_config = fcp_storage_postgres::PostgresConfig {
             connection_string: sbc_config.storage.database_url.clone(),
@@ -332,10 +333,11 @@ async fn main() -> Result<()> {
         info!(db = %sbc_config.storage.database_url, "CDR storage initialized");
         (
             Some(storage),
-            Some(pg_storage as Arc<dyn fcp_core::config_store::ConfigStore>),
+            Some(pg_storage.clone() as Arc<dyn fcp_core::config_store::ConfigStore>),
+            fcp_storage_postgres::ReplicaHealth::of(pg_storage),
         )
     } else {
-        (None, None)
+        (None, None, fcp_storage_postgres::ReplicaHealth::none())
     };
 
     // 12d2. Seed operational config sections into database (DB primary, TOML seed)
@@ -801,6 +803,7 @@ async fn main() -> Result<()> {
         stir_verifier: stir_verifier.clone(),
         api_token: cli.health_api_token.clone(),
         drain: Arc::clone(&drain),
+        replica: replica_health,
     });
     tokio::spawn(async move {
         if let Err(e) = health::run_health_server(health_bind, health_state).await {

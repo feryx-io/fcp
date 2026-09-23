@@ -27,6 +27,8 @@ pub struct AppState {
     pub manager: PresenceManager,
     /// Leaving service (`docs/CAPACITY_AND_SURVIVABILITY.md` §6).
     pub drain: Arc<fcp_sip::drain::Drain>,
+    /// The read replica as of its last probe (`docs/DEPLOYMENT_GAPS.md` §1.7).
+    pub replica: fcp_storage_postgres::ReplicaHealth,
     pub sip_handler: Option<Arc<SipPresenceHandler>>,
     pub start_time: Instant,
     pub api_token: Option<String>,
@@ -192,7 +194,10 @@ async fn health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 /// keeps answering `200`, so a liveness probe does not kill the process
 /// mid-drain.
 async fn ready(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    answer(fcp_sip::drain::ready_body(&state.drain).await)
+    let (code, mut body) = fcp_sip::drain::ready_body(&state.drain).await;
+    // Said, never acted on: reads fall back to the primary by themselves.
+    body["replica"] = state.replica.json();
+    answer((code, body))
 }
 
 /// Start a drain: this node grants short subscriptions so its watchers

@@ -2127,7 +2127,26 @@ async fn replica_reads_follow_health_and_the_read_after_write_window() {
     assert!(status.healthy, "{status:?}");
     assert_eq!(status.lag_ms, 0);
     assert_eq!(status.max_lag_ms, 500);
+    assert!(status.probe_age_secs <= 5, "just probed: {status:?}");
     assert!(s.reads_from_replica());
+    // What a binary's /status and /metrics say about it.
+    let health = fcp_storage_postgres::ReplicaHealth::of(std::sync::Arc::new(s.clone()));
+    let json = health.json();
+    assert_eq!(json["healthy"], true, "{json}");
+    assert!(json["probe_age_secs"].is_u64(), "{json}");
+    let prom = health.prometheus("node=\"t\"");
+    assert!(
+        prom.contains("fcp_replica_healthy{node=\"t\",replica=\""),
+        "{prom}"
+    );
+    assert!(prom.contains("fcp_replica_probe_age_seconds{"), "{prom}");
+    assert_eq!(
+        fcp_storage_postgres::ReplicaHealth::none().json(),
+        serde_json::Value::Null
+    );
+    assert!(fcp_storage_postgres::ReplicaHealth::none()
+        .prometheus("")
+        .is_empty());
 
     // Written through another backend, so `s` has no write of its own.
     let t = tenant("replica-routing");

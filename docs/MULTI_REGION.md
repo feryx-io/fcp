@@ -73,8 +73,14 @@ A replica that is down at startup does not stop the node (the pool
 connects lazily). A "replica" that is not in recovery — a primary given by
 mistake — is used as-is, with one warning.
 
-`PostgresStorage::replica_status()` returns the probe's view for health
-endpoints (host, reachable, healthy, lag, limit).
+`PostgresStorage::replica_status()` returns the probe's view (host,
+reachable, healthy, lag, limit, probe age), and every binary says it: as
+`replica` on `/status` (the call manager, conference server, IVR,
+voicemail server and registrar) or `/ready` (the SBC and presence server),
+`null` without a replica, and as `fcp_replica_reachable`,
+`fcp_replica_healthy`, `fcp_replica_lag_seconds` and
+`fcp_replica_probe_age_seconds` on `/metrics` where a binary has one
+(`docs/DEPLOYMENT_GAPS.md` §1.7).
 
 ### Not covered
 

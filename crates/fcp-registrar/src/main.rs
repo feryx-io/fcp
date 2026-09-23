@@ -45,6 +45,8 @@ struct AppState {
     /// only on a loopback bind, where configuration refuses to run
     /// without one otherwise.
     api_token: Option<String>,
+    /// The read replica as of its last probe (`docs/DEPLOYMENT_GAPS.md` §1.7).
+    replica: fcp_storage_postgres::ReplicaHealth,
 }
 
 #[tokio::main]
@@ -104,7 +106,10 @@ async fn main() -> Result<()> {
     }
 
     // 4. Initialize storage
-    let dyn_storage = storage::initialize_storage(&config.storage).await?;
+    let storage::StorageResult {
+        dyn_storage,
+        replica: replica_health,
+    } = storage::initialize_storage(&config.storage).await?;
 
     // 5. Create FcpRegistrar
     let registrar = create_registrar(&config, &dyn_storage);
@@ -161,6 +166,7 @@ async fn main() -> Result<()> {
         registrations_handled: AtomicU64::new(0),
         drain: Arc::clone(&drain),
         api_token: config.http.api_token.clone(),
+        replica: replica_health,
     });
     let http_bind = config.http.bind_address;
     tokio::spawn(async move {
@@ -454,6 +460,7 @@ async fn status_handler(State(state): State<Arc<AppState>>) -> Json<serde_json::
         "registrations_handled": registrations_handled,
         "draining": state.drain.is_draining(),
         "registrations_held": state.drain.carrying().await,
+        "replica": state.replica.json(),
     }))
 }
 

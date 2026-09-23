@@ -330,6 +330,8 @@ stream — `cdr_stream_pending` grows — and land when the primary is back.
 | A node's member list is stale | `fcp_cluster_view_age_seconds > 30` |
 | A bridge is down | `fcp_event_bridge_connected == 0` for 1 m |
 | The registration cache is not saving much | the ratio in §5 below the level a deployment decides |
+| A region reads from the primary | `fcp_replica_healthy == 0` for 2 m: the replica is unreachable or beyond `max_replica_lag_secs`, and configuration reads cross to the primary |
+| A replica probe is stuck | `fcp_replica_probe_age_seconds > 30` |
 
 ## 7. A region, checked off
 
@@ -371,8 +373,10 @@ keeps a handle it could ask for the replica's health.
   `[service] node_id` for membership, the drain, its calls and its trunks.
 - ~~Events ingested over HTTP never cross regions.~~ Fixed (v0.25.239):
   `/ingest` writes to the region's stream when the bus is Redis.
-- **No binary reports its replica's health** on `/status`, though the
-  backend probes it every five seconds (`replica_status()`).
+- ~~No binary reports its replica's health.~~ Fixed (v0.25.240): `replica`
+  on `/status` (call manager, conference server, IVR, voicemail server,
+  registrar) and `/ready` (SBC, presence server), `fcp_replica_*` on
+  `/metrics`.
 - ~~`fcp-api-gateway`'s default backend health path is not a route the
   API serves.~~ Fixed (v0.25.238): the default is each backend kind's
   own route, the API's `/api/v1/health` needs no token, and the gateway

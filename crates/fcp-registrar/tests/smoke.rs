@@ -153,6 +153,8 @@ format = "compact"
                 .expect("status answers");
             assert_eq!(code, 200);
             assert!(body.contains("\"draining\":true"), "{body}");
+            // No replica configured: said as null, not left out.
+            assert!(body.contains("\"replica\":null"), "{body}");
             // A liveness probe must still see a live process.
             let (code, _) = smoke::http_get(&smoke::loopback(http, "/health"))
                 .await

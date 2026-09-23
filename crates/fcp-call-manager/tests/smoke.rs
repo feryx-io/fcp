@@ -41,6 +41,8 @@ realm = "smoke.example.com"
 
 [storage]
 database_url = "{db}"
+# The primary standing in for a replica: probed, reachable, "healthy".
+read_replica_url = "{db}"
 
 [http]
 bind_address = "127.0.0.1:{http}"
@@ -60,6 +62,36 @@ format = "compact"
     let report = Smoke::new(BIN)
         .config_toml(config)
         .health_url(smoke::loopback(http, "/health"))
+        .while_up(move || async move {
+            // The replica's health is said on /status and /metrics
+            // (`docs/DEPLOYMENT_GAPS.md` §1.7).
+            let (code, body) = smoke::http_get(&smoke::loopback(http, "/status"))
+                .await
+                .expect("status answers");
+            assert_eq!(code, 200, "{body}");
+            let v: serde_json::Value = serde_json::from_str(&body).expect("json");
+            let replica = &v["replica"];
+            assert_eq!(replica["reachable"], true, "{body}");
+            assert_eq!(replica["healthy"], true, "{body}");
+            assert!(
+                replica["probe_age_secs"].as_u64().is_some_and(|a| a <= 10),
+                "{body}"
+            );
+            assert!(
+                replica["host"].as_str().is_some_and(|h| !h.is_empty()),
+                "{body}"
+            );
+
+            let (code, metrics) = smoke::http_get(&smoke::loopback(http, "/metrics"))
+                .await
+                .expect("metrics answer");
+            assert_eq!(code, 200);
+            assert!(metrics.contains("fcp_replica_healthy{"), "{metrics}");
+            assert!(
+                metrics.contains("fcp_replica_probe_age_seconds{"),
+                "{metrics}"
+            );
+        })
         .run()
         .await;
     report.assert_clean();

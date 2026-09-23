@@ -113,6 +113,7 @@ async fn main() -> Result<()> {
 
     // 4. Initialize storage
     let storage_result = storage::initialize_storage(&config.storage).await?;
+    let replica_health = storage_result.replica.clone();
     let config_store = storage_result.config_store;
     let dyn_storage = storage_result.dyn_storage;
     let flow_store_db = storage_result.flow_store;
@@ -833,6 +834,7 @@ async fn main() -> Result<()> {
 
     // 22. Spawn HTTP server (voicemail health routes)
     let vm_state = Arc::new(health::VoicemailState {
+        replica: replica_health.clone(),
         call_manager: Arc::clone(&call_manager),
         flow_handler: Arc::clone(&flow_handler),
         dyn_storage: Arc::clone(&dyn_storage),

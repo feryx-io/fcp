@@ -34,6 +34,8 @@ use crate::control::{ClusterControl, PeerOutcome, NODE_HEADER};
 pub struct ConferenceState {
     pub bridge: Arc<ConferenceBridge>,
     pub storage: Arc<DynStorage>,
+    /// The read replica as of its last probe (`docs/DEPLOYMENT_GAPS.md` §1.7).
+    pub replica: fcp_storage_postgres::ReplicaHealth,
     pub conference_handler: Arc<ConferenceCallHandler>,
     pub call_manager: Arc<CallManager>,
     pub event_bus: Arc<dyn EventPublisher>,
@@ -502,6 +504,7 @@ async fn status_handler(State(state): State<Arc<ConferenceState>>) -> Json<serde
             .unwrap_or(serde_json::Value::Null),
         // Whether this node's view of the cluster looks whole
         // (docs/MULTI_REGION_FOLLOWUPS.md §2.3).
+        "replica": state.replica.json(),
         "cluster_view": state.cluster_view(),
     }))
 }
@@ -628,6 +631,7 @@ async fn metrics_handler(State(state): State<Arc<ConferenceState>>) -> impl Into
     if let Some(view) = state.cluster_view() {
         body.push_str(&view.prometheus(""));
     }
+    body.push_str(&state.replica.prometheus(""));
 
     (
         StatusCode::OK,

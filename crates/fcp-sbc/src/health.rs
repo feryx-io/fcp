@@ -39,6 +39,8 @@ pub struct HealthState {
     pub api_token: Option<String>,
     /// Leaving service (`docs/CAPACITY_AND_SURVIVABILITY.md` §6).
     pub drain: Arc<fcp_sip::drain::Drain>,
+    /// The read replica as of its last probe (`docs/DEPLOYMENT_GAPS.md` §1.7).
+    pub replica: fcp_storage_postgres::ReplicaHealth,
 }
 
 fn extract_bearer_token(value: &str) -> Option<&str> {
@@ -150,6 +152,7 @@ async fn readiness_check(
             "trunks_healthy": trunks_healthy,
             "draining": draining,
             "active_calls": carrying,
+            "replica": state.replica.json(),
         })),
     )
 }
@@ -333,6 +336,8 @@ async fn metrics_snapshot(State(state): State<Arc<HealthState>>) -> impl IntoRes
         }
     }
 
+    buf.push_str(&state.replica.prometheus(""));
+
     ([(header::CONTENT_TYPE, "text/plain; version=0.0.4")], buf)
 }
 
@@ -367,6 +372,7 @@ mod tests {
 
         let drain;
         let state = Arc::new(HealthState {
+            replica: fcp_storage_postgres::ReplicaHealth::none(),
             admission: Arc::new(fcp_sbc_core::admission::AdmissionController::new(
                 Default::default(),
             )),
