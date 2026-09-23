@@ -22,7 +22,9 @@ echo "PASS: Health endpoint healthy"
 echo
 
 echo "--- Test: Status endpoint ---"
-STATUS_RESP=$(curl -sf "$BASE_URL/status")
+# /status is an operator route: it wants the registrar's [http] api_token.
+API_TOKEN="${FCP_REGISTRAR_API_TOKEN:-change-me-in-production}"
+STATUS_RESP=$(curl -sf -H "Authorization: Bearer $API_TOKEN" "$BASE_URL/status")
 echo "$STATUS_RESP" | jq .
 UPTIME=$(echo "$STATUS_RESP" | jq -r '.uptime_seconds')
 if [ "$UPTIME" = "null" ]; then

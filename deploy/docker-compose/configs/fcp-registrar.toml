@@ -7,7 +7,8 @@ udp_bind = "0.0.0.0:5060"
 tcp_bind = "0.0.0.0:5060"
 
 [registrar]
-auth_enabled = false    # Disabled for testing; enable in production
+# A non-loopback SIP bind is refused without authentication.
+auth_enabled = true
 realm = "fcp.local"
 default_expires = 3600
 min_expires = 60
@@ -18,6 +19,8 @@ database_url = "postgresql://postgres:password@postgres:5432/fcp"
 
 [http]
 bind_address = "0.0.0.0:8083"
+# /status and /drain need this bearer token; a non-loopback bind requires it.
+api_token = "change-me-in-production"
 
 [logging]
 level = "info"

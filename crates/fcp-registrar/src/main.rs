@@ -7,7 +7,9 @@ use anyhow::Result;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::{
-    extract::State,
+    extract::{Request, State},
+    middleware::{self, Next},
+    response::Response,
     routing::{get, post},
     Json, Router,
 };
@@ -39,6 +41,10 @@ struct AppState {
     registrations_handled: AtomicU64,
     /// Leaving service (`docs/CAPACITY_AND_SURVIVABILITY.md` §6).
     drain: Arc<fcp_sip::drain::Drain>,
+    /// `[http] api_token`: what `/status` and `/drain` ask for. `None`
+    /// only on a loopback bind, where configuration refuses to run
+    /// without one otherwise.
+    api_token: Option<String>,
 }
 
 #[tokio::main]
@@ -154,6 +160,7 @@ async fn main() -> Result<()> {
         start_time: Instant::now(),
         registrations_handled: AtomicU64::new(0),
         drain: Arc::clone(&drain),
+        api_token: config.http.api_token.clone(),
     });
     let http_bind = config.http.bind_address;
     tokio::spawn(async move {
@@ -373,22 +380,59 @@ fn init_tracing(config: &RegistrarConfig) {
     }
 }
 
-/// Run the HTTP health/status server.
+/// Run the HTTP health/status server. The probes — `/health`, `/ready` —
+/// are open; the operator routes — `/status`, `/drain` — are behind
+/// `[http] api_token`, as on every other binary
+/// (`docs/DEPLOYMENT_GAPS.md` §1.3).
 async fn run_health_server(bind_addr: std::net::SocketAddr, state: Arc<AppState>) -> Result<()> {
-    let app = Router::new()
+    let public = Router::new()
         .route("/health", get(health_handler))
-        .route("/ready", get(ready_handler))
+        .route("/ready", get(ready_handler));
+    let protected = Router::new()
         .route("/status", get(status_handler))
         .route(
             "/drain",
             post(start_drain_handler).delete(stop_drain_handler),
         )
-        .with_state(state);
+        .route_layer(middleware::from_fn_with_state(
+            Arc::clone(&state),
+            require_api_token,
+        ));
+    let app = public.merge(protected).with_state(state);
 
     let listener = tokio::net::TcpListener::bind(bind_addr).await?;
     info!(%bind_addr, "HTTP health server started");
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+async fn require_api_token(
+    State(state): State<Arc<AppState>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let Some(expected_token) = state.api_token.as_deref() else {
+        return next.run(request).await;
+    };
+
+    let auth_header = request
+        .headers()
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("");
+    let token = auth_header.strip_prefix("Bearer ").unwrap_or(auth_header);
+
+    // Compared in time that does not depend on how much of the token the
+    // caller guessed right (`docs/EDGE_SECURITY.md` §2.6).
+    if !token.is_empty() && fcp_core::secret::constant_time_eq(token, expected_token) {
+        next.run(request).await
+    } else {
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "Invalid or missing authentication token"})),
+        )
+            .into_response()
+    }
 }
 
 async fn health_handler() -> Json<serde_json::Value> {

@@ -563,9 +563,13 @@ the registrar carries the devices registered with it and ends nothing at all
 — a registration that is not renewed lapses, and by then the device has
 registered on a node that is serving. `/ready`, `POST /drain` and
 `DELETE /drain` answer the same JSON everywhere, from the same functions,
-while each binary's router keeps its own shape: the call manager's and the
-registrar's are open on their health servers, the SBC's `/drain` sits behind
-the API token with its other operator routes.
+while each binary's router keeps its own shape. Every binary's `/drain` sits
+behind its operator token — the call manager's, IVR's, voicemail server's,
+presence server's and registrar's `[http] api_token`, the SBC's
+`--health-api-token`, the conference server's `[http] auth_token`, the
+gateway's `[auth] tokens` — and a non-loopback bind is refused without one;
+`/ready` and `/health` never ask for it. (The registrar's was open until
+v0.25.237, `docs/DEPLOYMENT_GAPS.md` §1.3.)
 
 Three things learned:
 

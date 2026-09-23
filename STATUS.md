@@ -612,6 +612,14 @@ The presence server's `[redis] node_id` the survey called dead is its
 Pub/Sub identity and stays. Two binary tests prove it: a conference
 server bound to `0.0.0.0` heartbeats `127.0.0.1`, and an SBC's drain
 marks the record its configured id names.
+Phase 2 done (v0.25.237): the registrar's HTTP surface. `fcp-registrar`
+takes `[http] api_token`; `/status` and `/drain` answer 401 without it,
+`/health` and `/ready` never ask, and a non-loopback HTTP bind is refused
+without a token, as on every other binary. Its default HTTP bind moves to
+`127.0.0.1:8083` to match them — a deployment that relied on the old
+`0.0.0.0` default now binds explicitly and sets the token. The two
+documents that said the call manager's `/drain` was open, or left it off
+the list of binaries needing the token, are corrected.
 
 ## Historical documents
 

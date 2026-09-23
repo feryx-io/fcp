@@ -141,9 +141,12 @@ node in the middle of a drain.
 
 Every routing binary answers all of these: the call manager, the SBC, the
 registrar, the IVR, the voicemail server, the presence server, the WebRTC
-gateway and the conference server. `/drain` needs the operator token where
-the binary has one (the SBC, the IVR, the voicemail server, the presence
-server, the gateway, the conference server); `/ready` never does.
+gateway and the conference server. `/drain` and `/status` need the
+binary's operator token on every one of them — `[http] api_token` on the
+call manager, the registrar, the IVR, the voicemail server and the presence
+server; `--health-api-token` on the SBC; `[http] auth_token` on the
+conference server; `[auth] tokens` on the gateway — and a binary refuses a
+non-loopback HTTP bind without one. `/ready` and `/health` never ask.
 
 ### Health Check Response
 
