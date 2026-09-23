@@ -692,6 +692,41 @@ transport, so a UDP trunk no longer registers over TCP; the flow
 engine's emergency dial takes the transport its route names instead of
 UDP. The deployment guide's last gap bullet is struck.
 
+## What is next (chosen 2026-09-23, after the deployment gaps closed)
+
+**Ship and operate** — the last of the four candidates named on
+2026-09-20. Survey and design in `docs/SHIP_AND_OPERATE.md` (v0.25.243).
+The question: does what we ship start, and does what we tell an
+operator work? Both no. Every shipped compose configuration was started
+against its binary: five of nine are refused before they touch the
+network (the admin, call manager, both conference configs and the events
+server, each for the token or authentication rule edge security added on
+a public bind), and the compose file could not bring the stack up anyway
+— an external volume nothing creates, no Postgres service, the call
+manager and conference server both on host port 5060, the media server
+on the admin's 8080, TLS paths to a directory that does not exist, and
+every producer posting events with no token. No configuration struct
+outside the SBC's `[admission]` refuses an unknown key, so seven shipped
+or example files carry keys the code never reads and start as if
+configured. None of the five operator documents gives a working setup:
+the token rules are in none of them, every operator route in the
+runbook is called without a token, binary names and ports are wrong,
+and the root README configures sections the call manager never had while
+listing billing, E911, video and compliance as future. What is sound:
+the Dockerfiles, the binaries' own validation, every root
+`fcp-*-local.toml`, and `docs/MULTI_REGION_DEPLOYMENT.md`. Cause: nothing
+starts a shipped configuration, no CI job parses one, and the binaries
+accept any key, so three projects that each added a right startup rule
+left the packaging and the documents behind. Four questions settled by
+the user: unknown keys are refused everywhere; the root packaging is
+deleted; every token gets an environment override so the compose stack
+carries no secrets; the five operator documents are rewritten from the
+code and the four crate READMEs and five dead deployment documents go.
+Six phases: a configuration cannot lie (`deny_unknown_fields`,
+`--check-config`, CI over every TOML); secrets from the environment; the
+stack comes up; the stack is proved by a compose-shaped floor test; the
+single-node guide and the runbook; the READMEs.
+
 ## Historical documents
 
 Superseded status docs live in [`docs/archive/`](docs/archive/README.md) — they describe
