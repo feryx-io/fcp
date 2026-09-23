@@ -242,7 +242,12 @@ Applied on the leg that goes out on a trunk, in this order:
    the trunk's transport and TLS verification. The INVITE is addressed to
    the proxy with the dialled number as its user part, which is what a
    proxy routes by and what `[sip] outbound_proxy` already means elsewhere
-   on this platform.
+   on this platform. The hosts are a failover list (v0.25.241,
+   `docs/DEPLOYMENT_GAPS.md` §1.8): tried in the order written, each on
+   its own port (`host:port`) or the trunk's — unset, the transport's
+   default, 5061 for TLS — with the hosts this node's last probe found
+   down tried after the rest; a host that fails gives way to the next
+   host before the next trunk is consulted.
 
 Inbound, the same trunk decides the tenant, the admission limits (CPS,
 concurrency) and which HMR rules run.

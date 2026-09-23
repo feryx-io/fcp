@@ -26,17 +26,12 @@ use tracing::{debug, warn};
 const RESOLVE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// The address part of a trunk host — `10.0.0.1:5060`, `[2001:db8::1]:5060`
-/// and `sip.carrier.example` all name a host.
-fn host_part(host: &str) -> &str {
-    let host = host.trim();
-    if let Some(rest) = host.strip_prefix('[') {
-        return rest.split(']').next().unwrap_or(rest);
-    }
-    match host.rsplit_once(':') {
-        // One colon is a port; more is an IPv6 address without brackets.
-        Some((h, port)) if !h.contains(':') && port.parse::<u16>().is_ok() => h,
-        _ => host,
-    }
+/// and `sip.carrier.example` all name a host — read the one way every
+/// trunk host is (`fcp_core::trunk::TrunkHost`).
+fn host_part(host: &str) -> String {
+    fcp_core::trunk::TrunkHost::parse(host)
+        .map(|h| h.host)
+        .unwrap_or_else(|_| host.trim().to_string())
 }
 
 /// One tenant's trunks, and whether the platform's may carry its calls.
@@ -116,6 +111,7 @@ impl TrunkSet {
             }
             for host in &trunk.hosts {
                 let host = host_part(host);
+                let host = host.as_str();
                 let addrs = match host.parse::<IpAddr>() {
                     Ok(ip) => vec![ip],
                     Err(_) => resolved.get(host).cloned().unwrap_or_default(),
@@ -148,7 +144,7 @@ impl TrunkSet {
             .all()
             .iter()
             .filter(|t| t.takes_inbound() && t.inbound_sources.is_empty())
-            .flat_map(|t| t.hosts.iter().map(|h| host_part(h).to_string()))
+            .flat_map(|t| t.hosts.iter().map(|h| host_part(h)))
             .filter(|h| !h.is_empty() && h.parse::<IpAddr>().is_err())
             .collect();
         for name in names {

@@ -53,6 +53,7 @@ fn view_of(
         enabled: trunk.enabled,
         health: status,
         consecutive_failures: health.consecutive_failures(&key),
+        hosts_down: health.hosts_down(&key),
         calls_in_flight: health.concurrent_calls(&key),
         routable: trunk.enabled && health.is_healthy(&key),
         registration: trunk.register.then(|| {

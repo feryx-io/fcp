@@ -26,6 +26,10 @@ pub struct TrunkNodeView {
     /// probes have found, not what another node found.
     pub health: String,
     pub consecutive_failures: u32,
+    /// Hosts of the trunk this node's last probe found down; a call tries
+    /// them after the ones that answered (`docs/DEPLOYMENT_GAPS.md` §1.8).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hosts_down: Vec<String>,
     /// Calls this node has on the trunk right now. Capacity is per node
     /// (§13.3), so this is a share of the carrier's channels, not all of
     /// them.

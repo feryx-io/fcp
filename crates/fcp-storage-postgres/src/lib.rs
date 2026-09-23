@@ -4670,8 +4670,10 @@ fn row_to_trunk(row: sqlx::postgres::PgRow) -> Result<Trunk> {
         inbound_sources: row.get("inbound_sources"),
         transport: TrunkTransport {
             protocol: parse_transport(&row.try_get::<String, _>("transport_protocol")?),
-            port: u16::try_from(row.try_get::<i32, _>("transport_port")?)
-                .ok()
+            // Unset means the transport's default (migration 077).
+            port: row
+                .try_get::<Option<i32>, _>("transport_port")?
+                .and_then(|p| u16::try_from(p).ok())
                 .filter(|p| *p > 0),
             verify_tls: row.try_get("verify_tls")?,
         },
@@ -4972,7 +4974,7 @@ impl TrunkStore for PostgresStorage {
         .bind(trunk.weight as i32)
         .bind(&trunk.hosts)
         .bind(trunk.transport.protocol.to_string().to_lowercase())
-        .bind(trunk.transport.port.unwrap_or(5060) as i32)
+        .bind(trunk.transport.port.map(i32::from))
         .bind(trunk.transport.verify_tls)
         .bind(trunk.credentials.as_ref().map(|c| c.username.clone()))
         .bind(self.seal_opt(trunk.credentials.as_ref().map(|c| c.password.as_str()))?)

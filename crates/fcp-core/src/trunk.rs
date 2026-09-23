@@ -116,11 +116,108 @@ pub struct TrunkTransport {
     /// SIP transport protocol.
     pub protocol: crate::transport::TransportType,
 
-    /// Optional explicit port (otherwise uses protocol default).
+    /// The port every host is dialled on unless the host names its own
+    /// (`host:port`); unset means the protocol's default — 5060, or 5061
+    /// for TLS (`docs/DEPLOYMENT_GAPS.md` §1.8).
     pub port: Option<u16>,
 
     /// Verify TLS certificates (only relevant for TLS/WSS).
     pub verify_tls: bool,
+}
+
+impl TrunkTransport {
+    /// The port a host without one of its own is dialled on.
+    pub fn effective_port(&self) -> u16 {
+        self.port.unwrap_or_else(|| self.protocol.default_port())
+    }
+}
+
+/// One entry of a trunk's `hosts`, parsed: `10.0.0.1`, `10.0.0.1:5080`,
+/// `sip.carrier.example`, `[2001:db8::1]:5061` and `2001:db8::1` are all
+/// hosts. The one place `host:port` is read (`docs/DEPLOYMENT_GAPS.md`
+/// §1.8): the router, both probes and inbound matching agree because they
+/// all ask here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrunkHost {
+    /// The name or address, without brackets.
+    pub host: String,
+    /// The host's own port, when it names one.
+    pub port: Option<u16>,
+}
+
+impl TrunkHost {
+    /// Parse one `hosts` entry. Refuses an empty host, a host with
+    /// whitespace or CR/LF, a port that is not a number in 1–65535, and an
+    /// IPv6 literal in brackets with something other than `:port` after them.
+    pub fn parse(entry: &str) -> Result<Self, String> {
+        let entry = entry.trim();
+        if entry.is_empty() {
+            return Err("host must not be empty".to_string());
+        }
+        if entry
+            .chars()
+            .any(|c| c.is_whitespace() || c == '\r' || c == '\n')
+        {
+            return Err(format!(
+                "host {entry:?} must not contain whitespace or CR/LF characters"
+            ));
+        }
+        let parse_port = |p: &str| -> Result<u16, String> {
+            p.parse::<u16>()
+                .ok()
+                .filter(|p| *p > 0)
+                .ok_or_else(|| format!("host {entry:?}: port {p:?} must be 1–65535"))
+        };
+        if let Some(rest) = entry.strip_prefix('[') {
+            let (host, after) = rest
+                .split_once(']')
+                .ok_or_else(|| format!("host {entry:?}: unclosed '['"))?;
+            if host.is_empty() {
+                return Err(format!("host {entry:?}: empty address in brackets"));
+            }
+            let port = match after {
+                "" => None,
+                p => Some(parse_port(p.strip_prefix(':').ok_or_else(|| {
+                    format!("host {entry:?}: expected ':port' after ']'")
+                })?)?),
+            };
+            return Ok(Self {
+                host: host.to_string(),
+                port,
+            });
+        }
+        match entry.rsplit_once(':') {
+            // One colon is a port; more is an IPv6 address without brackets,
+            // which names no port.
+            Some((host, port)) if !host.contains(':') => {
+                if host.is_empty() {
+                    return Err(format!("host {entry:?}: empty host before ':'"));
+                }
+                Ok(Self {
+                    host: host.to_string(),
+                    port: Some(parse_port(port)?),
+                })
+            }
+            _ => Ok(Self {
+                host: entry.to_string(),
+                port: None,
+            }),
+        }
+    }
+
+    /// The host as a SIP URI writes it: an IPv6 literal in brackets.
+    pub fn uri_host(&self) -> String {
+        if self.host.contains(':') {
+            format!("[{}]", self.host)
+        } else {
+            self.host.clone()
+        }
+    }
+
+    /// The port this host is dialled on: its own, else `transport`'s.
+    pub fn port_or(&self, transport: &TrunkTransport) -> u16 {
+        self.port.unwrap_or_else(|| transport.effective_port())
+    }
 }
 
 impl Default for TrunkTransport {
@@ -797,7 +894,8 @@ impl Trunk {
             register_expiry: Some(3600),
             transport: TrunkTransport {
                 protocol: crate::transport::TransportType::Udp,
-                port: Some(5060),
+                // The protocol's default, whichever protocol it ends up with.
+                port: None,
                 verify_tls: true,
             },
             ..Default::default()
@@ -843,15 +941,7 @@ impl Trunk {
             return Err(format!("trunk {:?}: hosts must not be empty", self.name));
         }
         for (i, host) in self.hosts.iter().enumerate() {
-            if host.is_empty() {
-                return Err(format!("trunk {:?}: host {i} must not be empty", self.name));
-            }
-            if host.contains('\r') || host.contains('\n') {
-                return Err(format!(
-                    "trunk {:?}: host {i} must not contain CR/LF characters",
-                    self.name
-                ));
-            }
+            TrunkHost::parse(host).map_err(|e| format!("trunk {:?}: host {i}: {e}", self.name))?;
         }
         if self.weight > 100 {
             return Err(format!("trunk {:?}: weight must not exceed 100", self.name));
@@ -897,5 +987,58 @@ impl Trunk {
         self.stir_shaken
             .validate()
             .map_err(|e| format!("trunk {:?}: {e}", self.name))
+    }
+}
+
+#[cfg(test)]
+mod host_tests {
+    use super::*;
+
+    #[test]
+    fn a_trunk_host_is_read_one_way() {
+        let h = TrunkHost::parse("10.0.0.1").unwrap();
+        assert_eq!((h.host.as_str(), h.port), ("10.0.0.1", None));
+        let h = TrunkHost::parse(" sip.carrier.example:5080 ").unwrap();
+        assert_eq!(
+            (h.host.as_str(), h.port),
+            ("sip.carrier.example", Some(5080))
+        );
+        let h = TrunkHost::parse("[2001:db8::1]:5061").unwrap();
+        assert_eq!((h.host.as_str(), h.port), ("2001:db8::1", Some(5061)));
+        assert_eq!(h.uri_host(), "[2001:db8::1]");
+        let h = TrunkHost::parse("2001:db8::1").unwrap();
+        assert_eq!((h.host.as_str(), h.port), ("2001:db8::1", None));
+        for bad in [
+            "",
+            "sip.example.com:",
+            ":5060",
+            "a b",
+            "host:0",
+            "host:99999",
+            "host:abc",
+            "[::1",
+            "[::1]5060",
+        ] {
+            assert!(TrunkHost::parse(bad).is_err(), "{bad:?} parsed");
+        }
+        let tls = TrunkTransport {
+            protocol: crate::transport::TransportType::Tls,
+            port: None,
+            verify_tls: true,
+        };
+        assert_eq!(tls.effective_port(), 5061);
+        assert_eq!(TrunkHost::parse("a").unwrap().port_or(&tls), 5061);
+        assert_eq!(TrunkHost::parse("a:5070").unwrap().port_or(&tls), 5070);
+    }
+
+    #[test]
+    fn a_trunk_with_a_bad_host_does_not_validate() {
+        let mut trunk = Trunk::new("carrier".to_string(), crate::TenantId::nil());
+        trunk.hosts = vec!["good.example".into(), "bad host".into()];
+        let err = trunk.validate().unwrap_err();
+        assert!(err.contains("host 1"), "{err}");
+        trunk.hosts = vec!["good.example:5080".into()];
+        assert!(trunk.validate().is_ok());
+        assert_eq!(trunk.transport.port, None, "the protocol's default");
     }
 }

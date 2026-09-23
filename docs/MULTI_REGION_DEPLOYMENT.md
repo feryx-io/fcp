@@ -237,8 +237,11 @@ are each node's own `[[trunks]]`, so a region's nodes can give that
 region's carrier the better priority. A tenant's trunks are in the
 database and read the same in every region: for those there is no
 per-region preference, and the carrier's own routing decides. A
-trunk's target is always built with an explicit port, so RFC 3263 SRV
-lookup is not used for trunks — list every carrier address in `hosts`.
+trunk's `hosts` are a failover list — tried in order, each on its own
+port or the trunk's, the ones this node's probe found down last
+(v0.25.241) — so list every carrier address there. A trunk's target is
+still built with an explicit port, so RFC 3263 SRV lookup is not used
+for trunk INVITEs.
 
 ## 5. What a region away from the primary pays
 
@@ -382,7 +385,8 @@ keeps a handle it could ask for the replica's health.
   own route, the API's `/api/v1/health` needs no token, and the gateway
   probes in the background at `health_check_interval`.
 - **Trunk SRV**: trunk targets carry an explicit port, so SRV records for
-  a carrier are never consulted (§4.3).
+  a carrier are never consulted (§4.3). A trunk's hosts are a failover
+  list since v0.25.241; SRV is the next phase.
 - ~~`[events] redis_channel` and `redis_stream_key` on the call manager
   are parsed and ignored.~~ Fixed (v0.25.238): refused at startup, with
   the prefix named as the knob.

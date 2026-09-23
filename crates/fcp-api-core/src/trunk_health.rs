@@ -219,13 +219,26 @@ pub async fn probe_trunk_hosts_public(trunk: &fcp_core::Trunk) -> bool {
     probe_trunk_hosts(trunk).await
 }
 
-/// Send a SIP OPTIONS probe to a trunk's hosts via raw UDP.
+/// Send a SIP OPTIONS probe to a trunk's hosts via raw UDP — always UDP,
+/// whatever the trunk's transport: this is the admin's reachability
+/// check, not the node's probe, which goes through the SIP stack with the
+/// trunk's own transport (`fcp_sbc_core::health_probes`). A TCP- or
+/// TLS-only carrier reads as unreachable here.
 /// Returns true if any host responds (2xx, 401, 407 all count as reachable).
 async fn probe_trunk_hosts(trunk: &fcp_core::Trunk) -> bool {
-    let default_port = trunk.transport.port.unwrap_or(5060);
+    if trunk.transport.protocol != fcp_core::transport::TransportType::Udp {
+        debug!(
+            trunk = %trunk.name,
+            transport = %trunk.transport.protocol,
+            "Admin probe is UDP; a carrier that only listens on the trunk's transport reads as unreachable"
+        );
+    }
 
     for host_str in &trunk.hosts {
-        let (host, port) = parse_host_port(host_str, default_port);
+        let Ok(parsed) = fcp_core::trunk::TrunkHost::parse(host_str) else {
+            continue;
+        };
+        let (host, port) = (parsed.uri_host(), parsed.port_or(&trunk.transport));
         let target = format!("{}:{}", host, port);
 
         match tokio::time::timeout(
@@ -306,13 +319,4 @@ async fn send_options_probe(
         }
     })
     .await?
-}
-
-fn parse_host_port(host_str: &str, default_port: u16) -> (String, u16) {
-    if let Some((host, port_str)) = host_str.rsplit_once(':') {
-        if let Ok(port) = port_str.parse::<u16>() {
-            return (host.to_string(), port);
-        }
-    }
-    (host_str.to_string(), default_port)
 }
