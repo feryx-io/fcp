@@ -64,6 +64,9 @@ pub struct AppState {
     /// Leaving service without dropping calls (§6).
     pub drain: Arc<fcp_sip::drain::Drain>,
     pub node_id: String,
+    /// Registration lookups kept for a TTL, when the node keeps them
+    /// (`docs/MULTI_REGION_FOLLOWUPS.md` §2.1, phase 2).
+    pub registration_cache: Option<Arc<fcp_sip::registration_cache::RegistrationCache>>,
 }
 
 fn queue_visible_to_service_tenant(
@@ -342,12 +345,26 @@ async fn status_handler(State(state): State<Arc<AppState>>) -> Json<serde_json::
         // Registration lookups since start, by reason
         // (docs/MULTI_REGION_FOLLOWUPS.md §2.1). A region away from the
         // primary pays a crossing for each.
+        //
+        // `total` is round trips to the store; `cached` is lookups the
+        // registration cache answered instead (phase 2).
         "registration_reads": {
             "direct": fcp_core::storage::RegistrationReads::global().counts().0,
             "alias": fcp_core::storage::RegistrationReads::global().counts().1,
             "housekeeping": fcp_core::storage::RegistrationReads::global().counts().2,
             "total": fcp_core::storage::RegistrationReads::global().total(),
+            "cached": fcp_core::storage::RegistrationReads::global().cached(),
         },
+        "registration_cache": state.registration_cache.as_ref().map(|cache| {
+            let stats = cache.stats();
+            serde_json::json!({
+                "ttl_secs": cache.ttl().as_secs(),
+                "entries": stats.size,
+                "hits": stats.hits,
+                "misses": stats.misses,
+                "evictions": stats.evictions,
+            })
+        }),
         "admission": {
             "concurrent_calls": state.admission.concurrent_calls(),
             "current_cps": state.admission.current_cps(),

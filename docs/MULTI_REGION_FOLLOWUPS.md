@@ -81,6 +81,48 @@ two aliases treble the cost of every call. The counter is
 expiry, deregistration) counted apart so the call-path number is not
 inflated by it.
 
+**Cached in phase 2** (`fcp-call-manager/tests/registrations.rs`). The
+call manager keeps each lookup's answer for `[registrar] cache_ttl_secs`
+(default 30; zero is the old behaviour), empty answers included:
+
+| Deployment | First call after the phones register | Every call after, within the TTL |
+|---|---|---|
+| no domain aliases | 2 round trips | **0** (2 answered from memory) |
+| two aliases | 6 round trips | **0** (6 answered from memory) |
+
+The first call still pays: a REGISTER empties the cache for its address.
+What keeps a cached answer honest:
+
+- **This node's writes** — a REGISTER, a re-REGISTER from a new address, a
+  deregistration — invalidate the entry as the store takes them, so the
+  next call here reaches the phone where it now is.
+- **Another node's writes** arrive as registration events, and the node
+  forgets the address on each. Across nodes that needs `[events]
+  use_redis`; across regions, the events server's bridge. An
+  administrator's removal through the API now publishes the same event.
+- **The TTL** bounds what neither covers: a lost event, and a standalone
+  `fcp-registrar`, which publishes none — behind one, a phone that has
+  just registered can go unfound on a call manager for up to the TTL.
+- A lookup that raced a write never puts the old rows back: each entry has
+  a generation, an invalidation leaves a marker, and a fill lands only
+  over the generation it saw before its read.
+- Expiry is judged at every lookup, so a binding that lapses while cached
+  is not used.
+
+`/status` gains `registration_reads.cached` and a `registration_cache`
+object (TTL, entries, hits, misses, evictions); `/metrics` gains
+`fcp_registration_cache_hits_total`. The round-trip series keep their
+meaning — trips to the store — so hits against round trips is the
+cache's hit rate, read off a live deployment.
+
+**What this does not settle.** The zero above is for a party looked up
+again within the TTL. An ordinary phone called a few times an hour is
+looked up cold on most calls and still pays the crossing; the cache pays
+off for the hot addresses — agents, hunt-group members, receptionists —
+and for the alias multiplication, which it removes whenever it hits. How
+much of a deployment's traffic that is, is what `/metrics` now answers,
+and what the decision point in §5 needs.
+
 **The Redis alternative exists and does not fix it.** There is a
 `RedisRegistrationStore` with native TTL expiry
 (`fcp-storage-redis/src/registration.rs`) and a
@@ -212,7 +254,7 @@ One PR each, in order.
 | Phase | What |
 |---|---|
 | 1 ✅ | **Measure.** A per-peer counter of events and bytes on the `EventBridge` (§2.4, Q4), and a count of registration reads per call setup (§2.1), so the cost is a number rather than arithmetic. Nothing changes behaviour. Result: **2 reads per call, 6 with two aliases** (§2.1). |
-| 2 | **The registration cache** (Q1). Registrations get the short-TTL cache the other hot-path stores have, invalidated on the node's own writes, with the TTL as the knob. Measured against phase 1. |
+| 2 ✅ | **The registration cache** (Q1). Registrations get the short-TTL cache the other hot-path stores have, invalidated on the node's own writes and on other nodes' registration events, with the TTL as the knob. Measured against phase 1. Result: **a repeat call within the TTL costs 0 round trips, where it cost 2 — and 6 with two aliases** (§2.1). |
 | 3 | **A partition is visible** (§2.3, Q3). A node that loses every remote region at once while reaching Postgres says so on `/status`, in the admin UI, and as an event. |
 | 4 | **The deployment guide** (§2.2, Q2). A regional runbook: SRV layout per region, which Redis is global and which is regional, what to point a carrier at, what a partition looks like, and the registration cost a region away from the primary still pays. |
 
