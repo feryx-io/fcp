@@ -82,9 +82,9 @@ endpoints (host, reachable, healthy, lag, limit).
   or the cloud provider's managed failover. Nodes reconnect through the
   pool; writes fail while the promotion runs.
 - Getting a region's callers to that region's nodes in the first place:
-  DNS (SRV per region, or geo-DNS), anycast, or the SBC's trunk routing.
-  Once a call is on a node, placement keeps it in that node's region
-  (below).
+  DNS (SRV per region, or geo-DNS), anycast, or the SBC's trunk routing —
+  set out in `docs/MULTI_REGION_DEPLOYMENT.md` §4. Once a call is on a
+  node, placement keeps it in that node's region (below).
 
 ## Region-aware membership (done, v0.25.87)
 
@@ -156,6 +156,13 @@ simpler) deployment; regions then never place across each other.
   quiet at once; nothing acts on it.
 
 ## Cross-region event fan-out (done, v0.25.88)
+
+> The bridge is for a deployment whose regions each have their own Redis
+> — shape B in `docs/MULTI_REGION_DEPLOYMENT.md`. A call manager has one
+> Redis for membership and events alike, so a deployment whose membership
+> spans regions on one shared Redis (the section above) already has one
+> event stream, and must not bridge it to itself. The deployment guide
+> says which to choose.
 
 Each region's nodes publish to their own Redis (`events` Pub/Sub channel
 plus the `event_stream` stream), so without help a region's events stay in
