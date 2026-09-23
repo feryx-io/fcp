@@ -81,6 +81,10 @@ pub struct ApiState {
     /// Optional bearer token for authenticating to fcp-events-server.
     pub events_server_auth_token: Option<String>,
 
+    /// What this process calls itself when it posts an event to the events
+    /// server (`X-Node-ID`); the admin's `[service] node_id`.
+    pub events_node_id: Option<String>,
+
     /// URL of a conference server's HTTP API (e.g. "http://conf-a:8090")
     /// for live room controls. Any conference node will do: it locates
     /// or broadcasts to the nodes hosting a room through `/internal`.
@@ -190,6 +194,7 @@ impl ApiState {
             start_time: std::time::Instant::now(),
             events_server_url: None,
             events_server_auth_token: None,
+            events_node_id: None,
             conference_server_url: None,
             conference_server_auth_token: None,
             conference_join_secret: None,
@@ -223,6 +228,12 @@ impl ApiState {
     /// Set the events server bearer token for cluster-wide queries.
     pub fn with_events_server_auth_token(mut self, token: Option<String>) -> Self {
         self.events_server_auth_token = token;
+        self
+    }
+
+    /// Set the node id this process posts events under.
+    pub fn with_events_node_id(mut self, node_id: impl Into<String>) -> Self {
+        self.events_node_id = Some(node_id.into());
         self
     }
 
@@ -374,12 +385,16 @@ impl ApiState {
             let ingest_url = format!("{}/ingest", base_url);
             let event_clone = event;
             let auth_token = self.events_server_auth_token.clone();
+            let node_id = self.events_node_id.clone();
             tokio::spawn(async move {
                 let client = reqwest::Client::new();
                 let mut request = client
                     .post(&ingest_url)
                     .json(&event_clone)
                     .timeout(std::time::Duration::from_secs(5));
+                if let Some(node_id) = node_id {
+                    request = request.header("X-Node-ID", node_id);
+                }
                 if let Some(token) = auth_token.as_deref() {
                     request = request.bearer_auth(token);
                 }

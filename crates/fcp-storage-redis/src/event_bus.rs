@@ -177,23 +177,30 @@ impl RedisEventBus {
     }
 }
 
-#[async_trait]
-impl EventPublisher for RedisEventBus {
-    async fn publish(&self, event: PlatformEvent) -> Result<()> {
+impl RedisEventBus {
+    /// Publish `events` on behalf of `node_id` — the node that raised
+    /// them, not this process — in one pipeline. What an events server's
+    /// `/ingest` does with what a conference server, IVR or voicemail
+    /// server posts to it (`docs/DEPLOYMENT_GAPS.md` §1.6): the envelope
+    /// says which node and this region, so a bridge relays it once and
+    /// every consumer sees it.
+    pub async fn publish_many_from(&self, node_id: &str, events: Vec<PlatformEvent>) -> Result<()> {
+        if events.is_empty() {
+            return Ok(());
+        }
         let mut conn = self.storage.connection();
-
-        let envelope = EventEnvelope {
-            node_id: self.node_id.clone(),
-            origin_region: self.region.clone(),
-            relayed: false,
-            event,
-        };
-
-        let json = serde_json::to_string(&envelope)?;
-
-        // Pipeline: PUBLISH (real-time) + XADD (durability)
         let mut pipe = redis::pipe();
-        queue_publish(&mut pipe, &self.channel, &self.stream_key, &json);
+        let count = events.len();
+        for event in events {
+            let envelope = EventEnvelope {
+                node_id: node_id.to_string(),
+                origin_region: self.region.clone(),
+                relayed: false,
+                event,
+            };
+            let json = serde_json::to_string(&envelope)?;
+            queue_publish(&mut pipe, &self.channel, &self.stream_key, &json);
+        }
         let _: () = pipe
             .query_async(&mut conn)
             .await
@@ -201,11 +208,23 @@ impl EventPublisher for RedisEventBus {
 
         debug!(
             channel = %self.channel,
-            node_id = %self.node_id,
-            "Published event to Redis"
+            node_id = %node_id,
+            count,
+            "Published events to Redis"
         );
-
         Ok(())
+    }
+
+    /// `publish_many_from` for one event.
+    pub async fn publish_from(&self, node_id: &str, event: PlatformEvent) -> Result<()> {
+        self.publish_many_from(node_id, vec![event]).await
+    }
+}
+
+#[async_trait]
+impl EventPublisher for RedisEventBus {
+    async fn publish(&self, event: PlatformEvent) -> Result<()> {
+        self.publish_from(&self.node_id, event).await
     }
 }
 

@@ -634,6 +634,18 @@ The call manager's `[events] redis_channel` and `redis_stream_key`, read
 nowhere, are refused at startup with a message naming the events
 server's and `fcp-jobs`' `fcp:` prefix as the only knob. The wrong path
 is gone from the example configs, the compose config and the docs.
+Phase 4 done (v0.25.239): ingested events reach Redis. What a conference
+server, IVR, voicemail server or the admin posts to the events server's
+`/ingest` used to reach that one process's subscribers and no one else —
+not the region's other events servers, not the peer regions. With Redis
+as the bus the events server now writes an ingested event to its
+region's stream in an envelope carrying its region and the posting node
+(`X-Node-ID`, which every HTTP publisher now sends), and delivers it
+through its own consumer like any other event: once here, once in every
+other events server on the stream, once in every peer region through the
+bridge, webhooks in the origin region only. A stream that cannot be
+written answers 503 so the poster retries rather than the event being
+lost. Proved by two events servers in two regions on two Redis databases.
 
 ## Historical documents
 

@@ -1788,6 +1788,7 @@ async fn main() -> Result<()> {
     if let Some(ref events_url) = config.events.server_url {
         let events_url = events_url.clone();
         let events_config = config.events.clone();
+        let events_node_id = config.service.node_id.clone();
         let event_bus_clone = Arc::clone(&event_bus);
         let dropped_counter = Arc::clone(&events_dropped);
         tokio::spawn(supervise_task("event-forwarder", async move {
@@ -1795,6 +1796,7 @@ async fn main() -> Result<()> {
                 event_bus_clone,
                 &events_url,
                 &events_config,
+                events_node_id,
                 dropped_counter,
             )
             .await
@@ -2370,6 +2372,7 @@ async fn run_event_forwarder(
     event_bus: Arc<InMemoryEventBus>,
     events_url: &str,
     events_config: &config::EventsSection,
+    node_id: String,
     dropped_metric: Arc<std::sync::atomic::AtomicU64>,
 ) -> Result<()> {
     use std::sync::atomic::{AtomicBool, AtomicU64};
@@ -2437,6 +2440,7 @@ async fn run_event_forwarder(
                 let permit = Arc::clone(&semaphore);
                 let drop_counter = Arc::clone(&dropped_metric);
                 let auth_header = auth_header.clone();
+                let node_id = node_id.clone();
                 tokio::spawn(async move {
                     // Acquire semaphore permit to bound concurrency
                     let _permit = match permit.acquire().await {
@@ -2448,6 +2452,7 @@ async fn run_event_forwarder(
                         &url,
                         &event,
                         auth_header.as_deref(),
+                        &node_id,
                         max_retries,
                     )
                     .await
@@ -2502,6 +2507,7 @@ async fn forward_event_with_retry(
     url: &str,
     event: &fcp_events::PlatformEvent,
     auth_header: Option<&str>,
+    node_id: &str,
     max_retries: u32,
 ) -> bool {
     let mut delay = Duration::from_millis(200);
@@ -2518,6 +2524,8 @@ async fn forward_event_with_retry(
         let mut request = client
             .post(url)
             .header("content-type", "application/json")
+            // Which node raised it: the events server files it under this.
+            .header("X-Node-ID", node_id)
             .body(json_body.clone());
         if let Some(auth_header) = auth_header {
             request = request.header("Authorization", auth_header);
