@@ -1,7 +1,7 @@
 # The deployment guide's gaps
 
 Status: **agreed** (2026-09-23), survey done, all three questions in §3
-settled by the user. Chosen when the multi-region leftovers closed
+settled by the user; **phase 1 done** (v0.25.236). Chosen when the multi-region leftovers closed
 (`docs/MULTI_REGION_FOLLOWUPS.md` §5, the decision point).
 
 `docs/MULTI_REGION_DEPLOYMENT.md` was written against the code and ends
@@ -76,8 +76,9 @@ other id. The B2BUA handler gets `String::new()` as its node id
 `Option<String>` where every other binary has a `String` with a default,
 which is why the fallback is inline.
 
-Aside: `fcp-presence-server/src/config.rs:307` has a `[redis] node_id`
-nothing reads.
+(The survey first read the presence server's `[redis] node_id` as dead;
+it is not — `main.rs:671` gives it to the presence Pub/Sub as that
+node's identity, falling back to `[service] node_id`. Left alone.)
 
 ### 1.3 `fcp-registrar`'s `/drain` takes no credentials
 
@@ -282,7 +283,7 @@ One PR each, in order. Each phase strikes its item from the guide's §8.
 
 | Phase | What |
 |---|---|
-| 1 | **Identities and advertised addresses** (§1.1, §1.2). The SBC has one node id — `[service] node_id` a `String` with a default like every other binary — used by membership, the drain, the B2BUA handler and trunk registration. A `ClusterMember` is built from an *advertised* SIP address: a helper in `fcp-cluster` that replaces an unspecified bind IP with the node's `local_ip`, used by the conference server (where placement and migration read it) and by every other SIP binary's heartbeat. `docs/DISTRIBUTED_CONFERENCING.md` stops describing the raw bind as intended. The presence server's unread `[redis] node_id` is removed. |
+| 1 ✅ | **Identities and advertised addresses** (§1.1, §1.2). The SBC has one node id — `[service] node_id` a `String` with a default like every other binary — used by membership, the drain, the B2BUA handler and trunk registration. A `ClusterMember` is built from an *advertised* SIP address: a helper that replaces an unspecified bind IP with the node's `local_ip`, used by the conference server (where placement and migration read it) and by every other SIP binary's heartbeat. `docs/DISTRIBUTED_CONFERENCING.md` stops describing the raw bind as intended. Result: `fcp_core::transport::advertised_address` (re-exported by `fcp-cluster`), applied to the SIP **and** HTTP address of every heartbeat — call manager, conference server, IVR, voicemail, presence, gateway, SBC; the conference server's `SipSection::advertised_address()` beside its TLS twin; the SBC's four ids are one. The presence server's `[redis] node_id` turned out to be read (its Pub/Sub identity) and stays. Proved by two binary tests: a conference server bound to `0.0.0.0` heartbeats `127.0.0.1`, and an SBC's drain marks the record its configured id names. |
 | 2 | **The registrar's HTTP surface** (§1.3). `[http] api_token` on `fcp-registrar`; `/status` and `/drain` behind it; a public bind refused without it, like the others; the two documents corrected. |
 | 3 | **Configuration that does not do what it says** (§1.4, §1.5). The gateway's health path defaults per backend kind (`/api/v1/health` for admin, `/health` for events and jobs), the API's `/health` is exempt from its bearer layer (Q3), `health_check_interval` drives a background probe whose last result `/gateway/status` reports, and the wrong path leaves the example configs and docs. The call manager's `redis_channel` and `redis_stream_key` are gone; setting them is a startup error naming the prefix as the knob. |
 | 4 | **Ingested events reach Redis** (§1.6, Q2). `/ingest` and `/ingest/batch` write to the stream in an envelope — region local, node id from `X-Node-ID` or `ingest` — when the bus is Redis, and no longer publish locally; the conference server, IVR, voicemail server and admin send the header. Measured by the phase-1 bridge counters: a conference event raised in one region is counted out of its bridge and delivered to a WebSocket client in the other. |

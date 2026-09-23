@@ -598,6 +598,20 @@ resolved target); ingested events join Redis at `/ingest`; the API's
 addresses, the registrar's HTTP token, configuration that does not do
 what it says, ingested events reach Redis, replica health said, a
 trunk's hosts as a failover list, SRV for trunks.
+Phase 1 done (v0.25.236): identities and advertised addresses. Every
+heartbeat — call manager, conference server, IVR, voicemail, presence,
+gateway, SBC — now carries its SIP and HTTP address with an unspecified
+bind IP replaced by the node's `local_ip`
+(`fcp_core::transport::advertised_address`), so placement on the call
+manager and the gateway, and a migration's `Refer-To`, send callers to a
+conference node bound to `0.0.0.0` at an address they can reach. The SBC
+has one node id: `[service] node_id` (a `String` with an `sbc-<uuid>`
+default, like every other binary) names its membership record, its
+drain's events, its calls and its trunk registrations, where it had four.
+The presence server's `[redis] node_id` the survey called dead is its
+Pub/Sub identity and stays. Two binary tests prove it: a conference
+server bound to `0.0.0.0` heartbeats `127.0.0.1`, and an SBC's drain
+marks the record its configured id names.
 
 ## Historical documents
 

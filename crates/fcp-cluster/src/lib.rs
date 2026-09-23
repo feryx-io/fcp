@@ -22,6 +22,7 @@ pub use conference_registry::{
     choose_conference_node, ConferenceHost, ConferenceRegistry, RoomRecord, VideoNeed,
     CONFERENCE_NODE_TYPE,
 };
+pub use fcp_core::transport::advertised_address;
 pub use membership::{
     choose_handover_node, resolve_region, tenant_probe, ClusterManager, ClusterMember,
     DatabaseProbe, EngineBudget, NodeCapacity, VideoBudgetHandle, VideoDeviceBudget, VideoEngines,

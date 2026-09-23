@@ -312,6 +312,20 @@ impl SipSection {
         Some((cert, key))
     }
 
+    /// The SIP address to advertise in cluster membership, where the call
+    /// manager's and the gateway's placement send callers and a migration's
+    /// `Refer-To` sends a moved participant: `udp_bind` with an
+    /// unspecified IP replaced by `local_ip`. Falls back to the bind as-is
+    /// when nothing routable is known, or to `0.0.0.0:5060` when the bind
+    /// does not parse (validation refuses that before it matters).
+    pub fn advertised_address(&self) -> std::net::SocketAddr {
+        let bind = self
+            .udp_bind
+            .parse()
+            .unwrap_or_else(|_| "0.0.0.0:5060".parse().unwrap());
+        fcp_core::transport::advertised_address(bind, self.local_ip.as_deref())
+    }
+
     /// The TLS listener address peers should dial: `tls_bind` with an
     /// unspecified IP replaced by `local_ip`. `None` without a TLS
     /// listener, or when the bind is unspecified and no `local_ip` is
@@ -1558,6 +1572,18 @@ max_pin_attempts = 5
             sip.tls_client_identity(),
             Some(("client.crt", "client.key"))
         );
+    }
+
+    #[test]
+    fn advertised_address_substitutes_local_ip_for_unspecified_bind() {
+        let mut sip = SipSection::default();
+        // The default bind is unspecified and nothing routable is known.
+        assert_eq!(sip.advertised_address(), "0.0.0.0:5060".parse().unwrap());
+        sip.udp_bind = "0.0.0.0:5074".to_string();
+        sip.local_ip = Some("10.0.0.20".to_string());
+        assert_eq!(sip.advertised_address(), "10.0.0.20:5074".parse().unwrap());
+        sip.udp_bind = "10.0.0.21:5075".to_string();
+        assert_eq!(sip.advertised_address(), "10.0.0.21:5075".parse().unwrap());
     }
 
     #[test]

@@ -608,11 +608,7 @@ async fn main() -> Result<()> {
                 node_id: config.service.node_id.clone(),
                 node_type: config.service.service_type.clone(),
                 http_address: config.advertised_http_address(),
-                sip_address: config
-                    .sip
-                    .udp_bind
-                    .parse()
-                    .unwrap_or_else(|_| "0.0.0.0:5060".parse().unwrap()),
+                sip_address: config.sip.advertised_address(),
                 sip_tls_address: config.sip.advertised_tls_address(),
                 capabilities: vec![
                     "conference".to_string(),

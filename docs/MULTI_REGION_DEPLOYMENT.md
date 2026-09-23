@@ -359,16 +359,13 @@ keeps a handle it could ask for the replica's health.
   event bus, or making registrations regional, needs the call manager to
   take more than one Redis. This is the decision point after the
   multi-region follow-ups (`docs/MULTI_REGION_FOLLOWUPS.md` §5).
-- **A conference server advertises its SIP bind address as-is.** The
-  `sip_address` in its heartbeat is `[sip] udp_bind` unchanged, and the
-  call manager routes placed callers there; bound to `0.0.0.0`, that is
-  where callers are sent. Bind a concrete address until this uses
-  `local_ip`.
+- ~~A conference server advertises its SIP bind address as-is.~~ Fixed
+  (v0.25.236): every node's heartbeat carries its bind with an unspecified
+  IP replaced by `local_ip`.
 - **`fcp-registrar`'s `/drain` takes no credentials**, unlike every other
   binary's. Bind its HTTP listener to a private interface.
-- **The SBC's membership node id is random** (`sbc-<uuid>`), not its
-  `[service] node_id`, so it changes on every restart and does not match
-  the id its drain uses.
+- ~~The SBC's membership node id is random.~~ Fixed (v0.25.236): one
+  `[service] node_id` for membership, the drain, its calls and its trunks.
 - **Events ingested over HTTP never cross regions** (§3.2): conference,
   IVR and voicemail events stay in the region that produced them.
 - **No binary reports its replica's health** on `/status`, though the

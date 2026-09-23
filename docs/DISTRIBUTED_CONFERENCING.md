@@ -88,8 +88,11 @@ conference_node_capacity = 100                              # after phase 2
 ```
 
 Conference nodes advertise themselves in cluster membership with node type
-`conference` (the `[service] service_type`) and their SIP bind address; the
-selector returns that address as the target host.
+`conference` (the `[service] service_type`) and their SIP address — the
+`[sip] udp_bind` with an unspecified IP replaced by `local_ip`, so a node
+bound to `0.0.0.0` advertises somewhere a caller can reach; the selector
+returns that address as the target host, and a migration's `Refer-To`
+names it too.
 
 ## Phase 2: trunks
 

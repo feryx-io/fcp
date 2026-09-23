@@ -31,18 +31,33 @@ pub struct SbcDeployConfig {
 /// What this node calls itself, and how long it waits for the calls it is
 /// carrying when it leaves service
 /// (`docs/CAPACITY_AND_SURVIVABILITY.md` §6).
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ServiceSection {
-    /// This node's id in events and in cluster membership. Generated per
-    /// run when unset.
-    #[serde(default)]
-    pub node_id: Option<String>,
+    /// This node's id: in cluster membership, in the drain's events, on
+    /// the calls it carries and on the trunks it registers — one id, the
+    /// same everywhere (`docs/DEPLOYMENT_GAPS.md` §1.2). `sbc-<uuid>`,
+    /// fresh per run, when unset.
+    #[serde(default = "default_node_id")]
+    pub node_id: String,
 
     /// Seconds a drain waits for the calls this node is carrying before it
     /// ends what is left with a BYE that says why. Zero — the default — is
     /// what the SBC always did: it stops where it stands.
     #[serde(default)]
     pub drain_wait_secs: u64,
+}
+
+fn default_node_id() -> String {
+    format!("sbc-{}", uuid::Uuid::new_v4())
+}
+
+impl Default for ServiceSection {
+    fn default() -> Self {
+        Self {
+            node_id: default_node_id(),
+            drain_wait_secs: 0,
+        }
+    }
 }
 
 /// Cluster configuration.

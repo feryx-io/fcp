@@ -2,8 +2,10 @@
 //! ports, answer its health endpoint, and exit cleanly on SIGTERM.
 //! See `fcp_testkit::smoke` for the harness.
 
+use fcp_testkit::cluster;
 use fcp_testkit::smoke::{self, free_port, Smoke};
 use fcp_testkit::TestDatabase;
+use std::time::Duration;
 
 const BIN: &str = env!("CARGO_BIN_EXE_fcp-sbc");
 
@@ -112,6 +114,95 @@ database_url = "{db}"
             assert!(body.contains("serving"), "{body}");
             let (code, _) = smoke::http_get(&ready).await.expect("ready answers");
             assert_eq!(code, 200, "serving again");
+        })
+        .run()
+        .await;
+    report.assert_clean();
+
+    db.drop_db().await;
+}
+
+/// One node id (`docs/DEPLOYMENT_GAPS.md` §1.2): the id an SBC is
+/// configured with is the one its heartbeat is filed under, and a drain
+/// marks that record — not a second, random one — so an operator who
+/// drains `sbc-east-1` sees `sbc-east-1` draining. Also: bound to
+/// loopback, it advertises the loopback address as it is.
+#[tokio::test]
+async fn a_configured_node_id_names_the_record_the_drain_marks() {
+    let Some(db) = TestDatabase::create().await else {
+        eprintln!("FCP_TEST_DATABASE_URL not set; skipping fcp-sbc membership test");
+        return;
+    };
+    let Some(redis_url) = cluster::private_redis_url() else {
+        eprintln!("FCP_TEST_REDIS_URL not set; skipping fcp-sbc membership test");
+        return;
+    };
+    let sip = free_port();
+    let http = free_port();
+    let node_id = format!("sbc-smoke-{}", uuid::Uuid::new_v4().simple());
+    let config = format!(
+        r#"redis_url = "{redis}"
+
+[service]
+node_id = "{node_id}"
+drain_wait_secs = 0
+
+[cluster]
+enabled = true
+heartbeat_interval_secs = 1
+
+[core]
+external_domain = "smoke.example.com"
+
+[core.storage]
+enabled = true
+database_url = "{db}"
+"#,
+        db = db.url(),
+        redis = redis_url,
+    );
+
+    let redis_for_probe = redis_url.clone();
+    let id_for_probe = node_id.clone();
+    let report = Smoke::new(BIN)
+        .config_toml(config)
+        .arg("--bind")
+        .arg(format!("127.0.0.1:{sip}"))
+        .arg("--health-bind")
+        .arg(format!("127.0.0.1:{http}"))
+        .health_url(smoke::loopback(http, "/health"))
+        .while_up(move || async move {
+            let record = cluster::heartbeat_when(
+                &redis_for_probe,
+                &id_for_probe,
+                Duration::from_secs(10),
+                |_| true,
+            )
+            .await
+            .expect("the SBC heartbeats under its configured id");
+            assert_eq!(record["node_id"], id_for_probe.as_str());
+            assert_eq!(record["node_type"], "sbc");
+            assert_eq!(record["draining"], false);
+            assert_eq!(record["sip_address"], format!("127.0.0.1:{sip}"));
+            assert_eq!(record["http_address"], format!("127.0.0.1:{http}"));
+
+            let (code, body) = smoke::http_post(&smoke::loopback(http, "/drain"), "{}")
+                .await
+                .expect("drain starts");
+            assert_eq!(code, 200, "{body}");
+
+            let record = cluster::heartbeat_when(
+                &redis_for_probe,
+                &id_for_probe,
+                Duration::from_secs(10),
+                |r| r["draining"] == true,
+            )
+            .await
+            .expect("the record is still there");
+            assert_eq!(
+                record["draining"], true,
+                "the drain marks the record the configured id names: {record}"
+            );
         })
         .run()
         .await;
