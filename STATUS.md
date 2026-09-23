@@ -533,6 +533,25 @@ A standalone `fcp-registrar` publishes no events, so behind one a new
 registration reaches a call manager within the TTL. Whether this closes
 §2.1 depends on how much traffic is repeat lookups — the decision point,
 with hits against round trips on `/metrics` as its evidence.
+Phase 3 done (v0.25.233): a partition is visible. Every node's membership
+loop keeps a view of the cluster — `whole`, `store_unreachable` (its
+discovery fails or hangs, so its member list is as old as
+`view_age_secs`), or `remote_regions_lost` (every node outside its region
+went quiet at once, not by shutting down) — and, on the call manager and
+conference server, whether it still reaches its database. It is on
+`/status` (`cluster_view`), `/metrics` (`fcp_cluster_view`), the heartbeat
+record (the admin API per node, `nodes_with_partial_view`, a badge and a
+banner in the admin UI) and `system.cluster_view_changed`; nothing acts on
+it. A clean shutdown leaves a `cluster:left` marker, so `system.node_left`
+says `shutdown` or `heartbeat_expired` and a region taken down cleanly is
+not a partition. The survey was wrong on one point, now corrected: a node
+cut off from Redis does not lose the other nodes after 15 s — its list
+stays as it was. And the partition test found a real fault: `RedisStorage`
+used redis-rs 0.27's defaults, which retried a lost connection after 1 s
+and then every 60 s with every command waiting on the retry, so a
+two-second blip stalled a node's membership and events for minutes;
+retries are now at most a second apart and a connection attempt gives up
+after two seconds, and the node is back about a second after the link.
 
 ## Historical documents
 

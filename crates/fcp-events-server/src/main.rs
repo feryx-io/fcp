@@ -326,6 +326,7 @@ async fn main() -> Result<()> {
                         region: fcp_cluster::resolve_region(config.cluster.region.as_deref()),
                         video_budget: Vec::new(),
                         registering_trunks: Vec::new(),
+                        view: None,
                     };
                     let cm = fcp_cluster::ClusterManager::new(redis, member).with_intervals(
                         config.cluster.heartbeat_interval_secs,
@@ -1363,6 +1364,15 @@ fn process_event_for_state(
                         waited_secs = %waited_secs,
                         "Node drained"
                     );
+                }
+                SystemEvent::ClusterViewChanged {
+                    node_id,
+                    state,
+                    summary,
+                    ..
+                } => {
+                    // Said, not acted on (docs/MULTI_REGION_FOLLOWUPS.md §2.3).
+                    info!(node_id = %node_id, state = %state, "Node's cluster view changed: {summary}");
                 }
             }
         }

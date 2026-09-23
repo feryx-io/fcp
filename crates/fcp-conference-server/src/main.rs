@@ -635,16 +635,20 @@ async fn main() -> Result<()> {
                     .map(cluster_budget)
                     .collect(),
                 registering_trunks: Vec::new(),
+                view: None,
             };
-            let cm =
-                fcp_cluster::ClusterManager::new(redis.clone(), member)
-                    .with_intervals(
-                        config.cluster.heartbeat_interval_secs,
-                        config.cluster.heartbeat_ttl_secs,
-                    )
-                    .with_event_publisher(
-                        Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>
-                    );
+            let cm = fcp_cluster::ClusterManager::new(redis.clone(), member)
+                .with_intervals(
+                    config.cluster.heartbeat_interval_secs,
+                    config.cluster.heartbeat_ttl_secs,
+                )
+                .with_event_publisher(Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>)
+                // Whether a node that has lost the cluster still reaches
+                // its database (docs/MULTI_REGION_FOLLOWUPS.md §2.3).
+                .with_database_probe(fcp_cluster::tenant_probe(
+                    Arc::clone(&dyn_storage) as Arc<dyn fcp_core::storage::TenantStore>,
+                    config.service.default_tenant_id,
+                ));
             let _handle = cm.start();
             info!("Cluster membership started");
             Some((
@@ -1587,6 +1591,8 @@ async fn main() -> Result<()> {
             .and(config.cluster.secret.clone())
             .filter(|s| !s.is_empty()),
         control: cluster_control,
+        #[cfg(feature = "storage-redis")]
+        cluster: _cluster_manager.as_ref().map(|(cm, _)| Arc::clone(cm)),
     });
     let http_bind = config.http.bind_address;
     tokio::spawn(supervise_task("http-server", async move {

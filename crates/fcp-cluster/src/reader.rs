@@ -57,6 +57,10 @@ pub struct ClusterNodeInfo {
     /// Calls this node will still take, when it says what it allows.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub calls_left: Option<u32>,
+    /// The node's own view of the cluster, when it does not look whole
+    /// (`docs/MULTI_REGION_FOLLOWUPS.md` §2.3).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub view: Option<crate::view::ClusterView>,
 }
 
 /// Aggregate statistics across all cluster nodes.
@@ -72,6 +76,9 @@ pub struct ClusterStats {
     pub nodes_by_region: HashMap<String, usize>,
     /// Nodes that advertise no region.
     pub nodes_without_region: usize,
+    /// Nodes whose own view of the cluster does not look whole — most
+    /// often every node of a region that has lost the others (§2.3).
+    pub nodes_with_partial_view: usize,
 }
 
 impl ClusterReader {
@@ -168,6 +175,7 @@ impl ClusterReader {
                         .capacity
                         .and_then(|c| c.calls_left(member.active_calls)),
                     capacity: member.capacity,
+                    view: member.view,
                 });
             }
 
@@ -207,8 +215,12 @@ fn summarize(nodes: &[ClusterNodeInfo]) -> ClusterStats {
     let mut by_type: HashMap<String, usize> = HashMap::new();
     let mut by_region: HashMap<String, usize> = HashMap::new();
     let mut without_region = 0usize;
+    let mut partial_view = 0usize;
 
     for node in nodes {
+        if node.view.as_ref().is_some_and(|v| !v.is_whole()) {
+            partial_view += 1;
+        }
         match node.status {
             ClusterNodeStatus::Healthy => healthy += 1,
             ClusterNodeStatus::Degraded => degraded += 1,
@@ -231,6 +243,7 @@ fn summarize(nodes: &[ClusterNodeInfo]) -> ClusterStats {
         nodes_by_type: by_type,
         nodes_by_region: by_region,
         nodes_without_region: without_region,
+        nodes_with_partial_view: partial_view,
     }
 }
 
@@ -255,6 +268,7 @@ mod tests {
             draining: false,
             region: region.map(str::to_owned),
             video_budget: Vec::new(),
+            view: None,
         }
     }
 
@@ -273,5 +287,24 @@ mod tests {
         assert_eq!(stats.nodes_by_region.len(), 2);
         assert_eq!(stats.nodes_without_region, 1);
         assert_eq!(stats.nodes_by_type["call_manager"], 3);
+        assert_eq!(stats.nodes_with_partial_view, 0);
+    }
+
+    #[test]
+    fn stats_count_the_nodes_that_doubt_their_view() {
+        let doubting = crate::view::ClusterView {
+            state: crate::view::ViewState::RemoteRegionsLost,
+            since: Some(0),
+            lost_regions: vec!["eu-west".into()],
+            view_age_secs: Some(1),
+            database_reachable: Some(true),
+            summary: "lost eu-west".into(),
+        };
+        let mut a = node("cm-1", "call_manager", Some("us-east"), 0);
+        a.view = Some(doubting.clone());
+        let mut b = node("conf-1", "conference", Some("us-east"), 0);
+        b.view = Some(doubting);
+        let stats = summarize(&[a, b, node("cm-2", "call_manager", Some("us-east"), 0)]);
+        assert_eq!(stats.nodes_with_partial_view, 2);
     }
 }

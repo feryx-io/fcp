@@ -23,6 +23,7 @@ fn member(id: &str, node_type: &str, region: Option<&str>, calls: usize) -> Clus
         region: region.map(str::to_owned),
         video_budget: Vec::new(),
         registering_trunks: Vec::new(),
+        view: None,
     }
 }
 

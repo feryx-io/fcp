@@ -27,6 +27,12 @@ const statusBadge = (status: string) => {
 const DRAINING_TITLE =
   'Leaving service: taking no new calls, keeping the ones it has until its drain deadline'
 
+// A node that has lost every other region at once cannot tell a lost
+// region from a cut link, so it says its own view may be what is broken
+// (docs/MULTI_REGION_FOLLOWUPS.md §2.3). Nothing acts on it.
+const viewLabel = (state: string) =>
+  state === 'remote_regions_lost' ? 'lost other regions' : state.replace(/_/g, ' ')
+
 const formatNodeType = (t: string) =>
   t.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
 
@@ -48,6 +54,11 @@ const columns: ColumnDef<ClusterNodeInfo>[] = [
         </Badge>
         {row.original.draining && (
           <Badge variant="warning" title={DRAINING_TITLE}>draining</Badge>
+        )}
+        {row.original.view && row.original.view.state !== 'whole' && (
+          <Badge variant="warning" title={row.original.view.summary}>
+            {viewLabel(row.original.view.state)}
+          </Badge>
         )}
       </div>
     ),
@@ -275,6 +286,9 @@ export function ClusterPage() {
             </div>
           )}
 
+          {/* Nodes that doubt their own view of the cluster */}
+          <PartialViewBanner nodes={nodes} />
+
           {/* Summary Stats Cards */}
           {stats && (
             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-6">
@@ -349,6 +363,46 @@ export function ClusterPage() {
           <LocalNodeInfo status={systemStatus} summary={summary} />
         </>
       )}
+    </div>
+  )
+}
+
+/**
+ * Nodes whose own view of the cluster does not look whole. Every node of a
+ * region cut off from the others says the same thing, so they are grouped
+ * by what they lost. A node that cannot reach the cluster store at all
+ * cannot write its heartbeat either; it vanishes from this list, and its
+ * own /status is where it says why.
+ */
+function PartialViewBanner({ nodes }: { nodes: ClusterNodeInfo[] }) {
+  const doubting = nodes.filter((n) => n.view && n.view.state !== 'whole')
+  if (doubting.length === 0) return null
+  const groups = new Map<string, ClusterNodeInfo[]>()
+  for (const n of doubting) {
+    const key = `${n.region ?? '—'}|${(n.view!.lost_regions ?? []).join(', ')}`
+    groups.set(key, [...(groups.get(key) ?? []), n])
+  }
+  return (
+    <div className="rounded-md border border-yellow-200 bg-yellow-50 dark:border-yellow-900 dark:bg-yellow-950 p-4 text-sm text-yellow-800 dark:text-yellow-200 space-y-2">
+      <div className="font-semibold">
+        <AlertTriangle className="inline mr-2 h-4 w-4" />
+        {doubting.length === 1 ? 'A node doubts' : `${doubting.length} nodes doubt`} its view of the cluster
+      </div>
+      {[...groups.entries()].map(([key, members]) => {
+        const [region, lost] = key.split('|')
+        const since = members[0].view?.since
+        return (
+          <div key={key}>
+            {region !== '—' ? <>In <strong>{region}</strong>, </> : null}
+            {members.length === 1 ? '1 node' : `${members.length} nodes`} lost every node
+            {lost ? <> in <strong>{lost}</strong></> : null} at once
+            {since ? <> at {new Date(since * 1000).toLocaleTimeString()}</> : null}.
+            {' '}Either {lost || 'that region'} is down, or the link to it is: from inside, a node
+            cannot tell which. Nothing changes behaviour because of this.
+            <div className="text-xs opacity-80">{members.map((m) => m.node_id).join(', ')}</div>
+          </div>
+        )
+      })}
     </div>
   )
 }

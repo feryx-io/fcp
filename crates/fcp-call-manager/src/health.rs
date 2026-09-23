@@ -67,6 +67,10 @@ pub struct AppState {
     /// Registration lookups kept for a TTL, when the node keeps them
     /// (`docs/MULTI_REGION_FOLLOWUPS.md` §2.1, phase 2).
     pub registration_cache: Option<Arc<fcp_sip::registration_cache::RegistrationCache>>,
+    /// Cluster membership, when the node is clustered: what `/status`
+    /// reports of its view (`docs/MULTI_REGION_FOLLOWUPS.md` §2.3).
+    #[cfg(feature = "storage-redis")]
+    pub cluster: Option<Arc<fcp_cluster::ClusterManager>>,
 }
 
 fn queue_visible_to_service_tenant(
@@ -355,6 +359,10 @@ async fn status_handler(State(state): State<Arc<AppState>>) -> Json<serde_json::
             "total": fcp_core::storage::RegistrationReads::global().total(),
             "cached": fcp_core::storage::RegistrationReads::global().cached(),
         },
+        // Whether this node's view of the cluster looks whole, and why
+        // not (docs/MULTI_REGION_FOLLOWUPS.md §2.3). Absent outside a
+        // cluster.
+        "cluster_view": cluster_view(&state),
         "registration_cache": state.registration_cache.as_ref().map(|cache| {
             let stats = cache.stats();
             serde_json::json!({
@@ -965,6 +973,22 @@ async fn transcoding_handler(State(state): State<Arc<AppState>>) -> Json<serde_j
 /// are included.
 ///
 /// GET /metrics
+/// This node's view of the cluster, when it is clustered.
+fn cluster_view(state: &AppState) -> Option<serde_json::Value> {
+    #[cfg(feature = "storage-redis")]
+    {
+        state
+            .cluster
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c.view()).ok())
+    }
+    #[cfg(not(feature = "storage-redis"))]
+    {
+        let _ = state;
+        None
+    }
+}
+
 async fn metrics_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     use prometheus::Encoder;
     let encoder = prometheus::TextEncoder::new();
@@ -992,6 +1016,12 @@ async fn metrics_handler(State(state): State<Arc<AppState>>) -> impl IntoRespons
     body.push_str(
         &fcp_core::compliance::RecordingCounters::global().prometheus(&format!("node=\"{node}\"")),
     );
+    // Whether this node's view of the cluster looks whole
+    // (docs/MULTI_REGION_FOLLOWUPS.md §2.3).
+    #[cfg(feature = "storage-redis")]
+    if let Some(cluster) = &state.cluster {
+        body.push_str(&cluster.view().prometheus(&format!("node=\"{node}\"")));
+    }
     // Registration lookups in the store, by reason: the one hot-path read
     // that is neither cached nor replica-served, so each is a crossing in
     // a region away from the primary (docs/MULTI_REGION_FOLLOWUPS.md §2.1).

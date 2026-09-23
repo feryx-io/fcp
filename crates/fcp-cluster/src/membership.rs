@@ -15,6 +15,8 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 
+use crate::view::{ClusterView, Departure, ViewState, ViewTracker};
+
 /// Information about a cluster member node.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClusterMember {
@@ -87,6 +89,14 @@ pub struct ClusterMember {
     /// older versions: such a node is neither preferred nor excluded.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub video_budget: Vec<VideoDeviceBudget>,
+    /// This node's own view of the cluster, when it does not look whole
+    /// (`docs/MULTI_REGION_FOLLOWUPS.md` §2.3): a node that lost every
+    /// other region at once says so here, where the admin API reads it.
+    /// Absent while the view is whole and on records written by older
+    /// versions. A node that cannot reach the store cannot write this at
+    /// all; its own `/status` is where that is said.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view: Option<crate::view::ClusterView>,
 }
 
 /// What a node will carry, from its `[admission]` section, and what it
@@ -261,6 +271,29 @@ pub struct ClusterManager {
     /// Before that this node knows of none, and must not conclude from
     /// that silence that it is alone.
     discovered: Arc<AtomicBool>,
+    /// Whether this node's view of the cluster looks whole (§2.3).
+    view: Arc<std::sync::Mutex<ViewTracker>>,
+    /// Whether this node reaches its database, asked while the view is
+    /// not whole.
+    database_probe: Option<DatabaseProbe>,
+}
+
+/// Asks whether the node reaches its database: `true` when it does.
+pub type DatabaseProbe = Arc<
+    dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>> + Send + Sync,
+>;
+
+/// A [`DatabaseProbe`] that reads one tenant: the cheapest question every
+/// binary with a database can already ask. An answer — even "no such
+/// tenant" — is a database reached.
+pub fn tenant_probe(
+    store: Arc<dyn fcp_core::storage::TenantStore>,
+    tenant_id: fcp_core::TenantId,
+) -> DatabaseProbe {
+    Arc::new(move || {
+        let store = Arc::clone(&store);
+        Box::pin(async move { store.get_tenant(&tenant_id).await.is_ok() })
+    })
 }
 
 impl ClusterManager {
@@ -270,6 +303,7 @@ impl ClusterManager {
         let self_info_capacity = self_info.capacity;
         let self_info_budget = self_info.video_budget.clone();
         let self_info_trunks = self_info.registering_trunks.clone();
+        let self_info_region = self_info.region.clone();
         Self {
             storage,
             self_info,
@@ -284,6 +318,11 @@ impl ClusterManager {
             video_budget: Arc::new(std::sync::RwLock::new(self_info_budget)),
             registering_trunks: Arc::new(std::sync::RwLock::new(self_info_trunks)),
             discovered: Arc::new(AtomicBool::new(false)),
+            view: Arc::new(std::sync::Mutex::new(ViewTracker::new(
+                self_info_region,
+                std::time::Duration::from_secs(15),
+            ))),
+            database_probe: None,
         }
     }
 
@@ -291,7 +330,29 @@ impl ClusterManager {
     pub fn with_intervals(mut self, interval_secs: u64, ttl_secs: u64) -> Self {
         self.heartbeat_interval_secs = interval_secs;
         self.heartbeat_ttl_secs = ttl_secs;
+        self.view = Arc::new(std::sync::Mutex::new(ViewTracker::new(
+            self.self_info.region.clone(),
+            std::time::Duration::from_secs(ttl_secs),
+        )));
         self
+    }
+
+    /// Ask `probe` whether this node reaches its database while its view of
+    /// the cluster is not whole: one that reaches the database but not the
+    /// cluster is almost certainly the node that is cut off
+    /// (`docs/MULTI_REGION_FOLLOWUPS.md` §2.3).
+    pub fn with_database_probe(mut self, probe: DatabaseProbe) -> Self {
+        self.database_probe = Some(probe);
+        self
+    }
+
+    /// Whether this node's view of the cluster looks whole, and if not,
+    /// why (§2.3). Visibility only: nothing changes behaviour on it.
+    pub fn view(&self) -> ClusterView {
+        self.view
+            .lock()
+            .map(|v| v.view(std::time::Instant::now()))
+            .unwrap_or_else(|p| p.into_inner().view(std::time::Instant::now()))
     }
 
     /// Set an event publisher for emitting NodeJoined/NodeLeft events.
@@ -315,6 +376,13 @@ impl ClusterManager {
         let video_budget = Arc::clone(&self.video_budget);
         let registering_trunks = Arc::clone(&self.registering_trunks);
         let discovered = Arc::clone(&self.discovered);
+        let view = Arc::clone(&self.view);
+        let database_probe = self.database_probe.clone();
+        // A partition often drops packets rather than refusing them, and a
+        // command on a dropped link waits forever. A tick that has not
+        // finished within the heartbeat TTL has failed: by then this node's
+        // own record has expired, whatever the tick was waiting on.
+        let tick_budget = std::time::Duration::from_secs(ttl.max(2));
 
         info!(
             node_id = %self_info.node_id,
@@ -329,7 +397,7 @@ impl ClusterManager {
                     _ = tick.tick() => {}
                     _ = shutdown_rx.changed() => {
                         info!(node_id = %self_info.node_id, "Cluster shutdown signal received");
-                        if let Err(e) = remove_heartbeat(&storage, &self_info.node_id).await {
+                        if let Err(e) = remove_heartbeat(&storage, &self_info.node_id, ttl).await {
                             error!(error = %e, "Failed to remove heartbeat on shutdown");
                         }
                         break;
@@ -345,26 +413,82 @@ impl ClusterManager {
                     .read()
                     .map(|t| t.clone())
                     .unwrap_or_default();
+                self_info.view = view
+                    .lock()
+                    .ok()
+                    .map(|v| v.view(std::time::Instant::now()))
+                    .filter(|v| !v.is_whole());
 
-                // Publish heartbeat
-                if let Err(e) = publish_heartbeat(&storage, &self_info, ttl).await {
-                    error!(error = %e, "Failed to publish cluster heartbeat");
+                let beat_and_look = async {
+                    publish_heartbeat(&storage, &self_info, ttl).await?;
+                    discover_members(
+                        &storage,
+                        &self_info.node_id,
+                        &members,
+                        event_publisher.as_ref(),
+                    )
+                    .await
+                };
+                let outcome = match tokio::time::timeout(tick_budget, beat_and_look).await {
+                    Ok(outcome) => outcome,
+                    Err(_) => Err(anyhow::anyhow!(
+                        "the cluster store did not answer within {}s",
+                        tick_budget.as_secs()
+                    )),
+                };
+                let now = std::time::Instant::now();
+                let wall = std::time::SystemTime::now();
+                let (transition, whole) = {
+                    let Ok(mut tracker) = view.lock() else {
+                        continue;
+                    };
+                    let transition = match &outcome {
+                        Ok(departed) => {
+                            let regions: Vec<Option<String>> =
+                                members.iter().map(|m| m.region.clone()).collect();
+                            tracker.on_discovery(now, wall, &regions, departed)
+                        }
+                        Err(e) => {
+                            error!(error = %e, "Cluster heartbeat or discovery failed");
+                            tracker.on_failure(now, wall)
+                        }
+                    };
+                    (transition, tracker.state() == ViewState::Whole)
+                };
+                if outcome.is_ok() {
+                    // Whatever it found, this node has now looked: an empty
+                    // membership from here on means it really is alone.
+                    discovered.store(true, Ordering::Relaxed);
                 }
 
-                // Discover members
-                if let Err(e) = discover_members(
-                    &storage,
-                    &self_info.node_id,
-                    &members,
-                    event_publisher.as_ref(),
-                )
-                .await
-                {
-                    error!(error = %e, "Failed to discover cluster members");
+                // While the view is not whole, ask whether the database is
+                // still there: it tells a node that is cut off from one whose
+                // own network is down.
+                if !whole {
+                    if let Some(probe) = &database_probe {
+                        let reachable = tokio::time::timeout(tick_budget, probe())
+                            .await
+                            .unwrap_or(false);
+                        if let Ok(mut tracker) = view.lock() {
+                            tracker.set_database_reachable(Some(reachable));
+                        }
+                    }
                 }
-                // Whatever it found, this node has now looked: an empty
-                // membership from here on means it really is alone.
-                discovered.store(true, Ordering::Relaxed);
+
+                if let Some(transition) = transition {
+                    let current = view
+                        .lock()
+                        .map(|v| v.view(now))
+                        .unwrap_or(transition.view.clone());
+                    announce_view(
+                        &self_info,
+                        transition.from,
+                        &current,
+                        transition.lasted_secs,
+                        event_publisher.as_ref(),
+                    )
+                    .await;
+                }
             }
         })
     }
@@ -388,6 +512,7 @@ impl ClusterManager {
             .read()
             .map(|t| t.clone())
             .unwrap_or_default();
+        info.view = Some(self.view()).filter(|v| !v.is_whole());
         publish_heartbeat(&self.storage, &info, self.heartbeat_ttl_secs).await?;
         info!(node_id = %info.node_id, draining, "Cluster draining flag published");
         Ok(())
@@ -450,6 +575,7 @@ impl ClusterManager {
             .read()
             .map(|t| t.clone())
             .unwrap_or_default();
+        info.view = Some(self.view()).filter(|v| !v.is_whole());
         if let Err(e) = publish_heartbeat(&self.storage, &info, self.heartbeat_ttl_secs).await {
             warn!(error = %e, "Failed to publish cluster heartbeat");
         }
@@ -615,13 +741,22 @@ impl ClusterManager {
     }
 }
 
-/// Remove this node's heartbeat key from Redis (graceful shutdown).
-async fn remove_heartbeat(storage: &RedisStorage, node_id: &str) -> anyhow::Result<()> {
+/// Remove this node's heartbeat key from Redis (graceful shutdown), and
+/// say it left on purpose: a peer that sees it go reads the marker and does
+/// not take a shutdown for a region going quiet (§2.3).
+async fn remove_heartbeat(
+    storage: &RedisStorage,
+    node_id: &str,
+    ttl_secs: u64,
+) -> anyhow::Result<()> {
     let key = storage.key(&format!("cluster:node:{}", node_id));
+    let left = storage.key(&format!("cluster:left:{}", node_id));
     let mut conn = storage.connection();
 
-    let _: () = redis::cmd("DEL")
-        .arg(&key)
+    let (): () = redis::pipe()
+        .atomic()
+        .set_ex(&left, "shutdown", (ttl_secs * 4).max(60))
+        .del(&key)
         .query_async(&mut conn)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to remove heartbeat: {}", e))?;
@@ -655,13 +790,14 @@ async fn publish_heartbeat(
 
 /// Discover cluster members by scanning Redis keys.
 ///
-/// Emits `NodeJoined` / `NodeLeft` events when the set of known members changes.
+/// Emits `NodeJoined` / `NodeLeft` events when the set of known members
+/// changes, and returns who left and whether they said so.
 async fn discover_members(
     storage: &RedisStorage,
     self_node_id: &str,
     members: &DashMap<String, ClusterMember>,
     event_publisher: Option<&Arc<dyn EventPublisher>>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Vec<Departure>> {
     let mut conn = storage.connection();
     let pattern = storage.key("cluster:node:*");
 
@@ -711,12 +847,22 @@ async fn discover_members(
         }
     }
 
-    // Detect departed members before retain
-    let departed: Vec<String> = members
+    // Detect departed members before retain, and whether each left on
+    // purpose: a shutdown leaves a marker, a node that went quiet does not.
+    let gone: Vec<(String, Option<String>)> = members
         .iter()
         .filter(|e| !seen_ids.contains(e.key()))
-        .map(|e| e.key().clone())
+        .map(|e| (e.key().clone(), e.value().region.clone()))
         .collect();
+    let mut departed: Vec<(String, Departure)> = Vec::with_capacity(gone.len());
+    for (node_id, region) in gone {
+        let marker = storage.key(&format!("cluster:left:{}", node_id));
+        let graceful: bool = conn
+            .exists(&marker)
+            .await
+            .map_err(|e| anyhow::anyhow!("Redis EXISTS failed for {}: {}", marker, e))?;
+        departed.push((node_id, Departure { region, graceful }));
+    }
 
     // Remove members whose keys have expired (no longer seen)
     members.retain(|node_id, _| seen_ids.contains(node_id));
@@ -744,13 +890,18 @@ async fn discover_members(
             }
         }
 
-        for node_id in &departed {
+        for (node_id, departure) in &departed {
+            let reason = if departure.graceful {
+                "shutdown"
+            } else {
+                "heartbeat_expired"
+            };
             let event = fcp_events::PlatformEvent::System(fcp_events::SystemEvent::NodeLeft {
                 node_id: node_id.clone(),
-                reason: "heartbeat_expired".to_string(),
+                reason: reason.to_string(),
                 timestamp: now,
             });
-            info!(node_id = %node_id, "Cluster member left (heartbeat expired)");
+            info!(node_id = %node_id, reason, "Cluster member left");
             if let Err(e) = publisher.publish(event).await {
                 warn!(error = %e, "Failed to publish NodeLeft event");
             }
@@ -758,7 +909,53 @@ async fn discover_members(
     }
 
     debug!(member_count = seen_ids.len(), "Cluster discovery complete");
-    Ok(())
+    Ok(departed.into_iter().map(|(_, d)| d).collect())
+}
+
+/// Say that this node's view of the cluster changed: in the log, and as
+/// `system.cluster_view_changed`. When the store is what cannot be reached
+/// and the events travel through it, the event of going does not land;
+/// the one of coming back does, and says how long it lasted.
+async fn announce_view(
+    self_info: &ClusterMember,
+    from: ViewState,
+    view: &ClusterView,
+    lasted_secs: Option<u64>,
+    event_publisher: Option<&Arc<dyn EventPublisher>>,
+) {
+    if view.is_whole() {
+        info!(
+            node_id = %self_info.node_id,
+            from = from.as_str(),
+            lasted_secs = lasted_secs.unwrap_or_default(),
+            "Cluster view whole again"
+        );
+    } else {
+        warn!(
+            node_id = %self_info.node_id,
+            state = view.state.as_str(),
+            lost_regions = ?view.lost_regions,
+            "Cluster view not whole: {}",
+            view.summary
+        );
+    }
+    if let Some(publisher) = event_publisher {
+        let event =
+            fcp_events::PlatformEvent::System(fcp_events::SystemEvent::ClusterViewChanged {
+                node_id: self_info.node_id.clone(),
+                region: self_info.region.clone(),
+                state: view.state.as_str().to_string(),
+                previous: from.as_str().to_string(),
+                lost_regions: view.lost_regions.clone(),
+                database_reachable: view.database_reachable,
+                lasted_secs,
+                summary: view.summary.clone(),
+                timestamp: std::time::SystemTime::now(),
+            });
+        if let Err(e) = publisher.publish(event).await {
+            debug!(error = %e, "Failed to publish ClusterViewChanged event");
+        }
+    }
 }
 
 /// Who registers `trunk_id`: the lowest node id of those that loaded it,
@@ -862,6 +1059,7 @@ mod tests {
             region: region.map(str::to_owned),
             video_budget: Vec::new(),
             registering_trunks: Vec::new(),
+            view: None,
         }
     }
 
@@ -1133,6 +1331,7 @@ mod trunk_owner_tests {
             capacity: None,
             video_budget: Vec::new(),
             registering_trunks: trunks.iter().map(|t| t.to_string()).collect(),
+            view: None,
         }
     }
 

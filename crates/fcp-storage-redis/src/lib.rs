@@ -51,15 +51,35 @@ impl Default for RedisConfig {
     }
 }
 
+/// How a connection comes back after it is lost.
+///
+/// The library's defaults hand its `factor` of 100 to the backoff as the
+/// *multiplier*, from a one-second floor, so a lost connection is retried
+/// after 1 s and then every 60 s — and every command on it waits on the
+/// retry. A two-second blip in the link to Redis stalled a node's
+/// membership, events and parking for minutes
+/// (`docs/MULTI_REGION_FOLLOWUPS.md` §2.3 found it). Retries are a second
+/// apart at most, and an attempt that hears nothing gives up after two
+/// seconds rather than never.
+///
+/// No response timeout: `XREADGROUP … BLOCK` rides on these connections
+/// and waits longer than any sensible one.
+fn connection_config() -> redis::aio::ConnectionManagerConfig {
+    redis::aio::ConnectionManagerConfig::new()
+        .set_max_delay(1_000)
+        .set_connection_timeout(std::time::Duration::from_secs(2))
+}
+
 impl RedisStorage {
     /// Create a new Redis storage connection.
     pub async fn new(config: RedisConfig) -> Result<Self> {
         let client = redis::Client::open(config.url.as_str())
             .with_context(|| format!("Failed to create Redis client for {}", config.url))?;
 
-        let conn = redis::aio::ConnectionManager::new(client.clone())
-            .await
-            .with_context(|| format!("Failed to connect to Redis at {}", config.url))?;
+        let conn =
+            redis::aio::ConnectionManager::new_with_config(client.clone(), connection_config())
+                .await
+                .with_context(|| format!("Failed to connect to Redis at {}", config.url))?;
 
         // Validate connectivity with a PING before returning
         let mut test_conn = conn.clone();
@@ -142,9 +162,12 @@ impl RedisStorage {
     /// (`XREADGROUP … BLOCK`) holds up every other command behind it;
     /// consumers that block should read on a connection of their own.
     pub async fn detached(&self) -> Result<Self> {
-        let conn = redis::aio::ConnectionManager::new(self.client.clone())
-            .await
-            .context("Failed to open a detached Redis connection")?;
+        let conn = redis::aio::ConnectionManager::new_with_config(
+            self.client.clone(),
+            connection_config(),
+        )
+        .await
+        .context("Failed to open a detached Redis connection")?;
         Ok(Self {
             client: self.client.clone(),
             conn,

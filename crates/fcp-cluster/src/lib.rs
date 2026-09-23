@@ -14,6 +14,7 @@ pub mod membership;
 pub mod node_client;
 pub mod reader;
 pub mod trunk_registry;
+pub mod view;
 
 pub use call_leases::{CallLeases, LeaseSubject, DEFAULT_LEASE_TTL_SECS};
 pub use call_registry::CallRegistry;
@@ -22,9 +23,10 @@ pub use conference_registry::{
     CONFERENCE_NODE_TYPE,
 };
 pub use membership::{
-    choose_handover_node, resolve_region, ClusterManager, ClusterMember, EngineBudget,
-    NodeCapacity, VideoBudgetHandle, VideoDeviceBudget, VideoEngines,
+    choose_handover_node, resolve_region, tenant_probe, ClusterManager, ClusterMember,
+    DatabaseProbe, EngineBudget, NodeCapacity, VideoBudgetHandle, VideoDeviceBudget, VideoEngines,
 };
 pub use node_client::NodeClient;
 pub use reader::{ClusterNodeInfo, ClusterNodeStatus, ClusterReader, ClusterStats};
 pub use trunk_registry::TrunkRegistry;
+pub use view::{ClusterView, ViewState};

@@ -577,10 +577,36 @@ pub enum SystemEvent {
         timestamp: SystemTime,
     },
 
-    /// A node left the cluster (heartbeat expired or graceful shutdown).
+    /// A node left the cluster: `reason` is `shutdown` when it said so
+    /// and `heartbeat_expired` when it went quiet.
     NodeLeft {
         node_id: String,
         reason: String,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// A node's own view of the cluster stopped or started looking whole
+    /// (`docs/MULTI_REGION_FOLLOWUPS.md` §2.3). Said, never acted on.
+    ClusterViewChanged {
+        node_id: String,
+        /// The region of the node whose view it is.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        region: Option<String>,
+        /// `whole`, `store_unreachable` or `remote_regions_lost`.
+        state: String,
+        /// The state before this one.
+        previous: String,
+        /// The regions whose every node went at once.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        lost_regions: Vec<String>,
+        /// Whether the node still reaches its database, when it can tell.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        database_reachable: Option<bool>,
+        /// How long the previous state lasted, when it was not whole.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lasted_secs: Option<u64>,
+        summary: String,
         #[serde(with = "system_time_serde")]
         timestamp: SystemTime,
     },
@@ -1477,6 +1503,7 @@ impl PlatformEvent {
                 SystemEvent::NodeDrained { .. } => "system.node_drained",
                 SystemEvent::NodeJoined { .. } => "system.node_joined",
                 SystemEvent::NodeLeft { .. } => "system.node_left",
+                SystemEvent::ClusterViewChanged { .. } => "system.cluster_view_changed",
             },
             PlatformEvent::User(e) => match e {
                 UserEvent::Created { .. } => "user.created",
@@ -1679,7 +1706,8 @@ impl PlatformEvent {
                 | SystemEvent::NodeDraining { .. }
                 | SystemEvent::NodeDrained { .. }
                 | SystemEvent::NodeJoined { .. }
-                | SystemEvent::NodeLeft { .. } => None,
+                | SystemEvent::NodeLeft { .. }
+                | SystemEvent::ClusterViewChanged { .. } => None,
             },
             PlatformEvent::Billing(e) => Some(e.tenant_id()),
             PlatformEvent::Cdr(
@@ -1906,7 +1934,8 @@ impl SystemEvent {
             | SystemEvent::NodeDraining { timestamp, .. }
             | SystemEvent::NodeDrained { timestamp, .. }
             | SystemEvent::NodeJoined { timestamp, .. }
-            | SystemEvent::NodeLeft { timestamp, .. } => *timestamp,
+            | SystemEvent::NodeLeft { timestamp, .. }
+            | SystemEvent::ClusterViewChanged { timestamp, .. } => *timestamp,
         }
     }
 }

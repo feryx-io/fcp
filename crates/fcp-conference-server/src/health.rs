@@ -56,6 +56,24 @@ pub struct ConferenceState {
     pub cluster_secret: Option<String>,
     /// Leaving service (`docs/CAPACITY_AND_SURVIVABILITY.md` §6).
     pub drain: Arc<fcp_sip::drain::Drain>,
+    /// Cluster membership, when the node is clustered: what `/status` and
+    /// `/metrics` report of its view (`docs/MULTI_REGION_FOLLOWUPS.md` §2.3).
+    #[cfg(feature = "storage-redis")]
+    pub cluster: Option<Arc<fcp_cluster::ClusterManager>>,
+}
+
+impl ConferenceState {
+    /// This node's view of the cluster, when it is clustered.
+    fn cluster_view(&self) -> Option<fcp_cluster::ClusterView> {
+        #[cfg(feature = "storage-redis")]
+        {
+            self.cluster.as_ref().map(|c| c.view())
+        }
+        #[cfg(not(feature = "storage-redis"))]
+        {
+            None
+        }
+    }
 }
 
 /// Public routes (no auth required).
@@ -482,6 +500,9 @@ async fn status_handler(State(state): State<Arc<ConferenceState>>) -> Json<serde
             .video_capacity()
             .map(|c| c.json())
             .unwrap_or(serde_json::Value::Null),
+        // Whether this node's view of the cluster looks whole
+        // (docs/MULTI_REGION_FOLLOWUPS.md §2.3).
+        "cluster_view": state.cluster_view(),
     }))
 }
 
@@ -603,6 +624,10 @@ async fn metrics_handler(State(state): State<Arc<ConferenceState>>) -> impl Into
         latency.refer_count.load(Ordering::Relaxed),
         state.conference_handler.subscription_count(),
     );
+    let mut body = body;
+    if let Some(view) = state.cluster_view() {
+        body.push_str(&view.prometheus(""));
+    }
 
     (
         StatusCode::OK,

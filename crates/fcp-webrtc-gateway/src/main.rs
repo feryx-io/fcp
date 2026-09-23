@@ -251,6 +251,7 @@ async fn main() -> Result<()> {
                         region: fcp_cluster::resolve_region(config.cluster.region.as_deref()),
                         video_budget: Vec::new(),
                         registering_trunks: Vec::new(),
+                        view: None,
                     };
                     let cm = Arc::new(
                         fcp_cluster::ClusterManager::new(redis.clone(), member).with_intervals(

@@ -148,8 +148,12 @@ simpler) deployment; regions then never place across each other.
   do not care about regions. Queue and hunt-group ring targets are
   registrations, which are per Redis anyway.
 - Fencing: a region cut off from the shared Redis keeps serving what it
-  has and loses the cluster view (nodes expire after 15 s). Nothing
-  detects a partition as such.
+  has, and keeps placing on the member list it last saw — which does not
+  shrink while the Redis is unreachable. Since
+  `docs/MULTI_REGION_FOLLOWUPS.md` phase 3 a node *says* so (`/status`
+  `cluster_view`, `fcp_cluster_view`, the admin UI, and
+  `system.cluster_view_changed`), and says when every other region went
+  quiet at once; nothing acts on it.
 
 ## Cross-region event fan-out (done, v0.25.88)
 
