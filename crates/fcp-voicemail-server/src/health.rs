@@ -21,6 +21,8 @@ use tracing::{info, warn};
 /// Shared state for the voicemail HTTP API.
 pub struct VoicemailState {
     pub call_manager: Arc<CallManager>,
+    /// The read replica as of its last probe (`docs/DEPLOYMENT_GAPS.md` §1.7).
+    pub replica: fcp_storage_postgres::ReplicaHealth,
     pub flow_handler: Arc<FlowCallHandler>,
     pub dyn_storage: Arc<DynStorage>,
     pub start_time: Instant,
@@ -118,6 +120,7 @@ async fn status_handler(State(state): State<Arc<VoicemailState>>) -> Json<serde_
         "total_calls": call_stats.total,
         "voicemail_routes": routes.len(),
         "draining": draining,
+        "replica": state.replica.json(),
     }))
 }
 

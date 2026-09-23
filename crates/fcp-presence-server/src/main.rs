@@ -94,6 +94,7 @@ async fn main() -> Result<()> {
         dyn_storage,
         config_store,
         history_store,
+        replica: replica_health,
     } = initialize_storage(&config).await?;
 
     // Seed operational config sections into database (DB primary, TOML seed)
@@ -523,6 +524,7 @@ async fn main() -> Result<()> {
     let app_state = Arc::new(http_api::AppState {
         manager: manager.clone(),
         drain: Arc::clone(&drain),
+        replica: replica_health,
         sip_handler: Some(Arc::clone(&concrete_presence_handler)),
         start_time: Instant::now(),
         api_token: config.http.api_token.clone(),
@@ -628,6 +630,8 @@ async fn main() -> Result<()> {
 /// Storage initialization result with both DynStorage and ConfigStore.
 struct StorageResult {
     dyn_storage: Arc<fcp_core::storage::DynStorage>,
+    /// What `/ready` says about the read replica.
+    replica: fcp_storage_postgres::ReplicaHealth,
     config_store: Arc<dyn fcp_core::config_store::ConfigStore>,
     history_store: Arc<dyn fcp_core::storage::PresenceHistoryStore>,
 }
@@ -653,6 +657,7 @@ async fn initialize_storage(config: &PresenceServerConfig) -> Result<StorageResu
 
     info!("PostgreSQL storage initialized successfully");
     Ok(StorageResult {
+        replica: fcp_storage_postgres::ReplicaHealth::of(storage.clone()),
         dyn_storage: Arc::new(fcp_core::storage::DynStorage::from_all_in_one(
             storage.clone(),
         )),

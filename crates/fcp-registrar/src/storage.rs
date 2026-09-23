@@ -10,7 +10,14 @@ use tracing::info;
 use crate::config::StorageSection;
 
 /// Initialize PostgreSQL storage backend from configuration.
-pub async fn initialize_storage(config: &StorageSection) -> Result<Arc<DynStorage>> {
+/// The stores, and a way to ask about the replica after the backend has
+/// been dropped into them.
+pub struct StorageResult {
+    pub dyn_storage: Arc<DynStorage>,
+    pub replica: fcp_storage_postgres::ReplicaHealth,
+}
+
+pub async fn initialize_storage(config: &StorageSection) -> Result<StorageResult> {
     let pg_config = PostgresConfig {
         connection_string: config.database_url.clone(),
         read_replica_url: config.read_replica_url.clone(),
@@ -25,5 +32,9 @@ pub async fn initialize_storage(config: &StorageSection) -> Result<Arc<DynStorag
         .context("Failed to initialize PostgreSQL storage")?;
 
     info!("PostgreSQL storage initialized successfully");
-    Ok(Arc::new(DynStorage::from_all_in_one(Arc::new(storage))))
+    let storage = Arc::new(storage);
+    Ok(StorageResult {
+        dyn_storage: Arc::new(DynStorage::from_all_in_one(storage.clone())),
+        replica: fcp_storage_postgres::ReplicaHealth::of(storage),
+    })
 }

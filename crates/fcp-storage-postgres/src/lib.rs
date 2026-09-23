@@ -265,6 +265,9 @@ struct ReplicaState {
     host: String,
     /// The replica turned out to be a primary (not in recovery); said once.
     warned_not_standby: AtomicBool,
+    /// When the last probe finished (Unix ms; 0 = never), so a probe that
+    /// stalled reads as stale rather than healthy for ever.
+    last_probe_unix_ms: AtomicU64,
 }
 
 /// What a health endpoint can say about the read replica.
@@ -280,6 +283,86 @@ pub struct ReplicaStatus {
     pub lag_ms: u64,
     /// The lag limit, in milliseconds.
     pub max_lag_ms: u64,
+    /// How long ago the last probe finished, in seconds. The probe runs
+    /// every five seconds; much more than that means it is stuck.
+    pub probe_age_secs: u64,
+}
+
+impl ReplicaStatus {
+    /// Prometheus exposition of this status, with `labels` (for example
+    /// `node="cm-1"`) on every series.
+    pub fn prometheus(&self, labels: &str) -> String {
+        let host = self.host.replace('"', "");
+        let labels = if labels.is_empty() {
+            format!("replica=\"{host}\"")
+        } else {
+            format!("{labels},replica=\"{host}\"")
+        };
+        format!(
+            "# HELP fcp_replica_reachable Whether the read replica answered the last probe\n\
+             # TYPE fcp_replica_reachable gauge\n\
+             fcp_replica_reachable{{{labels}}} {}\n\
+             # HELP fcp_replica_healthy Whether configuration reads go to the read replica (reachable and within max lag)\n\
+             # TYPE fcp_replica_healthy gauge\n\
+             fcp_replica_healthy{{{labels}}} {}\n\
+             # HELP fcp_replica_lag_seconds Replication lag at the last probe\n\
+             # TYPE fcp_replica_lag_seconds gauge\n\
+             fcp_replica_lag_seconds{{{labels}}} {}\n\
+             # HELP fcp_replica_probe_age_seconds Seconds since the last replica probe finished\n\
+             # TYPE fcp_replica_probe_age_seconds gauge\n\
+             fcp_replica_probe_age_seconds{{{labels}}} {}\n",
+            u8::from(self.reachable),
+            u8::from(self.healthy),
+            self.lag_ms as f64 / 1000.0,
+            self.probe_age_secs,
+        )
+    }
+}
+
+/// A binary's way to ask about its replica after the backend has been
+/// dropped into `DynStorage` (`docs/DEPLOYMENT_GAPS.md` §1.7). Cheap to
+/// clone; `none()` for a binary without a database.
+#[derive(Clone, Default)]
+pub struct ReplicaHealth(Option<Arc<PostgresStorage>>);
+
+impl std::fmt::Debug for ReplicaHealth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("ReplicaHealth")
+            .field(&self.status())
+            .finish()
+    }
+}
+
+impl ReplicaHealth {
+    /// The health of `backend`'s replica.
+    pub fn of(backend: Arc<PostgresStorage>) -> Self {
+        Self(Some(backend))
+    }
+
+    /// No database, so no replica.
+    pub fn none() -> Self {
+        Self(None)
+    }
+
+    /// The replica's state as of the last probe; `None` without one.
+    pub fn status(&self) -> Option<ReplicaStatus> {
+        self.0.as_ref().and_then(|b| b.replica_status())
+    }
+
+    /// What `/status` or `/ready` says under `replica`: the status, or
+    /// `null` when no replica is configured.
+    pub fn json(&self) -> serde_json::Value {
+        self.status()
+            .map(|s| serde_json::to_value(s).unwrap_or(serde_json::Value::Null))
+            .unwrap_or(serde_json::Value::Null)
+    }
+
+    /// The replica's series for `/metrics`; empty without a replica.
+    pub fn prometheus(&self, labels: &str) -> String {
+        self.status()
+            .map(|s| s.prometheus(labels))
+            .unwrap_or_default()
+    }
 }
 
 /// How often the replica is probed for reachability and lag.
@@ -431,6 +514,7 @@ impl PostgresStorage {
                     max_lag: config.max_replica_lag,
                     host: url_host(url),
                     warned_not_standby: AtomicBool::new(false),
+                    last_probe_unix_ms: AtomicU64::new(0),
                 });
                 info!(
                     replica = %state.host,
@@ -512,6 +596,10 @@ impl PostgresStorage {
             healthy: r.healthy.load(Ordering::Relaxed),
             lag_ms: r.lag_ms.load(Ordering::Relaxed),
             max_lag_ms: r.max_lag.as_millis() as u64,
+            probe_age_secs: match r.last_probe_unix_ms.load(Ordering::Relaxed) {
+                0 => u64::MAX / 1000,
+                at => unix_ms().saturating_sub(at) / 1000,
+            },
         })
     }
 
@@ -544,6 +632,9 @@ impl PostgresStorage {
             Ok(outcome) => outcome,
             Err(_) => Err(sqlx::Error::PoolTimedOut),
         };
+        replica
+            .last_probe_unix_ms
+            .store(unix_ms(), Ordering::Relaxed);
         match outcome {
             Ok((in_recovery, primary_lsn, replay_lsn, replay_age)) => {
                 if !in_recovery && !replica.warned_not_standby.swap(true, Ordering::Relaxed) {

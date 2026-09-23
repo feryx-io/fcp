@@ -28,6 +28,8 @@ use tracing::{info, warn};
 pub struct AppState {
     pub call_manager: Arc<CallManager>,
     pub storage: Arc<DynStorage>,
+    /// The read replica as of its last probe (`docs/DEPLOYMENT_GAPS.md` §1.7).
+    pub replica: fcp_storage_postgres::ReplicaHealth,
     pub realm: String,
     pub default_tenant_id: TenantId,
     pub media_manager: Arc<MediaManager>,
@@ -363,6 +365,7 @@ async fn status_handler(State(state): State<Arc<AppState>>) -> Json<serde_json::
         // not (docs/MULTI_REGION_FOLLOWUPS.md §2.3). Absent outside a
         // cluster.
         "cluster_view": cluster_view(&state),
+        "replica": state.replica.json(),
         "registration_cache": state.registration_cache.as_ref().map(|cache| {
             let stats = cache.stats();
             serde_json::json!({
@@ -1028,6 +1031,7 @@ async fn metrics_handler(State(state): State<Arc<AppState>>) -> impl IntoRespons
     body.push_str(
         &fcp_core::storage::RegistrationReads::global().prometheus(&format!("node=\"{node}\"")),
     );
+    body.push_str(&state.replica.prometheus(&format!("node=\"{node}\"")));
     // Emergency calls by kind, location source and delivery, the location
     // gaps, and the trunks' Geolocation-Error answers
     // (docs/E911_BLOCK_2.md §9).

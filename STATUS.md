@@ -646,6 +646,19 @@ other events server on the stream, once in every peer region through the
 bridge, webhooks in the origin region only. A stream that cannot be
 written answers 503 so the poster retries rather than the event being
 lost. Proved by two events servers in two regions on two Redis databases.
+Phase 5 done (v0.25.240): replica health said. The backend probed its
+read replica every five seconds and no binary could ask, having dropped
+the concrete backend into its trait objects at construction. Each now
+keeps a `ReplicaHealth` handle beside them, and the replica's last probe
+— host, reachable, healthy, lag, limit, and how old the probe is, so a
+stuck probe no longer reads as healthy for ever — is `replica` on
+`/status` (call manager, conference server, IVR, voicemail server,
+registrar) and `/ready` (SBC, presence server), `null` without one, and
+`fcp_replica_reachable`, `fcp_replica_healthy`, `fcp_replica_lag_seconds`
+and `fcp_replica_probe_age_seconds` on `/metrics` where a binary has one.
+The deployment guide's alerts gain "a region reads from the primary" and
+"a replica probe is stuck". The media server is left out: its HTTP is
+forge-media's, and its database is a config store read at startup.
 
 ## Historical documents
 

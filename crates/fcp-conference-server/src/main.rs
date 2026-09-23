@@ -187,6 +187,7 @@ async fn main() -> Result<()> {
 
     // 4. Initialize storage
     let storage_result = storage::initialize_storage(&config.storage).await?;
+    let replica_health = storage_result.replica.clone();
     let config_store = storage_result.config_store;
     let dyn_storage = storage_result.dyn_storage;
 
@@ -1568,6 +1569,7 @@ async fn main() -> Result<()> {
     // 21. Spawn HTTP server (conference API)
     let events_dropped = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let conf_state = Arc::new(health::ConferenceState {
+        replica: replica_health.clone(),
         drain: Arc::clone(&drain),
         bridge: Arc::clone(&bridge),
         storage: Arc::clone(&dyn_storage),

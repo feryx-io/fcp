@@ -19,6 +19,8 @@ use tracing::info;
 /// Shared state for the IVR HTTP API.
 pub struct IvrState {
     pub call_manager: Arc<CallManager>,
+    /// The read replica as of its last probe (`docs/DEPLOYMENT_GAPS.md` §1.7).
+    pub replica: fcp_storage_postgres::ReplicaHealth,
     pub flow_handler: Arc<FlowCallHandler>,
     pub start_time: Instant,
     pub api_token: Option<String>,
@@ -123,6 +125,7 @@ async fn status_handler(State(state): State<Arc<IvrState>>) -> Json<serde_json::
         "total_calls": call_stats.total,
         "flow_routes": routes.len(),
         "draining": draining,
+        "replica": state.replica.json(),
     }))
 }
 

@@ -11,6 +11,8 @@ use crate::config::StorageSection;
 
 /// Storage initialization result with both DynStorage and ConfigStore.
 pub struct StorageResult {
+    /// What `/status` says about the read replica.
+    pub replica: fcp_storage_postgres::ReplicaHealth,
     pub dyn_storage: Arc<DynStorage>,
     pub config_store: Arc<dyn fcp_core::config_store::ConfigStore>,
     pub flow_store: Arc<dyn fcp_flow::storage::FlowStore>,
@@ -35,6 +37,7 @@ pub async fn initialize_storage(config: &StorageSection) -> Result<StorageResult
 
     info!("PostgreSQL storage initialized successfully");
     Ok(StorageResult {
+        replica: fcp_storage_postgres::ReplicaHealth::of(storage.clone()),
         dyn_storage: Arc::new(DynStorage::from_all_in_one(storage.clone())),
         flow_store: storage.clone() as Arc<dyn fcp_flow::storage::FlowStore>,
         config_store: storage,

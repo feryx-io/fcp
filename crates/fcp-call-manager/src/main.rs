@@ -142,6 +142,7 @@ async fn main() -> Result<()> {
 
     // 4. Initialize storage
     let storage_result = storage::initialize_storage(&config.storage).await?;
+    let replica_health = storage_result.replica.clone();
     let config_store = storage_result.config_store;
     let pg_flow_store = storage_result.flow_store;
     #[allow(unused_mut)]
@@ -1554,6 +1555,7 @@ async fn main() -> Result<()> {
     let app_state = Arc::new(health::AppState {
         call_manager: Arc::clone(&call_manager),
         storage: Arc::clone(&dyn_storage),
+        replica: replica_health.clone(),
         realm: config.registrar.realm.clone(),
         default_tenant_id,
         media_manager: Arc::clone(&media_manager),
