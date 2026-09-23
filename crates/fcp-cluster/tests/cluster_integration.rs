@@ -45,6 +45,7 @@ fn test_member(name: &str, http_port: u16) -> ClusterMember {
         region: None,
         video_budget: Vec::new(),
         registering_trunks: Vec::new(),
+        view: None,
     }
 }
 

@@ -157,9 +157,13 @@ traffic arrives in the right place.
 
 ### 2.3 A partitioned region does not know it is partitioned
 
-A region cut off from the shared Redis keeps serving the calls it has and
-loses the cluster view as the other regions' nodes expire after 15 s.
-Nothing distinguishes that from "the other regions went away", so:
+A region cut off from the shared Redis keeps serving the calls it has.
+What it sees of the cluster depends on which side of the cut the Redis is
+— and the survey got one side wrong (phase 3, below): a node that cannot
+reach the Redis does *not* lose the other regions' nodes after 15 s; its
+discovery fails and its member list stays exactly as it was, however old.
+Either way, nothing distinguishes the partition from "the other regions
+went away", so:
 
 - placement will happily choose local nodes for everything, which is
   correct behaviour by accident rather than by decision;
@@ -172,6 +176,68 @@ Detecting a partition as such is cheap (a node that can reach Postgres but
 not Redis, or that loses every remote region's nodes at once while its own
 stay, is almost certainly the one that is cut off) and would let the
 health surface say so.
+
+**Made visible in phase 3.** Each node's membership loop now keeps a view
+of the cluster (`fcp-cluster/src/view.rs`) in one of three states:
+
+| State | When | What it means |
+|---|---|---|
+| `whole` | nothing below | — |
+| `store_unreachable` | a heartbeat-and-discovery tick fails, or takes longer than the heartbeat TTL | this node cannot see the cluster; its member list is `view_age_secs` old. What the cut-off side of one global Redis sees. |
+| `remote_regions_lost` | a discovery finds no node outside this node's region, where the last one found some, and at least one of them went quiet within two heartbeat TTLs rather than shutting down | this region may be the one cut off, or the others may be down; from inside a node cannot tell. What the side holding the Redis sees — and, with an active-active Redis, both sides. |
+
+A node with a database probe (the call manager and the conference server,
+which read one tenant) also says, while the view is not whole, whether it
+still reaches its database: reaching it but not the cluster is the
+signature of the node being the one cut off; reaching neither points at
+its own network.
+
+It is said in four places, and acted on in none (Q3):
+
+- **`/status`** on the call manager and the conference server:
+  `cluster_view` — state, since, lost regions, view age, database
+  reachability and a sentence.
+- **`/metrics`**: `fcp_cluster_view{state=…}` and
+  `fcp_cluster_view_age_seconds`.
+- **The heartbeat record** carries the view while it is not whole, so
+  `GET /api/v1/cluster/nodes` shows it per node, `/cluster/stats` counts
+  `nodes_with_partial_view`, and the admin UI's cluster page badges the
+  node and puts a banner over the page grouping the doubting nodes by what
+  they lost. A node that cannot reach the store cannot write its record,
+  so that state is on its own `/status` only.
+- **`system.cluster_view_changed`**, on every change of state, with how
+  long the previous state lasted. It goes on the node's local bus, so it
+  reaches webhooks and the events server over HTTP even when the Redis is
+  what is gone.
+
+To tell a shutdown from a node going quiet, a node that stops cleanly now
+leaves a `cluster:left:<id>` marker beside deleting its heartbeat, and
+`system.node_left` says `shutdown` or `heartbeat_expired` accordingly. A
+region taken down cleanly is therefore not reported as a partition. A
+suspected partition is cleared when any node outside the region
+reappears — or by a restart, which is the answer when a region has been
+decommissioned without shutting its nodes down.
+
+**Found on the way: a lost Redis connection took minutes to come back.**
+The partition test cut the link to Redis and restored it, and the node
+never recovered. `RedisStorage` built its connections with redis-rs 0.27's
+defaults, which hand a `factor` of 100 to the backoff as its *multiplier*
+from a one-second floor: after one reset the client retried after 1 s,
+then every 60 s, and every command on the connection — membership, the
+event bus, parking, everything sharing it — waited on the retry. A
+two-second blip stalled a node for minutes. Every connection now retries
+at most a second apart and gives up a connection attempt after two
+seconds (`fcp-storage-redis/src/lib.rs`); the regression test
+(`fcp-storage-redis/tests/reconnect.rs`) measures the recovery at about a
+second after the link returns. A tick that hangs rather than fails — a
+link that drops packets instead of refusing them — is now bounded by the
+membership loop itself.
+
+**Not changed, deliberately.** A node that cannot reach the store keeps
+placing conferences on the member list it last saw. That is how it has
+always behaved, and Q3 settled that a partition is said, not acted on;
+`view_age_secs` is how old that list is, and the deployment guide (phase
+4) is where what to do about it belongs.
 
 ### 2.4 Everything crosses regions on the event bridge
 
@@ -255,7 +321,7 @@ One PR each, in order.
 |---|---|
 | 1 ✅ | **Measure.** A per-peer counter of events and bytes on the `EventBridge` (§2.4, Q4), and a count of registration reads per call setup (§2.1), so the cost is a number rather than arithmetic. Nothing changes behaviour. Result: **2 reads per call, 6 with two aliases** (§2.1). |
 | 2 ✅ | **The registration cache** (Q1). Registrations get the short-TTL cache the other hot-path stores have, invalidated on the node's own writes and on other nodes' registration events, with the TTL as the knob. Measured against phase 1. Result: **a repeat call within the TTL costs 0 round trips, where it cost 2 — and 6 with two aliases** (§2.1). |
-| 3 | **A partition is visible** (§2.3, Q3). A node that loses every remote region at once while reaching Postgres says so on `/status`, in the admin UI, and as an event. |
+| 3 ✅ | **A partition is visible** (§2.3, Q3). A node that loses every remote region at once while reaching Postgres says so on `/status`, in the admin UI, and as an event. Result: three states — whole, store unreachable, remote regions lost — on `/status`, `/metrics`, the heartbeat record (admin API and UI) and `system.cluster_view_changed`; shutdowns told apart from silence; and a Redis reconnect that took minutes now takes about a second (§2.3). |
 | 4 | **The deployment guide** (§2.2, Q2). A regional runbook: SRV layout per region, which Redis is global and which is regional, what to point a carrier at, what a partition looks like, and the registration cost a region away from the primary still pays. |
 
 **Decision point after phase 2**, not a phase: if the cache does not close
@@ -273,5 +339,7 @@ never written.
 - Phase 1's measurements want a floor test that counts registration reads
   per call setup, which is a counter assertion rather than a timing one —
   timings on a loaded CI box prove nothing.
-- Phase 3's partition is testable by pointing one node's Redis at a
-  closed port mid-run, which the harness can do.
+- Phase 3's partition is tested by putting a TCP proxy between one node
+  and its Redis and cutting it mid-run (`fcp-cluster/tests/partition.rs`),
+  and a region going quiet by stopping a node's heartbeat without a
+  shutdown.

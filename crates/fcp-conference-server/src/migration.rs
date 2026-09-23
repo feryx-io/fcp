@@ -242,6 +242,7 @@ mod tests {
             capacity: None,
             video_budget: vec![],
             registering_trunks: Vec::new(),
+            view: None,
         }
     }
 

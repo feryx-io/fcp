@@ -205,17 +205,21 @@ async fn main() -> Result<()> {
                 region: fcp_cluster::resolve_region(config.cluster.region.as_deref()),
                 video_budget: Vec::new(),
                 registering_trunks: Vec::new(),
+                view: None,
             };
 
-            let cm =
-                fcp_cluster::ClusterManager::new(redis.clone(), member)
-                    .with_intervals(
-                        config.cluster.heartbeat_interval_secs,
-                        config.cluster.heartbeat_ttl_secs,
-                    )
-                    .with_event_publisher(
-                        Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>
-                    );
+            let cm = fcp_cluster::ClusterManager::new(redis.clone(), member)
+                .with_intervals(
+                    config.cluster.heartbeat_interval_secs,
+                    config.cluster.heartbeat_ttl_secs,
+                )
+                .with_event_publisher(Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>)
+                // Whether a node that has lost the cluster still reaches
+                // its database (docs/MULTI_REGION_FOLLOWUPS.md §2.3).
+                .with_database_probe(fcp_cluster::tenant_probe(
+                    Arc::clone(&dyn_storage) as Arc<dyn fcp_core::storage::TenantStore>,
+                    config.service.default_tenant_id,
+                ));
             let _handle = cm.start();
             info!("Cluster membership started");
 
@@ -1570,6 +1574,8 @@ async fn main() -> Result<()> {
         registration_cache: registrar
             .as_ref()
             .and_then(|r| r.registration_cache().cloned()),
+        #[cfg(feature = "storage-redis")]
+        cluster: _cluster_manager.as_ref().map(|(cm, _, _)| Arc::clone(cm)),
     });
     let http_bind = config.http.bind_address;
     tokio::spawn(async move {

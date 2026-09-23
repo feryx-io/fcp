@@ -305,6 +305,7 @@ async fn start_cluster(config: &TtsServerConfig) {
         region: fcp_cluster::resolve_region(config.cluster.region.as_deref()),
         video_budget: Vec::new(),
         registering_trunks: Vec::new(),
+        view: None,
     };
 
     let cm = ClusterManager::new(redis, member).with_intervals(

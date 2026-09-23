@@ -740,6 +740,7 @@ async fn main() -> Result<()> {
                         ),
                         video_budget: Vec::new(),
                         registering_trunks: Vec::new(),
+                        view: None,
                     };
                     let cm = fcp_cluster::ClusterManager::new(redis, member).with_intervals(
                         deploy_config.cluster.heartbeat_interval_secs,

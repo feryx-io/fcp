@@ -1084,6 +1084,25 @@ export interface ClusterNodeInfo {
   capacity?: NodeCapacity
   /** Calls it will still take; absent when it advertises no limit. */
   calls_left?: number
+  /**
+   * The node's own view of the cluster, when it does not look whole
+   * (docs/MULTI_REGION_FOLLOWUPS.md §2.3). Absent while whole.
+   */
+  view?: ClusterView
+}
+
+/** Whether a node's view of the cluster can be trusted. Said, never acted on. */
+export interface ClusterView {
+  state: 'whole' | 'store_unreachable' | 'remote_regions_lost'
+  /** When this state began (Unix seconds). */
+  since?: number
+  /** The regions whose every node went at once. */
+  lost_regions?: string[]
+  /** Seconds since the node's discovery last worked. */
+  view_age_secs?: number
+  /** Whether the node still reaches its database, when it can tell. */
+  database_reachable?: boolean
+  summary: string
 }
 
 /** A node's admission limits and what it is using of them. */
@@ -1128,6 +1147,8 @@ export interface ClusterStatsResponse {
     nodes_by_type: Record<string, number>
     nodes_by_region: Record<string, number>
     nodes_without_region: number
+    /** Nodes whose own view of the cluster does not look whole. */
+    nodes_with_partial_view?: number
   }
 }
 
