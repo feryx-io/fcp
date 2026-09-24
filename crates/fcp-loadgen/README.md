@@ -72,7 +72,7 @@ node's CPU stays flat is measuring itself.
 ## Where the numbers come from
 
 Real runs are manual, on hardware worth naming, and their numbers go in
-`docs/CAPACITY_AND_SURVIVABILITY.md` §13 and `docs/DEPLOYMENT.md`. CI runs
+`docs/CAPACITY_AND_SURVIVABILITY.md` §13 and `docs/SINGLE-NODE-SETUP.md` §12. CI runs
 one small profile (`tests/ci_profile.rs`) for **behaviour** — every call
 answered, every leg hearing audio, every REGISTER answered — and asserts
 no rate at all: a shared runner's throughput is a number about the runner.

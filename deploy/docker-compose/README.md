@@ -1,637 +1,129 @@
-# FCP Docker Compose Deployment
+# The FCP stack on one Docker host
 
-Complete Docker Compose setup for testing the FCP multi-binary architecture on a single host.
+`docker-compose.yml` here brings up Postgres, Redis and nine FCP services
+on one machine (v0.25.249, `docs/SHIP_AND_OPERATE.md` phases 3 and 4). The
+same configurations, environment and tokens are what a CI test starts
+the binaries from (`crates/fcp-call-manager/tests/compose_stack.rs`), so
+a change to this stack is checked by a registration and a call.
 
-## Overview
-
-This deployment runs all FCP services in containers:
-
-- **Redis** - Cache (gateway) and queue (jobs)
-- **fcp-admin** - Management API (port 8080)
-- **fcp-api-gateway** - Public gateway (port 8000)
-- **fcp-events-server** - WebSocket events (port 8081)
-- **fcp-jobs** - Async job workers (port 8082)
-
-## Prerequisites
-
-### System Requirements
-
-- **OS**: Debian 13 (or any Linux with Docker)
-- **RAM**: 8GB minimum (your VM has this)
-- **Disk**: 20GB free space
-- **CPU**: 4+ cores recommended
-
-### Software Requirements
-
-1. **Docker** (already installed on your VM)
-   ```bash
-   docker --version  # Should be 20.10+
-   ```
-
-2. **Docker Compose** (install if needed)
-   ```bash
-   # Check if installed
-   docker compose version
-
-   # If not installed
-   sudo apt-get update
-   sudo apt-get install -y docker-compose-plugin
-   ```
-
-3. **Tools for testing** (install these)
-   ```bash
-   sudo apt-get install -y curl jq redis-tools
-   ```
-
-## Quick Start
-
-### 1. Navigate to Docker Compose Directory
+## Start
 
 ```bash
-cd /path/to/fcp/deploy/docker-compose
+git clone --recursive https://github.com/thevoiceguy/fcp.git   # the submodules are built into the images
+cd fcp/deploy/docker-compose
+$EDITOR .env                          # HOST_IP, and every secret (all say change-me)
+docker compose up -d --build          # nine Rust release builds the first time
+docker compose ps                     # every service healthy
+bash scripts/integration-test.sh      # waits for health, then exercises each service
 ```
 
-### 2. Build All Images
+`.env` is read by the compose file. `HOST_IP` is the address phones,
+browsers and carriers reach the host on; the SIP and RTP services put it
+in their SDP. Every `FCP_*` value is a secret handed to the binary of that
+prefix through the environment override every binary has, and the
+compose file passes the shared ones on (the events token to every
+producer, the call manager's and conference server's tokens and the join
+secret to the admin). No configuration under `configs/` carries a
+secret. To keep your own values out of git, keep a copy elsewhere and
+pass `--env-file`.
 
-**First time build (takes 10-15 minutes):**
+Options:
 
 ```bash
-docker compose build
+docker compose --profile registrar up -d                       # also the standalone registrar
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d   # the conference server on an NVIDIA GPU (docs/GPU.md)
 ```
 
-This builds all 4 services. Rust compilation is slow but only happens once.
+## What runs, and where
 
-**Monitor build progress:**
-```bash
-docker compose build --progress=plain
-```
+Two kinds of service. The ones that carry SIP and RTP — the call
+manager, the conference server, the media server and the WebRTC gateway
+— run on the host's network, because Docker's bridge cannot forward RTP
+port ranges usefully. They reach the bridge services through the ports
+those publish on the host (`127.0.0.1:5432`, `:6379`, `:8081`), and the
+bridge services reach them through `host.docker.internal`.
 
-### 3. Start All Services
+| Service | Network | Ports on the host |
+|---|---|---|
+| `postgres` (user `fcp`, database `fcp`) | bridge | 5432 |
+| `redis` | bridge | 6379 |
+| `fcp-admin` — the API and the admin UI at `/admin/` | bridge | 8080 |
+| `fcp-api-gateway` — the public face of the admin | bridge | 8000 |
+| `fcp-events-server` | bridge | 8081 |
+| `fcp-jobs` — the CDR processor and job workers | bridge | 8082 |
+| `fcp-call-manager` | host | SIP 5060, HTTP 8084, RTP 10000–10999 |
+| `fcp-conference` | host | SIP 5074, HTTP 8090, RTP 20000–20999 |
+| `fcp-media` | host | HTTP 8085, RTP 30000–30999 |
+| `fcp-webrtc-gw` | host | HTTP 8095, SIP 5077, RTP 34000–35999 |
+| `fcp-registrar` (profile `registrar`) | host | SIP 5062, HTTP 8083 |
+| `prometheus` | bridge | 9090 |
+| `grafana` (admin/admin; anonymous viewers) | bridge | 3000 |
 
-```bash
-docker compose up -d
-```
+Migrations run inside every binary that opens Postgres, at its startup;
+there is no migrate step. Records go from the call manager and the
+conference server to the Redis stream, and `fcp-jobs` stores them
+(`docs/CDR_PIPELINE.md`). Prometheus gets its configuration from the
+compose file itself, so its bearer tokens come from the same `.env`; it
+scrapes every metrics endpoint. The admin reaches the call manager and
+the conference server with their tokens, and mints join tokens with the
+secret the conference server verifies them with.
 
-This starts all containers in the background.
+Not in this stack: the SBC, the IVR, the voicemail, presence and TTS
+servers (no Dockerfile yet), TLS anywhere, encryption at rest, and
+clustering — one node of each.
 
-### 4. Check Service Status
+## Use it
 
-```bash
-docker compose ps
-```
-
-You should see all 5 containers running:
-- redis (healthy)
-- fcp-admin (healthy)
-- fcp-api-gateway (healthy)
-- fcp-events-server (healthy)
-- fcp-jobs (healthy)
-
-### 5. View Logs
-
-```bash
-# All services
-docker compose logs -f
-
-# Specific service
-docker compose logs -f fcp-admin
-docker compose logs -f fcp-api-gateway
-docker compose logs -f fcp-events-server
-docker compose logs -f fcp-jobs
-```
-
-Press `Ctrl+C` to stop following logs.
-
-### 6. Run Tests
-
-```bash
-# Test individual services
-./scripts/test-admin.sh
-./scripts/test-gateway.sh
-./scripts/test-events.sh
-./scripts/test-jobs.sh
-
-# Or run all tests
-./scripts/integration-test.sh
-```
-
-## Detailed Setup
-
-### Initial Build
-
-The first build takes time because it:
-1. Downloads Rust compiler and dependencies
-2. Compiles all workspace crates
-3. Creates optimized release binaries
-4. Packages into minimal Debian images
-
-**Expected build times:**
-- fcp-admin: 3-5 minutes
-- fcp-api-gateway: 2-3 minutes
-- fcp-events-server: 2-3 minutes
-- fcp-jobs: 2-3 minutes
-- **Total**: ~10-15 minutes
-
-**Subsequent builds are faster** (only changed code recompiles).
-
-### Service Architecture
-
-```
-┌─────────────────────────────────────────────────┐
-│                  Your Laptop                    │
-│                                                 │
-│  Browser/curl → localhost:8000 (Gateway)        │
-│                       ↓                         │
-│              localhost:8080 (Admin API)         │
-│                                                 │
-│  WebSocket → localhost:8081 (Events)            │
-│                                                 │
-│  Redis ← localhost:6379                         │
-│    ↓                                            │
-│  localhost:8082 (Jobs Workers)                  │
-└─────────────────────────────────────────────────┘
-```
-
-All services run in Docker containers but are accessible from your host via localhost.
-
-## Testing Guide
-
-### Test 1: fcp-admin (Management API)
+Health needs no token; everything else on a service's port needs the
+token from `.env`:
 
 ```bash
-./scripts/test-admin.sh
+. ./.env
+curl -s http://localhost:8080/api/v1/health
+curl -s -H "Authorization: Bearer $FCP_ADMIN_AUTH_TOKEN" http://localhost:8080/api/v1/tenants
+curl -s -H "Authorization: Bearer $FCP_CALL_MANAGER_API_TOKEN" http://localhost:8084/status | jq .
+curl -s -H "Authorization: Bearer $FCP_EVENTS_AUTH_TOKEN" http://localhost:8081/calls
+curl -s http://localhost:8000/gateway/status | jq .backends
 ```
 
-This tests:
-- Health check
-- Create/Read/Update/Delete tenants
-- Create/Read/Update/Delete users
-- SQLite storage
+The first tenant, user and extension are created through the API or the
+admin UI as `docs/SINGLE-NODE-SETUP.md` §9 shows; a phone then registers
+at `HOST_IP:5060`, realm `fcp.local`. Browsers join rooms through the
+WebRTC gateway's join page at `http://HOST_IP:8095/join`
+(`docs/WEBRTC.md`). `scripts/test-*.sh` exercise each service with the
+right token.
 
-**Expected output:**
-```
-=== Testing fcp-admin ===
-1. Health check...
-{
-  "status": "healthy",
-  "version": "0.12.0"
-}
+## Change it
 
-2. Creating tenant...
-{
-  "id": "tenant-abc123...",
-  "name": "Test Company",
-  "enabled": true
-}
-...
-```
-
-### Test 2: fcp-api-gateway (Public Gateway)
+Every configuration under `configs/` is checked by its binary's smoke
+test with this `.env` (`--check-config` must accept it), the compose
+file is validated by CI's packaging job on every pull request (alone,
+with the GPU overlay, with the registrar profile), the images are built
+nightly, and the stack test starts these services and carries a call.
+Check a file by hand:
 
 ```bash
-./scripts/test-gateway.sh
+set -a; . ./.env; set +a
+../../target/release/fcp-call-manager --check-config --config configs/fcp-call-manager.toml
 ```
 
-This tests:
-- Gateway health
-- Request proxying to fcp-admin
-- **Redis caching** (MISS → HIT)
-- Rate limiting (429 on excessive requests)
-
-**Expected output:**
-```
-=== Testing fcp-api-gateway ===
-1. Gateway health check...
-OK
-
-2. Gateway status...
-{
-  "status": "operational",
-  "backends": {...}
-}
-
-4a. First request (cache MISS)...
-HTTP/1.1 200 OK
-X-Cache: MISS
-
-4b. Second request (cache HIT)...
-HTTP/1.1 200 OK
-X-Cache: HIT
-```
-
-**Key test: Cache should show HIT on second request!**
-
-### Test 3: fcp-events-server (WebSocket)
-
-```bash
-./scripts/test-events.sh
-```
-
-This tests:
-- Health check
-- Status endpoint
-- WebSocket connection (if websocat installed)
-
-**For WebSocket testing:**
-```bash
-# Install websocat
-cargo install websocat
-
-# Connect to WebSocket
-websocat ws://localhost:8081/ws/tenant-test123
-
-# Send subscribe message (paste this)
-{"type": "subscribe", "filters": []}
-
-# You should receive:
-{"type": "connected", "connection_id": "conn-...", "tenant_id": "tenant-test123"}
-```
-
-### Test 4: fcp-jobs (Async Workers)
-
-```bash
-./scripts/test-jobs.sh
-```
-
-This tests:
-- Health check
-- Job submission to Redis queue
-- Job processing by workers
-- Status endpoint (queue statistics)
-
-**Expected output:**
-```
-=== Testing fcp-jobs ===
-1. Health check...
-OK
-
-2. Status (before jobs)...
-{
-  "workers": {"total": 4, "active": 0},
-  "queue": {"pending": {"total": 0}, "completed": 0}
-}
-
-3. Submitting test jobs...
-  - CDR processing job
-  - Webhook delivery job
-  - Recording processing job
-
-5. Status (after jobs)...
-{
-  "workers": {"total": 4, "active": 0},
-  "queue": {"pending": {"total": 0}, "completed": 3}
-}
-```
-
-**Check worker logs to see job processing:**
-```bash
-docker compose logs fcp-jobs
-```
-
-You should see:
-```
-Processing job job_id="job-test-..."
-Job completed job_id="job-test-..."
-```
-
-### Integration Test
-
-Run all tests in sequence:
-
-```bash
-./scripts/integration-test.sh
-```
-
-This waits for all services to be healthy, then runs all tests.
-
-## Management Commands
-
-### Start/Stop Services
-
-```bash
-# Start all
-docker compose up -d
-
-# Stop all
-docker compose down
-
-# Restart specific service
-docker compose restart fcp-admin
-
-# Stop without removing containers
-docker compose stop
-
-# Start stopped containers
-docker compose start
-```
-
-### View Logs
-
-```bash
-# All services (follow mode)
-docker compose logs -f
-
-# Specific service
-docker compose logs fcp-admin
-
-# Last 100 lines
-docker compose logs --tail=100 fcp-jobs
-
-# Since timestamp
-docker compose logs --since=10m fcp-api-gateway
-```
-
-### Execute Commands in Containers
-
-```bash
-# Shell in container
-docker compose exec fcp-admin /bin/bash
-
-# Run command
-docker compose exec redis redis-cli ping
-
-# Check Redis queue
-docker compose exec redis redis-cli keys "fcp:jobs:*"
-```
-
-### Resource Usage
-
-```bash
-# Container stats
-docker stats
-
-# Disk usage
-docker compose exec fcp-admin du -sh /app/data
-```
-
-### Rebuild After Code Changes
-
-```bash
-# Rebuild specific service
-docker compose build fcp-admin
-
-# Rebuild and restart
-docker compose up -d --build fcp-admin
-
-# Rebuild all
-docker compose build --no-cache
-```
-
-## Troubleshooting
-
-### Services Won't Start
-
-**Check logs:**
-```bash
-docker compose logs
-```
-
-**Check service health:**
-```bash
-docker compose ps
-```
-
-**Restart specific service:**
-```bash
-docker compose restart fcp-admin
-```
-
-### Build Failures
-
-**Out of disk space:**
-```bash
-# Clean up Docker
-docker system prune -a
-```
-
-**Out of memory during build:**
-```bash
-# Build one at a time
-docker compose build redis
-docker compose build fcp-admin
-docker compose build fcp-api-gateway
-docker compose build fcp-events-server
-docker compose build fcp-jobs
-```
-
-### Port Already in Use
-
-If ports are already in use, edit `docker-compose.yml`:
-
-```yaml
-services:
-  fcp-admin:
-    ports:
-      - "8080:8080"  # Change left side: "9080:8080"
-```
-
-### Redis Connection Errors
-
-**Check Redis is running:**
-```bash
-docker compose ps redis
-docker compose logs redis
-```
-
-**Test Redis connection:**
-```bash
-docker compose exec redis redis-cli ping
-# Should return: PONG
-```
-
-### Gateway Can't Reach Admin
-
-**Check networking:**
-```bash
-docker compose exec fcp-api-gateway ping -c 3 fcp-admin
-```
-
-**Check admin is healthy:**
-```bash
-curl http://localhost:8080/api/v1/health
-```
-
-### Jobs Not Processing
-
-**Check Redis queue:**
-```bash
-docker compose exec redis redis-cli keys "fcp:jobs:queue:*"
-```
-
-**Check worker logs:**
-```bash
-docker compose logs fcp-jobs
-```
-
-**Submit test job manually:**
-```bash
-docker compose exec redis redis-cli <<EOF
-SET "fcp:jobs:job:job-test" '{"id":"test","job_type":"cdr_processing","priority":"normal","status":"pending","retry_count":0,"max_retries":5,"payload":{},"created_at":$(date +%s),"updated_at":$(date +%s)}'
-ZADD "fcp:jobs:queue:normal" $(date +%s) "job-test"
-EOF
-```
-
-## Configuration
-
-### Modifying Configs
-
-Edit files in `configs/` directory:
-- `configs/fcp-admin.toml`
-- `configs/fcp-api-gateway.toml`
-- `configs/fcp-events-server.toml`
-- `configs/fcp-jobs.toml`
-
-After changes, restart the service:
-```bash
-docker compose restart fcp-admin
-```
-
-### Changing Worker Count
-
-Edit `configs/fcp-jobs.toml`:
-```toml
-[workers]
-count = 8  # Increase from 4 to 8
-```
-
-Or use environment variable:
-```bash
-docker compose up -d -e FCP_JOBS_WORKERS=8 fcp-jobs
-```
-
-### Enabling Authentication
-
-Edit `configs/fcp-admin.toml`:
-```toml
-[api]
-auth_enabled = true
-auth_token = "your-secret-token"
-```
-
-Then use token in requests:
-```bash
-curl -H "Authorization: Bearer your-secret-token" \
-  http://localhost:8080/api/v1/tenants
-```
-
-## Data Persistence
-
-### Volumes
-
-Data is persisted in Docker volumes:
-- `redis-data` - Redis persistence
-- `admin-data` - SQLite database
-
-**View volumes:**
-```bash
-docker volume ls | grep fcp
-```
-
-**Inspect volume:**
-```bash
-docker volume inspect fcp_redis-data
-```
-
-**Backup SQLite database:**
-```bash
-docker compose exec fcp-admin cat /app/data/fcp.db > backup-fcp.db
-```
-
-**Restore SQLite database:**
-```bash
-docker compose cp backup-fcp.db fcp-admin:/app/data/fcp.db
-docker compose restart fcp-admin
-```
-
-### Clean Everything
-
-**Stop and remove all containers + volumes:**
-```bash
-docker compose down -v
-```
-
-**This deletes:**
-- All containers
-- All volumes (Redis data, SQLite database)
-- Network
-
-**Then rebuild from scratch:**
-```bash
-docker compose build
-docker compose up -d
-```
-
-## Performance Tuning
-
-### With 8GB RAM
-
-Your VM has 8GB RAM. Default resource limits should work fine:
-- Redis: ~100MB
-- fcp-admin: ~50MB
-- fcp-api-gateway: ~50MB
-- fcp-events-server: ~50MB
-- fcp-jobs: ~100MB (4 workers)
-- **Total**: ~400MB (plenty of headroom)
-
-### Increase Workers
-
-If jobs are slow, increase worker count:
-
-```yaml
-# In docker-compose.yml
-fcp-jobs:
-  environment:
-    - FCP_JOBS_WORKERS=8
-```
-
-### Increase Redis Memory
-
-If caching many requests:
-
-```yaml
-redis:
-  command: redis-server --appendonly yes --maxmemory 512mb
-```
-
-## Next Steps
-
-### After Testing Locally
-
-1. **Kubernetes deployment** - Use manifests in `deploy/kubernetes/`
-2. **Production configs** - Adjust configs for production use
-3. **Monitoring** - Add Prometheus + Grafana
-4. **Load testing** - Use `wrk` or `k6` to load test
-5. **Cloud deployment** - Deploy to GCP/AWS/Linode
-
-### Monitoring
-
-**Add to docker-compose.yml:**
-```yaml
-prometheus:
-  image: prom/prometheus:latest
-  ports:
-    - "9090:9090"
-  volumes:
-    - ./prometheus.yml:/etc/prometheus/prometheus.yml
-
-grafana:
-  image: grafana/grafana:latest
-  ports:
-    - "3000:3000"
-```
-
-## Summary
-
-**To get started:**
-1. `cd /path/to/fcp/deploy/docker-compose`
-2. `docker compose build` (wait 10-15 mins)
-3. `docker compose up -d`
-4. `./scripts/integration-test.sh`
-
-**You should see:**
-- All services healthy
-- Tests passing
-- Cache working (HIT on second request)
-- Jobs being processed
-
-Enjoy testing! 🚀
+Rebuild after a code change with `docker compose up -d --build`; `docker
+compose logs -f <service>` follows a service; `docker compose down -v`
+removes the volumes too, the database included.
+
+## When it does not come up
+
+- **A service exits at once.** `docker compose logs <service>`: the
+  binary prints the rule it broke, and `--check-config` reproduces it.
+- **`postgres` is unhealthy.** Its volume holds a database from a
+  different `POSTGRES_PASSWORD`; `docker compose down -v` and start
+  again.
+- **The call manager is up but phones do not register.** `HOST_IP` must
+  be the address the phone reaches; the user must exist in the realm
+  `fcp.local`.
+- **A port is in use.** The plan above is fixed; stop what holds the
+  port or change the service's configuration and the compose file
+  together (the stack test uses the same ports).
+- **The images will not build.** The submodules must be checked out
+  (`git submodule update --init --recursive`); the nightly `images`
+  workflow builds every one and says which broke.

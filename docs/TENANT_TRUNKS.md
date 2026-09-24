@@ -347,7 +347,7 @@ Nothing moves on its own.
 - A tenant that creates a trunk starts using it for its own calls at once.
   The admin UI says what a trunk is for (this tenant) and what the platform
   falls back to.
-- `docs/DEPLOYMENT_BINARIES.md` and the compose configs keep their
+- The root local files and the compose configs keep their
   `[[trunks]]`; the documentation says when to use which.
 
 ## 11. Testing

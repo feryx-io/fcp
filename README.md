@@ -1,556 +1,127 @@
-# Ferrous Communications Platform (FCP)
+# Ferrous Communications Platform
 
-[![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE)
-[![Rust](https://img.shields.io/badge/rust-1.74%2B-orange.svg)](https://www.rust-lang.org/)
-[![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)]()
+FCP is a multi-tenant, API-first unified communications platform written
+in Rust: a registrar and B2BUA with PBX features, a session border
+controller, conferencing with video and a WebRTC gateway, IVR, voicemail,
+presence, a programmable call-flow engine, billing, compliance, E911 and
+multi-region operation, on a SIP stack and a media stack of its own. It
+is an alternative to FreeSWITCH, Kamailio and Asterisk with memory safety,
+async I/O and observability built in.
 
-> A next-generation, carrier-grade unified communications platform written entirely in Rust.
+**What is done, partial or absent is in [STATUS.md](STATUS.md)**, the
+maintained source of truth. This file is the map.
 
-FCP is a multi-tenant, API-first alternative to FreeSWITCH, Kamailio, and Asterisk, designed with memory safety, modern async I/O, and observability built-in from day one.
+## What runs
 
-**📋 Current implementation status: [STATUS.md](STATUS.md)** — the maintained source of truth for what is done, partial, or absent.
+Fourteen binaries, each a service. Their names are not all their crates'
+names; the full table with each one's configuration file is in
+[docs/SINGLE-NODE-SETUP.md](docs/SINGLE-NODE-SETUP.md) §1.
 
----
+| Binary | What it is |
+|---|---|
+| `fcp-call-manager` | Registrar, B2BUA, routing, PBX features: where phones register and calls are placed |
+| `fcp-sbc` | The session border controller: trunks, admission, topology hiding, STIR/SHAKEN |
+| `fcp-admin` | The management API (`/api/v1`) and the admin UI (`/admin/`) |
+| `fcp-api-gateway` | The public face of the admin: caching, rate limiting, one origin |
+| `fcp-events-server` | Event streaming: every service posts to it, clients subscribe, webhooks fire |
+| `fcp-conference` | The conference bridge, audio and video, clustered |
+| `fcp-webrtc-gw` | Browsers into conference rooms |
+| `fcp-ivr`, `fcp-voicemail`, `fcp-presence` | Call flows, voicemail, presence and BLF |
+| `fcp-media`, `fcp-tts` | The standalone media server; text to speech |
+| `fcp-jobs` | The CDR processor and the job workers |
+| `fcp-registrar` | A standalone registrar, for deployments that keep registration off the call manager |
 
-## 🚀 Features
+Under `external/` are the two stacks they are built on, each its own
+public repository: [siphon-rs](https://github.com/thevoiceguy/siphon-rs),
+the SIP stack, and [forge-media](https://github.com/thevoiceguy/forge-media),
+the media stack. Clone with `--recursive`, or run
+`git submodule update --init --recursive`; nothing builds without them.
 
-### Phase 1 (Complete - MVP)
+## Build and test
 
-- ✅ **Production-Grade SIP Stack** (siphon-rs)
-  - RFC 3261 compliant (INVITE, BYE, CANCEL, ACK, REGISTER, OPTIONS)
-  - RFC 3262 PRACK support (reliable provisionals)
-  - RFC 3263 DNS resolution (NAPTR/SRV/A/AAAA)
-  - RFC 7616/7617 Digest authentication (MD5/SHA-256/SHA-512)
-  - Multi-transport: UDP, TCP, TLS, WebSocket
-  - Dialog and subscription management
-  - tel URI support (RFC 3966)
-
-- ✅ **B2BUA (Back-to-Back User Agent)**
-  - Parallel forking with proper provisional handling
-  - Early media support (183 Session Progress)
-  - Media anchoring and bridging
-  - Call transfer support (REFER, Replaces)
-
-- ✅ **Multi-Tenant Support**
-  - Domain-based tenant isolation
-  - Tenant-scoped routing and extensions
-  - Per-tenant configuration
-
-- ✅ **Call Routing**
-  - Extension-based routing
-  - DID routing to extensions
-  - Policy-based routing engine
-  - Line binding management
-
-- ✅ **Voicemail System**
-  - Mailbox management with custom greetings
-  - Message recording and retrieval
-  - Status tracking (new/heard/saved/deleted)
-  - REST API for mailbox management
-  - Flow engine integration
-
-- ✅ **Flow Engine (Call Flows)**
-  - JSON-based flow definitions
-  - Twilio Studio-inspired DSL
-  - Nodes: Answer, Play, Say, Gather, Dial, Voicemail, Branch, HTTP, etc.
-  - Variable interpolation
-  - Webhook support
-
-- ✅ **REST API**
-  - User management
-  - Device management
-  - Extension management
-  - Phone number management
-  - Line binding management
-  - CDR (Call Detail Records)
-  - Flow management
-  - Voicemail management
-  - Real-time event streaming (SSE)
-
-- ✅ **Storage Backends**
-  - PostgreSQL (production)
-  - Redis (caching, events, distributed state)
-
-- ✅ **Observability**
-  - Prometheus metrics export
-  - Structured logging (tracing)
-  - Real-time TUI (Terminal UI)
-  - Debug API endpoints
-
-- ✅ **Media Handling**
-  - RTP/RTCP relay
-  - DTMF collection
-  - Call recording (basic)
-  - SDP manipulation
-
----
-
-## 📦 Quick Start
-
-### Prerequisites
-
-- Rust 1.75 or later
-- PostgreSQL
-- Optional: Redis (for event bus, caching, distributed state)
-
-### Installation
+Rust stable (`rust-toolchain.toml`); the code needs Rust 1.82 or later.
 
 ```bash
-# Clone the repository with submodules
 git clone --recursive https://github.com/thevoiceguy/fcp.git
 cd fcp
-
-# Build all binaries
-cargo build --release
-
-# Run the call manager (registrar + B2BUA + PBX)
-./target/release/fcp-call-manager --config config/fcp-call-manager.toml
-
-# Run individual services as needed
-./target/release/fcp-sbc --config config/fcp-sbc.toml
-./target/release/fcp-admin --config config/fcp-admin.toml
+cargo build --release          # every binary, under target/release/
+cargo test --workspace         # unit tests and every test that needs no database
 ```
 
-### Docker Deployment (Recommended)
+The database-backed suites and the end-to-end tests against the running
+binaries run when `FCP_TEST_DATABASE_URL` (and, for some,
+`FCP_TEST_REDIS_URL`) is set; CI runs them against service containers.
+What CI gates every pull request on:
 
 ```bash
-# Using docker-compose (includes Redis, all services)
-cd deploy/docker-compose
-docker-compose up -d
-
-# Access the API
-curl http://localhost:8080/api/v1/health
+# Format: the workspace members only (`--all` would also reformat the submodules)
+pkgs=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[].name | "-p \(.)"' | tr '\n' ' ')
+cargo fmt $pkgs -- --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-targets \
+  --features fcp-conference-server/recording-webm,fcp-conference-server/recording-mp4,fcp-conference-server/video-openh264
 ```
 
-### Configuration
-
-Each service has its own TOML config file. Example for `fcp-call-manager`:
-
-```toml
-[service]
-node_id = "cm-01"
-
-[sip]
-bind_address = "0.0.0.0:5060"
-external_ip = "192.168.1.100"
-domain = "pbx.example.com"
-
-[storage]
-postgres_url = "postgresql://fcp:secret@localhost:5432/fcp"
-
-[media]
-rtp_port_range = "10000-20000"
-recording_dir = "/var/lib/fcp/recordings"
-
-[voicemail]
-enabled = true
-recordings_dir = "/var/lib/fcp/voicemail"
-max_message_duration = 300
-```
-
-See `deploy/docker-compose/configs/` for example configurations for all services.
-
----
-
-## 🏗️ Architecture
-
-FCP uses a layered architecture:
-
-```
-┌─────────────────────────────────────────────────────┐
-│                   REST API Layer                    │
-│         (User, Device, Extension Management)         │
-└─────────────────────────────────────────────────────┘
-                        ↓
-┌─────────────────────────────────────────────────────┐
-│               Application Layer                      │
-│    (Flow Engine, IVR, Voicemail, Routing)           │
-└─────────────────────────────────────────────────────┘
-                        ↓
-┌─────────────────────────────────────────────────────┐
-│                SIP Signaling Layer                   │
-│      (Registrar, B2BUA, Proxy, Call Manager)        │
-└─────────────────────────────────────────────────────┘
-                        ↓
-┌─────────────────────────────────────────────────────┐
-│                  Media Layer                         │
-│         (RTP Engine, Recording, DTMF)                │
-└─────────────────────────────────────────────────────┘
-                        ↓
-┌─────────────────────────────────────────────────────┐
-│                 Storage Layer                        │
-│           (PostgreSQL, Redis)                        │
-└─────────────────────────────────────────────────────┘
-```
-
-### Key Components
-
-- **fcp-core**: Core types, identifiers, traits, error handling
-- **fcp-sip**: SIP integration layer (bridges fcp-core and siphon-rs)
-- **fcp-routing**: Policy-based routing engine
-- **fcp-media**: Media session management, RTP relay
-- **fcp-flow**: Flow engine for programmable call flows
-- **fcp-voicemail**: Voicemail service implementation
-- **fcp-call-manager**: Main PBX binary (registrar + B2BUA + call routing)
-- **fcp-cli**: Terminal UI for monitoring
-- **siphon-rs**: Production-grade SIP stack (submodule)
-
----
-
-## 📚 API Documentation
-
-### Authentication
-
-Currently, the API uses basic authentication (production OAuth2/JWT coming in Phase 2).
-
-### Core Endpoints
-
-#### Users
-```bash
-# List users
-GET /api/v1/users
-
-# Create user
-POST /api/v1/users
-{
-  "username": "alice",
-  "display_name": "Alice Smith",
-  "email": "alice@example.com",
-  "password": "secure_password"
-}
-
-# Get user
-GET /api/v1/users/alice
-
-# Update user
-PUT /api/v1/users/alice
-
-# Delete user
-DELETE /api/v1/users/alice
-```
-
-#### Extensions
-```bash
-# List extensions
-GET /api/v1/extensions
-
-# Create extension
-POST /api/v1/extensions
-{
-  "number": "1001",
-  "display_name": "Alice Desk",
-  "extension_type": "user"
-}
-
-# Get extension
-GET /api/v1/extensions/1001
-```
-
-#### Voicemail
-```bash
-# List mailboxes
-GET /api/v1/voicemail/mailboxes
-
-# Create mailbox
-POST /api/v1/voicemail/mailboxes
-{
-  "tenant_id": "tenant-xxx",
-  "user_id": "user-xxx",
-  "line_binding_id": "line-xxx",
-  "extension": "1001",
-  "pin": "1234"
-}
-
-# List messages for mailbox
-GET /api/v1/voicemail/mailboxes/{id}/messages
-
-# Get message
-GET /api/v1/voicemail/messages/{id}
-
-# Update message status
-PUT /api/v1/voicemail/messages/{id}
-{
-  "status": "heard"
-}
-
-# Delete message
-DELETE /api/v1/voicemail/messages/{id}
-```
-
-#### Call Detail Records (CDR)
-```bash
-# List CDRs
-GET /api/v1/cdrs?limit=100&offset=0
-
-# Get specific CDR
-GET /api/v1/cdrs/{call_id}
-```
-
-#### Flows
-```bash
-# List flows
-GET /api/v1/flows
-
-# Create flow
-POST /api/v1/flows
-{
-  "name": "Main IVR",
-  "initial_node": "answer",
-  "nodes": {
-    "answer": {
-      "id": "answer",
-      "type": "answer",
-      "next": "play_greeting"
-    },
-    "play_greeting": {
-      "id": "play_greeting",
-      "type": "play",
-      "url": "/audio/greeting.wav",
-      "next": "gather"
-    }
-  }
-}
-```
-
-For complete API documentation, see [API.md](docs/API.md).
-
----
-
-## 🧪 Testing
-
-### Run All Tests
-
-```bash
-# Run unit and integration tests
-cargo test --all
-
-# Run with output
-cargo test --all -- --nocapture
-
-# Run specific crate tests
-cargo test -p fcp-core
-cargo test -p fcp-sip
-```
-
-### SIP Testing with siphond
-
-```bash
-# Start test registrar
-cargo run -p siphond -- --mode registrar
-
-# Start B2BUA mode
-cargo run -p siphond -- --mode b2bua
-```
-
-### Load Testing
-
-```bash
-# Coming soon - SIPp scenarios for load testing
-```
-
----
-
-## 🔒 Security
-
-### Current Security Features
-
-- Digest authentication (RFC 7616/7617)
-- TLS transport support
-- Multi-tenant isolation
-- Input validation and sanitization
-
-### Security Roadmap
-
-- [ ] Rate limiting on API endpoints
-- [ ] OAuth2/JWT authentication
-- [ ] RBAC (Role-Based Access Control)
-- [ ] STIR/SHAKEN for caller ID authentication
-- [ ] Encryption at rest (KMS integration)
-
-### Reporting Security Issues
-
-Please report security vulnerabilities to security@example.com (private disclosure).
-
----
-
-## 📊 Monitoring
-
-### Prometheus Metrics
-
-FCP exports Prometheus metrics at `/api/v1/metrics`:
-
-- Call statistics (active calls, total calls, failed calls)
-- SIP transaction metrics
-- Registration counts
-- Media session statistics
-- HTTP request metrics
-
-### Grafana Dashboards
-
-Import the pre-built dashboards from `deploy/grafana/` directory.
-
-### Logs
-
-Structured JSON logging with tracing spans:
-
-```bash
-# Set log level
-export RUST_LOG=info
-
-# Pretty format for development
-export FCP_LOG_FORMAT=pretty
-
-# JSON format for production
-export FCP_LOG_FORMAT=json
-```
-
----
-
-## 🛠️ Development
-
-### Project Structure
-
-```
-fcp/
-├── crates/               # Rust crates
-│   ├── fcp-core/        # Core types and traits
-│   ├── fcp-sip/         # SIP integration
-│   ├── fcp-routing/     # Routing engine
-│   ├── fcp-media/       # Media handling
-│   ├── fcp-flow/        # Flow engine
-│   ├── fcp-voicemail/   # Voicemail service
-│   ├── fcp-call-manager/ # Main PBX binary
-│   ├── fcp-cli/         # Terminal UI
-│   └── fcp-storage-*/   # Storage backends
-├── external/
-│   └── siphon-rs/       # SIP stack (submodule)
-├── config/              # Configuration examples
-├── deploy/              # Deployment files
-│   ├── docker/
-│   └── kubernetes/
-├── docs/                # Documentation
-└── tests/               # Integration tests
-```
-
-### Building from Source
-
-```bash
-# Debug build (faster compilation)
-cargo build
-
-# Release build (optimized)
-cargo build --release
-
-# Build specific binary
-cargo build -p fcp-call-manager
-
-# Watch and rebuild on changes
-cargo watch -x "build -p fcp-call-manager"
-```
-
-### Code Style
-
-```bash
-# Format code
-cargo fmt --all
-
-# Lint with clippy
-cargo clippy --all -- -D warnings
-
-# Check without building
-cargo check --all
-```
-
-### Contributing
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines.
-
----
-
-## 🗺️ Roadmap
-
-### Phase 1: MVP Foundation (Complete)
-- ✅ Core SIP functionality (siphon-rs)
-- ✅ B2BUA with parallel forking
-- ✅ Multi-tenant support
-- ✅ REST API
-- ✅ PostgreSQL storage backend
-- ✅ Docker deployment
-
-### Phase 2: Programmable Voice (Complete)
-- ✅ Flow engine with full node set (Answer, Play, Gather, Dial, Record, Voicemail, HTTP, etc.)
-- ✅ Voicemail system with greetings, MWI, REST API
-- ✅ Webhook dispatcher (HMAC-signed, retry with backoff)
-- ✅ Web admin UI
-- ✅ IVR server
-
-### Phase 3: Applications & Clustering (Complete)
-- ✅ Queue/ACD service
-- ✅ Presence server with BLF
-- ✅ Clustering with SWIM protocol
-- ✅ Redis for distributed state
-- ✅ WebRTC gateway (browsers join conference rooms with audio and video; `docs/WEBRTC.md`)
-- ✅ Conference bridge server
-- ✅ Event streaming server
-
-### Phase 4: Enterprise Features (In Progress)
-- ✅ SBC with enforcement pipeline
-- ✅ Trunk management and LCR
-- ✅ STIR/SHAKEN signing and verification
-- ✅ Device provisioning serving layer (vendor templates pending)
-- ✅ Shared TTS service
-- 🚧 Audio transcoding (queue path done; B2BUA/SBC path pending)
-- [ ] Billing (rate plans, CDR cost stamping)
-- [ ] Policy engine extraction (fcp-policy)
-- [ ] KMS integration
-
-### Phase 5: Carrier Grade (Planned - 2027)
-- [ ] Multi-region support
-- [ ] E911 integration
-- [ ] Video conferencing
-- [ ] Regulatory compliance
-
----
-
-## 📄 License
-
-FCP is dual-licensed under:
-
-- MIT License ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
-- Apache License 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
-
-You may choose either license for your use.
-
----
-
-## 🙏 Acknowledgments
-
-- **siphon-rs**: Production-grade SIP stack developed specifically for FCP
-- **Rust Community**: For amazing async runtime and ecosystem
-- **Twilio Studio**: Inspiration for flow engine design
-- **FreeSWITCH/Asterisk**: Reference implementations for VoIP patterns
-
----
-
-## 📞 Support
-
-- **Documentation**: https://fcp-docs.example.com
-- **Issues**: https://github.com/thevoiceguy/fcp/issues
-- **Discussions**: https://github.com/thevoiceguy/fcp/discussions
-- **Discord**: https://discord.gg/fcp (community chat)
-
----
-
-## 🌟 Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=thevoiceguy/fcp&type=Date)](https://star-history.com/#thevoiceguy/fcp&Date)
-
----
-
-**Built with ❤️ and 🦀 Rust**
+`docs/TEST_FLOOR.md` describes the end-to-end harness (a scripted SIP
+phone with media, and every binary started as a process).
+
+## Run it
+
+- **One machine, from source:** [docs/SINGLE-NODE-SETUP.md](docs/SINGLE-NODE-SETUP.md)
+  — the port plan, the rules every binary enforces at startup, what
+  connects to what, the first tenant, user and phone.
+- **One machine, in containers:** [deploy/docker-compose/README.md](deploy/docker-compose/README.md)
+  — `docker compose up -d --build` brings up Postgres, Redis and the
+  stack; its configurations are the ones a CI test starts.
+- **Several nodes:** [docs/CLUSTER_OPERATIONS_RUNBOOK.md](docs/CLUSTER_OPERATIONS_RUNBOOK.md)
+  — what a cluster is, every binary's routes and token, draining and
+  rolling restarts.
+- **Several regions:** [docs/MULTI_REGION_DEPLOYMENT.md](docs/MULTI_REGION_DEPLOYMENT.md).
+- **Video on a GPU:** [docs/GPU.md](docs/GPU.md).
+
+Three things about configuration that every binary shares:
+
+- **`--check-config`** loads a file, applies the environment, runs the
+  startup rules and prints the effective configuration with every secret
+  masked; exit 0 means the node would start. Run it before a restart,
+  and without `--config` to see a binary's defaults.
+- **A non-loopback HTTP bind needs the binary's token, and a public SIP
+  bind needs digest authentication.** The guide's §4 has the key and the
+  environment variable for each. An unknown key is refused, naming it.
+- **Every secret has an environment variable** in the binary's
+  `FCP_<BINARY>_*` style (`--help` lists them), which wins over the file.
+
+## Where each question is answered
+
+The design documents are the record of what was built and why; each
+ends with what it left out. `CLAUDE.md` indexes them all; the ones an
+operator or integrator reaches for:
+
+| Question | Document |
+|---|---|
+| The architecture and the roadmap it came from | `ARCHITECTURE-v0.2.md` |
+| Trunks, carriers, tenant trunks, routing rules | `docs/TENANT_TRUNKS.md` |
+| What a node can carry, admission, draining | `docs/CAPACITY_AND_SURVIVABILITY.md` |
+| The edge: authentication, address checks, rate limits | `docs/EDGE_SECURITY.md` |
+| Conferencing across nodes, and video | `docs/DISTRIBUTED_CONFERENCING.md`, `docs/VIDEO_CONFERENCING.md`, `docs/WEBRTC.md` |
+| CDRs: the record, the pipeline, the archive | `docs/CDR_PIPELINE.md` |
+| Billing, encryption at rest, compliance, E911 | `docs/BILLING.md`, `docs/ENCRYPTION.md`, `docs/COMPLIANCE.md`, `docs/E911.md` |
+| Events, webhooks and the WebSocket stream | `docs/API_EVENTS.md` |
+| The packaging and the documents, checked against the code | `docs/SHIP_AND_OPERATE.md`, `docs/DEPLOYMENT_GAPS.md` |
+| The SIP stack | `external/siphon-rs/CLAUDE.md` |
+
+## Contributing
+
+`docs/CONTRIBUTING.md`. In short: design first for anything larger than
+a fix, one pull request per phase, and the three CI gates above before
+opening it. `CLAUDE.md` is the guide to the codebase for people and for
+the assistant that helps maintain it.
+
+## License
+
+No license file is committed to this repository yet; until one is, the
+code is the owner's. Ask before redistributing.
+
+## Support
+
+Issues and discussion: https://github.com/thevoiceguy/fcp/issues

@@ -325,7 +325,7 @@ can be a pass/fail gate.
 
 **Where it runs.** Real runs are manual, on the dev VM and — for video — the
 GPU box, with the numbers recorded in §13's phase 4 notes and in
-`docs/DEPLOYMENT.md`. CI runs one small profile for behaviour, not throughput:
+`docs/SINGLE-NODE-SETUP.md` §12. CI runs one small profile for behaviour, not throughput:
 CI runners are too variable to assert a rate (`docs/TEST_FLOOR.md` and the
 media flakes say as much).
 
@@ -455,7 +455,7 @@ One PR each, in order.
 | 2b-3 ✅ v0.25.215 | **The WebRTC gateway.** It has no health server at all, so: one, with `/health`, `/ready` and `/drain`; the `[admission]` section; and a drain that hands sessions to another node the way distributed conferencing's phase 5 migrates participants, rather than only refusing new ones |
 | 2b-4 ✅ v0.25.216 | **The conference server, the badge and the runbook.** Its own drain — SIGTERM, `set_draining`, `start_draining()`, `drain_wait_secs`, REFER migration — aligned on the shared `draining` state and given `/ready` and `/drain`, without losing the migration; the drain badge and node state on the admin UI's cluster page; the rolling-restart procedure in `docs/CLUSTER_OPERATIONS_RUNBOOK.md` |
 | 3 ✅ v0.25.217 | **The harness.** `fcp-loadgen` on `fcp-testkit`: the four profiles, the measurements, the JSON report, the budget flags; the small CI profile |
-| 4 ✅ v0.25.218 | **What the numbers say.** Run it on the dev VM: calls per second and concurrent calls to first refusal, latency percentiles, memory per call, registration storm behaviour. Fix what it finds — this is where the defects are — and record the numbers here, in `docs/DEPLOYMENT.md` and in the heartbeat as a published capacity budget, the shape video's already has |
+| 4 ✅ v0.25.218 | **What the numbers say.** Run it on the dev VM: calls per second and concurrent calls to first refusal, latency percentiles, memory per call, registration storm behaviour. Fix what it finds — this is where the defects are — and record the numbers here, in `docs/SINGLE-NODE-SETUP.md` §12 and in the heartbeat as a published capacity budget, the shape video's already has |
 | 5a ✅ v0.25.219 | **A tenant's contract, across the cluster.** `fcp_cluster::CallLeases`: a lease per call in Redis, scored by expiry so a dead node's calls fade; `NodeAdmission::admit` becomes async and the controller takes the lease on the way in, falling back to this node's own count when Redis cannot be read; a settling tick gives back what has ended and refreshes what is still up |
 | 5b ✅ v0.25.220 | **The rest of it.** Trunk channels leased the same way; the heartbeat's `capacity` and `load`; placement by headroom among serving nodes in region; load, headroom and limits on the admin UI's cluster and tenant pages |
 | 5 (as written) | **Across the cluster.** Tenant concurrency and trunk channels leased in Redis with a per-node fallback; placement by headroom among serving nodes in region; load, headroom and limits on the admin UI's cluster and tenant pages |

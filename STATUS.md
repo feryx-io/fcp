@@ -796,6 +796,16 @@ maps what connects to what with which token, and shows the first
 tenant, user and extension through the API; the runbook lists every
 binary's routes and token, and gives the drain, rolling restart and
 partition procedures as the code does them.
+Phase 6 done (v0.25.249): the READMEs — and the project is complete.
+The root README is the map: what runs, how to build and test with the
+three CI gates, where to run it, the configuration facts every binary
+shares, and which document answers which question; its roadmap is this
+file. It no longer claims a license the repository does not carry. The
+compose README is written against the rebuilt stack. The four crate
+READMEs are gone; the five dead deployment documents are archived with a
+row each, and the capacity numbers measured on 2026-09-21 that one of
+them held are now §12 of the single-node guide. What ships now starts,
+is checked by CI, and is described by documents written from the code.
 
 ## Historical documents
 
