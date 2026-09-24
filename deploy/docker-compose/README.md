@@ -196,7 +196,11 @@ What must be saved, what a restore needs and what an upgrade does are in
 `docs/BACKUP_AND_RESTORE.md`. In short: the database and the `fcp-certs`
 volume (the master key) are one unit, the recording and voicemail
 volumes are the files their rows name, Redis is not backed up, and
-`docker compose down -v` drops all of it.
+`docker compose down -v` drops all of it. `scripts/backup.sh <directory>`
+takes all of it — the dump through the `postgres` container, a tar per
+stateful volume, a manifest and checksums — with `postgres` up and the
+rest running or stopped; stop the services that write files first for
+a backup with nothing in flight.
 
 ## When it does not come up
 
