@@ -877,6 +877,27 @@ user; the compose stack ships `routing.yaml` again (one allow policy for
 the default tenant, no users) and the stack test's call goes through it;
 the floor has the 403. The production-shaped stack is complete.
 
+## What is next (chosen 2026-09-24, after the production stack closed)
+
+**Backup, restore and upgrade** — design in `docs/BACKUP_RESTORE_UPGRADE.md`
+(v0.25.256): the stack can be run and cannot yet be kept. What the survey
+found: every piece of state and where it lives (Postgres, the certs
+volume with the master key, files on each node, Redis), the call
+manager's recordings written to the container's own filesystem in the
+compose stack, no backup procedure or tool anywhere, migrations that
+refuse an older binary (`VersionMissing`) so rollback is a restore
+nobody can take, three migrations that drop or rename with nothing
+stopping the next, a node's version in every heartbeat and shown
+nowhere, and two storage documents describing backends that do not
+exist. Five phases: every stateful path in a volume and the state
+documented; `backup.sh`; `restore.sh` proved by a test that restores
+into a fresh stack and registers the old user — and refuses without the
+key; upgrade rules, the version on the node list, a migration-discipline
+check in CI; the skew proved. Five questions settled by the user, each
+on its recommendation: shell scripts, Redis not backed up, an old binary
+keeps refusing a newer schema, the stale storage documents deleted, a CI
+check on new migrations.
+
 ## Historical documents
 
 Superseded status docs live in [`docs/archive/`](docs/archive/README.md) — they describe
