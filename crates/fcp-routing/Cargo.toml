@@ -12,6 +12,8 @@ fcp-policy = { path = "../fcp-policy" }
 
 # Error handling
 anyhow = "1.0"
+async-trait = "0.1"
+serde_json = { workspace = true }
 
 # Async
 tokio = { workspace = true }

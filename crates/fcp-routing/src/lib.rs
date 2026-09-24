@@ -45,6 +45,7 @@
 //! ```
 
 pub mod service;
+pub mod users;
 
 // The policy engine was extracted into fcp-policy; re-export it wholesale so
 // existing `fcp_routing::` paths keep working.
@@ -56,3 +57,4 @@ pub use fcp_policy::{
     YamlRoutingStore,
 };
 pub use service::RoutingService;
+pub use users::DatabaseRoutingStore;

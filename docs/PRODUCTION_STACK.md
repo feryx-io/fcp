@@ -116,7 +116,7 @@ its binary's configuration-check test.
 | 2 | ✅ v0.25.252 — **Secrets by reference** (§1.4, Q2). Every string in every binary's configuration may name an environment variable, `${NAME}`, resolved when the file is loaded, in `fcp_core::config` so every binary gets it the same way; a name the environment lacks refuses the file at startup, naming it; `--check-config` resolves and masks them like any secret. The per-field variables stay. The compose stack moves nothing to it yet — nothing in the stack needs a nested credential — but the stack test proves a `${…}` in a configuration is resolved from the environment. |
 | 3 | ✅ v0.25.253 — **TLS in the stack** (§1.2, Q3). A one-shot `certs` service makes a CA and a certificate per service into a volume (`openssl` in Alpine; idempotent, so a restart keeps them). SIPS and WSS on the call manager and registrar, SIP/TLS on the conference server and SBC, HTTPS on the media and WebRTC servers, from those files. A reverse proxy in front of the admin, gateway and events server with the same CA, so provisioning can require HTTPS as it does by default; the admin's `gateway_url` and the WebRTC gateway's CORS origins become `https://`. The stack test registers over SIPS, and the CA is where the compose README says to find it for a phone. Plain SIP and HTTP stay listening beside them. |
 | 4 | ✅ v0.25.254 — **Encryption at rest on** (§1.3). The master key is generated once into the same volume by the `certs` service (`openssl rand -base64 32`), every binary that opens Postgres gets `FCP_ENCRYPTION_PROVIDER=local` and `FCP_MASTER_KEY_FILE`, the compose README says how to run the one-time `reencrypt` and that the key is part of the backup; the stack test asserts `GET /api/v1/system/encryption` reports `local` and a DEK. |
-| 5 | **A stranger is refused** (§1.5, Q4). The routing engine takes its users and their tenants from the database — a `RoutingStore` whose `find_user` asks the user store, with the YAML file supplying policies only — and a caller with no user is a `403` with a reason, as a policy's `Deny` already is, never a 500. The shipped compose stack gets a `routing.yaml` back, with a policy and no `users:`, and the stack test's call goes through it. |
+| 5 | ✅ v0.25.255 — **A stranger is refused** (§1.5, Q4). The routing engine takes its users and their tenants from the database — a `RoutingStore` whose `find_user` asks the user store, with the YAML file supplying policies only — and a caller with no user is a `403` with a reason, as a policy's `Deny` already is, never a 500. The shipped compose stack gets a `routing.yaml` back, with a policy and no `users:`, and the stack test's call goes through it. |
 
 Folded into this design's PR, not a phase: `STATUS.md`'s scoreboard
 still said Phase 5 was "Planned — data-model stubs at most" and its
@@ -177,4 +177,10 @@ it should be retired in favour of the database rules
 - Phase 4: the stack test reads `GET /api/v1/system/encryption`.
 - Phase 5: unit tests for the database-backed user lookup and the
   refusal; the stack test's call passes through a shipped
-  `routing.yaml`; a caller with no user gets 403 in the floor.
+  `routing.yaml`; a caller with no user gets 403 in the floor. *As
+  built:* a phone's INVITE is digest-authenticated before the engine
+  sees it, so a caller with no user can only reach the engine through a
+  trusted edge naming one (`X-FCP-Caller-User`) — which is what the
+  floor test does — or on a trunk, where a carrier's call is evaluated
+  as the trunk's tenant's with no roles rather than refused, since a
+  carrier holds no user's name.

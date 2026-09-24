@@ -206,6 +206,12 @@ impl ComposeStack {
             .replace("redis://redis:6379\"", &format!("{redis_url}\""))
             .replace("redis://127.0.0.1:6379\"", &format!("{redis_url}\""))
             .replace("/app/data", &format!("{d}/app-data"))
+            .replace(
+                "/app/routing.yaml",
+                &root
+                    .join("deploy/docker-compose/configs/routing.yaml")
+                    .to_string_lossy(),
+            )
             .replace("/var/lib/fcp", &format!("{d}/var-lib-fcp"))
             .replace("/var/fcp", &format!("{d}/var-fcp"))
     }

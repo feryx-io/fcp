@@ -5,7 +5,7 @@
 use anyhow::Result;
 use fcp_core::TenantId;
 use fcp_policy::evaluator::PolicyEvaluator;
-use fcp_policy::models::PolicyDecision;
+use fcp_policy::models::{PolicyDecision, User};
 use fcp_policy::storage::RoutingStore;
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -18,8 +18,7 @@ pub struct RoutingService {
     /// Policy evaluator
     evaluator: PolicyEvaluator,
 
-    /// Storage reference (kept for potential future use)
-    #[allow(dead_code)]
+    /// The users and policies.
     store: Arc<dyn RoutingStore>,
 }
 
@@ -57,6 +56,14 @@ impl RoutingService {
             .await?
             .map(|user| user.tenant_id)
             .ok_or_else(|| anyhow::anyhow!("user '{}' not found in routing store", user_id))
+    }
+
+    /// The caller as a user of `tenant_id`, or `None` when the tenant has
+    /// no such user: what the SIP handler asks before it evaluates a call
+    /// from a phone (`docs/PRODUCTION_STACK.md` phase 5), so a stranger
+    /// is a refusal and not an evaluation error.
+    pub async fn caller(&self, caller: &str, tenant_id: &TenantId) -> Result<Option<User>> {
+        self.store.get_user(caller, tenant_id).await
     }
 
     /// Evaluate if a call is allowed.
