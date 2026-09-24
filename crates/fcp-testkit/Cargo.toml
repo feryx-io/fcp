@@ -15,6 +15,7 @@ bytes = { workspace = true }
 dashmap = "6"
 libc = "0.2"
 serde_json = { workspace = true }
+serde_yaml = "0.9"
 redis = { version = "0.27", features = ["tokio-comp"] }
 smol_str = "0.3"
 sqlx = { version = "0.8", features = ["runtime-tokio", "postgres"] }

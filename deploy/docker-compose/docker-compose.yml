@@ -149,7 +149,6 @@ services:
     network_mode: host
     volumes:
       - ./configs/fcp-call-manager.toml:/app/fcp-call-manager.toml:ro
-      - ./configs/routing.yaml:/app/routing.yaml:ro
       - call-manager-data:/app/data
     environment:
       RUST_LOG: info
