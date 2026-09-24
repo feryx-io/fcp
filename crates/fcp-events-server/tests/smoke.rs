@@ -229,11 +229,11 @@ fn shipped_configurations_check() {
     smoke::assert_configs_check(
         BIN,
         &[],
-        &["fcp-events-server-local.toml"],
         &[
+            "fcp-events-server-local.toml",
             "deploy/docker-compose/configs/fcp-events-server.toml",
-            "crates/fcp-events-server/fcp-events-server.toml.example",
         ],
+        &["crates/fcp-events-server/fcp-events-server.toml.example"],
     );
 }
 

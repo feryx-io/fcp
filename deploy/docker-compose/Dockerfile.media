@@ -36,8 +36,8 @@ COPY --from=builder /app/target/release/fcp-media /app/fcp-media
 RUN mkdir -p /var/lib/fcp/media/recordings /var/lib/fcp/media/prompts
 
 # Expose HTTP API and RTP port range
-EXPOSE 8080
-EXPOSE 10000-20000/udp
+EXPOSE 8085
+EXPOSE 30000-30999/udp
 
 # Run the binary
 CMD ["/app/fcp-media", "--config", "/app/fcp-media-server.toml"]

@@ -65,11 +65,11 @@ fn shipped_configurations_check() {
     smoke::assert_configs_check(
         BIN,
         &[],
-        &["fcp-admin-local.toml"],
         &[
+            "fcp-admin-local.toml",
             "deploy/docker-compose/configs/fcp-admin.toml",
-            "crates/fcp-admin/fcp-admin.toml.example",
         ],
+        &["crates/fcp-admin/fcp-admin.toml.example"],
     );
 }
 

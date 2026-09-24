@@ -158,11 +158,12 @@ fn shipped_configurations_check() {
     smoke::assert_configs_check(
         BIN,
         &[],
-        &["fcp-conference-local.toml"],
         &[
+            "fcp-conference-local.toml",
             "deploy/docker-compose/configs/fcp-conference-server.toml",
             "deploy/docker-compose/configs/fcp-conference-server.gpu.toml",
         ],
+        &[],
     );
 }
 

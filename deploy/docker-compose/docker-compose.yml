@@ -1,7 +1,47 @@
-version: '3.8'
+# The FCP stack on one Docker host (docs/SHIP_AND_OPERATE.md phase 3).
+#
+#   edit .env (or keep your own copy and pass --env-file)
+#   docker compose up -d --build
+#   docker compose --profile registrar up -d   # with the standalone registrar
+#
+# Two kinds of service. The ones that carry SIP and RTP — the call manager,
+# the conference server, the media server and the WebRTC gateway — run on
+# the host's network, because Docker's bridge cannot forward RTP port
+# ranges usefully; they reach the bridge services through the ports those
+# publish on the host (127.0.0.1:5432, :6379, :8081), and the bridge
+# services reach them through `host.docker.internal`. Everything else runs
+# on the bridge network `fcp-network`.
+#
+# Ports on the host (none collide):
+#   5432 postgres · 6379 redis · 8000 gateway · 8080 admin · 8081 events
+#   8082 jobs · 8084 call manager HTTP · 8085 media HTTP · 8090 conference
+#   HTTP · 8095 webrtc HTTP · 9090 prometheus · 3000 grafana
+#   5060 call manager SIP · 5074 conference SIP · 5077 webrtc SIP
+#   5062/8083 registrar (profile) · RTP 10000-10999 call manager,
+#   20000-20999 conference, 30000-30999 media, 34000-35999 webrtc
+#
+# Secrets come from .env through each binary's FCP_* environment override
+# (`--check-config` on any binary shows what it will run with, masked).
 
 services:
-  # Redis - Used by both fcp-api-gateway (cache) and fcp-jobs (queue)
+  postgres:
+    image: postgres:16-alpine
+    container_name: fcp-postgres
+    environment:
+      POSTGRES_USER: fcp
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: fcp
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fcp -d fcp"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
   redis:
     image: redis:7-alpine
     container_name: fcp-redis
@@ -17,7 +57,8 @@ services:
       retries: 5
     restart: unless-stopped
 
-  # fcp-admin - Management API (CRUD operations)
+  # The management API and the admin UI. Migrations run at its startup
+  # (and at every other binary's that opens Postgres).
   fcp-admin:
     build:
       context: ../..
@@ -27,13 +68,24 @@ services:
       - "8080:8080"
     volumes:
       - ./configs/fcp-admin.toml:/app/fcp-admin.toml:ro
-      - fcp_shared-data:/app/data  # Shared with fcp-call-manager
+      - admin-data:/app/data
     environment:
-      - RUST_LOG=info
-      - FCP_ADMIN_LOG_FORMAT=pretty
+      RUST_LOG: info
+      FCP_ADMIN_LOG_FORMAT: pretty
+      FCP_ADMIN_DATABASE_URL: postgresql://fcp:${POSTGRES_PASSWORD}@postgres:5432/fcp
+      FCP_ADMIN_AUTH_TOKEN: ${FCP_ADMIN_AUTH_TOKEN}
+      FCP_ADMIN_PROVISIONING_AUTH_TOKEN: ${FCP_ADMIN_PROVISIONING_AUTH_TOKEN}
+      FCP_ADMIN_EVENTS_AUTH_TOKEN: ${FCP_EVENTS_AUTH_TOKEN}
+      FCP_ADMIN_CALL_MANAGER_AUTH_TOKEN: ${FCP_CALL_MANAGER_API_TOKEN}
+      FCP_ADMIN_CONFERENCE_AUTH_TOKEN: ${FCP_CONFERENCE_AUTH_TOKEN}
+      FCP_ADMIN_CONFERENCE_JOIN_SECRET: ${FCP_CONFERENCE_JOIN_SECRET}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
-      - redis
-      - fcp-events-server
+      postgres:
+        condition: service_healthy
+      fcp-events-server:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/api/v1/health"]
       interval: 10s
@@ -41,7 +93,7 @@ services:
       retries: 3
     restart: unless-stopped
 
-  # fcp-api-gateway - Public-facing gateway with caching and rate limiting
+  # The public API gateway in front of the admin.
   fcp-api-gateway:
     build:
       context: ../..
@@ -52,11 +104,13 @@ services:
     volumes:
       - ./configs/fcp-api-gateway.toml:/app/fcp-api-gateway.toml:ro
     environment:
-      - RUST_LOG=info
-      - FCP_GATEWAY_LOG_FORMAT=pretty
+      RUST_LOG: info
+      FCP_GATEWAY_LOG_FORMAT: pretty
     depends_on:
-      - redis
-      - fcp-admin
+      redis:
+        condition: service_healthy
+      fcp-admin:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 10s
@@ -64,7 +118,7 @@ services:
       retries: 3
     restart: unless-stopped
 
-  # fcp-events-server - WebSocket event streaming
+  # Event streaming: every other service posts to its /ingest.
   fcp-events-server:
     build:
       context: ../..
@@ -75,8 +129,9 @@ services:
     volumes:
       - ./configs/fcp-events-server.toml:/app/fcp-events-server.toml:ro
     environment:
-      - RUST_LOG=info
-      - FCP_EVENTS_LOG_FORMAT=pretty
+      RUST_LOG: info
+      FCP_EVENTS_LOG_FORMAT: pretty
+      FCP_EVENTS_AUTH_TOKEN: ${FCP_EVENTS_AUTH_TOKEN}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
       interval: 10s
@@ -84,27 +139,29 @@ services:
       retries: 3
     restart: unless-stopped
 
-  # fcp-call-manager - Combined SIP registrar and B2BUA call handler
+  # Registrar, B2BUA, routing and PBX features: where phones register and
+  # calls are placed. SIP 5060, HTTP 8084, RTP 10000-10999, on the host.
   fcp-call-manager:
     build:
       context: ../..
       dockerfile: deploy/docker-compose/Dockerfile.call-manager
     container_name: fcp-call-manager
-    # Use host networking for proper UDP/RTP handling
-    # Docker bridge networking has issues with UDP port ranges used by RTP
     network_mode: host
     volumes:
       - ./configs/fcp-call-manager.toml:/app/fcp-call-manager.toml:ro
       - ./configs/routing.yaml:/app/routing.yaml:ro
-      - ./certs:/app/certs:ro  # TLS certificates for SIPS
-      - fcp_shared-data:/app/data  # Shared with main docker-compose
+      - call-manager-data:/app/data
     environment:
-      - RUST_LOG=info
-      - FCP_CALL_MANAGER_LOG_FORMAT=pretty
-      # Set to your Docker host's LAN IP (required for RTP/SDP to work)
-      - FCP_CALL_MANAGER_PUBLIC_IP=${HOST_IP:-}
+      RUST_LOG: info
+      FCP_CALL_MANAGER_LOG_FORMAT: pretty
+      FCP_CALL_MANAGER_PUBLIC_IP: ${HOST_IP}
+      FCP_CALL_MANAGER_DATABASE_URL: postgresql://fcp:${POSTGRES_PASSWORD}@127.0.0.1:5432/fcp
+      FCP_CALL_MANAGER_API_TOKEN: ${FCP_CALL_MANAGER_API_TOKEN}
+      FCP_CALL_MANAGER_EVENTS_AUTH_TOKEN: ${FCP_EVENTS_AUTH_TOKEN}
     depends_on:
-      fcp-admin:
+      postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
       fcp-events-server:
         condition: service_healthy
@@ -116,25 +173,30 @@ services:
       start_period: 15s
     restart: unless-stopped
 
-  # fcp-conference - Conference bridge server
+  # The conference bridge. SIP 5074, HTTP 8090, RTP 20000-20999, on the host.
   fcp-conference:
     build:
       context: ../..
       dockerfile: deploy/docker-compose/Dockerfile.conference
     container_name: fcp-conference
-    # Use host networking for proper UDP/RTP handling
     network_mode: host
     volumes:
       - ./configs/fcp-conference-server.toml:/app/fcp-conference-server.toml:ro
-      - fcp-recordings:/var/fcp/conference/recordings
-      - fcp-conference-cdr-spool:/var/lib/fcp/cdr-spool
+      - conference-recordings:/var/fcp/conference/recordings
+      - conference-cdr-spool:/var/lib/fcp/cdr-spool
       - ./configs/announcements:/var/fcp/conference/announcements:ro
     environment:
-      - RUST_LOG=info
-      - FCP_CONFERENCE_LOG_FORMAT=pretty
-      - FCP_CONFERENCE_PUBLIC_IP=${HOST_IP:-}
+      RUST_LOG: info
+      FCP_CONFERENCE_LOG_FORMAT: pretty
+      FCP_CONFERENCE_PUBLIC_IP: ${HOST_IP}
+      FCP_CONFERENCE_DATABASE_URL: postgresql://fcp:${POSTGRES_PASSWORD}@127.0.0.1:5432/fcp
+      FCP_CONFERENCE_AUTH_TOKEN: ${FCP_CONFERENCE_AUTH_TOKEN}
+      FCP_CONFERENCE_EVENTS_AUTH_TOKEN: ${FCP_EVENTS_AUTH_TOKEN}
+      FCP_CONFERENCE_JOIN_SECRET: ${FCP_CONFERENCE_JOIN_SECRET}
     depends_on:
-      fcp-admin:
+      postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
       fcp-events-server:
         condition: service_healthy
@@ -146,20 +208,21 @@ services:
       start_period: 15s
     restart: unless-stopped
 
-  # fcp-webrtc-gw - WebRTC gateway (browsers into conference rooms)
+  # Browsers into conference rooms. HTTP 8095, SIP 5077, RTP 34000-35999,
+  # on the host.
   fcp-webrtc-gw:
     build:
       context: ../..
       dockerfile: deploy/docker-compose/Dockerfile.webrtc-gw
     container_name: fcp-webrtc-gw
-    # Use host networking for ICE, SIP and RTP
     network_mode: host
     volumes:
       - ./configs/fcp-webrtc-gw.toml:/app/fcp-webrtc-gw.toml:ro
     environment:
-      - RUST_LOG=info
-      - FCP_WEBRTC_GW_LOG_FORMAT=pretty
-      - FCP_WEBRTC_GW_PUBLIC_IP=${HOST_IP:-}
+      RUST_LOG: info
+      FCP_WEBRTC_GW_LOG_FORMAT: pretty
+      FCP_WEBRTC_GW_PUBLIC_IP: ${HOST_IP}
+      FCP_WEBRTC_GW_AUTH_TOKENS: ${FCP_WEBRTC_GW_AUTH_TOKENS}
     depends_on:
       fcp-conference:
         condition: service_healthy
@@ -171,72 +234,31 @@ services:
       start_period: 15s
     restart: unless-stopped
 
-  # fcp-media - Standalone media processing server
+  # The standalone media server. HTTP 8085, RTP 30000-30999, on the host.
   fcp-media:
     build:
       context: ../..
       dockerfile: deploy/docker-compose/Dockerfile.media
     container_name: fcp-media
-    # Use host networking for proper UDP/RTP handling
     network_mode: host
     volumes:
       - ./configs/fcp-media-server.toml:/app/fcp-media-server.toml:ro
-      - fcp-media-recordings:/var/lib/fcp/media/recordings
-      - fcp-media-prompts:/var/lib/fcp/media/prompts
+      - media-recordings:/var/lib/fcp/media/recordings
+      - media-prompts:/var/lib/fcp/media/prompts
     environment:
-      - RUST_LOG=info
-      - FCP_MEDIA_LOG_FORMAT=pretty
-      - FCP_MEDIA_PUBLIC_IP=${HOST_IP:-}
+      RUST_LOG: info
+      FCP_MEDIA_LOG_FORMAT: pretty
+      FCP_MEDIA_PUBLIC_IP: ${HOST_IP}
+      FCP_MEDIA_AUTH_TOKENS: ${FCP_MEDIA_AUTH_TOKENS}
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8085/health"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 15s
     restart: unless-stopped
 
-  # Prometheus - Metrics collection and storage
-  prometheus:
-    image: prom/prometheus:v2.53.0
-    container_name: fcp-prometheus
-    ports:
-      - "9090:9090"
-    volumes:
-      - ../prometheus/prometheus.compose.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus-data:/prometheus
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
-      interval: 10s
-      timeout: 3s
-      retries: 3
-    restart: unless-stopped
-
-  # Grafana - Dashboards and visualization
-  grafana:
-    image: grafana/grafana:11.1.0
-    container_name: fcp-grafana
-    ports:
-      - "3000:3000"
-    volumes:
-      - ../grafana/datasources-compose:/etc/grafana/provisioning/datasources:ro
-      - ../grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
-      - grafana-data:/var/lib/grafana
-    environment:
-      - GF_SECURITY_ADMIN_PASSWORD=admin
-      - GF_AUTH_ANONYMOUS_ENABLED=true
-      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
-    depends_on:
-      - prometheus
-    healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/api/health"]
-      interval: 10s
-      timeout: 3s
-      retries: 3
-    restart: unless-stopped
-
-  # fcp-jobs - Async job processing workers
+  # The CDR processor and the job workers.
   fcp-jobs:
     build:
       context: ../..
@@ -247,11 +269,15 @@ services:
     volumes:
       - ./configs/fcp-jobs.toml:/app/fcp-jobs.toml:ro
     environment:
-      - RUST_LOG=info
-      - FCP_JOBS_LOG_FORMAT=pretty
-      - FCP_JOBS_WORKERS=4
+      RUST_LOG: info
+      FCP_JOBS_LOG_FORMAT: pretty
+      FCP_JOBS_WORKERS: 4
+      FCP_JOBS_DATABASE_URL: postgresql://fcp:${POSTGRES_PASSWORD}@postgres:5432/fcp
     depends_on:
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8082/health"]
       interval: 10s
@@ -259,23 +285,143 @@ services:
       retries: 3
     restart: unless-stopped
 
+  # A standalone registrar, for deployments that keep registration off the
+  # call manager (docs/CAPACITY_AND_SURVIVABILITY.md). Off unless asked
+  # for: `docker compose --profile registrar up -d`. SIP 5062, HTTP 8083.
+  fcp-registrar:
+    build:
+      context: ../..
+      dockerfile: deploy/docker-compose/Dockerfile.registrar
+    container_name: fcp-registrar
+    profiles: ["registrar"]
+    network_mode: host
+    volumes:
+      - ./configs/fcp-registrar.toml:/app/fcp-registrar.toml:ro
+    environment:
+      RUST_LOG: info
+      FCP_REGISTRAR_LOG_FORMAT: pretty
+      FCP_REGISTRAR_DATABASE_URL: postgresql://fcp:${POSTGRES_PASSWORD}@127.0.0.1:5432/fcp
+      FCP_REGISTRAR_API_TOKEN: ${FCP_REGISTRAR_API_TOKEN}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8083/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+
+  # Metrics. Every FCP metrics endpoint that wants a token gets the one
+  # from .env; the configuration is written from this file so the tokens
+  # come from one place.
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    container_name: fcp-prometheus
+    ports:
+      - "9090:9090"
+    configs:
+      - source: prometheus
+        target: /etc/prometheus/prometheus.yml
+    volumes:
+      - prometheus-data:/prometheus
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    container_name: fcp-grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - ../grafana/datasources-compose:/etc/grafana/provisioning/datasources:ro
+      - ../grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    depends_on:
+      - prometheus
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/api/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+
+configs:
+  prometheus:
+    content: |
+      global:
+        scrape_interval: 15s
+        evaluation_interval: 15s
+        external_labels:
+          monitor: fcp
+      scrape_configs:
+        - job_name: fcp-admin
+          metrics_path: /metrics
+          authorization:
+            type: Bearer
+            credentials: ${FCP_ADMIN_AUTH_TOKEN}
+          static_configs:
+            - targets: ['fcp-admin:8080']
+              labels: { service: admin }
+        - job_name: fcp-events-server
+          metrics_path: /metrics
+          static_configs:
+            - targets: ['fcp-events-server:8081']
+              labels: { service: events }
+        - job_name: fcp-jobs
+          metrics_path: /metrics
+          static_configs:
+            - targets: ['fcp-jobs:8082']
+              labels: { service: jobs }
+        - job_name: fcp-call-manager
+          metrics_path: /metrics
+          authorization:
+            type: Bearer
+            credentials: ${FCP_CALL_MANAGER_API_TOKEN}
+          static_configs:
+            - targets: ['host.docker.internal:8084']
+              labels: { service: call-manager }
+        - job_name: fcp-conference
+          metrics_path: /metrics
+          authorization:
+            type: Bearer
+            credentials: ${FCP_CONFERENCE_AUTH_TOKEN}
+          static_configs:
+            - targets: ['host.docker.internal:8090']
+              labels: { service: conference }
+        - job_name: fcp-webrtc-gw
+          metrics_path: /metrics/prometheus
+          authorization:
+            type: Bearer
+            credentials: ${FCP_WEBRTC_GW_AUTH_TOKENS}
+          static_configs:
+            - targets: ['host.docker.internal:8095']
+              labels: { service: webrtc-gw }
+        - job_name: prometheus
+          static_configs:
+            - targets: ['prometheus:9090']
+
 volumes:
+  postgres-data:
   redis-data:
-    driver: local
-  fcp-recordings:
-    driver: local
-  fcp-conference-cdr-spool:
-    driver: local
-  fcp-media-recordings:
-    driver: local
-  fcp-media-prompts:
-    driver: local
+  admin-data:
+  call-manager-data:
+  conference-recordings:
+  conference-cdr-spool:
+  media-recordings:
+  media-prompts:
   prometheus-data:
-    driver: local
   grafana-data:
-    driver: local
-  fcp_shared-data:
-    external: true  # Created by main docker-compose.yml
 
 networks:
   default:

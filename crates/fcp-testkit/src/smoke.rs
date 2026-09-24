@@ -502,13 +502,21 @@ pub fn assert_configs_check(
     must_parse: &[&str],
 ) {
     let root = repo_root();
+    let compose_env = compose_env();
     let run = |rel: &str| {
         let path = root.join(rel);
         assert!(path.is_file(), "{rel} is listed but does not exist");
         let path = path.to_string_lossy().to_string();
         let mut args: Vec<&str> = vec!["--check-config", "--config", &path];
         args.extend_from_slice(extra_args);
-        let out = run_blocking(bin, &args, Duration::from_secs(30));
+        // A compose configuration is checked the way the compose file
+        // runs it: with the stack's .env in the environment.
+        let env: &[(String, String)] = if rel.starts_with("deploy/docker-compose/") {
+            &compose_env
+        } else {
+            &[]
+        };
+        let out = run_blocking_with_env(bin, &args, env, Duration::from_secs(30));
         (out.status.code(), out.stdout.clone(), out.stderr.clone())
     };
     for rel in must_start {
@@ -525,6 +533,60 @@ pub fn assert_configs_check(
         if code == Some(0) {
             assert_masked(rel, &stdout);
         }
+    }
+}
+
+/// The compose stack's `.env` (`deploy/docker-compose/.env`), as the
+/// variables it sets: what the compose file hands its services.
+pub fn compose_env() -> Vec<(String, String)> {
+    let path = repo_root().join("deploy/docker-compose/.env");
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .filter_map(|l| l.split_once('='))
+        .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
+        .collect()
+}
+
+/// [`run_blocking`], with `env` set for the process.
+pub fn run_blocking_with_env(
+    bin: &str,
+    args: &[&str],
+    env: &[(String, String)],
+    timeout: Duration,
+) -> Output {
+    let mut child = std::process::Command::new(bin)
+        .args(args)
+        .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|e| panic!("failed to spawn {bin}: {e}"));
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if let Some(status) = child.try_wait().expect("wait on child") {
+            let out = child.wait_with_output().expect("collect output");
+            return Output {
+                status,
+                stdout: String::from_utf8_lossy(&out.stdout).to_string(),
+                stderr: String::from_utf8_lossy(&out.stderr).to_string(),
+            };
+        }
+        if std::time::Instant::now() > deadline {
+            let _ = child.kill();
+            let out = child.wait_with_output().expect("collect output");
+            return Output {
+                status: out.status,
+                stdout: String::from_utf8_lossy(&out.stdout).to_string(),
+                stderr: format!(
+                    "{}\n(killed after {timeout:?})",
+                    String::from_utf8_lossy(&out.stderr)
+                ),
+            };
+        }
+        std::thread::sleep(Duration::from_millis(20));
     }
 }
 

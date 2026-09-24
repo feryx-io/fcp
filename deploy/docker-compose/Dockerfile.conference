@@ -36,10 +36,10 @@ COPY --from=builder /app/target/release/fcp-conference /app/fcp-conference
 RUN mkdir -p /app/data /var/fcp/conference/recordings /var/fcp/conference/announcements
 
 # Expose SIP ports (UDP + TCP), HTTP API, and RTP port range
-EXPOSE 5060/udp
-EXPOSE 5060/tcp
+EXPOSE 5074/udp
+EXPOSE 5074/tcp
 EXPOSE 8090
-EXPOSE 20000-30000/udp
+EXPOSE 20000-20999/udp
 
 # Run the binary
 CMD ["/app/fcp-conference", "--config", "/app/fcp-conference-server.toml"]

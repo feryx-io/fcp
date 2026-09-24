@@ -1,54 +1,19 @@
 #!/bin/bash
-# Test script for fcp-events-server
-
+# fcp-events-server: health, status with the token, and a WebSocket
+# connection when websocat is installed. A tenant id must be a UUID.
 set -e
+. "$(dirname "${BASH_SOURCE[0]}")/env.sh"
 
-EVENTS_URL="http://localhost:8081"
-ADMIN_URL="http://localhost:8080/api/v1"
-
-echo "=== Testing fcp-events-server ==="
-echo
-
-# Test 1: Health check
-echo "1. Health check..."
-curl -s "${EVENTS_URL}/health"
-echo
-echo
-
-# Test 2: Status
-echo "2. Status..."
-curl -s "${EVENTS_URL}/status" | jq '.'
-echo
-
-# Get actual tenant ID for WebSocket test
-TENANT_ID=$(curl -s "${ADMIN_URL}/tenants" | jq -r '.[0].id')
-echo "Using tenant ID: $TENANT_ID"
-echo
-
-# Test 3: WebSocket connection test (requires websocat or similar)
-echo "3. WebSocket connection test..."
-echo "Note: WebSocket testing requires 'websocat' tool"
-echo "Install with: cargo install websocat"
-echo
-
-if command -v websocat &> /dev/null; then
-    echo "Testing WebSocket connection to ws://localhost:8081/ws/${TENANT_ID}"
-    echo "Sending subscribe message..."
-
-    # Send subscribe message and wait for response
-    timeout 5s websocat "ws://localhost:8081/ws/${TENANT_ID}" <<EOF || true
-{"type": "subscribe", "filters": [{"event_types": ["call"]}]}
-EOF
-
-    echo "WebSocket test completed"
+echo "--- health (no token)"
+curl -sf "${EVENTS_URL}/health" || fail "events health"; echo
+echo "--- status (token)"
+curl -sf "${EVENTS_AUTH[@]}" "${EVENTS_URL}/status" | jq . || fail "events status (is FCP_EVENTS_AUTH_TOKEN right?)"
+TENANT_ID=$(curl -sf "${ADMIN_AUTH[@]}" "${ADMIN_URL}/tenants" | jq -r '.[0].id')
+if command -v websocat > /dev/null; then
+  echo "--- websocket for tenant $TENANT_ID (5 s)"
+  timeout 5s websocat "ws://localhost:8081/ws/${TENANT_ID}?token=${FCP_EVENTS_AUTH_TOKEN}" < /dev/null || true
 else
-    echo "Skipping WebSocket test (websocat not installed)"
-    echo
-    echo "To test WebSocket manually:"
-    echo "1. Install websocat: cargo install websocat"
-    echo "2. Connect: websocat ws://localhost:8081/ws/${TENANT_ID}"
-    echo "3. Send: {\"type\": \"subscribe\", \"filters\": []}"
+  echo "websocat not installed; connect with:"
+  echo "  websocat 'ws://localhost:8081/ws/${TENANT_ID}?token=\$FCP_EVENTS_AUTH_TOKEN'"
 fi
-echo
-
-echo "=== fcp-events-server tests completed ==="
+echo "All fcp-events-server tests passed!"

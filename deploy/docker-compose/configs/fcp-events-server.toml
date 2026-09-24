@@ -1,4 +1,5 @@
-# fcp-events-server configuration for Docker Compose
+# fcp-events-server in the compose stack. FCP_EVENTS_AUTH_TOKEN, from
+# .env, is what every producer posts with and every client connects with.
 
 [service]
 service_type = "events"
@@ -23,35 +24,3 @@ max_connections_per_tenant = 50
 [logging]
 level = "info"
 format = "pretty"
-
-# On-site notification of emergency calls (Kari's Law, docs/E911.md). The
-# notifier runs here, on call.emergency, and needs the same PostgreSQL
-# storage the webhook dispatcher uses (webhook.database_url). Each tenant
-# lists its contacts on /v1/emergency/config; the channels below are how
-# this deployment delivers to them. Credentials may be sealed with
-# encryption at rest (POST /api/v1/system/encryption/seal).
-# [notifications]
-# enabled = true
-# max_attempts = 5
-# base_retry_delay_secs = 30
-# give_up_after_secs = 1800
-#
-# [notifications.smtp]
-# host = "smtp.example.com"
-# port = 587
-# encryption = "starttls"
-# from = "fcp@example.com"
-# username = "fcp"
-# password = "enc:v1:..."
-#
-# [notifications.sms]
-# url = "https://sms.example.net/send"
-# token = "enc:v1:..."
-# from = "+15185550100"
-#
-# [notifications.call]
-# call_manager_url = "http://fcp-call-manager:8080"
-# auth_token = "enc:v1:..."
-# from = "sip:alerts@pbx.example.com"
-# ring_timeout_secs = 30
-# repeat = 2

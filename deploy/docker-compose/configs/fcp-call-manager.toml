@@ -1,3 +1,7 @@
+# fcp-call-manager in the compose stack, on the host's network. Secrets
+# come from .env through the FCP_CALL_MANAGER_* environment overrides; the
+# host's address through FCP_CALL_MANAGER_PUBLIC_IP.
+
 [service]
 service_type = "call-manager"
 node_id = "cm-docker-01"
@@ -5,89 +9,63 @@ node_id = "cm-docker-01"
 [sip]
 udp_bind = "0.0.0.0:5060"
 tcp_bind = "0.0.0.0:5060"
-sips_bind = "0.0.0.0:5061"
-tls_cert_path = "/app/certs/server.crt"
-tls_key_path = "/app/certs/server.key"
+# No SIPS in the compose stack: set sips_bind, tls_cert_path and
+# tls_key_path with real certificates to add it.
 
-# What reaches this node's SIP port (docs/EDGE_SECURITY.md §2.4). The call
-# manager is the edge of a single-binary deployment, so this is where it is
-# defended. Everything here has a default that refuses nothing: the address
-# list is allow-by-default, and a message that is not SIP is logged and
-# dropped, which is what the handler always did.
 [security]
-# Calls per second one source address may start; 0 is no limit. Peers in
-# [e911] trusted_edges are exempt, since an edge carries other people's
-# calls by design. Raise it for a carrier trunk that legitimately exceeds
-# it from one address — what it gets otherwise is a 503 with a Retry-After.
 max_invite_cps_per_source = 20
-# max_message_bytes = 65536
-# malformed_policy = "log_and_drop"   # or "drop", to stop logging a flood
-# acl = { default_action = "Allow", rules = [
-#   { cidr = "203.0.113.0/24", action = "Deny", description = "a noisy scanner" },
-# ] }
 
 [registrar]
-auth_enabled = true     # Enabled - users created via fcp-admin API can register
-# Challenge INVITE as well as REGISTER (docs/EDGE_SECURITY.md §2.1). Without
-# it a call is authorised by the address it came from, so anything that can
-# source packets from a registered device's address places calls as that
-# user. Off by default for one release, with a warning at startup; a carrier
-# on an enabled trunk and a peer in [e911] trusted_edges are still admitted
-# by source, so an embedded component that INVITEs this node over loopback
-# needs a place in trusted_edges or credentials of its own.
+auth_enabled = true     # Required on a public SIP bind; users come from the admin API
 auth_invites = false
 realm = "fcp.local"
 default_expires = 3600
 min_expires = 60
 max_expires = 86400
-# Domain aliases - these domains are treated as equivalent for registration lookups.
-# Calls to alice@192.168.1.225 will also ring alice@fcp.local and vice versa.
-domain_aliases = ["fcp.local", "192.168.1.225"]
-# Seconds a registration lookup is kept (docs/MULTI_REGION_FOLLOWUPS.md §2.1).
-# Another node's REGISTER is forgotten on its event ([events] use_redis);
-# 0 reads the store on every lookup.
-# cache_ttl_secs = 30
+# Phones register with the realm's domain; add the host's address here if
+# yours register with the IP.
+domain_aliases = ["fcp.local"]
 
 [calls]
 call_timeout_seconds = 60
 enable_sdp = true
 enable_refer = true
 
-# What this node will carry, and what it refuses with a 503
-# (docs/CAPACITY_AND_SURVIVABILITY.md §4). An unset limit caps nothing.
-# This was [calls] max_concurrent_calls until v0.25.208, when the limits
-# began to be enforced.
 [admission]
 max_concurrent_calls = 100
 
 [media]
 rtp_port_start = 10000
-rtp_port_end = 10100
+rtp_port_end = 10999
 codecs = ["PCMU", "PCMA", "G722"]
-public_ip = "192.168.1.225"
 
 [storage]
-database_url = "postgresql://postgres:password@postgres:5432/fcp"
+# Overridden by FCP_CALL_MANAGER_DATABASE_URL; Postgres and Redis publish
+# their ports on the host, which this container shares.
+database_url = "postgresql://fcp:change-me@127.0.0.1:5432/fcp"
+redis_url = "redis://127.0.0.1:6379"
 
-# Finished calls' records spool here before they are stored, so a database
-# outage delays them rather than losing them (docs/CDR_PIPELINE.md). On the
-# persistent data volume.
 [cdr]
-spool_dir = "/app/data/cdr-spool/call-manager"
+spool_dir = "/app/data/cdr-spool"
+# Records go to the Redis stream and fcp-jobs stores them (docs/CDR_PIPELINE.md).
+sink = "stream"
 
 [http]
 bind_address = "0.0.0.0:8084"
+# api_token: FCP_CALL_MANAGER_API_TOKEN, required on a non-loopback bind.
 
-[logging]
-level = "info"
-format = "pretty"
+[b2bua]
+# Where calls into a conference room go: the conference server on this host.
+conference_server_uri = "sip:conference@127.0.0.1:5074"
 
-# Routing configuration - call authorization policies
-# With `all_users: true` in routing.yaml, any authenticated caller can make calls.
 [routing]
 rules_file = "/app/routing.yaml"
 hot_reload = true
 
 [events]
-# Using localhost since call-manager uses host networking
-server_url = "http://localhost:8081/ingest"
+# The events server publishes 8081 on the host; FCP_CALL_MANAGER_EVENTS_AUTH_TOKEN authenticates.
+server_url = "http://127.0.0.1:8081/ingest"
+
+[logging]
+level = "info"
+format = "pretty"

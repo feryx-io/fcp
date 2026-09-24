@@ -1,13 +1,16 @@
+# fcp-registrar in the compose stack (the `registrar` profile), on the
+# host's network: SIP 5062, HTTP 8083. Secrets come from .env through the
+# FCP_REGISTRAR_* environment overrides.
+
 [service]
 service_type = "registrar"
 node_id = "registrar-docker-01"
 
 [sip]
-udp_bind = "0.0.0.0:5060"
-tcp_bind = "0.0.0.0:5060"
+udp_bind = "0.0.0.0:5062"
+tcp_bind = "0.0.0.0:5062"
 
 [registrar]
-# A non-loopback SIP bind is refused without authentication.
 auth_enabled = true
 realm = "fcp.local"
 default_expires = 3600
@@ -15,12 +18,12 @@ min_expires = 60
 max_expires = 86400
 
 [storage]
-database_url = "postgresql://postgres:password@postgres:5432/fcp"
+# Overridden by FCP_REGISTRAR_DATABASE_URL.
+database_url = "postgresql://fcp:change-me@127.0.0.1:5432/fcp"
 
 [http]
 bind_address = "0.0.0.0:8083"
-# /status and /drain need this bearer token; a non-loopback bind requires it.
-api_token = "change-me-in-production"
+# api_token: FCP_REGISTRAR_API_TOKEN, required on a non-loopback bind.
 
 [logging]
 level = "info"
