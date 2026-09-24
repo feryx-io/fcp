@@ -1,0 +1,31 @@
+# Multi-stage build for fcp-presence (fcp-presence-server)
+FROM rust:1.92 AS builder
+
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+COPY external ./external
+RUN cargo build --release -p fcp-presence-server
+
+FROM debian:trixie-slim
+
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY --from=builder /app/target/release/fcp-presence /app/fcp-presence
+RUN mkdir -p /app/data
+
+EXPOSE 5076/udp
+EXPOSE 5076/tcp
+EXPOSE 8092
+
+CMD ["/app/fcp-presence", "--config", "/app/fcp-presence-server.toml"]

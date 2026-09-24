@@ -14,11 +14,14 @@
 #
 # Ports on the host (none collide):
 #   5432 postgres · 6379 redis · 8000 gateway · 8080 admin · 8081 events
-#   8082 jobs · 8084 call manager HTTP · 8085 media HTTP · 8090 conference
-#   HTTP · 8095 webrtc HTTP · 9090 prometheus · 3000 grafana
-#   5060 call manager SIP · 5074 conference SIP · 5077 webrtc SIP
-#   5062/8083 registrar (profile) · RTP 10000-10999 call manager,
-#   20000-20999 conference, 30000-30999 media, 34000-35999 webrtc
+#   8082 jobs · 8084 call manager · 8085 media · 8086 ivr · 8087 voicemail
+#   8090 conference · 8092 presence · 8093 tts (profile) · 8094 sbc health
+#   8095 webrtc · 9090 prometheus · 3000 grafana
+#   SIP 5060 call manager · 5070 ivr · 5072 voicemail · 5074 conference
+#   5076 presence · 5077 webrtc · 5078 sbc · 5062/8083 registrar (profile)
+#   RTP 10000-10999 call manager · 20000-20999 conference · 22000-22999 ivr
+#   24000-24999 voicemail · 28000-28999 sbc · 30000-30999 media
+#   34000-35999 webrtc
 #
 # Secrets come from .env through each binary's FCP_* environment override
 # (`--check-config` on any binary shows what it will run with, masked).
@@ -157,6 +160,7 @@ services:
       FCP_CALL_MANAGER_DATABASE_URL: postgresql://fcp:${POSTGRES_PASSWORD}@127.0.0.1:5432/fcp
       FCP_CALL_MANAGER_API_TOKEN: ${FCP_CALL_MANAGER_API_TOKEN}
       FCP_CALL_MANAGER_EVENTS_AUTH_TOKEN: ${FCP_EVENTS_AUTH_TOKEN}
+      FCP_CALL_MANAGER_TTS_REMOTE_TOKEN: ${FCP_TTS_AUTH_TOKENS}
     depends_on:
       postgres:
         condition: service_healthy
@@ -282,6 +286,147 @@ services:
       interval: 10s
       timeout: 3s
       retries: 3
+    restart: unless-stopped
+
+  # Call flows (IVR). SIP 5070, HTTP 8086, RTP 22000-22999, on the host.
+  fcp-ivr:
+    build:
+      context: ../..
+      dockerfile: deploy/docker-compose/Dockerfile.ivr
+    container_name: fcp-ivr
+    network_mode: host
+    volumes:
+      - ./configs/fcp-ivr.toml:/app/fcp-ivr.toml:ro
+    environment:
+      RUST_LOG: info
+      FCP_IVR_LOG_FORMAT: pretty
+      FCP_IVR_PUBLIC_IP: ${HOST_IP}
+      FCP_IVR_DATABASE_URL: postgresql://fcp:${POSTGRES_PASSWORD}@127.0.0.1:5432/fcp
+      FCP_IVR_API_TOKEN: ${FCP_IVR_API_TOKEN}
+      FCP_IVR_EVENTS_AUTH_TOKEN: ${FCP_EVENTS_AUTH_TOKEN}
+      FCP_IVR_TTS_REMOTE_TOKEN: ${FCP_TTS_AUTH_TOKENS}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      fcp-events-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8086/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
+  # Voicemail. SIP 5072, HTTP 8087, RTP 24000-24999, on the host.
+  fcp-voicemail:
+    build:
+      context: ../..
+      dockerfile: deploy/docker-compose/Dockerfile.voicemail
+    container_name: fcp-voicemail
+    network_mode: host
+    volumes:
+      - ./configs/fcp-voicemail-server.toml:/app/fcp-voicemail-server.toml:ro
+      - voicemail-data:/var/lib/fcp/voicemail
+    environment:
+      RUST_LOG: info
+      FCP_VOICEMAIL_LOG_FORMAT: pretty
+      FCP_VOICEMAIL_PUBLIC_IP: ${HOST_IP}
+      FCP_VOICEMAIL_DATABASE_URL: postgresql://fcp:${POSTGRES_PASSWORD}@127.0.0.1:5432/fcp
+      FCP_VOICEMAIL_API_TOKEN: ${FCP_VOICEMAIL_API_TOKEN}
+      FCP_VOICEMAIL_EVENTS_AUTH_TOKEN: ${FCP_EVENTS_AUTH_TOKEN}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      fcp-events-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8087/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
+  # Presence and BLF. SIP 5076, HTTP 8092, on the host.
+  fcp-presence:
+    build:
+      context: ../..
+      dockerfile: deploy/docker-compose/Dockerfile.presence
+    container_name: fcp-presence
+    network_mode: host
+    volumes:
+      - ./configs/fcp-presence-server.toml:/app/fcp-presence-server.toml:ro
+    environment:
+      RUST_LOG: info
+      FCP_PRESENCE_DATABASE_URL: postgresql://fcp:${POSTGRES_PASSWORD}@127.0.0.1:5432/fcp
+      FCP_PRESENCE_API_TOKEN: ${FCP_PRESENCE_API_TOKEN}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8092/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
+  # The session border controller, in front of the call manager for
+  # carriers. SIP 5078, health 8094, RTP 28000-28999, on the host; its
+  # binds are flags, set here.
+  fcp-sbc:
+    build:
+      context: ../..
+      dockerfile: deploy/docker-compose/Dockerfile.sbc
+    container_name: fcp-sbc
+    network_mode: host
+    volumes:
+      - ./configs/fcp-sbc.toml:/app/fcp-sbc.toml:ro
+    environment:
+      RUST_LOG: info
+      FCP_SBC_LOG_FORMAT: pretty
+      FCP_SBC_BIND: 0.0.0.0:5078
+      FCP_SBC_HEALTH_BIND: 0.0.0.0:8094
+      FCP_SBC_HEALTH_API_TOKEN: ${FCP_SBC_HEALTH_API_TOKEN}
+      FCP_SBC_DATABASE_URL: postgresql://fcp:${POSTGRES_PASSWORD}@127.0.0.1:5432/fcp
+    depends_on:
+      postgres:
+        condition: service_healthy
+      fcp-call-manager:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8094/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
+  # Text to speech for the call manager and IVR. HTTP 8093. Off unless
+  # asked for — `docker compose --profile tts up -d` — because its image
+  # carries PyTorch; without it the prompts are silent.
+  fcp-tts:
+    build:
+      context: ../..
+      dockerfile: deploy/docker-compose/Dockerfile.tts
+    container_name: fcp-tts
+    profiles: ["tts"]
+    ports:
+      - "8093:8093"
+    volumes:
+      - ./configs/fcp-tts-server.toml:/app/fcp-tts-server.toml:ro
+      - tts-cache:/var/lib/fcp/tts_cache
+    environment:
+      RUST_LOG: info
+      FCP_TTS_LOG_FORMAT: pretty
+      FCP_TTS_AUTH_TOKENS: ${FCP_TTS_AUTH_TOKENS}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8093/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
     restart: unless-stopped
 
   # A standalone registrar, for deployments that keep registration off the
@@ -412,6 +557,8 @@ configs:
 
 volumes:
   postgres-data:
+  voicemail-data:
+  tts-cache:
   redis-data:
   admin-data:
   call-manager-data:

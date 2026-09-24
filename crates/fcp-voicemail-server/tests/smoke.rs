@@ -160,7 +160,10 @@ fn shipped_configurations_check() {
     smoke::assert_configs_check(
         BIN,
         &[],
-        &["fcp-voicemail-local.toml"],
+        &[
+            "fcp-voicemail-local.toml",
+            "deploy/docker-compose/configs/fcp-voicemail-server.toml",
+        ],
         &["crates/fcp-voicemail-server/fcp-voicemail-server.toml.example"],
     );
 }

@@ -61,7 +61,15 @@ format = "compact"
 /// outright are accepted.
 #[test]
 fn shipped_configurations_check() {
-    smoke::assert_configs_check(BIN, &[], &["fcp-tts-local.toml"], &[]);
+    smoke::assert_configs_check(
+        BIN,
+        &[],
+        &[
+            "fcp-tts-local.toml",
+            "deploy/docker-compose/configs/fcp-tts-server.toml",
+        ],
+        &[],
+    );
 }
 
 /// A secret given in the environment wins over the file and is never

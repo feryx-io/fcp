@@ -27,6 +27,11 @@ jobs:
           - media
           - jobs
           - registrar
+          - sbc
+          - ivr
+          - voicemail
+          - presence
+          - tts
     steps:
       - uses: actions/checkout@v5
         with:

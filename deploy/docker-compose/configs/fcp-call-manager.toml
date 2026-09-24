@@ -38,6 +38,9 @@ max_concurrent_calls = 100
 rtp_port_start = 10000
 rtp_port_end = 10999
 codecs = ["PCMU", "PCMA", "G722"]
+# Speech from the TTS server, when the `tts` profile is up;
+# FCP_CALL_MANAGER_TTS_REMOTE_TOKEN authenticates.
+tts_remote_url = "http://127.0.0.1:8093"
 
 [storage]
 # Overridden by FCP_CALL_MANAGER_DATABASE_URL; Postgres and Redis publish
@@ -57,6 +60,8 @@ bind_address = "0.0.0.0:8084"
 [b2bua]
 # Where calls into a conference room go: the conference server on this host.
 conference_server_uri = "sip:conference@127.0.0.1:5074"
+# And unanswered calls, to voicemail.
+voicemail_server_uri = "sip:voicemail@127.0.0.1:5072"
 
 # No [routing] rules file: the YAML routing store knows only the users the
 # file lists and refuses every other caller, and the tenants' routing
