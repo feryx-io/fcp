@@ -75,6 +75,11 @@ struct Cli {
         env = "FCP_MEDIA_PUBLIC_IP"
     )]
     public_ip: Option<String>,
+    /// Load and validate the configuration, print it with every secret
+    /// masked, and exit: 0 when the node would start, 1 when a startup
+    /// rule refuses it, 2 when it does not parse.
+    #[arg(long = "check-config")]
+    pub check_config: bool,
 }
 
 #[tokio::main]
@@ -83,7 +88,10 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     // 2. Load configuration
-    let mut config = config::load_config(cli.config.as_deref())?;
+    let mut config = fcp_core::config::check_stage(
+        config::load_config(cli.config.as_deref()),
+        cli.check_config,
+    )?;
 
     // Apply CLI overrides
     if let Some(ref level) = cli.log_level {
@@ -104,9 +112,16 @@ async fn main() -> Result<()> {
     }
 
     // 3. Validate configuration
-    config::validate_config(&config)?;
+    fcp_core::config::check_stage(config::validate_config(&config), cli.check_config)?;
 
     // 4. Initialize tracing
+    if cli.check_config {
+        println!(
+            "{}",
+            fcp_core::config::masked_toml(&config).map_err(anyhow::Error::msg)?
+        );
+        return Ok(());
+    }
     init_tracing(&config);
 
     info!(

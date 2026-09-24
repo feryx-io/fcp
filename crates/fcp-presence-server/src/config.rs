@@ -8,6 +8,7 @@ use tracing::info;
 
 /// Top-level presence server configuration.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct PresenceServerConfig {
     #[serde(default)]
     pub service: ServiceSection,
@@ -50,6 +51,7 @@ pub struct PresenceServerConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ServiceSection {
     #[serde(default = "default_service_type")]
     pub service_type: String,
@@ -102,6 +104,7 @@ impl Default for ServiceSection {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct SipSection {
     /// UDP bind address.
     #[serde(default = "default_sip_bind")]
@@ -172,6 +175,7 @@ impl Default for SipSection {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct StorageSection {
     /// PostgreSQL connection URL
     #[serde(default = "default_database_url")]
@@ -223,6 +227,7 @@ impl Default for StorageSection {
 
 /// Presence-specific settings (mapped to PresenceConfig).
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct PresenceSection {
     #[serde(default = "default_max_subscriptions")]
     pub max_subscriptions: usize,
@@ -254,6 +259,7 @@ fn default_cleanup_interval() -> u64 {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct HttpSection {
     #[serde(default = "default_http_bind")]
     pub bind_address: SocketAddr,
@@ -276,6 +282,7 @@ impl Default for HttpSection {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct LoggingSection {
     #[serde(default = "default_log_level")]
     pub level: String,
@@ -302,6 +309,7 @@ impl Default for LoggingSection {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct RedisSection {
     pub url: String,
     pub node_id: Option<String>,
@@ -309,6 +317,7 @@ pub struct RedisSection {
 
 /// XCAP server configuration (RFC 4825).
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct XcapSection {
     #[serde(default = "default_xcap_enabled")]
     pub enabled: bool,
@@ -335,6 +344,7 @@ impl Default for XcapSection {
 
 /// Webhook delivery configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct WebhookSection {
     /// Whether webhook delivery is enabled.
     #[serde(default)]
@@ -378,6 +388,7 @@ impl Default for WebhookSection {
 
 /// Cluster configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ClusterSection {
     #[serde(default)]
     pub enabled: bool,

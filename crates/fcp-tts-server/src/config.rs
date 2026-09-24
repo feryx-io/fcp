@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 /// Top-level configuration for fcp-tts.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct TtsServerConfig {
     #[serde(default)]
     pub service: ServiceSection,
@@ -23,6 +24,7 @@ pub struct TtsServerConfig {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ServiceSection {
     #[serde(default = "default_service_type")]
     pub service_type: String,
@@ -51,6 +53,7 @@ impl Default for ServiceSection {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct HttpSection {
     #[serde(default = "default_http_bind")]
     pub bind_address: String,
@@ -73,6 +76,7 @@ impl Default for HttpSection {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct AuthSection {
     #[serde(default)]
     pub tokens: Vec<String>,
@@ -85,6 +89,7 @@ pub struct AuthSection {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct TtsSection {
     #[serde(default = "default_provider_name")]
     pub default_provider: String,
@@ -133,6 +138,7 @@ impl Default for TtsSection {
 
 /// A named TTS provider entry in the configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProviderEntry {
     /// Logical name used to reference this provider (e.g. "kokoro", "openai-prod").
     pub name: String,
@@ -171,6 +177,7 @@ fn default_device() -> String {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct LoggingSection {
     #[serde(default = "default_log_level")]
     pub level: String,
@@ -199,6 +206,7 @@ impl Default for LoggingSection {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ClusterSection {
     #[serde(default)]
     pub enabled: bool,

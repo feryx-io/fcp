@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 /// STUN server configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StunServerConfig {
     /// STUN server hostname or IP.
     pub host: String,
@@ -26,6 +27,7 @@ impl Default for StunServerConfig {
 
 /// TURN server configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TurnServerConfig {
     /// TURN server hostname or IP.
     pub host: String,
@@ -57,6 +59,7 @@ impl Default for TurnServerConfig {
 
 /// NAT traversal configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 #[serde(default)]
 pub struct NatConfig {
     /// Whether NAT traversal is enabled.

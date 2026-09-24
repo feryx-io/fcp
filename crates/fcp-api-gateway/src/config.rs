@@ -10,6 +10,7 @@ use tracing::info;
 
 /// API Gateway configuration
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct GatewayConfig {
     /// Service configuration
     #[serde(default)]
@@ -46,6 +47,7 @@ pub struct GatewayConfig {
 
 /// Service configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ServiceConfig {
     /// Service type (always "gateway")
     #[serde(default = "default_service_type")]
@@ -75,6 +77,7 @@ impl Default for ServiceConfig {
 
 /// Gateway settings
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct GatewaySettings {
     /// Bind address (public-facing)
     #[serde(default = "default_bind_address")]
@@ -113,6 +116,7 @@ impl Default for GatewaySettings {
 
 /// Backend services configuration
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct BackendsConfig {
     /// Admin API backend
     #[serde(default)]
@@ -152,6 +156,7 @@ impl BackendKind {
 
 /// Backend service configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct BackendService {
     /// Service URL
     pub url: String,
@@ -208,6 +213,7 @@ impl Default for BackendService {
 
 /// Redis configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct RedisConfig {
     /// Redis connection URL
     #[serde(default = "default_redis_url")]
@@ -246,6 +252,7 @@ impl Default for RedisConfig {
 
 /// Rate limiting configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct RateLimitConfig {
     /// Enable rate limiting
     #[serde(default = "default_true")]
@@ -280,6 +287,7 @@ impl Default for RateLimitConfig {
 
 /// Cache configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct CacheConfig {
     /// Enable caching (disabled by default for security — enable explicitly)
     #[serde(default)]
@@ -310,6 +318,7 @@ impl Default for CacheConfig {
 
 /// CORS configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct CorsConfig {
     /// Enable CORS
     #[serde(default = "default_true")]
@@ -341,6 +350,7 @@ impl Default for CorsConfig {
 
 /// Logging configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct LoggingConfig {
     /// Log level
     #[serde(default = "default_log_level")]

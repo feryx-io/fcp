@@ -29,4 +29,9 @@ pub struct Cli {
     /// HTTP API bind address override.
     #[arg(long = "bind", value_name = "ADDR", env = "FCP_TTS_BIND_ADDR")]
     pub bind: Option<String>,
+    /// Load and validate the configuration, print it with every secret
+    /// masked, and exit: 0 when the node would start, 1 when a startup
+    /// rule refuses it, 2 when it does not parse.
+    #[arg(long = "check-config")]
+    pub check_config: bool,
 }

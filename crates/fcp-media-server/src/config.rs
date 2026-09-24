@@ -8,6 +8,7 @@ use tracing::info;
 
 /// Media server configuration.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct MediaServerConfig {
     #[serde(default)]
     pub service: ServiceSection,
@@ -41,6 +42,7 @@ pub struct MediaServerConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ServiceSection {
     #[serde(default = "default_service_type")]
     pub service_type: String,
@@ -77,6 +79,7 @@ impl Default for ServiceSection {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct HttpSection {
     #[serde(default = "default_http_bind")]
     pub bind_address: SocketAddr,
@@ -123,6 +126,7 @@ impl Default for HttpSection {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct MediaSection {
     #[serde(default = "default_rtp_port_start")]
     pub rtp_port_start: u16,
@@ -185,6 +189,7 @@ impl Default for MediaSection {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct RecordingSection {
     /// Base directory for session recordings
     #[serde(default = "default_recording_base_dir")]
@@ -222,6 +227,7 @@ impl Default for RecordingSection {
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct TlsSection {
     /// Enable HTTPS listener
     #[serde(default)]
@@ -235,6 +241,7 @@ pub struct TlsSection {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct AuthSection {
     /// Disable API authentication (NOT recommended for production)
     #[serde(default)]
@@ -259,6 +266,7 @@ impl Default for AuthSection {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct AiSection {
     /// Allowed AI API endpoint URLs
     #[serde(default = "default_ai_allowed_endpoints")]
@@ -278,6 +286,7 @@ impl Default for AiSection {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct LoggingSection {
     #[serde(default = "default_log_level")]
     pub level: String,
@@ -304,6 +313,7 @@ impl Default for LoggingSection {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct StorageConfigSection {
     /// PostgreSQL connection URL for config store.
     #[serde(default)]
@@ -351,6 +361,7 @@ impl Default for StorageConfigSection {
 
 /// Cluster configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ClusterSection {
     #[serde(default)]
     pub enabled: bool,

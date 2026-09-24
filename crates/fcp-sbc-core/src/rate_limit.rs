@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 /// A single rate limit entry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RateLimitEntry {
     /// Whether this rate limit is active.
     pub enabled: bool,
@@ -59,6 +60,7 @@ impl RateLimitEntry {
 
 /// Per-method rate limits applied per source IP.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MethodRateLimits {
     /// INVITE rate limit.
     pub invite: RateLimitEntry,
@@ -118,6 +120,7 @@ impl MethodRateLimits {
 
 /// Aggregate rate limiting policy configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 #[serde(default)]
 pub struct RateLimitPolicyConfig {
     /// Whether rate limiting is enabled globally.

@@ -8,6 +8,7 @@ use tracing::info;
 
 /// WebRTC gateway configuration.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct GatewayConfig {
     #[serde(default)]
     pub service: ServiceSection,
@@ -65,6 +66,7 @@ pub struct GatewayConfig {
 /// tenant's own numbers, locates the caller and routes it — so these should
 /// cover every tenant's numbers.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct E911Section {
     #[serde(default = "default_emergency_numbers")]
     pub emergency_numbers: Vec<String>,
@@ -118,6 +120,7 @@ impl E911Section {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ServiceSection {
     #[serde(default = "default_service_type")]
     pub service_type: String,
@@ -162,6 +165,7 @@ impl Default for ServiceSection {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct HttpSection {
     #[serde(default = "default_http_bind")]
     pub bind_address: SocketAddr,
@@ -235,6 +239,7 @@ impl Default for HttpSection {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct MediaSection {
     #[serde(default = "default_rtp_port_start")]
     pub rtp_port_start: u16,
@@ -265,6 +270,7 @@ impl Default for MediaSection {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct SipSection {
     #[serde(default = "default_sip_udp_bind")]
     pub udp_bind: String,
@@ -298,6 +304,7 @@ impl Default for SipSection {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct WebRtcSection {
     /// STUN servers (`stun:host:port`) the gateway's own ICE agent asks
     /// for a server-reflexive candidate — what a browser on the far side
@@ -336,6 +343,7 @@ pub struct WebRtcSection {
 
 /// One ICE server for browsers.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct BrowserIceServerSection {
     /// `stun:host:port`, `turn:host:port?transport=udp`, `turns:…`.
     pub urls: Vec<String>,
@@ -347,6 +355,7 @@ pub struct BrowserIceServerSection {
 
 /// One TURN server with its long-term credential.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct TurnServerSection {
     /// `turn:host:port` (UDP).
     pub uri: String,
@@ -385,6 +394,7 @@ impl Default for WebRtcSection {
 
 /// How room joins reach the conference server.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ConferenceSection {
     /// The conference server a room join INVITEs when cluster placement
     /// is off or finds no node: a host, `host:port`, or a `sip:` URI whose
@@ -442,6 +452,7 @@ impl Default for ConferenceSection {
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct TlsSection {
     #[serde(default)]
     pub enabled: bool,
@@ -452,6 +463,7 @@ pub struct TlsSection {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct AuthSection {
     #[serde(default)]
     pub disable_auth: bool,
@@ -474,6 +486,7 @@ impl Default for AuthSection {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct LoggingSection {
     #[serde(default = "default_log_level")]
     pub level: String,
@@ -500,6 +513,7 @@ impl Default for LoggingSection {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct StorageSection {
     #[serde(default)]
     pub redis_url: Option<String>,
@@ -507,6 +521,7 @@ pub struct StorageSection {
 
 /// Cluster configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ClusterSection {
     #[serde(default)]
     pub enabled: bool,

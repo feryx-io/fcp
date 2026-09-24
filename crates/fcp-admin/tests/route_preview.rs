@@ -77,7 +77,9 @@ async fn a_route_preview_is_asked_of_the_call_manager() {
     let dir = smoke::temp_dir();
     let http = free_port();
     let config = format!(
-        r#"[service]
+        r#"prompts_dir = "{dir}/prompts"
+
+[service]
 node_id = "preview-admin"
 
 [api]
@@ -86,8 +88,6 @@ auth_enabled = false
 
 [storage]
 database_url = "{db}"
-
-prompts_dir = "{dir}/prompts"
 
 [call_manager]
 url = "http://127.0.0.1:{node}"

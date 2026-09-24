@@ -1,3 +1,6 @@
+# Top-level keys come before any section.
+prompts_dir = "/tmp/fcp/audio/prompts"
+
 [service]
 service_type = "admin"
 node_id = "admin-local"
@@ -20,8 +23,6 @@ auth_token = "events-local-secret"
 [logging]
 level = "info"
 format = "pretty"
-
-prompts_dir = "/tmp/fcp/audio/prompts"
 
 [tts]
 engine = "kokoro"

@@ -31,6 +31,7 @@ fn default_cert_fetch_timeout() -> u64 {
 
 /// Global STIR/SHAKEN configuration (in SbcConfig).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StirShakenConfig {
     /// Master enable/disable toggle.
     #[serde(default)]

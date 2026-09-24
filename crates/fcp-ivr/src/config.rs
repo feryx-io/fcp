@@ -9,6 +9,7 @@ use tracing::info;
 
 /// IVR server configuration.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct IvrConfig {
     /// Service configuration
     #[serde(default)]
@@ -63,6 +64,7 @@ pub struct IvrConfig {
 
 /// Service identification.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ServiceSection {
     #[serde(default = "default_service_type")]
     pub service_type: String,
@@ -106,6 +108,7 @@ impl Default for ServiceSection {
 
 /// SIP transport configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct SipSection {
     /// UDP bind address
     #[serde(default = "default_sip_bind")]
@@ -159,6 +162,7 @@ impl Default for SipSection {
 
 /// Storage backend configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct StorageSection {
     /// PostgreSQL connection URL
     #[serde(default = "default_database_url")]
@@ -210,6 +214,7 @@ impl Default for StorageSection {
 
 /// HTTP health/API endpoint configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct HttpSection {
     /// Bind address for health/status/flows endpoint
     #[serde(default = "default_http_bind")]
@@ -236,6 +241,7 @@ impl Default for HttpSection {
 
 /// Logging configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct LoggingSection {
     /// Log level
     #[serde(default = "default_log_level")]
@@ -265,6 +271,7 @@ impl Default for LoggingSection {
 
 /// Media/RTP configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct MediaSection {
     /// RTP port range start
     #[serde(default = "default_rtp_port_start")]
@@ -307,6 +314,7 @@ impl Default for MediaSection {
 
 /// Events configuration.
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct EventsSection {
     /// URL of fcp-events-server ingest endpoint (optional)
     /// Example: "http://fcp-events-server:8081/ingest"
@@ -319,6 +327,7 @@ pub struct EventsSection {
 
 /// IVR flow configuration (IVR-specific).
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct FlowsSection {
     /// Default flow ID to use when no DID route matches.
     pub default_flow_id: Option<String>,
@@ -379,6 +388,7 @@ fn default_tts_language() -> String {
 
 /// A static DID-to-flow mapping.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct DidRoute {
     /// Phone number / DID (e.g. "+15551234567")
     pub did: String,
@@ -389,6 +399,7 @@ pub struct DidRoute {
 
 /// Cluster configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ClusterSection {
     /// Enable cluster mode. Requires `storage.redis_url`.
     #[serde(default)]

@@ -41,26 +41,17 @@ auth_token = "change-this-to-a-secure-random-token"
 # allow_public_signup = false
 
 [storage]
-# Storage backend type: "sqlite", "postgres", "mysql", "mongodb"
-storage_type = "sqlite"
+# PostgreSQL is the one backend. Migrations run at startup.
+database_url = "postgresql://fcp_user:password@localhost:5432/fcp"
 
-# SQLite database path (only for sqlite backend)
-sqlite_path = "fcp-admin.db"
+# A streaming read replica for configuration reads, and how far behind
+# it may be before reads go back to the primary (docs/MULTI_REGION.md).
+# read_replica_url = "postgresql://fcp_user:password@replica:5432/fcp"
+# max_replica_lag_secs = 5
 
-# PostgreSQL connection string (only for postgres backend)
-# postgres_url = "postgres://fcp_user:password@localhost:5432/fcp"
-
-# MySQL connection string (only for mysql backend)
-# mysql_url = "mysql://fcp_user:password@localhost:3306/fcp"
-
-# MongoDB connection string (only for mongodb backend)
-# mongodb_url = "mongodb://fcp_user:password@localhost:27017/fcp"
-
-# Maximum database connections per instance
+# Database connections per instance
 max_connections = 50
-
-# Minimum database connections per instance
-min_connections = 10
+min_connections = 5
 
 [logging]
 # Log level: "trace", "debug", "info", "warn", "error"

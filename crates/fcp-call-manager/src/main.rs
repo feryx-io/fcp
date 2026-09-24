@@ -53,7 +53,10 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     // 2. Load configuration
-    let mut config = config::load_config(cli.config.as_deref())?;
+    let mut config = fcp_core::config::check_stage(
+        config::load_config(cli.config.as_deref()),
+        cli.check_config,
+    )?;
 
     // Apply CLI overrides
     if let Some(ref level) = cli.log_level {
@@ -96,7 +99,7 @@ async fn main() -> Result<()> {
         config.sip.tls_key_path = Some(tls_key.display().to_string());
     }
 
-    config::validate_config(&config)?;
+    fcp_core::config::check_stage(config::validate_config(&config), cli.check_config)?;
 
     // Auto-detect local IP if not explicitly configured and bind is 0.0.0.0
     // This prevents using unroutable addresses (0.0.0.0, 127.0.0.1) in SIP
@@ -119,6 +122,13 @@ async fn main() -> Result<()> {
     }
 
     // 3. Initialize tracing
+    if cli.check_config {
+        println!(
+            "{}",
+            fcp_core::config::masked_toml(&config).map_err(anyhow::Error::msg)?
+        );
+        return Ok(());
+    }
     init_tracing(&config);
 
     info!(

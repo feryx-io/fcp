@@ -480,6 +480,108 @@ fn decode_body(head: &str, body: &str) -> String {
     out
 }
 
+/// The repository root, from the testkit's own manifest directory.
+pub fn repo_root() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .expect("the repository root")
+}
+
+/// Every configuration a binary ships, run through `--check-config`
+/// (`docs/SHIP_AND_OPERATE.md` phase 1). `must_start` are repo-relative
+/// files the node must accept outright, exit 0; `must_parse` are files
+/// that must at least parse (no unknown key, no wrong type: exit 0 or
+/// exit 1), because what refuses them is a rule a later phase satisfies.
+/// Every printed configuration must have its secrets masked. A listed
+/// file that does not exist fails: the list is the claim.
+pub fn assert_configs_check(
+    bin: &str,
+    extra_args: &[&str],
+    must_start: &[&str],
+    must_parse: &[&str],
+) {
+    let root = repo_root();
+    let run = |rel: &str| {
+        let path = root.join(rel);
+        assert!(path.is_file(), "{rel} is listed but does not exist");
+        let path = path.to_string_lossy().to_string();
+        let mut args: Vec<&str> = vec!["--check-config", "--config", &path];
+        args.extend_from_slice(extra_args);
+        let out = run_blocking(bin, &args, Duration::from_secs(30));
+        (out.status.code(), out.stdout.clone(), out.stderr.clone())
+    };
+    for rel in must_start {
+        let (code, stdout, stderr) = run(rel);
+        assert_eq!(code, Some(0), "{rel} must be accepted:\n{stderr}");
+        assert_masked(rel, &stdout);
+    }
+    for rel in must_parse {
+        let (code, stdout, stderr) = run(rel);
+        assert!(
+            code == Some(0) || code == Some(1),
+            "{rel} must parse (exit 0 or 1, got {code:?}):\n{stderr}"
+        );
+        if code == Some(0) {
+            assert_masked(rel, &stdout);
+        }
+    }
+}
+
+/// No printed line under a secret-looking key carries a value other
+/// than the mask (or nothing).
+fn assert_masked(rel: &str, stdout: &str) {
+    let secret_key = |key: &str| {
+        [
+            "token",
+            "secret",
+            "password",
+            "passwd",
+            "jwt",
+            "private_key",
+            "master_key",
+        ]
+        .iter()
+        .any(|n| key.contains(n))
+            && !key.ends_with("_file")
+            && !key.ends_with("_path")
+            && !key.ends_with("_secs")
+            && !key.ends_with("_enabled")
+            && !key.ends_with("_required")
+            && !key.starts_with("require_")
+            && !key.starts_with("allow_")
+            && !key.starts_with("disable_")
+    };
+    let leaks = |line: &str| {
+        line.replace("\"***\"", "")
+            .replace("\"\"", "")
+            .contains('"')
+    };
+    // A multi-line array under a secret key is checked to its `]`.
+    let mut in_secret_array = false;
+    for line in stdout.lines() {
+        if in_secret_array {
+            assert!(!leaks(line), "{rel}: `{line}` is not masked");
+            if line.trim_end().ends_with(']') {
+                in_secret_array = false;
+            }
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let key = key.trim().to_ascii_lowercase();
+        if !secret_key(&key) {
+            continue;
+        }
+        let value = value.trim();
+        assert!(!leaks(value), "{rel}: `{line}` is not masked");
+        if value.starts_with('[') && !value.ends_with(']') {
+            in_secret_array = true;
+        }
+    }
+}
+
 /// Convenience for building a loopback URL.
 pub fn loopback(port: u16, path: &str) -> String {
     format!("http://127.0.0.1:{port}{path}")

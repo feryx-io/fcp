@@ -5,6 +5,7 @@ use std::collections::HashMap;
 
 /// Top-level PBX configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct PbxConfig {
     /// Master enable/disable for all PBX features.
     #[serde(default = "default_pbx_enabled")]
@@ -60,6 +61,7 @@ pub fn validate_config(_config: &PbxConfig) -> Result<(), String> {
 
 /// Feature code (star code) prefix mappings.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct FeatureCodeConfig {
     /// Group pickup prefix (e.g., "*8").
     #[serde(default = "default_group_pickup")]
@@ -160,6 +162,7 @@ pub enum RingStrategy {
 
 /// Configuration for a single hunt group.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct HuntGroupConfig {
     /// Human-readable name (e.g., "Sales").
     pub name: String,
@@ -197,6 +200,7 @@ fn default_total_timeout() -> u32 {
 
 /// Call parking configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ParkingConfig {
     /// Enable call parking.
     #[serde(default)]
@@ -238,6 +242,7 @@ impl Default for ParkingConfig {
 
 /// A pickup group — a set of extensions that can pick up each other's ringing calls.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct PickupGroupConfig {
     /// Member extensions in this pickup group.
     pub members: Vec<String>,
@@ -245,6 +250,7 @@ pub struct PickupGroupConfig {
 
 /// Client Matter Code configuration.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct CmcConfig {
     /// Enable CMC collection.
     #[serde(default)]
@@ -269,6 +275,7 @@ fn default_cmc_digits() -> u32 {
 
 /// Forced Authorization Code configuration.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct FacConfig {
     /// Enable FAC enforcement.
     #[serde(default)]

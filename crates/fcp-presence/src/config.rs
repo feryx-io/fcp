@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 /// Presence service configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct PresenceConfig {
     /// Whether the presence service is enabled.
     #[serde(default)]

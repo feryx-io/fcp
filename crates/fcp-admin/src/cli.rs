@@ -85,4 +85,9 @@ pub struct Cli {
         env = "FCP_ADMIN_PROVISIONING_NO_HTTPS"
     )]
     pub provisioning_no_https: bool,
+    /// Load and validate the configuration, print it with every secret
+    /// masked, and exit: 0 when the node would start, 1 when a startup
+    /// rule refuses it, 2 when it does not parse.
+    #[arg(long = "check-config")]
+    pub check_config: bool,
 }

@@ -34,7 +34,10 @@ async fn main() -> Result<()> {
     let cli = cli::Cli::parse();
 
     // 2. Config
-    let mut config = config::load_config(cli.config.as_deref())?;
+    let mut config = fcp_core::config::check_stage(
+        config::load_config(cli.config.as_deref()),
+        cli.check_config,
+    )?;
     if let Some(ref level) = cli.log_level {
         config.logging.level = level.clone();
     }
@@ -44,9 +47,16 @@ async fn main() -> Result<()> {
     if let Some(ref bind) = cli.bind {
         config.http.bind_address = bind.clone();
     }
-    config::validate_runtime_config(&config)?;
+    fcp_core::config::check_stage(config::validate_runtime_config(&config), cli.check_config)?;
 
     // 3. Tracing
+    if cli.check_config {
+        println!(
+            "{}",
+            fcp_core::config::masked_toml(&config).map_err(anyhow::Error::msg)?
+        );
+        return Ok(());
+    }
     init_tracing(&config);
 
     info!(

@@ -21,9 +21,10 @@ tcp_bind = "0.0.0.0:5060"
 
 # Storage backend
 [storage]
-backend = "sqlite"                   # "sqlite", "postgres", "mysql", "mongodb"
-connection_string = "sqlite://data/fcp-voicemail.db"
-# max_connections = 20               # For PG/MySQL/MongoDB
+database_url = "postgresql://localhost/fcp"   # PostgreSQL is the one backend
+# read_replica_url = "postgresql://replica/fcp"   # docs/MULTI_REGION.md
+# max_replica_lag_secs = 5
+# max_connections = 20
 
 # HTTP health/status/voicemail API
 [http]

@@ -10,6 +10,7 @@ use tracing::info;
 
 /// Jobs service configuration
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct JobsConfig {
     /// Service configuration
     #[serde(default)]
@@ -46,6 +47,7 @@ pub struct JobsConfig {
 
 /// Service configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ServiceConfig {
     /// Service type (always "jobs")
     #[serde(default = "default_service_type")]
@@ -75,6 +77,7 @@ impl Default for ServiceConfig {
 
 /// Redis configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct RedisConfig {
     /// Redis connection URL
     #[serde(default = "default_redis_url")]
@@ -122,6 +125,7 @@ impl Default for RedisConfig {
 
 /// Worker configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct WorkerConfig {
     /// Number of concurrent workers
     #[serde(default = "default_worker_count")]
@@ -169,6 +173,7 @@ impl Default for WorkerConfig {
 
 /// Retry configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct RetryConfig {
     /// Maximum retry attempts
     #[serde(default = "default_max_retries")]
@@ -216,6 +221,7 @@ impl Default for RetryConfig {
 
 /// Health check configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct HealthConfig {
     /// Enable health check endpoint
     #[serde(default = "default_health_enabled")]
@@ -245,6 +251,7 @@ impl Default for HealthConfig {
 
 /// Logging configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct LoggingConfig {
     /// Log level
     #[serde(default = "default_log_level")]

@@ -27,6 +27,7 @@ pub enum MalformedSipPolicy {
 
 /// Security configuration for the SBC.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 #[serde(default)]
 pub struct SecurityConfig {
     /// ACL for signaling traffic.
