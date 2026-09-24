@@ -153,7 +153,8 @@ curl -s -H "$T" -X DELETE http://node:8084/drain   # to call it off instead
 ```
 
 **A rolling restart** is a drain, a stop, an upgrade and a start on
-each node in turn, waiting for `/ready` to answer 200 and `Cluster
+each node in turn (what an upgrade does to the schema, and why a backup
+comes first, is in `docs/BACKUP_AND_RESTORE.md`), waiting for `/ready` to answer 200 and `Cluster
 member joined` to appear on another node before the next. A node with
 no `[cluster] region` is local to nothing — never preferred, never
 excluded — so a node upgraded before its region label is set strands
