@@ -19,7 +19,7 @@ auth_token = "svc-local-secret"
 
 [media]
 rtp_port_start = 26000
-rtp_port_end = 28000
+rtp_port_end = 27999
 public_ip = "192.168.1.225"
 codecs = ["PCMU", "PCMA"]
 

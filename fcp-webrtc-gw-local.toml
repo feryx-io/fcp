@@ -17,7 +17,7 @@ local_ip = "192.168.1.225"
 
 [media]
 rtp_port_start = 34000
-rtp_port_end = 36000
+rtp_port_end = 35999
 public_ip = "192.168.1.225"
 
 [webrtc]

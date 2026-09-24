@@ -8,7 +8,7 @@ bind_address = "0.0.0.0:8083"
 
 [media]
 rtp_port_start = 30000
-rtp_port_end = 32000
+rtp_port_end = 31999
 
 [recording]
 base_dir = "/tmp/fcp/media/recordings"

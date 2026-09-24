@@ -1,713 +1,297 @@
-# FCP Single-Node Setup Guide
+# Running FCP on one machine
 
-Manual step-by-step guide for running all FCP services on a single machine for development and admin UI testing.
+Every FCP service on one host, from the source tree, the way a developer
+or an evaluator runs it. Written against the code and the root
+`fcp-*-local.toml` files (v0.25.248, `docs/SHIP_AND_OPERATE.md` phase 5);
+every port, key, flag and command here was taken from a binary's
+`--help`, its `--check-config` output or its router, not from memory.
+For the same stack in containers see `deploy/docker-compose/README.md`;
+for several nodes, `docs/CLUSTER_OPERATIONS_RUNBOOK.md`; for several
+regions, `docs/MULTI_REGION_DEPLOYMENT.md`.
 
-**Host:** 192.168.1.225
-**Date:** 2026-02-23
+## 1. What runs
 
----
+Fourteen binaries. Their names are not all their crates' names.
 
-## Architecture Overview
+| Binary | Crate | What it is | Local config |
+|---|---|---|---|
+| `fcp-admin` | fcp-admin | The management API (`/api/v1`) and the admin UI (`/admin/`) | `fcp-admin-local.toml` |
+| `fcp-api-gateway` | fcp-api-gateway | The public face of the admin: caching, rate limiting, one origin | `fcp-api-gateway-local.toml` |
+| `fcp-events-server` | fcp-events-server | Event streaming: every service posts to it, clients subscribe | `fcp-events-server-local.toml` |
+| `fcp-call-manager` | fcp-call-manager | Registrar, B2BUA, routing, PBX features: where phones register and calls are placed | `fcp-call-manager-local.toml` |
+| `fcp-conference` | fcp-conference-server | The conference bridge | `fcp-conference-local.toml` |
+| `fcp-ivr` | fcp-ivr | Call flows (IVR) | `fcp-ivr-local.toml` |
+| `fcp-voicemail` | fcp-voicemail-server | Voicemail | `fcp-voicemail-local.toml` |
+| `fcp-presence` | fcp-presence-server | Presence and BLF | `fcp-presence-local.toml` |
+| `fcp-media` | fcp-media-server | The standalone media server | `fcp-media-local.toml` |
+| `fcp-webrtc-gw` | fcp-webrtc-gateway | Browsers into conference rooms | `fcp-webrtc-gw-local.toml` |
+| `fcp-tts` | fcp-tts-server | Text to speech for the call manager and IVR | `fcp-tts-local.toml` |
+| `fcp-jobs` | fcp-jobs | The CDR processor and the job workers | `fcp-jobs-local.toml` |
+| `fcp-sbc` | fcp-sbc | The session border controller | `fcp-sbc-local.toml` |
+| `fcp-registrar` | fcp-registrar | A standalone registrar (optional; the call manager has one) | none |
 
-```
-                    ┌─────────────────────────────────────┐
-                    │         fcp-api-gateway :8000        │  (public entry point)
-                    └──────────┬──────────────────────────┘
-                               │ proxies to
-          ┌────────────────────┼────────────────────┐
-          ▼                    ▼                    ▼
-   fcp-admin :8080    fcp-events-server :8081   fcp-jobs :8082
-   (REST API + UI)    (WebSocket + ingest)      (async workers)
-          │                    ▲
-          │                    │ events via HTTP POST
-          ▼                    │
-      PostgreSQL :5432         │
-          ▲                    │
-          │         ┌─────────┴────────────────────────────────┐
-          │         │                                          │
-   fcp-call-manager :5060/sip :8084/http                       │
-          │         │ (registrar + B2BUA + PBX)                │
-          │         │                                          │
-          │    ┌────┼──────┬──────────┬───────────┬───────────┤
-          │    │    │      │          │           │           │
-          │    ▼    ▼      ▼          ▼           ▼           ▼
-          │  IVR  Voicemail Conference  SBC    Presence   Media
-          │ :5070  :5072    :5074     :5076     :8092     :8083
-          │ :8086  :8088    :8090     :8094
-          │         │          │
-          └─────────┴──────────┘
-              (all share PostgreSQL)
+A minimal PBX is Postgres, Redis, `fcp-events-server`, `fcp-admin` and
+`fcp-call-manager`. Everything else is added for what it does.
 
-      Redis :6379  (cluster heartbeats, job queue, caching)
-```
+## 2. Prerequisites
 
-## Port Allocation Plan
+- **Rust**, the stable toolchain (`rust-toolchain.toml`). The code uses
+  features from Rust 1.82; older toolchains do not build it.
+- **PostgreSQL** (16 is what CI and the compose stack use). Every
+  binary that opens Postgres runs the migrations itself at startup;
+  there is no separate migrate step. Create the database and user the
+  local files name:
 
-| Service              | SIP UDP/TCP | SIP TLS | HTTP API | RTP Range     |
-|----------------------|-------------|---------|----------|---------------|
-| fcp-call-manager     | 5060        | 5061    | 8084     | 20000-22000   |
-| fcp-ivr              | 5070        | —       | 8086     | 22000-24000   |
-| fcp-voicemail-server | 5072        | —       | 8088     | 24000-26000   |
-| fcp-conference-server| 5074        | —       | 8090     | 26000-28000   |
-| fcp-sbc              | 5076        | 5077    | 8094     | 28000-30000   |
-| fcp-presence-server  | —           | —       | 8092     | —             |
-| fcp-media-server     | —           | —       | 8083     | 30000-32000   |
-| fcp-events-server    | —           | —       | 8081     | —             |
-| fcp-admin            | —           | —       | 8080     | —             |
-| fcp-api-gateway      | —           | —       | 8000     | —             |
-| fcp-jobs             | —           | —       | 8082     | —             |
-| PostgreSQL           | —           | —       | 5432     | —             |
-| Redis                | —           | —       | 6379     | —             |
+  ```sql
+  CREATE USER fcp WITH PASSWORD 'fcp_password';
+  CREATE DATABASE fcp OWNER fcp;
+  ```
 
----
+- **Redis** 7, on `localhost:6379`. Cluster membership, the event bus,
+  the CDR stream, the gateway's cache and rate limiter and the job
+  queue use it. A single node runs without it, with those features off.
+- **Git submodules** (`git submodule update --init --recursive`): the
+  SIP and media stacks live under `external/` and nothing builds
+  without them.
+- For `fcp-tts`, a Python environment with the Kokoro engine
+  (`.venv/bin/python3` in the local file). Without it the TTS server
+  refuses to start, and the call manager and IVR run without speech.
 
-## Step 1: Prerequisites
-
-### 1a. PostgreSQL
-
-Start the Docker PostgreSQL container (already configured from previous sessions):
+## 3. Build
 
 ```bash
-docker start fcp-postgres
+cargo build --release
+ls target/release/ | grep '^fcp-'
 ```
 
-If it doesn't exist, create it:
+The binaries are the first column of the table above.
+
+## 4. The rules every binary enforces at startup
+
+These are what most old setup instructions got wrong. A binary that
+breaks one prints the rule and exits.
+
+**A non-loopback HTTP bind needs a token.**
+
+| Binary | The key | The environment variable |
+|---|---|---|
+| `fcp-admin` | `[api] auth_enabled = true` and `auth_token` | `FCP_ADMIN_AUTH_TOKEN` |
+| `fcp-events-server` | `[auth] token` | `FCP_EVENTS_AUTH_TOKEN` |
+| `fcp-call-manager` | `[http] api_token` | `FCP_CALL_MANAGER_API_TOKEN` |
+| `fcp-conference` | `[http] auth_enabled = true` and `auth_token` | `FCP_CONFERENCE_AUTH_TOKEN` |
+| `fcp-ivr`, `fcp-voicemail`, `fcp-presence`, `fcp-registrar` | `[http] api_token` | `FCP_IVR_API_TOKEN`, `FCP_VOICEMAIL_API_TOKEN`, `FCP_PRESENCE_API_TOKEN`, `FCP_REGISTRAR_API_TOKEN` |
+| `fcp-sbc` | the `--health-api-token` flag | `FCP_SBC_HEALTH_API_TOKEN` |
+| `fcp-media`, `fcp-tts` | `[auth] tokens` — required whatever the bind (`fcp-tts` alternatively `allow_unauthenticated`) | `FCP_MEDIA_AUTH_TOKENS`, `FCP_TTS_AUTH_TOKENS` (comma-separated) |
+| `fcp-webrtc-gw` | `[auth] tokens`; unset, a random token is generated and logged | `FCP_WEBRTC_GW_AUTH_TOKENS` |
+
+**A non-loopback SIP bind needs digest authentication:**
+`[registrar] auth_enabled = true` on the call manager and registrar,
+`[sip] auth_enabled = true` on the presence server. All default to on.
+
+**The admin's provisioning token** (`[api] provisioning_auth_token`,
+what phones fetch their configuration with) must be at least 32
+characters and differ from `auth_token`; `provisioning_require_https`
+defaults to true, so on plain HTTP set it false.
+
+**An unknown key is refused.** Every configuration section refuses a
+key it does not have, naming it, so a typo or a key from an old
+version stops the node rather than being silently ignored.
+
+**Check a file before you start it:**
 
 ```bash
-docker run -d --name fcp-postgres \
-  -e POSTGRES_DB=fcp \
-  -e POSTGRES_USER=fcp \
-  -e POSTGRES_PASSWORD=fcp_password \
-  -p 5432:5432 \
-  postgres:16-alpine
+target/release/fcp-call-manager --check-config --config fcp-call-manager-local.toml
 ```
 
-Verify:
-```bash
-docker exec fcp-postgres pg_isready -U fcp
-```
-
-### 1b. Redis
-
-Redis is already running natively on this machine. Verify:
-
-```bash
-redis-cli ping
-# Should return: PONG
-```
-
-If not running:
-```bash
-sudo systemctl start redis
-```
-
----
-
-## Step 2: Build All Binaries
-
-Build everything in release mode (one time, ~5-10 minutes first build):
-
-```bash
-cd /home/siphon/fcp
-cargo build --release 2>&1 | tail -5
-```
-
-Verify binaries exist:
-```bash
-ls -1 target/release/fcp-{admin,api-gateway,call-manager,conference-server,events-server,ivr,jobs,media-server,presence-server,sbc,voicemail-server} 2>/dev/null
-```
-
-For faster iteration during development, you can use debug builds (`cargo build`) and run with `cargo run -p <crate>`.
-
----
-
-## Step 3: Create Configuration Files
-
-All config files live in the repo root. The core services already have configs:
-- `fcp-admin-local.toml` (fcp-admin)
-- `fcp-call-manager-local.toml` (fcp-call-manager)
-
-Create config files for the remaining services below.
-
-### 3a. fcp-events-server (fcp-events-server-local.toml)
-
-```toml
-[service]
-service_type = "events"
-node_id = "events-local"
-
-[websocket]
-bind_address = "0.0.0.0:8081"
-heartbeat_interval = 30
-client_timeout = 60
-max_message_size = 1048576
-batch_size = 10
-batch_timeout = 100
-
-[event_bus]
-bus_type = "in-memory"
-buffer_size = 1000
-
-[limits]
-max_connections = 1000
-max_connections_per_tenant = 50
-
-[logging]
-level = "info"
-format = "pretty"
-```
-
-### 3b. fcp-ivr (fcp-ivr-local.toml)
-
-```toml
-[service]
-service_type = "ivr"
-node_id = "ivr-local"
-
-[sip]
-udp_bind = "0.0.0.0:5070"
-tcp_bind = "0.0.0.0:5070"
-local_ip = "192.168.1.225"
-local_uri = "sip:ivr@192.168.1.225:5070"
-
-[storage]
-database_url = "postgresql://fcp:fcp_password@localhost:5432/fcp"
-redis_url = "redis://localhost:6379"
-
-[http]
-bind_address = "0.0.0.0:8086"
-
-[media]
-rtp_port_start = 22000
-rtp_port_end = 24000
-public_ip = "192.168.1.225"
-
-[events]
-server_url = "http://localhost:8081/ingest"
-
-[flows]
-# Map DIDs to flow IDs (configure via admin API)
-# routes = [{ did = "+15551234567", flow_id = "welcome-flow" }]
-
-[logging]
-level = "info"
-format = "pretty"
-
-[cluster]
-enabled = true
-heartbeat_interval_secs = 5
-heartbeat_ttl_secs = 15
-```
-
-### 3c. fcp-voicemail-server (fcp-voicemail-local.toml)
-
-```toml
-[service]
-service_type = "voicemail"
-node_id = "voicemail-local"
-
-[sip]
-udp_bind = "0.0.0.0:5072"
-tcp_bind = "0.0.0.0:5072"
-local_ip = "192.168.1.225"
-local_uri = "sip:voicemail@192.168.1.225:5072"
-
-[storage]
-database_url = "postgresql://fcp:fcp_password@localhost:5432/fcp"
-redis_url = "redis://localhost:6379"
-
-[http]
-bind_address = "0.0.0.0:8088"
-
-[media]
-rtp_port_start = 24000
-rtp_port_end = 26000
-public_ip = "192.168.1.225"
-
-[events]
-server_url = "http://localhost:8081/ingest"
-
-[voicemail]
-recordings_dir = "/tmp/fcp/voicemail/recordings"
-greetings_dir = "/tmp/fcp/voicemail/greetings"
-max_message_duration = 300
-max_messages_per_mailbox = 100
-play_beep = true
-# routes = [{ did = "5001", mailbox_id = "alice" }]
-
-[logging]
-level = "info"
-format = "pretty"
-
-[cluster]
-enabled = true
-heartbeat_interval_secs = 5
-heartbeat_ttl_secs = 15
-```
-
-### 3d. fcp-conference-server (fcp-conference-local.toml)
-
-```toml
-[service]
-service_type = "conference"
-node_id = "conference-local"
-
-[sip]
-udp_bind = "0.0.0.0:5074"
-tcp_bind = "0.0.0.0:5074"
-local_ip = "192.168.1.225"
-local_uri = "sip:conference@192.168.1.225:5074"
-
-[storage]
-database_url = "postgresql://fcp:fcp_password@localhost:5432/fcp"
-redis_url = "redis://localhost:6379"
-
-[http]
-bind_address = "0.0.0.0:8090"
-auth_enabled = false
-
-[media]
-rtp_port_start = 26000
-rtp_port_end = 28000
-public_ip = "192.168.1.225"
-codecs = ["PCMU", "PCMA"]
-
-[events]
-server_url = "http://localhost:8081/ingest"
-
-[conference]
-sample_rate = 8000
-frame_size = 160
-enable_vad = true
-auto_destroy_empty_rooms = true
-recordings_dir = "/tmp/fcp/conference/recordings"
-announcements_dir = "/tmp/fcp/conference/announcements"
-jitter_buffer_ms = 60
-dtmf_enabled = true
-max_pin_attempts = 3
-pin_timeout_secs = 10
-
-[logging]
-level = "info"
-format = "pretty"
-
-[cluster]
-enabled = true
-heartbeat_interval_secs = 5
-heartbeat_ttl_secs = 15
-```
-
-### 3e. fcp-sbc (fcp-sbc-local.toml)
-
-```toml
-[cluster]
-enabled = true
-heartbeat_interval_secs = 5
-heartbeat_ttl_secs = 15
-redis_url = "redis://localhost:6379"
-
-[core]
-external_domain = "fcp.local"
-tls_bind = "0.0.0.0:5077"
-
-[core.security]
-max_message_size = 65535
-
-[core.admission]
-max_cps = 100
-max_concurrent_calls = 500
-
-[core.nat]
-public_ip = "192.168.1.225"
-rtp_port_start = 28000
-rtp_port_end = 30000
-enable_transcoding = true
-enable_dtmf = true
-
-[core.storage]
-enabled = true
-database_url = "postgresql://fcp:fcp_password@localhost:5432/fcp"
-
-[core.metrics]
-snapshot_interval_secs = 30
-```
-
-### 3f. fcp-presence-server (fcp-presence-local.toml)
-
-```toml
-[service]
-service_type = "presence"
-node_id = "presence-local"
-shutdown_timeout_secs = 10
-
-[storage]
-database_url = "postgresql://fcp:fcp_password@localhost:5432/fcp"
-max_connections = 10
-
-[presence]
-max_presentities = 10000
-default_subscription_expiry_secs = 3600
-cleanup_interval_secs = 60
-
-[http]
-bind_address = "0.0.0.0:8092"
-
-[logging]
-level = "info"
-format = "pretty"
-
-[cluster]
-enabled = true
-heartbeat_interval_secs = 5
-heartbeat_ttl_secs = 15
-```
-
-### 3g. fcp-media-server (fcp-media-local.toml)
-
-```toml
-[service]
-service_type = "media"
-node_id = "media-local"
-shutdown_timeout_secs = 30
-
-[http]
-bind_address = "0.0.0.0:8083"
-
-[media]
-rtp_port_start = 30000
-rtp_port_end = 32000
-
-[recording]
-base_dir = "/tmp/fcp/media/recordings"
-root_jail = "/tmp/fcp/media"
-prompts_dir = "/tmp/fcp/media/prompts"
-
-[auth]
-tokens = ["dev-token"]
-
-[logging]
-level = "info"
-format = "pretty"
-```
-
-### 3h. fcp-api-gateway (fcp-api-gateway-local.toml)
-
-```toml
-[service]
-service_type = "gateway"
-node_id = "gateway-local"
-
-[gateway]
-bind_address = "0.0.0.0:8000"
-request_timeout = 30
-compression_enabled = true
-
-[backends.admin]
-url = "http://localhost:8080"
-health_check_path = "/api/v1/health"   # the default for the admin backend
-health_check_interval = 10
-connection_timeout = 5
-
-[backends.events]
-url = "http://localhost:8081"
-health_check_path = "/health"
-health_check_interval = 10
-connection_timeout = 5
-
-[backends.jobs]
-url = "http://localhost:8082"
-health_check_path = "/health"
-health_check_interval = 10
-connection_timeout = 5
-
-[redis]
-url = "redis://localhost:6379"
-pool_size = 10
-connection_timeout = 5
-
-[rate_limit]
-enabled = false
-
-[cache]
-enabled = false
-
-[cors]
-enabled = true
-allow_all_origins = true
-
-[logging]
-level = "info"
-format = "pretty"
-```
-
-### 3i. fcp-jobs (fcp-jobs-local.toml)
-
-```toml
-[service]
-service_type = "jobs"
-node_id = "jobs-local"
-
-[redis]
-url = "redis://localhost:6379"
-pool_size = 10
-connection_timeout = 5
-queue_prefix = "fcp:jobs"
-
-[workers]
-count = 2
-poll_interval = 5
-job_timeout = 300
-shutdown_timeout = 30
-
-[retry]
-max_retries = 3
-initial_delay = 10
-max_delay = 3600
-backoff_multiplier = 2.0
-
-[health]
-enabled = true
-bind_address = "0.0.0.0:8082"
-
-[logging]
-level = "info"
-format = "pretty"
-```
-
----
-
-## Step 4: Create Data Directories
+Every binary takes `--check-config`. It loads the file, applies the
+environment, runs the rules above, prints the effective configuration
+with every secret masked and exits 0 (the node would start), 1 (a rule
+refuses it, printed) or 2 (it does not parse, printed). Run it without
+`--config` to see a binary's defaults.
+
+**Secrets from the environment.** Every token and every database URL
+has an environment variable in the binary's `FCP_<BINARY>_*` style
+(`--help` lists them; the table above has the tokens). A value in the
+environment wins over the file.
+
+## 5. Addresses and ports
+
+The root local files share one plan. The realm is `fcp.local`; every
+HTTP bind is `0.0.0.0` with a token set; the developer's LAN address
+`192.168.1.225` appears as `local_ip` and in URLs — **replace it with
+your host's address** before phones or browsers on other machines will
+reach you (or pass `--public-ip` / `FCP_<BINARY>_PUBLIC_IP` to the call
+manager, IVR, voicemail, conference, media and WebRTC servers).
+
+| Service | SIP | HTTP | RTP |
+|---|---|---|---|
+| `fcp-call-manager` | 5060 udp/tcp | 8084 | 20000–21999 |
+| `fcp-ivr` | 5070 | 8086 | 22000–23999 |
+| `fcp-voicemail` | 5072 | 8088 | 24000–25999 |
+| `fcp-conference` | 5074 | 8090 | 26000–27999 |
+| `fcp-presence` | 5076 | 8092 | — |
+| `fcp-webrtc-gw` | 5077 | 8095 | 34000–35999 |
+| `fcp-sbc` | `--bind` (the local file leaves it) | `--health-bind` | 28000–29999 |
+| `fcp-media` | — | 8083 | 30000–31999 |
+| `fcp-admin` | — | 8080 | — |
+| `fcp-events-server` | — | 8081 | — |
+| `fcp-jobs` | — | 8082 | — |
+| `fcp-tts` | — | 8093 | — |
+| `fcp-api-gateway` | — | 8000 | — |
+| Postgres / Redis | — | 5432 / 6379 | — |
+
+The binaries' own defaults are not this plan: every SIP service
+defaults to `0.0.0.0:5060` (the presence server to `127.0.0.1:5060`)
+and RTP `10000–20000`, and the HTTP defaults are `127.0.0.1:8080`
+(admin *and* presence), `:8081` events, `:8082` jobs (on `0.0.0.0`),
+`:8083` registrar, `:8084` call manager, `:8086` IVR, `:8087`
+voicemail, `:8090` conference, `0.0.0.0:8080` media and WebRTC,
+`0.0.0.0:8000` gateway. Two services on their defaults collide; use the
+files.
+
+## 6. What connects to what
+
+Every local file already says this; here is the map.
+
+- **Events.** The events server takes `[auth] token`
+  (`events-local-secret` in the files); every producer posts to
+  `http://localhost:8081/ingest` with the same value as its `[events]
+  auth_token`: the call manager, conference server, IVR, voicemail
+  server and admin.
+- **The admin** calls the call manager (`[call_manager] url`,
+  `auth_token` = the call manager's `api_token`), the conference server
+  (`[conference] server_url`, `auth_token`, and `join_secret`, which
+  must equal the conference server's `[conference] join_secret` — the
+  admin mints join tokens, the conference server verifies them) and
+  tells browsers where the WebRTC gateway is (`gateway_url`).
+- **The call manager** sends conference calls to `[b2bua]
+  conference_server_uri` (`sip:conference@<host>:5074`) and, with
+  `[cluster] enabled`, places them on the least loaded node instead.
+  The conference server lists the call manager's address in `[sip]
+  trusted_edges` so the call manager may name the record each leg
+  belongs to.
+- **Speech.** The call manager and IVR ask `fcp-tts` at
+  `tts_remote_url` (`http://localhost:8093`) with `tts_remote_token` =
+  one of the TTS server's `[auth] tokens`.
+- **The gateway** proxies `/api/v1/*` and `/metrics` to the admin and
+  passes the caller's `Authorization` header through; the events and
+  jobs backends it names are only health-probed. `GET /gateway/status`
+  shows each backend's last probe.
+- **Records.** With `[cdr] sink = "stream"` a node ships its records
+  to the Redis stream and `fcp-jobs` (`[cdr] enabled = true`) stores
+  them; the local files leave the default, `local`, where each node
+  stores its own.
+- **Region.** `[cluster] region` on every binary (or `FCP_REGION`)
+  labels the node for placement across regions; one machine needs
+  none.
+
+## 7. Start
+
+Postgres and Redis first, then the events server (everything posts to
+it), then the rest in any order. From the repository root:
 
 ```bash
-mkdir -p /tmp/fcp/{voicemail/{recordings,greetings},conference/{recordings,announcements},media/{recordings,prompts}}
+target/release/fcp-events-server --config fcp-events-server-local.toml &
+target/release/fcp-admin          --config fcp-admin-local.toml &
+target/release/fcp-call-manager   --config fcp-call-manager-local.toml &
+target/release/fcp-conference     --config fcp-conference-local.toml &
+target/release/fcp-ivr            --config fcp-ivr-local.toml &
+target/release/fcp-voicemail      --config fcp-voicemail-local.toml &
+target/release/fcp-presence       --config fcp-presence-local.toml &
+target/release/fcp-media          --config fcp-media-local.toml &
+target/release/fcp-webrtc-gw      --config fcp-webrtc-gw-local.toml &
+target/release/fcp-tts            --config fcp-tts-local.toml &
+target/release/fcp-jobs           --config fcp-jobs-local.toml &
+target/release/fcp-api-gateway    --config fcp-api-gateway-local.toml &
+target/release/fcp-sbc --config fcp-sbc-local.toml \
+    --bind 0.0.0.0:5078 --health-bind 127.0.0.1:8094 &
 ```
 
----
+The SBC's SIP and health binds are flags (`FCP_SBC_BIND`,
+`FCP_SBC_HEALTH_BIND`); a non-loopback health bind needs
+`--health-api-token`.
 
-## Step 5: Start Services (in order)
+What each logs when it is up: the admin `API server listening on …`,
+the events server `WebSocket server listening`, the call manager
+`fcp-call-manager ready — listening for SIP messages` (and `Cluster
+membership started` when clustered), the conference server
+`fcp-conference ready — listening for SIP INVITE messages`.
 
-Open a separate terminal (or tmux pane) for each service. Start them in this order — each group can be started in parallel within the group, but wait for the previous group to be ready before proceeding.
+## 8. Check
 
-### Group 1: Infrastructure (PostgreSQL + Redis)
+`/health` needs no token anywhere and says the process is alive;
+`/ready` needs none and says whether to send the node work (503 while
+it drains).
 
 ```bash
-# Terminal 1 — PostgreSQL (if not already running)
-docker start fcp-postgres
-
-# Redis should already be running
-redis-cli ping
+for p in 8080/api/v1 8081 8082 8084 8086 8088 8090 8092 8093 8095 8000; do
+  printf '%-14s ' "$p"; curl -s "http://localhost:$p/health"; echo
+done
+curl -s http://localhost:8083/health          # fcp-media
 ```
 
-### Group 2: Event Bus
+Everything else on a service's HTTP port wants its token:
 
 ```bash
-# Terminal 2 — Events Server
-cd /home/siphon/fcp
-cargo run --release -p fcp-events-server -- --config fcp-events-server-local.toml
+curl -s -H 'Authorization: Bearer svc-local-secret' http://localhost:8084/status | jq .
+curl -s -H 'Authorization: Bearer events-local-secret' http://localhost:8081/status | jq .
+curl -s http://localhost:8000/gateway/status | jq .backends
 ```
 
-Wait for: `Listening on 0.0.0.0:8081`
+`svc-local-secret` is the call manager's, conference server's, IVR's,
+voicemail server's, presence server's and WebRTC gateway's token in the
+local files; the admin's is `fcp-local-dev-token-2026`.
 
-### Group 3: Core Services
+## 9. The first tenant, user and phone
+
+A fresh database has no tenant. With the admin's token:
 
 ```bash
-# Terminal 3 — Admin API + Web UI
-cargo run --release -p fcp-admin -- --config fcp-admin-local.toml
-
-# Terminal 4 — Call Manager (SIP registrar + B2BUA)
-cargo run --release -p fcp-call-manager -- \
-  --config fcp-call-manager-local.toml \
-  --public-ip 192.168.1.225
-
-# Terminal 5 — Jobs Worker
-cargo run --release -p fcp-jobs -- --config fcp-jobs-local.toml
+A='Authorization: Bearer fcp-local-dev-token-2026'
+J='Content-Type: application/json'
+# A tenant; note its id.
+curl -s -H "$A" -H "$J" -X POST http://localhost:8080/api/v1/tenants \
+  -d '{"name":"Acme"}' | jq .
+# A user in it; the SIP password is what the phone registers with.
+curl -s -H "$A" -H "$J" -X POST http://localhost:8080/api/v1/users \
+  -d '{"username":"alice","password":"alice-pw","display_name":"Alice","tenant_id":"<tenant id>"}' | jq .
+# An extension that rings that user; the target names the user by id.
+curl -s -H "$A" -H "$J" -X POST http://localhost:8080/api/v1/extensions \
+  -d '{"number":"1001","target":{"user":"<user id>"},"tenant_id":"<tenant id>"}' | jq .
 ```
 
-### Group 4: Specialty Services
+Or do the same in the admin UI at `http://localhost:8080/admin/`
+(through the gateway at `:8000` only the API is proxied, not the UI).
 
-```bash
-# Terminal 6 — IVR
-cargo run --release -p fcp-ivr -- --config fcp-ivr-local.toml
+A phone then registers at the host's address, port 5060, realm
+`fcp.local`, user `alice`, password `alice-pw`. Registrations are
+listed at `GET /registrations` on the call manager, with its token.
 
-# Terminal 7 — Voicemail
-cargo run --release -p fcp-voicemail-server -- --config fcp-voicemail-local.toml
+## 10. Stop
 
-# Terminal 8 — Conference
-cargo run --release -p fcp-conference-server -- --config fcp-conference-local.toml
+`SIGTERM` (or `POST /drain` with the token, then `SIGTERM`): each
+routing binary stops taking new work, keeps what it carries until its
+`drain_wait_secs`, tells the cluster, and exits; the call manager logs
+`Shutdown complete`. The order does not matter.
 
-# Terminal 9 — SBC
-cargo run --release -p fcp-sbc -- \
-  --config fcp-sbc-local.toml \
-  --bind 0.0.0.0:5076 \
-  --health-bind 0.0.0.0:8094
+## 11. When something is wrong
 
-# Terminal 10 — Presence
-cargo run --release -p fcp-presence-server -- --config fcp-presence-local.toml
-
-# Terminal 11 — Media Server
-cargo run --release -p fcp-media-server -- --config fcp-media-local.toml
-```
-
-### Group 5: API Gateway (optional — direct access works fine for testing)
-
-```bash
-# Terminal 12 — API Gateway
-cargo run --release -p fcp-api-gateway -- --config fcp-api-gateway-local.toml
-```
-
----
-
-## Step 6: Verify All Services
-
-### Quick health checks
-
-```bash
-# Events Server
-curl -s http://localhost:8081/health | head -1
-
-# Admin API
-curl -s http://localhost:8080/api/v1/health | head -1
-
-# Call Manager
-curl -s http://localhost:8084/health | head -1
-
-# Jobs
-curl -s http://localhost:8082/health | head -1
-
-# IVR
-curl -s http://localhost:8086/health | head -1
-
-# Voicemail
-curl -s http://localhost:8088/health | head -1
-
-# Conference
-curl -s http://localhost:8090/health | head -1
-
-# SBC
-curl -s http://localhost:8094/health | head -1
-
-# Presence
-curl -s http://localhost:8092/health | head -1
-
-# Media Server
-curl -s http://localhost:8083/health | head -1
-
-# API Gateway
-curl -s http://localhost:8000/health | head -1
-```
-
-### Verify cluster membership (all nodes reporting in)
-
-```bash
-# Check Redis for heartbeats
-redis-cli keys "fcp:node:*"
-
-# Check via events server
-curl -s http://localhost:8081/api/v1/nodes | python3 -m json.tool
-```
-
----
-
-## Step 7: Access the Admin UI
-
-Open in a browser:
-
-```
-http://192.168.1.225:8080/admin/
-```
-
-Or through the API gateway:
-
-```
-http://192.168.1.225:8000/admin/
-```
-
-The admin UI should show:
-- **Dashboard**: Node count, active calls, registrations
-- **Nodes**: All running services with heartbeat status
-- **Registrations**: SIP phone registrations (empty until phones register)
-- **Calls**: Active calls
-- **Events**: Live event stream
-
----
-
-## Step 8: Register SIP Phones (for testing)
-
-Configure softphones (Ooh! Ooh!, Ooh! Ooh!, Ooh! Zoiper, Ooh! Ooh! MicroSIP, Ooh! Ooh! Ooh! Ooh! Ooh! Ooh! Ooh! Ooh! Ooh! Ooh! Ooh! Ooh! Ooh! Ooh! etc.) to register against the call manager:
-
-- **Server**: 192.168.1.225
-- **Port**: 5060
-- **Transport**: UDP or TCP
-- **Username**: alice, bob, charlie, or dave (from data/users.json)
-- **Password**: (auth is disabled in local config, so any password works)
-- **Domain**: fcp.local
-
----
-
-## Stopping Services
-
-Press `Ctrl+C` in each terminal. Services handle SIGINT gracefully.
-
-To stop infrastructure:
-```bash
-docker stop fcp-postgres
-# Redis: sudo systemctl stop redis (if you want to stop it)
-```
-
----
-
-## Troubleshooting
-
-| Problem | Solution |
-|---------|----------|
-| "Address already in use" | Check `ss -tlnp \| grep <port>` — kill conflicting process or change port in config |
-| PostgreSQL connection refused | `docker start fcp-postgres` and wait a few seconds |
-| Redis connection refused | `sudo systemctl start redis` |
-| No nodes in admin UI | Check that `[cluster]` is enabled and Redis is reachable |
-| Events not appearing | Verify `[events] server_url` points to running events server |
-| SIP registration fails | Check call-manager logs, verify `[registrar]` config |
-| RTP port conflicts | Ensure no overlapping port ranges between services |
-
----
-
-## Quick Start Script
-
-For convenience, you can start everything with tmux:
-
-```bash
-#!/bin/bash
-# start-all.sh — Start all FCP services in tmux
-cd /home/siphon/fcp
-
-docker start fcp-postgres 2>/dev/null
-sleep 2
-
-tmux new-session -d -s fcp -n events \
-  'cargo run --release -p fcp-events-server -- --config fcp-events-server-local.toml'
-sleep 3
-
-tmux new-window -t fcp -n admin \
-  'cargo run --release -p fcp-admin -- --config fcp-admin-local.toml'
-tmux new-window -t fcp -n call-mgr \
-  'cargo run --release -p fcp-call-manager -- --config fcp-call-manager-local.toml --public-ip 192.168.1.225'
-tmux new-window -t fcp -n jobs \
-  'cargo run --release -p fcp-jobs -- --config fcp-jobs-local.toml'
-tmux new-window -t fcp -n ivr \
-  'cargo run --release -p fcp-ivr -- --config fcp-ivr-local.toml'
-tmux new-window -t fcp -n voicemail \
-  'cargo run --release -p fcp-voicemail-server -- --config fcp-voicemail-local.toml'
-tmux new-window -t fcp -n conference \
-  'cargo run --release -p fcp-conference-server -- --config fcp-conference-local.toml'
-tmux new-window -t fcp -n sbc \
-  'cargo run --release -p fcp-sbc -- --config fcp-sbc-local.toml --bind 0.0.0.0:5076 --health-bind 0.0.0.0:8094'
-tmux new-window -t fcp -n presence \
-  'cargo run --release -p fcp-presence-server -- --config fcp-presence-local.toml'
-tmux new-window -t fcp -n media \
-  'cargo run --release -p fcp-media-server -- --config fcp-media-local.toml'
-tmux new-window -t fcp -n gateway \
-  'cargo run --release -p fcp-api-gateway -- --config fcp-api-gateway-local.toml'
-
-tmux attach -t fcp
-```
-
-Attach with `tmux attach -t fcp`, switch windows with `Ctrl+B` then window number.
+- **It exits at once with a rule.** Read the rule; `--check-config`
+  shows the effective configuration it was judged on.
+- **`unknown field`.** A key the binary does not have. `--check-config`
+  without `--config` prints every key it does.
+- **Phones do not register.** The SIP bind is `0.0.0.0` in the files,
+  but `local_ip` is what the node puts in its own headers and SDP: set
+  it (or `--public-ip`) to the address phones reach. Digest
+  authentication is on; the user must exist with that password, in the
+  realm `fcp.local`.
+- **Calls have no audio.** The RTP range (§5) must be reachable from
+  the phone, and `local_ip` / `public_ip` must be an address it can
+  send to.
+- **A producer's events never arrive.** Its `[events] auth_token`
+  must equal the events server's `[auth] token`; the events server
+  answers 401 otherwise, silently to the producer.
+- **The admin's live views are empty.** Its `[events] auth_token`,
+  `[call_manager] auth_token` and `[conference] auth_token` must match
+  those services' tokens.
+- **Two services on their defaults collide.** Use the files (§5).
