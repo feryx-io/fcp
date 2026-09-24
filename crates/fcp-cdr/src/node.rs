@@ -30,6 +30,7 @@ pub enum SinkKind {
 
 /// The `[cdr]` section of a node's configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct NodeConfig {
     /// Where records are spooled before they ship. Unset, records go
     /// straight to the processor on a task each, which is the MVP's

@@ -104,7 +104,8 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     // Load configuration
-    let mut config = load_config(cli.config.as_deref())?;
+    let mut config =
+        fcp_core::config::check_stage(load_config(cli.config.as_deref()), cli.check_config)?;
 
     // Apply CLI overrides
     if let Some(log_level) = cli.log_level {
@@ -121,6 +122,13 @@ async fn main() -> Result<()> {
     }
 
     // Initialize tracing/logging
+    if cli.check_config {
+        println!(
+            "{}",
+            fcp_core::config::masked_toml(&config).map_err(anyhow::Error::msg)?
+        );
+        return Ok(());
+    }
     init_tracing(&config).context("Failed to initialize tracing")?;
 
     info!(

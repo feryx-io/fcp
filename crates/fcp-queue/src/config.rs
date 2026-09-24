@@ -5,6 +5,7 @@ use std::collections::HashMap;
 
 /// Top-level queue system configuration (in call-manager's TOML).
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct QueueSystemConfig {
     /// Master enable/disable for the queue system.
     #[serde(default)]
@@ -97,6 +98,7 @@ impl Default for QueueSystemConfig {
 
 /// Configuration for a single queue.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct QueueConfig {
     /// Display name (e.g., "Sales", "Support").
     pub name: String,
@@ -288,6 +290,7 @@ impl QueueConfig {
 
 /// A time-of-day schedule entry for queue business hours.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ScheduleEntry {
     /// Days of week: 0=Monday .. 6=Sunday (ISO 8601 weekday numbering).
     pub days: Vec<u8>,

@@ -10,6 +10,7 @@ use tracing::info;
 
 /// Events server configuration
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct EventsConfig {
     /// Service configuration
     #[serde(default)]
@@ -79,6 +80,7 @@ pub struct EventsConfig {
 /// from = "sip:alerts@pbx.example.com"
 /// ```
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct NotificationsConfig {
     /// Whether emergency notifications are delivered from this server.
     #[serde(default = "default_true")]
@@ -169,6 +171,7 @@ impl Default for NotificationsConfig {
 
 /// `[notifications.smtp]`.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct SmtpConfig {
     pub host: String,
     #[serde(default = "default_smtp_port")]
@@ -201,6 +204,7 @@ fn default_smtp_timeout_secs() -> u64 {
 
 /// `[notifications.sms]`.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct SmsConfig {
     /// Where the text is posted.
     pub url: String,
@@ -220,6 +224,7 @@ fn default_sms_timeout_secs() -> u64 {
 
 /// `[notifications.call]`.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct CallNotifyConfig {
     /// A call manager's API.
     pub call_manager_url: String,
@@ -246,6 +251,7 @@ fn default_call_repeat() -> u32 {
 
 /// Upstream services configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct UpstreamConfig {
     /// Call manager URL for registration data
     #[serde(default = "default_call_manager_url")]
@@ -266,6 +272,7 @@ impl Default for UpstreamConfig {
 
 /// Webhook dispatcher configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct WebhookConfig {
     /// Whether webhook dispatching is enabled
     #[serde(default)]
@@ -339,6 +346,7 @@ impl Default for WebhookConfig {
 
 /// Authentication configuration for the events server.
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct AuthConfig {
     /// Shared bearer token required for ingest, query, and webhook management APIs.
     /// WebSocket clients may provide the same token via `?token=...`.
@@ -348,6 +356,7 @@ pub struct AuthConfig {
 
 /// Cluster configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ClusterConfig {
     /// Enable cluster membership heartbeats.
     #[serde(default)]
@@ -394,6 +403,7 @@ impl Default for ClusterConfig {
 
 /// Service configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ServiceConfig {
     /// Service type (always "events")
     #[serde(default = "default_service_type")]
@@ -423,6 +433,7 @@ impl Default for ServiceConfig {
 
 /// WebSocket configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct WebSocketConfig {
     /// Bind address
     #[serde(default = "default_bind_address")]
@@ -488,6 +499,7 @@ impl Default for WebSocketConfig {
 
 /// Event bus configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct EventBusConfig {
     /// Event bus type: "in-memory" or "redis"
     #[serde(default = "default_event_bus_type")]
@@ -522,6 +534,7 @@ pub struct EventBusConfig {
 
 /// One peer region for the event bridge.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct PeerRegionConfig {
     /// The peer's `[cluster] region` label.
     pub region: String,
@@ -569,6 +582,7 @@ impl Default for EventBusConfig {
 
 /// Connection limits configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct LimitsConfig {
     /// Maximum concurrent connections
     #[serde(default = "default_max_connections")]
@@ -598,6 +612,7 @@ impl Default for LimitsConfig {
 
 /// Logging configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct LoggingConfig {
     /// Log level
     #[serde(default = "default_log_level")]

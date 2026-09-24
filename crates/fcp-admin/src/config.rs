@@ -9,6 +9,7 @@ use tracing::info;
 
 /// Admin API configuration
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct AdminConfig {
     /// Service configuration
     #[serde(default)]
@@ -90,6 +91,7 @@ pub struct AdminConfig {
 
 /// The `[e911]` section.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct E911Section {
     #[serde(default)]
     pub validator: ValidatorConfig,
@@ -108,6 +110,7 @@ pub struct E911Section {
 /// timeout_secs = 5
 /// ```
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ValidatorConfig {
     /// `basic` (completeness and structure, no external call) or `http`.
     #[serde(default = "default_validator_provider")]
@@ -161,6 +164,7 @@ impl Default for ValidatorConfig {
 
 /// The `[compliance]` section.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ComplianceConfig {
     /// Where subject export bundles are written; the API serves them from
     /// here, so every admin replica mounts the same directory.
@@ -199,6 +203,7 @@ impl Default for ComplianceConfig {
 /// The `[retention]` section: what the platform tidies whatever the
 /// tenants' policies say.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct RetentionConfig {
     /// Remove files in the recordings, voicemail and profile picture
     /// directories that no row names once they are this many days old.
@@ -235,6 +240,7 @@ impl Default for RetentionConfig {
 
 /// TTS configuration for synthesizing prompt audio.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct TtsSection {
     /// TTS engine name (e.g., "kokoro")
     pub engine: String,
@@ -258,6 +264,7 @@ fn default_tts_cache_dir() -> String {
 
 /// Security policy configuration for login protection.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct SecurityConfig {
     /// Maximum failed login attempts before lockout (default: 5)
     #[serde(default = "default_max_failed_attempts")]
@@ -292,6 +299,7 @@ impl Default for SecurityConfig {
 
 /// Service configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ServiceConfig {
     /// Service type (always "admin")
     #[serde(default = "default_service_type")]
@@ -330,6 +338,7 @@ impl Default for ServiceConfig {
 
 /// API configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ApiConfig {
     /// Bind address (internal only, behind gateway)
     #[serde(default = "default_bind_address")]
@@ -389,6 +398,7 @@ impl Default for ApiConfig {
 
 /// Storage configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct StorageConfig {
     /// PostgreSQL connection URL
     #[serde(default = "default_database_url")]
@@ -444,6 +454,7 @@ impl Default for StorageConfig {
 
 /// Logging configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct LoggingConfig {
     /// Log level
     #[serde(default = "default_log_level")]
@@ -473,6 +484,7 @@ impl Default for LoggingConfig {
 
 /// Events configuration
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct EventsConfig {
     /// URL of fcp-events-server ingest endpoint (optional)
     /// Example: "http://fcp-events-server:8081/ingest"
@@ -490,6 +502,7 @@ pub struct EventsConfig {
 /// cluster heartbeat keys written by other FCP services. When absent,
 /// cluster monitoring is disabled and the UI shows setup instructions.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ClusterConfig {
     /// Redis connection URL (e.g. "redis://localhost:6379").
     /// When None, cluster monitoring is disabled.
@@ -521,6 +534,7 @@ impl Default for ClusterConfig {
 /// non-draining call manager is found through `[cluster]`; with neither,
 /// the preview answers 503.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct CallManagerConfig {
     /// Base URL of a call manager's HTTP API
     /// Example: "http://fcp-call-manager:8080"
@@ -538,6 +552,7 @@ pub struct CallManagerConfig {
 /// room and otherwise forwards to the hosting nodes itself. When
 /// `server_url` is absent the live endpoints answer 503.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ConferenceConfig {
     /// Base URL of a conference server's HTTP API
     /// Example: "http://fcp-conference-server:8090"

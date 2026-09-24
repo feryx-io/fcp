@@ -9,6 +9,7 @@ use tracing::info;
 
 /// Voicemail server configuration.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct VoicemailServerConfig {
     /// Service configuration
     #[serde(default)]
@@ -63,6 +64,7 @@ pub struct VoicemailServerConfig {
 
 /// Service identification.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ServiceSection {
     #[serde(default = "default_service_type")]
     pub service_type: String,
@@ -108,6 +110,7 @@ impl Default for ServiceSection {
 
 /// SIP transport configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct SipSection {
     /// UDP bind address
     #[serde(default = "default_sip_bind")]
@@ -161,6 +164,7 @@ impl Default for SipSection {
 
 /// Storage backend configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct StorageSection {
     /// PostgreSQL connection URL
     #[serde(default = "default_database_url")]
@@ -212,6 +216,7 @@ impl Default for StorageSection {
 
 /// HTTP health/API endpoint configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct HttpSection {
     /// Bind address for health/status/voicemail endpoint
     #[serde(default = "default_http_bind")]
@@ -238,6 +243,7 @@ impl Default for HttpSection {
 
 /// Logging configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct LoggingSection {
     /// Log level
     #[serde(default = "default_log_level")]
@@ -267,6 +273,7 @@ impl Default for LoggingSection {
 
 /// Media/RTP configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct MediaSection {
     /// RTP port range start
     #[serde(default = "default_rtp_port_start")]
@@ -309,6 +316,7 @@ impl Default for MediaSection {
 
 /// Events configuration.
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct EventsSection {
     /// URL of fcp-events-server ingest endpoint (optional)
     pub server_url: Option<String>,
@@ -320,6 +328,7 @@ pub struct EventsSection {
 
 /// Voicemail-specific configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct VoicemailSection {
     /// Directory for voicemail recordings
     #[serde(default = "default_recordings_dir")]
@@ -397,6 +406,7 @@ impl Default for VoicemailSection {
 
 /// A static DID/extension-to-mailbox mapping.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct VoicemailRoute {
     /// Phone number / DID / extension (e.g. "+15551234567" or "5000")
     pub did: String,
@@ -407,6 +417,7 @@ pub struct VoicemailRoute {
 
 /// Cluster configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ClusterSection {
     /// Enable cluster mode. Requires `storage.redis_url`.
     #[serde(default)]

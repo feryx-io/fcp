@@ -34,9 +34,10 @@ All cluster settings live under the `[cluster]` section in `fcp-call-manager.tom
 # Enable cluster mode. Requires storage.redis_url to be set.
 enabled = true
 
-# Shared secret for inter-node HTTP authentication (Bearer token).
-# All nodes in the cluster MUST use the same secret.
-cluster_secret = "my-secret-token"
+# There is no cluster secret on the call manager: its inter-node routes
+# (`/internal/*`) are authenticated by `[http] api_token`, so every call
+# manager in a cluster must carry the same `api_token`. A `cluster_secret`
+# key here is refused at startup (v0.25.244).
 
 # Heartbeat interval — how often this node announces itself (seconds).
 heartbeat_interval_secs = 5
@@ -91,7 +92,7 @@ fcp-call-manager --config node2.toml
 ```
 
 Each node's config must share:
-- Same `cluster_secret`
+- Same `[http] api_token` (it authenticates `/internal/*` between nodes)
 - Same `storage.redis_url`
 - Same `events.use_redis` setting
 
@@ -272,7 +273,7 @@ other limit.
 
 ### Add a New Node
 
-1. Prepare the config file with the same `cluster_secret` and `redis_url`
+1. Prepare the config file with the same `[http] api_token` and `redis_url`
 2. Assign a unique `service.node_id`
 3. Start the node: `fcp-call-manager --config new-node.toml`
 4. Verify it appears in other nodes' logs: `Cluster member joined`
@@ -367,7 +368,7 @@ kill -HUP $(pidof fcp-call-manager)
 **Symptoms**: `POST /internal/hangup` returns 401 or connection refused.
 
 **Resolution**:
-1. Verify all nodes use the same `cluster_secret`
+1. Verify all nodes use the same `[http] api_token`
 2. Verify `http.bind_address` is reachable from other nodes (not `127.0.0.1`)
 3. Check firewall rules for the HTTP port
 4. Check logs for `traceparent` and `x-fcp-node-id` headers for request tracing

@@ -27,6 +27,7 @@ pub enum RecordingPolicy {
 /// one enabled rule. All non-`None` fields must match (AND logic within
 /// a rule); any rule matching is sufficient (OR logic across rules).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SelectiveRecordingRule {
     /// Rule name (for display/logging).
     pub name: String,
@@ -58,6 +59,7 @@ fn default_true() -> bool {
 
 /// A SIPREC recording server definition.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RecordingServer {
     /// Server name (for display/logging).
     pub name: String,
@@ -74,6 +76,7 @@ pub struct RecordingServer {
 
 /// SIPREC recording configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 #[serde(default)]
 pub struct SiprecConfig {
     /// Recording policy.

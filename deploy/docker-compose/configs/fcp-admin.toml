@@ -9,7 +9,6 @@ bind_address = "0.0.0.0:8080"
 auth_enabled = false  # Disabled for testing
 provisioning_auth_token = "docker-compose-provisioning-token-change-me"
 provisioning_require_https = false  # No TLS in Compose; enable in production
-cors_enabled = true
 
 [storage]
 database_url = "postgresql://postgres:password@postgres:5432/fcp"

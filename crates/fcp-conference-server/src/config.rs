@@ -7,6 +7,7 @@ use tracing::info;
 
 /// Conference server configuration.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ConferenceServerConfig {
     #[serde(default)]
     pub service: ServiceSection,
@@ -91,6 +92,7 @@ impl ConferenceServerConfig {
 /// When enabled, meetings with `pin_prompt_tts` or `invalid_pin_tts` fields
 /// will have their text synthesized to audio at room creation time.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct TtsSection {
     /// Enable TTS prompt synthesis (default: false).
     #[serde(default)]
@@ -167,6 +169,7 @@ impl Default for TtsSection {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ServiceSection {
     #[serde(default = "default_service_type")]
     pub service_type: String,
@@ -228,6 +231,7 @@ impl Default for ServiceSection {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct SipSection {
     #[serde(default = "default_sip_bind")]
     pub udp_bind: String,
@@ -362,6 +366,7 @@ impl Default for SipSection {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct StorageSection {
     /// PostgreSQL connection URL
     #[serde(default = "default_database_url")]
@@ -412,6 +417,7 @@ impl Default for StorageSection {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct HttpSection {
     #[serde(default = "default_http_bind")]
     pub bind_address: SocketAddr,
@@ -461,6 +467,7 @@ impl Default for HttpSection {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct LoggingSection {
     #[serde(default = "default_log_level")]
     pub level: String,
@@ -487,6 +494,7 @@ impl Default for LoggingSection {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct MediaSection {
     #[serde(default = "default_rtp_port_start")]
     pub rtp_port_start: u16,
@@ -524,6 +532,7 @@ impl Default for MediaSection {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct EventsSection {
     pub server_url: Option<String>,
 
@@ -584,6 +593,7 @@ impl Default for EventsSection {
 
 /// AI participant configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct AiSection {
     /// Enable AI participant support (default: false)
     #[serde(default)]
@@ -630,6 +640,7 @@ impl Default for AiSection {
 
 /// Conference-specific configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ConferenceSection {
     /// Audio sample rate (default: 8000 Hz)
     #[serde(default = "default_sample_rate")]
@@ -1023,6 +1034,7 @@ impl Default for ConferenceSection {
 
 /// Cluster configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ClusterSection {
     /// Enable cluster mode. Requires `storage.redis_url`.
     #[serde(default)]

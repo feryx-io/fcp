@@ -9,6 +9,143 @@ pub(crate) fn default_true() -> bool {
     true
 }
 
+/// A key whose value is a secret: masked wherever a configuration is
+/// printed. Matched on the key's name, case-insensitively.
+fn is_secret_key(key: &str) -> bool {
+    let k = key.to_ascii_lowercase();
+    [
+        "token",
+        "secret",
+        "password",
+        "passwd",
+        "credential",
+        "private_key",
+        "master_key",
+        "api_key",
+        "jwt",
+    ]
+    .iter()
+    .any(|needle| k.contains(needle))
+        && !k.ends_with("_file")
+        && !k.ends_with("_path")
+        && !k.ends_with("_secs")
+        && !k.ends_with("_enabled")
+        && !k.ends_with("_required")
+        && !k.starts_with("require_")
+        && !k.starts_with("allow_")
+        && !k.starts_with("disable_")
+}
+
+/// The password in a `scheme://user:password@host…` URL replaced by
+/// `***`; any other string as it was.
+fn mask_url_password(s: &str) -> Option<String> {
+    let (scheme, rest) = s.split_once("://")?;
+    if scheme.is_empty()
+        || !scheme
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c))
+    {
+        return None;
+    }
+    let (userinfo, host) = rest.split_once('@')?;
+    if userinfo.contains('/') {
+        return None;
+    }
+    let (user, password) = userinfo.split_once(':')?;
+    if password.is_empty() {
+        return None;
+    }
+    Some(format!("{scheme}://{user}:***@{host}"))
+}
+
+/// Mask every secret in a TOML value tree in place: a string under a
+/// secret key becomes `***`, an array of strings under one becomes
+/// `["***", …]`, and the password in any URL becomes `***`; an empty
+/// string stays empty, so "unset" still reads as unset.
+pub fn mask_toml_value(value: &mut toml::Value) {
+    match value {
+        toml::Value::Table(table) => {
+            for (key, v) in table.iter_mut() {
+                if is_secret_key(key) {
+                    match v {
+                        toml::Value::String(s) if !s.is_empty() => *s = "***".to_string(),
+                        toml::Value::Array(items) => {
+                            for item in items.iter_mut() {
+                                if let toml::Value::String(s) = item {
+                                    if !s.is_empty() {
+                                        *s = "***".to_string();
+                                    }
+                                }
+                            }
+                        }
+                        other => mask_toml_value(other),
+                    }
+                } else {
+                    mask_toml_value(v);
+                }
+            }
+        }
+        toml::Value::Array(items) => {
+            for item in items.iter_mut() {
+                mask_toml_value(item);
+            }
+        }
+        toml::Value::String(s) => {
+            if let Some(masked) = mask_url_password(s) {
+                *s = masked;
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The effective configuration as TOML with every secret masked: what
+/// `--check-config` prints on every binary (`docs/SHIP_AND_OPERATE.md`
+/// phase 1), so an operator sees what the node will run with, defaults
+/// filled in, and never a token.
+pub fn masked_toml<T: Serialize>(config: &T) -> std::result::Result<String, String> {
+    let mut value = toml::Value::try_from(config).map_err(|e| e.to_string())?;
+    mask_toml_value(&mut value);
+    toml::to_string_pretty(&value).map_err(|e| e.to_string())
+}
+
+/// Exit code of `--check-config` when the file does not parse — an
+/// unknown key, a wrong type, bad TOML.
+pub const CHECK_CONFIG_PARSE_FAILED: i32 = 2;
+/// Exit code of `--check-config` when the file parses but a startup rule
+/// refuses it — a public bind without its token, say.
+pub const CHECK_CONFIG_REFUSED: i32 = 1;
+
+/// One stage of loading a configuration under `--check-config`: an
+/// error is printed as the refusal it is and the process exits with
+/// [`CHECK_CONFIG_PARSE_FAILED`] when a TOML error is in the chain,
+/// [`CHECK_CONFIG_REFUSED`] otherwise. Without `--check-config` the
+/// error is returned as it was, so startup fails as it always did.
+pub fn check_stage<T>(result: anyhow::Result<T>, checking: bool) -> anyhow::Result<T> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(e) if checking => {
+            let parse_failed = e
+                .chain()
+                .any(|cause| cause.downcast_ref::<toml::de::Error>().is_some());
+            eprintln!(
+                "configuration {}: {e:#}",
+                if parse_failed {
+                    "does not parse"
+                } else {
+                    "refused"
+                }
+            );
+            std::process::exit(if parse_failed {
+                CHECK_CONFIG_PARSE_FAILED
+            } else {
+                CHECK_CONFIG_REFUSED
+            });
+        }
+        Err(e) => Err(e),
+    }
+}
+
 const MAX_SIP_MESSAGE_SIZE: usize = 65_535;
 const MAX_CONNECTION_POOL_SIZE: usize = 10_000;
 const MAX_RTP_PORT_SPAN: u16 = 10_000;
@@ -687,5 +824,73 @@ impl MediaConfig {
             reject_crlf("media.turn_server", turn)?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod masking_tests {
+    use super::*;
+
+    #[test]
+    fn secrets_are_masked_and_nothing_else_is() {
+        #[derive(Serialize)]
+        struct Http {
+            bind_address: String,
+            api_token: Option<String>,
+            token_ttl_secs: u64,
+            require_token: bool,
+            token_file: Option<String>,
+        }
+        #[derive(Serialize)]
+        struct Auth {
+            tokens: Vec<String>,
+            password: String,
+            jwt_secret: String,
+        }
+        #[derive(Serialize)]
+        struct Cfg {
+            http: Http,
+            auth: Auth,
+        }
+        let cfg = Cfg {
+            http: Http {
+                bind_address: "127.0.0.1:8084".into(),
+                api_token: Some("hunter2".into()),
+                token_ttl_secs: 3600,
+                require_token: true,
+                token_file: Some("/run/secrets/t".into()),
+            },
+            auth: Auth {
+                tokens: vec!["a".into(), "".into()],
+                password: "".into(),
+                jwt_secret: "s".into(),
+            },
+        };
+        let out = masked_toml(&cfg).unwrap();
+        assert!(!out.contains("hunter2"), "{out}");
+        assert!(out.contains("api_token = \"***\""), "{out}");
+        assert!(out.contains("bind_address = \"127.0.0.1:8084\""), "{out}");
+        assert!(out.contains("token_ttl_secs = 3600"), "{out}");
+        assert!(out.contains("require_token = true"), "{out}");
+        assert!(out.contains("token_file = \"/run/secrets/t\""), "{out}");
+        assert!(!out.contains("\"a\""), "{out}");
+        assert!(out.contains("\"***\""), "{out}");
+        assert!(out.contains("password = \"\""), "unset stays unset: {out}");
+        assert!(out.contains("jwt_secret = \"***\""), "{out}");
+    }
+
+    #[test]
+    fn a_url_keeps_its_user_and_loses_its_password() {
+        assert_eq!(
+            mask_url_password("postgresql://fcp:fcp_password@localhost:5432/fcp").as_deref(),
+            Some("postgresql://fcp:***@localhost:5432/fcp")
+        );
+        assert_eq!(
+            mask_url_password("redis://:secret@redis:6379/1").as_deref(),
+            Some("redis://:***@redis:6379/1")
+        );
+        assert_eq!(mask_url_password("redis://redis:6379"), None);
+        assert_eq!(mask_url_password("http://host/a:b@c"), None);
+        assert_eq!(mask_url_password("sip:alice@example.com"), None);
     }
 }

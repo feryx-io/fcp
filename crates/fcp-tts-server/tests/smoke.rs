@@ -54,3 +54,12 @@ format = "compact"
         .await;
     report.assert_clean();
 }
+
+/// Every configuration this binary ships parses with no unknown key and
+/// prints with its secrets masked under `--check-config`
+/// (`docs/SHIP_AND_OPERATE.md` phase 1); the ones a node must accept
+/// outright are accepted.
+#[test]
+fn shipped_configurations_check() {
+    smoke::assert_configs_check(BIN, &[], &["fcp-tts-local.toml"], &[]);
+}

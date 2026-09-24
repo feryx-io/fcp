@@ -726,6 +726,19 @@ Six phases: a configuration cannot lie (`deny_unknown_fields`,
 `--check-config`, CI over every TOML); secrets from the environment; the
 stack comes up; the stack is proved by a compose-shaped floor test; the
 single-node guide and the runbook; the READMEs.
+Phase 1 done (v0.25.244): a configuration cannot lie. Every
+configuration section of every binary, and the sections the shared
+crates own, refuse an unknown key at startup with a message naming it;
+every binary takes `--check-config`, which loads and validates the file,
+prints the effective configuration with every secret masked (by key,
+and the password of any URL) and exits 0 when the node would start, 1
+when a startup rule refuses it, 2 when it does not parse. Run over
+every shipped, root and example TOML it refused exactly the seven files
+the survey named, all now fixed, and the call manager's dead
+`cluster_secret` is gone. Each binary's smoke suite now runs the files
+it ships through the flag, so a configuration that stops parsing fails
+the PR; the five compose files the token rules still refuse are held at
+"parses" until phase 3 gives them their tokens.
 
 ## Historical documents
 

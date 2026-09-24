@@ -39,6 +39,7 @@ pub enum HmrMessageType {
 
 /// Condition that must match for a rule to fire (all conditions are ANDed).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HmrCondition {
     /// Header to check. Special values: `$request-uri`, `$method`, `$status-code`.
     pub header_name: String,
@@ -64,6 +65,7 @@ pub enum HmrActionType {
 
 /// A single manipulation action within a rule.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HmrAction {
     /// The type of manipulation to perform.
     pub action_type: HmrActionType,
@@ -87,6 +89,7 @@ fn default_enabled() -> bool {
 
 /// A named header manipulation rule.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HmrRule {
     /// Unique rule name.
     pub name: String,
@@ -114,6 +117,7 @@ pub struct HmrRule {
 
 /// Top-level header manipulation configuration.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HeaderManipulationConfig {
     /// Whether header manipulation is enabled.
     #[serde(default)]

@@ -44,6 +44,7 @@ pub enum AclAction {
 
 /// A single IP ACL rule entry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IpAclEntry {
     /// CIDR notation network (e.g. "10.0.0.0/8", "192.168.1.1/32").
     pub cidr: String,
@@ -60,6 +61,7 @@ pub struct IpAclEntry {
 /// Rules are evaluated in order; the first matching rule wins.
 /// If no rule matches, `default_action` is returned.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 #[serde(default)]
 pub struct IpAcl {
     /// Ordered list of ACL rules.
@@ -146,6 +148,7 @@ fn unmap(ip: IpAddr) -> IpAddr {
 
 /// What this node accepts at its SIP port.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 #[serde(default)]
 pub struct EdgeConfig {
     /// Addresses this node answers at all. Empty rules with an `Allow`

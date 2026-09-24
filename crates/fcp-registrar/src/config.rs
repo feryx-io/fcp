@@ -9,6 +9,7 @@ use tracing::info;
 
 /// Registrar server configuration.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct RegistrarConfig {
     /// Service configuration
     #[serde(default)]
@@ -43,6 +44,7 @@ pub struct RegistrarConfig {
 
 /// Service identification.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ServiceSection {
     #[serde(default = "default_service_type")]
     pub service_type: String,
@@ -88,6 +90,7 @@ impl Default for ServiceSection {
 
 /// SIP transport configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct SipSection {
     /// UDP bind address
     #[serde(default = "default_sip_bind")]
@@ -140,6 +143,7 @@ impl Default for SipSection {
 
 /// Registrar behavior configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct RegistrarSection {
     /// Enable SIP Digest authentication
     #[serde(default = "default_true")]
@@ -196,6 +200,7 @@ impl Default for RegistrarSection {
 
 /// Storage backend configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct StorageSection {
     /// PostgreSQL connection URL
     #[serde(default = "default_database_url")]
@@ -242,6 +247,7 @@ impl Default for StorageSection {
 
 /// HTTP health endpoint configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct HttpSection {
     /// Bind address for the health, status and drain endpoints. Loopback
     /// by default, like every other binary's; a non-loopback bind needs
@@ -272,6 +278,7 @@ impl Default for HttpSection {
 
 /// Logging configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct LoggingSection {
     /// Log level
     #[serde(default = "default_log_level")]

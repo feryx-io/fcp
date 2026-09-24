@@ -7,6 +7,7 @@ use tracing::info;
 
 /// Deployment-level wrapper around SbcConfig that adds cluster membership fields.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct SbcDeployConfig {
     /// How this node names itself and how it leaves service.
     #[serde(default)]
@@ -32,6 +33,7 @@ pub struct SbcDeployConfig {
 /// carrying when it leaves service
 /// (`docs/CAPACITY_AND_SURVIVABILITY.md` §6).
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ServiceSection {
     /// This node's id: in cluster membership, in the drain's events, on
     /// the calls it carries and on the trunks it registers — one id, the
@@ -62,6 +64,7 @@ impl Default for ServiceSection {
 
 /// Cluster configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ClusterSection {
     #[serde(default)]
     pub enabled: bool,

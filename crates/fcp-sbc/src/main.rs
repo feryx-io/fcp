@@ -55,7 +55,10 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     // 2. Load configuration from TOML (or defaults)
-    let deploy_config = config::load_config(cli.config.as_deref())?;
+    let deploy_config = fcp_core::config::check_stage(
+        config::load_config(cli.config.as_deref()),
+        cli.check_config,
+    )?;
     let mut sbc_config = deploy_config.core.clone();
 
     // 3. Initialize tracing subscriber
@@ -71,6 +74,33 @@ async fn main() -> Result<()> {
     // 4. Validate config (best-effort; warn but don't abort if external_domain empty)
     if let Err(e) = sbc_config.validate() {
         warn!(%e, "SBC configuration validation warning");
+    }
+
+    // 4a. The health listener's rule, checked before anything is bound so
+    // `--check-config` sees it: a non-loopback bind needs the token.
+    let health_bind: std::net::SocketAddr = fcp_core::config::check_stage(
+        cli.health_bind
+            .parse()
+            .context("Invalid health bind address"),
+        cli.check_config,
+    )?;
+    fcp_core::config::check_stage(
+        if !health_bind.ip().is_loopback() && cli.health_api_token.is_none() {
+            Err(anyhow::anyhow!(
+                "FCP_SBC_HEALTH_API_TOKEN or --health-api-token is required when --health-bind is non-loopback ({})",
+                health_bind
+            ))
+        } else {
+            Ok(())
+        },
+        cli.check_config,
+    )?;
+    if cli.check_config {
+        println!(
+            "{}",
+            fcp_core::config::masked_toml(&deploy_config).map_err(anyhow::Error::msg)?
+        );
+        return Ok(());
     }
 
     // 4b. Warn about unsupported media feature flags
@@ -695,17 +725,7 @@ async fn main() -> Result<()> {
         }
     });
 
-    // 21. Spawn health HTTP server
-    let health_bind: std::net::SocketAddr = cli
-        .health_bind
-        .parse()
-        .context("Invalid health bind address")?;
-    if !health_bind.ip().is_loopback() && cli.health_api_token.is_none() {
-        anyhow::bail!(
-            "FCP_SBC_HEALTH_API_TOKEN or --health-api-token is required when --health-bind is non-loopback ({})",
-            health_bind
-        );
-    }
+    // 21. Spawn health HTTP server (its bind and token were checked in 4a)
 
     // Initialize cluster membership (if configured)
     #[cfg(feature = "storage-redis")]

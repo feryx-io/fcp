@@ -219,3 +219,20 @@ async fn an_ingested_event_reaches_the_ingesting_server_and_the_other_region() {
     us.stop().await;
     eu.stop().await;
 }
+
+/// Every configuration this binary ships parses with no unknown key and
+/// prints with its secrets masked under `--check-config`
+/// (`docs/SHIP_AND_OPERATE.md` phase 1); the ones a node must accept
+/// outright are accepted.
+#[test]
+fn shipped_configurations_check() {
+    smoke::assert_configs_check(
+        BIN,
+        &[],
+        &["fcp-events-server-local.toml"],
+        &[
+            "deploy/docker-compose/configs/fcp-events-server.toml",
+            "crates/fcp-events-server/fcp-events-server.toml.example",
+        ],
+    );
+}

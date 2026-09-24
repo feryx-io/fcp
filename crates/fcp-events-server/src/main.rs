@@ -143,7 +143,7 @@ async fn main() -> Result<()> {
 
     // Load configuration
     let config_path = cli.config.as_deref();
-    let mut config = load_config(config_path)?;
+    let mut config = fcp_core::config::check_stage(load_config(config_path), cli.check_config)?;
 
     // Apply CLI overrides
     if let Some(log_level) = cli.log_level {
@@ -166,7 +166,14 @@ async fn main() -> Result<()> {
         "Starting FCP Events Server"
     );
 
-    validate_listener_auth(&config)?;
+    fcp_core::config::check_stage(validate_listener_auth(&config), cli.check_config)?;
+    if cli.check_config {
+        println!(
+            "{}",
+            fcp_core::config::masked_toml(&config).map_err(anyhow::Error::msg)?
+        );
+        return Ok(());
+    }
 
     // Whether this server delivers emergency notifications: it is asked
     // to, and it has somewhere to deliver to (`docs/E911_BLOCK_2.md` §8).

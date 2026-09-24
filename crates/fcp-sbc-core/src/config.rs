@@ -29,6 +29,7 @@ use crate::trunk::TrunkConfig;
 
 /// Optional storage configuration for CDR persistence.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SbcStorageConfig {
     /// Enable storage (and CDR generation). Default: false.
     #[serde(default)]
@@ -82,6 +83,7 @@ impl Default for SbcStorageConfig {
 /// topology hiding, always anchor media, single forking, SBC transfer defaults).
 /// Emergency calling at the SBC (`docs/E911_BLOCK_2.md` §6.2).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 #[serde(default)]
 pub struct E911Config {
     /// Edges whose `X-FCP-Caller-*` and `X-FCP-Client-Address` headers are
@@ -96,6 +98,7 @@ pub struct E911Config {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 #[serde(default)]
 pub struct SbcConfig {
     /// B2BUA behavior configuration (topology hiding, media anchoring, etc.).

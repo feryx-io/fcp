@@ -10,6 +10,7 @@ use std::collections::HashSet;
 
 /// LCR configuration controlling cost-based route selection.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LcrConfig {
     /// Enable LCR routing. When false, TrunkRouter uses legacy priority/weight selection.
     #[serde(default)]
@@ -105,6 +106,7 @@ impl LcrConfig {
 
 /// A single LCR route entry mapping a destination prefix to a trunk.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LcrRouteEntry {
     /// Destination prefix (e.g. "+1", "+44", "+1212"). Longest match wins.
     pub prefix: String,

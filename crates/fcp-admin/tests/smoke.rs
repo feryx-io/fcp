@@ -26,7 +26,9 @@ async fn starts_serves_health_and_stops() {
     let dir = smoke::temp_dir();
     let http = free_port();
     let config = format!(
-        r#"[service]
+        r#"prompts_dir = "{dir}/prompts"
+
+[service]
 node_id = "smoke-admin"
 
 [api]
@@ -35,8 +37,6 @@ auth_enabled = false
 
 [storage]
 database_url = "{db}"
-
-prompts_dir = "{dir}/prompts"
 
 [logging]
 level = "info"
@@ -54,4 +54,21 @@ format = "compact"
     report.assert_clean();
 
     db.drop_db().await;
+}
+
+/// Every configuration this binary ships parses with no unknown key and
+/// prints with its secrets masked under `--check-config`
+/// (`docs/SHIP_AND_OPERATE.md` phase 1); the ones a node must accept
+/// outright are accepted.
+#[test]
+fn shipped_configurations_check() {
+    smoke::assert_configs_check(
+        BIN,
+        &[],
+        &["fcp-admin-local.toml"],
+        &[
+            "deploy/docker-compose/configs/fcp-admin.toml",
+            "crates/fcp-admin/fcp-admin.toml.example",
+        ],
+    );
 }

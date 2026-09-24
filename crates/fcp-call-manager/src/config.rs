@@ -10,6 +10,7 @@ use tracing::{info, warn};
 
 /// Call manager server configuration.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct CallManagerConfig {
     /// Service configuration
     #[serde(default)]
@@ -118,6 +119,7 @@ pub struct CallManagerConfig {
 
 /// What a node does about trunks it did not read from its own config.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct TrunkRoutingSection {
     /// How often the node re-reads the tenants' trunks when nothing has
     /// told it they changed. `system.config_changed` from the API is the
@@ -140,6 +142,7 @@ impl Default for TrunkRoutingSection {
 
 /// Emergency calling.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct E911Section {
     /// The edges — a WebRTC gateway, an SBC — whose `X-FCP-Caller-Tenant`
     /// and `X-FCP-Caller-User` headers name the tenant user a call is
@@ -157,6 +160,7 @@ pub struct E911Section {
 
 /// Service identification.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ServiceSection {
     #[serde(default = "default_service_type")]
     pub service_type: String,
@@ -200,6 +204,7 @@ impl Default for ServiceSection {
 
 /// SIP transport configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct SipSection {
     /// UDP bind address
     #[serde(default = "default_sip_bind")]
@@ -261,6 +266,7 @@ impl Default for SipSection {
 
 /// Registrar behavior configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct RegistrarSection {
     /// Enable the SIP registrar. Set to false for session-manager mode.
     #[serde(default = "default_true")]
@@ -364,6 +370,7 @@ impl Default for RegistrarSection {
 
 /// Storage backend configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct StorageSection {
     /// PostgreSQL connection URL
     #[serde(default = "default_database_url")]
@@ -425,6 +432,7 @@ impl Default for StorageSection {
 
 /// HTTP health/API endpoint configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct HttpSection {
     /// Bind address for health/status/calls endpoint
     #[serde(default = "default_http_bind")]
@@ -452,6 +460,7 @@ impl Default for HttpSection {
 
 /// Logging configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct LoggingSection {
     /// Log level
     #[serde(default = "default_log_level")]
@@ -501,6 +510,7 @@ impl CallManagerConfig {
 
 /// Call handling configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct CallsSection {
     /// Maximum concurrent calls. Until v0.25.207 this was parsed and never
     /// enforced; a node that sets it now means it, and the limit is read as
@@ -542,6 +552,7 @@ impl Default for CallsSection {
 
 /// Media/RTP configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct MediaSection {
     /// RTP port range start
     #[serde(default = "default_rtp_port_start")]
@@ -644,6 +655,7 @@ impl Default for MediaSection {
 
 /// Routing configuration.
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct RoutingSection {
     /// Path to routing rules YAML file (optional)
     pub rules_file: Option<String>,
@@ -655,6 +667,7 @@ pub struct RoutingSection {
 
 /// Events configuration.
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct EventsSection {
     /// URL of fcp-events-server ingest endpoint (optional).
     /// Used for HTTP-based event forwarding (fallback when Redis is not configured).
@@ -691,6 +704,7 @@ pub struct EventsSection {
 
 /// Cluster configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ClusterSection {
     /// Enable cluster mode. Requires `storage.redis_url`.
     #[serde(default)]
@@ -702,10 +716,6 @@ pub struct ClusterSection {
     /// `docs/MULTI_REGION.md`.
     #[serde(default)]
     pub region: Option<String>,
-
-    /// Shared secret for inter-node HTTP authentication.
-    #[serde(default)]
-    pub cluster_secret: Option<String>,
 
     /// Count each tenant's concurrent calls across the cluster, by a
     /// lease per call in Redis, rather than on this node alone
@@ -786,7 +796,6 @@ impl Default for ClusterSection {
         Self {
             enabled: false,
             region: None,
-            cluster_secret: None,
             lease_tenant_calls: default_lease_tenant_calls(),
             lease_trunk_channels: default_lease_tenant_calls(),
             lease_settle_secs: default_lease_settle_secs(),
@@ -801,6 +810,7 @@ impl Default for ClusterSection {
 
 /// Webhook endpoint configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct WebhookConfig {
     /// HTTP(S) URL to POST events to.
     pub url: String,
