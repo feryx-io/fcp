@@ -56,6 +56,11 @@ fn binary_for(dockerfile: &str) -> Option<(&'static str, &'static str)> {
         "media" => ("fcp-media-server", "fcp-media"),
         "jobs" => ("fcp-jobs", "fcp-jobs"),
         "registrar" => ("fcp-registrar", "fcp-registrar"),
+        "sbc" => ("fcp-sbc", "fcp-sbc"),
+        "ivr" => ("fcp-ivr", "fcp-ivr"),
+        "voicemail" => ("fcp-voicemail-server", "fcp-voicemail"),
+        "presence" => ("fcp-presence-server", "fcp-presence"),
+        "tts" => ("fcp-tts-server", "fcp-tts"),
         _ => return None,
     })
 }
@@ -239,6 +244,11 @@ mod tests {
             "fcp-media",
             "fcp-jobs",
             "fcp-registrar",
+            "fcp-sbc",
+            "fcp-ivr",
+            "fcp-voicemail",
+            "fcp-presence",
+            "fcp-tts",
         ] {
             let svc = stack.service(name);
             assert!(

@@ -1,0 +1,30 @@
+# fcp-presence in the compose stack, on the host's network: SIP 5076,
+# HTTP 8092. Secrets come from .env through the FCP_PRESENCE_* overrides.
+
+[service]
+service_type = "presence"
+node_id = "presence-docker-01"
+shutdown_timeout_secs = 10
+
+[sip]
+udp_bind = "0.0.0.0:5076"
+tcp_bind = "0.0.0.0:5076"
+
+[storage]
+# Overridden by FCP_PRESENCE_DATABASE_URL.
+database_url = "postgresql://fcp:change-me@127.0.0.1:5432/fcp"
+max_connections = 10
+redis_url = "redis://127.0.0.1:6379"
+
+[presence]
+max_presentities = 10000
+default_subscription_expiry_secs = 3600
+cleanup_interval_secs = 60
+
+[http]
+bind_address = "0.0.0.0:8092"
+# api_token: FCP_PRESENCE_API_TOKEN, required on a non-loopback bind.
+
+[logging]
+level = "info"
+format = "pretty"

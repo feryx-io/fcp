@@ -219,7 +219,15 @@ format = "compact"
 /// outright are accepted.
 #[test]
 fn shipped_configurations_check() {
-    smoke::assert_configs_check(BIN, &[], &["fcp-presence-local.toml"], &[]);
+    smoke::assert_configs_check(
+        BIN,
+        &[],
+        &[
+            "fcp-presence-local.toml",
+            "deploy/docker-compose/configs/fcp-presence-server.toml",
+        ],
+        &[],
+    );
 }
 
 /// A secret given in the environment wins over the file and is never

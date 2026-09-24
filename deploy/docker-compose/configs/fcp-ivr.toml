@@ -1,0 +1,38 @@
+# fcp-ivr in the compose stack, on the host's network: SIP 5070, HTTP
+# 8086, RTP 22000-22999. Secrets come from .env through the FCP_IVR_*
+# environment overrides; the host's address through FCP_IVR_PUBLIC_IP.
+
+[service]
+service_type = "ivr"
+node_id = "ivr-docker-01"
+
+[sip]
+udp_bind = "0.0.0.0:5070"
+tcp_bind = "0.0.0.0:5070"
+
+[storage]
+# Overridden by FCP_IVR_DATABASE_URL.
+database_url = "postgresql://fcp:change-me@127.0.0.1:5432/fcp"
+redis_url = "redis://127.0.0.1:6379"
+
+[http]
+bind_address = "0.0.0.0:8086"
+# api_token: FCP_IVR_API_TOKEN, required on a non-loopback bind.
+
+[media]
+rtp_port_start = 22000
+rtp_port_end = 22999
+
+[events]
+# The events server publishes 8081 on the host; FCP_IVR_EVENTS_AUTH_TOKEN authenticates.
+server_url = "http://127.0.0.1:8081/ingest"
+
+[flows]
+# Speech from the TTS server, when the `tts` profile is up; FCP_IVR_TTS_REMOTE_TOKEN authenticates.
+tts_provider = "remote"
+tts_remote_url = "http://127.0.0.1:8093"
+tts_language = "en-US"
+
+[logging]
+level = "info"
+format = "pretty"

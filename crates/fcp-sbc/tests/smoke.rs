@@ -217,7 +217,15 @@ database_url = "{db}"
 /// outright are accepted.
 #[test]
 fn shipped_configurations_check() {
-    smoke::assert_configs_check(BIN, &[], &["fcp-sbc-local.toml"], &[]);
+    smoke::assert_configs_check(
+        BIN,
+        &[],
+        &[
+            "fcp-sbc-local.toml",
+            "deploy/docker-compose/configs/fcp-sbc.toml",
+        ],
+        &[],
+    );
 }
 
 /// A secret given in the environment wins over the file and is never

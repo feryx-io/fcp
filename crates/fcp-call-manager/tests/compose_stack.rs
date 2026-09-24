@@ -3,8 +3,9 @@
 //! the gateway, the call manager and the conference server start from
 //! `deploy/docker-compose/docker-compose.yml`'s own configurations,
 //! environment and tokens (`fcp_testkit::compose`), against the test's
-//! Postgres and Redis; a phone registers at the call manager, joins a
-//! conference room, is seen on the events server and read back through
+//! Postgres and Redis — every service the stack runs by default, each
+//! waited for until healthy; a phone registers at the call manager, joins
+//! a conference room, is seen on the events server and read back through
 //! the gateway. The compose file's ports are used as they are, so this is
 //! the one test in this binary.
 
@@ -81,7 +82,9 @@ async fn the_compose_stack_comes_up_and_carries_a_call() {
     let alice = seed.user("alice", "alice-pw", "1001").await;
 
     // In the compose file's order: the events server, then the admin and
-    // the gateway, then the call manager and the conference server.
+    // the gateway, then every SIP and media service and the job worker.
+    // Not the TTS server (its provider needs the image's Python) and not
+    // the registrar profile.
     let mut services = Vec::new();
     for name in [
         "fcp-events-server",
@@ -89,6 +92,13 @@ async fn the_compose_stack_comes_up_and_carries_a_call() {
         "fcp-api-gateway",
         "fcp-call-manager",
         "fcp-conference",
+        "fcp-ivr",
+        "fcp-voicemail",
+        "fcp-presence",
+        "fcp-sbc",
+        "fcp-media",
+        "fcp-webrtc-gw",
+        "fcp-jobs",
     ] {
         services.push(start(&stack, name, dir.path(), db.url(), &redis).await);
     }

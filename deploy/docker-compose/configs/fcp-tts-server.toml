@@ -1,0 +1,32 @@
+# fcp-tts in the compose stack (the `tts` profile), on the bridge network:
+# HTTP 8093. Tokens come from .env through FCP_TTS_AUTH_TOKENS; the call
+# manager and IVR reach it at 127.0.0.1:8093 on the host.
+
+[service]
+service_type = "tts"
+node_id = "tts-docker-01"
+
+[http]
+bind_address = "0.0.0.0:8093"
+
+[auth]
+# tokens: FCP_TTS_AUTH_TOKENS (required).
+tokens = ["set-by-FCP_TTS_AUTH_TOKENS"]
+
+[tts]
+default_provider = "kokoro"
+cache_dir = "/var/lib/fcp/tts_cache"
+cache_max_size_mb = 1000
+default_language = "en-US"
+
+[[tts.providers]]
+name = "kokoro"
+type = "local"
+engine = "kokoro"
+# The image's Python, with kokoro installed; the worker is at FCP_KOKORO_WORKER.
+python_path = "/usr/local/bin/python3"
+device = "cpu"
+
+[logging]
+level = "info"
+format = "pretty"

@@ -178,6 +178,9 @@ jobs:
       - name: The compose stack resolves with the registrar profile
         working-directory: deploy/docker-compose
         run: docker compose --profile registrar config --quiet
+      - name: The compose stack resolves with the tts profile
+        working-directory: deploy/docker-compose
+        run: docker compose --profile tts config --quiet
       - name: The test scripts parse
         run: bash -n deploy/docker-compose/scripts/*.sh
 

@@ -825,7 +825,18 @@ stack with a one-shot certificate service and a reverse proxy; encryption
 at rest on; a stranger refused with 403 and users taken from the
 database. Four questions settled by the user: the TTS image under an
 opt-in profile, `${NAME}` references in every configuration string, a
-reverse proxy for HTTPS, users from the database.
+reverse proxy for HTTPS, users from the database. Phase 1 done
+(v0.25.251): Dockerfiles for the SBC, IVR, voicemail, presence and TTS
+servers (the TTS image on `python:3.12-slim-trixie` with CPU PyTorch,
+Kokoro and `espeak-ng`, its worker script copied in), compose services
+for each — the SBC on the host at SIP 5078 and health 8094 with one
+bidirectional trunk to the call manager, the IVR, voicemail and presence
+servers on the host at the guide's ports, the TTS server on the bridge
+under the `tts` profile — the call manager sending unanswered calls to
+voicemail and speech requests to the TTS server, `images.yml` building
+fourteen, every new configuration in its binary's configuration check,
+and the stack test starting all twelve default services and waiting for
+each to be healthy.
 
 ## Historical documents
 

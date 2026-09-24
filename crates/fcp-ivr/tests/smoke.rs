@@ -149,7 +149,10 @@ fn shipped_configurations_check() {
     smoke::assert_configs_check(
         BIN,
         &[],
-        &["fcp-ivr-local.toml"],
+        &[
+            "fcp-ivr-local.toml",
+            "deploy/docker-compose/configs/fcp-ivr.toml",
+        ],
         &["crates/fcp-ivr/fcp-ivr.toml.example"],
     );
 }

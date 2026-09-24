@@ -1,0 +1,49 @@
+# fcp-sbc in the compose stack, on the host's network: SIP 5078, health
+# 8094 (both from FCP_SBC_BIND / FCP_SBC_HEALTH_BIND, which the compose
+# file sets), RTP 28000-28999. Its one trunk is the call manager on this
+# host, so a carrier pointed at this SBC reaches the PBX
+# (docs/TENANT_TRUNKS.md §7 says how to point one). Secrets come from .env.
+
+redis_url = "redis://127.0.0.1:6379"
+
+[service]
+node_id = "sbc-docker-01"
+drain_wait_secs = 0
+
+[cluster]
+enabled = false
+
+[core]
+external_domain = "fcp.local"
+
+[core.security]
+max_message_size = 65535
+
+[core.admission]
+max_cps = 100
+max_concurrent_calls = 500
+
+[core.nat]
+rtp_port_start = 28000
+rtp_port_end = 28999
+
+[core.storage]
+enabled = true
+# Overridden by FCP_SBC_DATABASE_URL.
+database_url = "postgresql://fcp:change-me@127.0.0.1:5432/fcp"
+
+[core.metrics]
+snapshot_interval_secs = 30
+
+# The PBX behind this SBC: the call manager on this host. Calls from it
+# are recognised by their source, calls to it go here.
+[[core.trunks]]
+name = "call-manager"
+enabled = true
+direction = "Bidirectional"
+hosts = ["127.0.0.1:5060"]
+inbound_sources = ["127.0.0.1/32"]
+priority = 1
+weight = 100
+register = false
+max_concurrent_calls = 0

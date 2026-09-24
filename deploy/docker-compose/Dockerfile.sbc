@@ -1,0 +1,32 @@
+# Multi-stage build for fcp-sbc (fcp-sbc)
+FROM rust:1.92 AS builder
+
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+COPY external ./external
+RUN cargo build --release -p fcp-sbc
+
+FROM debian:trixie-slim
+
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY --from=builder /app/target/release/fcp-sbc /app/fcp-sbc
+RUN mkdir -p /app/data
+
+EXPOSE 5078/udp
+EXPOSE 5078/tcp
+EXPOSE 8094
+EXPOSE 28000-28999/udp
+
+CMD ["/app/fcp-sbc", "--config", "/app/fcp-sbc.toml"]
