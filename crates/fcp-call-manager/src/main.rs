@@ -16,7 +16,7 @@ use fcp_core::storage::{DeviceStore, ExtensionStore, LineBindingStore, PhoneNumb
 use fcp_events::filter::EventType;
 use fcp_events::{EventFilter, EventPublisher, EventSubscriber, InMemoryEventBus};
 use fcp_media::{BackendType, MediaConfig};
-use fcp_routing::{RoutingService, YamlRoutingStore};
+use fcp_routing::{DatabaseRoutingStore, RoutingService, YamlRoutingStore};
 use fcp_sbc_core::{
     CpsChecker, TrunkCredentialProvider, TrunkHealthMonitor, TrunkRegistrar, TrunkRouter,
 };
@@ -794,11 +794,16 @@ async fn main() -> Result<()> {
         Some(router as Arc<dyn fcp_sip::OutboundRouteProvider>)
     };
 
-    // 13. Create routing service (if configured)
+    // 13. Create routing service (if configured): the file's policies over
+    // the database's users (`docs/PRODUCTION_STACK.md` phase 5).
     let routing_service = if let Some(ref rules_file) = config.routing.rules_file {
         match YamlRoutingStore::new(PathBuf::from(rules_file), config.routing.hot_reload).await {
             Ok(store) => {
-                info!(rules_file = %rules_file, hot_reload = config.routing.hot_reload, "Routing service initialized");
+                info!(rules_file = %rules_file, hot_reload = config.routing.hot_reload, "Routing service initialized: policies from the file, users from the database");
+                let store = DatabaseRoutingStore::new(
+                    Arc::clone(&dyn_storage) as Arc<dyn fcp_core::storage::CredentialStore>,
+                    Arc::new(store),
+                );
                 Some(Arc::new(RoutingService::new(Arc::new(store))))
             }
             Err(e) => {

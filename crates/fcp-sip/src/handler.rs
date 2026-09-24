@@ -2623,10 +2623,27 @@ impl SipMessageHandler {
         // node's own, the platform's.
         if let (Some(routing_service), None) = (&self.routing_service, &emergency) {
             match self
-                .evaluate_routing_policy(request, routing_service, peer)
+                .evaluate_routing_policy(
+                    request,
+                    routing_service,
+                    peer,
+                    &tenant_id,
+                    edge_caller.as_ref().map(|e| e.username.as_str()),
+                    inbound_trunk.is_some(),
+                )
                 .await
             {
-                Ok(decision) => {
+                Ok(RoutingVerdict::Refused(reason)) => {
+                    info!(
+                        tenant_id = %tenant_id,
+                        reason = %reason,
+                        "Call refused by the routing engine: the caller is not one of the tenant's users"
+                    );
+                    let response = self.create_simple_response(request, 403, &reason);
+                    handle.send_final(response).await;
+                    return Ok(());
+                }
+                Ok(RoutingVerdict::Decision(decision)) => {
                     if !decision.action.is_allow() {
                         let matched_rule_str = format!("{:?}", decision.matched_rule);
                         info!(
@@ -8573,26 +8590,38 @@ impl SipMessageHandler {
     ///
     /// Extracts caller, destination, tenant ID, and source IP from the SIP request
     /// and evaluates the routing policy.
+    /// The routing engine's answer for an INVITE in the tenant the
+    /// handler resolved: a caller that is one of the tenant's users is
+    /// evaluated as that user; one that is not — a phone whose user is
+    /// gone, an edge naming nobody — is refused, never an evaluation
+    /// error (`docs/PRODUCTION_STACK.md` §1.5). A carrier's call on a
+    /// trunk has no user to be, and is evaluated as the trunk's tenant's
+    /// with no roles. A trusted edge's call is its `edge_user`'s, not
+    /// the `From`'s.
     async fn evaluate_routing_policy(
         &self,
         request: &sip_core::Request,
         routing_service: &Arc<fcp_routing::RoutingService>,
         peer: SocketAddr,
-    ) -> Result<fcp_routing::PolicyDecision> {
-        use anyhow::Context as _;
-
+        tenant_id: &fcp_core::TenantId,
+        edge_user: Option<&str>,
+        on_trunk: bool,
+    ) -> Result<RoutingVerdict> {
         // Extract From header (caller)
         let from = sip_parse::header(request.headers(), "From")
             .ok_or_else(|| anyhow::anyhow!("Missing From header"))?;
 
         // Extract caller URI from From header (strip display name and parameters)
-        let caller = from
-            .split('<')
-            .nth(1)
-            .and_then(|s| s.split('>').next())
-            .unwrap_or(from)
-            .trim()
-            .to_string();
+        let caller = match edge_user {
+            Some(user) => user.to_string(),
+            None => from
+                .split('<')
+                .nth(1)
+                .and_then(|s| s.split('>').next())
+                .unwrap_or(from)
+                .trim()
+                .to_string(),
+        };
 
         // Extract To header (destination)
         let to = sip_parse::header(request.headers(), "To")
@@ -8610,25 +8639,34 @@ impl SipMessageHandler {
         // Get source IP from peer address
         let source_ip = peer.ip();
 
-        // Look up the caller to get their tenant ID
-        // This ensures we use the correct tenant's policies
-        let tenant_id = routing_service
-            .get_user_tenant(&caller)
-            .await
-            .with_context(|| format!("Failed to determine tenant for caller: {}", caller))?;
+        if !on_trunk {
+            match routing_service.caller(&caller, tenant_id).await? {
+                Some(user) if !user.enabled => {
+                    return Ok(RoutingVerdict::Refused("Caller is disabled".to_string()));
+                }
+                Some(_) => {}
+                None => {
+                    return Ok(RoutingVerdict::Refused(
+                        "Caller is not a user of this tenant".to_string(),
+                    ));
+                }
+            }
+        }
 
         debug!(
             caller = %caller,
             destination = %destination,
             tenant_id = %tenant_id,
             source_ip = %source_ip,
+            on_trunk,
             "Evaluating routing policy"
         );
 
         // Evaluate the call using routing service
         routing_service
-            .evaluate_call(&caller, &destination, &tenant_id, source_ip)
+            .evaluate_call(&caller, &destination, tenant_id, source_ip)
             .await
+            .map(RoutingVerdict::Decision)
     }
 
     /// Generate an SDP answer for an INVITE request.
@@ -14838,6 +14876,13 @@ fn answering_trunk<'a>(
 }
 
 /// The header a transferred call's INVITE carries naming the call it left.
+/// What the routing engine said about an INVITE: a decision to apply, or
+/// a refusal of the caller with the reason the 403 carries.
+enum RoutingVerdict {
+    Decision(fcp_routing::PolicyDecision),
+    Refused(String),
+}
+
 pub const TRANSFERRED_FROM_HEADER: &str = "X-FCP-Transferred-From";
 
 /// `uri` with a URI header added (`?name=value`, or `&name=value` when it

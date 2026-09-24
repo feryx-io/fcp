@@ -866,7 +866,16 @@ open Postgres run with `FCP_ENCRYPTION_PROVIDER=local` and
 every write of a secret is sealed; the README says how to run the
 one-time `reencrypt`, that the key is part of the backup and what losing
 it means; the stack test's services run the same way and it reads
-`GET /api/v1/system/encryption` for `local` and an active DEK.
+`GET /api/v1/system/encryption` for `local` and an active DEK. Phase 5
+done (v0.25.255): `fcp_routing::DatabaseRoutingStore` — the engine's
+users from the platform's `CredentialStore`, looked up within the tenant
+the SIP handler resolved, the YAML file supplying policies only; the
+handler answers a caller that is not one of the tenant's users (or is
+disabled) with 403 and a reason, never a 500, a trusted edge's call being
+its named user's and a carrier's call on a trunk evaluated without a
+user; the compose stack ships `routing.yaml` again (one allow policy for
+the default tenant, no users) and the stack test's call goes through it;
+the floor has the 403. The production-shaped stack is complete.
 
 ## Historical documents
 

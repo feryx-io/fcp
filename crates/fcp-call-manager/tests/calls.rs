@@ -240,6 +240,108 @@ async fn registration_is_digest_authenticated_and_listed() {
     stack.finish().await;
 }
 
+/// The routing engine's users are the platform's, and a caller that is
+/// not one of the tenant's users is refused with 403, never a 500
+/// (`docs/PRODUCTION_STACK.md` phase 5). A phone's own INVITE is
+/// digest-authenticated before the engine sees it, so the caller with no
+/// user arrives the one way it can: a trusted edge naming one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_routing_engine_refuses_a_caller_who_is_not_a_user() {
+    let rules = tempfile::tempdir().expect("tempdir");
+    let rules_file = rules.path().join("routing.yaml");
+    std::fs::write(
+        &rules_file,
+        r#"users: []
+policies:
+  - name: allow-tenant-users
+    tenant_id: "00000000-0000-0000-0000-000000000000"
+    priority: 100
+    enabled: true
+    applies_to:
+      all_users: true
+    destination_match: null
+    time_windows: []
+    source_ip_ranges: []
+    action: Allow
+    reason: "The tenant's users may call"
+"#,
+    )
+    .expect("rules file");
+    let extra = format!(
+        "[routing]\nrules_file = \"{}\"\n\n[e911]\ntrusted_edges = [\"127.0.0.1\"]\n",
+        rules_file.display()
+    );
+    let Some(stack) = Stack::start_with(&extra, 40).await else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let bob = stack.seed.user("bob", "bob-pw", "1002").await;
+    let bob_phone = stack.phone(&bob).await;
+    assert_eq!(bob_phone.register().await.unwrap(), 200);
+    bob_phone.auto_answer(true);
+    let tenant = stack.seed.tenant_id.to_string();
+
+    // A registered phone's call is its user's, found in the database: it
+    // passes the file's policy and rings Bob.
+    let alice_phone = stack.phone(&alice).await;
+    assert_eq!(alice_phone.register().await.unwrap(), 200);
+    let call = alice_phone.call("1002").await.unwrap();
+    if let Err(e) = call.answered(SOON).await {
+        stack
+            .fail(
+                &format!("Alice's own call was not answered: {e}"),
+                &alice_phone,
+            )
+            .await;
+    }
+    call.hangup().await.unwrap();
+
+    // The edge names a user the tenant does not have: 403 with the reason.
+    let edge = Phone::new("edge", "x", REALM, stack.sip).await.unwrap();
+    let call = edge
+        .call_with_headers(
+            "1002",
+            &[
+                (fcp_core::CALLER_TENANT_HEADER, tenant.as_str()),
+                (fcp_core::CALLER_USER_HEADER, "nobody"),
+            ],
+        )
+        .await
+        .unwrap();
+    match call.failed(SOON).await {
+        Some(403) => {}
+        other => {
+            stack
+                .fail(&format!("a stranger's call got {other:?}, not 403"), &edge)
+                .await
+        }
+    }
+
+    // The edge names Alice: the call is hers, and passes.
+    let call = edge
+        .call_with_headers(
+            "1002",
+            &[
+                (fcp_core::CALLER_TENANT_HEADER, tenant.as_str()),
+                (fcp_core::CALLER_USER_HEADER, "alice"),
+            ],
+        )
+        .await
+        .unwrap();
+    if let Err(e) = call.answered(SOON).await {
+        stack
+            .fail(
+                &format!("the call the edge placed as Alice failed: {e}"),
+                &edge,
+            )
+            .await;
+    }
+    call.hangup().await.unwrap();
+
+    stack.finish().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_invite_is_admitted_by_its_credentials_not_its_address() {
     // `[registrar] auth_invites` (`docs/EDGE_SECURITY.md` §2.1). Every

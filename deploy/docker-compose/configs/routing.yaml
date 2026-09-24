@@ -1,0 +1,25 @@
+# The call manager's routing policies (docs/PRODUCTION_STACK.md phase 5).
+#
+# Policies only: the engine's users are the platform's, from the database,
+# looked up within the tenant each call belongs to. A caller that is not
+# one of the tenant's users is refused with 403; a carrier's call on a
+# trunk is evaluated as the trunk's tenant's with no roles. Rules run in
+# priority order (lower first); the first match decides; no match denies.
+#
+# `tenant_id` is the tenant a rule belongs to. This one is the default
+# tenant the stack creates (docs/SINGLE-NODE-SETUP.md §9); a second tenant
+# needs rules of its own here.
+users: []
+
+policies:
+  - name: allow-tenant-users
+    tenant_id: "00000000-0000-0000-0000-000000000000"
+    priority: 100
+    enabled: true
+    applies_to:
+      all_users: true
+    destination_match: null
+    time_windows: []
+    source_ip_ranges: []
+    action: Allow
+    reason: "The tenant's users may call anything its dial plan routes"

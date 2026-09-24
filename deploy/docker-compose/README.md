@@ -1,9 +1,9 @@
 # The FCP stack on one Docker host
 
 `docker-compose.yml` here brings up Postgres, Redis and every FCP service
-on one machine, with TLS and encryption at rest (v0.25.254,
-`docs/SHIP_AND_OPERATE.md` phases 3 and 4, `docs/PRODUCTION_STACK.md`
-phases 1–4). The
+on one machine, with TLS, encryption at rest and a routing policy
+(v0.25.255, `docs/SHIP_AND_OPERATE.md` phases 3 and 4,
+`docs/PRODUCTION_STACK.md`, complete). The
 same configurations, environment and tokens are what a CI test starts
 the binaries from (`crates/fcp-call-manager/tests/compose_stack.rs`), so
 a change to this stack is checked by a registration and a call.
@@ -77,6 +77,13 @@ bridge services reach them through `host.docker.internal`.
 | `fcp-tts` (profile `tts`) — speech for the call manager and IVR | bridge | 8093 |
 | `prometheus` | bridge | 9090 |
 | `grafana` (admin/admin; anonymous viewers) | bridge | 3000 |
+
+The call manager's routing engine runs `configs/routing.yaml`: its
+policies come from that file (one, allowing the default tenant's users
+to call; a second tenant needs rules of its own there) and its users
+from the database, so a caller that is not one of the tenant's users is
+refused with 403 and a carrier's call on a trunk is evaluated as the
+trunk's tenant's. The file is watched; edit it in place.
 
 Migrations run inside every binary that opens Postgres, at its startup;
 there is no migrate step. Records go from the call manager and the
