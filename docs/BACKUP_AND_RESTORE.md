@@ -4,7 +4,7 @@ How a deployment is kept: where every piece of state lives, what a
 backup must hold, what a restore needs, and what an upgrade does. The
 design behind it, with what the survey found, is
 `docs/BACKUP_RESTORE_UPGRADE.md`; this is the document an operator
-reads. Sections 3 to 5 arrive with that project's phases 2 to 4 and say
+reads. Sections 4 and 5 arrive with that project's phases 3 and 4 and say
 so until they do.
 
 ## 1. Where the state is
@@ -63,8 +63,79 @@ took it. Redis is not in it, and §1 says what that costs. Point-in-time
 recovery and streaming replicas are the Postgres documentation's
 subject, not this one's.
 
-*The tool that takes one, and the from-source procedure, arrive with
-phase 2 of `docs/BACKUP_RESTORE_UPGRADE.md`.*
+### 3.1 The compose stack: `backup.sh`
+
+```bash
+cd deploy/docker-compose
+scripts/backup.sh /backups/fcp-$(date +%F)
+```
+
+The directory must be new or empty. `postgres` must be running; the
+rest of the stack may be up or stopped. The script needs `docker` and
+`sha256sum` on the host and nothing else — `pg_dump` runs inside the
+`postgres` container, so the client is always the server's own — and
+it prints every step. It writes:
+
+| File | What |
+|---|---|
+| `fcp.dump` | `pg_dump -Fc --no-owner --no-privileges` of the `fcp` database: one consistent snapshot of every table in §1, the key ring included |
+| `fcp-certs.tar.gz` | the master key, the CA and every service certificate |
+| `call-manager-data.tar.gz`, `admin-data.tar.gz`, `voicemail-data.tar.gz`, `conference-recordings.tar.gz`, `conference-cdr-spool.tar.gz`, `media-recordings.tar.gz`, `media-prompts.tar.gz` | each stateful volume of §2, a tar of its root with ownership kept; a volume that does not exist because its service never ran is skipped and named under `volumes_absent` |
+| `manifest` | `taken_at`, `stack_version` (the admin image's binary asked `--version`, or the checkout's when no image is built), `project`, `kek_id` (the key ring's active KEK — what `master.key` must fingerprint to), `volumes`, `volumes_absent` |
+| `SHA256SUMS` | every file's checksum; `sha256sum -c SHA256SUMS` verifies a copy |
+
+Not in it: `postgres-data` (that is the dump), `tts-cache` and
+`redis-data` (re-derivable, §1), `prometheus-data` and `grafana-data`
+(the monitoring stack's own). The script refuses to finish without
+`fcp-certs`: a dump without the key is secrets nobody can open.
+
+**The dump is a snapshot; the volumes are copied after it, live.** A
+recording still being written when its volume is copied is partial in
+the backup, and a file finished after the dump has no row — both are
+harmless to a restore and both are the price of not stopping. For a
+backup with neither, stop the services that write files first and
+leave the database up:
+
+```bash
+docker compose stop fcp-call-manager fcp-conference fcp-media fcp-voicemail fcp-admin
+scripts/backup.sh /backups/fcp-$(date +%F)
+docker compose start fcp-call-manager fcp-conference fcp-media fcp-voicemail fcp-admin
+```
+
+Keep the backup somewhere that is not the host: the directory is what
+`restore.sh` (§4) takes, whole. Take one before every upgrade (§5).
+
+### 3.2 From source: the same commands
+
+A deployment from source runs the same four steps against its own
+paths — the database URL each binary's `[storage] database_url` names,
+the key file `FCP_MASTER_KEY_FILE` names, and the directories §2
+lists as set on each node. On the node that holds the key and reaches
+the database:
+
+```bash
+OUT=/backups/fcp-$(date +%F); mkdir -p "$OUT"
+pg_dump -Fc --no-owner --no-privileges "$DATABASE_URL" > "$OUT/fcp.dump"
+cp "$FCP_MASTER_KEY_FILE" "$OUT/master.key"; chmod 600 "$OUT/master.key"
+psql -tA -c "SELECT kek_id FROM data_encryption_keys WHERE active" "$DATABASE_URL" > "$OUT/kek_id"
+```
+
+On every node, each directory of §2 that is not re-derivable — the
+call manager's `recording_dir`, `prompts_dir` and `spool_dir`, the
+conference server's `recordings_dir` and `spool_dir`, the media
+server's `base_dir` and `prompts_dir`, the voicemail server's two, the
+admin's `exports_dir` — as a tar, named for the node and the key:
+
+```bash
+tar -C /var/lib/fcp/media/recordings -czf "$OUT/node-2.media-recordings.tar.gz" .
+```
+
+Then the checksums beside them (`cd "$OUT" && sha256sum * > SHA256SUMS`),
+and a note of the release (`fcp-admin --version`). The `pg_dump` and
+`psql` on the node must be the server's major version or newer. A
+restore is §4 with the same files: the key on every node first, the
+dump into an empty database, each tar back at the path its node's
+rows name.
 
 ## 4. What a restore needs
 
