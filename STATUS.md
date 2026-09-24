@@ -786,6 +786,16 @@ routing store knows only the users it lists, so the compose call
 manager had answered every INVITE with 500: the stack could not have
 carried a call. The file is gone from the stack; that a caller missing
 from a YAML routing store is a 500 rather than a refusal is noted.
+Phase 5 done (v0.25.248): the single-node guide and the runbook,
+rewritten from the binaries — their `--help`, their `--check-config`
+defaults, their routers and their log lines — rather than from the old
+text. The guide names every binary by its real name, states the startup
+rules with the key and the environment variable for each, gives the
+port plan the root local files share (their RTP ranges made disjoint),
+maps what connects to what with which token, and shows the first
+tenant, user and extension through the API; the runbook lists every
+binary's routes and token, and gives the drain, rolling restart and
+partition procedures as the code does them.
 
 ## Historical documents
 

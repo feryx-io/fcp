@@ -19,7 +19,7 @@ max_concurrent_calls = 500
 [core.nat]
 external_ip = "192.168.1.225"
 rtp_port_start = 28000
-rtp_port_end = 30000
+rtp_port_end = 29999
 enable_transcoding = true
 enable_dtmf = true
 

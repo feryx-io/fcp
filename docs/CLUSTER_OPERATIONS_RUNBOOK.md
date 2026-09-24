@@ -1,459 +1,230 @@
-# FCP Cluster Operations Runbook
+# Cluster operations runbook
 
-Operational guide for running, monitoring, and troubleshooting a multi-node FCP cluster.
+How to run, watch and change a cluster of FCP nodes. Written against the
+code (v0.25.248, `docs/SHIP_AND_OPERATE.md` phase 5): every route, key,
+token and log line here was taken from a binary's router, its
+`--check-config` output or the source, not from memory. What a single
+node needs is in `docs/SINGLE-NODE-SETUP.md`; what several regions need
+is in `docs/MULTI_REGION_DEPLOYMENT.md`; the design behind draining and
+admission is `docs/CAPACITY_AND_SURVIVABILITY.md`.
 
----
+## 1. What a cluster is
 
-## 1. Prerequisites
+A cluster is the set of nodes that heartbeat into one Redis. Each node
+writes `cluster:node:<node_id>` every `heartbeat_interval_secs` (5) with
+a `heartbeat_ttl_secs` (15) expiry and discovers the others by scanning
+those keys. What it carries — its addresses, region, capabilities, load,
+whether it is draining, and its view of the cluster — is what the other
+nodes and the admin API see. There is no gossip protocol and no leader.
 
-### Redis
-- **Version**: Redis 7.0+ recommended (6.x works but lacks some observability features)
-- **Mode**: Standalone or Sentinel. Redis Cluster mode is not currently supported.
-- **Memory**: Allocate at least 50 MB per cluster node (heartbeat keys + call registry + parking)
-- **Persistence**: `RDB` snapshots recommended. `AOF` optional — cluster state is ephemeral and self-healing.
+Every binary has a `[cluster]` section with `enabled`,
+`heartbeat_interval_secs`, `heartbeat_ttl_secs` and `region`; the Redis
+it uses is `[storage] redis_url` (the SBC's is the top-level
+`redis_url`; the admin's is `[cluster] redis_url`). The call manager
+adds `call_ttl_secs` (7200), the Redis circuit breaker
+(`redis_circuit_breaker_threshold` 5, `_cooldown_secs` 30) and the
+leases (`lease_tenant_calls`, `lease_trunk_channels`,
+`lease_settle_secs` 5); the conference server adds `secret` — required
+for cross-node room control and participant migration — and
+`migration_timeout_secs` (15) and its trunk settings.
 
-### Network
-- All nodes must be able to reach Redis on the configured port (default: 6379)
-- All nodes must be able to reach each other's HTTP API port (default: 8084) for inter-node operations (hangup, supervisor, parking)
-- SIP ports (5060 UDP/TCP, 5061 TLS) must be reachable from external clients
-- RTP port range (default: 10000–20000) must be open for media
+**Every node's clock must agree** (NTP): heartbeat expiry and lease
+settlement are wall-clock arithmetic across nodes.
 
-### NTP / Time Sync
-- All nodes should have their clocks synchronized via NTP
-- Clock skew > 5 seconds may cause heartbeat TTL mismatches and false node departure events
-- Use `chronyc tracking` or `ntpq -p` to verify sync
+## 2. Configuration
 
----
-
-## 2. Configuration Reference
-
-All cluster settings live under the `[cluster]` section in `fcp-call-manager.toml`:
-
-```toml
-[cluster]
-# Enable cluster mode. Requires storage.redis_url to be set.
-enabled = true
-
-# There is no cluster secret on the call manager: its inter-node routes
-# (`/internal/*`) are authenticated by `[http] api_token`, so every call
-# manager in a cluster must carry the same `api_token`. A `cluster_secret`
-# key here is refused at startup (v0.25.244).
-
-# Heartbeat interval — how often this node announces itself (seconds).
-heartbeat_interval_secs = 5
-
-# Heartbeat TTL — if a node misses heartbeats for this duration, it is
-# considered dead and removed from the member list (seconds).
-# Rule of thumb: TTL >= 3 * interval
-heartbeat_ttl_secs = 15
-
-# Call registry TTL — maximum time a call ownership key persists in Redis.
-# Should be longer than the longest expected call duration (seconds).
-call_ttl_secs = 7200
-
-# Circuit breaker: consecutive Redis failures before opening the breaker.
-redis_circuit_breaker_threshold = 5
-
-# Circuit breaker: cooldown in seconds before allowing a probe request.
-redis_circuit_breaker_cooldown_secs = 30
-```
-
-### Required companion settings
+A call manager in a cluster:
 
 ```toml
+[service]
+node_id = "cm-east-1"          # unique; every record and event names it
+
 [storage]
-# Redis URL is required for cluster mode
+database_url = "postgresql://fcp:…@db:5432/fcp"
 redis_url = "redis://redis:6379"
 
-# Optional: use Redis for registrations (recommended in cluster mode)
-registration_backend = "redis"
-
-[events]
-# Optional: use Redis Pub/Sub for cross-node event delivery
-use_redis = true
-
-[service]
-# Unique node identifier (auto-generated if omitted)
-node_id = "cm-prod-01"
-```
-
----
-
-## 3. Starting a Cluster
-
-### 2-Node Setup
-
-```bash
-# Node 1
-fcp-call-manager --config node1.toml
-
-# Node 2 (different machine or different ports)
-fcp-call-manager --config node2.toml
-```
-
-Each node's config must share:
-- Same `[http] api_token` (it authenticates `/internal/*` between nodes)
-- Same `storage.redis_url`
-- Same `events.use_redis` setting
-
-Each node must have a unique:
-- `service.node_id`
-- `http.bind_address`
-- `sip.udp_bind` / `sip.tcp_bind`
-
-### 3-Node Setup
-
-Same pattern. Three nodes, three configs, all pointing at the same Redis.
-
-### Verifying Cluster Formation
-
-After startup, check each node's `/status` endpoint:
-
-```bash
-curl http://node1:8084/status
-```
-
-Check each node's logs for:
-```
-Cluster membership started
-Cluster member joined (node_id=cm-prod-02)
-```
-
----
-
-## 4. Health Checks
-
-### Endpoints
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/health` | GET | Basic liveness check (always returns `{"status": "healthy"}`, draining or not) |
-| `/ready` | GET | Whether to send this node work: `200` when serving, `503` while draining |
-| `/status` | GET | Detailed status: uptime, call stats, version, `draining` |
-| `/drain` | POST / DELETE | Leave service, or return to it (`docs/CAPACITY_AND_SURVIVABILITY.md` §6) |
-| `/calls` | GET | List all active calls on this node |
-| `/registrations` | GET | List SIP registrations (optional `?aor=` filter) |
-| `/metrics` | GET | Prometheus metrics in text exposition format |
-
-`/health` and `/ready` answer different questions and are not
-interchangeable: `/health` says the process is alive, `/ready` says it
-should be given new work. A liveness probe pointed at `/ready` kills a
-node in the middle of a drain.
-
-Every routing binary answers all of these: the call manager, the SBC, the
-registrar, the IVR, the voicemail server, the presence server, the WebRTC
-gateway and the conference server. `/drain` and `/status` need the
-binary's operator token on every one of them — `[http] api_token` on the
-call manager, the registrar, the IVR, the voicemail server and the presence
-server; `--health-api-token` on the SBC; `[http] auth_token` on the
-conference server; `[auth] tokens` on the gateway — and a binary refuses a
-non-loopback HTTP bind without one. `/ready` and `/health` never ask.
-
-### Health Check Response
-
-```json
-{
-  "status": "healthy",
-  "service": "fcp-call-manager",
-  "version": "0.14.96",
-  "uptime_seconds": 3600,
-  "active_calls": 12,
-  "total_calls": 4567,
-  "established_calls": 10,
-  "terminated_calls": 4553,
-  "failed_calls": 4
-}
-```
-
-### Load Balancer Configuration
-
-Point your load balancer at `GET /ready`, with 5-second intervals and a
-3-failure threshold: it turns `503` the moment a node starts draining, so
-new calls stop arriving before the node stops taking them. Point a
-liveness probe (Kubernetes `livenessProbe`, systemd watchdog) at
-`GET /health`, which stays `200` throughout a drain.
-
----
-
-## 5. Monitoring
-
-### Prometheus Metrics
-
-Scrape `/metrics` on each node. Key metrics:
-
-#### Redis Operations
-| Metric | Type | Labels | Description |
-|--------|------|--------|-------------|
-| `fcp_redis_operations_total` | Counter | `operation`, `result` | Total ops (result: ok/err) |
-| `fcp_redis_operation_duration_seconds` | Histogram | `operation` | Latency per operation |
-| `fcp_redis_connection_errors_total` | Counter | — | Connection failures |
-
-Operations tracked: `get`, `set`, `del`, `scan`, `hgetall`, `hset`, `expire`, `pipe`
-
-#### Cache
-| Metric | Type | Labels | Description |
-|--------|------|--------|-------------|
-| `fcp_cache_hits_total` | Counter | `store` | Cache hits |
-| `fcp_cache_misses_total` | Counter | `store` | Cache misses |
-| `fcp_cache_evictions_total` | Counter | `store` | Evictions |
-| `fcp_cache_size` | Gauge | `store` | Current entry count |
-
-### Alert Thresholds
-
-| Condition | Severity | Description |
-|-----------|----------|-------------|
-| `fcp_redis_connection_errors_total` rate > 0 for 1m | Warning | Redis connectivity issues |
-| `fcp_redis_operation_duration_seconds` p99 > 100ms | Warning | Redis latency spike |
-| Node missing from `/status` for > 30s | Critical | Node departure |
-| `fcp_cache_hits_total` / (`hits` + `misses`) < 0.5 | Info | Low cache hit rate |
-
-### Grafana Tips
-
-- Create a dashboard per node with Redis latency, operation throughput, and active calls
-- Use `rate(fcp_redis_operations_total[5m])` for throughput graphs
-- Use `histogram_quantile(0.99, rate(fcp_redis_operation_duration_seconds_bucket[5m]))` for p99 latency
-
----
-
-## 6. Common Operations
-
-### Rolling Restart
-
-Restart nodes one at a time, and drain each one first so the restart costs
-no calls (`docs/CAPACITY_AND_SURVIVABILITY.md` §6). Set
-`[service] drain_wait_secs` on every node before you need it — it is `0`
-by default, which means "stop where you stand":
-
-```toml
-[service]
-drain_wait_secs = 300    # wait up to five minutes for calls to end
-```
-
-Then, per node:
-
-```bash
-# 1. Leave service. The node stops taking calls, keeps the ones it has,
-#    and says so in its heartbeat, so placement elsewhere skips it.
-curl -sX POST http://node1:8084/drain
-#    -> {"status":"draining","active_calls":12,"wait_secs":300}
-
-# 2. Watch it empty. /ready is 503 from here on; /health stays 200.
-watch -n5 'curl -s http://node1:8084/status | jq "{draining,active_calls}"'
-
-# 3. Stop it once it is empty — or straight away: SIGTERM runs the same
-#    drain, waits drain_wait_secs, then BYEs whatever is left with a
-#    Reason header and writes each record.
-kill -TERM $(pidof fcp-call-manager)
-# Wait for "Shutdown complete" in the logs.
-
-# 4. Restart, and confirm it is serving before moving on.
-fcp-call-manager --config node1.toml
-curl -sf http://node1:8084/ready && echo serving
-
-# Repeat for node 2, node 3, ...
-```
-
-A second SIGTERM during the wait ends the remaining calls immediately —
-each still gets its BYE and its record — which is what to send when a
-container runtime's grace period is about to expire.
-
-What each kind of node does with what it is carrying:
-
-| Node | On a drain |
-|---|---|
-| Call manager, SBC | Keeps its calls until the deadline, then BYEs both legs with `Reason: SIP;cause=200;text="node draining"` and completes each record |
-| Registrar, call manager | Grants registrations of at most `[admission] drain_register_expiry_secs` (60 s), so devices come back on a serving node |
-| IVR, voicemail | Lets callers finish; the voicemail server also waits for the messages already spoken to be written |
-| Presence | Grants short subscriptions, then sends `terminated;reason=probation` to whoever is left |
-| Conference | Moves its callers to other nodes by REFER (`docs/DISTRIBUTED_CONFERENCING.md` phase 5), then waits, then hangs up |
-| WebRTC gateway | Tells each browser in a room to join another gateway (`docs/WEBRTC.md`), waits, then ends what is left |
-
-Emergency calls are admitted on a draining node, as they are past every
-other limit.
-
-### Add a New Node
-
-1. Prepare the config file with the same `[http] api_token` and `redis_url`
-2. Assign a unique `service.node_id`
-3. Start the node: `fcp-call-manager --config new-node.toml`
-4. Verify it appears in other nodes' logs: `Cluster member joined`
-
-### Remove a Node
-
-1. Gracefully stop: `kill -TERM $(pidof fcp-call-manager)`
-2. The node removes its heartbeat key on shutdown
-3. Other nodes detect departure within one heartbeat cycle
-
-### Drain a Node (without restarting it)
-
-A drain is not a shutdown: the node keeps running and can be put back.
-
-```bash
-curl -sX POST   http://node:8084/drain   # leave service
-curl -s         http://node:8084/status  # {"draining":true,"active_calls":…}
-curl -sX DELETE http://node:8084/drain   # serve again; the calls it kept carry on
-```
-
-`DELETE /drain` before the deadline returns the node to service with
-everything it was carrying untouched — which is what makes starting a
-drain by hand safe. After the deadline the node has ended what was left,
-and calling the drain off only makes it take new calls again.
-
-The admin UI's cluster page shows a `draining` badge per node and a count
-of draining nodes, from the same heartbeat field.
-
-### Reload Queue Configuration (No Restart)
-
-Send SIGHUP to reload queue configs without restarting:
-
-```bash
-kill -HUP $(pidof fcp-call-manager)
-```
-
----
-
-## 7. Troubleshooting
-
-### Split Brain
-
-**Symptoms**: Two groups of nodes can't see each other; duplicate registrations.
-
-**Causes**:
-- Redis is unreachable from some nodes but not others
-- Network partition between node groups
-
-**Resolution**:
-1. Check Redis connectivity from all nodes: `redis-cli -h <redis-host> ping`
-2. Check inter-node HTTP: `curl http://other-node:8084/health`
-3. If Redis is down, see "Redis Down" below
-4. If network partition, fix network and nodes will self-heal within one heartbeat cycle
-
-### Redis Down
-
-**Symptoms**: Logs show `Failed to publish cluster heartbeat` and `Failed to discover cluster members`. Circuit breaker may open.
-
-**Impact**:
-- New call registrations won't be tracked in the cluster
-- Inter-node call lookup fails (but local calls continue working)
-- Node membership is frozen (no join/leave detection)
-
-**Resolution**:
-1. Restore Redis connectivity
-2. If circuit breaker opened, it will automatically probe after the cooldown period
-3. Nodes will resume heartbeats and rediscover each other within one cycle
-4. No manual intervention needed — the system self-heals
-
-### Heartbeat Storms
-
-**Symptoms**: Redis `SCAN` commands taking longer than expected. High CPU on Redis.
-
-**Causes**: Too many nodes with too-short heartbeat intervals.
-
-**Resolution**:
-1. Increase `heartbeat_interval_secs` (e.g., 5 → 10)
-2. Increase `heartbeat_ttl_secs` proportionally (e.g., 15 → 30)
-3. Consider using Redis Cluster for larger deployments (future feature)
-
-### Clock Skew
-
-**Symptoms**: Nodes intermittently appear and disappear. TTL-based expiry behaves unpredictably.
-
-**Resolution**:
-1. Verify NTP sync on all nodes: `chronyc tracking`
-2. Ensure clock skew < 2 seconds
-3. If skew is large, increase `heartbeat_ttl_secs` to compensate
-
-### Cross-Node Operations Failing
-
-**Symptoms**: `POST /internal/hangup` returns 401 or connection refused.
-
-**Resolution**:
-1. Verify all nodes use the same `[http] api_token`
-2. Verify `http.bind_address` is reachable from other nodes (not `127.0.0.1`)
-3. Check firewall rules for the HTTP port
-4. Check logs for `traceparent` and `x-fcp-node-id` headers for request tracing
-
----
-
-## 8. Circuit Breaker
-
-### States
-
-| State | Behavior |
-|-------|----------|
-| **Closed** | All Redis operations proceed normally. Failures are counted. |
-| **Open** | All Redis operations return an error immediately. No traffic to Redis. |
-| **Half-Open** | One probe request is allowed. Success → Closed. Failure → Open. |
-
-### Configuration
-
-```toml
 [cluster]
-redis_circuit_breaker_threshold = 5    # failures before opening
-redis_circuit_breaker_cooldown_secs = 30  # seconds before probe
+enabled = true
+region = "us-east"             # or FCP_REGION; docs/MULTI_REGION.md
+
+[http]
+bind_address = "0.0.0.0:8084"
+api_token = "…"                # or FCP_CALL_MANAGER_API_TOKEN
 ```
 
-### Fallback Behavior When Open
+There is no cluster secret on the call manager. Its inter-node routes
+(`/internal/*`: hangup, supervisor, unpark) are authenticated by
+`[http] api_token`, so **every call manager in a cluster carries the
+same `api_token`**. A `cluster_secret` key is refused at startup.
 
-- Cluster heartbeats fail silently (node membership frozen)
-- Call registry lookups return errors (local calls continue)
-- Registration store falls back to primary backend if configured
-- The node continues serving local calls normally
+The conference server's `[cluster] secret` must be the same on every
+conference node; its `[sip] tls_bind` and `local_ip` are what the
+inter-node trunks dial (`docs/DISTRIBUTED_CONFERENCING.md`).
 
-### Recovery Procedure
+Companion settings, so the nodes agree:
 
-The circuit breaker is fully automatic:
+- the same `[registrar] realm` and `domain_aliases`;
+- `[events] server_url` and `auth_token` on every producer, all
+  pointing at the region's events server;
+- `[cdr] sink = "stream"` where `fcp-jobs` stores records for the
+  cluster;
+- `[registrar] cache_ttl_secs` (30) and `[events] use_redis` on the
+  call manager, so a REGISTER on one node reaches the others' caches
+  (`docs/MULTI_REGION_FOLLOWUPS.md`).
 
-1. After `cooldown_secs`, the breaker transitions to Half-Open
-2. The next Redis operation is a probe
-3. If the probe succeeds, the breaker closes and normal operation resumes
-4. If the probe fails, the breaker reopens for another cooldown period
+Check a node's file before starting it: `--check-config` prints the
+effective configuration with secrets masked and exits 0 only if the
+node would start.
 
-No manual intervention is required. Monitor the breaker state via logs:
+## 3. Starting a cluster
+
+Start the nodes in any order. Each logs `Cluster membership started`
+when it heartbeats, and `Cluster member joined` for each other node it
+discovers. A node that cannot reach Redis logs `Cluster heartbeat or
+discovery failed` (or `Failed to publish cluster heartbeat`) and keeps
+serving with the member list it last had.
+
+See the cluster from any node:
+
+```bash
+T='Authorization: Bearer <api_token>'
+curl -s -H "$T" http://node:8084/status | jq .cluster_view
 ```
-Redis circuit breaker opening (failures=5, threshold=5, cooldown_secs=30)
-Redis circuit breaker transitioning to half-open
-Redis circuit breaker closing (probe succeeded)
+
+or from the admin API, which reads the same Redis:
+
+```bash
+curl -s -H 'Authorization: Bearer <admin token>' \
+  http://admin:8080/api/v1/cluster/nodes | jq .
 ```
 
----
+## 4. The routes, per binary
 
-## 9. Capacity Planning
+`/health` and `/ready` are open on every binary. `/health` says the
+process is alive; `/ready` says whether to send the node work — 200
+serving, 503 draining — and is what a load balancer or a SIP SRV weight
+should watch. Pointing a liveness probe at `/ready` kills a node in the
+middle of a drain.
 
-### Redis Memory
+Everything else needs the binary's token, as a bearer header. The
+routes below are the ones that exist; a binary has no others.
 
-| Item | Keys per Node | Size per Key | Notes |
-|------|---------------|--------------|-------|
-| Heartbeat | 1 | ~500 bytes | JSON with node metadata |
-| Call registry | 1 per active call | ~100 bytes | `node_id` string |
-| Parking slots | 1 per parked call | ~200 bytes | JSON with parking metadata |
-| Registrations | 1 per SIP registration | ~300 bytes | JSON with contact, AOR, expiry |
+| Binary | Token | Routes (all need the token unless marked open) |
+|---|---|---|
+| `fcp-call-manager` | `[http] api_token` | `/status`, `/calls`, `/registrations` (`?aor=`), `/cdrs`, `/cdr/status`, `/media-sessions`, `/transcoding`, `/trunks`, `/emergency/trunks`, `/queues/*`, `/agents/*`, `/callbacks/*`, `/campaigns/*`, `/calls/:id/{monitor,whisper,barge}`, `/presence`, `/metrics`, `POST`/`DELETE /drain`, `/internal/*`, `/ws/wallboard` |
+| `fcp-conference` | `[http] auth_token` (with `auth_enabled`) | `/status`, `/metrics`, `/meetings*`, `/conferences*` (rooms, lock, stats, announce, video, dial-out, ai), `/events`, `/recordings`, `/drain`, `/internal/*` (with `[cluster] secret`) |
+| `fcp-registrar` | `[http] api_token` | `/status`, `/drain` |
+| `fcp-ivr` | `[http] api_token` | `/status`, `/flows/routes`, `/flows/active`, `/drain` |
+| `fcp-voicemail` | `[http] api_token` | `/status`, `/voicemail/routes`, `/voicemail/mailboxes*`, `/drain` |
+| `fcp-presence` | `[http] api_token` | `/v1/metrics`, `/v1/presence/*`, `/v1/analytics/*`, `/v1/webhooks*`, `/drain`; `/v1/health` open; no `/status` |
+| `fcp-sbc` | `--health-api-token` | `/drain`, `/metrics` (a JSON snapshot, not Prometheus text); no `/status` — `/ready` carries `trunks_healthy`, `active_calls` and `replica` |
+| `fcp-webrtc-gw` | `[auth] tokens` | `/status`, `/drain`, `/v1/rooms*`, `/v1/calls*`; `/join` open when `public_join` |
+| `fcp-events-server` | `[auth] token` | `/status`, `/ingest`, `/ingest/batch`, `/calls`, `/registrations`, `/nodes`, `/stats`, `/v1/webhooks*`, `/ws/:tenant_id` (the token as a bearer header or `?token=`); `/metrics` open |
+| `fcp-jobs` | none | `/status`, `/metrics` — open, so bind it privately |
+| `fcp-api-gateway` | none of its own | `/gateway/status` open; `/api/v1/*` and `/metrics` proxied to the admin with the caller's header |
+| `fcp-admin` | `[api] auth_token`, or a user's JWT | `/api/v1/*`; `/metrics` for an admin; `/api/v1/health` open |
 
-**Estimate**: For a 10-node cluster with 5,000 concurrent calls and 2,000 registrations:
-- Heartbeats: 10 x 500B = 5 KB
-- Call registry: 5,000 x 100B = 500 KB
-- Registrations: 2,000 x 300B = 600 KB
-- **Total: ~1.1 MB** (Redis memory overhead adds ~2x, so ~2.5 MB)
+`/status` is a JSON of the node's own numbers: uptime, calls, `draining`,
+and on the call manager and conference server `cluster_view`,
+`registration_reads`, `registration_cache`, `admission` and `replica`
+(`docs/MULTI_REGION_DEPLOYMENT.md` §6 says what a partition looks like
+there). The metrics endpoints that need a token need it from Prometheus
+too (`authorization: type: Bearer`); the compose stack shows the shape.
 
-Redis memory is not a bottleneck for typical PBX deployments.
+## 5. Draining and restarting
 
-### Redis Operations
+A drain (`docs/CAPACITY_AND_SURVIVABILITY.md` §6) is how a node leaves
+service without dropping what it carries. The same sequence runs from
+`POST /drain` and from `SIGTERM`: the node refuses new work, says so on
+`/ready` (503) and in its heartbeat (so placement skips it and the admin
+UI shows it), keeps its calls until `drain_wait_secs`, then ends what is
+left with a BYE that says why, and tells the cluster. `DELETE /drain`
+calls a drain off. The registrar drains by granting short registrations
+so phones come back to a serving node; the conference server drains by
+moving its participants to another node (a REFER with a signed ticket).
 
-Each node generates approximately:
-- 1 `SET` + 1 `EXPIRE` per heartbeat interval (pipeline)
-- 1 `SCAN` per heartbeat interval (discovery)
-- N `GET` per SCAN result (member deserialization)
-- 1 `SET` + 1 `EXPIRE` per new call (registration)
-- 1 `DEL` per call termination
+```bash
+T='Authorization: Bearer <api_token>'
+curl -s -H "$T" -X POST http://node:8084/drain     # {"status":"draining","active_calls":…,"wait_secs":…}
+curl -s http://node:8084/ready                      # 503 while draining
+# … when active_calls reaches 0, or wait_secs has passed:
+kill -TERM <pid>                                    # logs "Shutdown complete"
+curl -s -H "$T" -X DELETE http://node:8084/drain   # to call it off instead
+```
 
-For a 10-node cluster with 5s heartbeat interval:
-- Heartbeats: 10 nodes x 2 ops / 5s = 4 ops/s
-- Discovery: 10 nodes x 1 SCAN / 5s = 2 SCANs/s
-- Calls: depends on call volume
+**A rolling restart** is a drain, a stop, an upgrade and a start on
+each node in turn, waiting for `/ready` to answer 200 and `Cluster
+member joined` to appear on another node before the next. A node with
+no `[cluster] region` is local to nothing — never preferred, never
+excluded — so a node upgraded before its region label is set strands
+no one.
 
-### Network Bandwidth
+**Adding a node** is starting it with the same Redis, database, realm,
+tokens and `[cluster] secret` (conference); it joins on its first
+heartbeat. **Removing one** is a drain and a stop; its record expires
+after `heartbeat_ttl_secs`, and its clean shutdown leaves a
+`cluster:left` marker so the others report `shutdown`, not a lost node.
 
-Inter-node HTTP traffic is minimal:
-- Cross-node operations (hangup, supervisor, unpark) are rare
-- Each operation is a single HTTP POST (~1 KB)
-- Redis traffic is also lightweight (< 10 KB/s per node)
+**Reloading queues** on the call manager is `SIGHUP`; nothing else
+reloads without a restart.
+
+## 6. Watching
+
+**Prometheus.** Scrape `/metrics` on the call manager, conference
+server (both with the token), events server and jobs (open); the admin's
+`/metrics` with an admin token. Alerts worth having, with their queries,
+are in `docs/MULTI_REGION_DEPLOYMENT.md` §6.3: a node that doubts its
+view of the cluster, a stale member list, a bridge down, a region
+reading from the primary, a stuck replica probe. A node's draining
+state is not a metric; it is `draining` on `/status` and `/ready` and
+in the node's heartbeat, which the admin UI shows.
+
+**Logs worth alerting on.** The call manager's Redis circuit breaker
+logs `Redis circuit breaker opening` when it opens, `transitioning to
+half-open` when it probes, `closing (probe succeeded)` or `reopening
+(probe failed)`; the conference server's event forwarder logs `Circuit
+breaker OPENED — event forwarding paused` when the events server stops
+answering it.
+
+**The admin UI's cluster page** (`/admin/`) shows every node's record:
+region, load, draining, and a banner over the nodes whose view of the
+cluster is not whole.
+
+**Events.** `system.node_left` (with `shutdown` or `heartbeat_expired`),
+`system.cluster_view_changed` and `trunk.health_changed` reach webhooks
+and WebSocket clients through the events server.
+
+## 7. When it goes wrong
+
+- **Two halves of a cluster, each serving.** A node that can reach
+  Postgres but not Redis reports `store_unreachable` in `cluster_view`;
+  one that lost every node outside its region at once reports
+  `remote_regions_lost`. Nothing acts on it: each side keeps serving
+  the calls it has and placing new ones on the nodes it can see. When
+  the link returns, the records simply agree again. Decide in advance
+  which side should be told to drain; the platform will not choose.
+- **Redis is down.** Every node keeps serving with its last member
+  list; placement, parking, leases and the CDR stream pause; the call
+  manager's circuit breaker opens after `redis_circuit_breaker_threshold`
+  failures and probes again after the cooldown. A reconnect takes about
+  a second after the link returns (the redis-rs default of a minute was
+  fixed in v0.25.233).
+- **A node's heartbeat is late.** Look at the node's clock first, then
+  its Redis latency. `fcp_cluster_view_age_seconds` on `/metrics` is how
+  old its member list is.
+- **Cross-node calls fail with 401.** The call managers' `api_token`
+  values differ, or the conference servers' `[cluster] secret` does.
+- **A node refuses to start.** It prints the rule: a public bind
+  without its token, a public SIP bind without digest authentication,
+  an unknown key. `--check-config` shows what it was judged on.
+
+## 8. Capacity
+
+Redis holds one small hash per node, one key per active call
+(`call_ttl_secs`), one per parked call, the leases and the event and
+CDR streams; a hundred nodes and a few thousand concurrent calls fit
+in a few hundred megabytes. Admission — calls per second, concurrent
+calls and registrations per node and per tenant — is in
+`docs/CAPACITY_AND_SURVIVABILITY.md` §5 with the numbers the load
+harness measured; the `[admission]` section is on every routing
+binary.
