@@ -1,4 +1,4 @@
-# fcp-api-gateway configuration for Docker Compose
+# fcp-api-gateway in the compose stack: the public face of fcp-admin.
 
 [service]
 service_type = "gateway"
@@ -11,7 +11,16 @@ compression_enabled = true
 
 [backends.admin]
 url = "http://fcp-admin:8080"
-health_check_path = "/api/v1/health"   # the default for the admin backend
+health_check_interval = 10
+connection_timeout = 5
+
+[backends.events]
+url = "http://fcp-events-server:8081"
+health_check_interval = 10
+connection_timeout = 5
+
+[backends.jobs]
+url = "http://fcp-jobs:8082"
 health_check_interval = 10
 connection_timeout = 5
 

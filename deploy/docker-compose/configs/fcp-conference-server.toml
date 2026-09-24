@@ -1,87 +1,59 @@
-# fcp-conference-server configuration
+# fcp-conference in the compose stack, on the host's network: SIP 5074,
+# HTTP 8090, RTP 20000-20999. Secrets come from .env through the
+# FCP_CONFERENCE_* environment overrides.
 
 [service]
 service_type = "conference"
-node_id = "conference-01"
+node_id = "conference-docker-01"
 
 [sip]
-udp_bind = "0.0.0.0:5060"
-tcp_bind = "0.0.0.0:5060"
-# local_ip = "10.0.0.1"  # Set to your server's LAN IP
-# local_uri = "sip:conference@10.0.0.1:5060"
-# The peers whose X-FCP-* claims about a call this node believes
-# (docs/EDGE_SECURITY.md §2.3), as addresses or CIDR ranges. The call
-# manager and the WebRTC gateway name the record each leg belongs to in
-# X-FCP-Call-Id; from anyone else that header is taken away, since a
-# caller who chooses the id chooses whose call their leg is billed
-# against. Empty believes nobody. Inter-node conference trunks are not
-# listed here — they prove themselves with a client certificate.
-# trusted_edges = ["10.0.0.2", "10.0.0.3"]
+udp_bind = "0.0.0.0:5074"
+tcp_bind = "0.0.0.0:5074"
+# The call manager on this host names the record each leg belongs to
+# (docs/EDGE_SECURITY.md §2.3); its INVITEs come from the loopback.
+trusted_edges = ["127.0.0.1"]
 
 [storage]
-database_url = "postgresql://postgres:password@postgres:5432/fcp"
+# Overridden by FCP_CONFERENCE_DATABASE_URL.
+database_url = "postgresql://fcp:change-me@127.0.0.1:5432/fcp"
+redis_url = "redis://127.0.0.1:6379"
 
-# Each participant's leg record spools here before it is stored
-# (docs/CDR_PIPELINE.md); a persistent volume.
 [cdr]
 spool_dir = "/var/lib/fcp/cdr-spool"
+sink = "stream"
 
 [http]
 bind_address = "0.0.0.0:8090"
-# auth_enabled = true
-# auth_token = "change-me-in-production"
-# rate_limit_rps = 100
+# A non-loopback bind needs auth_enabled and a token: FCP_CONFERENCE_AUTH_TOKEN.
+auth_enabled = true
 
 [media]
 rtp_port_start = 20000
-rtp_port_end = 30000
+rtp_port_end = 20999
 codecs = ["PCMU", "PCMA", "G722"]
-# public_ip = "203.0.113.10"  # Set for NAT traversal
 
 [conference]
-# Where video rooms run: "host" (default), or a GPU as "cuda:0" — a build
-# with the `video-hwaccel` feature and the NVIDIA driver (docs/GPU.md).
-# video_device = "host"
-# Browser join tokens: the same value as the admin API's [conference] join_secret.
-# join_secret = "change-me-in-production"
+# Audio only in the base image; the GPU overlay adds video.
 sample_rate = 8000
 frame_size = 160
 enable_vad = true
 auto_destroy_empty_rooms = true
 recordings_dir = "/var/fcp/conference/recordings"
-# What a room is recorded to (docs/VIDEO_CONFERENCING.md §11, §15.9):
-#   auto — when the meeting has video: MP4 (composite video + Opus) if
-#          this node can encode H.264 — natively or on its GPU — WebM if
-#          it can encode VP8/VP9 instead; WAV otherwise
-#   wav  — mixed audio only, as conference recordings have always been
-#   webm — always WebM (VP8 or VP9)
-#   mp4  — always MP4 (H.264, HEVC or AV1; the container every player opens)
-# MP4 and WebM need the `recording-mp4` / `recording-webm` build features;
-# without them the node records what it can and says so.
 recording_format = "auto"
-# recording_video_codec = "auto"      # h264, hevc, av1 (MP4) or vp8, vp9 (WebM)
-# recording_resolution = "720p"       # the room's own by default, and the cap
-# recording_audio_bitrate = 64000
-# How long this node keeps a recording when its tenant has set no
-# retention policy of its own (0 or unset: keep until asked).
-# recording_retention_days = 90
 announcements_dir = "/var/fcp/conference/announcements"
 jitter_buffer_ms = 40
 dtmf_enabled = true
 max_pin_attempts = 3
 pin_timeout_secs = 10
 cache_ttl_secs = 60
-# enable_srtp = true
-# allowed_codecs = ["PCMU", "PCMA"]
+# join_secret: FCP_CONFERENCE_JOIN_SECRET, shared with the admin that mints join tokens.
 
 [ai]
 enabled = false
-# api_key = "sk-..."
-# model = "gpt-4o-realtime-preview"
-# voice = "alloy"
 
 [events]
-# server_url = "http://fcp-events-server:8081/events"
+# The events server publishes 8081 on the host; FCP_CONFERENCE_EVENTS_AUTH_TOKEN authenticates.
+server_url = "http://127.0.0.1:8081/ingest"
 
 [logging]
 level = "info"

@@ -12,7 +12,8 @@ services:
       dockerfile: deploy/docker-compose/Dockerfile.conference.nvidia
     volumes:
       - ./configs/fcp-conference-server.gpu.toml:/app/fcp-conference-server.toml:ro
-      - fcp-recordings:/var/fcp/conference/recordings
+      - conference-recordings:/var/fcp/conference/recordings
+      - conference-cdr-spool:/var/lib/fcp/cdr-spool
       - ./configs/announcements:/var/fcp/conference/announcements:ro
     deploy:
       resources:

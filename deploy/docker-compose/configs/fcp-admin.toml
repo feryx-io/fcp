@@ -1,4 +1,5 @@
-# fcp-admin configuration for Docker Compose
+# fcp-admin in the compose stack. Secrets come from .env through the
+# FCP_ADMIN_* environment overrides; nothing secret is written here.
 
 [service]
 service_type = "admin"
@@ -6,64 +7,32 @@ node_id = "admin-docker-01"
 
 [api]
 bind_address = "0.0.0.0:8080"
-auth_enabled = false  # Disabled for testing
-provisioning_auth_token = "docker-compose-provisioning-token-change-me"
-provisioning_require_https = false  # No TLS in Compose; enable in production
+# A non-loopback bind needs auth_enabled and a token: FCP_ADMIN_AUTH_TOKEN
+# and FCP_ADMIN_PROVISIONING_AUTH_TOKEN come from .env.
+auth_enabled = true
+provisioning_require_https = false  # No TLS in the compose stack; require it in production
 
 [storage]
-database_url = "postgresql://postgres:password@postgres:5432/fcp"
+# Overridden by FCP_ADMIN_DATABASE_URL (the password is in .env).
+database_url = "postgresql://fcp:change-me@postgres:5432/fcp"
+
+[events]
+# The events server on the bridge network; FCP_ADMIN_EVENTS_AUTH_TOKEN authenticates.
+server_url = "http://fcp-events-server:8081/ingest"
+
+[call_manager]
+# The call manager runs on the host's network; FCP_ADMIN_CALL_MANAGER_AUTH_TOKEN authenticates.
+url = "http://host.docker.internal:8084"
+
+[conference]
+# The conference server, on the host's network; FCP_ADMIN_CONFERENCE_AUTH_TOKEN
+# and FCP_ADMIN_CONFERENCE_JOIN_SECRET come from .env. gateway_url is where
+# browsers are sent to join: the WebRTC gateway on the host's address.
+server_url = "http://host.docker.internal:8090"
+
+[compliance]
+exports_dir = "/app/data/exports"
 
 [logging]
 level = "info"
 format = "pretty"
-
-[events]
-server_url = "http://fcp-events-server:8081/ingest"
-
-[call_manager]
-# The routing page's "Test routing" asks a live call manager what it would
-# do with a call (docs/TENANT_TRUNKS.md §12, phase 6d). Without a url, a
-# healthy call manager is found through [cluster]; with neither, the test
-# answers 503. auth_token is the call manager's [http] api_token, if set.
-url = "http://fcp-call-manager:8084"
-# auth_token = "change-me-in-production"
-
-[conference]
-# Live room controls go through this conference server.
-# server_url = "http://localhost:8090"
-# auth_token = "change-me-in-production"
-# Browser join tokens: the same secret on every conference server
-# (conference.join_secret), and the WebRTC gateway the join links open.
-# join_secret = "change-me-in-production"
-# gateway_url = "https://meet.example.com"
-
-# Platform upkeep beside the tenants' retention (docs/COMPLIANCE.md). The
-# reaper removes files of deleted recordings and voicemail only from the
-# directories this service mounts (call_recordings_dir, the voicemail
-# directories, profile_pictures_dir, and these).
-# [retention]
-# orphan_files_days = 30        # files no row names; unset leaves them
-# system_trace_days = 7         # SIP traces of no tenant's call
-# deleted_voicemail_grace_days = 7
-# extra_file_roots = ["/var/lib/fcp/queue-recordings"]
-
-# Subject requests (docs/COMPLIANCE.md): export bundles are written here and
-# served by the API from here, so every admin replica mounts the same
-# directory. A bundle can be downloaded for export_ttl_days.
-[compliance]
-exports_dir = "/app/data/exports"
-# export_ttl_days = 7
-# poll_secs = 30
-
-# How E911 addresses are validated (docs/E911.md, "Address validation").
-# "basic" checks completeness and splits the street into civic elements with
-# no external call; "http" asks a provider that can answer against an
-# MSAG-grade database. The bearer token may be sealed with encryption at
-# rest (POST /api/v1/system/encryption/seal) or mounted as a file.
-# [e911.validator]
-# provider = "http"
-# name = "acme-msag"
-# url = "https://validate.example.net/e911"
-# token = "enc:v1:..."
-# token_file = "/run/secrets/e911-validator"
-# timeout_secs = 5

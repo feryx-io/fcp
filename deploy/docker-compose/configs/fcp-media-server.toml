@@ -1,19 +1,17 @@
-# fcp-media-server Docker configuration
+# fcp-media in the compose stack, on the host's network: HTTP 8085,
+# RTP 30000-30999. Tokens come from .env through FCP_MEDIA_AUTH_TOKENS.
 
 [service]
 service_type = "media"
-node_id = "media-01"
+node_id = "media-docker-01"
 shutdown_timeout_secs = 30
 
 [http]
-bind_address = "0.0.0.0:8080"
-# enable_cors = false
-# allowed_origins = ["https://app.example.com"]
+bind_address = "0.0.0.0:8085"
 
 [media]
-rtp_port_start = 10000
-rtp_port_end = 20000
-# public_ip — set via FCP_MEDIA_PUBLIC_IP env var
+rtp_port_start = 30000
+rtp_port_end = 30999
 
 [recording]
 base_dir = "/var/lib/fcp/media/recordings"
@@ -21,8 +19,8 @@ root_jail = "/var/lib/fcp/media"
 prompts_dir = "/var/lib/fcp/media/prompts"
 
 [auth]
-# Set tokens for production use
-tokens = ["change-me-in-production"]
+# tokens: FCP_MEDIA_AUTH_TOKENS (required; the server refuses to start without one).
+tokens = ["set-by-FCP_MEDIA_AUTH_TOKENS"]
 
 [logging]
 level = "info"

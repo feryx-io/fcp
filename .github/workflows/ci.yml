@@ -160,6 +160,27 @@ jobs:
       - name: Tests
         run: cargo test --all-targets --features fcp-conference-server/recording-webm,fcp-conference-server/recording-mp4,fcp-conference-server/video-openh264
 
+  # The packaging: the compose file, alone and with the GPU overlay, must
+  # be a valid stack with the shipped .env (docs/SHIP_AND_OPERATE.md phase
+  # 3). Cheap, so it runs on every pull request including drafts; the
+  # images themselves are built nightly (.github/workflows/images.yml).
+  packaging:
+    name: Packaging
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: The compose stack resolves
+        working-directory: deploy/docker-compose
+        run: docker compose config --quiet
+      - name: The compose stack resolves with the GPU overlay
+        working-directory: deploy/docker-compose
+        run: docker compose -f docker-compose.yml -f docker-compose.gpu.yml config --quiet
+      - name: The compose stack resolves with the registrar profile
+        working-directory: deploy/docker-compose
+        run: docker compose --profile registrar config --quiet
+      - name: The test scripts parse
+        run: bash -n deploy/docker-compose/scripts/*.sh
+
   security-audit:
     name: Security Audit
     # Cheap enough (~20s) to keep running on `docs:` PRs, which do change

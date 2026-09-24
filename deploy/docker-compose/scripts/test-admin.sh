@@ -1,84 +1,29 @@
 #!/bin/bash
-# Test script for fcp-admin (MVP single-tenant mode)
-
+# fcp-admin: health, and a user's life through the API with the operator token.
 set -e
+. "$(dirname "${BASH_SOURCE[0]}")/env.sh"
 
-BASE_URL="http://localhost:8080/api/v1"
+echo "--- health (no token)"
+curl -sf "${ADMIN_URL}/health" | jq . || fail "admin health"
 
-echo "=== Testing fcp-admin (MVP Single-Tenant Mode) ==="
-echo
+echo "--- tenants"
+TENANTS=$(curl -sf "${ADMIN_AUTH[@]}" "${ADMIN_URL}/tenants") || fail "list tenants (is FCP_ADMIN_AUTH_TOKEN right?)"
+TENANT_ID=$(echo "$TENANTS" | jq -r '.[0].id')
+[ -n "$TENANT_ID" ] && [ "$TENANT_ID" != "null" ] || fail "no tenant"
+echo "tenant: $TENANT_ID"
 
-# Test 1: Health check
-echo "1. Health check..."
-curl -s "${BASE_URL}/health" | jq '.'
-echo
-
-# Test 2: List tenants (MVP returns only default tenant)
-echo "2. Listing tenants..."
-TENANT_RESPONSE=$(curl -s "${BASE_URL}/tenants")
-echo "$TENANT_RESPONSE" | jq '.'
-TENANT_ID=$(echo "$TENANT_RESPONSE" | jq -r '.[0].id')
-# Extract UUID without "tenant-" prefix for API calls
-TENANT_UUID="${TENANT_ID#tenant-}"
-echo "Using default tenant ID: $TENANT_ID (UUID: $TENANT_UUID)"
-echo
-
-# Test 3: Get default tenant
-echo "3. Getting default tenant..."
-curl -s "${BASE_URL}/tenants/${TENANT_ID}" | jq '.'
-echo
-
-# NOTE: Tenant creation/deletion not supported in MVP single-tenant mode
-
-# Test 4: Create user
-echo "4. Creating user..."
-UNIQUE_ID=$(cat /proc/sys/kernel/random/uuid | cut -d'-' -f1)
-USER_RESPONSE=$(curl -s -X POST "${BASE_URL}/users" \
+USERNAME="smoke-$(date +%s)"
+echo "--- create user $USERNAME"
+curl -sf "${ADMIN_AUTH[@]}" -X POST "${ADMIN_URL}/users" \
   -H "Content-Type: application/json" \
-  -d "{
-    \"tenant_id\": \"${TENANT_UUID}\",
-    \"username\": \"alice${UNIQUE_ID}\",
-    \"password\": \"TestPass123!\",
-    \"email\": \"alice${UNIQUE_ID}@example.com\",
-    \"enabled\": true
-  }")
-echo "$USER_RESPONSE" | jq '.'
-USER_ID=$(echo "$USER_RESPONSE" | jq -r '.id')
-USERNAME=$(echo "$USER_RESPONSE" | jq -r '.username')
-echo "Created user: $USER_ID (username: $USERNAME)"
-echo
+  -d "{\"username\":\"${USERNAME}\",\"password\":\"smoke-pass-1\",\"display_name\":\"Smoke\",\"tenant_id\":\"${TENANT_ID}\"}" | jq . || fail "create user"
 
-# Test 5: List users
-echo "5. Listing users..."
-curl -s "${BASE_URL}/users" | jq '.'
-echo
+echo "--- read it back"
+curl -sf "${ADMIN_AUTH[@]}" "${ADMIN_URL}/users/${USERNAME}" | jq . || fail "get user"
 
-# Test 6: Get user (API uses username in path, not user ID)
-echo "6. Getting user..."
-curl -s "${BASE_URL}/users/${USERNAME}" | jq '.'
-echo
-
-# Test 7: Update user
-echo "7. Updating user..."
-curl -s -X PUT "${BASE_URL}/users/${USERNAME}" \
-  -H "Content-Type: application/json" \
-  -d "{
-    \"email\": \"alice${UNIQUE_ID}.updated@example.com\",
-    \"enabled\": true
-  }" | jq '.'
-echo
-
-# Test 8: Delete user
-echo "8. Deleting user..."
-curl -s -X DELETE "${BASE_URL}/users/${USERNAME}"
-echo "User deleted"
-echo
-
-# Test 9: Verify user deleted
-echo "9. Verifying user deleted..."
-DELETE_CHECK=$(curl -s "${BASE_URL}/users/${USERNAME}")
-echo "$DELETE_CHECK" | jq '.'
-echo
-
-echo "=== fcp-admin tests completed (MVP mode) ==="
-echo "Note: Multi-tenant operations (create/update/delete tenants) are not supported in MVP mode"
+echo "--- delete it"
+curl -sf "${ADMIN_AUTH[@]}" -X DELETE "${ADMIN_URL}/users/${USERNAME}" || fail "delete user"
+if curl -sf "${ADMIN_AUTH[@]}" "${ADMIN_URL}/users/${USERNAME}" > /dev/null 2>&1; then
+  fail "user still there after delete"
+fi
+echo "All fcp-admin tests passed!"

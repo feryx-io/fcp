@@ -752,6 +752,26 @@ the compose stack's `.env` can inject them and the shipped TOMLs carry
 none. Left in the file: the events server's notification providers'
 credentials, TURN passwords and webhook signing secrets, which are
 nested lists.
+Phase 3 done (v0.25.246): the stack comes up. `deploy/docker-compose/`
+has a Postgres service, its own volumes and a port plan with no
+collisions; the host-network services reach Postgres, Redis and the
+events server through the ports those publish on the host and the admin
+reaches the call manager and conference server through
+`host.docker.internal`; every secret is in `.env` under the binaries'
+own `FCP_*` names and the compose file hands the shared ones on, so no
+TOML carries a token; the wiring is set — events tokens on every
+producer, the admin's call manager, conference and join-secret settings,
+the conference server's trusted edge, the call manager's conference URI,
+the CDR stream pipeline through `fcp-jobs`; TLS is off rather than
+pointed at missing certificates; Prometheus gets its bearer tokens from
+the same `.env` and scrapes every metrics endpoint; a registrar profile;
+the scripts send tokens and read Compose's output as it is; the root
+packaging and the committed binary are gone. Each binary's smoke suite
+checks its compose configuration with the stack's `.env`, so all ten
+must start; CI validates the compose file alone, with the GPU overlay
+and with the registrar profile on every pull request, and builds the
+nine images nightly. Not proved: bringing the stack up, since the
+development machine has no Docker — phase 4's test does that.
 
 ## Historical documents
 

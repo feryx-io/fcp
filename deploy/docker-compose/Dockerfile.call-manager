@@ -38,9 +38,8 @@ RUN mkdir -p /app/data
 # Expose SIP ports (UDP + TCP + TLS), HTTP API, and RTP range
 EXPOSE 5060/udp
 EXPOSE 5060/tcp
-EXPOSE 5061/tcp
 EXPOSE 8084
-EXPOSE 10000-10100/udp
+EXPOSE 10000-10999/udp
 
 # Run the binary
 CMD ["/app/fcp-call-manager", "--config", "/app/fcp-call-manager.toml"]

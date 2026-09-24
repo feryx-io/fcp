@@ -63,9 +63,9 @@ RUN mkdir -p /app/data /var/fcp/conference/recordings /var/fcp/conference/announ
 ENV NVIDIA_VISIBLE_DEVICES=all
 ENV NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
 
-EXPOSE 5060/udp
-EXPOSE 5060/tcp
+EXPOSE 5074/udp
+EXPOSE 5074/tcp
 EXPOSE 8090
-EXPOSE 20000-30000/udp
+EXPOSE 20000-20999/udp
 
 CMD ["/app/fcp-conference", "--config", "/app/fcp-conference-server.toml"]

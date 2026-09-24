@@ -1,85 +1,32 @@
 #!/bin/bash
-# Integration test script - runs all tests in sequence
-
+# The stack, end to end: wait for every service to be healthy, then run
+# each service's test. Run from the compose directory, or anywhere.
 set -e
-
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+cd "${SCRIPT_DIR}/.."
 
-echo "======================================"
-echo "FCP Integration Tests"
-echo "======================================"
-echo
-
-# Wait for all services to be healthy
-echo "Waiting for services to be healthy..."
-echo
-
-MAX_WAIT=60
-WAIT_TIME=0
-
-while [ $WAIT_TIME -lt $MAX_WAIT ]; do
-    ALL_HEALTHY=true
-
-    # Check each service
-    for SERVICE in redis fcp-admin fcp-api-gateway fcp-events-server fcp-jobs fcp-call-manager; do
-        if ! docker compose ps --format json | jq -e ".[] | select(.Service == \"$SERVICE\" and .Health == \"healthy\")" > /dev/null 2>&1; then
-            ALL_HEALTHY=false
-            break
-        fi
-    done
-
-    if $ALL_HEALTHY; then
-        echo "All services are healthy!"
-        break
-    fi
-
-    echo "Waiting for services... ($WAIT_TIME/$MAX_WAIT seconds)"
-    sleep 5
-    WAIT_TIME=$((WAIT_TIME + 5))
+echo "Waiting for the stack to be healthy..."
+MAX_WAIT=180
+WAITED=0
+SERVICES="postgres redis fcp-events-server fcp-admin fcp-api-gateway fcp-jobs fcp-call-manager fcp-conference fcp-webrtc-gw fcp-media"
+while [ $WAITED -lt $MAX_WAIT ]; do
+  # `docker compose ps --format json` prints one object per line on
+  # current Compose and an array on older ones; slurp and flatten reads both.
+  HEALTHY=$(docker compose ps --format json 2>/dev/null | jq -rs 'flatten | .[] | select(.Health == "healthy") | .Service')
+  MISSING=""
+  for s in $SERVICES; do echo "$HEALTHY" | grep -qx "$s" || MISSING="$MISSING $s"; done
+  if [ -z "$MISSING" ]; then echo "All services are healthy."; break; fi
+  echo "waiting for:$MISSING ($WAITED/$MAX_WAIT s)"
+  sleep 5; WAITED=$((WAITED + 5))
 done
-
-if [ $WAIT_TIME -ge $MAX_WAIT ]; then
-    echo "ERROR: Services did not become healthy in time"
-    echo
-    echo "Service status:"
-    docker compose ps
-    exit 1
+if [ $WAITED -ge $MAX_WAIT ]; then
+  echo "ERROR: services did not become healthy in time"; docker compose ps; exit 1
 fi
 
-echo
-echo "======================================"
-echo "Test 1: fcp-admin"
-echo "======================================"
-bash "${SCRIPT_DIR}/test-admin.sh"
-
-echo
-echo "======================================"
-echo "Test 2: fcp-api-gateway"
-echo "======================================"
-bash "${SCRIPT_DIR}/test-gateway.sh"
-
-echo
-echo "======================================"
-echo "Test 3: fcp-events-server"
-echo "======================================"
-bash "${SCRIPT_DIR}/test-events.sh"
-
-echo
-echo "======================================"
-echo "Test 4: fcp-jobs"
-echo "======================================"
-bash "${SCRIPT_DIR}/test-jobs.sh"
-
-echo
-echo "======================================"
-echo "Test 5: fcp-call-manager"
-echo "======================================"
-bash "${SCRIPT_DIR}/test-call-manager.sh"
-
-echo
-echo "======================================"
-echo "All Integration Tests Completed!"
-echo "======================================"
-echo
-echo "Summary:"
-docker compose ps
+for t in admin gateway events jobs call-manager; do
+  echo; echo "====== $t"; bash "${SCRIPT_DIR}/test-${t}.sh"
+done
+if docker compose ps --format json 2>/dev/null | jq -rs 'flatten | .[] | .Service' | grep -qx fcp-registrar; then
+  echo; echo "====== registrar"; bash "${SCRIPT_DIR}/test-registrar.sh"
+fi
+echo; echo "All integration tests passed."

@@ -108,8 +108,11 @@ fn shipped_configurations_check() {
     smoke::assert_configs_check(
         BIN,
         &[],
-        &["fcp-call-manager-local.toml"],
-        &["deploy/docker-compose/configs/fcp-call-manager.toml"],
+        &[
+            "fcp-call-manager-local.toml",
+            "deploy/docker-compose/configs/fcp-call-manager.toml",
+        ],
+        &[],
     );
 }
 
