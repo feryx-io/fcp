@@ -24,6 +24,9 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
 rcgen = "0.13"
+# HTTPS in the HTTP helpers and the phone over SIPS, with a CA of the test's.
+tokio-rustls = "0.26"
+rustls-pemfile = "2"
 
 # The seed writes fixtures the way the binaries read them.
 fcp-core = { path = "../fcp-core" }
@@ -33,7 +36,7 @@ fcp-storage-postgres = { path = "../fcp-storage-postgres" }
 sip-core = { path = "../../external/siphon-rs/crates/sip-core" }
 sip-parse = { path = "../../external/siphon-rs/crates/sip-parse" }
 sip-transaction = { path = "../../external/siphon-rs/crates/sip-transaction" }
-sip-transport = { path = "../../external/siphon-rs/crates/sip-transport" }
+sip-transport = { path = "../../external/siphon-rs/crates/sip-transport", features = ["tls"] }
 sip-dialog = { path = "../../external/siphon-rs/crates/sip-dialog" }
 sip-uac = { path = "../../external/siphon-rs/crates/sip-uac" }
 sip-uas = { path = "../../external/siphon-rs/crates/sip-uas" }

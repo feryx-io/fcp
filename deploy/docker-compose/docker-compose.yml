@@ -16,9 +16,12 @@
 #   5432 postgres · 6379 redis · 8000 gateway · 8080 admin · 8081 events
 #   8082 jobs · 8084 call manager · 8085 media · 8086 ivr · 8087 voicemail
 #   8090 conference · 8092 presence · 8093 tts (profile) · 8094 sbc health
-#   8095 webrtc · 9090 prometheus · 3000 grafana
+#   8095 webrtc (HTTPS) · 8185 media HTTPS · 9090 prometheus · 3000 grafana
+#   HTTPS through the proxy: 8443 gateway · 8444 admin · 8445 events
 #   SIP 5060 call manager · 5070 ivr · 5072 voicemail · 5074 conference
 #   5076 presence · 5077 webrtc · 5078 sbc · 5062/8083 registrar (profile)
+#   TLS: SIPS 5061 + WSS 5081 call manager · 5075 conference · 5079 sbc
+#   5063/5083 registrar (profile)
 #   RTP 10000-10999 call manager · 20000-20999 conference · 22000-22999 ivr
 #   24000-24999 voicemail · 28000-28999 sbc · 30000-30999 media
 #   34000-35999 webrtc
@@ -62,6 +65,20 @@ services:
 
   # The management API and the admin UI. Migrations run at its startup
   # (and at every other binary's that opens Postgres).
+  # The stack's certificates (docs/PRODUCTION_STACK.md phase 3): a CA and
+  # a certificate per TLS service, made once into the fcp-certs volume by
+  # scripts/make-certs.sh and kept on every later start. Phones and
+  # browsers trust ca.crt from that volume (README, "Certificates").
+  certs:
+    image: alpine/openssl:latest
+    container_name: fcp-certs
+    entrypoint: ["/bin/sh", "/make-certs.sh"]
+    environment:
+      HOST_IP: ${HOST_IP}
+    volumes:
+      - ./scripts/make-certs.sh:/make-certs.sh:ro
+      - fcp-certs:/certs
+
   fcp-admin:
     build:
       context: ../..
@@ -75,6 +92,7 @@ services:
     environment:
       RUST_LOG: info
       FCP_ADMIN_LOG_FORMAT: pretty
+      HOST_IP: ${HOST_IP}
       FCP_ADMIN_DATABASE_URL: postgresql://fcp:${POSTGRES_PASSWORD}@postgres:5432/fcp
       FCP_ADMIN_AUTH_TOKEN: ${FCP_ADMIN_AUTH_TOKEN}
       FCP_ADMIN_PROVISIONING_AUTH_TOKEN: ${FCP_ADMIN_PROVISIONING_AUTH_TOKEN}
@@ -152,6 +170,7 @@ services:
     network_mode: host
     volumes:
       - ./configs/fcp-call-manager.toml:/app/fcp-call-manager.toml:ro
+      - fcp-certs:/var/lib/fcp/certs:ro
       - call-manager-data:/app/data
     environment:
       RUST_LOG: info
@@ -162,6 +181,8 @@ services:
       FCP_CALL_MANAGER_EVENTS_AUTH_TOKEN: ${FCP_EVENTS_AUTH_TOKEN}
       FCP_CALL_MANAGER_TTS_REMOTE_TOKEN: ${FCP_TTS_AUTH_TOKENS}
     depends_on:
+      certs:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
@@ -185,6 +206,7 @@ services:
     network_mode: host
     volumes:
       - ./configs/fcp-conference-server.toml:/app/fcp-conference-server.toml:ro
+      - fcp-certs:/var/lib/fcp/certs:ro
       - conference-recordings:/var/fcp/conference/recordings
       - conference-cdr-spool:/var/lib/fcp/cdr-spool
       - ./configs/announcements:/var/fcp/conference/announcements:ro
@@ -197,6 +219,8 @@ services:
       FCP_CONFERENCE_EVENTS_AUTH_TOKEN: ${FCP_EVENTS_AUTH_TOKEN}
       FCP_CONFERENCE_JOIN_SECRET: ${FCP_CONFERENCE_JOIN_SECRET}
     depends_on:
+      certs:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
@@ -221,23 +245,27 @@ services:
     network_mode: host
     volumes:
       - ./configs/fcp-webrtc-gw.toml:/app/fcp-webrtc-gw.toml:ro
+      - fcp-certs:/var/lib/fcp/certs:ro
     environment:
       RUST_LOG: info
       FCP_WEBRTC_GW_LOG_FORMAT: pretty
       FCP_WEBRTC_GW_PUBLIC_IP: ${HOST_IP}
       FCP_WEBRTC_GW_AUTH_TOKENS: ${FCP_WEBRTC_GW_AUTH_TOKENS}
     depends_on:
+      certs:
+        condition: service_completed_successfully
       fcp-conference:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8095/health"]
+      test: ["CMD", "curl", "-fk", "https://localhost:8095/health"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 15s
     restart: unless-stopped
 
-  # The standalone media server. HTTP 8085, RTP 30000-30999, on the host.
+  # The standalone media server. HTTP 8085, HTTPS 8185, RTP 30000-30999,
+  # on the host.
   fcp-media:
     build:
       context: ../..
@@ -246,6 +274,7 @@ services:
     network_mode: host
     volumes:
       - ./configs/fcp-media-server.toml:/app/fcp-media-server.toml:ro
+      - fcp-certs:/var/lib/fcp/certs:ro
       - media-recordings:/var/lib/fcp/media/recordings
       - media-prompts:/var/lib/fcp/media/prompts
     environment:
@@ -253,6 +282,9 @@ services:
       FCP_MEDIA_LOG_FORMAT: pretty
       FCP_MEDIA_PUBLIC_IP: ${HOST_IP}
       FCP_MEDIA_AUTH_TOKENS: ${FCP_MEDIA_AUTH_TOKENS}
+    depends_on:
+      certs:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8085/health"]
       interval: 10s
@@ -383,6 +415,7 @@ services:
     network_mode: host
     volumes:
       - ./configs/fcp-sbc.toml:/app/fcp-sbc.toml:ro
+      - fcp-certs:/var/lib/fcp/certs:ro
     environment:
       RUST_LOG: info
       FCP_SBC_LOG_FORMAT: pretty
@@ -391,6 +424,8 @@ services:
       FCP_SBC_HEALTH_API_TOKEN: ${FCP_SBC_HEALTH_API_TOKEN}
       FCP_SBC_DATABASE_URL: postgresql://fcp:${POSTGRES_PASSWORD}@127.0.0.1:5432/fcp
     depends_on:
+      certs:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       fcp-call-manager:
@@ -429,6 +464,40 @@ services:
       start_period: 60s
     restart: unless-stopped
 
+  # HTTPS for the services that serve only HTTP: nginx in front of the
+  # gateway (8443), the admin (8444) and the events server (8445) with the
+  # certs service's certificate, saying so in X-Forwarded-Proto so the
+  # admin can require HTTPS for provisioning as it does by default. Plain
+  # HTTP stays on their own ports.
+  fcp-proxy:
+    image: nginx:1.27-alpine
+    container_name: fcp-proxy
+    ports:
+      - "8443:8443"
+      - "8444:8444"
+      - "8445:8445"
+    configs:
+      - source: proxy_config
+        target: /etc/nginx/nginx.conf
+    volumes:
+      - fcp-certs:/var/lib/fcp/certs:ro
+    depends_on:
+      certs:
+        condition: service_completed_successfully
+      fcp-admin:
+        condition: service_healthy
+      fcp-api-gateway:
+        condition: service_healthy
+      fcp-events-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--no-check-certificate", "-O", "/dev/null", "https://localhost:8444/api/v1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
   # A standalone registrar, for deployments that keep registration off the
   # call manager (docs/CAPACITY_AND_SURVIVABILITY.md). Off unless asked
   # for: `docker compose --profile registrar up -d`. SIP 5062, HTTP 8083.
@@ -441,12 +510,15 @@ services:
     network_mode: host
     volumes:
       - ./configs/fcp-registrar.toml:/app/fcp-registrar.toml:ro
+      - fcp-certs:/var/lib/fcp/certs:ro
     environment:
       RUST_LOG: info
       FCP_REGISTRAR_LOG_FORMAT: pretty
       FCP_REGISTRAR_DATABASE_URL: postgresql://fcp:${POSTGRES_PASSWORD}@127.0.0.1:5432/fcp
       FCP_REGISTRAR_API_TOKEN: ${FCP_REGISTRAR_API_TOKEN}
     depends_on:
+      certs:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
     healthcheck:
@@ -501,6 +573,39 @@ services:
     restart: unless-stopped
 
 configs:
+  # The proxy: one TLS server per HTTP-only service. `$$` is a literal `$`
+  # to compose.
+  proxy_config:
+    content: |
+      events {}
+      http {
+        map $$http_upgrade $$connection_upgrade {
+          default upgrade;
+          ''      close;
+        }
+        ssl_certificate     /var/lib/fcp/certs/fcp-proxy.crt;
+        ssl_certificate_key /var/lib/fcp/certs/fcp-proxy.key;
+        proxy_http_version 1.1;
+        proxy_set_header Host $$host;
+        proxy_set_header X-Real-IP $$remote_addr;
+        proxy_set_header X-Forwarded-For $$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header Upgrade $$http_upgrade;
+        proxy_set_header Connection $$connection_upgrade;
+        proxy_read_timeout 3600s;
+        server {
+          listen 8443 ssl;
+          location / { proxy_pass http://fcp-api-gateway:8000; }
+        }
+        server {
+          listen 8444 ssl;
+          location / { proxy_pass http://fcp-admin:8080; }
+        }
+        server {
+          listen 8445 ssl;
+          location / { proxy_pass http://fcp-events-server:8081; }
+        }
+      }
   prometheus:
     content: |
       global:
@@ -557,6 +662,7 @@ configs:
 
 volumes:
   postgres-data:
+  fcp-certs:
   voicemail-data:
   tts-cache:
   redis-data:

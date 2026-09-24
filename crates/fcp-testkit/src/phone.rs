@@ -129,6 +129,9 @@ struct Inner {
     follow_refers: std::sync::atomic::AtomicBool,
     /// Where the server is, for bare-number targets.
     server: SocketAddr,
+    /// `;transport=tls` for a phone that talks SIPS, else empty: on every
+    /// request URI built from `server`.
+    transport_param: &'static str,
     /// Every REGISTER this phone has been sent, in order — a carrier's
     /// registrar, for a test that asks who registered and as whom.
     registrations: std::sync::Mutex<Vec<SeenRegistration>>,
@@ -182,7 +185,7 @@ impl Inner {
         let target = if target.starts_with("sip:") || target.starts_with("sips:") {
             target.to_string()
         } else {
-            format!("sip:{target}@{}", self.server)
+            format!("sip:{target}@{}{}", self.server, self.transport_param)
         };
         let media = Arc::new(MediaLeg::open().await?);
         let offer = media.sdp("sendrecv");
@@ -436,14 +439,71 @@ pub struct Phone {
     _socket: Arc<UdpSocket>,
 }
 
-/// Sends over the phone's own socket.
-struct UdpDispatcher(Arc<UdpSocket>);
+/// The phone's outbound side: its own UDP socket, and for a phone made
+/// with [`Phone::new_tls`] a pool of TLS connections to the server. A
+/// request that arrived on a connection is answered on it.
+struct PhoneDispatcher {
+    socket: Arc<UdpSocket>,
+    tls: Option<PhoneTls>,
+}
+
+struct PhoneTls {
+    pool: Arc<sip_transport::pool::TlsPool>,
+    client: Arc<tokio_rustls::rustls::ClientConfig>,
+}
 
 #[async_trait]
-impl TransportDispatcher for UdpDispatcher {
+impl TransportDispatcher for PhoneDispatcher {
     async fn dispatch(&self, ctx: &TransportContext, payload: Bytes) -> anyhow::Result<()> {
-        self.0.send_to(&payload, ctx.peer()).await?;
-        Ok(())
+        if let Some(writer) = ctx.stream() {
+            return sip_transport::send_stream(transport_kind(ctx.transport()), writer, payload)
+                .await;
+        }
+        match ctx.transport() {
+            sip_transaction::TransportKind::Tls => {
+                let tls = self
+                    .tls
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("this phone was not made for TLS"))?;
+                let server_name = ctx
+                    .server_name()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| ctx.peer().ip().to_string());
+                tls.pool
+                    .send_tls(ctx.peer(), server_name, Arc::clone(&tls.client), payload)
+                    .await
+            }
+            _ => {
+                self.socket.send_to(&payload, ctx.peer()).await?;
+                Ok(())
+            }
+        }
+    }
+}
+
+fn transaction_kind(kind: sip_transport::TransportKind) -> sip_transaction::TransportKind {
+    use sip_transaction::TransportKind as T;
+    match kind {
+        sip_transport::TransportKind::Udp => T::Udp,
+        sip_transport::TransportKind::Tcp => T::Tcp,
+        sip_transport::TransportKind::Tls => T::Tls,
+        sip_transport::TransportKind::Sctp => T::Sctp,
+        sip_transport::TransportKind::TlsSctp => T::TlsSctp,
+        sip_transport::TransportKind::Ws => T::Ws,
+        sip_transport::TransportKind::Wss => T::Wss,
+    }
+}
+
+fn transport_kind(kind: sip_transaction::TransportKind) -> sip_transport::TransportKind {
+    use sip_transport::TransportKind as T;
+    match kind {
+        sip_transaction::TransportKind::Udp => T::Udp,
+        sip_transaction::TransportKind::Tcp => T::Tcp,
+        sip_transaction::TransportKind::Tls => T::Tls,
+        sip_transaction::TransportKind::Sctp => T::Sctp,
+        sip_transaction::TransportKind::TlsSctp => T::TlsSctp,
+        sip_transaction::TransportKind::Ws => T::Ws,
+        sip_transaction::TransportKind::Wss => T::Wss,
     }
 }
 
@@ -476,6 +536,41 @@ impl Phone {
         realm: &str,
         server: SocketAddr,
     ) -> Result<Self> {
+        Self::build(bind, username, password, realm, server, None).await
+    }
+
+    /// A phone that talks to the server over SIPS (`server` is its TLS
+    /// port), trusting the CA in `ca_pem` and nothing else: what a phone
+    /// pointed at the compose stack's `sips_bind` with its `ca.crt` does
+    /// (`docs/PRODUCTION_STACK.md` phase 3). Every request it sends goes
+    /// over a TLS connection it opens and keeps; answers come back on it.
+    /// It still listens on its UDP socket, which its Contact names.
+    pub async fn new_tls(
+        username: &str,
+        password: &str,
+        realm: &str,
+        server: SocketAddr,
+        ca_pem: &std::path::Path,
+    ) -> Result<Self> {
+        Self::build(
+            "127.0.0.1:0",
+            username,
+            password,
+            realm,
+            server,
+            Some(ca_pem),
+        )
+        .await
+    }
+
+    async fn build(
+        bind: &str,
+        username: &str,
+        password: &str,
+        realm: &str,
+        server: SocketAddr,
+        tls_ca: Option<&std::path::Path>,
+    ) -> Result<Self> {
         disable_rate_limits();
         let socket = Arc::new(UdpSocket::bind(bind).await?);
         let local_addr = socket.local_addr()?;
@@ -483,7 +578,24 @@ impl Phone {
             .map_err(|e| anyhow!("local uri: {e}"))?;
         let contact = format!("sip:{username}@{local_addr}");
 
-        let dispatcher: Arc<dyn TransportDispatcher> = Arc::new(UdpDispatcher(Arc::clone(&socket)));
+        // The inbound channel: the socket, and any TLS connection, feed it.
+        let (tx, mut rx) = mpsc::channel::<InboundPacket>(256);
+        let tls = match tls_ca {
+            Some(ca) => {
+                let pool = Arc::new(sip_transport::pool::TlsPool::new());
+                pool.set_inbound_tx(tx.clone()).await;
+                Some(PhoneTls {
+                    pool,
+                    client: crate::tls::client_config(ca)?,
+                })
+            }
+            None => None,
+        };
+        let transport_param = if tls.is_some() { ";transport=tls" } else { "" };
+        let dispatcher: Arc<dyn TransportDispatcher> = Arc::new(PhoneDispatcher {
+            socket: Arc::clone(&socket),
+            tls,
+        });
         let tm = Arc::new(TransactionManager::new(Arc::clone(&dispatcher)));
 
         let (events_tx, events_rx) = mpsc::unbounded_channel();
@@ -499,6 +611,7 @@ impl Phone {
             auto_answer: std::sync::atomic::AtomicBool::new(false),
             follow_refers: std::sync::atomic::AtomicBool::new(false),
             server,
+            transport_param,
         });
 
         let handler: Arc<dyn UasRequestHandler> = Arc::new(Handler(Arc::clone(&inner)));
@@ -531,7 +644,6 @@ impl Phone {
         let _ = inner.uac.set(Arc::clone(&uac));
 
         // The inbound loop: the socket to the transaction layer and the UAS.
-        let (tx, mut rx) = mpsc::channel::<InboundPacket>(256);
         let recv_socket = Arc::clone(&socket);
         tokio::spawn(async move {
             if let Err(e) = sip_transport::run_udp(recv_socket, tx).await {
@@ -589,7 +701,7 @@ impl Phone {
     /// device with a short registration does, and what a load run that
     /// re-registers on expiry needs.
     pub async fn register_for(&self, expires: u32) -> Result<u16> {
-        let target = format!("sip:{}", self.server);
+        let target = format!("sip:{}{}", self.server, self.inner.transport_param);
         let resp = tokio::time::timeout(
             Duration::from_secs(10),
             self.uac().register(target.as_str(), Some(expires)),
@@ -1331,8 +1443,11 @@ async fn handle_packet(
     packet: InboundPacket,
 ) {
     if let Some(req) = sip_parse::parse_request(packet.payload()) {
-        let ctx = TransportContext::new(sip_transaction::TransportKind::Udp, packet.peer(), None)
-            .with_udp_socket(Some(Arc::clone(socket)));
+        let kind = transaction_kind(packet.transport());
+        let mut ctx = TransportContext::new(kind, packet.peer(), packet.stream().cloned());
+        if kind == sip_transaction::TransportKind::Udp {
+            ctx = ctx.with_udp_socket(Some(Arc::clone(socket)));
+        }
         if req.method() == &sip_core::Method::Ack {
             if let Some(branch) = request_branch_id(&req) {
                 let key = TransactionKey::new(branch, sip_core::Method::Invite, true);

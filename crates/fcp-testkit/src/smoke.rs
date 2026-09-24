@@ -14,9 +14,12 @@ use std::process::{ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::process::Command;
+use tokio_rustls::rustls::pki_types::{CertificateDer, ServerName};
+use tokio_rustls::rustls::{ClientConfig, RootCertStore};
+use tokio_rustls::TlsConnector;
 
 /// Pick a loopback port that is currently free for both TCP and UDP, so the
 /// same number can serve a SIP `udp_bind`/`tcp_bind` pair.
@@ -422,35 +425,70 @@ where
 ///
 /// Avoids pulling an HTTP client into every binary's dev-dependencies.
 pub async fn http_get(url: &str) -> anyhow::Result<(u16, String)> {
-    let rest = url
-        .strip_prefix("http://")
-        .ok_or_else(|| anyhow::anyhow!("only http:// URLs are supported: {url}"))?;
+    http_request("GET", url, &[], None).await
+}
+
+/// The CAs every `https://` URL the helpers here open is checked against.
+static TRUSTED_CAS: Mutex<Vec<CertificateDer<'static>>> = Mutex::new(Vec::new());
+
+/// Trust the certificates in `ca_pem` for every `https://` URL this
+/// process's HTTP helpers open (and so for a service's HTTPS health URL):
+/// the stack's CA, made by the test that starts the stack.
+pub fn trust_ca(ca_pem: &Path) {
+    let file =
+        std::fs::File::open(ca_pem).unwrap_or_else(|e| panic!("open CA {}: {e}", ca_pem.display()));
+    let certs: Vec<CertificateDer<'static>> =
+        rustls_pemfile::certs(&mut std::io::BufReader::new(file))
+            .collect::<Result<_, _>>()
+            .unwrap_or_else(|e| panic!("read CA {}: {e}", ca_pem.display()));
+    assert!(!certs.is_empty(), "{}: no certificate", ca_pem.display());
+    TRUSTED_CAS.lock().expect("trusted CAs").extend(certs);
+}
+
+trait HttpStream: AsyncRead + AsyncWrite + Unpin + Send {}
+impl<T: AsyncRead + AsyncWrite + Unpin + Send> HttpStream for T {}
+
+/// A connection to `url`'s authority: plain for `http://`, TLS under the
+/// CAs given to [`trust_ca`] for `https://`. With the authority and path.
+async fn open(url: &str) -> anyhow::Result<(Box<dyn HttpStream>, String, String)> {
+    let (tls, rest) = if let Some(rest) = url.strip_prefix("https://") {
+        (true, rest)
+    } else if let Some(rest) = url.strip_prefix("http://") {
+        (false, rest)
+    } else {
+        anyhow::bail!("only http:// and https:// URLs are supported: {url}");
+    };
     let (authority, path) = match rest.split_once('/') {
         Some((a, p)) => (a, format!("/{p}")),
         None => (rest, "/".to_string()),
     };
-
-    let mut stream = tokio::time::timeout(Duration::from_secs(2), TcpStream::connect(authority))
+    let tcp = tokio::time::timeout(Duration::from_secs(2), TcpStream::connect(authority))
         .await
         .map_err(|_| anyhow::anyhow!("connect timeout"))??;
-    let request = format!(
-        "GET {path} HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\nAccept: */*\r\n\r\n"
+    if !tls {
+        return Ok((Box::new(tcp), authority.to_string(), path));
+    }
+    let mut roots = RootCertStore::empty();
+    for ca in TRUSTED_CAS.lock().expect("trusted CAs").iter() {
+        roots.add(ca.clone())?;
+    }
+    if roots.is_empty() {
+        anyhow::bail!("{url}: no CA trusted; call smoke::trust_ca first");
+    }
+    crate::tls::ensure_crypto_provider();
+    let config = Arc::new(
+        ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth(),
     );
-    stream.write_all(request.as_bytes()).await?;
-
-    let mut raw = Vec::new();
-    tokio::time::timeout(Duration::from_secs(5), stream.read_to_end(&mut raw))
-        .await
-        .map_err(|_| anyhow::anyhow!("read timeout"))??;
-    let text = String::from_utf8_lossy(&raw);
-    let (head, body) = text.split_once("\r\n\r\n").unwrap_or((&text, ""));
-    let status = head
-        .lines()
-        .next()
-        .and_then(|line| line.split_whitespace().nth(1))
-        .and_then(|code| code.parse::<u16>().ok())
-        .ok_or_else(|| anyhow::anyhow!("malformed response: {head:?}"))?;
-    Ok((status, decode_body(head, body)))
+    let host = authority
+        .rsplit_once(':')
+        .map(|(h, _)| h)
+        .unwrap_or(authority);
+    let name = ServerName::try_from(host.to_string())
+        .map_err(|e| anyhow::anyhow!("{host}: not a server name: {e}"))?;
+    let stream = TlsConnector::from(config).connect(name, tcp).await?;
+    Ok((Box::new(stream), authority.to_string(), path))
 }
 
 /// The body as the server meant it: chunked transfer encoding undone
@@ -736,16 +774,7 @@ pub async fn http_request(
     headers: &[(&str, &str)],
     body: Option<&str>,
 ) -> anyhow::Result<(u16, String)> {
-    let rest = url
-        .strip_prefix("http://")
-        .ok_or_else(|| anyhow::anyhow!("only http:// URLs are supported: {url}"))?;
-    let (authority, path) = match rest.split_once('/') {
-        Some((a, p)) => (a, format!("/{p}")),
-        None => (rest, "/".to_string()),
-    };
-    let mut stream = tokio::time::timeout(Duration::from_secs(2), TcpStream::connect(authority))
-        .await
-        .map_err(|_| anyhow::anyhow!("connect timeout"))??;
+    let (mut stream, authority, path) = open(url).await?;
     let mut request = format!(
         "{method} {path} HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\nAccept: */*\r\n"
     );

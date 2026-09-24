@@ -27,6 +27,7 @@ pub mod seed;
 pub mod service;
 pub mod sinks;
 pub mod smoke;
+pub mod tls;
 pub mod wav;
 
 pub use db::TestDatabase;

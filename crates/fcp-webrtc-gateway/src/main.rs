@@ -125,6 +125,11 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // rustls 0.23 needs the process to choose a crypto provider before
+    // any TLS configuration is built (the HTTPS listener's is); with more
+    // than one provider in the dependency graph it will not guess.
+    fcp_sip::transport::ensure_crypto_provider();
+
     // 1. Parse CLI arguments
     let cli = Cli::parse();
 

@@ -114,7 +114,7 @@ its binary's configuration-check test.
 |---|---|
 | 1 | ✅ v0.25.251 — **Every binary has an image and a service** (§1.1). Dockerfiles for the SBC, IVR, voicemail, presence and TTS servers in the existing shape; compose services for each — the SBC on the host's network (SIP 5078, health 8094, its own RTP block) with one trunk to the call manager so a carrier can be pointed at it, the IVR, voicemail and presence servers on the host's network on the guide's ports, the TTS server on the bridge; the port plan extended, no collisions; tokens through the variables phase 2 of ship-and-operate made; `images.yml` builds fourteen; the stack test starts every service and checks each is healthy, and the compose README's table grows. The TTS image installs `kokoro soundfile numpy` on a Python base and runs under a `tts` profile (Q1). |
 | 2 | ✅ v0.25.252 — **Secrets by reference** (§1.4, Q2). Every string in every binary's configuration may name an environment variable, `${NAME}`, resolved when the file is loaded, in `fcp_core::config` so every binary gets it the same way; a name the environment lacks refuses the file at startup, naming it; `--check-config` resolves and masks them like any secret. The per-field variables stay. The compose stack moves nothing to it yet — nothing in the stack needs a nested credential — but the stack test proves a `${…}` in a configuration is resolved from the environment. |
-| 3 | **TLS in the stack** (§1.2, Q3). A one-shot `certs` service makes a CA and a certificate per service into a volume (`openssl` in Alpine; idempotent, so a restart keeps them). SIPS and WSS on the call manager and registrar, SIP/TLS on the conference server and SBC, HTTPS on the media and WebRTC servers, from those files. A reverse proxy in front of the admin, gateway and events server with the same CA, so provisioning can require HTTPS as it does by default; the admin's `gateway_url` and the WebRTC gateway's CORS origins become `https://`. The stack test registers over SIPS, and the CA is where the compose README says to find it for a phone. Plain SIP and HTTP stay listening beside them. |
+| 3 | ✅ v0.25.253 — **TLS in the stack** (§1.2, Q3). A one-shot `certs` service makes a CA and a certificate per service into a volume (`openssl` in Alpine; idempotent, so a restart keeps them). SIPS and WSS on the call manager and registrar, SIP/TLS on the conference server and SBC, HTTPS on the media and WebRTC servers, from those files. A reverse proxy in front of the admin, gateway and events server with the same CA, so provisioning can require HTTPS as it does by default; the admin's `gateway_url` and the WebRTC gateway's CORS origins become `https://`. The stack test registers over SIPS, and the CA is where the compose README says to find it for a phone. Plain SIP and HTTP stay listening beside them. |
 | 4 | **Encryption at rest on** (§1.3). The master key is generated once into the same volume by the `certs` service (`openssl rand -base64 32`), every binary that opens Postgres gets `FCP_ENCRYPTION_PROVIDER=local` and `FCP_MASTER_KEY_FILE`, the compose README says how to run the one-time `reencrypt` and that the key is part of the backup; the stack test asserts `GET /api/v1/system/encryption` reports `local` and a DEK. |
 | 5 | **A stranger is refused** (§1.5, Q4). The routing engine takes its users and their tenants from the database — a `RoutingStore` whose `find_user` asks the user store, with the YAML file supplying policies only — and a caller with no user is a `403` with a reason, as a policy's `Deny` already is, never a 500. The shipped compose stack gets a `routing.yaml` back, with a policy and no `users:`, and the stack test's call goes through it. |
 
@@ -166,7 +166,14 @@ it should be retired in favour of the database rules
   and a missing name; a smoke test per binary that a `${…}` in its file
   is resolved and masked.
 - Phase 3: the stack test registers a phone over SIPS with the stack's
-  CA and reads the admin through the proxy over HTTPS.
+  CA and reads the admin through the proxy over HTTPS. *As built:* the
+  proxy is a container (nginx), which the test floor cannot run, so the
+  stack test reads the WebRTC gateway and the media server over HTTPS
+  under the same CA instead — the listeners the stack's own binaries
+  serve — and the proxy is checked by `docker compose config` on every
+  pull request and by the stack's own health check. The media server's
+  `[tls]` needed a `bind` of its own: it had none, so HTTPS would have
+  tried the HTTP address.
 - Phase 4: the stack test reads `GET /api/v1/system/encryption`.
 - Phase 5: unit tests for the database-backed user lookup and the
   refusal; the stack test's call passes through a shipped

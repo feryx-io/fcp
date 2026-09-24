@@ -153,7 +153,7 @@ impl ComposeStack {
                 .into_iter()
                 .flatten()
                 .filter_map(|v| v.as_str())
-                .find(|s| s.starts_with("http://"))
+                .find(|s| s.starts_with("http://") || s.starts_with("https://"))
                 .map(|u| u.replace("localhost", "127.0.0.1"))
                 .unwrap_or_else(|| panic!("{name}: no HTTP health check"));
             services.insert(
@@ -257,7 +257,8 @@ mod tests {
                 svc.config.display()
             );
             assert!(
-                svc.health_url.starts_with("http://127.0.0.1:"),
+                svc.health_url.starts_with("http://127.0.0.1:")
+                    || svc.health_url.starts_with("https://127.0.0.1:"),
                 "{name}: {}",
                 svc.health_url
             );

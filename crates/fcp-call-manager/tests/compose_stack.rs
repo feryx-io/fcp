@@ -7,11 +7,15 @@
 //! waited for until healthy; a phone registers at the call manager, joins
 //! a conference room, is seen on the events server and read back through
 //! the gateway, and the call manager's node id reaches it as a `${NAME}`
-//! reference resolved from the environment. The compose file's ports are
-//! used as they are, so this is the one test in this binary.
+//! reference resolved from the environment. The certificates the stack's
+//! `certs` service would have made come from the test's own CA, and a
+//! second phone registers over SIPS with it while the WebRTC gateway and
+//! the media server answer over HTTPS. The compose file's ports are used
+//! as they are, so this is the one test in this binary.
 
+use fcp_testkit::certs::ClusterCa;
 use fcp_testkit::compose::ComposeStack;
-use fcp_testkit::smoke::{http_request, loopback};
+use fcp_testkit::smoke::{http_request, loopback, trust_ca};
 use fcp_testkit::{bins, cluster, Phone, Seed, Service, TestDatabase};
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -98,9 +102,29 @@ async fn the_compose_stack_comes_up_and_carries_a_call() {
     };
     let stack = ComposeStack::load();
     let dir = tempfile::tempdir().expect("tempdir");
+
+    // The certificates the compose stack's `certs` service makes into its
+    // volume, from a CA of this test's, under the path the configurations
+    // name once `config_for` has moved `/var/lib/fcp` under `dir`.
+    let certs_dir = dir.path().join("var-lib-fcp").join("certs");
+    std::fs::create_dir_all(&certs_dir).expect("certs dir");
+    let ca = ClusterCa::new(&certs_dir);
+    for service in [
+        "fcp-call-manager",
+        "fcp-registrar",
+        "fcp-conference",
+        "fcp-sbc",
+        "fcp-media",
+        "fcp-webrtc-gw",
+        "fcp-proxy",
+    ] {
+        ca.node(service);
+    }
+    trust_ca(&ca.ca_path);
     let seed = Seed::new(db.url(), REALM).await;
     seed.meeting(ROOM, None, None).await;
     let alice = seed.user("alice", "alice-pw", "1001").await;
+    let bob = seed.user("bob", "bob-pw", "1002").await;
 
     // In the compose file's order: the events server, then the admin and
     // the gateway, then every SIP and media service and the job worker.
@@ -138,6 +162,31 @@ async fn the_compose_stack_comes_up_and_carries_a_call() {
         Some(NODE_ID_BY_REFERENCE),
         "the node id was resolved from the environment: {trunks}"
     );
+
+    // A phone registers over SIPS (5061, as the compose file publishes
+    // it) with the stack's CA: the call manager's certificate is the
+    // one the `certs` service would have made, and only that CA is
+    // trusted.
+    let cm_sips: SocketAddr = "127.0.0.1:5061".parse().unwrap();
+    let secure_phone = Phone::new_tls(&bob.username, &bob.password, REALM, cm_sips, &ca.ca_path)
+        .await
+        .expect("TLS phone binds");
+    let registered = secure_phone.register().await;
+    if !matches!(registered, Ok(200)) {
+        fail(services, &format!("REGISTER over SIPS: {registered:?}")).await;
+    }
+
+    // The services that serve HTTPS themselves answer under the same CA:
+    // the WebRTC gateway on its one listener, the media server beside
+    // its HTTP one. (The proxy in front of the admin, gateway and events
+    // server is a container this test cannot run.)
+    for url in [
+        "https://127.0.0.1:8095/health",
+        "https://127.0.0.1:8185/health",
+    ] {
+        let (code, body) = get_json(url, "").await;
+        assert_eq!(code, 200, "{url}: {body}");
+    }
 
     // A phone registers at the call manager (SIP 5060, as the compose
     // file publishes it) and joins the room on the conference server.
