@@ -326,7 +326,8 @@ pub fn load_config(config_path: Option<&Path>) -> Result<RegistrarConfig> {
         }
     };
 
-    validate_config(&config)?;
+    // Validated by the caller after its overrides (`validate_config`),
+    // so a secret from the environment counts.
 
     info!(
         node_id = %config.service.node_id,

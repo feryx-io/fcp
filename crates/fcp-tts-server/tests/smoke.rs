@@ -72,6 +72,14 @@ fn a_secret_from_the_environment_wins_over_the_file() {
         BIN,
         r#"[http]
 bind_address = "127.0.0.1:8093"
+
+[tts]
+default_provider = "kokoro"
+
+[[tts.providers]]
+name = "kokoro"
+type = "local"
+engine = "kokoro"
 "#,
         ("FCP_TTS_AUTH_TOKENS", "tts-env-token-7f3a"),
         r#""***""#,
