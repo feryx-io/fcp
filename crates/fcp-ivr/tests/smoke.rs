@@ -139,6 +139,27 @@ format = "compact"
 
     db.drop_db().await;
 }
+/// A `${NAME}` in the file is resolved from the environment when the
+/// file is loaded and masked like any secret, and a name the environment
+/// lacks refuses the file (`docs/PRODUCTION_STACK.md` phase 2).
+#[test]
+fn a_reference_in_the_file_is_resolved_from_the_environment() {
+    const CONFIG: &str = r#"[sip]
+udp_bind = "127.0.0.1:5070"
+tcp_bind = "127.0.0.1:5070"
+
+[http]
+bind_address = "127.0.0.1:8086"
+api_token = "${FCP_SMOKE_REF_IVR}"
+"#;
+    smoke::assert_env_override(
+        BIN,
+        CONFIG,
+        ("FCP_SMOKE_REF_IVR", "ivr-ref-token-7f3a"),
+        r#"api_token = "***""#,
+    );
+    smoke::assert_reference_unset_refuses(BIN, CONFIG, "FCP_SMOKE_REF_IVR");
+}
 
 /// Every configuration this binary ships parses with no unknown key and
 /// prints with its secrets masked under `--check-config`

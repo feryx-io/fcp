@@ -6,8 +6,9 @@
 //! Postgres and Redis — every service the stack runs by default, each
 //! waited for until healthy; a phone registers at the call manager, joins
 //! a conference room, is seen on the events server and read back through
-//! the gateway. The compose file's ports are used as they are, so this is
-//! the one test in this binary.
+//! the gateway, and the call manager's node id reaches it as a `${NAME}`
+//! reference resolved from the environment. The compose file's ports are
+//! used as they are, so this is the one test in this binary.
 
 use fcp_testkit::compose::ComposeStack;
 use fcp_testkit::smoke::{http_request, loopback};
@@ -17,6 +18,7 @@ use std::time::Duration;
 
 const REALM: &str = "fcp.local"; // the compose call manager's realm
 const ROOM: &str = "8000";
+const NODE_ID_BY_REFERENCE: &str = "cm-by-reference";
 const A_WHILE: Duration = Duration::from_secs(20);
 
 async fn start(
@@ -27,8 +29,27 @@ async fn start(
     redis: &str,
 ) -> Service {
     let svc = stack.service(name);
-    let config = stack.config_for(name, dir, redis);
-    let env = stack.env_for(name, db);
+    let mut config = stack.config_for(name, dir, redis);
+    let mut env = stack.env_for(name, db);
+    if name == "fcp-call-manager" {
+        // A `${NAME}` in a configuration is resolved from the environment
+        // when the file is loaded (`docs/PRODUCTION_STACK.md` phase 2):
+        // the shipped node id becomes a reference, and `/status` below
+        // must show what the environment held.
+        let referenced = config.replace(
+            "node_id = \"cm-docker-01\"",
+            "node_id = \"${FCP_STACK_TEST_NODE_ID}\"",
+        );
+        assert_ne!(
+            referenced, config,
+            "the shipped node id is where this test expects it"
+        );
+        config = referenced;
+        env.push((
+            "FCP_STACK_TEST_NODE_ID".to_string(),
+            NODE_ID_BY_REFERENCE.to_string(),
+        ));
+    }
     let env_refs: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let bin = bins::path(svc.binary, svc.package);
     Service::start_with(name, bin, &config, &svc.health_url, &env_refs).await
@@ -105,6 +126,18 @@ async fn the_compose_stack_comes_up_and_carries_a_call() {
 
     let admin_token = stack.dotenv("FCP_ADMIN_AUTH_TOKEN");
     let events_token = stack.dotenv("FCP_EVENTS_AUTH_TOKEN");
+    let cm_token = stack.dotenv("FCP_CALL_MANAGER_API_TOKEN");
+
+    // The call manager runs with the node id its configuration took from
+    // the environment through `${FCP_STACK_TEST_NODE_ID}`: `/trunks`
+    // reports it.
+    let (code, trunks) = get_json(&loopback(8084, "/trunks"), &cm_token).await;
+    assert_eq!(code, 200, "{trunks}");
+    assert_eq!(
+        trunks["node_id"].as_str(),
+        Some(NODE_ID_BY_REFERENCE),
+        "the node id was resolved from the environment: {trunks}"
+    );
 
     // A phone registers at the call manager (SIP 5060, as the compose
     // file publishes it) and joins the room on the conference server.

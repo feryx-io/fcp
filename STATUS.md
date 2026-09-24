@@ -836,7 +836,16 @@ under the `tts` profile — the call manager sending unanswered calls to
 voicemail and speech requests to the TTS server, `images.yml` building
 fourteen, every new configuration in its binary's configuration check,
 and the stack test starting all twelve default services and waiting for
-each to be healthy.
+each to be healthy. Phase 2 done (v0.25.252): every binary loads its
+file through `fcp_core::config::parse_toml`, which resolves `${NAME}` in
+every string from the environment before deserializing — a name the
+environment lacks refuses the file naming the key and the variable
+(`--check-config` exits 1), `$${…}` is a literal — so the nested
+credentials no per-field variable reaches (`[notifications.smtp]
+password`, a TURN password, a webhook secret) stay out of the file; unit
+tests in `fcp-core`, a reference resolved, masked and refused-when-unset
+test in all fourteen smoke suites, and the stack test's call manager
+taking its node id by reference.
 
 ## Historical documents
 

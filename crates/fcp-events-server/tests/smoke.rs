@@ -219,6 +219,29 @@ async fn an_ingested_event_reaches_the_ingesting_server_and_the_other_region() {
     us.stop().await;
     eu.stop().await;
 }
+/// A `${NAME}` in the file is resolved from the environment when the
+/// file is loaded and masked like any secret, and a name the environment
+/// lacks refuses the file (`docs/PRODUCTION_STACK.md` phase 2).
+#[test]
+fn a_reference_in_the_file_is_resolved_from_the_environment() {
+    const CONFIG: &str = r#"[websocket]
+bind_address = "127.0.0.1:8081"
+
+# The nested credential no per-field variable reaches.
+[notifications.smtp]
+host = "mail.example.net"
+from = "fcp@example.net"
+username = "fcp"
+password = "${FCP_SMOKE_REF_EVENTS}"
+"#;
+    smoke::assert_env_override(
+        BIN,
+        CONFIG,
+        ("FCP_SMOKE_REF_EVENTS", "smtp-ref-pass-7f3a"),
+        r#"password = "***""#,
+    );
+    smoke::assert_reference_unset_refuses(BIN, CONFIG, "FCP_SMOKE_REF_EVENTS");
+}
 
 /// Every configuration this binary ships parses with no unknown key and
 /// prints with its secrets masked under `--check-config`
