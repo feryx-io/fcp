@@ -3274,6 +3274,7 @@ dependencies = [
  "rcgen",
  "redis",
  "serde_json",
+ "serde_yaml",
  "sip-core",
  "sip-dialog",
  "sip-dns",

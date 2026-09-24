@@ -772,6 +772,20 @@ must start; CI validates the compose file alone, with the GPU overlay
 and with the registrar profile on every pull request, and builds the
 nine images nightly. Not proved: bringing the stack up, since the
 development machine has no Docker — phase 4's test does that.
+Phase 4 done (v0.25.247): the stack is proved. The testkit reads the
+compose file and `.env` and starts the events server, the admin, the
+gateway, the call manager and the conference server from the very
+binaries, configurations, environment and health checks the compose
+file names, on its own ports, against the test's Postgres and Redis;
+a phone registers, joins a room on the conference server, the events
+server lists the call, the gateway reads it back through the admin and
+reports its backends healthy. It runs in CI, so the compose file and
+its configurations are checked by a call from now on. Its first run
+found that the shipped `routing.yaml` listed no users and the YAML
+routing store knows only the users it lists, so the compose call
+manager had answered every INVITE with 500: the stack could not have
+carried a call. The file is gone from the stack; that a caller missing
+from a YAML routing store is a 500 rather than a refusal is noted.
 
 ## Historical documents
 

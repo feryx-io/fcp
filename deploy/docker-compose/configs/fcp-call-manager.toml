@@ -58,9 +58,9 @@ bind_address = "0.0.0.0:8084"
 # Where calls into a conference room go: the conference server on this host.
 conference_server_uri = "sip:conference@127.0.0.1:5074"
 
-[routing]
-rules_file = "/app/routing.yaml"
-hot_reload = true
+# No [routing] rules file: the YAML routing store knows only the users the
+# file lists and refuses every other caller, and the tenants' routing
+# rules live in the database (docs/TENANT_TRUNKS.md §12).
 
 [events]
 # The events server publishes 8081 on the host; FCP_CALL_MANAGER_EVENTS_AUTH_TOKEN authenticates.
