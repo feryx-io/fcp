@@ -71,4 +71,14 @@ pub struct Cli {
     /// rule refuses it, 2 when it does not parse.
     #[arg(long = "check-config")]
     pub check_config: bool,
+    /// `[cdr] database_url` and `[cdr_archive] database_url` from the environment, for a secret store or a compose
+    /// `.env` to inject; wins over the file (`docs/SHIP_AND_OPERATE.md`
+    /// phase 2).
+    #[arg(
+        long = "database-url",
+        value_name = "URL",
+        env = "FCP_JOBS_DATABASE_URL",
+        hide_env_values = true
+    )]
+    pub database_url: Option<String>,
 }

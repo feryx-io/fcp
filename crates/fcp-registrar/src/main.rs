@@ -59,6 +59,14 @@ async fn main() -> Result<()> {
         config::load_config(cli.config.as_deref()),
         cli.check_config,
     )?;
+    // Secrets from the environment win over the file
+    // (`docs/SHIP_AND_OPERATE.md` phase 2).
+    if let Some(v) = &cli.database_url {
+        config.storage.database_url = v.clone();
+    }
+    if let Some(v) = &cli.api_token {
+        config.http.api_token = Some(v.clone());
+    }
 
     // Apply CLI overrides
     if let Some(ref level) = cli.log_level {

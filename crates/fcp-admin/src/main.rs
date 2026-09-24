@@ -119,6 +119,23 @@ async fn main() -> Result<()> {
     // Load configuration
     let mut config =
         fcp_core::config::check_stage(load_config(cli.config.as_deref()), cli.check_config)?;
+    // Secrets from the environment win over the file
+    // (`docs/SHIP_AND_OPERATE.md` phase 2).
+    if let Some(v) = &cli.database_url {
+        config.storage.database_url = v.clone();
+    }
+    if let Some(v) = &cli.events_auth_token {
+        config.events.auth_token = Some(v.clone());
+    }
+    if let Some(v) = &cli.call_manager_auth_token {
+        config.call_manager.auth_token = Some(v.clone());
+    }
+    if let Some(v) = &cli.conference_auth_token {
+        config.conference.auth_token = Some(v.clone());
+    }
+    if let Some(v) = &cli.conference_join_secret {
+        config.conference.join_secret = Some(v.clone());
+    }
 
     // Apply CLI overrides
     if let Some(log_level) = cli.log_level {

@@ -90,4 +90,58 @@ pub struct Cli {
     /// rule refuses it, 2 when it does not parse.
     #[arg(long = "check-config")]
     pub check_config: bool,
+    /// `[storage] database_url` from the environment, for a secret store or a compose
+    /// `.env` to inject; wins over the file (`docs/SHIP_AND_OPERATE.md`
+    /// phase 2).
+    #[arg(
+        long = "database-url",
+        value_name = "URL",
+        env = "FCP_ADMIN_DATABASE_URL",
+        hide_env_values = true
+    )]
+    pub database_url: Option<String>,
+
+    /// `[events] auth_token` from the environment, for a secret store or a compose
+    /// `.env` to inject; wins over the file (`docs/SHIP_AND_OPERATE.md`
+    /// phase 2).
+    #[arg(
+        long = "events-auth-token",
+        value_name = "TOKEN",
+        env = "FCP_ADMIN_EVENTS_AUTH_TOKEN",
+        hide_env_values = true
+    )]
+    pub events_auth_token: Option<String>,
+
+    /// `[call_manager] auth_token` from the environment, for a secret store or a compose
+    /// `.env` to inject; wins over the file (`docs/SHIP_AND_OPERATE.md`
+    /// phase 2).
+    #[arg(
+        long = "call-manager-auth-token",
+        value_name = "TOKEN",
+        env = "FCP_ADMIN_CALL_MANAGER_AUTH_TOKEN",
+        hide_env_values = true
+    )]
+    pub call_manager_auth_token: Option<String>,
+
+    /// `[conference] auth_token` from the environment, for a secret store or a compose
+    /// `.env` to inject; wins over the file (`docs/SHIP_AND_OPERATE.md`
+    /// phase 2).
+    #[arg(
+        long = "conference-auth-token",
+        value_name = "TOKEN",
+        env = "FCP_ADMIN_CONFERENCE_AUTH_TOKEN",
+        hide_env_values = true
+    )]
+    pub conference_auth_token: Option<String>,
+
+    /// `[conference] join_secret` from the environment, for a secret store or a compose
+    /// `.env` to inject; wins over the file (`docs/SHIP_AND_OPERATE.md`
+    /// phase 2).
+    #[arg(
+        long = "conference-join-secret",
+        value_name = "TOKEN",
+        env = "FCP_ADMIN_CONFERENCE_JOIN_SECRET",
+        hide_env_values = true
+    )]
+    pub conference_join_secret: Option<String>,
 }

@@ -70,3 +70,20 @@ fn shipped_configurations_check() {
         &[],
     );
 }
+
+/// A secret given in the environment wins over the file and is never
+/// printed (`docs/SHIP_AND_OPERATE.md` phase 2).
+#[test]
+fn a_secret_from_the_environment_wins_over_the_file() {
+    smoke::assert_env_override(
+        BIN,
+        r#"[cdr]
+enabled = true
+"#,
+        (
+            "FCP_JOBS_DATABASE_URL",
+            "postgresql://fcp:env-db-pass-7f3a@db.internal:5432/fcp",
+        ),
+        r#"database_url = "postgresql://fcp:***@db.internal:5432/fcp""#,
+    );
+}

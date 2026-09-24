@@ -144,6 +144,14 @@ async fn main() -> Result<()> {
     // Load configuration
     let config_path = cli.config.as_deref();
     let mut config = fcp_core::config::check_stage(load_config(config_path), cli.check_config)?;
+    // Secrets from the environment win over the file
+    // (`docs/SHIP_AND_OPERATE.md` phase 2).
+    if let Some(v) = &cli.auth_token {
+        config.auth.token = Some(v.clone());
+    }
+    if let Some(v) = &cli.webhook_database_url {
+        config.webhook.database_url = v.clone();
+    }
 
     // Apply CLI overrides
     if let Some(log_level) = cli.log_level {

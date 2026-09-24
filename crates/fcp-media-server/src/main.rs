@@ -80,6 +80,27 @@ struct Cli {
     /// rule refuses it, 2 when it does not parse.
     #[arg(long = "check-config")]
     pub check_config: bool,
+    /// `[storage] database_url` from the environment, for a secret store or a compose
+    /// `.env` to inject; wins over the file (`docs/SHIP_AND_OPERATE.md`
+    /// phase 2).
+    #[arg(
+        long = "database-url",
+        value_name = "URL",
+        env = "FCP_MEDIA_DATABASE_URL",
+        hide_env_values = true
+    )]
+    database_url: Option<String>,
+
+    /// `[auth] tokens`, comma-separated from the environment, for a secret store or a compose
+    /// `.env` to inject; wins over the file (`docs/SHIP_AND_OPERATE.md`
+    /// phase 2).
+    #[arg(
+        long = "auth-tokens",
+        value_name = "TOKEN",
+        env = "FCP_MEDIA_AUTH_TOKENS",
+        hide_env_values = true
+    )]
+    auth_tokens: Option<String>,
 }
 
 #[tokio::main]
@@ -92,6 +113,14 @@ async fn main() -> Result<()> {
         config::load_config(cli.config.as_deref()),
         cli.check_config,
     )?;
+    // Secrets from the environment win over the file
+    // (`docs/SHIP_AND_OPERATE.md` phase 2).
+    if let Some(v) = &cli.database_url {
+        config.storage.database_url = Some(v.clone());
+    }
+    if let Some(v) = &cli.auth_tokens {
+        config.auth.tokens = split_tokens(v);
+    }
 
     // Apply CLI overrides
     if let Some(ref level) = cli.log_level {
@@ -420,4 +449,12 @@ fn init_tracing(config: &MediaServerConfig) {
                 .init();
         }
     }
+}
+
+/// A comma-separated list from the environment, as a token list.
+fn split_tokens(v: &str) -> Vec<String> {
+    v.split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
 }

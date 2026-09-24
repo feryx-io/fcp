@@ -55,10 +55,15 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     // 2. Load configuration from TOML (or defaults)
-    let deploy_config = fcp_core::config::check_stage(
+    let mut deploy_config = fcp_core::config::check_stage(
         config::load_config(cli.config.as_deref()),
         cli.check_config,
     )?;
+    // Secrets from the environment win over the file
+    // (`docs/SHIP_AND_OPERATE.md` phase 2).
+    if let Some(v) = &cli.database_url {
+        deploy_config.core.storage.database_url = v.clone();
+    }
     let mut sbc_config = deploy_config.core.clone();
 
     // 3. Initialize tracing subscriber

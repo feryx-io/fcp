@@ -75,4 +75,36 @@ pub struct Cli {
     /// rule refuses it, 2 when it does not parse.
     #[arg(long = "check-config")]
     pub check_config: bool,
+    /// `[storage] database_url` from the environment, for a secret store or a compose
+    /// `.env` to inject; wins over the file (`docs/SHIP_AND_OPERATE.md`
+    /// phase 2).
+    #[arg(
+        long = "database-url",
+        value_name = "URL",
+        env = "FCP_VOICEMAIL_DATABASE_URL",
+        hide_env_values = true
+    )]
+    pub database_url: Option<String>,
+
+    /// `[http] api_token` from the environment, for a secret store or a compose
+    /// `.env` to inject; wins over the file (`docs/SHIP_AND_OPERATE.md`
+    /// phase 2).
+    #[arg(
+        long = "api-token",
+        value_name = "TOKEN",
+        env = "FCP_VOICEMAIL_API_TOKEN",
+        hide_env_values = true
+    )]
+    pub api_token: Option<String>,
+
+    /// `[events] auth_token` from the environment, for a secret store or a compose
+    /// `.env` to inject; wins over the file (`docs/SHIP_AND_OPERATE.md`
+    /// phase 2).
+    #[arg(
+        long = "events-auth-token",
+        value_name = "TOKEN",
+        env = "FCP_VOICEMAIL_EVENTS_AUTH_TOKEN",
+        hide_env_values = true
+    )]
+    pub events_auth_token: Option<String>,
 }

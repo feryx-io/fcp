@@ -582,6 +582,43 @@ fn assert_masked(rel: &str, stdout: &str) {
     }
 }
 
+/// A secret given in the environment wins over the file
+/// (`docs/SHIP_AND_OPERATE.md` phase 2): `bin --check-config` on
+/// `config_toml` with `env` set must be accepted, its output must show
+/// `must_show`, and the secret's value must appear nowhere in it.
+pub fn assert_env_override(bin: &str, config_toml: &str, env: (&str, &str), must_show: &str) {
+    let file = tempfile::Builder::new()
+        .prefix("fcp-env-")
+        .suffix(".toml")
+        .tempfile()
+        .expect("temp config");
+    std::fs::write(file.path(), config_toml).expect("write config");
+    let path = file.path().to_string_lossy().to_string();
+    let out = std::process::Command::new(bin)
+        .args(["--check-config", "--config", &path])
+        .env(env.0, env.1)
+        .output()
+        .expect("run binary");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{bin} with {} set must be accepted:\n{stderr}",
+        env.0
+    );
+    assert!(
+        stdout.contains(must_show),
+        "{bin}: `{must_show}` not shown with {} set:\n{stdout}",
+        env.0
+    );
+    assert!(
+        !stdout.contains(env.1),
+        "{bin}: the secret from {} is printed:\n{stdout}",
+        env.0
+    );
+}
+
 /// Convenience for building a loopback URL.
 pub fn loopback(port: u16, path: &str) -> String {
     format!("http://127.0.0.1:{port}{path}")

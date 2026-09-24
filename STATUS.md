@@ -739,6 +739,19 @@ the survey named, all now fixed, and the call manager's dead
 it ships through the flag, so a configuration that stops parsing fails
 the PR; the five compose files the token rules still refuse are held at
 "parses" until phase 3 gives them their tokens.
+Phase 2 done (v0.25.245): secrets from the environment. Every token and
+secret a binary read only from its TOML — the events server's
+`[auth] token`, the call manager's `api_token` and events token, the
+conference server's HTTP token, join secret and cluster secret, the
+registrar's, IVR's, voicemail's and presence server's `api_token`, the
+media, WebRTC gateway and TTS servers' token lists, and every database
+URL, since a password in one is a secret — now has an environment
+variable in the binary's `FCP_<BINARY>_*` style, listed by `--help` and
+never echoed, that wins over the file. A secret store, Kubernetes or
+the compose stack's `.env` can inject them and the shipped TOMLs carry
+none. Left in the file: the events server's notification providers'
+credentials, TURN passwords and webhook signing secrets, which are
+nested lists.
 
 ## Historical documents
 

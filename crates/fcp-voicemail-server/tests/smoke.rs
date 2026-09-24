@@ -164,3 +164,21 @@ fn shipped_configurations_check() {
         &["crates/fcp-voicemail-server/fcp-voicemail-server.toml.example"],
     );
 }
+
+/// A secret given in the environment wins over the file and is never
+/// printed (`docs/SHIP_AND_OPERATE.md` phase 2).
+#[test]
+fn a_secret_from_the_environment_wins_over_the_file() {
+    smoke::assert_env_override(
+        BIN,
+        r#"[sip]
+udp_bind = "127.0.0.1:5072"
+tcp_bind = "127.0.0.1:5072"
+
+[http]
+bind_address = "0.0.0.0:8087"
+"#,
+        ("FCP_VOICEMAIL_API_TOKEN", "vm-env-token-7f3a"),
+        r#"api_token = "***""#,
+    );
+}

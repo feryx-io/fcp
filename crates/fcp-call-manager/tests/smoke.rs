@@ -112,3 +112,21 @@ fn shipped_configurations_check() {
         &["deploy/docker-compose/configs/fcp-call-manager.toml"],
     );
 }
+
+/// A secret given in the environment wins over the file and is never
+/// printed (`docs/SHIP_AND_OPERATE.md` phase 2).
+#[test]
+fn a_secret_from_the_environment_wins_over_the_file() {
+    smoke::assert_env_override(
+        BIN,
+        r#"[sip]
+udp_bind = "127.0.0.1:5060"
+tcp_bind = "127.0.0.1:5060"
+
+[http]
+bind_address = "0.0.0.0:8084"
+"#,
+        ("FCP_CALL_MANAGER_API_TOKEN", "cm-env-token-7f3a"),
+        r#"api_token = "***""#,
+    );
+}

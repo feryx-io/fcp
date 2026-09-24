@@ -52,6 +52,27 @@ struct Cli {
     /// rule refuses it, 2 when it does not parse.
     #[arg(long = "check-config")]
     pub check_config: bool,
+    /// `[storage] database_url` from the environment, for a secret store or a compose
+    /// `.env` to inject; wins over the file (`docs/SHIP_AND_OPERATE.md`
+    /// phase 2).
+    #[arg(
+        long = "database-url",
+        value_name = "URL",
+        env = "FCP_PRESENCE_DATABASE_URL",
+        hide_env_values = true
+    )]
+    database_url: Option<String>,
+
+    /// `[http] api_token` from the environment, for a secret store or a compose
+    /// `.env` to inject; wins over the file (`docs/SHIP_AND_OPERATE.md`
+    /// phase 2).
+    #[arg(
+        long = "api-token",
+        value_name = "TOKEN",
+        env = "FCP_PRESENCE_API_TOKEN",
+        hide_env_values = true
+    )]
+    api_token: Option<String>,
 }
 
 #[tokio::main]
@@ -63,6 +84,14 @@ async fn main() -> Result<()> {
         config::load_config(cli.config.as_deref()),
         cli.check_config,
     )?;
+    // Secrets from the environment win over the file
+    // (`docs/SHIP_AND_OPERATE.md` phase 2).
+    if let Some(v) = &cli.database_url {
+        config.storage.database_url = v.clone();
+    }
+    if let Some(v) = &cli.api_token {
+        config.http.api_token = Some(v.clone());
+    }
 
     if let Some(ref level) = cli.log_level {
         config.logging.level = level.clone();

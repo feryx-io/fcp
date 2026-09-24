@@ -221,3 +221,17 @@ format = "compact"
 fn shipped_configurations_check() {
     smoke::assert_configs_check(BIN, &[], &["fcp-presence-local.toml"], &[]);
 }
+
+/// A secret given in the environment wins over the file and is never
+/// printed (`docs/SHIP_AND_OPERATE.md` phase 2).
+#[test]
+fn a_secret_from_the_environment_wins_over_the_file() {
+    smoke::assert_env_override(
+        BIN,
+        r#"[http]
+bind_address = "0.0.0.0:8092"
+"#,
+        ("FCP_PRESENCE_API_TOKEN", "pres-env-token-7f3a"),
+        r#"api_token = "***""#,
+    );
+}

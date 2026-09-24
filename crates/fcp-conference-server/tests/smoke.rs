@@ -165,3 +165,22 @@ fn shipped_configurations_check() {
         ],
     );
 }
+
+/// A secret given in the environment wins over the file and is never
+/// printed (`docs/SHIP_AND_OPERATE.md` phase 2).
+#[test]
+fn a_secret_from_the_environment_wins_over_the_file() {
+    smoke::assert_env_override(
+        BIN,
+        r#"[sip]
+udp_bind = "127.0.0.1:5074"
+tcp_bind = "127.0.0.1:5074"
+
+[http]
+bind_address = "0.0.0.0:8090"
+auth_enabled = true
+"#,
+        ("FCP_CONFERENCE_AUTH_TOKEN", "conf-env-token-7f3a"),
+        r#"auth_token = "***""#,
+    );
+}

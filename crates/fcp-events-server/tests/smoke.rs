@@ -236,3 +236,17 @@ fn shipped_configurations_check() {
         ],
     );
 }
+
+/// A secret given in the environment wins over the file and is never
+/// printed (`docs/SHIP_AND_OPERATE.md` phase 2).
+#[test]
+fn a_secret_from_the_environment_wins_over_the_file() {
+    smoke::assert_env_override(
+        BIN,
+        r#"[websocket]
+bind_address = "0.0.0.0:8081"
+"#,
+        ("FCP_EVENTS_AUTH_TOKEN", "events-env-token-7f3a"),
+        r#"token = "***""#,
+    );
+}
