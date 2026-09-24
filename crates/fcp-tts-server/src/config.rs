@@ -257,8 +257,8 @@ pub fn load_config(path: Option<&str>) -> anyhow::Result<TtsServerConfig> {
         Some(p) => {
             let text = std::fs::read_to_string(p)
                 .map_err(|e| anyhow::anyhow!("Failed to read config '{}': {}", p, e))?;
-            let config: TtsServerConfig = toml::from_str(&text)
-                .map_err(|e| anyhow::anyhow!("Failed to parse config '{}': {}", p, e))?;
+            let config: TtsServerConfig = fcp_core::config::parse_toml(&text)
+                .map_err(|e| e.context(format!("Failed to parse config '{}'", p)))?;
             Ok(config)
         }
         None => Ok(TtsServerConfig {

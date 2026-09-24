@@ -709,7 +709,7 @@ fn load_config_from_file(path: &Path) -> Result<AdminConfig> {
     let contents = fs::read_to_string(path)
         .with_context(|| format!("Failed to read config file: {}", path.display()))?;
 
-    let config: AdminConfig = toml::from_str(&contents)
+    let config: AdminConfig = fcp_core::config::parse_toml(&contents)
         .with_context(|| format!("Failed to parse config file: {}", path.display()))?;
 
     info!("Configuration loaded from {}", path.display());

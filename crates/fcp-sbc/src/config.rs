@@ -124,7 +124,7 @@ fn load_config_from_file(path: &Path) -> Result<SbcDeployConfig> {
     let contents = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read config file: {}", path.display()))?;
 
-    let config: SbcDeployConfig = toml::from_str(&contents)
+    let config: SbcDeployConfig = fcp_core::config::parse_toml(&contents)
         .with_context(|| format!("Failed to parse config file: {}", path.display()))?;
 
     info!("Configuration loaded from {}", path.display());

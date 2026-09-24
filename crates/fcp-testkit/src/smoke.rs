@@ -681,6 +681,34 @@ pub fn assert_env_override(bin: &str, config_toml: &str, env: (&str, &str), must
     );
 }
 
+/// A `${NAME}` the environment does not set refuses the file
+/// (`docs/PRODUCTION_STACK.md` phase 2): `--check-config` exits with
+/// [`fcp_core::config::CHECK_CONFIG_REFUSED`] and names the variable.
+pub fn assert_reference_unset_refuses(bin: &str, config_toml: &str, name: &str) {
+    let file = tempfile::Builder::new()
+        .prefix("fcp-ref-")
+        .suffix(".toml")
+        .tempfile()
+        .expect("temp config");
+    std::fs::write(file.path(), config_toml).expect("write config");
+    let path = file.path().to_string_lossy().to_string();
+    let out = std::process::Command::new(bin)
+        .args(["--check-config", "--config", &path])
+        .env_remove(name)
+        .output()
+        .expect("run binary");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        out.status.code(),
+        Some(fcp_core::config::CHECK_CONFIG_REFUSED),
+        "{bin} with ${{{name}}} unset must be refused, not accepted or a parse failure:\n{stderr}"
+    );
+    assert!(
+        stderr.contains(&format!("${{{name}}}")),
+        "{bin}: the refusal must name ${{{name}}}:\n{stderr}"
+    );
+}
+
 /// Convenience for building a loopback URL.
 pub fn loopback(port: u16, path: &str) -> String {
     format!("http://127.0.0.1:{port}{path}")

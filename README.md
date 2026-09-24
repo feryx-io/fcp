@@ -90,6 +90,9 @@ Three things about configuration that every binary shares:
   environment variable for each. An unknown key is refused, naming it.
 - **Every secret has an environment variable** in the binary's
   `FCP_<BINARY>_*` style (`--help` lists them), which wins over the file.
+- **Any string in a file may name one as `${NAME}`**, resolved when the
+  file is loaded; a name the environment lacks refuses the file. That is
+  how a credential nested in a list stays out of the file.
 
 ## Where each question is answered
 

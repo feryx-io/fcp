@@ -189,6 +189,35 @@ format = "compact"
         .await;
     report.assert_clean();
 }
+/// A `${NAME}` in the file is resolved from the environment when the
+/// file is loaded — here into a value that is not a secret, so the
+/// effective configuration shows it resolved — and a name the
+/// environment lacks refuses the file (`docs/PRODUCTION_STACK.md` phase 2).
+#[test]
+fn a_reference_in_the_file_is_resolved_from_the_environment() {
+    const CONFIG: &str = r#"[service]
+node_id = "gateway-${FCP_SMOKE_REF_API_GATEWAY}"
+"#;
+    let file = smoke::temp_dir();
+    let path = file.path().join("ref.toml");
+    std::fs::write(&path, CONFIG).unwrap();
+    let out = smoke::run_blocking_with_env(
+        BIN,
+        &["--check-config", "--config", &path.to_string_lossy()],
+        &[(
+            "FCP_SMOKE_REF_API_GATEWAY".to_string(),
+            "by-reference".to_string(),
+        )],
+        std::time::Duration::from_secs(20),
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", out.stderr);
+    assert!(
+        out.stdout.contains(r#"node_id = "gateway-by-reference""#),
+        "{}",
+        out.stdout
+    );
+    smoke::assert_reference_unset_refuses(BIN, CONFIG, "FCP_SMOKE_REF_API_GATEWAY");
+}
 
 /// Every configuration this binary ships parses with no unknown key and
 /// prints with its secrets masked under `--check-config`

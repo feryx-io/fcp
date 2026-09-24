@@ -28,6 +28,14 @@ secret to the admin). No configuration under `configs/` carries a
 secret. To keep your own values out of git, keep a copy elsewhere and
 pass `--env-file`.
 
+A value with no variable of its own — an SMTP password under the events
+server's `[notifications]`, a TURN server's password, a webhook's
+signing secret — is written as `${NAME}` in the configuration and given
+to the service in its `environment:`; every binary resolves such a
+reference when it loads its file and refuses to start if the name is not
+set. Nothing under `configs/` uses one yet; the stack test proves the
+mechanism on the call manager's node id.
+
 Options:
 
 ```bash

@@ -52,6 +52,23 @@ format = "compact"
         .await;
     report.assert_clean();
 }
+/// A `${NAME}` in the file is resolved from the environment when the
+/// file is loaded and masked like any secret, and a name the environment
+/// lacks refuses the file (`docs/PRODUCTION_STACK.md` phase 2).
+#[test]
+fn a_reference_in_the_file_is_resolved_from_the_environment() {
+    const CONFIG: &str = r#"[cdr]
+enabled = true
+database_url = "postgresql://fcp:${FCP_SMOKE_REF_JOBS}@db.internal:5432/fcp"
+"#;
+    smoke::assert_env_override(
+        BIN,
+        CONFIG,
+        ("FCP_SMOKE_REF_JOBS", "jobs-ref-pass-7f3a"),
+        r#"database_url = "postgresql://fcp:***@db.internal:5432/fcp""#,
+    );
+    smoke::assert_reference_unset_refuses(BIN, CONFIG, "FCP_SMOKE_REF_JOBS");
+}
 
 /// Every configuration this binary ships parses with no unknown key and
 /// prints with its secrets masked under `--check-config`

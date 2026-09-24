@@ -114,6 +114,18 @@ has an environment variable in the binary's `FCP_<BINARY>_*` style
 (`--help` lists them; the table above has the tokens). A value in the
 environment wins over the file.
 
+**Any string by reference.** Every string in every binary's file may
+name an environment variable as `${NAME}`, anywhere in the string —
+`password = "${SMTP_PASSWORD}"`, `hosts = ["${CARRIER}:5060"]`,
+`database_url = "postgresql://fcp:${DB_PASSWORD}@db:5432/fcp"` — and it
+is resolved when the file is loaded, so a credential nested in a list or
+an optional provider, which no per-field variable reaches, still stays
+out of the file. A name the environment does not set refuses the file at
+startup, naming the key and the variable (`--check-config` exits 1);
+`$${…}` writes a literal `${…}`. The effective configuration
+`--check-config` prints shows what was resolved, masked where the key
+is a secret.
+
 ## 5. Addresses and ports
 
 The root local files share one plan. The realm is `fcp.local`; every

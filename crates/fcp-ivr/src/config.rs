@@ -518,7 +518,7 @@ fn load_config_from_file(path: &Path) -> Result<IvrConfig> {
     let contents = fs::read_to_string(path)
         .with_context(|| format!("Failed to read config file: {}", path.display()))?;
 
-    let config: IvrConfig = toml::from_str(&contents)
+    let config: IvrConfig = fcp_core::config::parse_toml(&contents)
         .with_context(|| format!("Failed to parse config file: {}", path.display()))?;
 
     info!("Configuration loaded from {}", path.display());

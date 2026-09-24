@@ -109,6 +109,134 @@ pub fn masked_toml<T: Serialize>(config: &T) -> std::result::Result<String, Stri
     toml::to_string_pretty(&value).map_err(|e| e.to_string())
 }
 
+/// A `${NAME}` in a configuration string that could not be resolved
+/// (`docs/PRODUCTION_STACK.md` phase 2): the environment does not set
+/// the name, or what is between the braces is not a name.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ReferenceError {
+    /// `${NAME}` where `NAME` is not set in the environment.
+    #[error("{key} refers to ${{{name}}}, which is not set in the environment")]
+    Unset { name: String, key: String },
+    /// `${…}` where `…` is not an environment variable name, or has no
+    /// closing brace.
+    #[error("{key} has `${{{text}` where an environment variable name was expected")]
+    Malformed { text: String, key: String },
+}
+
+fn is_reference_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Every `${NAME}` in `text` replaced by what `lookup` returns for it;
+/// `$${` is the way to write a literal `${`. Any other `$` is itself.
+/// `key` names the value in the error, for the operator.
+pub fn resolve_references(
+    text: &str,
+    key: &str,
+    lookup: &dyn Fn(&str) -> Option<String>,
+) -> std::result::Result<String, ReferenceError> {
+    if !text.contains('$') {
+        return Ok(text.to_string());
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(i) = rest.find('$') {
+        out.push_str(&rest[..i]);
+        let after = &rest[i + 1..];
+        if let Some(tail) = after.strip_prefix("${") {
+            // `$${…}`: a literal `${`, the reference not resolved.
+            out.push_str("${");
+            rest = tail;
+        } else if let Some(tail) = after.strip_prefix('{') {
+            let Some(end) = tail.find('}') else {
+                return Err(ReferenceError::Malformed {
+                    text: tail.to_string(),
+                    key: key.to_string(),
+                });
+            };
+            let name = &tail[..end];
+            if !is_reference_name(name) {
+                return Err(ReferenceError::Malformed {
+                    text: format!("{name}}}"),
+                    key: key.to_string(),
+                });
+            }
+            match lookup(name) {
+                Some(value) => out.push_str(&value),
+                None => {
+                    return Err(ReferenceError::Unset {
+                        name: name.to_string(),
+                        key: key.to_string(),
+                    })
+                }
+            }
+            rest = &tail[end + 1..];
+        } else {
+            out.push('$');
+            rest = after;
+        }
+    }
+    out.push_str(rest);
+    Ok(out)
+}
+
+fn resolve_value_references(
+    value: &mut toml::Value,
+    key: &mut String,
+    lookup: &dyn Fn(&str) -> Option<String>,
+) -> std::result::Result<(), ReferenceError> {
+    match value {
+        toml::Value::Table(table) => {
+            for (k, v) in table.iter_mut() {
+                let len = key.len();
+                if !key.is_empty() {
+                    key.push('.');
+                }
+                key.push_str(k);
+                resolve_value_references(v, key, lookup)?;
+                key.truncate(len);
+            }
+        }
+        toml::Value::Array(items) => {
+            for (i, item) in items.iter_mut().enumerate() {
+                let len = key.len();
+                key.push_str(&format!("[{i}]"));
+                resolve_value_references(item, key, lookup)?;
+                key.truncate(len);
+            }
+        }
+        toml::Value::String(s) if s.contains('$') => {
+            *s = resolve_references(s, key, lookup)?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Every string in a TOML value tree with its `${NAME}` references
+/// resolved through `lookup`, in place; the first that cannot be is the
+/// error, naming the key.
+pub fn resolve_toml_references(
+    value: &mut toml::Value,
+    lookup: &dyn Fn(&str) -> Option<String>,
+) -> std::result::Result<(), ReferenceError> {
+    resolve_value_references(value, &mut String::new(), lookup)
+}
+
+/// A binary's configuration from its file's text: parsed, every
+/// `${NAME}` in every string resolved from the process environment,
+/// then deserialized — so a nested credential no per-field variable
+/// reaches can still come from the environment. A name the environment
+/// lacks is a refusal that names the key; bad TOML, an unknown key or a
+/// wrong type is a parse failure, as before.
+pub fn parse_toml<T: serde::de::DeserializeOwned>(text: &str) -> anyhow::Result<T> {
+    let mut value: toml::Value = toml::from_str(text)?;
+    resolve_toml_references(&mut value, &|name| std::env::var(name).ok())?;
+    Ok(value.try_into::<T>()?)
+}
+
 /// Exit code of `--check-config` when the file does not parse — an
 /// unknown key, a wrong type, bad TOML.
 pub const CHECK_CONFIG_PARSE_FAILED: i32 = 2;
@@ -230,6 +358,114 @@ fn reject_crlf(field: &str, value: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    fn env(name: &str) -> Option<String> {
+        match name {
+            "TOKEN" => Some("s3cret".to_string()),
+            "HOST" => Some("carrier.example.net".to_string()),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn references_resolve_anywhere_in_a_string() {
+        assert_eq!(resolve_references("${TOKEN}", "k", &env).unwrap(), "s3cret");
+        assert_eq!(
+            resolve_references("sip:${HOST}:5060;x=${TOKEN}", "k", &env).unwrap(),
+            "sip:carrier.example.net:5060;x=s3cret"
+        );
+        assert_eq!(
+            resolve_references("no reference", "k", &env).unwrap(),
+            "no reference"
+        );
+    }
+
+    #[test]
+    fn a_doubled_dollar_is_a_literal_reference_and_a_lone_one_is_itself() {
+        assert_eq!(
+            resolve_references("$${TOKEN} costs $5 and $TOKEN", "k", &env).unwrap(),
+            "${TOKEN} costs $5 and $TOKEN"
+        );
+    }
+
+    #[test]
+    fn an_unset_name_and_a_malformed_reference_are_errors_naming_the_key() {
+        assert_eq!(
+            resolve_references("${MISSING}", "http.api_token", &env),
+            Err(ReferenceError::Unset {
+                name: "MISSING".into(),
+                key: "http.api_token".into()
+            })
+        );
+        let e = resolve_references("${MISSING}", "http.api_token", &env).unwrap_err();
+        assert_eq!(
+            e.to_string(),
+            "http.api_token refers to ${MISSING}, which is not set in the environment"
+        );
+        assert!(matches!(
+            resolve_references("${not a name}", "k", &env),
+            Err(ReferenceError::Malformed { .. })
+        ));
+        assert!(matches!(
+            resolve_references("${TOKEN", "k", &env),
+            Err(ReferenceError::Malformed { .. })
+        ));
+        assert!(matches!(
+            resolve_references("${}", "k", &env),
+            Err(ReferenceError::Malformed { .. })
+        ));
+    }
+
+    #[test]
+    fn a_toml_tree_is_resolved_in_every_string_and_the_key_is_a_path() {
+        let mut value: toml::Value = toml::from_str(
+            r#"
+[http]
+api_token = "${TOKEN}"
+port = 8080
+[[trunks]]
+name = "a"
+hosts = ["${HOST}:5060", "b"]
+"#,
+        )
+        .unwrap();
+        resolve_toml_references(&mut value, &env).unwrap();
+        assert_eq!(value["http"]["api_token"].as_str(), Some("s3cret"));
+        assert_eq!(
+            value["trunks"][0]["hosts"][0].as_str(),
+            Some("carrier.example.net:5060")
+        );
+
+        let mut value: toml::Value =
+            toml::from_str("[[trunks]]\nhosts = [\"x\", \"${NOPE}\"]\n").unwrap();
+        let e = resolve_toml_references(&mut value, &env).unwrap_err();
+        assert_eq!(
+            e,
+            ReferenceError::Unset {
+                name: "NOPE".into(),
+                key: "trunks[0].hosts[1]".into()
+            }
+        );
+    }
+
+    #[test]
+    fn parse_toml_resolves_from_the_environment_and_still_refuses_unknown_keys() {
+        #[derive(Debug, serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct C {
+            token: String,
+        }
+        std::env::set_var("FCP_CORE_TEST_REFERENCE", "from-env");
+        let c: C = parse_toml("token = \"${FCP_CORE_TEST_REFERENCE}\"").unwrap();
+        assert_eq!(c.token, "from-env");
+
+        let e = parse_toml::<C>("token = \"${FCP_CORE_TEST_UNSET}\"").unwrap_err();
+        assert!(e.downcast_ref::<ReferenceError>().is_some(), "{e}");
+        assert!(e.to_string().contains("FCP_CORE_TEST_UNSET"), "{e}");
+
+        let e = parse_toml::<C>("token = \"x\"\nother = 1").unwrap_err();
+        assert!(e.downcast_ref::<toml::de::Error>().is_some(), "{e}");
+        assert!(e.to_string().contains("other"), "{e}");
+    }
     use super::*;
 
     #[test]

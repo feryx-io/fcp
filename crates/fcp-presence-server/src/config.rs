@@ -428,7 +428,7 @@ pub fn load_config(config_path: Option<&Path>) -> Result<PresenceServerConfig> {
     let config = if let Some(path) = config_path {
         let contents = std::fs::read_to_string(path)
             .with_context(|| format!("Failed to read config file: {}", path.display()))?;
-        toml::from_str(&contents)
+        fcp_core::config::parse_toml(&contents)
             .with_context(|| format!("Failed to parse config file: {}", path.display()))?
     } else {
         let default_path = Path::new("fcp-presence-server.toml");
@@ -436,7 +436,8 @@ pub fn load_config(config_path: Option<&Path>) -> Result<PresenceServerConfig> {
             info!("Loading configuration from {}", default_path.display());
             let contents = std::fs::read_to_string(default_path)
                 .context("Failed to read default config file")?;
-            toml::from_str(&contents).context("Failed to parse default config file")?
+            fcp_core::config::parse_toml(&contents)
+                .context("Failed to parse default config file")?
         } else {
             info!("No configuration file found, using defaults");
             PresenceServerConfig::default()
