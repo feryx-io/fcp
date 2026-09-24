@@ -211,8 +211,10 @@ impl ComposeStack {
     }
 
     /// The service's environment as the test runs it: every
-    /// `*_DATABASE_URL` the test database.
-    pub fn env_for(&self, name: &str, database_url: &str) -> Vec<(String, String)> {
+    /// `*_DATABASE_URL` the test database, the containers' paths under
+    /// `dir` as [`ComposeStack::config_for`] puts them.
+    pub fn env_for(&self, name: &str, database_url: &str, dir: &Path) -> Vec<(String, String)> {
+        let d = dir.to_string_lossy().to_string();
         self.service(name)
             .env
             .iter()
@@ -220,7 +222,10 @@ impl ComposeStack {
                 if k.ends_with("_DATABASE_URL") {
                     (k.clone(), database_url.to_string())
                 } else {
-                    (k.clone(), v.clone())
+                    (
+                        k.clone(),
+                        v.replace("/var/lib/fcp", &format!("{d}/var-lib-fcp")),
+                    )
                 }
             })
             .collect()

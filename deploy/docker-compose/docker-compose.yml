@@ -65,10 +65,12 @@ services:
 
   # The management API and the admin UI. Migrations run at its startup
   # (and at every other binary's that opens Postgres).
-  # The stack's certificates (docs/PRODUCTION_STACK.md phase 3): a CA and
-  # a certificate per TLS service, made once into the fcp-certs volume by
-  # scripts/make-certs.sh and kept on every later start. Phones and
-  # browsers trust ca.crt from that volume (README, "Certificates").
+  # The stack's certificates and master key (docs/PRODUCTION_STACK.md
+  # phases 3 and 4): a CA, a certificate per TLS service and master.key,
+  # made once into the fcp-certs volume by scripts/make-certs.sh and kept
+  # on every later start. Phones and browsers trust ca.crt from that
+  # volume (README, "Certificates"); every service that opens Postgres
+  # seals its secrets under master.key (README, "Encryption at rest").
   certs:
     image: alpine/openssl:latest
     container_name: fcp-certs
@@ -88,12 +90,15 @@ services:
       - "8080:8080"
     volumes:
       - ./configs/fcp-admin.toml:/app/fcp-admin.toml:ro
+      - fcp-certs:/var/lib/fcp/certs:ro
       - admin-data:/app/data
     environment:
       RUST_LOG: info
       FCP_ADMIN_LOG_FORMAT: pretty
       HOST_IP: ${HOST_IP}
       FCP_ADMIN_DATABASE_URL: postgresql://fcp:${POSTGRES_PASSWORD}@postgres:5432/fcp
+      FCP_ENCRYPTION_PROVIDER: local
+      FCP_MASTER_KEY_FILE: /var/lib/fcp/certs/master.key
       FCP_ADMIN_AUTH_TOKEN: ${FCP_ADMIN_AUTH_TOKEN}
       FCP_ADMIN_PROVISIONING_AUTH_TOKEN: ${FCP_ADMIN_PROVISIONING_AUTH_TOKEN}
       FCP_ADMIN_EVENTS_AUTH_TOKEN: ${FCP_EVENTS_AUTH_TOKEN}
@@ -103,6 +108,8 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
+      certs:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       fcp-events-server:
@@ -177,6 +184,8 @@ services:
       FCP_CALL_MANAGER_LOG_FORMAT: pretty
       FCP_CALL_MANAGER_PUBLIC_IP: ${HOST_IP}
       FCP_CALL_MANAGER_DATABASE_URL: postgresql://fcp:${POSTGRES_PASSWORD}@127.0.0.1:5432/fcp
+      FCP_ENCRYPTION_PROVIDER: local
+      FCP_MASTER_KEY_FILE: /var/lib/fcp/certs/master.key
       FCP_CALL_MANAGER_API_TOKEN: ${FCP_CALL_MANAGER_API_TOKEN}
       FCP_CALL_MANAGER_EVENTS_AUTH_TOKEN: ${FCP_EVENTS_AUTH_TOKEN}
       FCP_CALL_MANAGER_TTS_REMOTE_TOKEN: ${FCP_TTS_AUTH_TOKENS}
@@ -215,6 +224,8 @@ services:
       FCP_CONFERENCE_LOG_FORMAT: pretty
       FCP_CONFERENCE_PUBLIC_IP: ${HOST_IP}
       FCP_CONFERENCE_DATABASE_URL: postgresql://fcp:${POSTGRES_PASSWORD}@127.0.0.1:5432/fcp
+      FCP_ENCRYPTION_PROVIDER: local
+      FCP_MASTER_KEY_FILE: /var/lib/fcp/certs/master.key
       FCP_CONFERENCE_AUTH_TOKEN: ${FCP_CONFERENCE_AUTH_TOKEN}
       FCP_CONFERENCE_EVENTS_AUTH_TOKEN: ${FCP_EVENTS_AUTH_TOKEN}
       FCP_CONFERENCE_JOIN_SECRET: ${FCP_CONFERENCE_JOIN_SECRET}
@@ -303,12 +314,17 @@ services:
       - "8082:8082"
     volumes:
       - ./configs/fcp-jobs.toml:/app/fcp-jobs.toml:ro
+      - fcp-certs:/var/lib/fcp/certs:ro
     environment:
       RUST_LOG: info
       FCP_JOBS_LOG_FORMAT: pretty
       FCP_JOBS_WORKERS: 4
       FCP_JOBS_DATABASE_URL: postgresql://fcp:${POSTGRES_PASSWORD}@postgres:5432/fcp
+      FCP_ENCRYPTION_PROVIDER: local
+      FCP_MASTER_KEY_FILE: /var/lib/fcp/certs/master.key
     depends_on:
+      certs:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
@@ -329,15 +345,20 @@ services:
     network_mode: host
     volumes:
       - ./configs/fcp-ivr.toml:/app/fcp-ivr.toml:ro
+      - fcp-certs:/var/lib/fcp/certs:ro
     environment:
       RUST_LOG: info
       FCP_IVR_LOG_FORMAT: pretty
       FCP_IVR_PUBLIC_IP: ${HOST_IP}
       FCP_IVR_DATABASE_URL: postgresql://fcp:${POSTGRES_PASSWORD}@127.0.0.1:5432/fcp
+      FCP_ENCRYPTION_PROVIDER: local
+      FCP_MASTER_KEY_FILE: /var/lib/fcp/certs/master.key
       FCP_IVR_API_TOKEN: ${FCP_IVR_API_TOKEN}
       FCP_IVR_EVENTS_AUTH_TOKEN: ${FCP_EVENTS_AUTH_TOKEN}
       FCP_IVR_TTS_REMOTE_TOKEN: ${FCP_TTS_AUTH_TOKENS}
     depends_on:
+      certs:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       fcp-events-server:
@@ -359,15 +380,20 @@ services:
     network_mode: host
     volumes:
       - ./configs/fcp-voicemail-server.toml:/app/fcp-voicemail-server.toml:ro
+      - fcp-certs:/var/lib/fcp/certs:ro
       - voicemail-data:/var/lib/fcp/voicemail
     environment:
       RUST_LOG: info
       FCP_VOICEMAIL_LOG_FORMAT: pretty
       FCP_VOICEMAIL_PUBLIC_IP: ${HOST_IP}
       FCP_VOICEMAIL_DATABASE_URL: postgresql://fcp:${POSTGRES_PASSWORD}@127.0.0.1:5432/fcp
+      FCP_ENCRYPTION_PROVIDER: local
+      FCP_MASTER_KEY_FILE: /var/lib/fcp/certs/master.key
       FCP_VOICEMAIL_API_TOKEN: ${FCP_VOICEMAIL_API_TOKEN}
       FCP_VOICEMAIL_EVENTS_AUTH_TOKEN: ${FCP_EVENTS_AUTH_TOKEN}
     depends_on:
+      certs:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       fcp-events-server:
@@ -389,11 +415,16 @@ services:
     network_mode: host
     volumes:
       - ./configs/fcp-presence-server.toml:/app/fcp-presence-server.toml:ro
+      - fcp-certs:/var/lib/fcp/certs:ro
     environment:
       RUST_LOG: info
       FCP_PRESENCE_DATABASE_URL: postgresql://fcp:${POSTGRES_PASSWORD}@127.0.0.1:5432/fcp
+      FCP_ENCRYPTION_PROVIDER: local
+      FCP_MASTER_KEY_FILE: /var/lib/fcp/certs/master.key
       FCP_PRESENCE_API_TOKEN: ${FCP_PRESENCE_API_TOKEN}
     depends_on:
+      certs:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
     healthcheck:
@@ -423,6 +454,8 @@ services:
       FCP_SBC_HEALTH_BIND: 0.0.0.0:8094
       FCP_SBC_HEALTH_API_TOKEN: ${FCP_SBC_HEALTH_API_TOKEN}
       FCP_SBC_DATABASE_URL: postgresql://fcp:${POSTGRES_PASSWORD}@127.0.0.1:5432/fcp
+      FCP_ENCRYPTION_PROVIDER: local
+      FCP_MASTER_KEY_FILE: /var/lib/fcp/certs/master.key
     depends_on:
       certs:
         condition: service_completed_successfully
@@ -515,6 +548,8 @@ services:
       RUST_LOG: info
       FCP_REGISTRAR_LOG_FORMAT: pretty
       FCP_REGISTRAR_DATABASE_URL: postgresql://fcp:${POSTGRES_PASSWORD}@127.0.0.1:5432/fcp
+      FCP_ENCRYPTION_PROVIDER: local
+      FCP_MASTER_KEY_FILE: /var/lib/fcp/certs/master.key
       FCP_REGISTRAR_API_TOKEN: ${FCP_REGISTRAR_API_TOKEN}
     depends_on:
       certs:

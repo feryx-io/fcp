@@ -858,7 +858,15 @@ and sends browsers to `https://${HOST_IP}:8095` — the stack's first
 `${NAME}`; the testkit's phone talks SIPS (`Phone::new_tls`) and its HTTP
 helpers HTTPS under a trusted CA; the stack test registers over SIPS and
 reads the gateway and media server over HTTPS (the proxy, a container,
-is checked by compose and its own health check).
+is checked by compose and its own health check). Phase 4 done
+(v0.25.254): the `certs` service also makes `master.key` (`openssl rand
+-base64 32`) into the same volume and keeps it; all nine services that
+open Postgres run with `FCP_ENCRYPTION_PROVIDER=local` and
+`FCP_MASTER_KEY_FILE`, so the first to start creates the initial DEK and
+every write of a secret is sealed; the README says how to run the
+one-time `reencrypt`, that the key is part of the backup and what losing
+it means; the stack test's services run the same way and it reads
+`GET /api/v1/system/encryption` for `local` and an active DEK.
 
 ## Historical documents
 

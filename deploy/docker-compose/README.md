@@ -1,8 +1,9 @@
 # The FCP stack on one Docker host
 
 `docker-compose.yml` here brings up Postgres, Redis and every FCP service
-on one machine, with TLS (v0.25.253, `docs/SHIP_AND_OPERATE.md` phases 3
-and 4, `docs/PRODUCTION_STACK.md` phases 1–3). The
+on one machine, with TLS and encryption at rest (v0.25.254,
+`docs/SHIP_AND_OPERATE.md` phases 3 and 4, `docs/PRODUCTION_STACK.md`
+phases 1–4). The
 same configurations, environment and tokens are what a CI test starts
 the binaries from (`crates/fcp-call-manager/tests/compose_stack.rs`), so
 a change to this stack is checked by a registration and a call.
@@ -58,7 +59,7 @@ bridge services reach them through `host.docker.internal`.
 |---|---|---|
 | `postgres` (user `fcp`, database `fcp`) | bridge | 5432 |
 | `redis` | bridge | 6379 |
-| `certs` — runs once: the CA and every certificate into `fcp-certs` | — | — |
+| `certs` — runs once: the CA, every certificate and the master key into `fcp-certs` | — | — |
 | `fcp-admin` — the API and the admin UI at `/admin/` | bridge | 8080 |
 | `fcp-api-gateway` — the public face of the admin | bridge | 8000 |
 | `fcp-events-server` | bridge | 8081 |
@@ -90,8 +91,8 @@ The TTS server is off unless its profile is up, because its image carries
 PyTorch (the Kokoro engine); without it the call manager's and IVR's
 prompts are silent. The image builds nightly like the rest.
 
-Not in this stack yet: encryption at rest, and clustering — one node of
-each (`docs/PRODUCTION_STACK.md` has the order).
+Not in this stack yet: clustering — one node of each
+(`docs/PRODUCTION_STACK.md` has the order).
 
 ## Certificates
 
@@ -115,6 +116,31 @@ TLS ports, except on the WebRTC gateway, whose one listener is HTTPS.
 Provisioning is served over HTTPS only (the admin's default), through the
 proxy on 8444: a phone's provisioning URL is
 `https://HOST_IP:8444/api/v1/provisioning/…`.
+
+## Encryption at rest
+
+`certs` also makes `master.key` into `fcp-certs`, and every service that
+opens Postgres runs with `FCP_ENCRYPTION_PROVIDER=local` and
+`FCP_MASTER_KEY_FILE` pointing at it (`docs/ENCRYPTION.md`). The first
+service to start creates the initial data encryption key, wrapped by that
+master key, and from then on every SIP password, trunk password, PIN and
+webhook secret is written sealed. `GET /api/v1/system/encryption` (the
+admin token) shows the provider, the active key and the sealed columns.
+
+Two things follow. **The key is part of the backup**: a dump of `postgres-data`
+without `fcp-certs` holds secrets nobody can open, and a new key with an
+old database fails at startup with a message naming the mismatch, so
+back the two volumes up together and never regenerate the key without
+`down -v`. And **what was stored before the key existed is still plain**
+until it is rewritten; a stack that ran without encryption once seals it
+all with:
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $FCP_ADMIN_AUTH_TOKEN" http://localhost:8080/api/v1/system/encryption/reencrypt
+```
+
+Rotation is `POST …/encryption/rotate` and then, once every service has
+restarted or refreshed, `reencrypt` again (`docs/ENCRYPTION.md`).
 
 ## Use it
 
