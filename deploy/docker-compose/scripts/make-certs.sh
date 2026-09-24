@@ -1,11 +1,16 @@
 #!/bin/sh
-# The compose stack's certificates (docs/PRODUCTION_STACK.md phase 3), made
-# once by the `certs` service into the `fcp-certs` volume: a CA, and a
-# certificate per service that terminates TLS, each naming the service on
-# the bridge network, the host's address and the loopback. Idempotent: a
-# file that exists is kept, so a restart keeps the CA the phones trust.
-# Regenerate everything with `docker compose down -v` (which also drops
-# the database) or `docker volume rm docker-compose_fcp-certs`.
+# The compose stack's certificates and its master key
+# (docs/PRODUCTION_STACK.md phases 3 and 4), made once by the `certs`
+# service into the `fcp-certs` volume: a CA, a certificate per service
+# that terminates TLS, each naming the service on the bridge network, the
+# host's address and the loopback, and `master.key`, the key every
+# binary that opens the database wraps its data encryption keys with
+# (docs/ENCRYPTION.md). Idempotent: a file that exists is kept, so a
+# restart keeps the CA the phones trust and the key the database's
+# secrets are sealed under. Regenerate everything with
+# `docker compose down -v` (which also drops the database, which is the
+# only safe time to lose the key) or `docker volume rm
+# docker-compose_fcp-certs`.
 set -eu
 
 DIR="${CERTS_DIR:-/certs}"
@@ -44,5 +49,13 @@ for svc in $SERVICES; do
     chmod 600 "$svc.key"
 done
 chmod 644 ca.crt ./*.crt
+
+if [ ! -f master.key ]; then
+    echo "certs: making the master key"
+    openssl rand -base64 32 > master.key
+    chmod 600 master.key
+else
+    echo "certs: keeping the master key"
+fi
 echo "certs: ready in $DIR"
 ls -1 "$DIR"

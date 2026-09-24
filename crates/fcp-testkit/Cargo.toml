@@ -24,6 +24,7 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
 rcgen = "0.13"
+base64 = "0.22"
 # HTTPS in the HTTP helpers and the phone over SIPS, with a CA of the test's.
 tokio-rustls = "0.26"
 rustls-pemfile = "2"

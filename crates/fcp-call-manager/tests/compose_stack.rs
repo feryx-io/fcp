@@ -10,7 +10,9 @@
 //! reference resolved from the environment. The certificates the stack's
 //! `certs` service would have made come from the test's own CA, and a
 //! second phone registers over SIPS with it while the WebRTC gateway and
-//! the media server answer over HTTPS. The compose file's ports are used
+//! the media server answer over HTTPS; the master key beside them has
+//! every service sealing the database's secrets, which the admin's
+//! encryption status shows. The compose file's ports are used
 //! as they are, so this is the one test in this binary.
 
 use fcp_testkit::certs::ClusterCa;
@@ -34,7 +36,7 @@ async fn start(
 ) -> Service {
     let svc = stack.service(name);
     let mut config = stack.config_for(name, dir, redis);
-    let mut env = stack.env_for(name, db);
+    let mut env = stack.env_for(name, db, dir);
     if name == "fcp-call-manager" {
         // A `${NAME}` in a configuration is resolved from the environment
         // when the file is loaded (`docs/PRODUCTION_STACK.md` phase 2):
@@ -121,6 +123,18 @@ async fn the_compose_stack_comes_up_and_carries_a_call() {
         ca.node(service);
     }
     trust_ca(&ca.ca_path);
+    // And the master key the certs service makes beside them: 32 random
+    // bytes, base64, as `openssl rand -base64 32` writes it.
+    let mut key = uuid::Uuid::new_v4().as_bytes().to_vec();
+    key.extend_from_slice(uuid::Uuid::new_v4().as_bytes());
+    std::fs::write(
+        certs_dir.join("master.key"),
+        format!(
+            "{}\n",
+            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, key)
+        ),
+    )
+    .expect("master key");
     let seed = Seed::new(db.url(), REALM).await;
     seed.meeting(ROOM, None, None).await;
     let alice = seed.user("alice", "alice-pw", "1001").await;
@@ -151,6 +165,24 @@ async fn the_compose_stack_comes_up_and_carries_a_call() {
     let admin_token = stack.dotenv("FCP_ADMIN_AUTH_TOKEN");
     let events_token = stack.dotenv("FCP_EVENTS_AUTH_TOKEN");
     let cm_token = stack.dotenv("FCP_CALL_MANAGER_API_TOKEN");
+
+    // Encryption at rest is on: every service that opened Postgres did so
+    // as `local` under the key in the volume, and the first of them made
+    // the initial data encryption key the rest now seal with.
+    let (code, encryption) =
+        get_json(&loopback(8080, "/api/v1/system/encryption"), &admin_token).await;
+    assert_eq!(code, 200, "{encryption}");
+    assert_eq!(
+        encryption["provider"].as_str(),
+        Some("local"),
+        "{encryption}"
+    );
+    assert!(
+        encryption["active_key_id"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty()),
+        "an active DEK: {encryption}"
+    );
 
     // The call manager runs with the node id its configuration took from
     // the environment through `${FCP_STACK_TEST_NODE_ID}`: `/trunks`
