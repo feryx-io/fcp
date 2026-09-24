@@ -73,4 +73,58 @@ pub struct Cli {
     /// rule refuses it, 2 when it does not parse.
     #[arg(long = "check-config")]
     pub check_config: bool,
+    /// `[storage] database_url` from the environment, for a secret store or a compose
+    /// `.env` to inject; wins over the file (`docs/SHIP_AND_OPERATE.md`
+    /// phase 2).
+    #[arg(
+        long = "database-url",
+        value_name = "URL",
+        env = "FCP_CONFERENCE_DATABASE_URL",
+        hide_env_values = true
+    )]
+    pub database_url: Option<String>,
+
+    /// `[http] auth_token` from the environment, for a secret store or a compose
+    /// `.env` to inject; wins over the file (`docs/SHIP_AND_OPERATE.md`
+    /// phase 2).
+    #[arg(
+        long = "auth-token",
+        value_name = "TOKEN",
+        env = "FCP_CONFERENCE_AUTH_TOKEN",
+        hide_env_values = true
+    )]
+    pub auth_token: Option<String>,
+
+    /// `[events] auth_token` from the environment, for a secret store or a compose
+    /// `.env` to inject; wins over the file (`docs/SHIP_AND_OPERATE.md`
+    /// phase 2).
+    #[arg(
+        long = "events-auth-token",
+        value_name = "TOKEN",
+        env = "FCP_CONFERENCE_EVENTS_AUTH_TOKEN",
+        hide_env_values = true
+    )]
+    pub events_auth_token: Option<String>,
+
+    /// `[conference] join_secret` from the environment, for a secret store or a compose
+    /// `.env` to inject; wins over the file (`docs/SHIP_AND_OPERATE.md`
+    /// phase 2).
+    #[arg(
+        long = "join-secret",
+        value_name = "TOKEN",
+        env = "FCP_CONFERENCE_JOIN_SECRET",
+        hide_env_values = true
+    )]
+    pub join_secret: Option<String>,
+
+    /// `[cluster] secret` from the environment, for a secret store or a compose
+    /// `.env` to inject; wins over the file (`docs/SHIP_AND_OPERATE.md`
+    /// phase 2).
+    #[arg(
+        long = "cluster-secret",
+        value_name = "TOKEN",
+        env = "FCP_CONFERENCE_CLUSTER_SECRET",
+        hide_env_values = true
+    )]
+    pub cluster_secret: Option<String>,
 }

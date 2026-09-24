@@ -153,3 +153,21 @@ fn shipped_configurations_check() {
         &["crates/fcp-ivr/fcp-ivr.toml.example"],
     );
 }
+
+/// A secret given in the environment wins over the file and is never
+/// printed (`docs/SHIP_AND_OPERATE.md` phase 2).
+#[test]
+fn a_secret_from_the_environment_wins_over_the_file() {
+    smoke::assert_env_override(
+        BIN,
+        r#"[sip]
+udp_bind = "127.0.0.1:5070"
+tcp_bind = "127.0.0.1:5070"
+
+[http]
+bind_address = "0.0.0.0:8086"
+"#,
+        ("FCP_IVR_API_TOKEN", "ivr-env-token-7f3a"),
+        r#"api_token = "***""#,
+    );
+}

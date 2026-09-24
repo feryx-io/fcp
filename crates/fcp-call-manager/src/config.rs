@@ -846,8 +846,8 @@ pub fn load_config(config_path: Option<&Path>) -> Result<CallManagerConfig> {
         }
     };
 
-    validate_config(&config)?;
-
+    // Validated by the caller after its overrides (`validate_config`),
+    // so a secret from the environment counts.
     info!(
         node_id = %config.service.node_id,
         default_tenant_id = %config.service.default_tenant_id,

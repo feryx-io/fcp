@@ -38,6 +38,11 @@ async fn main() -> Result<()> {
         config::load_config(cli.config.as_deref()),
         cli.check_config,
     )?;
+    // Secrets from the environment win over the file
+    // (`docs/SHIP_AND_OPERATE.md` phase 2).
+    if let Some(v) = &cli.auth_tokens {
+        config.auth.tokens = split_tokens(v);
+    }
     if let Some(ref level) = cli.log_level {
         config.logging.level = level.clone();
     }
@@ -387,6 +392,14 @@ async fn shutdown_signal() {
         _ = ctrl_c => info!("Received Ctrl+C, shutting down"),
         _ = terminate => info!("Received SIGTERM, shutting down"),
     }
+}
+
+/// A comma-separated list from the environment, as a token list.
+fn split_tokens(v: &str) -> Vec<String> {
+    v.split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
 }
 
 #[cfg(test)]

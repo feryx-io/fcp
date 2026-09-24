@@ -93,6 +93,14 @@ async fn main() -> Result<()> {
     }
 
     fcp_core::config::check_stage(config::validate_config(&config), cli.check_config)?;
+    // Secrets from the environment win over the file
+    // (`docs/SHIP_AND_OPERATE.md` phase 2).
+    if let Some(v) = &cli.database_url {
+        config.storage.database_url = v.clone();
+    }
+    if let Some(v) = &cli.api_token {
+        config.http.api_token = Some(v.clone());
+    }
 
     // 3. Initialize tracing
     if cli.check_config {

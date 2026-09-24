@@ -219,3 +219,20 @@ database_url = "{db}"
 fn shipped_configurations_check() {
     smoke::assert_configs_check(BIN, &[], &["fcp-sbc-local.toml"], &[]);
 }
+
+/// A secret given in the environment wins over the file and is never
+/// printed (`docs/SHIP_AND_OPERATE.md` phase 2).
+#[test]
+fn a_secret_from_the_environment_wins_over_the_file() {
+    smoke::assert_env_override(
+        BIN,
+        r#"[core.storage]
+enabled = true
+"#,
+        (
+            "FCP_SBC_DATABASE_URL",
+            "postgresql://fcp:env-db-pass-7f3a@db.internal:5432/fcp",
+        ),
+        r#"database_url = "postgresql://fcp:***@db.internal:5432/fcp""#,
+    );
+}

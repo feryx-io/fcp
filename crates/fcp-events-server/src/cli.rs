@@ -63,4 +63,25 @@ pub struct Cli {
     /// rule refuses it, 2 when it does not parse.
     #[arg(long = "check-config")]
     pub check_config: bool,
+    /// `[auth] token` from the environment, for a secret store or a compose
+    /// `.env` to inject; wins over the file (`docs/SHIP_AND_OPERATE.md`
+    /// phase 2).
+    #[arg(
+        long = "auth-token",
+        value_name = "TOKEN",
+        env = "FCP_EVENTS_AUTH_TOKEN",
+        hide_env_values = true
+    )]
+    pub auth_token: Option<String>,
+
+    /// `[webhook] database_url` from the environment, for a secret store or a compose
+    /// `.env` to inject; wins over the file (`docs/SHIP_AND_OPERATE.md`
+    /// phase 2).
+    #[arg(
+        long = "webhook-database-url",
+        value_name = "URL",
+        env = "FCP_EVENTS_WEBHOOK_DATABASE_URL",
+        hide_env_values = true
+    )]
+    pub webhook_database_url: Option<String>,
 }

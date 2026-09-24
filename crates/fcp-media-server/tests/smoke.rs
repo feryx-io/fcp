@@ -68,3 +68,20 @@ fn shipped_configurations_check() {
         &[],
     );
 }
+
+/// A secret given in the environment wins over the file and is never
+/// printed (`docs/SHIP_AND_OPERATE.md` phase 2).
+#[test]
+fn a_secret_from_the_environment_wins_over_the_file() {
+    smoke::assert_env_override(
+        BIN,
+        r#"[http]
+bind_address = "127.0.0.1:8083"
+"#,
+        (
+            "FCP_MEDIA_AUTH_TOKENS",
+            "media-env-token-7f3a,media-env-token-8e4b",
+        ),
+        r#""***""#,
+    );
+}

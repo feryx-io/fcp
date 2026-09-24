@@ -34,4 +34,14 @@ pub struct Cli {
     /// rule refuses it, 2 when it does not parse.
     #[arg(long = "check-config")]
     pub check_config: bool,
+    /// `[auth] tokens`, comma-separated from the environment, for a secret store or a compose
+    /// `.env` to inject; wins over the file (`docs/SHIP_AND_OPERATE.md`
+    /// phase 2).
+    #[arg(
+        long = "auth-tokens",
+        value_name = "TOKEN",
+        env = "FCP_TTS_AUTH_TOKENS",
+        hide_env_values = true
+    )]
+    pub auth_tokens: Option<String>,
 }

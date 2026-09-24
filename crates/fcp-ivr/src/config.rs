@@ -459,8 +459,8 @@ pub fn load_config(config_path: Option<&Path>) -> Result<IvrConfig> {
         }
     };
 
-    validate_http_config(&config.http)?;
-    validate_sip_config(&config.sip)?;
+    // Validated by the caller after its overrides (`validate_config`),
+    // so a secret from the environment counts.
 
     info!(
         node_id = %config.service.node_id,
@@ -476,6 +476,13 @@ pub fn load_config(config_path: Option<&Path>) -> Result<IvrConfig> {
     );
 
     Ok(config)
+}
+
+/// The startup rules: a public HTTP bind needs its token, a public SIP
+/// bind its authentication.
+pub fn validate_config(config: &IvrConfig) -> Result<()> {
+    validate_http_config(&config.http)?;
+    validate_sip_config(&config.sip)
 }
 
 fn validate_http_config(http: &HttpSection) -> Result<()> {

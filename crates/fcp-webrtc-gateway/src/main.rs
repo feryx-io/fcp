@@ -111,6 +111,16 @@ struct Cli {
     /// rule refuses it, 2 when it does not parse.
     #[arg(long = "check-config")]
     pub check_config: bool,
+    /// `[auth] tokens`, comma-separated from the environment, for a secret store or a compose
+    /// `.env` to inject; wins over the file (`docs/SHIP_AND_OPERATE.md`
+    /// phase 2).
+    #[arg(
+        long = "auth-tokens",
+        value_name = "TOKEN",
+        env = "FCP_WEBRTC_GW_AUTH_TOKENS",
+        hide_env_values = true
+    )]
+    auth_tokens: Option<String>,
 }
 
 #[tokio::main]
@@ -123,6 +133,11 @@ async fn main() -> Result<()> {
         config::load_config(cli.config.as_deref()),
         cli.check_config,
     )?;
+    // Secrets from the environment win over the file
+    // (`docs/SHIP_AND_OPERATE.md` phase 2).
+    if let Some(v) = &cli.auth_tokens {
+        config.auth.tokens = split_tokens(v);
+    }
 
     // Apply CLI overrides
     if let Some(ref level) = cli.log_level {
@@ -741,4 +756,12 @@ async fn start_cdr(
     let writer =
         fcp_cdr::start_node(cdr, None, Some(stream)).context("Failed to start the CDR spool")?;
     Ok(Some(writer))
+}
+
+/// A comma-separated list from the environment, as a token list.
+fn split_tokens(v: &str) -> Vec<String> {
+    v.split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
 }
