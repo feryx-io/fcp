@@ -1,8 +1,8 @@
 # The FCP stack on one Docker host
 
 `docker-compose.yml` here brings up Postgres, Redis and every FCP service
-on one machine (v0.25.251, `docs/SHIP_AND_OPERATE.md` phases 3 and 4,
-`docs/PRODUCTION_STACK.md` phase 1). The
+on one machine, with TLS (v0.25.253, `docs/SHIP_AND_OPERATE.md` phases 3
+and 4, `docs/PRODUCTION_STACK.md` phases 1–3). The
 same configurations, environment and tokens are what a CI test starts
 the binaries from (`crates/fcp-call-manager/tests/compose_stack.rs`), so
 a change to this stack is checked by a registration and a call.
@@ -46,7 +46,8 @@ docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d   # the con
 
 ## What runs, and where
 
-Two kinds of service. The ones that carry SIP and RTP — the call
+Two kinds of service, and `certs`, which runs once and exits. The ones
+that carry SIP and RTP — the call
 manager, the SBC, the conference server, the IVR, voicemail and presence
 servers, the media server and the WebRTC gateway — run on the host's
 network, because Docker's bridge cannot forward RTP port ranges usefully. They reach the bridge services through the ports
@@ -57,19 +58,21 @@ bridge services reach them through `host.docker.internal`.
 |---|---|---|
 | `postgres` (user `fcp`, database `fcp`) | bridge | 5432 |
 | `redis` | bridge | 6379 |
+| `certs` — runs once: the CA and every certificate into `fcp-certs` | — | — |
 | `fcp-admin` — the API and the admin UI at `/admin/` | bridge | 8080 |
 | `fcp-api-gateway` — the public face of the admin | bridge | 8000 |
 | `fcp-events-server` | bridge | 8081 |
+| `fcp-proxy` — HTTPS for the three above | bridge | 8443 gateway, 8444 admin, 8445 events |
 | `fcp-jobs` — the CDR processor and job workers | bridge | 8082 |
-| `fcp-call-manager` | host | SIP 5060, HTTP 8084, RTP 10000–10999 |
-| `fcp-sbc` — carriers point here; its one trunk is the call manager | host | SIP 5078, health 8094, RTP 28000–28999 |
-| `fcp-conference` | host | SIP 5074, HTTP 8090, RTP 20000–20999 |
+| `fcp-call-manager` | host | SIP 5060, SIPS 5061, WSS 5081, HTTP 8084, RTP 10000–10999 |
+| `fcp-sbc` — carriers point here; its one trunk is the call manager | host | SIP 5078, SIP/TLS 5079, health 8094, RTP 28000–28999 |
+| `fcp-conference` | host | SIP 5074, SIP/TLS 5075, HTTP 8090, RTP 20000–20999 |
 | `fcp-ivr` | host | SIP 5070, HTTP 8086, RTP 22000–22999 |
 | `fcp-voicemail` — the call manager sends unanswered calls here | host | SIP 5072, HTTP 8087, RTP 24000–24999 |
 | `fcp-presence` | host | SIP 5076, HTTP 8092 |
-| `fcp-media` | host | HTTP 8085, RTP 30000–30999 |
-| `fcp-webrtc-gw` | host | HTTP 8095, SIP 5077, RTP 34000–35999 |
-| `fcp-registrar` (profile `registrar`) | host | SIP 5062, HTTP 8083 |
+| `fcp-media` | host | HTTP 8085, HTTPS 8185, RTP 30000–30999 |
+| `fcp-webrtc-gw` | host | HTTPS 8095, SIP 5077, RTP 34000–35999 |
+| `fcp-registrar` (profile `registrar`) | host | SIP 5062, SIPS 5063, WSS 5083, HTTP 8083 |
 | `fcp-tts` (profile `tts`) — speech for the call manager and IVR | bridge | 8093 |
 | `prometheus` | bridge | 9090 |
 | `grafana` (admin/admin; anonymous viewers) | bridge | 3000 |
@@ -87,8 +90,31 @@ The TTS server is off unless its profile is up, because its image carries
 PyTorch (the Kokoro engine); without it the call manager's and IVR's
 prompts are silent. The image builds nightly like the rest.
 
-Not in this stack yet: TLS anywhere, encryption at rest, and clustering —
-one node of each (`docs/PRODUCTION_STACK.md` has the order).
+Not in this stack yet: encryption at rest, and clustering — one node of
+each (`docs/PRODUCTION_STACK.md` has the order).
+
+## Certificates
+
+`certs` runs once, before anything that terminates TLS, and makes a CA
+and a certificate per service into the `fcp-certs` volume
+(`scripts/make-certs.sh`); each certificate names the service on the
+bridge network, `localhost`, `host.docker.internal`, `127.0.0.1` and
+`HOST_IP`. A later start keeps them; `docker compose down -v` (or
+`docker volume rm docker-compose_fcp-certs`) makes new ones, after which
+every phone and browser must trust the new CA. The CA:
+
+```bash
+docker run --rm -v docker-compose_fcp-certs:/certs:ro alpine cat /certs/ca.crt > fcp-ca.crt
+```
+
+Install `fcp-ca.crt` on a phone and register at `HOST_IP:5061` over
+TLS (`sips:`), or on a browser and open `https://HOST_IP:8444/admin/`.
+`curl --cacert fcp-ca.crt https://HOST_IP:8443/api/v1/health` reads the
+gateway through the proxy. Plain SIP and HTTP stay listening beside the
+TLS ports, except on the WebRTC gateway, whose one listener is HTTPS.
+Provisioning is served over HTTPS only (the admin's default), through the
+proxy on 8444: a phone's provisioning URL is
+`https://HOST_IP:8444/api/v1/provisioning/…`.
 
 ## Use it
 
@@ -102,6 +128,7 @@ curl -s -H "Authorization: Bearer $FCP_ADMIN_AUTH_TOKEN" http://localhost:8080/a
 curl -s -H "Authorization: Bearer $FCP_CALL_MANAGER_API_TOKEN" http://localhost:8084/status | jq .
 curl -s -H "Authorization: Bearer $FCP_EVENTS_AUTH_TOKEN" http://localhost:8081/calls
 curl -s http://localhost:8000/gateway/status | jq .backends
+curl -s --cacert fcp-ca.crt https://localhost:8444/api/v1/health      # the admin through the proxy
 ```
 
 The first tenant, user and extension are created through the API or the

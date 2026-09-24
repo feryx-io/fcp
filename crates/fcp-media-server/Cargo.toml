@@ -18,6 +18,8 @@ path = "src/main.rs"
 [dependencies]
 # forge-media crates (media engine)
 forge-api = { path = "../../external/forge-media/crates/forge-api" }
+# The process-level crypto provider the HTTPS listener needs installed.
+rustls = "0.23"
 forge-core = { path = "../../external/forge-media/crates/forge-core" }
 
 # CLI and configuration

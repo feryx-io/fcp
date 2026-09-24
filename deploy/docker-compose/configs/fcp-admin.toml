@@ -10,7 +10,8 @@ bind_address = "0.0.0.0:8080"
 # A non-loopback bind needs auth_enabled and a token: FCP_ADMIN_AUTH_TOKEN
 # and FCP_ADMIN_PROVISIONING_AUTH_TOKEN come from .env.
 auth_enabled = true
-provisioning_require_https = false  # No TLS in the compose stack; require it in production
+# provisioning_require_https stays at its default, true: provisioning is
+# served through the proxy on 8444, which says so in X-Forwarded-Proto.
 
 [storage]
 # Overridden by FCP_ADMIN_DATABASE_URL (the password is in .env).
@@ -27,8 +28,10 @@ url = "http://host.docker.internal:8084"
 [conference]
 # The conference server, on the host's network; FCP_ADMIN_CONFERENCE_AUTH_TOKEN
 # and FCP_ADMIN_CONFERENCE_JOIN_SECRET come from .env. gateway_url is where
-# browsers are sent to join: the WebRTC gateway on the host's address.
+# browsers are sent to join: the WebRTC gateway on the host's address,
+# over HTTPS; HOST_IP is resolved from the environment when this file loads.
 server_url = "http://host.docker.internal:8090"
+gateway_url = "https://${HOST_IP}:8095"
 
 [compliance]
 exports_dir = "/app/data/exports"

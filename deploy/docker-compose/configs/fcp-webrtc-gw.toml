@@ -1,5 +1,6 @@
-# fcp-webrtc-gw in the compose stack, on the host's network: HTTP 8095,
-# SIP 5077, RTP 34000-35999. Tokens come from .env through
+# fcp-webrtc-gw in the compose stack, on the host's network: HTTPS 8095
+# (its one listener, from the `certs` service's certificate), SIP 5077,
+# RTP 34000-35999. Tokens come from .env through
 # FCP_WEBRTC_GW_AUTH_TOKENS; the host's address through FCP_WEBRTC_GW_PUBLIC_IP.
 
 [service]
@@ -9,9 +10,14 @@ node_id = "webrtc-gw-docker-01"
 [http]
 bind_address = "0.0.0.0:8095"
 enable_cors = true
-allowed_origins = ["http://localhost:8080"]
+allowed_origins = ["http://localhost:8080", "https://localhost:8444"]
 serve_join_page = true
 public_join = true
+
+[tls]
+enabled = true
+cert = "/var/lib/fcp/certs/fcp-webrtc-gw.crt"
+key = "/var/lib/fcp/certs/fcp-webrtc-gw.key"
 
 [sip]
 udp_bind = "0.0.0.0:5077"

@@ -18,6 +18,13 @@ base_dir = "/var/lib/fcp/media/recordings"
 root_jail = "/var/lib/fcp/media"
 prompts_dir = "/var/lib/fcp/media/prompts"
 
+[tls]
+# HTTPS on 8185 beside HTTP on 8085, from the `certs` service's certificate.
+enabled = true
+bind = "0.0.0.0:8185"
+cert = "/var/lib/fcp/certs/fcp-media.crt"
+key = "/var/lib/fcp/certs/fcp-media.key"
+
 [auth]
 # tokens: FCP_MEDIA_AUTH_TOKENS (required; the server refuses to start without one).
 tokens = ["set-by-FCP_MEDIA_AUTH_TOKENS"]

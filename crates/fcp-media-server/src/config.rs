@@ -233,6 +233,11 @@ pub struct TlsSection {
     #[serde(default)]
     pub enabled: bool,
 
+    /// Where HTTPS listens, beside HTTP on `[http] bind_address`. Unset,
+    /// it is the HTTP bind, which the two listeners cannot share.
+    #[serde(default)]
+    pub bind: Option<SocketAddr>,
+
     /// Path to TLS certificate (PEM)
     pub cert: Option<PathBuf>,
 
@@ -410,7 +415,7 @@ pub fn to_api_server_config(config: &MediaServerConfig) -> ApiServerConfig {
         rate_limit_window_secs: config.http.rate_limit_window_secs,
         trusted_proxies: Vec::new(),
         enable_https: config.tls.enabled,
-        https_bind: None,
+        https_bind: config.tls.bind,
         tls_cert: config.tls.cert.clone(),
         tls_key: config.tls.key.clone(),
         recording_base_dir: config.recording.base_dir.clone(),
@@ -442,6 +447,17 @@ pub fn validate_config(config: &MediaServerConfig) -> Result<()> {
     // TLS consistency
     if config.tls.enabled && (config.tls.cert.is_none() || config.tls.key.is_none()) {
         anyhow::bail!("tls.enabled is true but tls.cert and/or tls.key are not configured");
+    }
+    if config.tls.enabled
+        && config
+            .tls
+            .bind
+            .is_none_or(|b| b == config.http.bind_address)
+    {
+        anyhow::bail!(
+            "tls.enabled is true but tls.bind is not set (HTTPS listens beside HTTP, not on {})",
+            config.http.bind_address
+        );
     }
 
     // Auth consistency: not disabled and no tokens

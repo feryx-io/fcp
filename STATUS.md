@@ -845,7 +845,20 @@ credentials no per-field variable reaches (`[notifications.smtp]
 password`, a TURN password, a webhook secret) stay out of the file; unit
 tests in `fcp-core`, a reference resolved, masked and refused-when-unset
 test in all fourteen smoke suites, and the stack test's call manager
-taking its node id by reference.
+taking its node id by reference. Phase 3 done (v0.25.253): a `certs`
+service (`alpine/openssl`, `scripts/make-certs.sh`) makes a CA and a
+certificate per TLS service into the `fcp-certs` volume once and keeps
+them; SIPS 5061 and WSS 5081 on the call manager (5063/5083 on the
+registrar profile), SIP/TLS 5075 on the conference server and 5079 on the
+SBC, HTTPS on the WebRTC gateway's one listener (8095) and beside the
+media server's HTTP (8185, a new `[tls] bind`); nginx (`fcp-proxy`) in
+front of the gateway (8443), admin (8444) and events server (8445) with
+`X-Forwarded-Proto`, so the admin requires HTTPS for provisioning again
+and sends browsers to `https://${HOST_IP}:8095` — the stack's first
+`${NAME}`; the testkit's phone talks SIPS (`Phone::new_tls`) and its HTTP
+helpers HTTPS under a trusted CA; the stack test registers over SIPS and
+reads the gateway and media server over HTTPS (the proxy, a container,
+is checked by compose and its own health check).
 
 ## Historical documents
 

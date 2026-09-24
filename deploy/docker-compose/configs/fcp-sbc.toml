@@ -15,6 +15,10 @@ enabled = false
 
 [core]
 external_domain = "fcp.local"
+# SIP over TLS for carriers, from the `certs` service's certificate.
+tls_bind = "0.0.0.0:5079"
+tls_cert = "/var/lib/fcp/certs/fcp-sbc.crt"
+tls_key = "/var/lib/fcp/certs/fcp-sbc.key"
 
 [core.security]
 max_message_size = 65535
