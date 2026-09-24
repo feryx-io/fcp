@@ -190,6 +190,14 @@ Rebuild after a code change with `docker compose up -d --build`; `docker
 compose logs -f <service>` follows a service; `docker compose down -v`
 removes the volumes too, the database included.
 
+## Keep it
+
+What must be saved, what a restore needs and what an upgrade does are in
+`docs/BACKUP_AND_RESTORE.md`. In short: the database and the `fcp-certs`
+volume (the master key) are one unit, the recording and voicemail
+volumes are the files their rows name, Redis is not backed up, and
+`docker compose down -v` drops all of it.
+
 ## When it does not come up
 
 - **A service exits at once.** `docker compose logs <service>`: the

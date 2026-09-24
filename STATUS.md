@@ -896,7 +896,15 @@ key; upgrade rules, the version on the node list, a migration-discipline
 check in CI; the skew proved. Five questions settled by the user, each
 on its recommendation: shell scripts, Redis not backed up, an old binary
 keeps refusing a newer schema, the stale storage documents deleted, a CI
-check on new migrations.
+check on new migrations. Phase 1 done (v0.25.257): the compose call
+manager's `recording_dir`, `prompts_dir` and `tts_cache_dir` under its
+`call-manager-data` volume (they defaulted to the container's own
+filesystem); `docs/BACKUP_AND_RESTORE.md` written from the inventory —
+what lives where and whether it is re-derivable, the directories per
+binary with their defaults, what a backup must hold, what Redis loses,
+what a restore needs — and pointed at by the compose README, the guide
+and the runbook; `docs/STORAGE_BACKENDS.md` and `docs/SQLITE_STORAGE.md`
+deleted.
 
 ## Historical documents
 

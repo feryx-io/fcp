@@ -286,7 +286,12 @@ routing binary stops taking new work, keeps what it carries until its
 `drain_wait_secs`, tells the cluster, and exits; the call manager logs
 `Shutdown complete`. The order does not matter.
 
-## 11. When something is wrong
+## 11. Keeping it
+
+Where every binary writes its state, what a backup must hold and what an
+upgrade does: `docs/BACKUP_AND_RESTORE.md`.
+
+## 12. When something is wrong
 
 - **It exits at once with a rule.** Read the rule; `--check-config`
   shows the effective configuration it was judged on.
@@ -308,7 +313,7 @@ routing binary stops taking new work, keeps what it carries until its
   those services' tokens.
 - **Two services on their defaults collide.** Use the files (§5).
 
-## 12. What one node carries
+## 13. What one node carries
 
 Measured 2026-09-21 with `fcp-loadgen` (`docs/CAPACITY_AND_SURVIVABILITY.md`
 §8) against a release-built call manager. **Read the machine before the

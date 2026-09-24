@@ -42,6 +42,12 @@ max_concurrent_calls = 100
 rtp_port_start = 10000
 rtp_port_end = 10999
 codecs = ["PCMU", "PCMA", "G722"]
+# Everything this node writes to disk lives under /app/data, the
+# call-manager-data volume (docs/BACKUP_AND_RESTORE.md): without these the
+# defaults are the container's own filesystem (./recordings, /tmp/fcp).
+recording_dir = "/app/data/recordings"
+prompts_dir = "/app/data/prompts"
+tts_cache_dir = "/app/data/tts-cache"
 # Speech from the TTS server, when the `tts` profile is up;
 # FCP_CALL_MANAGER_TTS_REMOTE_TOKEN authenticates.
 tts_remote_url = "http://127.0.0.1:8093"
