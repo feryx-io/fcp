@@ -50,6 +50,7 @@ pub mod storage;
 pub mod subject;
 pub mod subject_erasure;
 pub mod subject_request;
+pub mod sync;
 pub mod tenant;
 pub mod time;
 pub mod transport;
@@ -151,6 +152,7 @@ pub use crate::storage::{
     TenantStore, TrunkStore, UsageAggregation, User, UserFileEntry, WebhookDeliveryLog,
     WebhookEndpoint, WebhookStore,
 };
+pub use crate::sync::{JournalEntry, SyncOp, SyncStore, SYNC_TABLES};
 pub use crate::tenant::{is_host_literal, Tenant, TenantStatus};
 pub use crate::transport::{
     ConnectionId, ConnectionMetadata, ConnectionState, Transport, TransportMessage,

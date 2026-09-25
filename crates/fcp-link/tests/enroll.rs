@@ -8,59 +8,13 @@
 //! taken again; and a link that stops is marked down by the sweep. Gated
 //! on `FCP_TEST_DATABASE_URL`; skipped with a notice when unset.
 
+mod common;
+
+use common::{admin, until, ADMIN_TOKEN, A_WHILE};
 use fcp_testkit::certs::ClusterCa;
 use fcp_testkit::smoke::{free_port, http_request, loopback, toml_path, trust_ca};
 use fcp_testkit::{bins, Service, TestDatabase};
 use std::time::Duration;
-
-const ADMIN_TOKEN: &str = "link-test-admin-token-change-me-32";
-const A_WHILE: Duration = Duration::from_secs(20);
-
-async fn admin(
-    port: u16,
-    method: &str,
-    path: &str,
-    tenant: Option<&str>,
-    body: Option<&str>,
-) -> (u16, serde_json::Value) {
-    let bearer = format!("Bearer {ADMIN_TOKEN}");
-    let mut headers = vec![
-        ("Authorization", bearer.as_str()),
-        ("Content-Type", "application/json"),
-    ];
-    if let Some(tenant) = tenant {
-        headers.push(("x-fcp-tenant-id", tenant));
-    }
-    let url = loopback(port, path);
-    let (code, text) = http_request(method, &url, &headers, body)
-        .await
-        .unwrap_or_else(|e| panic!("{method} {url}: {e}"));
-    (
-        code,
-        serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text)),
-    )
-}
-
-async fn until<F: Fn(&serde_json::Value) -> bool>(
-    what: &str,
-    port: u16,
-    path: &str,
-    tenant: Option<&str>,
-    check: F,
-) -> serde_json::Value {
-    let deadline = tokio::time::Instant::now() + A_WHILE;
-    loop {
-        let (code, body) = admin(port, "GET", path, tenant, None).await;
-        if code == 200 && check(&body) {
-            return body;
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "{what}: last {code} {body}"
-        );
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
-}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_link_enrolls_once_heartbeats_under_mutual_tls_and_is_refused_when_disabled() {

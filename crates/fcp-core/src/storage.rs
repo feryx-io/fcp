@@ -3027,6 +3027,7 @@ pub struct DynStorage {
     geo_routing_store: Arc<dyn GeoRoutingStore>,
     porting_store: Arc<dyn crate::porting::PortingStore>,
     site_store: Arc<dyn crate::site::SiteStore>,
+    sync_store: Arc<dyn crate::sync::SyncStore>,
     tenant_store: Arc<dyn TenantStore>,
     conference_store: Arc<dyn ConferenceStore>,
     queue_store: Arc<dyn QueueStore>,
@@ -3071,6 +3072,7 @@ impl DynStorage {
         geo_routing_store: Arc<dyn GeoRoutingStore>,
         porting_store: Arc<dyn crate::porting::PortingStore>,
         site_store: Arc<dyn crate::site::SiteStore>,
+        sync_store: Arc<dyn crate::sync::SyncStore>,
         tenant_store: Arc<dyn TenantStore>,
         conference_store: Arc<dyn ConferenceStore>,
         queue_store: Arc<dyn QueueStore>,
@@ -3095,6 +3097,7 @@ impl DynStorage {
             geo_routing_store,
             porting_store,
             site_store,
+            sync_store,
             tenant_store,
             conference_store,
             queue_store,
@@ -3139,6 +3142,7 @@ impl DynStorage {
             + GeoRoutingStore
             + crate::porting::PortingStore
             + crate::site::SiteStore
+            + crate::sync::SyncStore
             + TenantStore
             + ConferenceStore
             + QueueStore
@@ -3165,6 +3169,7 @@ impl DynStorage {
             geo_routing_store: storage.clone(),
             porting_store: storage.clone(),
             site_store: storage.clone(),
+            sync_store: storage.clone(),
             tenant_store: storage.clone(),
             conference_store: storage.clone(),
             queue_store: storage.clone(),
@@ -4218,6 +4223,22 @@ impl GeoRoutingStore for DynStorage {
         self.geo_routing_store
             .delete_phone_number_location(phone_number_id)
             .await
+    }
+}
+
+#[async_trait]
+impl crate::sync::SyncStore for DynStorage {
+    async fn journal_head(&self) -> Result<i64> {
+        self.sync_store.journal_head().await
+    }
+
+    async fn journal_after(
+        &self,
+        tenant_id: &crate::TenantId,
+        since: i64,
+        limit: usize,
+    ) -> Result<Vec<crate::JournalEntry>> {
+        self.sync_store.journal_after(tenant_id, since, limit).await
     }
 }
 

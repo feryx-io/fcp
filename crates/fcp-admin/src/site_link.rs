@@ -19,12 +19,12 @@ use axum::{
     extract::Extension,
     http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::post,
+    routing::{get, post},
     Json, Router,
 };
 use axum_server::tls_rustls::RustlsConfig;
 use base64::Engine;
-use fcp_core::{DynStorage, Site, SiteHeartbeat, SiteStatus, SiteStore};
+use fcp_core::{DynStorage, Site, SiteHeartbeat, SiteStatus, SiteStore, SyncStore, TenantId};
 use fcp_events::{EventPublisher, PlatformEvent, SystemEvent};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -139,6 +139,7 @@ impl LinkCa {
 #[derive(Clone)]
 pub struct LinkState {
     pub storage: Arc<DynStorage>,
+    pub flows: Arc<dyn fcp_flow::storage::FlowStore>,
     pub ca: Arc<LinkCa>,
     pub events: Arc<dyn EventPublisher>,
     pub config: LinkConfig,
@@ -409,7 +410,384 @@ pub fn enroll_router(state: LinkState) -> Router {
 pub fn link_router(state: LinkState) -> Router {
     Router::new()
         .route("/link/v1/heartbeat", post(heartbeat))
+        .route("/link/v1/snapshot", get(snapshot))
+        .route("/link/v1/changes", get(changes))
         .layer(Extension(state))
+}
+
+// ── Configuration down: the snapshot and the feed (§3.2, phase 2) ────
+
+/// One object of a tenant's slice, as the feed and the snapshot carry
+/// it: the table the journal names, the row's id, and the object as the
+/// storage crate serializes it (a `rate_plans` object is the plan with
+/// its rates).
+#[derive(Debug, Serialize)]
+pub struct SyncItem {
+    pub table: String,
+    pub id: String,
+    pub object: serde_json::Value,
+}
+
+/// `GET /link/v1/snapshot`: every synced object of the site's tenant,
+/// and the journal position to follow from.
+#[derive(Debug, Serialize)]
+pub struct Snapshot {
+    pub protocol: u32,
+    pub tenant_id: String,
+    /// The journal's head when the snapshot began: every change after it
+    /// is in the feed, and a change during the snapshot is replayed,
+    /// which is harmless.
+    pub cursor: i64,
+    pub objects: Vec<SyncItem>,
+}
+
+/// One entry of the feed: what the journal said, with the object as it
+/// is now — `None` when the row is gone, whatever the journal said.
+#[derive(Debug, Serialize)]
+pub struct Change {
+    pub seq: i64,
+    pub table: String,
+    pub id: String,
+    pub op: fcp_core::SyncOp,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub object: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Changes {
+    pub protocol: u32,
+    /// The last sequence number in `changes`, or `since` when there are none.
+    pub cursor: i64,
+    pub changes: Vec<Change>,
+    /// Whether more may follow at once (the page was full).
+    pub more: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ChangesQuery {
+    #[serde(default)]
+    pub since: i64,
+    /// How long to hold the request open waiting for a change, at most
+    /// thirty seconds; zero answers at once.
+    #[serde(default)]
+    pub wait_secs: u64,
+    #[serde(default = "default_changes_limit")]
+    pub limit: usize,
+}
+
+fn default_changes_limit() -> usize {
+    500
+}
+
+/// The site behind a request's secret, enrolled and enabled.
+async fn site_of(state: &LinkState, headers: &HeaderMap) -> Result<Site, LinkError> {
+    let Some(secret) = bearer(headers) else {
+        return Err(LinkError(
+            StatusCode::UNAUTHORIZED,
+            "the request carries the site's secret as a bearer token".to_string(),
+        ));
+    };
+    let Some(site) = state
+        .storage
+        .get_site_by_secret_hash(&sha256_hex(secret))
+        .await?
+    else {
+        return Err(LinkError(
+            StatusCode::UNAUTHORIZED,
+            "no site has this secret".to_string(),
+        ));
+    };
+    if site.status == SiteStatus::Disabled {
+        return Err(LinkError(
+            StatusCode::FORBIDDEN,
+            "the site is disabled".to_string(),
+        ));
+    }
+    Ok(site)
+}
+
+fn item<T: Serialize>(table: &str, id: &dyn std::fmt::Display, object: &T) -> Result<SyncItem> {
+    Ok(SyncItem {
+        table: table.to_string(),
+        id: id.to_string(),
+        object: serde_json::to_value(object)?,
+    })
+}
+
+/// A rate plan as the feed carries it: the plan with its rates.
+async fn rate_plan_object(
+    storage: &DynStorage,
+    tenant: &TenantId,
+    plan: fcp_core::billing::RatePlan,
+) -> Result<serde_json::Value> {
+    use fcp_core::billing::BillingStore;
+    let rates = storage.list_rates(tenant, plan.id).await?;
+    Ok(serde_json::json!({ "plan": plan, "rates": rates }))
+}
+
+/// Every synced object of a tenant, table by table.
+async fn slice_of(state: &LinkState, tenant: &TenantId) -> Result<Vec<SyncItem>> {
+    use fcp_core::billing::BillingStore;
+    use fcp_core::storage::*;
+    let storage = state.storage.as_ref();
+    let mut items = Vec::new();
+    if let Some(t) = storage.get_tenant(tenant).await? {
+        items.push(item("tenants", &t.id, &t)?);
+    }
+    for u in storage.list_users().await? {
+        if u.tenant_id == *tenant {
+            items.push(item("users", &u.id, &u)?);
+        }
+    }
+    for d in storage.list_devices(tenant).await? {
+        items.push(item("devices", &d.id, &d)?);
+    }
+    for e in storage.list_extensions(tenant).await? {
+        items.push(item("extensions", &e.id, &e)?);
+    }
+    for b in storage.list_line_bindings(tenant).await? {
+        items.push(item("line_bindings", &b.id, &b)?);
+    }
+    for n in storage.list_phone_numbers(tenant).await? {
+        items.push(item("phone_numbers", &n.id, &n)?);
+    }
+    for r in storage.list_routing_rules(tenant).await? {
+        items.push(item("routing_rules", &r.id, &r)?);
+    }
+    for r in storage.list_lcr_routes(tenant).await? {
+        items.push(item("lcr_routes", &r.id, &r)?);
+    }
+    for t in storage.list_trunks(tenant).await? {
+        items.push(item("trunks", &t.id, &t)?);
+    }
+    for q in storage.list_queue_configs(tenant).await? {
+        items.push(item("queue_configs", &q.id, &q)?);
+    }
+    for f in state.flows.list_flows(Some(&tenant.to_string())).await? {
+        items.push(item("flows", &f.id, &f)?);
+    }
+    if let Some(prompts) = storage.prompt_store() {
+        for p in prompts.list_prompts(tenant, None, None).await? {
+            items.push(item("prompts", &p.id, &p)?);
+        }
+    }
+    if let Some(templates) = storage.config_template_store() {
+        for c in templates.list_config_templates(tenant).await? {
+            items.push(item("config_templates", &c.id, &c)?);
+        }
+    }
+    for m in storage.list_meetings(tenant).await? {
+        items.push(item("conference_meetings", &m.id, &m)?);
+    }
+    for l in storage.list_locations(tenant).await? {
+        items.push(item("locations", &l.id, &l)?);
+    }
+    if let Some(emergency) = storage.emergency_store() {
+        for n in emergency.list_emergency_networks(tenant).await? {
+            items.push(item("emergency_networks", &n.id, &n)?);
+        }
+        if let Some(c) = emergency.get_emergency_config(tenant).await? {
+            items.push(item("emergency_configs", tenant, &c)?);
+        }
+    }
+    for plan in storage.list_rate_plans(tenant).await? {
+        let id = plan.id;
+        let object = rate_plan_object(storage, tenant, plan).await?;
+        items.push(SyncItem {
+            table: "rate_plans".to_string(),
+            id: id.to_string(),
+            object,
+        });
+    }
+    Ok(items)
+}
+
+/// One synced object as it is now, by the journal's table and row id;
+/// `None` when it is gone, or belongs to another tenant.
+async fn object_now(
+    state: &LinkState,
+    tenant: &TenantId,
+    table: &str,
+    id: &str,
+) -> Result<Option<serde_json::Value>> {
+    use fcp_core::billing::BillingStore;
+    use fcp_core::storage::*;
+    let storage = state.storage.as_ref();
+    macro_rules! same_tenant {
+        ($object:expr) => {
+            match $object {
+                Some(o) if o.tenant_id == *tenant => Some(serde_json::to_value(&o)?),
+                _ => None,
+            }
+        };
+    }
+    Ok(match table {
+        "tenants" => match id.parse::<TenantId>() {
+            Ok(t) if t == *tenant => storage
+                .get_tenant(&t)
+                .await?
+                .map(|t| serde_json::to_value(&t))
+                .transpose()?,
+            _ => None,
+        },
+        "users" => match id.parse() {
+            Ok(id) => same_tenant!(storage.get_user_by_id(&id).await?),
+            Err(_) => None,
+        },
+        "devices" => match id.parse() {
+            Ok(id) => same_tenant!(storage.get_device(&id).await?),
+            Err(_) => None,
+        },
+        "extensions" => match id.parse() {
+            Ok(id) => same_tenant!(storage.get_extension(&id).await?),
+            Err(_) => None,
+        },
+        "line_bindings" => match id.parse() {
+            Ok(id) => same_tenant!(storage.get_line_binding(&id).await?),
+            Err(_) => None,
+        },
+        "phone_numbers" => match id.parse() {
+            Ok(id) => same_tenant!(storage.get_phone_number(&id).await?),
+            Err(_) => None,
+        },
+        "routing_rules" => match id.parse() {
+            Ok(id) => same_tenant!(storage.get_routing_rule(&id).await?),
+            Err(_) => None,
+        },
+        "lcr_routes" => {
+            let id: fcp_core::LcrRouteId =
+                serde_json::from_value(serde_json::Value::String(id.to_string()))?;
+            same_tenant!(storage.get_lcr_route(&id).await?)
+        }
+        "trunks" => match id.parse() {
+            Ok(id) => match storage.get_trunk(&id).await? {
+                Some(t) if t.tenant_id == Some(*tenant) => Some(serde_json::to_value(&t)?),
+                _ => None,
+            },
+            Err(_) => None,
+        },
+        "queue_configs" => match id.parse() {
+            Ok(id) => same_tenant!(storage.get_queue_config(&id).await?),
+            Err(_) => None,
+        },
+        "flows" => match state.flows.get_flow(id).await? {
+            Some(f) if f.tenant_id.as_deref() == Some(tenant.to_string().as_str()) => {
+                Some(serde_json::to_value(&f)?)
+            }
+            _ => None,
+        },
+        "prompts" => match (storage.prompt_store(), id.parse()) {
+            (Some(prompts), Ok(id)) => same_tenant!(prompts.get_prompt(&id).await?),
+            _ => None,
+        },
+        "config_templates" => match (storage.config_template_store(), id.parse()) {
+            (Some(templates), Ok(id)) => {
+                same_tenant!(templates.get_config_template(&id).await?)
+            }
+            _ => None,
+        },
+        "conference_meetings" => match id.parse() {
+            Ok(id) => same_tenant!(storage.get_meeting(&id).await?),
+            Err(_) => None,
+        },
+        "locations" => match id.parse() {
+            Ok(id) => same_tenant!(storage.get_location(&id).await?),
+            Err(_) => None,
+        },
+        "emergency_networks" => match (storage.emergency_store(), id.parse()) {
+            (Some(emergency), Ok(id)) => {
+                same_tenant!(emergency.get_emergency_network(&id).await?)
+            }
+            _ => None,
+        },
+        "emergency_configs" => match storage.emergency_store() {
+            Some(emergency) => emergency
+                .get_emergency_config(tenant)
+                .await?
+                .map(|c| serde_json::to_value(&c))
+                .transpose()?,
+            None => None,
+        },
+        "rate_plans" | "rates" => match id.parse::<uuid::Uuid>() {
+            Ok(plan_id) => match storage.get_rate_plan(tenant, plan_id).await? {
+                Some(plan) => Some(rate_plan_object(storage, tenant, plan).await?),
+                None => None,
+            },
+            Err(_) => None,
+        },
+        _ => None,
+    })
+}
+
+async fn snapshot(
+    Extension(state): Extension<LinkState>,
+    headers: HeaderMap,
+) -> Result<Json<Snapshot>, LinkError> {
+    let site = site_of(&state, &headers).await?;
+    let cursor = state.storage.journal_head().await?;
+    let objects = slice_of(&state, &site.tenant_id).await?;
+    info!(site_id = %site.id, objects = objects.len(), cursor, "A site took a snapshot");
+    Ok(Json(Snapshot {
+        protocol: LINK_PROTOCOL,
+        tenant_id: site.tenant_id.to_string(),
+        cursor,
+        objects,
+    }))
+}
+
+async fn changes(
+    Extension(state): Extension<LinkState>,
+    headers: HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<ChangesQuery>,
+) -> Result<Json<Changes>, LinkError> {
+    let site = site_of(&state, &headers).await?;
+    let limit = query.limit.clamp(1, 5000);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(query.wait_secs.min(30));
+    let entries = loop {
+        let entries = state
+            .storage
+            .journal_after(&site.tenant_id, query.since, limit)
+            .await?;
+        if !entries.is_empty() || tokio::time::Instant::now() >= deadline {
+            break entries;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    };
+    let more = entries.len() >= limit;
+    let mut cursor = query.since;
+    let mut changes = Vec::with_capacity(entries.len());
+    for entry in entries {
+        cursor = entry.seq;
+        let table = if entry.table == "rates" {
+            "rate_plans".to_string()
+        } else {
+            entry.table.clone()
+        };
+        let object = match entry.op {
+            fcp_core::SyncOp::Delete => None,
+            fcp_core::SyncOp::Put => {
+                object_now(&state, &site.tenant_id, &entry.table, &entry.row_id).await?
+            }
+        };
+        let op = if object.is_some() {
+            fcp_core::SyncOp::Put
+        } else {
+            fcp_core::SyncOp::Delete
+        };
+        changes.push(Change {
+            seq: entry.seq,
+            table,
+            id: entry.row_id,
+            op,
+            object,
+        });
+    }
+    Ok(Json(Changes {
+        protocol: LINK_PROTOCOL,
+        cursor,
+        changes,
+        more,
+    }))
 }
 
 fn read_pem_certs(path: &Path) -> Result<Vec<rustls::pki_types::CertificateDer<'static>>> {
