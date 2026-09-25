@@ -904,7 +904,16 @@ what lives where and whether it is re-derivable, the directories per
 binary with their defaults, what a backup must hold, what Redis loses,
 what a restore needs — and pointed at by the compose README, the guide
 and the runbook; `docs/STORAGE_BACKENDS.md` and `docs/SQLITE_STORAGE.md`
-deleted.
+deleted. Phase 2 done (v0.25.258): `deploy/docker-compose/scripts/backup.sh
+<directory>` — `pg_dump -Fc` through the `postgres` container, a tar per
+stateful volume (the certs volume with the master key first; a volume
+whose service never ran is named as absent, a backup without `fcp-certs`
+is refused), a manifest naming the release (the admin image's binary
+asked `--version`), the project, the key ring's active KEK id and the
+time, and `SHA256SUMS`; the operator document's §3 says what it writes,
+that the dump is a snapshot and the volumes are copied live after it,
+which services to stop for a backup with nothing in flight, and the
+from-source procedure with the same commands.
 
 ## Historical documents
 
