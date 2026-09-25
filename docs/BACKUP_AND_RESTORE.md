@@ -330,11 +330,22 @@ node re-ships what it holds.
 
 ### 5.5 Proved
 
-`crates/fcp-cluster/src/versions.rs` tests the grouping, the summary,
-the skew appearing, changing and resolving, and the metrics; the CI
-step `The migration discipline` runs `scripts/check-migrations.sh
---self-test` — an add passes, a drop, a rename and a type change fail
-without the marker and pass with it — before checking the migrations.
-That an old binary refuses a newer schema with the migration's version
-in its message, and that the version shows on the node list and a
-different version is flagged, are phase 5's tests.
+- `crates/fcp-storage-postgres/tests/upgrade.rs`: this release opens an
+  empty database; a migration from a later release is recorded as
+  applied; this release refuses to start, naming it (`999999 … missing`);
+  and with a shipped migration's checksum changed, refuses that too
+  (`migration 1 … modified`).
+- `crates/fcp-cluster/src/versions.rs` tests the grouping, the summary,
+  the skew appearing, changing and resolving, and the metrics;
+  `crates/fcp-cluster/tests/versions.rs`, against Redis: two nodes on
+  one release say nothing, a third on another is grouped apart and
+  said as `system.version_skew` with who is on what, the admin's
+  reader counts the skew from the heartbeat records, and the odd node
+  shutting down is said as one release again.
+- `crates/fcp-call-manager/tests/compose_stack.rs`: the compose call
+  manager, clustered as its configuration ships, is on the admin's node
+  list with this release, the stats and its own `/status` group it
+  under it, and no skew.
+- The CI step `The migration discipline` runs `scripts/check-migrations.sh
+  --self-test` — an add passes, a drop, a rename and a type change fail
+  without the marker and pass with it — before checking the migrations.

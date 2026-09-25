@@ -206,7 +206,10 @@ checksums, the key against the key ring, the volumes, the database, `up`.
 An upgrade is `scripts/backup.sh`, `git pull`, `docker compose up -d
 --build`: the first service to open the database migrates it, and an
 older image against the new schema refuses to start, so the way back
-is the backup (`docs/BACKUP_AND_RESTORE.md` §5).
+is the backup (`docs/BACKUP_AND_RESTORE.md` §5). The call manager
+heartbeats into the stack's Redis and the admin reads it, so the admin
+UI's cluster page lists it with its version — a cluster of one, until
+a second call manager on the same Redis joins.
 
 ## When it does not come up
 

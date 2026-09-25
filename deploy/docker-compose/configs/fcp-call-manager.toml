@@ -58,6 +58,12 @@ tts_remote_url = "http://127.0.0.1:8093"
 database_url = "postgresql://fcp:change-me@127.0.0.1:5432/fcp"
 redis_url = "redis://127.0.0.1:6379"
 
+[cluster]
+# One node is a cluster of one: it heartbeats into Redis, so the admin's
+# cluster page lists it with its version, and a second call manager on
+# the same Redis joins (docs/CLUSTER_OPERATIONS_RUNBOOK.md).
+enabled = true
+
 [cdr]
 spool_dir = "/app/data/cdr-spool"
 # Records go to the Redis stream and fcp-jobs stores them (docs/CDR_PIPELINE.md).

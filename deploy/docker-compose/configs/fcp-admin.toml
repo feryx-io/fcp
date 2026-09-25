@@ -17,6 +17,12 @@ auth_enabled = true
 # Overridden by FCP_ADMIN_DATABASE_URL (the password is in .env).
 database_url = "postgresql://fcp:change-me@postgres:5432/fcp"
 
+[cluster]
+# The Redis the nodes heartbeat into: the cluster page lists every node
+# with its version, and says when they run more than one release
+# (docs/BACKUP_AND_RESTORE.md §5).
+redis_url = "redis://redis:6379"
+
 [events]
 # The events server on the bridge network; FCP_ADMIN_EVENTS_AUTH_TOKEN authenticates.
 server_url = "http://fcp-events-server:8081/ingest"

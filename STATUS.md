@@ -877,7 +877,7 @@ user; the compose stack ships `routing.yaml` again (one allow policy for
 the default tenant, no users) and the stack test's call goes through it;
 the floor has the 403. The production-shaped stack is complete.
 
-## What is next (chosen 2026-09-24, after the production stack closed)
+## What is next (chosen 2026-09-24, after the production stack closed; complete 2026-09-25)
 
 **Backup, restore and upgrade** — design in `docs/BACKUP_RESTORE_UPGRADE.md`
 (v0.25.256): the stack can be run and cannot yet be kept. What the survey
@@ -947,7 +947,17 @@ one release at a time), the compose and cluster procedures, and
 renames a table, view or column or changes a column's type fails
 without `-- fcp: contraction: …, read by nothing since vX.Y.Z`
 (migrations up to 077 predate the rule; 047, 058, 059 contract), proved
-against itself first.
+against itself first. Phase 5 done (v0.25.263): the skew proved —
+`fcp-storage-postgres/tests/upgrade.rs` (this release refuses a schema
+a later release migrated, naming the migration, and refuses an edited
+one), `fcp-cluster/tests/versions.rs` against Redis (a node on another
+release is grouped apart, said as `system.version_skew`, counted by the
+reader, and said resolved when it shuts down), and the stack test
+asserting the compose call manager — now clustered as it ships, with
+the admin's `[cluster] redis_url` set, so the cluster page lists it —
+on the node list with this release and no skew. The project is
+complete: a deployment can be backed up, restored and upgraded, and
+each is proved by a test.
 
 ## Historical documents
 

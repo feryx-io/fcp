@@ -184,6 +184,38 @@ async fn the_compose_stack_comes_up_and_carries_a_call() {
         "an active DEK: {encryption}"
     );
 
+    // The call manager heartbeats into the stack's Redis, and the admin
+    // reads it back: the node list has its release, and the cluster runs
+    // one release (docs/BACKUP_AND_RESTORE.md §5). Its own `/status`
+    // says the same.
+    let version = env!("CARGO_PKG_VERSION");
+    let (code, listed) = get_json(&loopback(8080, "/api/v1/cluster/nodes"), &admin_token).await;
+    assert_eq!(code, 200, "{listed}");
+    assert_eq!(listed["available"], true, "{listed}");
+    let cm_node = listed["nodes"]
+        .as_array()
+        .and_then(|nodes| nodes.iter().find(|n| n["node_id"] == NODE_ID_BY_REFERENCE))
+        .unwrap_or_else(|| panic!("the call manager is on the node list: {listed}"));
+    assert_eq!(cm_node["version"], version, "{cm_node}");
+    let (code, stats) = get_json(&loopback(8080, "/api/v1/cluster/stats"), &admin_token).await;
+    assert_eq!(code, 200, "{stats}");
+    assert_eq!(stats["stats"]["version_skew"], false, "{stats}");
+    assert!(
+        stats["stats"]["versions"][version]
+            .as_array()
+            .is_some_and(|nodes| nodes.iter().any(|n| n == NODE_ID_BY_REFERENCE)),
+        "the stats group the call manager under this release: {stats}"
+    );
+    let (code, status) = get_json(&loopback(8084, "/status"), &cm_token).await;
+    assert_eq!(code, 200, "{status}");
+    assert_eq!(status["cluster_versions"]["skew"], false, "{status}");
+    assert!(
+        status["cluster_versions"]["versions"][version]
+            .as_array()
+            .is_some_and(|nodes| nodes.iter().any(|n| n == NODE_ID_BY_REFERENCE)),
+        "the call manager's status groups itself under this release: {status}"
+    );
+
     // The call manager runs with the node id its configuration took from
     // the environment through `${FCP_STACK_TEST_NODE_ID}`: `/trunks`
     // reports it.
