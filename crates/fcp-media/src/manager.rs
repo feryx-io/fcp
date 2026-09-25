@@ -388,6 +388,15 @@ impl MediaManager {
         self.backend.backend_name()
     }
 
+    /// The pool this node's media sessions take their RTP ports from
+    /// (`None` for a backend that runs its media elsewhere). A subsystem
+    /// that opens RTP sockets of its own in the same range — the call
+    /// manager's queue legs — allocates from it, never from a pool of its
+    /// own over the same ports.
+    pub fn port_pool(&self) -> Option<std::sync::Arc<forge_rtp::PortPool>> {
+        self.backend.port_pool()
+    }
+
     /// Get the shared TTS service, if configured.
     ///
     /// Other subsystems (FlowEngine, prompt pre-generation) can reuse this

@@ -1563,8 +1563,13 @@ record_calls = true
         bob_call.media().heard(PROMPT_HZ, SOON)
     );
     if !(alice_heard && bob_heard) {
-        let why =
-            format!("announcement heard by the caller {alice_heard}, by the agent {bob_heard}");
+        let why = format!(
+            "announcement heard by the caller {alice_heard} ({} packets, {} frames of it), by the agent {bob_heard} ({} packets, {} frames of it)",
+            alice_call.media().packets_received(),
+            alice_call.media().tone_frames(PROMPT_HZ),
+            bob_call.media().packets_received(),
+            bob_call.media().tone_frames(PROMPT_HZ),
+        );
         stack.fail(&why, &alice_phone).await;
     }
     let Some(file) = recording_started(&stack, SOON).await else {

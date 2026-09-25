@@ -1027,10 +1027,23 @@ async fn main() -> Result<()> {
     let queue_call_handler: Option<Arc<queue_handler::QueueCallHandler>> = if let Some(ref qm) =
         queue_manager
     {
-        let port_pool_config =
-            forge_rtp::PortPoolConfig::new(config.media.rtp_port_start, config.media.rtp_port_end)
+        // The queue's legs take their ports from the media sessions' own
+        // pool. A second pool over the same range handed out ports the
+        // sessions held: both binds succeed under SO_REUSEADDR, and a
+        // packet for that port reaches whichever socket the kernel picks
+        // — a queue call's announcement or audio going astray at random.
+        let queue_port_pool = match media_manager.port_pool() {
+            Some(pool) => pool,
+            None => {
+                warn!("The media backend has no port pool on this node; the queue allocates from the media range on its own");
+                let port_pool_config = forge_rtp::PortPoolConfig::new(
+                    config.media.rtp_port_start,
+                    config.media.rtp_port_end,
+                )
                 .context("Invalid RTP port pool configuration for queue handler")?;
-        let queue_port_pool = Arc::new(forge_rtp::PortPool::new(port_pool_config));
+                Arc::new(forge_rtp::PortPool::new(port_pool_config))
+            }
+        };
         let handler = queue_handler::QueueCallHandler::new(
             Arc::clone(qm),
             effective_queue_config.clone(),
