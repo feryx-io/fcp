@@ -200,7 +200,9 @@ volumes are the files their rows name, Redis is not backed up, and
 takes all of it — the dump through the `postgres` container, a tar per
 stateful volume, a manifest and checksums — with `postgres` up and the
 rest running or stopped; stop the services that write files first for
-a backup with nothing in flight.
+a backup with nothing in flight. `docker compose down -v` and then
+`scripts/restore.sh <directory>` bring a backup back into a fresh stack:
+checksums, the key against the key ring, the volumes, the database, `up`.
 
 ## When it does not come up
 

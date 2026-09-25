@@ -913,7 +913,22 @@ asked `--version`), the project, the key ring's active KEK id and the
 time, and `SHA256SUMS`; the operator document's §3 says what it writes,
 that the dump is a snapshot and the volumes are copied live after it,
 which services to stop for a backup with nothing in flight, and the
-from-source procedure with the same commands.
+from-source procedure with the same commands. Phase 3 done (v0.25.259):
+`scripts/restore.sh <directory> [--no-up]` into a fresh stack — the
+checksums verified, no volume of the stack may exist (`down -v` is the
+operator's step), the master key in `fcp-certs.tar.gz` fingerprinted
+against the manifest's KEK id before anything is touched, each volume
+created as compose labels it and filled from its tar, `postgres` started
+alone and the dump restored with `pg_restore --exit-on-error`, the
+restored key ring checked against the manifest, then `up -d --build`;
+proved by `crates/fcp-call-manager/tests/compose_restore.rs`, which runs
+the same commands against the binaries' directories: a user made sealed
+through the admin API calls a room, the backup is taken, the database
+dropped and the directories deleted, the restore made into a new
+database and directory, all nine database services refuse a wrong
+master key naming both KEKs, and with the right one the same DEK is
+active, the old user registers with the sealed password and calls; the
+operator document's §4 has the compose and from-source procedures.
 
 ## Historical documents
 

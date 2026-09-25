@@ -157,6 +157,15 @@ jobs:
       # only run when asked for by name; the MP4 one needs real H.264
       # frames, so `video-openh264` comes along (the codec action above
       # built it).
+      # The restore test (crates/fcp-call-manager/tests/compose_restore.rs)
+      # dumps and restores with the client tools, which must be the
+      # service container's major version or newer; the runner image ships
+      # PostgreSQL 16's, the same as `postgres:16`, and this is for the
+      # day it does not.
+      - name: Postgres client tools for the restore test
+        run: |
+          command -v pg_dump >/dev/null || sudo apt-get install -y postgresql-client
+          pg_dump --version
       - name: Tests
         run: cargo test --all-targets --features fcp-conference-server/recording-webm,fcp-conference-server/recording-mp4,fcp-conference-server/video-openh264
 

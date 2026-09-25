@@ -106,3 +106,5 @@ tempfile = "3"
 p256 = { version = "0.13", features = ["ecdsa", "pem"] }
 rand = "0.8"
 base64 = "0.22"
+# The master key's fingerprint, as restore.sh checks it (tests/compose_restore.rs).
+sha2 = "0.10"
