@@ -586,6 +586,23 @@ pub enum SystemEvent {
         timestamp: SystemTime,
     },
 
+    /// The set of releases the cluster's nodes run changed while there
+    /// is, or was, more than one (`docs/BACKUP_AND_RESTORE.md` §5): the
+    /// first node of an upgrade started, or the last old one stopped.
+    /// Said by every node that sees it, never acted on.
+    VersionSkew {
+        /// The node whose discovery saw the change.
+        node_id: String,
+        /// Release → the node ids on it.
+        versions: std::collections::BTreeMap<String, Vec<String>>,
+        /// More than one release is running now.
+        skew: bool,
+        /// One sentence for a person.
+        summary: String,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
     /// A node's own view of the cluster stopped or started looking whole
     /// (`docs/MULTI_REGION_FOLLOWUPS.md` §2.3). Said, never acted on.
     ClusterViewChanged {
@@ -1504,6 +1521,7 @@ impl PlatformEvent {
                 SystemEvent::NodeJoined { .. } => "system.node_joined",
                 SystemEvent::NodeLeft { .. } => "system.node_left",
                 SystemEvent::ClusterViewChanged { .. } => "system.cluster_view_changed",
+                SystemEvent::VersionSkew { .. } => "system.version_skew",
             },
             PlatformEvent::User(e) => match e {
                 UserEvent::Created { .. } => "user.created",
@@ -1707,7 +1725,8 @@ impl PlatformEvent {
                 | SystemEvent::NodeDrained { .. }
                 | SystemEvent::NodeJoined { .. }
                 | SystemEvent::NodeLeft { .. }
-                | SystemEvent::ClusterViewChanged { .. } => None,
+                | SystemEvent::ClusterViewChanged { .. }
+                | SystemEvent::VersionSkew { .. } => None,
             },
             PlatformEvent::Billing(e) => Some(e.tenant_id()),
             PlatformEvent::Cdr(
@@ -1935,7 +1954,8 @@ impl SystemEvent {
             | SystemEvent::NodeDrained { timestamp, .. }
             | SystemEvent::NodeJoined { timestamp, .. }
             | SystemEvent::NodeLeft { timestamp, .. }
-            | SystemEvent::ClusterViewChanged { timestamp, .. } => *timestamp,
+            | SystemEvent::ClusterViewChanged { timestamp, .. }
+            | SystemEvent::VersionSkew { timestamp, .. } => *timestamp,
         }
     }
 }

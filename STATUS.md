@@ -929,6 +929,25 @@ database and directory, all nine database services refuse a wrong
 master key naming both KEKs, and with the right one the same DEK is
 active, the old user registers with the sealed password and calls; the
 operator document's §4 has the compose and from-source procedures.
+Phase 4 done (v0.25.261): the version was already on every heartbeat,
+the node list and the cluster page's column — nothing compared them;
+now every node groups the members by release at each discovery
+(`fcp_cluster::versions`), `cluster_versions` on the call manager's and
+conference server's `/status`, `fcp_cluster_version_skew` and
+`fcp_cluster_nodes_by_version` on `/metrics`, `versions` and
+`version_skew` on `/api/v1/cluster/stats`, a banner on the cluster page
+naming who is on what, and `system.version_skew` when the set of
+releases changes while there is or was more than one — said by every
+node, never acted on; the rules in the operator document's §5 (back up
+first, the first new node migrates, an old binary refuses the new
+schema and rollback is the backup, a migration is never edited, a
+migration may add but not take away what the previous release reads,
+one release at a time), the compose and cluster procedures, and
+`scripts/check-migrations.sh` in CI — a new migration that drops or
+renames a table, view or column or changes a column's type fails
+without `-- fcp: contraction: …, read by nothing since vX.Y.Z`
+(migrations up to 077 predate the rule; 047, 058, 059 contract), proved
+against itself first.
 
 ## Historical documents
 

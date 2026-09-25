@@ -192,6 +192,14 @@ jobs:
         run: docker compose --profile tts config --quiet
       - name: The test scripts parse
         run: bash -n deploy/docker-compose/scripts/*.sh
+      # A new migration may add but not take away what the previous
+      # release still reads (docs/BACKUP_AND_RESTORE.md §5): the check
+      # proves itself against a drop and an add, then reads every
+      # migration above 077.
+      - name: The migration discipline
+        run: |
+          scripts/check-migrations.sh --self-test
+          scripts/check-migrations.sh
 
   security-audit:
     name: Security Audit

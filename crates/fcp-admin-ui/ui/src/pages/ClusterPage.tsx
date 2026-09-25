@@ -289,6 +289,11 @@ export function ClusterPage() {
           {/* Nodes that doubt their own view of the cluster */}
           <PartialViewBanner nodes={nodes} />
 
+          {/* More than one release running (docs/BACKUP_AND_RESTORE.md §5) */}
+          {stats?.version_skew && stats.versions && (
+            <VersionSkewBanner versions={stats.versions} />
+          )}
+
           {/* Summary Stats Cards */}
           {stats && (
             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-6">
@@ -374,6 +379,39 @@ export function ClusterPage() {
  * cannot write its heartbeat either; it vanishes from this list, and its
  * own /status is where it says why.
  */
+// An upgrade is a skew on purpose: the first new node makes it, the
+// last old one ends it. One that stays is an upgrade that stopped half
+// way, and an old binary against the new schema refuses to start
+// (docs/BACKUP_AND_RESTORE.md §5), so the banner names who is on what.
+function VersionSkewBanner({ versions }: { versions: Record<string, string[]> }) {
+  const groups = Object.entries(versions).sort((a, b) => b[1].length - a[1].length)
+  return (
+    <div className="rounded-md border border-yellow-200 bg-yellow-50 dark:border-yellow-900 dark:bg-yellow-950 p-4 text-sm text-yellow-800 dark:text-yellow-200">
+      <div className="flex items-center gap-2 font-medium">
+        <AlertTriangle className="h-4 w-4" />
+        The cluster runs {groups.length} releases
+      </div>
+      <ul className="mt-2 space-y-1">
+        {groups.map(([version, nodeIds]) => (
+          <li key={version}>
+            <span className="font-mono text-xs">{version}</span>
+            {': '}
+            {nodeIds.length} {nodeIds.length === 1 ? 'node' : 'nodes'}
+            {' ('}
+            {nodeIds.join(', ')}
+            {')'}
+          </li>
+        ))}
+      </ul>
+      <div className="mt-2 text-xs">
+        Expected during a rolling upgrade, one node at a time; a skew that stays is an upgrade
+        that stopped half way. Finish it, node by node — an old binary does not start against the
+        new schema, so the way back is the backup taken before it.
+      </div>
+    </div>
+  )
+}
+
 function PartialViewBanner({ nodes }: { nodes: ClusterNodeInfo[] }) {
   const doubting = nodes.filter((n) => n.view && n.view.state !== 'whole')
   if (doubting.length === 0) return null

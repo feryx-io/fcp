@@ -1149,6 +1149,10 @@ export interface ClusterStatsResponse {
     nodes_without_region: number
     /** Nodes whose own view of the cluster does not look whole. */
     nodes_with_partial_view?: number
+    /** Release → the node ids on it (docs/BACKUP_AND_RESTORE.md §5). */
+    versions?: Record<string, string[]>
+    /** More than one release is running: an upgrade under way, or one that stopped half way. */
+    version_skew?: boolean
   }
 }
 

@@ -333,6 +333,7 @@ stream — `cdr_stream_pending` grows — and land when the primary is back.
 |---|---|
 | A node doubts its view | `max by (node) (fcp_cluster_view{state!="whole"}) == 1` for 1 m |
 | A node's member list is stale | `fcp_cluster_view_age_seconds > 30` |
+| An upgrade stopped half way | `max(fcp_cluster_version_skew) == 1` for 1 h (`docs/BACKUP_AND_RESTORE.md` §5) |
 | A bridge is down | `fcp_event_bridge_connected == 0` for 1 m |
 | The registration cache is not saving much | the ratio in §5 below the level a deployment decides |
 | A region reads from the primary | `fcp_replica_healthy == 0` for 2 m: the replica is unreachable or beyond `max_replica_lag_secs`, and configuration reads cross to the primary |

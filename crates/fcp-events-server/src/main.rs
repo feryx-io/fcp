@@ -1441,6 +1441,15 @@ fn process_event_for_state(
                     // Said, not acted on (docs/MULTI_REGION_FOLLOWUPS.md §2.3).
                     info!(node_id = %node_id, state = %state, "Node's cluster view changed: {summary}");
                 }
+                SystemEvent::VersionSkew {
+                    node_id,
+                    skew,
+                    summary,
+                    ..
+                } => {
+                    // Said, not acted on (docs/BACKUP_AND_RESTORE.md §5).
+                    info!(node_id = %node_id, skew = %skew, "Cluster releases changed: {summary}");
+                }
             }
         }
         _ => {

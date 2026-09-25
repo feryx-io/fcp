@@ -65,6 +65,18 @@ pub struct ConferenceState {
 }
 
 impl ConferenceState {
+    /// Which release every node runs, when this one is clustered.
+    fn cluster_versions(&self) -> Option<fcp_cluster::ClusterVersions> {
+        #[cfg(feature = "storage-redis")]
+        {
+            self.cluster.as_ref().map(|c| c.versions())
+        }
+        #[cfg(not(feature = "storage-redis"))]
+        {
+            None
+        }
+    }
+
     /// This node's view of the cluster, when it is clustered.
     fn cluster_view(&self) -> Option<fcp_cluster::ClusterView> {
         #[cfg(feature = "storage-redis")]
@@ -506,6 +518,8 @@ async fn status_handler(State(state): State<Arc<ConferenceState>>) -> Json<serde
         // (docs/MULTI_REGION_FOLLOWUPS.md §2.3).
         "replica": state.replica.json(),
         "cluster_view": state.cluster_view(),
+        // Which release every node runs (docs/BACKUP_AND_RESTORE.md §5).
+        "cluster_versions": state.cluster_versions(),
     }))
 }
 
@@ -630,6 +644,9 @@ async fn metrics_handler(State(state): State<Arc<ConferenceState>>) -> impl Into
     let mut body = body;
     if let Some(view) = state.cluster_view() {
         body.push_str(&view.prometheus(""));
+    }
+    if let Some(versions) = state.cluster_versions() {
+        body.push_str(&versions.prometheus(""));
     }
     body.push_str(&state.replica.prometheus(""));
 

@@ -35,12 +35,16 @@ const PASSWORD: &str = "Alice-restores-2026!";
 const A_WHILE: Duration = Duration::from_secs(20);
 
 /// What the test runs: the events server the call manager posts to,
-/// the admin that makes the user, the call manager and the room.
-const STACK: [&str; 4] = [
+/// the admin that makes the user, the call manager, the room, and the
+/// job worker that takes the call's record off the Redis stream and
+/// stores it — so the record is in the dump, and so nothing is left on
+/// the stream for another test's processor to find.
+const STACK: [&str; 5] = [
     "fcp-events-server",
     "fcp-admin",
     "fcp-call-manager",
     "fcp-conference",
+    "fcp-jobs",
 ];
 
 /// Every compose service that opens Postgres under the master key
@@ -265,6 +269,10 @@ async fn a_backup_restores_into_a_fresh_stack_and_refuses_without_the_key() {
     assert_eq!(call.hangup().await.expect("BYE"), 200);
     drop(phone);
 
+    // The call's record, shipped over the stream and stored by the job
+    // worker: what the dump must carry.
+    let cdr_id = stored_call_record(&admin_token, 1).await;
+
     // A file where the call manager writes its recordings, standing in
     // for one: what a row would name, and what the tar must bring back.
     let recording = Path::new("app-data/recordings/call-restore-proof.wav");
@@ -406,6 +414,14 @@ async fn a_backup_restores_into_a_fresh_stack_and_refuses_without_the_key() {
     )
     .await;
     assert_eq!(code, 200, "the dump carried the user: {user}");
+    let (code, cdrs) = request("GET", &loopback(8080, "/api/v1/cdrs"), &admin_token, None).await;
+    assert_eq!(code, 200, "{cdrs}");
+    assert!(
+        cdrs["cdrs"]
+            .as_array()
+            .is_some_and(|list| list.iter().any(|r| r["cdr_id"] == cdr_id.as_str())),
+        "the dump carried the call's record {cdr_id}: {cdrs}"
+    );
 
     // The old user registers with the sealed password, and calls.
     let phone = Phone::new("alice", PASSWORD, REALM, cm_sip)
@@ -421,7 +437,38 @@ async fn a_backup_restores_into_a_fresh_stack_and_refuses_without_the_key() {
         .await
         .expect("the restored stack carries a call");
     assert_eq!(call.hangup().await.expect("BYE"), 200);
+    // And the restored stack's own pipeline stores this call's record too
+    // — which also leaves nothing of ours on the stream.
+    stored_call_record(&admin_token, 2).await;
 
     stop_all(services).await;
     db.drop_db().await;
+}
+
+/// The id of the newest of the tenant's call records once `n` of them
+/// are stored: the job worker took them off the stream.
+async fn stored_call_record(admin_token: &str, n: usize) -> String {
+    let deadline = tokio::time::Instant::now() + A_WHILE;
+    loop {
+        let (code, cdrs) = request("GET", &loopback(8080, "/api/v1/cdrs"), admin_token, None).await;
+        assert_eq!(code, 200, "{cdrs}");
+        let calls: Vec<&serde_json::Value> = cdrs["cdrs"]
+            .as_array()
+            .map(|list| list.iter().filter(|r| r["kind"] == "call").collect())
+            .unwrap_or_default();
+        if calls.len() >= n {
+            return calls
+                .iter()
+                .max_by_key(|r| r["start_time"].as_u64().unwrap_or(0))
+                .and_then(|r| r["cdr_id"].as_str())
+                .expect("a record has a cdr_id")
+                .to_string();
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "{} of {n} call records reached the database: {cdrs}",
+            calls.len()
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
 }

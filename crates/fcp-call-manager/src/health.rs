@@ -365,6 +365,9 @@ async fn status_handler(State(state): State<Arc<AppState>>) -> Json<serde_json::
         // not (docs/MULTI_REGION_FOLLOWUPS.md §2.3). Absent outside a
         // cluster.
         "cluster_view": cluster_view(&state),
+        // Which release every node runs, and whether more than one
+        // (docs/BACKUP_AND_RESTORE.md §5). Absent outside a cluster.
+        "cluster_versions": cluster_versions(&state),
         "replica": state.replica.json(),
         "registration_cache": state.registration_cache.as_ref().map(|cache| {
             let stats = cache.stats();
@@ -976,6 +979,22 @@ async fn transcoding_handler(State(state): State<Arc<AppState>>) -> Json<serde_j
 /// are included.
 ///
 /// GET /metrics
+/// Which release every node runs, when this one is clustered.
+fn cluster_versions(state: &AppState) -> Option<serde_json::Value> {
+    #[cfg(feature = "storage-redis")]
+    {
+        state
+            .cluster
+            .as_ref()
+            .and_then(|c| serde_json::to_value(c.versions()).ok())
+    }
+    #[cfg(not(feature = "storage-redis"))]
+    {
+        let _ = state;
+        None
+    }
+}
+
 /// This node's view of the cluster, when it is clustered.
 fn cluster_view(state: &AppState) -> Option<serde_json::Value> {
     #[cfg(feature = "storage-redis")]
@@ -1024,6 +1043,7 @@ async fn metrics_handler(State(state): State<Arc<AppState>>) -> impl IntoRespons
     #[cfg(feature = "storage-redis")]
     if let Some(cluster) = &state.cluster {
         body.push_str(&cluster.view().prometheus(&format!("node=\"{node}\"")));
+        body.push_str(&cluster.versions().prometheus(&format!("node=\"{node}\"")));
     }
     // Registration lookups in the store, by reason: the one hot-path read
     // that is neither cached nor replica-served, so each is a crossing in
