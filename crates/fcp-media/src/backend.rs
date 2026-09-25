@@ -267,6 +267,14 @@ pub trait MediaBackend: Send + Sync {
     /// returns to its independent state (silence or can be bridged to other calls).
     async fn unbridge_calls(&self, a_leg_call_id: &CallId, b_leg_call_id: &CallId) -> Result<()>;
 
+    /// The pool the backend's sessions take their RTP ports from, when it
+    /// has one on this node. Anything else on the node that opens RTP
+    /// sockets in the same range allocates from it, so two pools never
+    /// hand out one port.
+    fn port_pool(&self) -> Option<Arc<forge_rtp::PortPool>> {
+        None
+    }
+
     /// Get backend type name (for logging/metrics)
     fn backend_name(&self) -> &'static str;
 
@@ -1512,6 +1520,10 @@ pub mod embedded {
             );
 
             Ok(())
+        }
+
+        fn port_pool(&self) -> Option<Arc<forge_rtp::PortPool>> {
+            Some(self.session_manager.port_pool())
         }
 
         fn backend_name(&self) -> &'static str {
