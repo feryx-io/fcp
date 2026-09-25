@@ -980,6 +980,14 @@ a test's Redis flushed at acquisition; what the nightly finds written
 down. Five questions settled on their recommendations: name the target
 rather than build cargo-fuzz from source, GHCR under the repository, pull rather than
 build, a cargo test rather than a script, a flush rather than a prefix.
+Phase 1 done (v0.25.265): both fuzz workflows name the host triple on
+`cargo fuzz build` and `run` and report a target that did not build
+apart from one that crashed — validated by a twenty-second run of every
+target in each repository, millions of executions per target, the
+first fuzzing either has done in CI; FCP's weekly CI gains
+`submodule-nightlies`, which reads each submodule's latest completed
+Fuzz run from the GitHub API and fails when it is not a success or is
+two days old.
 
 ## Historical documents
 
