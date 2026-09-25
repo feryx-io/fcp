@@ -1628,6 +1628,127 @@ record_calls = true
     stack.finish().await;
 }
 
+/// A registration whose phone is gone — crashed, or brought back by a
+/// restore — is one of the contacts a call to the user forks to. The
+/// live phone answers; the caller must hear that answer at once, not
+/// after the dead leg's transactions give up (found by the nightly
+/// stack, `docs/NIGHTLY_STACK.md` §4). The dead contact here is a port
+/// that swallows everything and answers nothing, as a hung phone does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_dead_registration_does_not_delay_the_answer() {
+    use fcp_core::storage::{Registration, RegistrationStore};
+    let stack = stack_or_skip!();
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let bob = stack.seed.user("bob", "bob-pw", "1002").await;
+
+    // Bob's other phone: a binding in the store whose contact is a socket
+    // nobody reads — no answer, no refusal, as a phone that hung or a
+    // restore's stale row. Planted before Bob's live phone registers, so
+    // the registrar's cache of his AOR is refreshed by that REGISTER.
+    let silent = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let dead_port = silent.local_addr().unwrap().port();
+    let now = std::time::SystemTime::now();
+    stack
+        .seed
+        .storage()
+        .put_registration(Registration {
+            tenant_id: stack.seed.tenant_id,
+            aor: format!("sip:{}@{REALM}", bob.username),
+            contact: format!("sip:{}@127.0.0.1:{dead_port}", bob.username),
+            expires_at: now + Duration::from_secs(3600),
+            call_id: format!("{}@dead", uuid::Uuid::new_v4()),
+            cseq: 1,
+            user_agent: Some("hung phone".to_string()),
+            q: None,
+            registered_at: now,
+            path: None,
+            flow_token: None,
+            source_address: Some(format!("127.0.0.1:{dead_port}")),
+        })
+        .await
+        .unwrap();
+
+    let alice_phone = stack.phone(&alice).await;
+    let bob_phone = stack.phone(&bob).await;
+    assert_eq!(alice_phone.register().await.unwrap(), 200);
+    assert_eq!(bob_phone.register().await.unwrap(), 200);
+
+    let started = tokio::time::Instant::now();
+    let call = alice_phone.call(&bob.extension).await.unwrap();
+    let Some(incoming) = bob_phone.incoming(SOON).await else {
+        stack
+            .fail("Bob's live phone did not ring", &alice_phone)
+            .await;
+    };
+    let bob_call = incoming.answer().await.unwrap();
+    if let Err(e) = call.answered(SOON).await {
+        stack
+            .fail(
+                &format!("the answer did not reach the caller in time: {e}"),
+                &alice_phone,
+            )
+            .await;
+    }
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "the answer took {:?}",
+        started.elapsed()
+    );
+    assert_eq!(call.hangup().await.unwrap(), 200);
+    assert!(bob_call.ended(SOON).await);
+    drop(silent);
+    stack.finish().await;
+}
+
+/// A softphone is configured with the node's address and dials
+/// `sip:2002@<address>`, which names no tenant; the caller's registration
+/// does. Found by the nightly stack (`docs/NIGHTLY_STACK.md` §4): once a
+/// tenant other than the node's default existed, such a call was
+/// refused for want of a tenant, though the caller was registered and
+/// digest-checked in one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_registered_phone_in_another_tenant_calls_by_the_node_address() {
+    let stack = stack_or_skip!();
+    let globex = stack.seed.tenant("globex", "globex.e2e.local").await;
+    let alice = stack
+        .seed
+        .user_in(globex, "alice-globex", "alice-pw", "2001")
+        .await;
+    let bob = stack
+        .seed
+        .user_in(globex, "bob-globex", "bob-pw", "2002")
+        .await;
+    let alice_phone = Phone::new(
+        &alice.username,
+        &alice.password,
+        "globex.e2e.local",
+        stack.sip,
+    )
+    .await
+    .unwrap();
+    let bob_phone = Phone::new(&bob.username, &bob.password, "globex.e2e.local", stack.sip)
+        .await
+        .unwrap();
+    assert_eq!(alice_phone.register().await.unwrap(), 200);
+    assert_eq!(bob_phone.register().await.unwrap(), 200);
+
+    // Dialled at the node's address, not at the tenant's domain.
+    let call = alice_phone.call(&bob.extension).await.unwrap();
+    let Some(incoming) = bob_phone.incoming(SOON).await else {
+        stack
+            .fail(
+                "Bob's phone did not ring: the call was not placed in the caller's tenant",
+                &alice_phone,
+            )
+            .await;
+    };
+    let bob_call = incoming.answer().await.unwrap();
+    call.answered(SOON).await.unwrap();
+    assert_eq!(call.hangup().await.unwrap(), 200);
+    assert!(bob_call.ended(SOON).await);
+    stack.finish().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_number_that_records_its_calls_records_them_without_an_announcement_when_none_is_asked() {
     use fcp_core::storage::PhoneNumberStore;

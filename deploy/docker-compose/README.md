@@ -190,6 +190,23 @@ Rebuild after a code change with `docker compose up -d --build`; `docker
 compose logs -f <service>` follows a service; `docker compose down -v`
 removes the volumes too, the database included.
 
+## Pull instead of build
+
+The Images workflow builds the fourteen images every night and pushes
+them to `ghcr.io/thevoiceguy/fcp-<service>` as `nightly` and as the
+commit's sha, then brings that stack up on a runner, carries a call
+through it, backs it up, drops it, restores it and calls again
+(`docs/NIGHTLY_STACK.md`). To run what it ran, with no Rust toolchain:
+
+```bash
+sed -i 's/^FCP_IMAGE_TAG=.*/FCP_IMAGE_TAG=nightly/' .env   # or a commit sha
+docker compose pull
+docker compose up -d --no-build
+```
+
+`FCP_IMAGE_TAG=local`, the default, is what `up -d --build` builds
+here. The NVIDIA conference image is built here only.
+
 ## Keep it
 
 What must be saved, what a restore needs and what an upgrade does are in

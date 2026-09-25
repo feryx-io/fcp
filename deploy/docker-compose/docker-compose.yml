@@ -28,6 +28,11 @@
 #
 # Secrets come from .env through each binary's FCP_* environment override
 # (`--check-config` on any binary shows what it will run with, masked).
+#
+# Every FCP service names both an image and a build: `up -d --build` builds
+# it here and tags it `…:local`; `FCP_IMAGE_TAG=nightly docker compose pull`
+# fetches what the Images workflow pushed to ghcr.io instead, and
+# `up -d --no-build` runs that (docs/NIGHTLY_STACK.md phase 2).
 
 services:
   postgres:
@@ -82,6 +87,7 @@ services:
       - fcp-certs:/certs
 
   fcp-admin:
+    image: ghcr.io/thevoiceguy/fcp-admin:${FCP_IMAGE_TAG:-local}
     build:
       context: ../..
       dockerfile: deploy/docker-compose/Dockerfile.admin
@@ -119,10 +125,12 @@ services:
       interval: 10s
       timeout: 3s
       retries: 3
+      start_period: 60s
     restart: unless-stopped
 
   # The public API gateway in front of the admin.
   fcp-api-gateway:
+    image: ghcr.io/thevoiceguy/fcp-gateway:${FCP_IMAGE_TAG:-local}
     build:
       context: ../..
       dockerfile: deploy/docker-compose/Dockerfile.gateway
@@ -144,10 +152,12 @@ services:
       interval: 10s
       timeout: 3s
       retries: 3
+      start_period: 60s
     restart: unless-stopped
 
   # Event streaming: every other service posts to its /ingest.
   fcp-events-server:
+    image: ghcr.io/thevoiceguy/fcp-events:${FCP_IMAGE_TAG:-local}
     build:
       context: ../..
       dockerfile: deploy/docker-compose/Dockerfile.events
@@ -165,11 +175,13 @@ services:
       interval: 10s
       timeout: 3s
       retries: 3
+      start_period: 60s
     restart: unless-stopped
 
   # Registrar, B2BUA, routing and PBX features: where phones register and
   # calls are placed. SIP 5060, HTTP 8084, RTP 10000-10999, on the host.
   fcp-call-manager:
+    image: ghcr.io/thevoiceguy/fcp-call-manager:${FCP_IMAGE_TAG:-local}
     build:
       context: ../..
       dockerfile: deploy/docker-compose/Dockerfile.call-manager
@@ -208,6 +220,7 @@ services:
 
   # The conference bridge. SIP 5074, HTTP 8090, RTP 20000-20999, on the host.
   fcp-conference:
+    image: ghcr.io/thevoiceguy/fcp-conference:${FCP_IMAGE_TAG:-local}
     build:
       context: ../..
       dockerfile: deploy/docker-compose/Dockerfile.conference
@@ -249,6 +262,7 @@ services:
   # Browsers into conference rooms. HTTP 8095, SIP 5077, RTP 34000-35999,
   # on the host.
   fcp-webrtc-gw:
+    image: ghcr.io/thevoiceguy/fcp-webrtc-gw:${FCP_IMAGE_TAG:-local}
     build:
       context: ../..
       dockerfile: deploy/docker-compose/Dockerfile.webrtc-gw
@@ -278,6 +292,7 @@ services:
   # The standalone media server. HTTP 8085, HTTPS 8185, RTP 30000-30999,
   # on the host.
   fcp-media:
+    image: ghcr.io/thevoiceguy/fcp-media:${FCP_IMAGE_TAG:-local}
     build:
       context: ../..
       dockerfile: deploy/docker-compose/Dockerfile.media
@@ -306,6 +321,7 @@ services:
 
   # The CDR processor and the job workers.
   fcp-jobs:
+    image: ghcr.io/thevoiceguy/fcp-jobs:${FCP_IMAGE_TAG:-local}
     build:
       context: ../..
       dockerfile: deploy/docker-compose/Dockerfile.jobs
@@ -334,10 +350,12 @@ services:
       interval: 10s
       timeout: 3s
       retries: 3
+      start_period: 60s
     restart: unless-stopped
 
   # Call flows (IVR). SIP 5070, HTTP 8086, RTP 22000-22999, on the host.
   fcp-ivr:
+    image: ghcr.io/thevoiceguy/fcp-ivr:${FCP_IMAGE_TAG:-local}
     build:
       context: ../..
       dockerfile: deploy/docker-compose/Dockerfile.ivr
@@ -373,6 +391,7 @@ services:
 
   # Voicemail. SIP 5072, HTTP 8087, RTP 24000-24999, on the host.
   fcp-voicemail:
+    image: ghcr.io/thevoiceguy/fcp-voicemail:${FCP_IMAGE_TAG:-local}
     build:
       context: ../..
       dockerfile: deploy/docker-compose/Dockerfile.voicemail
@@ -408,6 +427,7 @@ services:
 
   # Presence and BLF. SIP 5076, HTTP 8092, on the host.
   fcp-presence:
+    image: ghcr.io/thevoiceguy/fcp-presence:${FCP_IMAGE_TAG:-local}
     build:
       context: ../..
       dockerfile: deploy/docker-compose/Dockerfile.presence
@@ -439,6 +459,7 @@ services:
   # carriers. SIP 5078, health 8094, RTP 28000-28999, on the host; its
   # binds are flags, set here.
   fcp-sbc:
+    image: ghcr.io/thevoiceguy/fcp-sbc:${FCP_IMAGE_TAG:-local}
     build:
       context: ../..
       dockerfile: deploy/docker-compose/Dockerfile.sbc
@@ -475,6 +496,7 @@ services:
   # asked for — `docker compose --profile tts up -d` — because its image
   # carries PyTorch; without it the prompts are silent.
   fcp-tts:
+    image: ghcr.io/thevoiceguy/fcp-tts:${FCP_IMAGE_TAG:-local}
     build:
       context: ../..
       dockerfile: deploy/docker-compose/Dockerfile.tts
@@ -523,8 +545,12 @@ services:
         condition: service_healthy
       fcp-events-server:
         condition: service_healthy
+    # Through the proxy to the admin's health, by address: in the container
+    # `localhost` is ::1 first, so the probe must reach an IPv6 listener or
+    # name the IPv4 one — it does both, and the nightly stack proved the
+    # old probe never passed (docs/NIGHTLY_STACK.md phase 2).
     healthcheck:
-      test: ["CMD", "wget", "-q", "--no-check-certificate", "-O", "/dev/null", "https://localhost:8444/api/v1/health"]
+      test: ["CMD", "wget", "-q", "--no-check-certificate", "-O", "/dev/null", "https://127.0.0.1:8444/api/v1/health"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -535,6 +561,7 @@ services:
   # call manager (docs/CAPACITY_AND_SURVIVABILITY.md). Off unless asked
   # for: `docker compose --profile registrar up -d`. SIP 5062, HTTP 8083.
   fcp-registrar:
+    image: ghcr.io/thevoiceguy/fcp-registrar:${FCP_IMAGE_TAG:-local}
     build:
       context: ../..
       dockerfile: deploy/docker-compose/Dockerfile.registrar
@@ -561,6 +588,7 @@ services:
       interval: 10s
       timeout: 3s
       retries: 3
+      start_period: 60s
     restart: unless-stopped
 
   # Metrics. Every FCP metrics endpoint that wants a token gets the one
@@ -630,14 +658,17 @@ configs:
         proxy_read_timeout 3600s;
         server {
           listen 8443 ssl;
+          listen [::]:8443 ssl;
           location / { proxy_pass http://fcp-api-gateway:8000; }
         }
         server {
           listen 8444 ssl;
+          listen [::]:8444 ssl;
           location / { proxy_pass http://fcp-admin:8080; }
         }
         server {
           listen 8445 ssl;
+          listen [::]:8445 ssl;
           location / { proxy_pass http://fcp-events-server:8081; }
         }
       }

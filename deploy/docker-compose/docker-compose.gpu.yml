@@ -7,6 +7,8 @@
 # device in `[conference] video_device`. Everything else is the base file's.
 services:
   fcp-conference:
+    # Built here only: the Images workflow pushes no NVIDIA image.
+    image: ghcr.io/thevoiceguy/fcp-conference-nvidia:${FCP_IMAGE_TAG:-local}
     build:
       context: ../..
       dockerfile: deploy/docker-compose/Dockerfile.conference.nvidia

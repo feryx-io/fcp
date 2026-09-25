@@ -100,7 +100,7 @@ impl EncryptionState {
         let cipher = match load_ring(pool, kek.as_ref()).await? {
             Some(cipher) => cipher,
             None => {
-                create_dek(pool, kek.as_ref(), true).await?;
+                create_first_dek(pool, kek.as_ref()).await?;
                 load_ring(pool, kek.as_ref())
                     .await?
                     .context("data encryption key ring empty after creating the first key")?
@@ -285,6 +285,49 @@ async fn load_ring(pool: &Pool<Postgres>, kek: &dyn Kek) -> Result<Option<FieldC
 
     let active = active.context("no active data encryption key in data_encryption_keys")?;
     Ok(Some(FieldCipher::new(keys, &active)?))
+}
+
+/// The advisory lock the first key is made under: one transaction at a
+/// time, so the services of a stack starting together on an empty
+/// database make one key between them.
+const FIRST_KEY_LOCK: i64 = 0x6663_705f_6b65_7973; // "fcp_keys"
+
+/// Make the first DEK of an empty ring, unless another process made it
+/// first. Every service of a stack opens the database at once on first
+/// boot; without the lock each found the ring empty, each inserted, the
+/// unique index on the active key refused all but one, and the losers
+/// exited to be restarted (found by the nightly stack,
+/// `docs/NIGHTLY_STACK.md` §4).
+async fn create_first_dek(pool: &Pool<Postgres>, kek: &dyn Kek) -> Result<()> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(FIRST_KEY_LOCK)
+        .execute(&mut *tx)
+        .await
+        .context("taking the first-key lock")?;
+    let existing: i64 = sqlx::query_scalar("SELECT count(*) FROM data_encryption_keys")
+        .fetch_one(&mut *tx)
+        .await?;
+    if existing > 0 {
+        // Another service made it while this one waited for the lock.
+        tx.rollback().await?;
+        return Ok(());
+    }
+    let (_dek, wrapped) = kek.generate_dek().await?;
+    let id = format!("dek-{}", &uuid::Uuid::new_v4().simple().to_string()[..12]);
+    sqlx::query(
+        "INSERT INTO data_encryption_keys (id, kek_id, wrapped_key, active, created_at)
+         VALUES ($1, $2, $3, TRUE, NOW())",
+    )
+    .bind(&id)
+    .bind(kek.id())
+    .bind(&wrapped)
+    .execute(&mut *tx)
+    .await
+    .context("inserting the first data encryption key")?;
+    tx.commit().await?;
+    info!(key_id = %id, "Created the first data encryption key");
+    Ok(())
 }
 
 /// Generate, wrap and insert a DEK. With `activate`, the previous active key
