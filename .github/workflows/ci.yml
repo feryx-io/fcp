@@ -173,6 +173,38 @@ jobs:
   # be a valid stack with the shipped .env (docs/SHIP_AND_OPERATE.md phase
   # 3). Cheap, so it runs on every pull request including drafts; the
   # images themselves are built nightly (.github/workflows/images.yml).
+  # The submodules' nightly fuzzing (docs/NIGHTLY_STACK.md phase 1): FCP
+  # relies on siphon-rs and forge-media fuzzing their parsers every night,
+  # and their runs were red for two weeks before anyone looked. On the
+  # weekly run (and by hand), the latest completed Fuzz run of each must
+  # have succeeded and be less than two days old.
+  submodule-nightlies:
+    name: Submodule nightlies
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: The latest fuzz run of each submodule is green and recent
+        run: |
+          set -eo pipefail
+          failed=""
+          for repo in thevoiceguy/siphon-rs thevoiceguy/forge-media; do
+            run=$(gh api "repos/$repo/actions/workflows/fuzz.yml/runs?status=completed&per_page=1" \
+              --jq '.workflow_runs[0] | "\(.conclusion) \(.created_at) \(.html_url)"')
+            set -- $run
+            conclusion=$1; created=$2; url=$3
+            age_hours=$(( ( $(date -u +%s) - $(date -u -d "$created" +%s) ) / 3600 ))
+            echo "$repo: $conclusion, ${age_hours}h ago — $url"
+            if [ "$conclusion" != "success" ] || [ "$age_hours" -ge 48 ]; then
+              failed="$failed $repo"
+            fi
+          done
+          if [ -n "$failed" ]; then
+            echo "::error::a submodule's fuzzing is red or stale:$failed"
+            exit 1
+          fi
+
   packaging:
     name: Packaging
     runs-on: ubuntu-latest
