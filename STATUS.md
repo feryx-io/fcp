@@ -1006,6 +1006,24 @@ own tasks); and every service inserting the first data encryption key
 at once on first boot (made under an advisory lock now, and the five
 health checks without a start period have one).
 
+## What is next (chosen 2026-09-25, to follow the nightly stack)
+
+**Hybrid: the control plane and the site** — design in
+`docs/HYBRID_CONTROL_PLANE.md` (v0.25.267), written after a feature review
+against BroadSoft, CUCM, Zoom, Webex Calling and Twilio found the
+platform's largest structural gap: a customer's binaries on their own
+network cannot use cloud features, because every node opens the one
+Postgres and the one Redis directly. The model: the cloud is the system
+of record for configuration; a site is the tenant's own stack (every
+binary, its own stores and key) plus `fcp-link`, enrolled by a one-time
+token into mutual TLS, which keeps the site's database a copy of the
+tenant's slice through a trigger-written journal, a snapshot and a
+change feed, ships the site's CDRs, events and recording rows up,
+carries its health, and lets the site run alone when the link is down;
+calls that need the cloud go over a trunk to the cloud SBC provisioned
+at enrollment. Seven phases from sites and enrollment to a site stack
+in the nightly; nine questions, each settled on its recommendation.
+
 ## Historical documents
 
 Superseded status docs live in [`docs/archive/`](docs/archive/README.md) — they describe
