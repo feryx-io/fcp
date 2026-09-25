@@ -18,6 +18,44 @@ use std::sync::Arc;
 pub struct ClusterApiState {
     /// None when Redis is not configured.
     pub reader: Option<Arc<ClusterReader>>,
+    /// Every tenant's sites (`docs/HYBRID_CONTROL_PLANE.md`), for the
+    /// cluster page's Sites section; None without a database.
+    pub storage: Option<Arc<fcp_core::DynStorage>>,
+}
+
+/// Response for GET /api/v1/cluster/sites: every tenant's sites, as the
+/// tenant API shows one.
+#[derive(Serialize)]
+pub struct ClusterSitesResponse {
+    pub available: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    pub sites: Vec<fcp_api_core::v1::sites::SiteResponse>,
+}
+
+async fn list_sites(Extension(state): Extension<ClusterApiState>) -> Json<ClusterSitesResponse> {
+    let Some(storage) = &state.storage else {
+        return Json(ClusterSitesResponse {
+            available: false,
+            message: Some("No database: sites are not kept here.".to_string()),
+            sites: vec![],
+        });
+    };
+    match fcp_core::SiteStore::list_all_sites(storage.as_ref()).await {
+        Ok(sites) => Json(ClusterSitesResponse {
+            available: true,
+            message: None,
+            sites: sites.into_iter().map(Into::into).collect(),
+        }),
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to list sites");
+            Json(ClusterSitesResponse {
+                available: true,
+                message: Some(format!("Failed to read sites: {}", e)),
+                sites: vec![],
+            })
+        }
+    }
 }
 
 /// Query for GET /api/v1/cluster/nodes.
@@ -59,6 +97,7 @@ where
     Router::new()
         .route("/cluster/nodes", get(list_nodes))
         .route("/cluster/stats", get(get_stats))
+        .route("/cluster/sites", get(list_sites))
         .layer(Extension(state))
 }
 

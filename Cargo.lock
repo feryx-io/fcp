@@ -2227,11 +2227,13 @@ checksum = "9f1f227452a390804cdb637b74a86990f2a7d7ba4b7d5693aac9b4dd6defd8d6"
 
 [[package]]
 name = "fcp-admin"
-version = "0.25.267"
+version = "0.25.268"
 dependencies = [
  "anyhow",
  "async-trait",
  "axum 0.7.9",
+ "axum-server",
+ "base64 0.22.1",
  "bytes",
  "clap",
  "dashmap 6.1.0",
@@ -2250,9 +2252,14 @@ dependencies = [
  "fcp-storage-redis",
  "fcp-testkit",
  "futures-util",
+ "rand 0.8.6",
+ "rcgen",
  "reqwest 0.12.28",
+ "rustls",
+ "rustls-pemfile",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror 1.0.69",
  "tokio",
  "tokio-tungstenite 0.24.0",
@@ -2266,7 +2273,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-admin-ui"
-version = "0.25.267"
+version = "0.25.268"
 dependencies = [
  "axum 0.7.9",
  "include_dir",
@@ -2275,7 +2282,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-api-core"
-version = "0.25.267"
+version = "0.25.268"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2319,7 +2326,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-api-gateway"
-version = "0.25.267"
+version = "0.25.268"
 dependencies = [
  "anyhow",
  "axum 0.7.9",
@@ -2350,7 +2357,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-b2bua-core"
-version = "0.25.267"
+version = "0.25.268"
 dependencies = [
  "anyhow",
  "bytes",
@@ -2374,7 +2381,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-billing"
-version = "0.25.267"
+version = "0.25.268"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2390,7 +2397,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-call-manager"
-version = "0.25.267"
+version = "0.25.268"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2457,7 +2464,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-cdr"
-version = "0.25.267"
+version = "0.25.268"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2488,7 +2495,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-cli"
-version = "0.25.267"
+version = "0.25.268"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2521,7 +2528,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-cluster"
-version = "0.25.267"
+version = "0.25.268"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2540,7 +2547,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-conference-server"
-version = "0.25.267"
+version = "0.25.268"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -2635,7 +2642,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-crypto"
-version = "0.25.267"
+version = "0.25.268"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -2653,7 +2660,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-events"
-version = "0.25.267"
+version = "0.25.268"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2671,7 +2678,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-events-server"
-version = "0.25.267"
+version = "0.25.268"
 dependencies = [
  "anyhow",
  "axum 0.7.9",
@@ -2729,7 +2736,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-ivr"
-version = "0.25.267"
+version = "0.25.268"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2770,7 +2777,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-jobs"
-version = "0.25.267"
+version = "0.25.268"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2803,8 +2810,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "fcp-link"
+version = "0.25.268"
+dependencies = [
+ "anyhow",
+ "axum 0.7.9",
+ "clap",
+ "fcp-cluster",
+ "fcp-core",
+ "fcp-storage-redis",
+ "fcp-testkit",
+ "rcgen",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "fcp-loadgen"
-version = "0.25.267"
+version = "0.25.268"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2856,7 +2884,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-media-server"
-version = "0.25.267"
+version = "0.25.268"
 dependencies = [
  "anyhow",
  "clap",
@@ -2880,7 +2908,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-notify"
-version = "0.25.267"
+version = "0.25.268"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2902,7 +2930,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-pbx"
-version = "0.25.267"
+version = "0.25.268"
 dependencies = [
  "dashmap 6.1.0",
  "fcp-b2bua-core",
@@ -2941,7 +2969,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-presence"
-version = "0.25.267"
+version = "0.25.268"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -2968,7 +2996,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-presence-server"
-version = "0.25.267"
+version = "0.25.268"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3001,7 +3029,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-queue"
-version = "0.25.267"
+version = "0.25.268"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3023,7 +3051,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-registrar"
-version = "0.25.267"
+version = "0.25.268"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3072,7 +3100,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-sbc"
-version = "0.25.267"
+version = "0.25.268"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3124,7 +3152,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-sbc-core"
-version = "0.25.267"
+version = "0.25.268"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3214,7 +3242,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-storage-postgres"
-version = "0.25.267"
+version = "0.25.268"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3241,7 +3269,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-storage-redis"
-version = "0.25.267"
+version = "0.25.268"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3262,7 +3290,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-testkit"
-version = "0.25.267"
+version = "0.25.268"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3300,7 +3328,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-tts-server"
-version = "0.25.267"
+version = "0.25.268"
 dependencies = [
  "anyhow",
  "axum 0.7.9",
@@ -3338,7 +3366,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-voicemail-server"
-version = "0.25.267"
+version = "0.25.268"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3382,7 +3410,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-webhooks"
-version = "0.25.267"
+version = "0.25.268"
 dependencies = [
  "anyhow",
  "fcp-core",
@@ -3401,7 +3429,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-webrtc-gateway"
-version = "0.25.267"
+version = "0.25.268"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6599,6 +6627,7 @@ dependencies = [
  "ring",
  "rustls-pki-types",
  "time",
+ "x509-parser 0.16.0",
  "yasna",
 ]
 
@@ -10034,6 +10063,7 @@ dependencies = [
  "lazy_static",
  "nom 7.1.3",
  "oid-registry 0.7.1",
+ "ring",
  "rusticata-macros",
  "thiserror 1.0.69",
  "time",

@@ -64,6 +64,7 @@ bridge services reach them through `host.docker.internal`.
 | `fcp-api-gateway` — the public face of the admin | bridge | 8000 |
 | `fcp-events-server` | bridge | 8081 |
 | `fcp-proxy` — HTTPS for the three above | bridge | 8443 gateway, 8444 admin, 8445 events |
+| the admin's link — what a tenant's sites enroll to and heartbeat at (`docs/HYBRID_CONTROL_PLANE.md`) | bridge | 8446 enroll (TLS), 8447 heartbeats (mutual TLS) |
 | `fcp-jobs` — the CDR processor and job workers | bridge | 8082 |
 | `fcp-call-manager` | host | SIP 5060, SIPS 5061, WSS 5081, HTTP 8084, RTP 10000–10999 |
 | `fcp-sbc` — carriers point here; its one trunk is the call manager | host | SIP 5078, SIP/TLS 5079, health 8094, RTP 28000–28999 |

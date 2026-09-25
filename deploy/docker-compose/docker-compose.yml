@@ -18,6 +18,7 @@
 #   8090 conference · 8092 presence · 8093 tts (profile) · 8094 sbc health
 #   8095 webrtc (HTTPS) · 8185 media HTTPS · 9090 prometheus · 3000 grafana
 #   HTTPS through the proxy: 8443 gateway · 8444 admin · 8445 events
+#   The link (admin): 8446 enroll · 8447 heartbeats under mutual TLS
 #   SIP 5060 call manager · 5070 ivr · 5072 voicemail · 5074 conference
 #   5076 presence · 5077 webrtc · 5078 sbc · 5062/8083 registrar (profile)
 #   TLS: SIPS 5061 + WSS 5081 call manager · 5075 conference · 5079 sbc
@@ -94,6 +95,10 @@ services:
     container_name: fcp-admin
     ports:
       - "8080:8080"
+      # The link: sites enroll on 8446 (TLS) and heartbeat on 8447 (mutual
+      # TLS from the link CA) — docs/HYBRID_CONTROL_PLANE.md.
+      - "8446:8446"
+      - "8447:8447"
     volumes:
       - ./configs/fcp-admin.toml:/app/fcp-admin.toml:ro
       - fcp-certs:/var/lib/fcp/certs:ro

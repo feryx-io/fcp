@@ -119,6 +119,7 @@ async fn the_compose_stack_comes_up_and_carries_a_call() {
         "fcp-media",
         "fcp-webrtc-gw",
         "fcp-proxy",
+        "fcp-admin",
     ] {
         ca.node(service);
     }

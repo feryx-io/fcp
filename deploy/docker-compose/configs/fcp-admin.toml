@@ -23,6 +23,18 @@ database_url = "postgresql://fcp:change-me@postgres:5432/fcp"
 # (docs/BACKUP_AND_RESTORE.md §5).
 redis_url = "redis://redis:6379"
 
+[link]
+# What a tenant's sites enroll to and heartbeat at (docs/HYBRID_CONTROL_PLANE.md):
+# 8446 over TLS for the one-time enrollment, 8447 under mutual TLS from the
+# link CA this process makes into admin-data on first start. The listeners'
+# own certificate is the certs service's.
+enabled = true
+enroll_bind = "0.0.0.0:8446"
+bind = "0.0.0.0:8447"
+cert = "/var/lib/fcp/certs/fcp-admin.crt"
+key = "/var/lib/fcp/certs/fcp-admin.key"
+ca_dir = "/app/data/link-ca"
+
 [events]
 # The events server on the bridge network; FCP_ADMIN_EVENTS_AUTH_TOKEN authenticates.
 server_url = "http://fcp-events-server:8081/ingest"

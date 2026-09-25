@@ -87,6 +87,90 @@ pub struct AdminConfig {
     /// (`docs/E911_BLOCK_2.md` §7).
     #[serde(default)]
     pub e911: E911Section,
+
+    #[serde(default)]
+    pub link: LinkConfig,
+}
+
+/// `[link]`: what sites enroll to and heartbeat at
+/// (`docs/HYBRID_CONTROL_PLANE.md` §3). Two listeners: `enroll_bind`
+/// over TLS, where a link spends its one-time token, and `bind` under
+/// mutual TLS from the link CA this process keeps in `ca_dir` and signs
+/// every site's certificate with.
+///
+/// ```toml
+/// [link]
+/// enabled = true
+/// enroll_bind = "0.0.0.0:8446"
+/// bind = "0.0.0.0:8447"
+/// cert = "/var/lib/fcp/certs/fcp-admin.crt"   # the listeners' own certificate
+/// key = "/var/lib/fcp/certs/fcp-admin.key"
+/// ca_dir = "/app/data/link-ca"                # link-ca.crt and link-ca.key, made here once
+/// certificate_days = 365
+/// heartbeat_interval_secs = 30
+/// heartbeat_stale_secs = 90
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct LinkConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_link_enroll_bind")]
+    pub enroll_bind: SocketAddr,
+    #[serde(default = "default_link_bind")]
+    pub bind: SocketAddr,
+    /// The listeners' certificate and key (PEM). Required when enabled.
+    #[serde(default)]
+    pub cert: Option<String>,
+    #[serde(default)]
+    pub key: Option<String>,
+    /// Where the link CA lives; made on first start when absent.
+    #[serde(default = "default_link_ca_dir")]
+    pub ca_dir: String,
+    /// How long a site's certificate is good for.
+    #[serde(default = "default_link_certificate_days")]
+    pub certificate_days: u32,
+    /// What links are told to heartbeat every.
+    #[serde(default = "default_link_heartbeat_interval_secs")]
+    pub heartbeat_interval_secs: u64,
+    /// After this long without a heartbeat a site's link is down.
+    #[serde(default = "default_link_heartbeat_stale_secs")]
+    pub heartbeat_stale_secs: u64,
+}
+
+fn default_link_enroll_bind() -> SocketAddr {
+    "127.0.0.1:8446".parse().unwrap()
+}
+fn default_link_bind() -> SocketAddr {
+    "127.0.0.1:8447".parse().unwrap()
+}
+fn default_link_ca_dir() -> String {
+    "/var/lib/fcp/link-ca".to_string()
+}
+fn default_link_certificate_days() -> u32 {
+    365
+}
+fn default_link_heartbeat_interval_secs() -> u64 {
+    30
+}
+fn default_link_heartbeat_stale_secs() -> u64 {
+    90
+}
+
+impl Default for LinkConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            enroll_bind: default_link_enroll_bind(),
+            bind: default_link_bind(),
+            cert: None,
+            key: None,
+            ca_dir: default_link_ca_dir(),
+            certificate_days: default_link_certificate_days(),
+            heartbeat_interval_secs: default_link_heartbeat_interval_secs(),
+            heartbeat_stale_secs: default_link_heartbeat_stale_secs(),
+        }
+    }
 }
 
 /// The `[e911]` section.
@@ -606,6 +690,24 @@ pub fn load_config(config_path: Option<&Path>) -> Result<AdminConfig> {
 }
 
 pub fn validate_config(config: &AdminConfig) -> Result<()> {
+    if config.link.enabled {
+        for (name, value) in [
+            ("link.cert", &config.link.cert),
+            ("link.key", &config.link.key),
+        ] {
+            if value.as_deref().map(str::trim).is_none_or(str::is_empty) {
+                anyhow::bail!("{name} must be set when link.enabled = true");
+            }
+        }
+        if config.link.heartbeat_stale_secs <= config.link.heartbeat_interval_secs {
+            anyhow::bail!(
+                "link.heartbeat_stale_secs must be greater than link.heartbeat_interval_secs"
+            );
+        }
+        if config.link.certificate_days == 0 {
+            anyhow::bail!("link.certificate_days must be greater than zero");
+        }
+    }
     match config.e911.validator.provider.as_str() {
         "basic" => {}
         "http" => {

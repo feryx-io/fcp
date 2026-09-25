@@ -45,6 +45,7 @@ mod cli;
 mod cluster_api;
 mod config;
 mod route_preview;
+mod site_link;
 mod storage;
 mod subject_requests;
 
@@ -471,6 +472,24 @@ async fn main() -> Result<()> {
     // The validator behind POST …/e911/validate (`docs/E911_BLOCK_2.md` §7).
     let e911_validator = build_e911_validator(&config.e911.validator, &storage).await?;
 
+    // The link: what sites enroll to and heartbeat at
+    // (docs/HYBRID_CONTROL_PLANE.md phase 1), when configured.
+    let link_state = if config.link.enabled {
+        site_link::ensure_crypto_provider();
+        let ca = site_link::LinkCa::load_or_create(&site_link::ca_dir(&config.link))
+            .context("the link CA")?;
+        Some(site_link::LinkState {
+            storage: storage.clone(),
+            ca: Arc::new(ca),
+            events: Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>,
+            config: config.link.clone(),
+        })
+    } else {
+        info!("Sites cannot enroll here ([link] enabled is false)");
+        None
+    };
+    let cluster_storage = storage.clone();
+
     // Create API state
     let api_state = fcp_api_core::ApiState::new(
         Some(storage),
@@ -630,7 +649,16 @@ async fn main() -> Result<()> {
 
     let cluster_state = cluster_api::ClusterApiState {
         reader: cluster_reader,
+        storage: Some(cluster_storage),
     };
+
+    if let Some(state) = link_state {
+        tokio::spawn(async move {
+            if let Err(e) = site_link::serve(state).await {
+                tracing::error!(error = %e, "The link listeners stopped");
+            }
+        });
+    }
 
     // Start API server with admin UI
     info!(

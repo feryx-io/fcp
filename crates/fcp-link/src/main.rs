@@ -1,0 +1,152 @@
+//! fcp-link: a site's link to its cloud (`docs/HYBRID_CONTROL_PLANE.md`
+//! §3, phase 1). At a site — a tenant's own stack on the tenant's own
+//! network — this process enrolls once, with the one-time token a tenant
+//! administrator minted in the cloud, and holds the certificate and the
+//! secret that enrollment gave in its state directory. From then on it
+//! heartbeats what it finds at the site: its own release, and every node
+//! of the site's cluster when it has the site's Redis. Later phases carry
+//! configuration down and records up over the same link. It opens no
+//! inbound port but its own health check; every connection is to the
+//! cloud.
+
+mod cli;
+mod config;
+mod link;
+
+use anyhow::{Context, Result};
+use axum::{extract::State, routing::get, Json, Router};
+use clap::Parser;
+use std::sync::Arc;
+use tokio::signal;
+use tracing::{error, info, warn};
+use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+
+use crate::cli::Cli;
+use crate::config::{load_config, LinkFileConfig};
+use crate::link::{Link, LinkStatus};
+
+#[derive(Clone)]
+struct AppState {
+    link: Arc<Link>,
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let cli = Cli::parse();
+    let mut config =
+        fcp_core::config::check_stage(load_config(cli.config.as_deref()), cli.check_config)?;
+    if let Some(v) = &cli.enrollment_token {
+        config.link.enrollment_token = Some(v.clone());
+    }
+    if let Some(v) = &cli.cloud_url {
+        config.link.cloud_url = v.clone();
+    }
+    if let Some(v) = &cli.link_url {
+        config.link.link_url = v.clone();
+    }
+    if let Some(v) = &cli.log_level {
+        config.logging.level = v.clone();
+    }
+    if let Some(v) = &cli.log_format {
+        config.logging.format = v.clone();
+    }
+    fcp_core::config::check_stage(config::validate_config(&config), cli.check_config)?;
+    if cli.check_config {
+        let masked = mask(&config);
+        println!(
+            "{}",
+            fcp_core::config::masked_toml(&masked).map_err(anyhow::Error::msg)?
+        );
+        return Ok(());
+    }
+    init_tracing(&config);
+    info!(
+        version = env!("CARGO_PKG_VERSION"),
+        service = "fcp-link",
+        "Starting FCP Link"
+    );
+
+    let link = Arc::new(Link::new(config.clone()).await?);
+    let state = AppState {
+        link: Arc::clone(&link),
+    };
+    let app = Router::new()
+        .route("/health", get(health))
+        .route("/status", get(status))
+        .with_state(state);
+    let listener = tokio::net::TcpListener::bind(config.health.bind_address)
+        .await
+        .with_context(|| format!("binding {}", config.health.bind_address))?;
+    info!(bind = %config.health.bind_address, "Health check listening");
+    let health_task = tokio::spawn(async move {
+        if let Err(e) = axum::serve(listener, app).await {
+            error!(error = %e, "The health listener stopped");
+        }
+    });
+
+    let run = Arc::clone(&link);
+    let run_task = tokio::spawn(async move { run.run().await });
+
+    shutdown_signal().await;
+    info!("Shutdown signal received");
+    run_task.abort();
+    health_task.abort();
+    info!("Shutdown complete");
+    Ok(())
+}
+
+async fn health(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let status = state.link.status();
+    Json(serde_json::json!({
+        "status": "ok",
+        "enrolled": status.enrolled,
+        "link_up": status.last_heartbeat_ok_at.is_some(),
+    }))
+}
+
+async fn status(State(state): State<AppState>) -> Json<LinkStatus> {
+    Json(state.link.status())
+}
+
+/// The configuration as `--check-config` shows it: the token masked.
+fn mask(config: &LinkFileConfig) -> LinkFileConfig {
+    let mut masked = config.clone();
+    if masked.link.enrollment_token.is_some() {
+        masked.link.enrollment_token = Some("***".to_string());
+    }
+    masked
+}
+
+fn init_tracing(config: &LinkFileConfig) {
+    let env_filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new(config.logging.level.clone()));
+    let registry = tracing_subscriber::registry().with(env_filter);
+    match config.logging.format.as_str() {
+        "json" => registry.with(fmt::layer().json()).init(),
+        "pretty" => registry.with(fmt::layer().pretty()).init(),
+        _ => registry.with(fmt::layer().compact()).init(),
+    }
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        if let Err(e) = signal::ctrl_c().await {
+            warn!(error = %e, "Failed to listen for Ctrl-C");
+        }
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        match signal::unix::signal(signal::unix::SignalKind::terminate()) {
+            Ok(mut s) => {
+                s.recv().await;
+            }
+            Err(e) => warn!(error = %e, "Failed to listen for SIGTERM"),
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+    tokio::select! {
+        _ = ctrl_c => {}
+        _ = terminate => {}
+    }
+}

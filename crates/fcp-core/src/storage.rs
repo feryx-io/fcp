@@ -3026,6 +3026,7 @@ pub struct DynStorage {
     voicemail_store: Arc<dyn VoicemailStore>,
     geo_routing_store: Arc<dyn GeoRoutingStore>,
     porting_store: Arc<dyn crate::porting::PortingStore>,
+    site_store: Arc<dyn crate::site::SiteStore>,
     tenant_store: Arc<dyn TenantStore>,
     conference_store: Arc<dyn ConferenceStore>,
     queue_store: Arc<dyn QueueStore>,
@@ -3069,6 +3070,7 @@ impl DynStorage {
         voicemail_store: Arc<dyn VoicemailStore>,
         geo_routing_store: Arc<dyn GeoRoutingStore>,
         porting_store: Arc<dyn crate::porting::PortingStore>,
+        site_store: Arc<dyn crate::site::SiteStore>,
         tenant_store: Arc<dyn TenantStore>,
         conference_store: Arc<dyn ConferenceStore>,
         queue_store: Arc<dyn QueueStore>,
@@ -3092,6 +3094,7 @@ impl DynStorage {
             voicemail_store,
             geo_routing_store,
             porting_store,
+            site_store,
             tenant_store,
             conference_store,
             queue_store,
@@ -3135,6 +3138,7 @@ impl DynStorage {
             + VoicemailStore
             + GeoRoutingStore
             + crate::porting::PortingStore
+            + crate::site::SiteStore
             + TenantStore
             + ConferenceStore
             + QueueStore
@@ -3160,6 +3164,7 @@ impl DynStorage {
             voicemail_store: storage.clone(),
             geo_routing_store: storage.clone(),
             porting_store: storage.clone(),
+            site_store: storage.clone(),
             tenant_store: storage.clone(),
             conference_store: storage.clone(),
             queue_store: storage.clone(),
@@ -4213,6 +4218,44 @@ impl GeoRoutingStore for DynStorage {
         self.geo_routing_store
             .delete_phone_number_location(phone_number_id)
             .await
+    }
+}
+
+#[async_trait]
+impl crate::site::SiteStore for DynStorage {
+    async fn get_site(&self, id: &crate::SiteId) -> Result<Option<crate::Site>> {
+        self.site_store.get_site(id).await
+    }
+
+    async fn list_sites(&self, tenant_id: &crate::TenantId) -> Result<Vec<crate::Site>> {
+        self.site_store.list_sites(tenant_id).await
+    }
+
+    async fn list_all_sites(&self) -> Result<Vec<crate::Site>> {
+        self.site_store.list_all_sites().await
+    }
+
+    async fn put_site(&self, site: crate::Site) -> Result<()> {
+        self.site_store.put_site(site).await
+    }
+
+    async fn delete_site(&self, id: &crate::SiteId) -> Result<()> {
+        self.site_store.delete_site(id).await
+    }
+
+    async fn put_enrollment_token(&self, token: crate::EnrollmentToken) -> Result<()> {
+        self.site_store.put_enrollment_token(token).await
+    }
+
+    async fn consume_enrollment_token(
+        &self,
+        token_hash: &str,
+    ) -> Result<Option<crate::EnrollmentToken>> {
+        self.site_store.consume_enrollment_token(token_hash).await
+    }
+
+    async fn get_site_by_secret_hash(&self, secret_hash: &str) -> Result<Option<crate::Site>> {
+        self.site_store.get_site_by_secret_hash(secret_hash).await
     }
 }
 

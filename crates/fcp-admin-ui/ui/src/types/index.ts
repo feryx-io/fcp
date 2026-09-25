@@ -1129,6 +1129,30 @@ export interface VideoDeviceBudget {
   }
 }
 
+/** A tenant's site on its own network, as the cloud keeps it (docs/HYBRID_CONTROL_PLANE.md). */
+export interface SiteInfo {
+  id: string
+  tenant_id: string
+  name: string
+  status: 'pending' | 'enrolled' | 'disabled'
+  created_at: number
+  updated_at: number
+  enrolled_at?: number
+  certificate_expires_at?: number
+  last_seen_at?: number
+  link_up: boolean
+  link_version?: string
+  /** Release → node ids, from the site's last heartbeat. */
+  versions: Record<string, string[]>
+  nodes: { node_id: string; node_type: string; version: string; healthy: boolean }[]
+}
+
+export interface ClusterSitesResponse {
+  available: boolean
+  message?: string
+  sites: SiteInfo[]
+}
+
 export interface ClusterNodesResponse {
   available: boolean
   message?: string

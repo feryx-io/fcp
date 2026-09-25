@@ -586,6 +586,20 @@ pub enum SystemEvent {
         timestamp: SystemTime,
     },
 
+    /// A site's link came up or went down (`docs/HYBRID_CONTROL_PLANE.md`
+    /// §3.4): the first heartbeat after none, or none for too long.
+    SiteLinkChanged {
+        site_id: String,
+        tenant_id: TenantId,
+        name: String,
+        up: bool,
+        /// How long the previous state lasted, when known.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lasted_secs: Option<u64>,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
     /// The set of releases the cluster's nodes run changed while there
     /// is, or was, more than one (`docs/BACKUP_AND_RESTORE.md` §5): the
     /// first node of an upgrade started, or the last old one stopped.
@@ -1522,6 +1536,7 @@ impl PlatformEvent {
                 SystemEvent::NodeLeft { .. } => "system.node_left",
                 SystemEvent::ClusterViewChanged { .. } => "system.cluster_view_changed",
                 SystemEvent::VersionSkew { .. } => "system.version_skew",
+                SystemEvent::SiteLinkChanged { .. } => "system.site_link_changed",
             },
             PlatformEvent::User(e) => match e {
                 UserEvent::Created { .. } => "user.created",
@@ -1726,7 +1741,8 @@ impl PlatformEvent {
                 | SystemEvent::NodeJoined { .. }
                 | SystemEvent::NodeLeft { .. }
                 | SystemEvent::ClusterViewChanged { .. }
-                | SystemEvent::VersionSkew { .. } => None,
+                | SystemEvent::VersionSkew { .. }
+                | SystemEvent::SiteLinkChanged { .. } => None,
             },
             PlatformEvent::Billing(e) => Some(e.tenant_id()),
             PlatformEvent::Cdr(
@@ -1955,7 +1971,8 @@ impl SystemEvent {
             | SystemEvent::NodeJoined { timestamp, .. }
             | SystemEvent::NodeLeft { timestamp, .. }
             | SystemEvent::ClusterViewChanged { timestamp, .. }
-            | SystemEvent::VersionSkew { timestamp, .. } => *timestamp,
+            | SystemEvent::VersionSkew { timestamp, .. }
+            | SystemEvent::SiteLinkChanged { timestamp, .. } => *timestamp,
         }
     }
 }

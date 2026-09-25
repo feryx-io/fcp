@@ -44,6 +44,16 @@ fcp-cluster = { path = "../fcp-cluster" }
 
 # Web framework (for merging admin UI router)
 axum = { version = "0.7", features = ["macros"] }
+# The link listeners (docs/HYBRID_CONTROL_PLANE.md phase 1): the enroll
+# listener over TLS, the link listener under mutual TLS from the link CA
+# this process keeps and signs sites' certificates with.
+axum-server = { version = "0.8", features = ["tls-rustls"] }
+rustls = { version = "0.23", default-features = false, features = ["std", "ring", "logging", "tls12"] }
+rustls-pemfile = "2"
+rcgen = { version = "0.13", features = ["x509-parser"] }
+sha2 = "0.10"
+rand = "0.8"
+base64 = "0.22"
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 serde_json = { workspace = true }
 

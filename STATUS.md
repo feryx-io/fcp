@@ -1023,6 +1023,22 @@ carries its health, and lets the site run alone when the link is down;
 calls that need the cloud go over a trunk to the cloud SBC provisioned
 at enrollment. Seven phases from sites and enrollment to a site stack
 in the nightly; nine questions, each settled on its recommendation.
+Phase 1 done (v0.25.268): `sites` and `site_enrollment_tokens`
+(migration 078), `fcp_core::site` with `SiteStore` in every store bundle,
+`SiteRead`/`SiteManage`, `/v1/sites` (made with a one-time token shown
+once, listed, read, a new token, disabled, enabled, deleted, in the
+tenant), `/v1/cluster/sites` for the cluster page's Sites section, the
+admin's `[link]` — a link CA made in `ca_dir` on first start, an enroll
+listener over TLS and a link listener under mutual TLS from that CA, a
+per-site secret on every heartbeat, a sweep marking a quiet link down,
+`system.site_link_changed` — and the new `fcp-link` binary (its image
+built nightly), which enrolls with the token, keeps its certificate and
+secret in its state directory, and heartbeats what it finds at the site
+(every node of the site's cluster with the site's Redis). Proved by
+`fcp-link/tests/enroll.rs` against a live admin: enroll, heartbeat,
+the spent token refused, a certificate-less connection refused at TLS,
+disable and enable, the sweep; the sites API by `api_postgres.rs`. The
+compose admin ships with the link on (8446 enroll, 8447 heartbeats).
 
 ## Historical documents
 
