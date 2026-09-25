@@ -15,6 +15,7 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 
+use crate::versions::{group_versions, ClusterVersions, VersionGroups, VersionTracker};
 use crate::view::{ClusterView, Departure, ViewState, ViewTracker};
 
 /// Information about a cluster member node.
@@ -273,6 +274,9 @@ pub struct ClusterManager {
     discovered: Arc<AtomicBool>,
     /// Whether this node's view of the cluster looks whole (§2.3).
     view: Arc<std::sync::Mutex<ViewTracker>>,
+    /// Which release every node runs, as the last discovery found it,
+    /// and the tracker that says when that set changes (`versions`).
+    versions: Arc<std::sync::Mutex<(VersionTracker, VersionGroups)>>,
     /// Whether this node reaches its database, asked while the view is
     /// not whole.
     database_probe: Option<DatabaseProbe>,
@@ -322,6 +326,10 @@ impl ClusterManager {
                 self_info_region,
                 std::time::Duration::from_secs(15),
             ))),
+            versions: Arc::new(std::sync::Mutex::new((
+                VersionTracker::new(),
+                VersionGroups::new(),
+            ))),
             database_probe: None,
         }
     }
@@ -355,6 +363,19 @@ impl ClusterManager {
             .unwrap_or_else(|p| p.into_inner().view(std::time::Instant::now()))
     }
 
+    /// Which release every node runs, as the last discovery found it
+    /// (`docs/BACKUP_AND_RESTORE.md` §5): the groups, whether there is
+    /// more than one, and a sentence. Empty before the first discovery.
+    /// Visibility only: a rolling upgrade is a skew on purpose.
+    pub fn versions(&self) -> ClusterVersions {
+        let groups = self
+            .versions
+            .lock()
+            .map(|v| v.1.clone())
+            .unwrap_or_else(|p| p.into_inner().1.clone());
+        ClusterVersions::from_groups(groups)
+    }
+
     /// Set an event publisher for emitting NodeJoined/NodeLeft events.
     pub fn with_event_publisher(mut self, publisher: Arc<dyn EventPublisher>) -> Self {
         self.event_publisher = Some(publisher);
@@ -377,6 +398,7 @@ impl ClusterManager {
         let registering_trunks = Arc::clone(&self.registering_trunks);
         let discovered = Arc::clone(&self.discovered);
         let view = Arc::clone(&self.view);
+        let versions = Arc::clone(&self.versions);
         let database_probe = self.database_probe.clone();
         // A partition often drops packets rather than refusing them, and a
         // command on a dropped link waits forever. A tick that has not
@@ -436,6 +458,29 @@ impl ClusterManager {
                         tick_budget.as_secs()
                     )),
                 };
+                // Which release every node runs, this one included; a
+                // change in the set of releases is said once.
+                if outcome.is_ok() {
+                    let mut by_node: std::collections::BTreeMap<String, String> = members
+                        .iter()
+                        .map(|m| (m.node_id.clone(), m.version.clone()))
+                        .collect();
+                    by_node.insert(self_info.node_id.clone(), self_info.version.clone());
+                    let groups =
+                        group_versions(by_node.iter().map(|(n, v)| (n.as_str(), v.as_str())));
+                    let change = match versions.lock() {
+                        Ok(mut v) => {
+                            let change = v.0.observe(&groups);
+                            v.1 = groups;
+                            change
+                        }
+                        Err(_) => None,
+                    };
+                    if let Some(change) = change {
+                        announce_versions(&self_info, &change, event_publisher.as_ref()).await;
+                    }
+                }
+
                 let now = std::time::Instant::now();
                 let wall = std::time::SystemTime::now();
                 let (transition, whole) = {
@@ -910,6 +955,43 @@ async fn discover_members(
 
     debug!(member_count = seen_ids.len(), "Cluster discovery complete");
     Ok(departed.into_iter().map(|(_, d)| d).collect())
+}
+
+/// Say that the set of releases the cluster runs changed: in the log,
+/// and as `system.version_skew` — when a second release appears (the
+/// first node of an upgrade), when the set changes again, and when one
+/// release is left (the upgrade done, or rolled back).
+async fn announce_versions(
+    self_info: &ClusterMember,
+    versions: &ClusterVersions,
+    event_publisher: Option<&Arc<dyn EventPublisher>>,
+) {
+    if versions.skew {
+        warn!(
+            node_id = %self_info.node_id,
+            versions = ?versions.versions,
+            "Cluster runs more than one release: {}",
+            versions.summary
+        );
+    } else {
+        info!(
+            node_id = %self_info.node_id,
+            "Cluster runs one release again: {}",
+            versions.summary
+        );
+    }
+    if let Some(publisher) = event_publisher {
+        let event = fcp_events::PlatformEvent::System(fcp_events::SystemEvent::VersionSkew {
+            node_id: self_info.node_id.clone(),
+            versions: versions.versions.clone(),
+            skew: versions.skew,
+            summary: versions.summary.clone(),
+            timestamp: std::time::SystemTime::now(),
+        });
+        if let Err(e) = publisher.publish(event).await {
+            debug!(error = %e, "Failed to publish VersionSkew event");
+        }
+    }
 }
 
 /// Say that this node's view of the cluster changed: in the log, and as

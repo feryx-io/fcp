@@ -188,12 +188,15 @@ breaker OPENED — event forwarding paused` when the events server stops
 answering it.
 
 **The admin UI's cluster page** (`/admin/`) shows every node's record:
-region, load, draining, and a banner over the nodes whose view of the
-cluster is not whole.
+region, load, draining, version, a banner over the nodes whose view of
+the cluster is not whole, and a banner naming who is on what while the
+nodes run more than one release.
 
 **Events.** `system.node_left` (with `shutdown` or `heartbeat_expired`),
-`system.cluster_view_changed` and `trunk.health_changed` reach webhooks
-and WebSocket clients through the events server.
+`system.cluster_view_changed`, `system.version_skew` (the cluster
+started or stopped running more than one release —
+`docs/BACKUP_AND_RESTORE.md` §5) and `trunk.health_changed` reach
+webhooks and WebSocket clients through the events server.
 
 ## 7. When it goes wrong
 

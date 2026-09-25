@@ -79,6 +79,11 @@ pub struct ClusterStats {
     /// Nodes whose own view of the cluster does not look whole — most
     /// often every node of a region that has lost the others (§2.3).
     pub nodes_with_partial_view: usize,
+    /// Release → the nodes on it (`docs/BACKUP_AND_RESTORE.md` §5).
+    pub versions: crate::versions::VersionGroups,
+    /// More than one release is running: an upgrade under way, or one
+    /// that stopped half way.
+    pub version_skew: bool,
 }
 
 impl ClusterReader {
@@ -217,6 +222,12 @@ fn summarize(nodes: &[ClusterNodeInfo]) -> ClusterStats {
     let mut without_region = 0usize;
     let mut partial_view = 0usize;
 
+    let versions = crate::versions::group_versions(
+        nodes
+            .iter()
+            .map(|n| (n.node_id.as_str(), n.version.as_str())),
+    );
+
     for node in nodes {
         if node.view.as_ref().is_some_and(|v| !v.is_whole()) {
             partial_view += 1;
@@ -244,6 +255,8 @@ fn summarize(nodes: &[ClusterNodeInfo]) -> ClusterStats {
         nodes_by_region: by_region,
         nodes_without_region: without_region,
         nodes_with_partial_view: partial_view,
+        version_skew: crate::versions::is_skew(&versions),
+        versions,
     }
 }
 

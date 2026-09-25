@@ -4,8 +4,7 @@ How a deployment is kept: where every piece of state lives, what a
 backup must hold, what a restore needs, and what an upgrade does. The
 design behind it, with what the survey found, is
 `docs/BACKUP_RESTORE_UPGRADE.md`; this is the document an operator
-reads. Section 5 arrives with that project's phase 4 and says so until
-it does.
+reads.
 
 ## 1. Where the state is
 
@@ -230,6 +229,112 @@ older than the schema **refuses to start** — so once one new node has
 started, the way back is not the old binary but the backup taken before
 the upgrade. Take one.
 
-*The rules in full — what a migration may and may not do while old and
-new nodes share a schema, the version on the node list, the procedure
-for the compose stack and for a cluster — arrive with phase 4.*
+### 5.1 The rules
+
+1. **Back up first** (§3). A restore (§4) is the only rollback.
+2. **The first new node migrates the schema** for every node. It runs
+   the migrations it carries that the database has not, in order, at
+   startup, before it serves.
+3. **An old binary against a new schema refuses to start.** The
+   database has applied a migration the binary does not carry
+   (`VersionMissing` in its log). Restarting the old release on any
+   node is not a rollback; restoring the backup is.
+4. **A migration is never edited after it ships.** Every node checks
+   each applied migration's checksum at startup and refuses on a
+   mismatch (`VersionMismatch`). A mistake is fixed by the next
+   migration.
+5. **A migration may add, but not take away what the previous release
+   reads.** Old and new nodes share one schema while an upgrade runs.
+   A table, view or column may be created; a column made nullable or
+   given a default; an index or constraint dropped. A table, view or
+   column may not be dropped or renamed, and a column's type may not
+   change, until no node of the previous release is left — which is the
+   release after. Such a *contraction* ships one release after the code
+   stopped reading what it removes, and says so on a line of its own:
+
+   ```sql
+   -- fcp: contraction: cdrs.cost_cents, read by nothing since v0.25.261
+   ALTER TABLE cdrs DROP COLUMN cost_cents;
+   ```
+
+   CI refuses a new migration that contracts without that line
+   (`scripts/check-migrations.sh`, on every migration above 077; the
+   three older ones that contract predate the rule).
+6. **One release at a time.** A rolling upgrade goes from the previous
+   release to the next; skipping one means a migration written for a
+   schema the running nodes never had.
+
+### 5.2 What the cluster shows
+
+Every node's heartbeat carries its version, and every node groups the
+members by it at each discovery:
+
+- **`/status`** on the call manager and the conference server:
+  `cluster_versions` — `versions` (release → node ids), `skew` (more
+  than one release), `summary`.
+- **`/metrics`**: `fcp_cluster_version_skew` (1 while more than one
+  release runs) and `fcp_cluster_nodes_by_version{version=…}`.
+- **The admin API**: `GET /api/v1/cluster/nodes` has each node's
+  `version`; `GET /api/v1/cluster/stats` has `versions` and
+  `version_skew`.
+- **The admin UI's cluster page**: the version column, and a banner
+  naming who is on what while the releases differ.
+- **`system.version_skew`**, when the set of releases changes while
+  there is or was more than one: the first new node starting, the last
+  old one stopping, with `versions`, `skew` and `summary`. Said by
+  every node that sees it, never acted on — a rolling upgrade is a skew
+  on purpose. A skew that stays is an upgrade that stopped half way.
+
+### 5.3 The compose stack
+
+```bash
+cd deploy/docker-compose
+scripts/backup.sh /backups/fcp-$(date +%F)      # §3
+git pull                                        # the release to run
+docker compose config --quiet                   # the compose file still resolves
+docker compose up -d --build                    # rebuilds what changed, restarts it
+docker compose ps                               # every service up
+```
+
+Every service restarts as its image changes; the first to open the
+database migrates it, the rest wait on `depends_on` and find it done.
+Calls in progress on the call manager end with the restart — the compose
+stack is one node, with nowhere to drain to. To see it went well:
+`docker compose logs --since 5m | grep -i migrat`, then the admin UI's
+cluster page or `/status` on the call manager showing the new version.
+
+**If it does not come up**: a service that exits at once prints the
+rule it broke (`docker compose logs <service>`); a `VersionMissing`
+means an old image met the new schema — `docker compose build` that
+service again; anything else, `docker compose down` (not `-v`),
+`git checkout` the previous release, `docker compose down -v`, restore
+the backup (§4), `up -d --build`.
+
+### 5.4 A cluster
+
+One node at a time, the runbook's drain first
+(`docs/CLUSTER_OPERATIONS_RUNBOOK.md` §5): back up, then on each node in
+turn — drain, wait for its calls to end, stop, install the release,
+start, wait for `/ready` to answer 200 and the node to show the new
+version on the cluster page — and only then the next. The first node
+started migrates the schema; from then on `system.version_skew` says
+the cluster runs two releases, and says again when it runs one. The
+order of nodes does not matter to the schema; upgrade the binaries
+that share a database in one pass rather than leaving some behind.
+
+What cannot be rolled forward is rolled back whole: stop the new
+nodes, restore the backup (§4) — the database, the key, every node's
+files — and start the previous release. A new node's calls and
+recordings since the backup are lost with it; the CDR spool on each
+node re-ships what it holds.
+
+### 5.5 Proved
+
+`crates/fcp-cluster/src/versions.rs` tests the grouping, the summary,
+the skew appearing, changing and resolving, and the metrics; the CI
+step `The migration discipline` runs `scripts/check-migrations.sh
+--self-test` — an add passes, a drop, a rename and a type change fail
+without the marker and pass with it — before checking the migrations.
+That an old binary refuses a newer schema with the migration's version
+in its message, and that the version shows on the node list and a
+different version is flagged, are phase 5's tests.

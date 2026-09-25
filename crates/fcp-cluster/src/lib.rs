@@ -14,6 +14,7 @@ pub mod membership;
 pub mod node_client;
 pub mod reader;
 pub mod trunk_registry;
+pub mod versions;
 pub mod view;
 
 pub use call_leases::{CallLeases, LeaseSubject, DEFAULT_LEASE_TTL_SECS};
@@ -30,4 +31,5 @@ pub use membership::{
 pub use node_client::NodeClient;
 pub use reader::{ClusterNodeInfo, ClusterNodeStatus, ClusterReader, ClusterStats};
 pub use trunk_registry::TrunkRegistry;
+pub use versions::{ClusterVersions, VersionGroups, VersionTracker};
 pub use view::{ClusterView, ViewState};

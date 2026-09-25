@@ -203,6 +203,10 @@ rest running or stopped; stop the services that write files first for
 a backup with nothing in flight. `docker compose down -v` and then
 `scripts/restore.sh <directory>` bring a backup back into a fresh stack:
 checksums, the key against the key ring, the volumes, the database, `up`.
+An upgrade is `scripts/backup.sh`, `git pull`, `docker compose up -d
+--build`: the first service to open the database migrates it, and an
+older image against the new schema refuses to start, so the way back
+is the backup (`docs/BACKUP_AND_RESTORE.md` §5).
 
 ## When it does not come up
 
