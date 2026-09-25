@@ -987,7 +987,24 @@ target in each repository, millions of executions per target, the
 first fuzzing either has done in CI; FCP's weekly CI gains
 `submodule-nightlies`, which reads each submodule's latest completed
 Fuzz run from the GitHub API and fails when it is not a success or is
-two days old.
+two days old. Phase 2 done (v0.25.266): the Images workflow pushes the
+fourteen images to `ghcr.io/thevoiceguy/fcp-<name>` as `nightly` and the
+sha, every compose service names its image beside its build
+(`FCP_IMAGE_TAG`), and a `stack` job pulls them, brings the stack up,
+runs `compose_live.rs` (health, a tenant and users through the API,
+registration over SIP and SIPS, a call with media, the node list, the
+record), backs up, drops, restores and runs it again; run 36177386025
+passed end to end. Seven bugs the first runs found, fixed: the proxy's
+health check never passed (nginx on IPv4 only, `localhost` is ::1
+first); a tenant id as printed was refused when handed back (every id
+reads both forms now); the guide's extension example; a registered
+phone dialling the node's address named no tenant (the caller's
+registration decides now); a user without a device row was unreachable
+(rung at their own address of record now); a fork awaited a dead
+contact's CANCEL before relaying the answer (losers cancelled in their
+own tasks); and every service inserting the first data encryption key
+at once on first boot (made under an advisory lock now, and the five
+health checks without a start period have one).
 
 ## Historical documents
 

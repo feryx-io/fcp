@@ -1,18 +1,38 @@
-# Every image the compose stack builds, built nightly from main
-# (docs/SHIP_AND_OPERATE.md phase 3): a Dockerfile that no longer builds
-# is found by this run rather than by an operator. Not on pull requests —
-# nine Rust release builds are too long for one — but `workflow_dispatch`
-# builds a branch by hand.
+# The shipped stack, built, published and run (docs/NIGHTLY_STACK.md phase
+# 2). Every night: the fourteen images are built one to a runner and
+# pushed to ghcr.io/thevoiceguy/fcp-<name> as `nightly` and as the commit
+# sha; then one runner pulls them, brings the stack up with the shipped
+# .env, carries a call through it with the testkit's phone, backs it up,
+# drops it, restores it and calls again. What the stack test over the
+# binaries cannot see — each image's entrypoint and filesystem,
+# depends_on and the health checks, the certs service as a container,
+# host networking, the proxy, the scripts against real volumes — is seen
+# here. Operators pull the same images: FCP_IMAGE_TAG=nightly in .env,
+# `docker compose pull`, `up -d --no-build`.
 name: Images
 
 on:
   schedule:
     - cron: '0 3 * * *'
   workflow_dispatch:
+    inputs:
+      image_tag:
+        description: Run the stack job alone, against images already pushed under this tag (a sha or `nightly`); blank builds and pushes first
+        default: ''
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  OWNER: thevoiceguy
+  IMAGE_TAG: ${{ inputs.image_tag || github.sha }}
 
 jobs:
   build:
     name: ${{ matrix.image }}
+    if: inputs.image_tag == ''
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -38,5 +58,107 @@ jobs:
           submodules: recursive
       - name: Free disk space
         run: sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android
+      - name: Log in to the registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Build
-        run: docker build -f deploy/docker-compose/Dockerfile.${{ matrix.image }} -t fcp-${{ matrix.image }}:nightly .
+        run: |
+          docker build -f deploy/docker-compose/Dockerfile.${{ matrix.image }} \
+            -t "$REGISTRY/$OWNER/fcp-${{ matrix.image }}:${{ github.sha }}" \
+            -t "$REGISTRY/$OWNER/fcp-${{ matrix.image }}:nightly" .
+      - name: Push
+        run: |
+          docker push "$REGISTRY/$OWNER/fcp-${{ matrix.image }}:${{ github.sha }}"
+          docker push "$REGISTRY/$OWNER/fcp-${{ matrix.image }}:nightly"
+
+  stack:
+    name: The stack, live
+    needs: build
+    # After the build, or alone against a tag already pushed.
+    if: ${{ !cancelled() && (needs.build.result == 'success' || needs.build.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: read
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+    defaults:
+      run:
+        working-directory: deploy/docker-compose
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+      - name: Free disk space
+        run: sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache/CodeQL
+      - name: Install toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Restore cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: images-stack
+      - name: Log in to the registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # The shipped .env, with this runner's address (what the phone's SDP
+      # names) and the images this run built.
+      - name: This runner's .env
+        run: |
+          ip=$(hostname -I | awk '{print $1}')
+          sed -i "s/^HOST_IP=.*/HOST_IP=$ip/; s/^FCP_IMAGE_TAG=.*/FCP_IMAGE_TAG=$IMAGE_TAG/" .env
+          grep -E '^(HOST_IP|FCP_IMAGE_TAG)=' .env
+          docker compose config --quiet
+      - name: Pull and start the stack
+        run: |
+          docker compose pull --quiet
+          docker compose up -d --no-build
+          scripts/wait-healthy.sh 300
+      # The CA the certs service made: the phone registers over SIPS with it.
+      - name: The stack's CA
+        run: docker run --rm -v docker-compose_fcp-certs:/certs:ro alpine:3.20 cat /certs/ca.crt > "$RUNNER_TEMP/ca.crt"
+      # The test binary, built once while the stack settles; the call itself
+      # is quick.
+      - name: A call through the fresh stack
+        working-directory: .
+        env:
+          FCP_LIVE_STACK: fresh
+          FCP_LIVE_CA: ${{ runner.temp }}/ca.crt
+        run: cargo test -p fcp-call-manager --test compose_live -- --nocapture
+      - name: Back up, drop, restore
+        run: |
+          scripts/backup.sh "$RUNNER_TEMP/backup"
+          cat "$RUNNER_TEMP/backup/manifest"
+          docker compose down -v
+          scripts/restore.sh "$RUNNER_TEMP/backup" --no-up
+          docker compose up -d --no-build
+          scripts/wait-healthy.sh 300
+      - name: A call through the restored stack
+        working-directory: .
+        env:
+          FCP_LIVE_STACK: restored
+          FCP_LIVE_CA: ${{ runner.temp }}/ca.crt
+        run: cargo test -p fcp-call-manager --test compose_live -- --nocapture
+      - name: The stack's logs
+        if: failure()
+        run: |
+          docker compose ps
+          docker compose logs --no-color > "$RUNNER_TEMP/stack.log" 2>&1 || true
+      - name: Keep the logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stack-logs
+          path: ${{ runner.temp }}/stack.log
+          if-no-files-found: ignore
+      - name: Down
+        if: always()
+        run: docker compose down -v

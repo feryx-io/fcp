@@ -269,7 +269,7 @@ curl -s -H "$A" -H "$J" -X POST http://localhost:8080/api/v1/users \
   -d '{"username":"alice","password":"alice-pw","display_name":"Alice","tenant_id":"<tenant id>"}' | jq .
 # An extension that rings that user; the target names the user by id.
 curl -s -H "$A" -H "$J" -X POST http://localhost:8080/api/v1/extensions \
-  -d '{"number":"1001","target":{"user":"<user id>"},"tenant_id":"<tenant id>"}' | jq .
+  -d '{"number":"1001","target":{"type":"user","id":"<user id>"},"tenant_id":"<tenant id>"}' | jq .
 ```
 
 Or do the same in the admin UI at `http://localhost:8080/admin/`

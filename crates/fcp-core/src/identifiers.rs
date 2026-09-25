@@ -8,9 +8,24 @@ const MAX_AOR_LENGTH: usize = 256;
 /// Macro to define strongly typed UUID wrappers with friendly display prefixes.
 macro_rules! define_id {
     ($name:ident, $prefix:expr) => {
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
         #[serde(transparent)]
         pub struct $name(Uuid);
+
+        // Read from JSON, the prefixed form every response shows
+        // (`tenant-<uuid>`) and the bare UUID are both taken, as `FromStr`
+        // takes them: a client may hand back what it was given. What is
+        // written stays the bare UUID the stores hold.
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                if deserializer.is_human_readable() {
+                    let s = String::deserialize(deserializer)?;
+                    s.parse().map_err(serde::de::Error::custom)
+                } else {
+                    Uuid::deserialize(deserializer).map(Self)
+                }
+            }
+        }
 
         impl $name {
             pub fn new() -> Self {
@@ -196,6 +211,23 @@ fn contains_crlf(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A response shows `tenant-<uuid>`; a request may hand it back, or the
+    /// bare UUID; what is written is the bare UUID.
+    #[test]
+    fn an_id_reads_both_its_forms_and_writes_the_bare_uuid() {
+        let id = TenantId::new();
+        let prefixed = serde_json::to_string(&id.to_string()).unwrap();
+        let bare = serde_json::to_string(id.as_uuid()).unwrap();
+        assert_eq!(serde_json::from_str::<TenantId>(&prefixed).unwrap(), id);
+        assert_eq!(serde_json::from_str::<TenantId>(&bare).unwrap(), id);
+        assert_eq!(serde_json::to_string(&id).unwrap(), bare);
+        assert!(serde_json::from_str::<TenantId>("\"call-not-a-uuid\"").is_err());
+        let call: CallId =
+            serde_json::from_str(&serde_json::to_string(&CallId::nil().to_string()).unwrap())
+                .unwrap();
+        assert!(call.is_nil());
+    }
 
     #[test]
     fn aor_parse_rejects_crlf_and_overlong_values() {

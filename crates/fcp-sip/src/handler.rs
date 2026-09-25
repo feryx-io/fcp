@@ -1735,11 +1735,70 @@ impl SipMessageHandler {
     /// — the address the REGISTER arrived from where the registrar kept
     /// one, else the contact's parsed host
     /// (`crate::registrar::registration_is_at`, `docs/EDGE_SECURITY.md` §2.2).
-    async fn is_registered_device(
+    /// The registrations at a user's own address of record — `sip:<username>@<d>`
+    /// for each of the tenant's SIP domains, then the INVITE's own domain —
+    /// for a user whose devices, if any, are not registered. A phone that
+    /// registered as the user is the user's phone whether or not anyone
+    /// made a device row for it (found by the nightly stack,
+    /// `docs/NIGHTLY_STACK.md` §4).
+    async fn registrations_at_users_aor(
+        &self,
+        storage: &fcp_core::DynStorage,
+        registrar: &crate::registrar::FcpRegistrar,
+        tenant_id: &fcp_core::TenantId,
+        user_id: &fcp_core::UserId,
+        invite_domain: &str,
+    ) -> Vec<sip_registrar::Binding> {
+        let user = match storage.get_user_by_id(user_id).await {
+            Ok(Some(user)) => user,
+            Ok(None) => return Vec::new(),
+            Err(e) => {
+                warn!(user_id = %user_id, error = %e, "Failed to read the user to ring their own address");
+                return Vec::new();
+            }
+        };
+        let mut domains: Vec<String> = match storage.get_tenant(tenant_id).await {
+            Ok(Some(tenant)) => tenant.sip_domains,
+            _ => Vec::new(),
+        };
+        if !invite_domain.is_empty()
+            && !domains
+                .iter()
+                .any(|d| d.eq_ignore_ascii_case(invite_domain))
+        {
+            domains.push(invite_domain.to_string());
+        }
+        for domain in domains {
+            let aor = format!("sip:{}@{domain}", user.username);
+            match registrar
+                .get_registrations_for_device(tenant_id, &aor, invite_domain)
+                .await
+            {
+                Ok(bindings) if !bindings.is_empty() => {
+                    debug!(user_id = %user_id, aor = %aor, count = bindings.len(), "Ringing the user's own address");
+                    return bindings;
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    warn!(user_id = %user_id, aor = %aor, error = %e, "Failed to read the registrations at the user's own address");
+                }
+            }
+        }
+        Vec::new()
+    }
+
+    /// The tenant of the registration this INVITE's caller placed it from:
+    /// the From AOR's bindings, one of them at the peer's address. A
+    /// registered, digest-checked caller's call is its registration's
+    /// tenant's, whatever host the phone dialled — a softphone configured
+    /// with the node's address dials `sip:1002@<address>`, which names no
+    /// tenant (found by the nightly stack, `docs/NIGHTLY_STACK.md` §4).
+    /// `None` when the caller is not registered here.
+    async fn registered_caller_tenant(
         &self,
         request: &sip_core::Request,
         peer_ip: std::net::IpAddr,
-    ) -> bool {
+    ) -> Option<fcp_core::TenantId> {
         if let Some(registrar) = &self.registrar {
             let from_header = sip_parse::header(request.headers(), "From");
             let from_aor = from_header.and_then(|h| {
@@ -1763,13 +1822,14 @@ impl SipMessageHandler {
                     Ok(rows) => rows,
                     Err(e) => {
                         debug!(aor = %aor, error = %e, "No registrations to place this INVITE's caller");
-                        return false;
+                        return None;
                     }
                 };
                 let matched = rows
                     .iter()
-                    .any(|reg| crate::registrar::registration_is_at(reg, peer_ip));
-                if !matched && !rows.is_empty() {
+                    .find(|reg| crate::registrar::registration_is_at(reg, peer_ip))
+                    .map(|reg| reg.tenant_id);
+                if matched.is_none() && !rows.is_empty() {
                     warn!(
                         aor = %aor,
                         source = %peer_ip,
@@ -1779,10 +1839,10 @@ impl SipMessageHandler {
                 }
                 matched
             } else {
-                false
+                None
             }
         } else {
-            false
+            None
         }
     }
 
@@ -2335,8 +2395,12 @@ impl SipMessageHandler {
         // A registered device is itself, whoever else shares its address;
         // otherwise a carrier's call is whose the trunk it arrived on says
         // (`docs/TENANT_TRUNKS.md` §7), before the domain is looked at.
-        let is_registered_device =
-            edge_caller.is_none() && self.is_registered_device(request, peer.ip()).await;
+        let registered_tenant = if edge_caller.is_none() {
+            self.registered_caller_tenant(request, peer.ip()).await
+        } else {
+            None
+        };
+        let is_registered_device = registered_tenant.is_some();
         let inbound = if edge_caller.is_none() && !is_registered_device {
             self.inbound_trunk(request, peer.ip()).await
         } else {
@@ -2371,6 +2435,13 @@ impl SipMessageHandler {
                 "INVITE placed by a trusted edge for a tenant user"
             );
             edge.tenant_id
+        } else if let Some(tenant) = registered_tenant {
+            debug!(
+                source = %peer,
+                tenant_id = %tenant,
+                "INVITE placed by a registered device; the call is its registration's tenant's"
+            );
+            tenant
         } else if let (Some(tenant), Some(trunk)) = (trunk_tenant, &inbound_trunk) {
             debug!(
                 source = %peer,
@@ -3951,6 +4022,34 @@ impl SipMessageHandler {
         b_leg_handle: &Arc<crate::uac::OutboundCall>,
         context: &str,
     ) {
+        Self::cancel_or_bye_fork_leg_with(
+            self.uac.clone(),
+            Arc::clone(&self.dialog_manager),
+            *call_id,
+            target.to_string(),
+            leg_index,
+            Arc::clone(b_leg_handle),
+            context.to_string(),
+        )
+        .await
+    }
+
+    /// [`cancel_or_bye_fork_leg`](Self::cancel_or_bye_fork_leg) on its own,
+    /// so a fork race can spawn it: cancelling a leg waits on that leg's
+    /// CANCEL transaction, and a contact that is gone — a phone that
+    /// crashed, a registration a restore brought back — answers nothing,
+    /// so a winner relayed only after every loser was cancelled reached
+    /// the caller a transaction timeout late (found by the nightly stack,
+    /// `docs/NIGHTLY_STACK.md` §4).
+    async fn cancel_or_bye_fork_leg_with(
+        uac: Option<Arc<SipUserAgentClient>>,
+        dialog_manager: Arc<DialogManager>,
+        call_id: fcp_b2bua_core::CallId,
+        target: String,
+        leg_index: usize,
+        b_leg_handle: Arc<crate::uac::OutboundCall>,
+        context: String,
+    ) {
         let cancel_result = b_leg_handle.cancel().await;
         if let Err(ref e) = cancel_result {
             warn!(
@@ -3983,7 +4082,7 @@ impl SipMessageHandler {
 
         // Dialog is confirmed — the callee already answered 200 OK. CANCEL is
         // ineffective (or was already ineffective when we sent it); send BYE.
-        let Some(uac) = &self.uac else {
+        let Some(uac) = &uac else {
             warn!(
                 call_id = %call_id,
                 target = %target,
@@ -3996,7 +4095,7 @@ impl SipMessageHandler {
 
         match uac.bye(&dialog).await {
             Ok(response) => {
-                self.dialog_manager.remove(dialog.id());
+                dialog_manager.remove(dialog.id());
                 info!(
                     call_id = %call_id,
                     target = %target,
@@ -5475,6 +5574,20 @@ impl SipMessageHandler {
                                         }
 
                                         if extension_contacts.is_empty() {
+                                            if let Some(registrar) = &self.registrar {
+                                                extension_contacts.extend(
+                                                    self.registrations_at_users_aor(
+                                                        storage,
+                                                        registrar,
+                                                        &tenant_id,
+                                                        user_id,
+                                                        invite_domain,
+                                                    )
+                                                    .await,
+                                                );
+                                            }
+                                        }
+                                        if extension_contacts.is_empty() {
                                             info!(
                                                 call_id = %call_id,
                                                 user_id = %user_id,
@@ -5494,18 +5607,43 @@ impl SipMessageHandler {
                                         }
                                     }
                                     Ok(_) => {
-                                        warn!(call_id = %call_id, user_id = %user_id, "User has no devices");
-                                        let response = self.create_simple_response(
-                                            request,
-                                            480,
-                                            "Temporarily Unavailable",
+                                        let own = match &self.registrar {
+                                            Some(registrar) => {
+                                                self.registrations_at_users_aor(
+                                                    storage,
+                                                    registrar,
+                                                    &tenant_id,
+                                                    user_id,
+                                                    invite_domain,
+                                                )
+                                                .await
+                                            }
+                                            None => Vec::new(),
+                                        };
+                                        if own.is_empty() {
+                                            warn!(call_id = %call_id, user_id = %user_id, "User has no devices and is not registered");
+                                            let response = self.create_simple_response(
+                                                request,
+                                                480,
+                                                "Temporarily Unavailable",
+                                            );
+                                            a_leg_handle.send_final(response).await;
+                                            let _ = self.call_manager.terminate_call(
+                                                &call_id,
+                                                Some(
+                                                    "User has no devices and is not registered"
+                                                        .to_string(),
+                                                ),
+                                            );
+                                            return Ok(());
+                                        }
+                                        info!(
+                                            call_id = %call_id,
+                                            user_id = %user_id,
+                                            contacts = own.len(),
+                                            "User has no devices; ringing the registrations at their own address"
                                         );
-                                        a_leg_handle.send_final(response).await;
-                                        let _ = self.call_manager.terminate_call(
-                                            &call_id,
-                                            Some("User has no devices".to_string()),
-                                        );
-                                        return Ok(());
+                                        extension_contacts.extend(own);
                                     }
                                     Err(e) => {
                                         error!(call_id = %call_id, user_id = %user_id, error = %e, "Failed to list user devices");
@@ -7838,7 +7976,9 @@ impl SipMessageHandler {
             self.trunk_fallbacks.remove(&call_id);
         }
 
-        // CANCEL all non-winning B-legs
+        // CANCEL all non-winning B-legs — each in its own task, so a leg
+        // that answers nothing (a contact that is gone) holds up neither
+        // the others nor the winner's answer to the caller.
         for (i, (target, b_leg_handle, _flow_token)) in b_leg_calls.iter().enumerate() {
             if Some(i) != winning_index {
                 info!(
@@ -7846,8 +7986,15 @@ impl SipMessageHandler {
                     target = %target,
                     "CANCELing non-winning B-leg {}", i
                 );
-                self.cancel_or_bye_fork_leg(&call_id, target, i, b_leg_handle, "Fork race cleanup")
-                    .await;
+                tokio::spawn(Self::cancel_or_bye_fork_leg_with(
+                    self.uac.clone(),
+                    Arc::clone(&self.dialog_manager),
+                    call_id,
+                    target.clone(),
+                    i,
+                    Arc::clone(b_leg_handle),
+                    "Fork race cleanup".to_string(),
+                ));
             }
         }
 
