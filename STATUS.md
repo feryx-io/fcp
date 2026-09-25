@@ -959,6 +959,28 @@ on the node list with this release and no skew. The project is
 complete: a deployment can be backed up, restored and upgraded, and
 each is proved by a test.
 
+## What is next (chosen 2026-09-25, after backup, restore and upgrade closed)
+
+**The nightly proves the shipped stack** — design in `docs/NIGHTLY_STACK.md`
+(v0.25.264). Nothing on the roadmap is left; the survey found what is
+open is operational, and one item red: both submodules' nightly fuzzing
+has never fuzzed anything in CI (forge-media's since 2026-09-11,
+siphon-rs's since 2026-09-23) — the prebuilt cargo-fuzz is a musl
+binary and builds for musl unless told the target, so every target
+fails to build and is reported as crashing — and FCP's CI never looks; the fourteen images are built every
+night and never run — the stack is proved over binaries, and the backup
+scripts were proved live by hand; tests share one Redis (a database
+index drawn at random per process, one `fcp:` prefix for every node), which
+leaked records between binaries on 2026-09-25. Four phases: fuzzing back
+and watched (the host named as the target, a build failure told from a
+crash, a weekly job in FCP that reads the submodules' nightlies); the images pushed to GHCR
+and a `stack` job that pulls them, brings the stack up, takes a call
+with the testkit's phone, backs up, drops, restores and registers again;
+a test's Redis flushed at acquisition; what the nightly finds written
+down. Five questions settled on their recommendations: name the target
+rather than build cargo-fuzz from source, GHCR under the repository, pull rather than
+build, a cargo test rather than a script, a flush rather than a prefix.
+
 ## Historical documents
 
 Superseded status docs live in [`docs/archive/`](docs/archive/README.md) — they describe
