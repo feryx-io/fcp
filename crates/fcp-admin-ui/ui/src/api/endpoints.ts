@@ -32,8 +32,7 @@ import type {
   ClusterNodesResponse, ClusterStatsResponse,
   MeProfile, UpdateProfileRequest, ChangePasswordRequest,
   MeMailbox, MeMailboxStats, MeForwarding, UpdateForwardingRequest,
-  MeetingResponse, CreateMeetingRequest, UpdateMeetingRequest,
-} from '@/types'
+  MeetingResponse, CreateMeetingRequest, UpdateMeetingRequest, ClusterSitesResponse } from '@/types'
 
 // Auth
 export const auth = {
@@ -463,6 +462,7 @@ export const cluster = {
   health: () => apiClient.get<{ status: string; version: string }>('/health'),
   nodes: () => apiClient.get<ClusterNodesResponse>('/cluster/nodes'),
   stats: () => apiClient.get<ClusterStatsResponse>('/cluster/stats'),
+  sites: () => apiClient.get<ClusterSitesResponse>('/cluster/sites'),
 }
 
 // Number Porting

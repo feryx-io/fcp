@@ -38,6 +38,7 @@ pub mod routing;
 pub mod self_service;
 pub mod signup;
 pub mod sip_trace;
+pub mod sites;
 pub mod system;
 pub mod tenants;
 pub mod trunks;
@@ -272,6 +273,19 @@ pub fn router() -> Router<ApiState> {
                 .delete(tenants::delete_tenant),
         )
         .route("/tenants/:id/deletion", get(tenants::get_tenant_deletion))
+        // Sites: a tenant's own stacks on its own network
+        // (docs/HYBRID_CONTROL_PLANE.md).
+        .route("/sites", get(sites::list_sites).post(sites::create_site))
+        .route(
+            "/sites/:id",
+            get(sites::get_site).delete(sites::delete_site),
+        )
+        .route(
+            "/sites/:id/enrollment-token",
+            post(sites::new_enrollment_token),
+        )
+        .route("/sites/:id/disable", post(sites::disable_site))
+        .route("/sites/:id/enable", post(sites::enable_site))
         // User management
         .route("/users", get(users::list_users).post(users::create_user))
         .route(

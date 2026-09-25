@@ -177,6 +177,12 @@ pub enum Permission {
     // Routing rules (`docs/TENANT_TRUNKS.md` §12, phase 6d): the tenant's
     // own call policy. A rule that routes to a trunk also takes
     // `TrunkUpdate`, since it names a carrier.
+    // Sites: a tenant's own stacks on its own network, enrolled to this
+    // cloud (`docs/HYBRID_CONTROL_PLANE.md`). Managing one mints the
+    // token a link enrolls with, and can disable it.
+    SiteRead,
+    SiteManage,
+
     RoutingRuleRead,
     RoutingRuleManage,
 
@@ -230,6 +236,8 @@ impl FromStr for Permission {
             "trunk_read" => Ok(Self::TrunkRead),
             "trunk_update" => Ok(Self::TrunkUpdate),
             "trunk_delete" => Ok(Self::TrunkDelete),
+            "site_read" => Ok(Self::SiteRead),
+            "site_manage" => Ok(Self::SiteManage),
             "routing_rule_read" => Ok(Self::RoutingRuleRead),
             "routing_rule_manage" => Ok(Self::RoutingRuleManage),
             "tenant_create" => Ok(Self::TenantCreate),
@@ -275,6 +283,8 @@ impl Permission {
             Self::TrunkRead => "trunk_read",
             Self::TrunkUpdate => "trunk_update",
             Self::TrunkDelete => "trunk_delete",
+            Self::SiteRead => "site_read",
+            Self::SiteManage => "site_manage",
             Self::RoutingRuleRead => "routing_rule_read",
             Self::RoutingRuleManage => "routing_rule_manage",
             Self::TenantCreate => "tenant_create",
@@ -317,6 +327,8 @@ impl Permission {
             Self::TrunkRead => "View Trunks",
             Self::TrunkUpdate => "Update Trunks",
             Self::TrunkDelete => "Delete Trunks",
+            Self::SiteRead => "View Sites",
+            Self::SiteManage => "Manage Sites",
             Self::RoutingRuleRead => "View Routing Rules",
             Self::RoutingRuleManage => "Manage Routing Rules",
             Self::TenantCreate => "Create Tenants",
@@ -356,6 +368,9 @@ impl UserRole {
             // numbers, sending international calls to a trunk group — and
             // belong to whoever administers the tenant or its telephony, in
             // every mode; the read-only role may look.
+            (TenantAdmin | TelecomAdmin, SiteRead | SiteManage, _) => true,
+            (ReadOnly, SiteRead, _) => true,
+            (_, SiteRead | SiteManage, _) => false,
             (TenantAdmin | TelecomAdmin, RoutingRuleRead | RoutingRuleManage, _) => true,
             (ReadOnly, RoutingRuleRead, _) => true,
             (_, RoutingRuleRead | RoutingRuleManage, _) => false,

@@ -7010,3 +7010,110 @@ async fn enterprise_tenant_admins_manage_rules_but_not_carriers() {
 
     app.finish().await;
 }
+
+/// Sites (`docs/HYBRID_CONTROL_PLANE.md` phase 1): made in the cloud with a
+/// one-time token shown once, listed, disabled and enabled, deleted; a
+/// disabled site mints no token; another tenant sees nothing.
+#[tokio::test]
+async fn sites_are_made_with_a_token_shown_once_and_managed_in_their_tenant() {
+    let app = require_app!();
+
+    let made = app
+        .admin(
+            Method::POST,
+            "/api/v1/sites",
+            Some(json!({ "name": "acme-hq" })),
+        )
+        .await;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.text);
+    let id = made.json["id"].as_str().expect("a site id").to_string();
+    assert!(id.starts_with("site-"), "{id}");
+    assert_eq!(made.json["status"], "pending");
+    assert_eq!(made.json["link_up"], false);
+    let token = made.json["enrollment_token"]
+        .as_str()
+        .expect("the token, shown once")
+        .to_string();
+    assert!(token.len() >= 40, "{token}");
+    assert!(made.json["enrollment_token_expires_at"].as_u64().is_some());
+
+    // Listed and read back, without the token.
+    let listed = app.admin(Method::GET, "/api/v1/sites", None).await;
+    assert_eq!(listed.status, StatusCode::OK, "{}", listed.text);
+    let list = listed.json.as_array().expect("a list");
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0]["name"], "acme-hq");
+    assert!(list[0].get("enrollment_token").is_none());
+    let got = app
+        .admin(Method::GET, &format!("/api/v1/sites/{id}"), None)
+        .await;
+    assert_eq!(got.status, StatusCode::OK, "{}", got.text);
+    assert_eq!(got.json["tenant_id"], app.tenant_a.to_string());
+
+    // Another tenant sees nothing of it.
+    let other = app
+        .send(
+            Method::GET,
+            &format!("/api/v1/sites/{id}"),
+            &[
+                (AUTH_HEADER, BEARER),
+                ("x-fcp-tenant-id", &app.tenant_b.to_string()),
+            ],
+            None,
+        )
+        .await;
+    assert_eq!(other.status, StatusCode::NOT_FOUND, "{}", other.text);
+
+    // A new token for it; then disabled, which mints none; then enabled
+    // again — pending, since no link ever enrolled.
+    let again = app
+        .admin(
+            Method::POST,
+            &format!("/api/v1/sites/{id}/enrollment-token"),
+            None,
+        )
+        .await;
+    assert_eq!(again.status, StatusCode::OK, "{}", again.text);
+    assert_ne!(again.json["enrollment_token"].as_str().unwrap(), token);
+    let disabled = app
+        .admin(Method::POST, &format!("/api/v1/sites/{id}/disable"), None)
+        .await;
+    assert_eq!(disabled.status, StatusCode::OK, "{}", disabled.text);
+    assert_eq!(disabled.json["status"], "disabled");
+    let refused = app
+        .admin(
+            Method::POST,
+            &format!("/api/v1/sites/{id}/enrollment-token"),
+            None,
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.text);
+    let enabled = app
+        .admin(Method::POST, &format!("/api/v1/sites/{id}/enable"), None)
+        .await;
+    assert_eq!(enabled.status, StatusCode::OK, "{}", enabled.text);
+    assert_eq!(enabled.json["status"], "pending");
+
+    // A name is required.
+    let nameless = app
+        .admin(Method::POST, "/api/v1/sites", Some(json!({ "name": "  " })))
+        .await;
+    assert_eq!(
+        nameless.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        nameless.text
+    );
+
+    // Gone.
+    let deleted = app
+        .admin(Method::DELETE, &format!("/api/v1/sites/{id}"), None)
+        .await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{}", deleted.text);
+    let gone = app
+        .admin(Method::GET, &format!("/api/v1/sites/{id}"), None)
+        .await;
+    assert_eq!(gone.status, StatusCode::NOT_FOUND, "{}", gone.text);
+
+    app.finish().await;
+}

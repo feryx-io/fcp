@@ -158,6 +158,7 @@ fn make_certs(certs_dir: &Path) -> ClusterCa {
         "fcp-media",
         "fcp-webrtc-gw",
         "fcp-proxy",
+        "fcp-admin",
     ] {
         ca.node(service);
     }

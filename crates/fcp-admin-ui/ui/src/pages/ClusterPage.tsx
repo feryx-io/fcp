@@ -10,7 +10,7 @@ import { Badge } from '@/components/ui/badge'
 import { DataTable } from '@/components/DataTable'
 import { cluster, dashboard } from '@/api/endpoints'
 import { formatDuration } from '@/lib/utils'
-import type { ClusterNodeInfo, DashboardSummary } from '@/types'
+import type { ClusterNodeInfo, DashboardSummary, SiteInfo } from '@/types'
 
 const statusBadge = (status: string) => {
   switch (status) {
@@ -237,6 +237,12 @@ export function ClusterPage() {
     refetchInterval: 5000,
   })
 
+  const { data: sitesData } = useQuery({
+    queryKey: ['cluster-sites'],
+    queryFn: cluster.sites,
+    refetchInterval: 10000,
+  })
+
   const { data: statsData, isLoading: statsLoading } = useQuery({
     queryKey: ['cluster-stats'],
     queryFn: cluster.stats,
@@ -309,6 +315,11 @@ export function ClusterPage() {
                 color={nodes.some((n) => n.draining) ? 'text-yellow-600' : undefined}
               />
             </div>
+          )}
+
+          {/* Sites: tenants' own stacks enrolled here (docs/HYBRID_CONTROL_PLANE.md) */}
+          {sitesData?.available && sitesData.sites.length > 0 && (
+            <SitesSection sites={sitesData.sites} />
           )}
 
           {/* Nodes by Type */}
@@ -407,6 +418,58 @@ function VersionSkewBanner({ versions }: { versions: Record<string, string[]> })
         Expected during a rolling upgrade, one node at a time; a skew that stays is an upgrade
         that stopped half way. Finish it, node by node — an old binary does not start against the
         new schema, so the way back is the backup taken before it.
+      </div>
+    </div>
+  )
+}
+
+// A site is a tenant's own stack on the tenant's network, enrolled to
+// this cloud and kept by fcp-link; the cloud sees it through its link's
+// heartbeats, not through cluster membership.
+function SitesSection({ sites }: { sites: SiteInfo[] }) {
+  const ago = (secs?: number) =>
+    secs === undefined ? 'never' : formatDuration(Math.max(0, Math.floor(Date.now() / 1000) - secs)) + ' ago'
+  return (
+    <div>
+      <h2 className="text-lg font-semibold mb-3">Sites</h2>
+      <div className="rounded-md border">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b bg-muted/50 text-left">
+              <th className="p-2">Site</th>
+              <th className="p-2">Tenant</th>
+              <th className="p-2">Status</th>
+              <th className="p-2">Link</th>
+              <th className="p-2">Last seen</th>
+              <th className="p-2">Nodes</th>
+              <th className="p-2">Releases</th>
+            </tr>
+          </thead>
+          <tbody>
+            {sites.map((site) => (
+              <tr key={site.id} className="border-b last:border-0">
+                <td className="p-2 font-medium">{site.name}</td>
+                <td className="p-2 font-mono text-xs">{site.tenant_id}</td>
+                <td className="p-2">
+                  <Badge variant={site.status === 'enrolled' ? 'success' : site.status === 'disabled' ? 'destructive' : 'outline'}>
+                    {site.status}
+                  </Badge>
+                </td>
+                <td className="p-2">
+                  <Badge variant={site.link_up ? 'success' : 'warning'}>{site.link_up ? 'up' : 'down'}</Badge>
+                </td>
+                <td className="p-2 text-muted-foreground">{ago(site.last_seen_at)}</td>
+                <td className="p-2">
+                  {site.nodes.length}
+                  {site.nodes.some((n) => !n.healthy) && (
+                    <span className="ml-1 text-yellow-600">({site.nodes.filter((n) => !n.healthy).length} unhealthy)</span>
+                  )}
+                </td>
+                <td className="p-2 font-mono text-xs">{Object.keys(site.versions).join(', ') || '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </div>
   )

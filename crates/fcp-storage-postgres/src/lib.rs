@@ -7408,6 +7408,132 @@ impl GeoRoutingStore for PostgresStorage {
 // ============================================================================
 
 #[async_trait]
+impl fcp_core::site::SiteStore for PostgresStorage {
+    async fn get_site(&self, id: &fcp_core::SiteId) -> Result<Option<fcp_core::Site>> {
+        let row = sqlx::query("SELECT site_json FROM sites WHERE id = $1")
+            .bind(id.to_string())
+            .fetch_optional(&self.pool)
+            .await?;
+        row.map(|row| site_from_value(row.get("site_json")))
+            .transpose()
+    }
+
+    async fn list_sites(&self, tenant_id: &fcp_core::TenantId) -> Result<Vec<fcp_core::Site>> {
+        let rows = sqlx::query(
+            "SELECT site_json FROM sites WHERE tenant_id = $1 ORDER BY created_at DESC",
+        )
+        .bind(tenant_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| site_from_value(row.get("site_json")))
+            .collect()
+    }
+
+    async fn list_all_sites(&self) -> Result<Vec<fcp_core::Site>> {
+        let rows = sqlx::query("SELECT site_json FROM sites ORDER BY created_at DESC")
+            .fetch_all(&self.pool)
+            .await?;
+        rows.into_iter()
+            .map(|row| site_from_value(row.get("site_json")))
+            .collect()
+    }
+
+    async fn put_site(&self, site: fcp_core::Site) -> Result<()> {
+        let site_json = serde_json::to_value(&site)?;
+        sqlx::query(
+            "INSERT INTO sites (id, tenant_id, name, status, secret_hash, created_at, updated_at, site_json)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+             ON CONFLICT (id) DO UPDATE
+             SET tenant_id = EXCLUDED.tenant_id,
+                 name = EXCLUDED.name,
+                 status = EXCLUDED.status,
+                 secret_hash = EXCLUDED.secret_hash,
+                 updated_at = EXCLUDED.updated_at,
+                 site_json = EXCLUDED.site_json",
+        )
+        .bind(site.id.to_string())
+        .bind(site.tenant_id.to_string())
+        .bind(&site.name)
+        .bind(site.status.as_str())
+        .bind(&site.secret_hash)
+        .bind(system_time_to_datetime(site.created_at))
+        .bind(system_time_to_datetime(site.updated_at))
+        .bind(site_json)
+        .execute(self.writes())
+        .await?;
+        Ok(())
+    }
+
+    async fn delete_site(&self, id: &fcp_core::SiteId) -> Result<()> {
+        sqlx::query("DELETE FROM sites WHERE id = $1")
+            .bind(id.to_string())
+            .execute(self.writes())
+            .await?;
+        Ok(())
+    }
+
+    async fn put_enrollment_token(&self, token: fcp_core::EnrollmentToken) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO site_enrollment_tokens (token_hash, site_id, created_at, expires_at, used_at)
+             VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT (token_hash) DO NOTHING",
+        )
+        .bind(&token.token_hash)
+        .bind(token.site_id.to_string())
+        .bind(system_time_to_datetime(token.created_at))
+        .bind(system_time_to_datetime(token.expires_at))
+        .bind(token.used_at.map(system_time_to_datetime))
+        .execute(self.writes())
+        .await?;
+        Ok(())
+    }
+
+    async fn consume_enrollment_token(
+        &self,
+        token_hash: &str,
+    ) -> Result<Option<fcp_core::EnrollmentToken>> {
+        // Spent in the same statement that finds it: two links presenting
+        // one token get it once.
+        let row = sqlx::query(
+            "UPDATE site_enrollment_tokens
+             SET used_at = NOW()
+             WHERE token_hash = $1 AND used_at IS NULL AND expires_at > NOW()
+             RETURNING token_hash, site_id, created_at, expires_at, used_at",
+        )
+        .bind(token_hash)
+        .fetch_optional(self.writes())
+        .await?;
+        Ok(row.map(|row| {
+            let created: chrono::DateTime<chrono::Utc> = row.get("created_at");
+            let expires: chrono::DateTime<chrono::Utc> = row.get("expires_at");
+            let used: Option<chrono::DateTime<chrono::Utc>> = row.get("used_at");
+            let site_id: String = row.get("site_id");
+            fcp_core::EnrollmentToken {
+                site_id: site_id.parse().unwrap_or_else(|_| fcp_core::SiteId::nil()),
+                token_hash: row.get("token_hash"),
+                created_at: created.into(),
+                expires_at: expires.into(),
+                used_at: used.map(Into::into),
+            }
+        }))
+    }
+
+    async fn get_site_by_secret_hash(&self, secret_hash: &str) -> Result<Option<fcp_core::Site>> {
+        let row = sqlx::query("SELECT site_json FROM sites WHERE secret_hash = $1")
+            .bind(secret_hash)
+            .fetch_optional(&self.pool)
+            .await?;
+        row.map(|row| site_from_value(row.get("site_json")))
+            .transpose()
+    }
+}
+
+fn site_from_value(value: serde_json::Value) -> Result<fcp_core::Site> {
+    serde_json::from_value(value).context("Failed to deserialize site")
+}
+
+#[async_trait]
 impl PortingStore for PostgresStorage {
     async fn get_port_request(
         &self,

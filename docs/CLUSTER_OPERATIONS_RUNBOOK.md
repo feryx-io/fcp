@@ -195,8 +195,12 @@ nodes run more than one release.
 **Events.** `system.node_left` (with `shutdown` or `heartbeat_expired`),
 `system.cluster_view_changed`, `system.version_skew` (the cluster
 started or stopped running more than one release —
-`docs/BACKUP_AND_RESTORE.md` §5) and `trunk.health_changed` reach
-webhooks and WebSocket clients through the events server.
+`docs/BACKUP_AND_RESTORE.md` §5), `system.site_link_changed` (a tenant's
+site's link came up or went quiet — `docs/HYBRID_CONTROL_PLANE.md`) and
+`trunk.health_changed` reach webhooks and WebSocket clients through the
+events server. The admin's `[link]` listeners, when on, are what sites
+enroll to (TLS) and heartbeat at (mutual TLS); the cluster page's Sites
+section shows them.
 
 ## 7. When it goes wrong
 

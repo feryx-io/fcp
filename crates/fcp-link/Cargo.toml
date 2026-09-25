@@ -1,0 +1,31 @@
+[package]
+name = "fcp-link"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "The link between a site and its cloud: enrollment, heartbeats (docs/HYBRID_CONTROL_PLANE.md)"
+
+[[bin]]
+name = "fcp-link"
+path = "src/main.rs"
+
+[dependencies]
+fcp-core = { path = "../fcp-core" }
+fcp-cluster = { path = "../fcp-cluster" }
+fcp-storage-redis = { path = "../fcp-storage-redis" }
+anyhow = "1"
+axum = { version = "0.7", features = ["macros"] }
+clap = { version = "4", features = ["derive", "env"] }
+rcgen = "0.13"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["full", "signal"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+[dev-dependencies]
+fcp-testkit = { path = "../fcp-testkit" }
+tempfile = "3"

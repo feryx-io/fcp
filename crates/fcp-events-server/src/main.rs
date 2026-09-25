@@ -1450,6 +1450,11 @@ fn process_event_for_state(
                     // Said, not acted on (docs/BACKUP_AND_RESTORE.md §5).
                     info!(node_id = %node_id, skew = %skew, "Cluster releases changed: {summary}");
                 }
+                SystemEvent::SiteLinkChanged {
+                    site_id, name, up, ..
+                } => {
+                    info!(site_id = %site_id, name = %name, up = %up, "A site's link changed");
+                }
             }
         }
         _ => {

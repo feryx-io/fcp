@@ -131,6 +131,15 @@ cloud's view of the site.
 
 ### 3.1 Enrollment
 
+*As built in phase 1:* the enroll listener (`[link] enroll_bind`, TLS
+with the admin's own certificate) takes the token and a certificate
+signing request and answers with the certificate, the link CA and a
+secret; the link listener (`[link] bind`) requires a client certificate
+from the link CA at the TLS layer, and every heartbeat also carries the
+secret as a bearer token, which names the site — so revoking a site is
+refusing its secret, with no CRL to keep. `fcp-link` keeps the key, the
+certificate, the CA and `site.json` in `[link] state_dir`.
+
 A tenant administrator makes a site in the cloud (`POST /v1/sites`) and
 receives a one-time enrollment token. `fcp-link` at the site is started
 with the cloud's address and that token; it connects over TLS, presents
@@ -226,7 +235,7 @@ harness (`docs/TEST_FLOOR.md`, the two-node cluster harness with a
 
 | Phase | What |
 |---|---|
-| 1 | **Sites and enrollment.** The `sites` table and `/v1/sites`; enrollment tokens; the link CA and certificate issue; `fcp-link` enrolls, holds its certificate, heartbeats; the cloud's cluster page shows sites. Test: a link enrolls once, a spent token is refused, a disabled site's certificate is refused. |
+| 1 | ✅ v0.25.268 — **Sites and enrollment.** The `sites` table and `/v1/sites`; enrollment tokens; the link CA and certificate issue; `fcp-link` enrolls, holds its certificate, heartbeats; the cloud's cluster page shows sites. Test: a link enrolls once, a spent token is refused, a disabled site's certificate is refused. |
 | 2 | **The journal, the snapshot and the feed.** Triggers on every synced table writing the per-tenant journal; `GET /link/v1/snapshot` and `/link/v1/changes`; a test that every put and delete of every synced store journals, and that a snapshot plus the feed reproduce a tenant's slice exactly. |
 | 3 | **Configuration at the site.** `fcp-link` applies the snapshot and follows the feed into the site's Postgres, sealing secrets under the site's key; the site's admin API refuses writes to synced objects; lag on the heartbeat. Floor: a user made in the cloud registers at the site within seconds; a password changed in the cloud is the one the site challenges with. |
 | 4 | **Calls across.** The link trunk provisioned at enrollment; the cloud SBC knows the site as the tenant's registering trunk; numbers route to the site; inbound reaches the site's phones and outbound leaves through the cloud; emergency per the site's trunks. Floor, with the SBC and a carrier stub in the harness. |

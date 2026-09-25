@@ -16,7 +16,7 @@ set -eu
 DIR="${CERTS_DIR:-/certs}"
 HOST_IP="${HOST_IP:-127.0.0.1}"
 DAYS="${CERT_DAYS:-3650}"
-SERVICES="${CERT_SERVICES:-fcp-call-manager fcp-registrar fcp-conference fcp-sbc fcp-media fcp-webrtc-gw fcp-proxy}"
+SERVICES="${CERT_SERVICES:-fcp-call-manager fcp-registrar fcp-conference fcp-sbc fcp-media fcp-webrtc-gw fcp-proxy fcp-admin}"
 
 mkdir -p "$DIR"
 cd "$DIR"
