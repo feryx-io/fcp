@@ -200,7 +200,13 @@ site's link came up or went quiet — `docs/HYBRID_CONTROL_PLANE.md`) and
 `trunk.health_changed` reach webhooks and WebSocket clients through the
 events server. The admin's `[link]` listeners, when on, are what sites
 enroll to (TLS) and heartbeat at (mutual TLS); the cluster page's Sites
-section shows them.
+section shows them, with each site's sync — current, how many journal
+entries behind, or the error its link last hit. At a site, `fcp-link`
+with `[site] database_url` keeps the site's Postgres a copy of the
+tenant's configuration (its cursor in `sync.json` beside the
+certificate; delete that file to start from a fresh snapshot), and the
+site's admin runs with `[api] managed_by` naming the cloud, so a write
+to a synced object there is refused with the cloud's address.
 
 ## 7. When it goes wrong
 

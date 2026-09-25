@@ -4,14 +4,17 @@
 //! administrator minted in the cloud, and holds the certificate and the
 //! secret that enrollment gave in its state directory. From then on it
 //! heartbeats what it finds at the site: its own release, and every node
-//! of the site's cluster when it has the site's Redis. Later phases carry
-//! configuration down and records up over the same link. It opens no
-//! inbound port but its own health check; every connection is to the
-//! cloud.
+//! of the site's cluster when it has the site's Redis. With the site's
+//! Postgres (phase 3) it keeps that a copy of the tenant's configuration:
+//! a snapshot from the cloud, then every change as the cloud journals it,
+//! applied through the same storage crate the cloud writes with. Later
+//! phases carry records up over the same link. It opens no inbound port
+//! but its own health check; every connection is to the cloud.
 
 mod cli;
 mod config;
 mod link;
+mod sync;
 
 use anyhow::{Context, Result};
 use axum::{extract::State, routing::get, Json, Router};
@@ -43,6 +46,9 @@ async fn main() -> Result<()> {
     }
     if let Some(v) = &cli.link_url {
         config.link.link_url = v.clone();
+    }
+    if let Some(v) = &cli.site_database_url {
+        config.site.database_url = Some(v.clone());
     }
     if let Some(v) = &cli.log_level {
         config.logging.level = v.clone();

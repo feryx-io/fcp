@@ -1,0 +1,297 @@
+//! Configuration at the site (`docs/HYBRID_CONTROL_PLANE.md` phase 3): the
+//! link keeps the site's Postgres a copy of the tenant's slice, so a user
+//! made in the cloud registers at the site's registrar within seconds
+//! with the password set in the cloud; a password changed in the cloud
+//! is the one the site challenges with, and the old one is refused; the
+//! site's own admin refuses a write to a synced object, naming the cloud,
+//! and still reads and acts; and the cloud shows where the site's sync
+//! stands. Gated on `FCP_TEST_DATABASE_URL`; skipped with a notice when
+//! unset.
+
+mod common;
+
+use common::{admin, cloud_with_site_at, until};
+use fcp_testkit::smoke::{free_port, http_request, loopback, toml_path};
+use fcp_testkit::{bins, Phone, Service, TestDatabase};
+use std::net::SocketAddr;
+use std::time::Duration;
+
+/// The realm the cloud's API computes digest credentials for, and the
+/// site registrar's default.
+const REALM: &str = "fcp.local";
+const SITE_ADMIN_TOKEN: &str = "site-admin-token-change-me-32-chars";
+
+/// Register until the registrar answers `want`, or give up.
+async fn registers_with(what: &str, phone: &Phone, want: bool) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let code = phone.register().await.unwrap();
+        if (code == 200) == want {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "{what}: the registrar kept answering {code}"
+        );
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_user_made_in_the_cloud_registers_at_the_site_with_the_password_the_cloud_set() {
+    // The site's own database, and the cloud with a site whose link
+    // keeps it.
+    let Some(site_db) = TestDatabase::create().await else {
+        eprintln!("FCP_TEST_DATABASE_URL not set; skipping the apply test");
+        return;
+    };
+    let cloud = cloud_with_site_at(Some(site_db.url()))
+        .await
+        .expect("the database was there a moment ago");
+
+    // The site's registrar, on the site's database, in the tenant.
+    let (sip, registrar_http, site_admin_http) = (free_port(), free_port(), free_port());
+    let registrar_config = format!(
+        r#"[service]
+node_id = "acme-hq-registrar"
+default_tenant_id = "{tenant}"
+
+[sip]
+udp_bind = "127.0.0.1:{sip}"
+tcp_bind = "127.0.0.1:{sip}"
+
+[registrar]
+auth_enabled = true
+realm = "{REALM}"
+
+[storage]
+database_url = "{db}"
+
+[http]
+bind_address = "127.0.0.1:{registrar_http}"
+
+[logging]
+level = "info"
+format = "compact"
+"#,
+        tenant = cloud.tenant_id,
+        db = site_db.url(),
+    );
+    let registrar = Service::start_with(
+        "fcp-registrar",
+        bins::path("fcp-registrar", "fcp-registrar"),
+        &registrar_config,
+        &loopback(registrar_http, "/health"),
+        &[],
+    )
+    .await;
+    let sip_addr: SocketAddr = format!("127.0.0.1:{sip}").parse().unwrap();
+
+    // The site's admin: a site of the cloud, so synced objects are the
+    // cloud's to change.
+    let site_admin_config = format!(
+        r#"prompts_dir = "{dir}/site-prompts"
+
+[service]
+node_id = "acme-hq-admin"
+
+[api]
+bind_address = "127.0.0.1:{site_admin_http}"
+auth_enabled = true
+auth_token = "{SITE_ADMIN_TOKEN}"
+managed_by = "http://127.0.0.1:{cloud_http}"
+
+[storage]
+database_url = "{db}"
+
+[logging]
+level = "info"
+format = "compact"
+"#,
+        dir = toml_path(cloud.dir.path()),
+        cloud_http = cloud.http,
+        db = site_db.url(),
+    );
+    let site_admin = Service::start_with(
+        "fcp-admin (site)",
+        bins::path("fcp-admin", "fcp-admin"),
+        &site_admin_config,
+        &loopback(site_admin_http, "/api/v1/health"),
+        &[],
+    )
+    .await;
+
+    // The snapshot lands: the link's status shows a cursor, and the
+    // cloud shows the site caught up.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    let status = loop {
+        let (_, text) = http_request("GET", &loopback(cloud.link_health, "/status"), &[], None)
+            .await
+            .unwrap();
+        let status: serde_json::Value = serde_json::from_str(&text).unwrap();
+        if status["sync"]["cursor"].as_i64().unwrap_or(0) > 0 {
+            break status;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the link never applied the snapshot: {status}"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    };
+    assert!(status["sync"]["error"].is_null(), "{status}");
+    assert!(
+        status["sync_applied"].as_u64().unwrap() >= 1,
+        "the tenant itself: {status}"
+    );
+    let shown = until(
+        "the cloud never saw the site caught up",
+        cloud.http,
+        &cloud.site_path(),
+        Some(&cloud.tenant_id),
+        |s| s["sync_behind"] == 0 && s["sync_cursor"].as_i64().is_some_and(|c| c > 0),
+    )
+    .await;
+    assert!(shown["sync_applied_at"].as_u64().is_some(), "{shown}");
+
+    // A user made in the cloud registers at the site within seconds.
+    let (code, made) = cloud
+        .admin_call(
+            "POST",
+            "/api/v1/users",
+            true,
+            Some(
+                &serde_json::json!({
+                    "username": "alice",
+                    "password": "Alice-at-the-site-2026!",
+                    "display_name": "Alice",
+                    "tenant_id": cloud.tenant_id,
+                })
+                .to_string(),
+            ),
+        )
+        .await;
+    assert_eq!(code, 201, "{made}");
+    let alice = Phone::new("alice", "Alice-at-the-site-2026!", REALM, sip_addr)
+        .await
+        .unwrap();
+    let started = std::time::Instant::now();
+    registers_with("alice never registered at the site", &alice, true).await;
+    eprintln!(
+        "alice registered at the site {:?} after her creation",
+        started.elapsed()
+    );
+    let wrong = Phone::new("alice", "not-her-password", REALM, sip_addr)
+        .await
+        .unwrap();
+    assert_ne!(wrong.register().await.unwrap(), 200, "a wrong password");
+
+    // A password changed in the cloud is the one the site challenges
+    // with; the old one is refused.
+    let (code, changed) = cloud
+        .admin_call(
+            "PUT",
+            "/api/v1/users/alice/password",
+            true,
+            Some(&serde_json::json!({ "password": "Alice-renewed-2026!" }).to_string()),
+        )
+        .await;
+    assert!(code == 200 || code == 204, "{changed}");
+    registers_with(
+        "the old password was still taken at the site",
+        &alice,
+        false,
+    )
+    .await;
+    let renewed = Phone::new("alice", "Alice-renewed-2026!", REALM, sip_addr)
+        .await
+        .unwrap();
+    registers_with("the new password never reached the site", &renewed, true).await;
+
+    // The site's admin reads the synced user and refuses to change her,
+    // naming the cloud; a runtime action goes through.
+    let (code, listed) = admin(
+        site_admin_http,
+        "GET",
+        "/api/v1/users",
+        Some(&cloud.tenant_id),
+        None,
+    )
+    .await;
+    // The helper carries the cloud's token; the site's admin has its own.
+    let _ = (code, listed);
+    let site_bearer = format!("Bearer {SITE_ADMIN_TOKEN}");
+    let site_headers = [
+        ("Authorization", site_bearer.as_str()),
+        ("Content-Type", "application/json"),
+        ("x-fcp-tenant-id", cloud.tenant_id.as_str()),
+    ];
+    let (code, text) = http_request(
+        "GET",
+        &loopback(site_admin_http, "/api/v1/users"),
+        &site_headers,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(code, 200, "{text}");
+    assert!(
+        text.contains("\"alice\""),
+        "the synced user is read at the site: {text}"
+    );
+    let (code, text) = http_request(
+        "POST",
+        &loopback(site_admin_http, "/api/v1/users"),
+        &site_headers,
+        Some(
+            &serde_json::json!({
+                "username": "bob",
+                "password": "Bob-at-the-site-2026!",
+                "tenant_id": cloud.tenant_id,
+            })
+            .to_string(),
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(code, 403, "{text}");
+    assert!(
+        text.contains(&format!("http://127.0.0.1:{}", cloud.http)),
+        "the refusal names the cloud: {text}"
+    );
+    let (code, text) = http_request(
+        "PUT",
+        &loopback(site_admin_http, "/api/v1/users/alice/password"),
+        &site_headers,
+        Some(&serde_json::json!({ "password": "Nope-2026!" }).to_string()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(code, 403, "{text}");
+    let (code, text) = http_request(
+        "GET",
+        &loopback(site_admin_http, "/api/v1/registrations"),
+        &site_headers,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(code, 200, "the site's own runtime is readable: {text}");
+    assert!(
+        text.contains("alice"),
+        "alice's registration at the site: {text}"
+    );
+
+    // A user deleted in the cloud is gone at the site.
+    let (code, gone) = cloud
+        .admin_call("DELETE", "/api/v1/users/alice", true, None)
+        .await;
+    assert!(code == 200 || code == 204, "{gone}");
+    registers_with("alice still registered after her deletion", &renewed, false).await;
+
+    let log = registrar.stop().await;
+    assert!(!log.contains("panicked"), "the registrar panicked:\n{log}");
+    let log = site_admin.stop().await;
+    assert!(!log.contains("panicked"), "the site admin panicked:\n{log}");
+    cloud.finish().await;
+    site_db.drop_db().await;
+}

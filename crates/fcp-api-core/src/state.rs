@@ -160,6 +160,11 @@ pub struct ApiState {
 
     /// Directory holding call recordings, pruned by the retention policy.
     pub call_recordings_dir: Option<PathBuf>,
+
+    /// The cloud this deployment is a site of (`docs/HYBRID_CONTROL_PLANE.md`
+    /// §4), when it is one: the objects the link keeps in sync are read-only
+    /// here, and a write to one is refused naming this address.
+    pub managed_by: Option<String>,
 }
 
 impl ApiState {
@@ -216,6 +221,7 @@ impl ApiState {
             deployment_mode: fcp_core::permissions::DeploymentMode::default(),
             e911_validator: Arc::new(fcp_core::e911::BasicAddressValidator),
             call_recordings_dir: None,
+            managed_by: None,
         }
     }
 
@@ -341,6 +347,15 @@ impl ApiState {
     /// Set the deployment mode for permission evaluation.
     pub fn with_deployment_mode(mut self, mode: fcp_core::permissions::DeploymentMode) -> Self {
         self.deployment_mode = mode;
+        self
+    }
+
+    /// The cloud this deployment is a site of, if it is one: synced objects
+    /// become read-only (see [`crate::managed`]).
+    pub fn with_managed_by(mut self, cloud: Option<String>) -> Self {
+        self.managed_by = cloud
+            .map(|c| c.trim().trim_end_matches('/').to_string())
+            .filter(|c| !c.is_empty());
         self
     }
 

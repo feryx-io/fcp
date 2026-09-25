@@ -144,6 +144,12 @@ pub async fn until<F: Fn(&serde_json::Value) -> bool>(
 /// The cloud up with a tenant and a site, and the site's link enrolled
 /// and up. `None` without a database.
 pub async fn cloud_with_site() -> Option<Cloud> {
+    cloud_with_site_at(None).await
+}
+
+/// As [`cloud_with_site`], the link given the site's database to keep
+/// the tenant's configuration in.
+pub async fn cloud_with_site_at(site_database_url: Option<&str>) -> Option<Cloud> {
     let db = TestDatabase::create().await?;
     let dir = tempfile::tempdir().expect("tempdir");
     let certs_dir = dir.path().join("certs");
@@ -200,7 +206,7 @@ format = "compact"
         "POST",
         "/api/v1/tenants",
         None,
-        Some(&serde_json::json!({ "name": "acme" }).to_string()),
+        Some(&serde_json::json!({ "name": "acme", "sip_domains": ["fcp.local"] }).to_string()),
     )
     .await;
     assert_eq!(code, 201, "{tenant}");
@@ -217,6 +223,10 @@ format = "compact"
     let site_id = site["id"].as_str().unwrap().to_string();
     let token = site["enrollment_token"].as_str().unwrap().to_string();
 
+    let site_section = match site_database_url {
+        Some(url) => format!("[site]\ndatabase_url = \"{url}\"\nfeed_wait_secs = 5\n"),
+        None => String::new(),
+    };
     let link_config = format!(
         r#"[service]
 node_id = "acme-hq-link"
@@ -229,6 +239,7 @@ state_dir = "{dir}/link-state"
 cloud_ca = "{ca}"
 heartbeat_interval_secs = 1
 
+{site_section}
 [health]
 bind_address = "127.0.0.1:{link_health}"
 

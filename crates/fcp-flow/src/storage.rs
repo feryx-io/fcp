@@ -36,6 +36,22 @@ pub trait FlowStore: Send + Sync {
     /// Delete a flow (soft delete - marks as disabled).
     async fn delete_flow(&self, id: &str) -> Result<()>;
 
+    /// Write a flow exactly as given — its version, its enabled flag, its
+    /// timestamps — replacing what is there. A site applying the cloud's
+    /// copy uses this (`docs/HYBRID_CONTROL_PLANE.md` §3.2); an
+    /// administrator's edits go through [`insert_flow`] and
+    /// [`update_flow`], which number the versions.
+    ///
+    /// [`insert_flow`]: FlowStore::insert_flow
+    /// [`update_flow`]: FlowStore::update_flow
+    async fn put_flow(&self, flow: FlowDefinition) -> Result<()> {
+        if self.get_flow(&flow.id).await?.is_some() {
+            self.update_flow(flow).await
+        } else {
+            self.insert_flow(flow).await
+        }
+    }
+
     /// Get all versions of a flow.
     async fn list_flow_versions(&self, id: &str) -> Result<Vec<FlowDefinition>>;
 

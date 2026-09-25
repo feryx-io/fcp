@@ -17,6 +17,7 @@ use axum::{
 use base64::Engine;
 use fcp_core::permissions::Permission;
 use fcp_core::site::ENROLLMENT_TOKEN_TTL;
+use fcp_core::SyncStore;
 use fcp_core::{EnrollmentToken, Site, SiteId, SiteStatus, SiteStore};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -49,6 +50,27 @@ pub struct SiteResponse {
     pub versions: std::collections::BTreeMap<String, Vec<String>>,
     /// The site's nodes as the link last found them.
     pub nodes: Vec<fcp_core::SiteNode>,
+    /// The journal sequence the site has applied through, from its last
+    /// heartbeat; absent from a link that keeps no site database.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sync_cursor: Option<i64>,
+    /// When the site last applied a snapshot or a change.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sync_applied_at: Option<u64>,
+    /// The site's last failure to fetch or apply, until its next success.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sync_error: Option<String>,
+    /// Journal entries the site has not applied yet, as of this answer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sync_behind: Option<i64>,
+}
+
+impl SiteResponse {
+    /// How far behind the journal's head the site is.
+    pub fn behind(mut self, head: i64) -> Self {
+        self.sync_behind = self.sync_cursor.map(|c| (head - c).max(0));
+        self
+    }
 }
 
 fn secs(t: SystemTime) -> u64 {
@@ -60,6 +82,7 @@ fn secs(t: SystemTime) -> u64 {
 impl From<Site> for SiteResponse {
     fn from(site: Site) -> Self {
         let versions = site.versions();
+        let sync = site.last_heartbeat.as_ref().and_then(|b| b.sync.clone());
         Self {
             id: site.id.to_string(),
             tenant_id: site.tenant_id.to_string(),
@@ -80,6 +103,10 @@ impl From<Site> for SiteResponse {
                 .last_heartbeat
                 .map(|beat| beat.nodes)
                 .unwrap_or_default(),
+            sync_cursor: sync.as_ref().map(|s| s.cursor),
+            sync_applied_at: sync.as_ref().and_then(|s| s.applied_at),
+            sync_error: sync.and_then(|s| s.error),
+            sync_behind: None,
         }
     }
 }
@@ -151,7 +178,13 @@ pub async fn list_sites(
     check_permission(&identity, Permission::SiteRead, state.deployment_mode)?;
     let storage = storage!(state);
     let sites = storage.list_sites(&tenant.0).await?;
-    Ok(Json(sites.into_iter().map(SiteResponse::from).collect()))
+    let head = storage.journal_head().await?;
+    Ok(Json(
+        sites
+            .into_iter()
+            .map(|s| SiteResponse::from(s).behind(head))
+            .collect(),
+    ))
 }
 
 /// POST /api/v1/sites — a site, and the token that enrolls it.
@@ -192,7 +225,9 @@ pub async fn get_site(
 ) -> Result<Json<SiteResponse>, ApiError> {
     check_permission(&identity, Permission::SiteRead, state.deployment_mode)?;
     let storage = storage!(state);
-    Ok(Json(site_in_tenant(storage, &tenant, &id).await?.into()))
+    let site = site_in_tenant(storage, &tenant, &id).await?;
+    let head = storage.journal_head().await?;
+    Ok(Json(SiteResponse::from(site).behind(head)))
 }
 
 /// POST /api/v1/sites/:id/enrollment-token — a new token for a site whose

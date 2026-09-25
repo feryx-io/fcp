@@ -516,6 +516,7 @@ async fn main() -> Result<()> {
     .with_config_store(config_store)
     .with_trunk_health(trunk_health_map)
     .with_deployment_mode(config.api.deployment_mode)
+    .with_managed_by(config.api.managed_by.clone())
     .with_e911_validator(e911_validator);
 
     // Set security policy from config

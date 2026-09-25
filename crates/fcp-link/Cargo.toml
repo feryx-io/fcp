@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "The link between a site and its cloud: enrollment, heartbeats (docs/HYBRID_CONTROL_PLANE.md)"
+description = "The link between a site and its cloud: enrollment, heartbeats, configuration down (docs/HYBRID_CONTROL_PLANE.md)"
 
 [[bin]]
 name = "fcp-link"
@@ -15,6 +15,8 @@ path = "src/main.rs"
 fcp-core = { path = "../fcp-core" }
 fcp-cluster = { path = "../fcp-cluster" }
 fcp-storage-redis = { path = "../fcp-storage-redis" }
+fcp-storage-postgres = { path = "../fcp-storage-postgres" }
+fcp-flow = { path = "../fcp-flow" }
 anyhow = "1"
 axum = { version = "0.7", features = ["macros"] }
 clap = { version = "4", features = ["derive", "env"] }
@@ -25,6 +27,7 @@ serde_json = { workspace = true }
 tokio = { workspace = true, features = ["full", "signal"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+uuid = { workspace = true }
 
 [dev-dependencies]
 fcp-testkit = { path = "../fcp-testkit" }

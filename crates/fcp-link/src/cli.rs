@@ -9,8 +9,8 @@ use std::path::PathBuf;
     long_about = "fcp-link runs at a site (a tenant's own stack on its own network) and\n\
                   keeps it linked to the cloud (docs/HYBRID_CONTROL_PLANE.md): it enrolls\n\
                   once with a one-time token and holds a certificate from then on, and\n\
-                  heartbeats what it finds at the site. Configuration follows in later\n\
-                  phases."
+                  heartbeats what it finds at the site, and, with the site's Postgres,\n\
+                  keeps it a copy of the tenant's configuration from the cloud."
 )]
 pub struct Cli {
     #[arg(
@@ -59,4 +59,13 @@ pub struct Cli {
     /// The cloud's link listener, e.g. https://cloud.example.com:8447
     #[arg(long = "link-url", value_name = "URL", env = "FCP_LINK_LINK_URL")]
     pub link_url: Option<String>,
+
+    /// The site's Postgres, kept a copy of the tenant's configuration.
+    #[arg(
+        long = "site-database-url",
+        value_name = "URL",
+        env = "FCP_LINK_SITE_DATABASE_URL",
+        hide_env_values = true
+    )]
+    pub site_database_url: Option<String>,
 }

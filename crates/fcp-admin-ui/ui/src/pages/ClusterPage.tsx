@@ -442,6 +442,7 @@ function SitesSection({ sites }: { sites: SiteInfo[] }) {
               <th className="p-2">Link</th>
               <th className="p-2">Last seen</th>
               <th className="p-2">Nodes</th>
+              <th className="p-2">Sync</th>
               <th className="p-2">Releases</th>
             </tr>
           </thead>
@@ -463,6 +464,17 @@ function SitesSection({ sites }: { sites: SiteInfo[] }) {
                   {site.nodes.length}
                   {site.nodes.some((n) => !n.healthy) && (
                     <span className="ml-1 text-yellow-600">({site.nodes.filter((n) => !n.healthy).length} unhealthy)</span>
+                  )}
+                </td>
+                <td className="p-2">
+                  {site.sync_cursor === undefined ? (
+                    <span className="text-muted-foreground">—</span>
+                  ) : site.sync_error ? (
+                    <Badge variant="destructive" title={site.sync_error}>error</Badge>
+                  ) : site.sync_behind ? (
+                    <Badge variant="warning">{site.sync_behind} behind</Badge>
+                  ) : (
+                    <Badge variant="success">current</Badge>
                   )}
                 </td>
                 <td className="p-2 font-mono text-xs">{Object.keys(site.versions).join(', ') || '—'}</td>

@@ -1145,6 +1145,12 @@ export interface SiteInfo {
   /** Release → node ids, from the site's last heartbeat. */
   versions: Record<string, string[]>
   nodes: { node_id: string; node_type: string; version: string; healthy: boolean }[]
+  /** The journal sequence the site has applied through; absent from a link without a site database. */
+  sync_cursor?: number
+  sync_applied_at?: number
+  sync_error?: string
+  /** Journal entries the site has not applied yet. */
+  sync_behind?: number
 }
 
 export interface ClusterSitesResponse {
