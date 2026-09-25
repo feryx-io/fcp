@@ -122,11 +122,20 @@ async fn get_json(port: u16, path: &str) -> serde_json::Value {
 }
 
 /// The call manager's records, once `n` are there.
+/// This node's records — the processor stores whatever is on the stream
+/// it shares, and another test's call manager may have left records
+/// there, so a record from any other node is not one of ours.
 async fn cdrs(http: u16, n: usize, within: Duration) -> Vec<serde_json::Value> {
     let deadline = tokio::time::Instant::now() + within;
     loop {
         let body = get_json(http, "/cdrs").await;
-        let list = body["cdrs"].as_array().cloned().unwrap_or_default();
+        let list: Vec<serde_json::Value> = body["cdrs"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|r| r["node_id"] == "e2e-call-manager")
+            .collect();
         if list.len() >= n {
             return list;
         }
@@ -165,6 +174,21 @@ async fn records_cross_the_stream_to_the_processor_rated_charged_once_and_announ
         eprintln!("skipped: FCP_TEST_DATABASE_URL or FCP_TEST_REDIS_URL is not set");
         return;
     };
+    // The stream is `fcp:cdrs` in whichever Redis database this test
+    // was given, and an earlier test binary's call manager may have left
+    // records on it (every node writes under the one prefix); the
+    // processor would store and charge them here. Start from an empty
+    // stream — test binaries run one at a time, so nothing else is
+    // writing it now.
+    {
+        let client = redis::Client::open(redis.as_str()).unwrap();
+        let mut conn = client.get_multiplexed_async_connection().await.unwrap();
+        let _: () = redis::cmd("DEL")
+            .arg("fcp:cdrs")
+            .query_async(&mut conn)
+            .await
+            .unwrap();
+    }
     let dir = tempfile::tempdir().unwrap();
     let seed = Seed::new(db.url(), REALM).await;
     let alice_user = seed.user("alice", "alice-pw", "1001").await;
