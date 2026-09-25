@@ -4,8 +4,8 @@ How a deployment is kept: where every piece of state lives, what a
 backup must hold, what a restore needs, and what an upgrade does. The
 design behind it, with what the survey found, is
 `docs/BACKUP_RESTORE_UPGRADE.md`; this is the document an operator
-reads. Sections 4 and 5 arrive with that project's phases 3 and 4 and say
-so until they do.
+reads. Section 5 arrives with that project's phase 4 and says so until
+it does.
 
 ## 1. Where the state is
 
@@ -143,14 +143,83 @@ A fresh stack — or a stack whose data is gone — with the key restored
 before any service starts, the database restored before any service
 opens it, and each node's files at the paths its rows name. The first
 service to start finds a key ring wrapped by the key it holds; a wrong
-key refuses to start. Everything the deployment did after the backup
-is gone, including erasures: a restored backup can hold what a subject
-request removed since, which is why `docs/COMPLIANCE_FOLLOWUPS.md` §9
-counts backups as a store erasure does not reach and the report says
-so.
+key refuses to start, naming the KEK the ring wanted and the one it
+was given. Everything the deployment did after the backup is gone,
+including erasures: a restored backup can hold what a subject request
+removed since, which is why `docs/COMPLIANCE_FOLLOWUPS.md` §9 counts
+backups as a store erasure does not reach and the report says so.
+Redis starts empty, and §1 says what that means.
 
-*The tool that performs one, and the test that proves it, arrive with
-phase 3.*
+### 4.1 The compose stack: `restore.sh`
+
+```bash
+cd deploy/docker-compose
+docker compose down -v                  # drops what is there, if anything
+scripts/restore.sh /backups/fcp-2026-09-24
+```
+
+The directory is one `backup.sh` wrote. The script refuses at the first
+thing wrong and touches nothing before it is sure, in this order:
+
+1. **The manifest and the checksums.** `sha256sum -c SHA256SUMS`; a
+   copy that does not match is refused as damaged.
+2. **A fresh stack.** No volume of the stack may exist. A restore never
+   merges into a running deployment; `docker compose down -v` is the
+   operator's step, and it drops everything.
+3. **The key is the key.** `master.key` inside `fcp-certs.tar.gz` must
+   fingerprint to the KEK id the manifest's key ring names (`local:` and
+   the first eight bytes of its SHA-256, as every binary derives it). A
+   key and a dump not taken together are refused here, before any
+   service could refuse them.
+4. **The volumes**, each created as compose names and labels it and
+   filled from its tar, the certs volume first.
+5. **The database.** `postgres` is started alone and waited for; the
+   dump is restored into its empty `fcp` database with `pg_restore
+   --no-owner --no-privileges --exit-on-error`; the key ring it holds
+   must name the manifest's KEK id.
+6. **Up.** `docker compose up -d --build`, unless `--no-up`.
+
+After it, every service starts under the restored key, the users
+register with their sealed passwords, and the recordings are where
+their rows say. The service certificates in the volume name the
+address the backup's host had (`HOST_IP`); on a host with another
+address, remove them from the volume after the restore and before
+`up` — not `ca.*` and not `master.key` — and the `certs` service
+remakes them under the kept CA, so phones that trust it keep
+trusting it.
+
+### 4.2 From source: the same commands
+
+The key file first, on every node, at the path `FCP_MASTER_KEY_FILE`
+names; then the dump into an empty database — `createdb fcp` or its
+equivalent, then `pg_restore --no-owner --no-privileges --exit-on-error
+-d "$DATABASE_URL" fcp.dump` — before any binary opens it; then each
+tar back at the directory its node's configuration names (`tar -C
+/var/lib/fcp/media/recordings -xzf node-2.media-recordings.tar.gz`);
+then the binaries. Check the key before starting anything:
+
+```bash
+echo "local:$(tr -d '[:space:]' < master.key | base64 -d | sha256sum | cut -c1-16)"
+psql -tA -c "SELECT kek_id FROM data_encryption_keys WHERE active" "$DATABASE_URL"
+```
+
+The two must be equal. A binary started with another key exits at once
+with `active data encryption key … was wrapped by KEK local:… but this
+process is configured with KEK local:…`.
+
+### 4.3 Proved
+
+`crates/fcp-call-manager/tests/compose_restore.rs` runs these commands
+against the binaries' own directories: the stack's database services
+start from the compose configurations with encryption on, a user made
+through the admin API (so their SIP credentials are sealed) registers
+and calls a room; the dump, the tars, the manifest and the checksums
+are taken; the database is dropped and the directories deleted; the
+backup is restored into a new database and directory. With a different
+master key beside the restored certificates, every one of the nine
+services that opens the database refuses to start, naming both KEKs.
+With the right one, the same data encryption key is active, the old
+user registers with the sealed password and the room takes a call.
 
 ## 5. What an upgrade does
 
