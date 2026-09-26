@@ -41,11 +41,17 @@ async fn list_sites(Extension(state): Extension<ClusterApiState>) -> Json<Cluste
             sites: vec![],
         });
     };
+    let head = fcp_core::SyncStore::journal_head(storage.as_ref())
+        .await
+        .unwrap_or_default();
     match fcp_core::SiteStore::list_all_sites(storage.as_ref()).await {
         Ok(sites) => Json(ClusterSitesResponse {
             available: true,
             message: None,
-            sites: sites.into_iter().map(Into::into).collect(),
+            sites: sites
+                .into_iter()
+                .map(|s| fcp_api_core::v1::sites::SiteResponse::from(s).behind(head))
+                .collect(),
         }),
         Err(e) => {
             tracing::error!(error = %e, "Failed to list sites");

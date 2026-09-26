@@ -14,6 +14,7 @@ pub mod audit;
 pub mod auth;
 pub mod e911_validator;
 pub mod error;
+pub mod managed;
 pub mod state;
 pub mod trunk_health;
 
@@ -110,7 +111,13 @@ pub fn create_router_with(
         )
         .nest(
             "/api/v1",
-            v1::router().merge(extra_v1).layer(audit_layer.clone()),
+            v1::router()
+                .merge(extra_v1)
+                .layer(audit_layer.clone())
+                .layer(middleware::from_fn_with_state(
+                    state.clone(),
+                    managed::refuse_synced_writes,
+                )),
         );
 
     // Always derive JWT secret from auth_token when available.

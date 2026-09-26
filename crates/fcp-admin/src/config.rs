@@ -456,6 +456,14 @@ pub struct ApiConfig {
     /// Deployment mode for permission evaluation
     #[serde(default)]
     pub deployment_mode: fcp_core::permissions::DeploymentMode,
+
+    /// The cloud this admin is a site of (`docs/HYBRID_CONTROL_PLANE.md`
+    /// §4): the address of the cloud's admin, shown when a write to an
+    /// object the link keeps in sync — the tenant, users, devices, numbers,
+    /// routes, trunks, flows and the rest — is refused here. Unset at the
+    /// cloud and in a deployment that is nobody's site.
+    #[serde(default)]
+    pub managed_by: Option<String>,
 }
 
 fn default_bind_address() -> SocketAddr {
@@ -476,6 +484,7 @@ impl Default for ApiConfig {
             provisioning_require_https: true,
             allow_public_signup: false,
             deployment_mode: fcp_core::permissions::DeploymentMode::default(),
+            managed_by: None,
         }
     }
 }
@@ -690,6 +699,12 @@ pub fn load_config(config_path: Option<&Path>) -> Result<AdminConfig> {
 }
 
 pub fn validate_config(config: &AdminConfig) -> Result<()> {
+    if let Some(cloud) = &config.api.managed_by {
+        let cloud = cloud.trim();
+        if !(cloud.starts_with("https://") || cloud.starts_with("http://")) {
+            anyhow::bail!("api.managed_by must be the cloud admin's http(s):// address");
+        }
+    }
     if config.link.enabled {
         for (name, value) in [
             ("link.cert", &config.link.cert),

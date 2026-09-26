@@ -44,6 +44,22 @@ pub struct SiteNode {
     pub healthy: bool,
 }
 
+/// Where the site's copy of the tenant's configuration stands
+/// (`docs/HYBRID_CONTROL_PLANE.md` §3.2, phase 3): the journal cursor the
+/// link has applied through, when it last applied anything, and what went
+/// wrong if it is stuck.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct SiteSync {
+    /// The journal sequence applied through; 0 before the first snapshot.
+    pub cursor: i64,
+    /// When the link last applied a snapshot or a change, epoch seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub applied_at: Option<u64>,
+    /// The last failure to fetch or apply, until the next success.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 /// What a link reports on every heartbeat.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct SiteHeartbeat {
@@ -54,6 +70,10 @@ pub struct SiteHeartbeat {
     /// The site's nodes, as the link found them.
     #[serde(default)]
     pub nodes: Vec<SiteNode>,
+    /// Where the site's configuration stands; absent from a link that
+    /// keeps no site database.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync: Option<SiteSync>,
 }
 
 /// A site as the cloud keeps it.
@@ -223,6 +243,7 @@ mod tests {
                     healthy: false,
                 },
             ],
+            sync: None,
         });
         let groups = site.versions();
         assert_eq!(groups["0.25.268"], vec!["cm-1", "cm-2"]);

@@ -6607,6 +6607,41 @@ impl FlowStore for PostgresStorage {
         Ok(())
     }
 
+    async fn put_flow(&self, flow: FlowDefinition) -> std::result::Result<(), FlowError> {
+        let nodes_json = serde_json::to_value(&flow.nodes)?;
+        let variables_json = serde_json::to_value(&flow.variables)?;
+        let now = Utc::now();
+        sqlx::query(
+            "INSERT INTO flows (
+                id, name, description, version, initial_node, nodes, variables,
+                tenant_id, enabled, webhook_url, created_at, updated_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            ON CONFLICT (id) DO UPDATE SET
+                name = EXCLUDED.name, description = EXCLUDED.description,
+                version = EXCLUDED.version, initial_node = EXCLUDED.initial_node,
+                nodes = EXCLUDED.nodes, variables = EXCLUDED.variables,
+                tenant_id = EXCLUDED.tenant_id, enabled = EXCLUDED.enabled,
+                webhook_url = EXCLUDED.webhook_url, updated_at = EXCLUDED.updated_at",
+        )
+        .bind(&flow.id)
+        .bind(&flow.name)
+        .bind(&flow.description)
+        .bind(flow.version as i32)
+        .bind(&flow.initial_node)
+        .bind(&nodes_json)
+        .bind(&variables_json)
+        .bind(&flow.tenant_id)
+        .bind(flow.enabled)
+        .bind(&flow.webhook_url)
+        .bind(flow.created_at.unwrap_or(now))
+        .bind(flow.updated_at.unwrap_or(now))
+        .execute(self.writes())
+        .await
+        .map_err(|e| FlowError::StorageError(e.to_string()))?;
+        debug!(flow_id = %flow.id, version = flow.version, "Flow written as given");
+        Ok(())
+    }
+
     async fn update_flow(&self, flow: FlowDefinition) -> std::result::Result<(), FlowError> {
         let nodes_json = serde_json::to_value(&flow.nodes)?;
         let variables_json = serde_json::to_value(&flow.variables)?;

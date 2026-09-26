@@ -140,7 +140,9 @@ pub use crate::sip_handler::{
     InviteContext, InviteHandler, InviteResponse, SipError, SipResponseCode, SipResult,
 };
 pub use crate::sip_trace::{SipTraceMessage, SipTraceStore};
-pub use crate::site::{EnrollmentToken, Site, SiteHeartbeat, SiteNode, SiteStatus, SiteStore};
+pub use crate::site::{
+    EnrollmentToken, Site, SiteHeartbeat, SiteNode, SiteStatus, SiteStore, SiteSync,
+};
 pub use crate::site_location::SiteLocation;
 pub use crate::storage::{
     room_number_exists_globally, AccountStatus, ApiToken, ApiTokenStore, AvailableNumberQuery,

@@ -1058,7 +1058,26 @@ puts, updates and deletes journal in order under the tenant) and
 tenant, a user made in the cloud is on the feed within a second with
 the credentials the site will challenge with, a held feed comes back
 empty on time, and the snapshot plus the feed equal a fresh snapshot).
-The link does not yet apply any of it: that is phase 3.
+Phase 3 done (v0.25.270): configuration at the site. With `[site]
+database_url`, `fcp-link` opens the site's Postgres (migrating its
+schema as every binary does), takes the tenant's snapshot and follows
+the feed, applying each object through the same stores the cloud writes
+with — so the site's store seals the digest credentials under the site's
+own key — with its cursor kept in `sync.json` beside the certificate; a
+rate plan lands with its rates, a flow as an exact copy
+(`FlowStore::put_flow`). Every heartbeat carries `sync` (cursor, applied
+at, the last error), and the cloud shows `sync_cursor`, `sync_applied_at`,
+`sync_error` and `sync_behind` (entries the site has not applied) on
+every site and on the cluster page. The site's admin, with `[api]
+managed_by` naming the cloud, refuses a write to any synced resource
+with 403 and that address (`fcp_api_core::managed`; reads and runtime
+actions such as a trunk test or an agent's login go through). Proved by
+`fcp-link/tests/apply.rs` against a live cloud, a site registrar and a
+site admin: a user made in the cloud registers at the site within
+seconds with the password set there, a wrong one is refused, a password
+changed in the cloud replaces the one the site challenges with, the
+site's admin lists the user and refuses to change her, and a user
+deleted in the cloud is gone at the site.
 
 ## Historical documents
 

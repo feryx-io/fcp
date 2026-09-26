@@ -1,14 +1,16 @@
-//! The link itself: enroll once, then heartbeat.
+//! The link itself: enroll once, then heartbeat, and keep the site's
+//! configuration when it has the site's database.
 
 use anyhow::{Context, Result};
-use fcp_core::{SiteHeartbeat, SiteNode};
+use fcp_core::{SiteHeartbeat, SiteNode, SiteSync, TenantId};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 use tracing::{info, warn};
 
 use crate::config::LinkFileConfig;
+use crate::sync::{SiteStores, Syncer};
 
 /// The link protocol this link speaks.
 pub const LINK_PROTOCOL: u32 = 1;
@@ -60,6 +62,12 @@ pub struct LinkStatus {
     pub heartbeat_interval_secs: u64,
     pub version: String,
     pub protocol: u32,
+    /// Where the site's configuration stands; absent without a site
+    /// database.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sync: Option<SiteSync>,
+    /// Objects written since start.
+    pub sync_applied: u64,
 }
 
 struct Inner {
@@ -75,6 +83,10 @@ pub struct Link {
     state_dir: PathBuf,
     inner: Mutex<Inner>,
     reader: Option<fcp_cluster::ClusterReader>,
+    /// The site's stores, when `[site] database_url` is set.
+    stores: Option<SiteStores>,
+    /// The sync, once enrolled and the stores are known.
+    sync: Mutex<Option<Arc<Syncer>>>,
 }
 
 fn secs(t: SystemTime) -> u64 {
@@ -108,6 +120,17 @@ impl Link {
             }
             None => None,
         };
+        let stores = match &config.site.database_url {
+            Some(url) => {
+                let stores = crate::sync::open_site(url, config.site.max_connections).await?;
+                info!("The site's database is open; its configuration will follow the cloud's");
+                Some(stores)
+            }
+            None => {
+                info!("No site database ([site] database_url); this link carries no configuration");
+                None
+            }
+        };
         let interval = Duration::from_secs(
             enrollment
                 .as_ref()
@@ -126,10 +149,17 @@ impl Link {
                 interval,
             }),
             reader,
+            stores,
+            sync: Mutex::new(None),
         })
     }
 
+    fn syncer(&self) -> Option<Arc<Syncer>> {
+        self.sync.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
     pub fn status(&self) -> LinkStatus {
+        let syncer = self.syncer();
         let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         LinkStatus {
             enrolled: inner.enrollment.is_some(),
@@ -142,6 +172,58 @@ impl Link {
             heartbeat_interval_secs: inner.interval.as_secs(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             protocol: LINK_PROTOCOL,
+            sync: syncer.as_ref().map(|s| s.state()),
+            sync_applied: syncer.as_ref().map(|s| s.applied()).unwrap_or(0),
+        }
+    }
+
+    /// Start following the cloud's configuration, once, when enrolled
+    /// and the site's database is open.
+    fn start_sync(&self) {
+        let Some(stores) = &self.stores else {
+            return;
+        };
+        let mut slot = self.sync.lock().unwrap_or_else(|e| e.into_inner());
+        if slot.is_some() {
+            return;
+        }
+        let (secret, tenant) = {
+            let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(e) = &inner.enrollment else {
+                return;
+            };
+            (e.secret.clone(), e.tenant_id.clone())
+        };
+        let tenant: TenantId = match tenant.parse() {
+            Ok(t) => t,
+            Err(e) => {
+                warn!(error = %e, "The enrollment's tenant id does not parse; no sync");
+                return;
+            }
+        };
+        let client = match self.client(true) {
+            Ok(c) => c,
+            Err(e) => {
+                warn!(error = %e, "No client for the sync");
+                return;
+            }
+        };
+        match Syncer::new(
+            stores.clone(),
+            client,
+            &self.config.link.link_url,
+            secret,
+            tenant,
+            &self.state_dir,
+            self.config.site.feed_wait_secs,
+        ) {
+            Ok(syncer) => {
+                let syncer = Arc::new(syncer);
+                let run = Arc::clone(&syncer);
+                tokio::spawn(async move { run.run().await });
+                *slot = Some(syncer);
+            }
+            Err(e) => warn!(error = %e, "The sync could not start"),
         }
     }
 
@@ -167,6 +249,7 @@ impl Link {
                     }
                 }
             }
+            self.start_sync();
             let interval = match self.heartbeat().await {
                 Ok(interval) => interval,
                 Err(e) => {
@@ -331,6 +414,7 @@ impl Link {
             link_version: env!("CARGO_PKG_VERSION").to_string(),
             link_protocol: LINK_PROTOCOL,
             nodes,
+            sync: self.syncer().map(|s| s.state()),
         }
     }
 

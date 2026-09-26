@@ -103,19 +103,58 @@ impl Default for LinkConfig {
     }
 }
 
-/// `[site]`: what the link looks at here. With the site's Redis, the
-/// heartbeat carries every node of the site's cluster and its release.
-#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+/// `[site]`: what the link looks at and writes to here. With the site's
+/// Redis, the heartbeat carries every node of the site's cluster and its
+/// release. With the site's Postgres, the link keeps it a copy of the
+/// tenant's configuration from the cloud (`docs/HYBRID_CONTROL_PLANE.md`
+/// §3.2): a snapshot first, then every change as the cloud journals it.
+/// Secrets arrive over the link and are sealed under the site's own key,
+/// which this process reads as every binary does (`FCP_ENCRYPTION_PROVIDER`,
+/// `FCP_MASTER_KEY`, `docs/ENCRYPTION.md`).
+///
+/// ```toml
+/// [site]
+/// database_url = "postgresql://fcp:${FCP_DB_PASSWORD}@postgres/fcp"
+/// redis_url = "redis://redis:6379"
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SiteConfig {
     #[serde(default)]
     pub redis_url: Option<String>,
     #[serde(default = "default_heartbeat_ttl_secs")]
     pub heartbeat_ttl_secs: u64,
+    /// The site's Postgres; without it the link carries no configuration.
+    #[serde(default)]
+    pub database_url: Option<String>,
+    #[serde(default = "default_max_connections")]
+    pub max_connections: u32,
+    /// Seconds the change feed is held open by the cloud before answering
+    /// empty; the link asks again at once.
+    #[serde(default = "default_feed_wait_secs")]
+    pub feed_wait_secs: u64,
 }
 
 fn default_heartbeat_ttl_secs() -> u64 {
     15
+}
+fn default_max_connections() -> u32 {
+    4
+}
+fn default_feed_wait_secs() -> u64 {
+    25
+}
+
+impl Default for SiteConfig {
+    fn default() -> Self {
+        Self {
+            redis_url: None,
+            heartbeat_ttl_secs: default_heartbeat_ttl_secs(),
+            database_url: None,
+            max_connections: default_max_connections(),
+            feed_wait_secs: default_feed_wait_secs(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -191,6 +230,12 @@ pub fn validate_config(config: &LinkFileConfig) -> Result<()> {
     }
     if config.link.heartbeat_interval_secs == 0 {
         anyhow::bail!("link.heartbeat_interval_secs must be greater than zero");
+    }
+    if config.site.max_connections == 0 {
+        anyhow::bail!("site.max_connections must be greater than zero");
+    }
+    if config.site.feed_wait_secs > 30 {
+        anyhow::bail!("site.feed_wait_secs is at most 30, the longest the cloud holds the feed");
     }
     Ok(())
 }
