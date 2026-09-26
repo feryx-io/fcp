@@ -102,6 +102,15 @@ struct CallState {
     timings: Mutex<CallTimings>,
 }
 
+impl CallState {
+    /// The call is over, by either side: its phase says so and its media
+    /// leg stops sending, as a phone's does.
+    fn end(&self) {
+        self.phase.send_replace(CallPhase::Ended);
+        self.media.hang_up();
+    }
+}
+
 /// When a call's milestones happened, for a caller measuring a node under
 /// load (`docs/CAPACITY_AND_SURVIVABILITY.md` §8). Times are elapsed from
 /// the INVITE leaving this phone.
@@ -407,7 +416,7 @@ impl Inner {
                 if let Some(old) = self.calls.get(&old_call_id).map(|e| e.value().clone()) {
                     let _ = tokio::time::timeout(Duration::from_secs(10), self.uac().bye(&dialog))
                         .await;
-                    old.phase.send_replace(CallPhase::Ended);
+                    old.end();
                     self.calls.remove(&old_call_id);
                 }
             }
@@ -920,7 +929,7 @@ impl Call {
         let resp = tokio::time::timeout(Duration::from_secs(10), self.uac().bye(&dialog))
             .await
             .context("BYE timed out")??;
-        self.state.phase.send_replace(CallPhase::Ended);
+        self.state.end();
         self.inner.calls.remove(&self.state.call_id);
         Ok(resp.start_line().code())
     }
@@ -1271,7 +1280,7 @@ impl UasRequestHandler for Handler {
     ) -> anyhow::Result<()> {
         self.plain_ok(request, handle, ctx).await;
         if let Some(call) = self.call_of(request).await {
-            call.phase.send_replace(CallPhase::Ended);
+            call.end();
             self.0.calls.remove(&call.call_id);
             self.0.emit(PhoneEvent::Bye {
                 call_id: call.call_id.clone(),
@@ -1288,7 +1297,7 @@ impl UasRequestHandler for Handler {
     ) -> anyhow::Result<()> {
         self.plain_ok(request, handle, ctx).await;
         if let Some(call) = self.call_of(request).await {
-            call.phase.send_replace(CallPhase::Ended);
+            call.end();
             self.0.calls.remove(&call.call_id);
             self.0.emit(PhoneEvent::Cancelled {
                 call_id: call.call_id.clone(),

@@ -507,6 +507,15 @@ floor's `calls.rs` proves it on the loopback). A site's own
 `fcp-events-server`, voicemail and conference servers are not in the
 site compose project; the site runs what the call manager carries. The
 link's protocol is versioned but no second version exists to refuse.
+And a weakness this phase's CI run found in the media engine: a relay
+port freed by one session is handed straight to the next, and a leg
+that learns its peer from its first packet (the comedia latch of §3.6)
+takes whatever reaches that port first — in the floor, the previous
+call's phone leg, which the testkit kept sending after the BYE (fixed
+in the testkit: a leg stops at its call's end). A stale stream to a
+reused port would do the same in production; the engine should not
+reuse a port at once, or should not latch a source another session
+knew.
 
 ## 4. Tenancy and security at the site
 

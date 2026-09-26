@@ -675,6 +675,17 @@ impl MediaLeg {
     }
 }
 
+impl MediaLeg {
+    /// The call is over: stop sending, as a phone does at the BYE. What
+    /// the leg heard and counted stays readable. A leg that kept sending
+    /// after its call would reach a relay's port after the relay freed
+    /// it, and a session that took that port next would latch its first
+    /// packet from this stale stream instead of its own peer.
+    pub fn hang_up(&self) {
+        let _ = self.stop.send(true);
+    }
+}
+
 impl Drop for MediaLeg {
     fn drop(&mut self) {
         let _ = self.stop.send(true);
