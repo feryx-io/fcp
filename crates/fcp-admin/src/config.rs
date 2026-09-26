@@ -136,6 +136,17 @@ pub struct LinkConfig {
     /// After this long without a heartbeat a site's link is down.
     #[serde(default = "default_link_heartbeat_stale_secs")]
     pub heartbeat_stale_secs: u64,
+    /// Where a site's calls reach the cloud: the cloud SBC's SIP-over-TLS
+    /// address, `host:port`, as the site's call manager dials it
+    /// (`docs/HYBRID_CONTROL_PLANE.md` §3.6). Set, every site enrolled
+    /// here is given a link trunk to it; unset, sites sync configuration
+    /// and carry no calls across.
+    #[serde(default)]
+    pub sip_host: Option<String>,
+    /// The realm the cloud SBC challenges a site's registration with: its
+    /// `external_domain`. The link trunk's credentials are made in it.
+    #[serde(default = "default_link_sip_realm")]
+    pub sip_realm: String,
 }
 
 fn default_link_enroll_bind() -> SocketAddr {
@@ -153,6 +164,10 @@ fn default_link_certificate_days() -> u32 {
 fn default_link_heartbeat_interval_secs() -> u64 {
     30
 }
+fn default_link_sip_realm() -> String {
+    "fcp.local".to_string()
+}
+
 fn default_link_heartbeat_stale_secs() -> u64 {
     90
 }
@@ -169,6 +184,8 @@ impl Default for LinkConfig {
             certificate_days: default_link_certificate_days(),
             heartbeat_interval_secs: default_link_heartbeat_interval_secs(),
             heartbeat_stale_secs: default_link_heartbeat_stale_secs(),
+            sip_host: None,
+            sip_realm: default_link_sip_realm(),
         }
     }
 }

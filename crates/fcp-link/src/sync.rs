@@ -12,7 +12,7 @@
 use anyhow::{Context, Result};
 use fcp_core::billing::BillingStore;
 use fcp_core::storage::*;
-use fcp_core::{DynStorage, SiteSync, TenantId};
+use fcp_core::{DynStorage, SiteId, SiteSync, TenantId};
 use fcp_flow::FlowStore;
 use fcp_storage_postgres::{PostgresConfig, PostgresStorage};
 use serde::Deserialize;
@@ -112,6 +112,8 @@ pub struct Syncer {
     link_url: String,
     secret: String,
     tenant: TenantId,
+    /// Which site this is: the trunks it keeps are this site's.
+    site: SiteId,
     state_path: PathBuf,
     feed_wait_secs: u64,
     state: Mutex<SiteSync>,
@@ -132,6 +134,7 @@ impl Syncer {
         link_url: &str,
         secret: String,
         tenant: TenantId,
+        site: SiteId,
         state_dir: &Path,
         feed_wait_secs: u64,
     ) -> Result<Self> {
@@ -154,6 +157,7 @@ impl Syncer {
             link_url: link_url.trim_end_matches('/').to_string(),
             secret,
             tenant,
+            site,
             state_path,
             feed_wait_secs,
             state: Mutex::new(SiteSync {
@@ -319,7 +323,22 @@ impl Syncer {
             "phone_numbers" => storage.put_phone_number(parse!()).await?,
             "routing_rules" => storage.put_routing_rule(parse!()).await?,
             "lcr_routes" => storage.put_lcr_route(parse!()).await?,
-            "trunks" => storage.put_trunk(parse!()).await?,
+            "trunks" => {
+                // A trunk runs where its `site_id` says
+                // (`docs/HYBRID_CONTROL_PLANE.md` §3.6): the site holds its
+                // own — its carriers and its link, which arrives as the
+                // cloud's end and is kept as the site's — and none of the
+                // cloud's, which it could neither reach nor should register.
+                let mut trunk: fcp_core::Trunk = parse!();
+                if trunk.site_id != Some(self.site) {
+                    storage.delete_trunk(&trunk.id).await?;
+                    return Ok(());
+                }
+                if trunk.link == Some(fcp_core::LinkEnd::Cloud) {
+                    trunk.link = Some(fcp_core::LinkEnd::Site);
+                }
+                storage.put_trunk(trunk).await?
+            }
             "queue_configs" => storage.put_queue_config(parse!()).await?,
             "flows" => self.stores.flows.put_flow(parse!()).await?,
             "prompts" => {

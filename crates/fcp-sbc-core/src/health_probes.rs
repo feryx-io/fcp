@@ -42,7 +42,9 @@ pub async fn run_health_probes(
         let enabled: Vec<_> = trunks
             .all()
             .into_iter()
-            .filter(|t| t.failover.health_check_enabled)
+            // A site's link peer has no host to probe: its hosts are this
+            // cloud's own address, and it is reached by its registration.
+            .filter(|t| t.failover.health_check_enabled && !t.is_link_peer())
             .collect();
 
         for trunk in &enabled {

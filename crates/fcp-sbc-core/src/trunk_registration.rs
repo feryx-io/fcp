@@ -404,6 +404,11 @@ pub struct TrunkRegistrationContext {
     pub ownership: Arc<dyn TrunkOwnership>,
     pub events: Option<Arc<dyn EventPublisher>>,
     pub node_id: String,
+    /// Whether this node registers the site's end of a link trunk: a call
+    /// manager does, since the cloud's calls arrive down that
+    /// registration; the other nodes route out on it and leave the
+    /// binding to a call manager.
+    pub registers_link: bool,
 }
 
 /// Background task that keeps the REGISTER bindings of every registering
@@ -435,7 +440,17 @@ pub async fn run_trunk_registration(
         }
 
         // What this node has loaded, and what its peers should know of it.
-        let tracked = ctx.registrar.track(&ctx.trunks.all());
+        // The cloud's end of a site's link is registered to, never from;
+        // the site's end is registered by its call managers only, where
+        // the cloud's calls must arrive (`docs/HYBRID_CONTROL_PLANE.md`
+        // §3.6).
+        let loaded: Vec<Arc<Trunk>> = ctx
+            .trunks
+            .all()
+            .into_iter()
+            .filter(|t| !t.is_link_peer() && (ctx.registers_link || !t.is_link_to_cloud()))
+            .collect();
+        let tracked = ctx.registrar.track(&loaded);
         ctx.ownership.advertise(tracked.clone());
 
         for id in tracked {

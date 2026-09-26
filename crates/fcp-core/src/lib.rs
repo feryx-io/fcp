@@ -105,6 +105,11 @@ pub const CALL_ID_HEADER: &str = "X-FCP-Call-Id";
 pub const CALLER_TENANT_HEADER: &str = "X-FCP-Caller-Tenant";
 /// The user, by username, a trusted edge places a call for.
 pub const CALLER_USER_HEADER: &str = "X-FCP-Caller-User";
+/// The site a trusted edge (the cloud SBC) places a call for: a call
+/// that came up a site's link is the site's tenant's own, placed by a
+/// phone the site already authenticated (`docs/HYBRID_CONTROL_PLANE.md`
+/// §3.6). Believed only from `[e911] trusted_edges`.
+pub const CALLER_SITE_HEADER: &str = "X-FCP-Caller-Site";
 /// The address a trusted edge (an SBC, the WebRTC gateway) saw its client
 /// at, so the call manager can place the caller by network even though the
 /// call reached it from the edge (`docs/E911_BLOCK_2.md` §6.2). Believed
@@ -160,7 +165,7 @@ pub use crate::transport::{
     ConnectionId, ConnectionMetadata, ConnectionState, Transport, TransportMessage,
     TransportReceiver, TransportType,
 };
-pub use crate::trunk::{Trunk, TrunkDirection, TrunkId, TrunkStats};
+pub use crate::trunk::{LinkEnd, Trunk, TrunkDirection, TrunkId, TrunkStats};
 pub use crate::voicemail::{
     GreetingType, MessagePriority, MessageStatus, MwiNotifier, MwiStatus, VoicemailGreeting,
     VoicemailMailbox, VoicemailMessage, VoicemailStats,

@@ -3082,7 +3082,7 @@ impl PhoneNumberStore for PostgresStorage {
                     carrier, lrn, ocn, rate_center, lata,
                     acquired_at, activated_at, ported_at, loa_date, foc_date,
                     recording_enabled, block_anonymous, allow_list, block_list, tags,
-                    location_id, created_at, updated_at
+                    location_id, site_id, created_at, updated_at
              FROM phone_numbers
              WHERE id = $1",
         )
@@ -3103,7 +3103,7 @@ impl PhoneNumberStore for PostgresStorage {
                     carrier, lrn, ocn, rate_center, lata,
                     acquired_at, activated_at, ported_at, loa_date, foc_date,
                     recording_enabled, block_anonymous, allow_list, block_list, tags,
-                    location_id, created_at, updated_at
+                    location_id, site_id, created_at, updated_at
              FROM phone_numbers
              WHERE e164 = $1",
         )
@@ -3124,7 +3124,7 @@ impl PhoneNumberStore for PostgresStorage {
                     carrier, lrn, ocn, rate_center, lata,
                     acquired_at, activated_at, ported_at, loa_date, foc_date,
                     recording_enabled, block_anonymous, allow_list, block_list, tags,
-                    location_id, created_at, updated_at
+                    location_id, site_id, created_at, updated_at
              FROM phone_numbers
              WHERE tenant_id = $1
              ORDER BY e164",
@@ -3168,9 +3168,9 @@ impl PhoneNumberStore for PostgresStorage {
                 carrier, lrn, ocn, rate_center, lata,
                 acquired_at, activated_at, ported_at, loa_date, foc_date,
                 recording_enabled, block_anonymous, allow_list, block_list, tags,
-                location_id, created_at, updated_at
+                location_id, site_id, created_at, updated_at
              )
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31)
              ON CONFLICT(id) DO UPDATE SET
                  tenant_id = EXCLUDED.tenant_id,
                  state = EXCLUDED.state,
@@ -3194,6 +3194,7 @@ impl PhoneNumberStore for PostgresStorage {
                  block_list = EXCLUDED.block_list,
                  tags = EXCLUDED.tags,
                  location_id = EXCLUDED.location_id,
+                 site_id = EXCLUDED.site_id,
                  updated_at = EXCLUDED.updated_at",
         )
         .bind(&id)
@@ -3224,6 +3225,7 @@ impl PhoneNumberStore for PostgresStorage {
         .bind(&block_list)
         .bind(&tags)
         .bind(&location_id)
+        .bind(phone_number.site_id.map(|id| id.to_string()))
         .bind(created_at)
         .bind(updated_at)
         .execute(self.writes())
@@ -3288,7 +3290,7 @@ impl PhoneNumberStore for PostgresStorage {
                     carrier, lrn, ocn, rate_center, lata,
                     acquired_at, activated_at, ported_at, loa_date, foc_date,
                     recording_enabled, block_anonymous, allow_list, block_list, tags,
-                    location_id, created_at, updated_at
+                    location_id, site_id, created_at, updated_at
              FROM phone_numbers
              WHERE tenant_id = $1 AND state = 'available'",
         );
@@ -4311,6 +4313,11 @@ fn row_to_phone_number(row: sqlx::postgres::PgRow) -> Result<PhoneNumber> {
         location_id: row
             .get::<Option<String>, _>("location_id")
             .and_then(|s| LocationId::from_str(&s).ok()),
+        site_id: row
+            .try_get::<Option<String>, _>("site_id")
+            .ok()
+            .flatten()
+            .and_then(|s| fcp_core::SiteId::from_str(&s).ok()),
         created_at,
         updated_at,
     })
@@ -4668,6 +4675,20 @@ fn row_to_trunk(row: sqlx::postgres::PgRow) -> Result<Trunk> {
         weight: row.try_get::<i32, _>("weight")?.max(0) as u32,
         hosts: row.try_get("hosts")?,
         inbound_sources: row.get("inbound_sources"),
+        site_id: row
+            .try_get::<Option<String>, _>("site_id")
+            .ok()
+            .flatten()
+            .and_then(|s| fcp_core::SiteId::from_str(&s).ok()),
+        link: row
+            .try_get::<Option<String>, _>("link_end")
+            .ok()
+            .flatten()
+            .and_then(|end| match end.as_str() {
+                "cloud" => Some(fcp_core::LinkEnd::Cloud),
+                "site" => Some(fcp_core::LinkEnd::Site),
+                _ => None,
+            }),
         transport: TrunkTransport {
             protocol: parse_transport(&row.try_get::<String, _>("transport_protocol")?),
             // Unset means the transport's default (migration 077).
@@ -4822,7 +4843,7 @@ impl TrunkStore for PostgresStorage {
                     created_at, updated_at, emergency_capable,
                     strip_prefixes, srtp_suites, allow_transcoding,
                     stir_verify_mode, stir_sign_mode, stir_attestation,
-                    stir_max_iat_age_secs, emergency_location, inbound_sources
+                    stir_max_iat_age_secs, emergency_location, inbound_sources, site_id, link_end
              FROM trunks WHERE id = $1",
         )
         .bind(id.to_string())
@@ -4850,7 +4871,7 @@ impl TrunkStore for PostgresStorage {
                     created_at, updated_at, emergency_capable,
                     strip_prefixes, srtp_suites, allow_transcoding,
                     stir_verify_mode, stir_sign_mode, stir_attestation,
-                    stir_max_iat_age_secs, emergency_location, inbound_sources
+                    stir_max_iat_age_secs, emergency_location, inbound_sources, site_id, link_end
              FROM trunks WHERE tenant_id = $1
              ORDER BY priority, name",
         )
@@ -4883,7 +4904,7 @@ impl TrunkStore for PostgresStorage {
                     created_at, updated_at, emergency_capable,
                     strip_prefixes, srtp_suites, allow_transcoding,
                     stir_verify_mode, stir_sign_mode, stir_attestation,
-                    stir_max_iat_age_secs, emergency_location, inbound_sources
+                    stir_max_iat_age_secs, emergency_location, inbound_sources, site_id, link_end
              FROM trunks
              ORDER BY tenant_id, priority, name",
         )
@@ -4912,8 +4933,8 @@ impl TrunkStore for PostgresStorage {
                     created_at, updated_at, emergency_capable,
                     strip_prefixes, srtp_suites, allow_transcoding,
                     stir_verify_mode, stir_sign_mode, stir_attestation,
-                    stir_max_iat_age_secs, emergency_location, inbound_sources)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47)
+                    stir_max_iat_age_secs, emergency_location, inbound_sources, site_id, link_end)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49)
              ON CONFLICT (id) DO UPDATE SET
                 name = EXCLUDED.name,
                 enabled = EXCLUDED.enabled,
@@ -4958,6 +4979,8 @@ impl TrunkStore for PostgresStorage {
                 stir_max_iat_age_secs = EXCLUDED.stir_max_iat_age_secs,
                 emergency_location = EXCLUDED.emergency_location,
                 inbound_sources = EXCLUDED.inbound_sources,
+                site_id = EXCLUDED.site_id,
+                link_end = EXCLUDED.link_end,
                 updated_at = EXCLUDED.updated_at",
         )
         .bind(trunk.id.to_string())
@@ -5036,6 +5059,11 @@ impl TrunkStore for PostgresStorage {
                 .collect::<Vec<_>>(),
         )
         .bind(&trunk.inbound_sources)
+        .bind(trunk.site_id.map(|id| id.to_string()))
+        .bind(trunk.link.map(|end| match end {
+            fcp_core::LinkEnd::Cloud => "cloud",
+            fcp_core::LinkEnd::Site => "site",
+        }))
         .execute(self.writes())
         .await?;
 

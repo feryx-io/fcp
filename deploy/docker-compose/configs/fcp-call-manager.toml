@@ -87,6 +87,12 @@ voicemail_server_uri = "sip:voicemail@127.0.0.1:5072"
 # The events server publishes 8081 on the host; FCP_CALL_MANAGER_EVENTS_AUTH_TOKEN authenticates.
 server_url = "http://127.0.0.1:8081/ingest"
 
+# The SBC on this host stands in front of this node: a call it forwards up a
+# site's link names the site, and that is believed from these addresses
+# (docs/HYBRID_CONTROL_PLANE.md §3.6). The stack runs on the host's network.
+[e911]
+trusted_edges = ["127.0.0.0/8"]
+
 [logging]
 level = "info"
 format = "pretty"

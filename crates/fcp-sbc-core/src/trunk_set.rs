@@ -14,7 +14,7 @@
 use crate::lcr::{LcrRouteEntry, LcrRouteTable};
 use fcp_core::storage::{TenantStore, TrunkStore};
 use fcp_core::transport::TransportType;
-use fcp_core::{TenantId, Trunk};
+use fcp_core::{SiteId, TenantId, Trunk};
 use ipnetwork::IpNetwork;
 use rust_decimal::prelude::ToPrimitive;
 use std::collections::{HashMap, HashSet};
@@ -83,6 +83,14 @@ pub struct TrunkSet {
     /// What each tenant may carry at once, as of the last refresh
     /// (`docs/CAPACITY_AND_SURVIVABILITY.md` §5). Absent means no limit.
     call_limits: RwLock<HashMap<TenantId, u32>>,
+    /// Which site this deployment is, in a hybrid deployment
+    /// (`docs/HYBRID_CONTROL_PLANE.md` §3.6): the site whose end of a link
+    /// trunk this node holds. `None` at the cloud, and everywhere else.
+    site: RwLock<Option<SiteId>>,
+    /// Keep, of the tenants' trunks, only the cloud's ends of sites' links:
+    /// the cloud SBC, which routes by the platform's trunks alone (§13.8)
+    /// and takes the sites' registrations.
+    link_peers_only: bool,
 }
 
 impl TrunkSet {
@@ -107,9 +115,35 @@ impl TrunkSet {
             resolver,
             lcr: RwLock::new(HashMap::new()),
             call_limits: RwLock::new(HashMap::new()),
+            site: RwLock::new(None),
+            link_peers_only: false,
         };
         set.rebuild_inbound();
         set
+    }
+
+    /// Of the tenants' trunks, keep only the cloud's ends of sites' links
+    /// (`docs/HYBRID_CONTROL_PLANE.md` §3.6): what the cloud SBC needs of
+    /// them, and nothing that would make it route a tenant's calls.
+    pub fn link_peers_only(mut self) -> Self {
+        self.link_peers_only = true;
+        self
+    }
+
+    /// Which site this deployment is: the site of the link trunk it holds
+    /// the site's end of, or `None` at the cloud and in a deployment that
+    /// is neither.
+    pub fn site(&self) -> Option<SiteId> {
+        self.site.read().ok().and_then(|s| *s)
+    }
+
+    /// The cloud's ends of sites' links this node knows: the peers whose
+    /// registrations it takes.
+    pub fn link_peers(&self) -> Vec<Arc<Trunk>> {
+        self.all()
+            .into_iter()
+            .filter(|t| t.is_link_peer())
+            .collect()
     }
 
     /// Answer the RFC 3263 question with `resolver` instead of the
@@ -156,7 +190,10 @@ impl TrunkSet {
         let srv = self.srv.read().map(|r| r.clone()).unwrap_or_default();
         let mut index = Vec::new();
         for trunk in self.all() {
-            if !trunk.takes_inbound() {
+            // A site's link peer takes calls from wherever the site
+            // registered from, which the handler knows; its hosts are this
+            // cloud's own address.
+            if !trunk.takes_inbound() || trunk.is_link_peer() {
                 continue;
             }
             let networks = trunk.inbound_networks();
@@ -305,6 +342,11 @@ impl TrunkSet {
                 (Vec::new(), true)
             }
         };
+        // A trunk runs where its site says, and a link peer is reached by
+        // its registration, not routed to (`docs/HYBRID_CONTROL_PLANE.md`
+        // §3.6).
+        let site = self.site();
+        trunks.retain(|t| t.routes_from(site));
         if fallback {
             trunks.extend(self.platform.iter().cloned());
         }
@@ -399,7 +441,21 @@ impl TrunkSet {
         trunks: Vec<Trunk>,
         fallback: &HashMap<TenantId, bool>,
     ) -> usize {
+        let trunks: Vec<Trunk> = if self.link_peers_only {
+            trunks.into_iter().filter(|t| t.is_link_peer()).collect()
+        } else {
+            trunks
+        };
         let count = trunks.len();
+        // The site this deployment is: what the link wrote as the site's
+        // end of its link says so.
+        let site = trunks
+            .iter()
+            .find(|t| t.is_link_to_cloud())
+            .and_then(|t| t.site_id);
+        if let Ok(mut held) = self.site.write() {
+            *held = site;
+        }
         let mut by_tenant: HashMap<TenantId, TenantTrunks> = HashMap::new();
         for trunk in trunks {
             let Some(tenant) = trunk.tenant_id else {
@@ -485,6 +541,25 @@ impl TrunkSet {
 }
 
 impl fcp_sip::trunk_ingress::InboundTrunks for TrunkSet {
+    fn link_peer_by_account(&self, username: &str) -> Option<Arc<Trunk>> {
+        self.link_peers().into_iter().find(|t| {
+            t.enabled
+                && t.credentials
+                    .as_ref()
+                    .is_some_and(|c| c.username.eq_ignore_ascii_case(username))
+        })
+    }
+
+    fn link_peer_for_site(&self, site: SiteId) -> Option<Arc<Trunk>> {
+        self.link_peers()
+            .into_iter()
+            .find(|t| t.enabled && t.site_id == Some(site))
+    }
+
+    fn site(&self) -> Option<SiteId> {
+        TrunkSet::site(self)
+    }
+
     fn inbound_from(&self, source: IpAddr) -> Vec<Arc<Trunk>> {
         TrunkSet::inbound_from(self, source)
     }

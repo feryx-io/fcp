@@ -5,7 +5,7 @@
 //! module holds what the cloud knows of a site: its record, the one-time
 //! token it enrolls with, and what its link last reported.
 
-use crate::{SiteId, TenantId};
+use crate::{SiteId, TenantId, TrunkId};
 use anyhow::Result as AnyhowResult;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -110,6 +110,10 @@ pub struct Site {
     /// When `link_up` last changed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link_changed_at: Option<SystemTime>,
+    /// The site's link trunk, made at enrollment when the cloud names a
+    /// SIP address for sites (`docs/HYBRID_CONTROL_PLANE.md` §3.6).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trunk_id: Option<TrunkId>,
 }
 
 impl Site {
@@ -130,6 +134,7 @@ impl Site {
             last_heartbeat: None,
             link_up: false,
             link_changed_at: None,
+            trunk_id: None,
         }
     }
 

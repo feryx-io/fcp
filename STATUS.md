@@ -1078,6 +1078,45 @@ seconds with the password set there, a wrong one is refused, a password
 changed in the cloud replaces the one the site challenges with, the
 site's admin lists the user and refuses to change her, and a user
 deleted in the cloud is gone at the site.
+Phase 4 done (v0.25.271): calls across. When the admin names `[link]
+sip_host` (the cloud SBC's SIP-over-TLS address) every site enrolled is
+given a link trunk — a tenant trunk with `site_id`, `link = cloud`, TLS,
+credentials minted at enrollment in `[link] sip_realm`, registering
+every two minutes, emergency-capable, after the site's own carriers —
+named by `Site.trunk_id` and disabled and deleted with the site.
+`Trunk.site_id` (migration 080) says where a trunk runs: the cloud's
+nodes route out on none that has one, the link applies only its own
+site's and turns the link's end to `site` as it lands, so the cloud's
+carriers no longer reach the site. The cloud SBC loads the link peers
+alone, challenges a site's REGISTER against the link accounts
+(`fcp_sip::link_peers::SiteAccounts`), keeps each site's binding and
+the RFC 5626 flow its TLS registration left (`LinkPeers`, `/admin/sites`
+on the SBC), and knows a site's calls by where they come from.
+`PhoneNumber.site_id` (`site_id` on `/v1/phone-numbers`) sends a
+number's calls down its site's flow with the number as the target's
+user, 480 when the site is not bound; a site's own calls are the
+tenant's (`Call::link_site`), forwarded to the cloud's call manager with
+`X-FCP-Caller-Tenant` and `X-FCP-Caller-Site`, which a trusted edge's
+caller may now be, with no user of the cloud's to check. Every leg to
+or from a site latches its media on the first packet from the site's
+signalling address (`MediaManager::latch_leg`) instead of its SDP. The
+site's call manager trusts `[sip] tls_ca_path` for the link, builds its
+TLS client whether or not it listens on TLS, and is the one node at the
+site that registers the site's end. Proved by `fcp-link/tests/calls.rs`:
+a carrier's call rings the site's phone down the flow with audio both
+ways, the site phone's call to the outside reaches the tenant's carrier
+through the cloud as the tenant's own recorded call, and a site whose
+call manager is gone is unbound and its number answers 480. Two
+defects fixed on the way: a TLS trunk's INVITE went out over UDP, its
+`;transport=tls` stripped as a contact parameter (routes are kept in
+angle brackets now), and the media relay told a call's legs apart by
+IP alone, so a leg learning its peer from a named address went deaf
+beside a peer on the same address (forge-media v2026.09.26 classifies
+by exact address first). Left for later: a site binds at one SBC and is
+known by the exact connection it registered on; the link carries RTP,
+not SRTP; a site's emergency call reaches the cloud without its
+location; in-dialog requests other than BYE to a site behind NAT are
+proved in phase 6.
 
 ## Historical documents
 

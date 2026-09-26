@@ -21,18 +21,33 @@ use fcp_core::e911::{
     dialed_user_part, resolve_for_user, EmergencyCallRecord, EmergencyConfig, LocationDelivery,
 };
 use fcp_core::storage::CredentialStore;
-use fcp_core::TenantId;
+use fcp_core::{SiteId, TenantId};
 use ipnetwork::IpNetwork;
 use smol_str::SmolStr;
 use tracing::{debug, warn};
 
-pub use fcp_core::{CALLER_TENANT_HEADER, CALLER_USER_HEADER, CLIENT_ADDRESS_HEADER};
+pub use fcp_core::{
+    CALLER_SITE_HEADER, CALLER_TENANT_HEADER, CALLER_USER_HEADER, CLIENT_ADDRESS_HEADER,
+};
 
 /// The caller a trusted edge vouched for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EdgeCaller {
     pub tenant_id: TenantId,
-    pub username: String,
+    /// The tenant's user the call is placed for; none for a site's call,
+    /// which a phone the site already authenticated placed.
+    pub username: Option<String>,
+    /// The site whose link the call came up, when the edge is the cloud
+    /// SBC (`docs/HYBRID_CONTROL_PLANE.md` §3.6).
+    pub site_id: Option<SiteId>,
+}
+
+impl EdgeCaller {
+    /// Whether this is a site's call: the tenant's own, with no user of
+    /// the cloud's to check it against.
+    pub fn is_site(&self) -> bool {
+        self.site_id.is_some() && self.username.is_none()
+    }
 }
 
 /// The addresses whose caller headers are believed.
@@ -96,14 +111,17 @@ impl TrustedEdges {
     pub fn caller(&self, request: &sip_core::Request, peer: IpAddr) -> Option<EdgeCaller> {
         let tenant = sip_parse::header(request.headers(), CALLER_TENANT_HEADER);
         let user = sip_parse::header(request.headers(), CALLER_USER_HEADER);
-        if tenant.is_none() && user.is_none() {
+        let site = sip_parse::header(request.headers(), CALLER_SITE_HEADER);
+        if tenant.is_none() && user.is_none() && site.is_none() {
             return None;
         }
         if !self.contains(peer) {
             warn!(peer = %peer, "Ignoring caller headers from a peer that is not a trusted edge");
             return None;
         }
-        let (Some(tenant), Some(user)) = (tenant, user) else {
+        // A user, or a site (`docs/HYBRID_CONTROL_PLANE.md` §3.6), with
+        // the tenant either way.
+        let (Some(tenant), true) = (tenant, user.is_some() || site.is_some()) else {
             warn!(peer = %peer, "Ignoring incomplete caller headers from a trusted edge");
             return None;
         };
@@ -111,13 +129,26 @@ impl TrustedEdges {
             warn!(peer = %peer, tenant = %tenant, "Ignoring caller headers naming an unparsable tenant");
             return None;
         };
-        let username = user.as_str().trim().to_string();
-        if username.is_empty() {
+        let username = user
+            .map(|u| u.as_str().trim().to_string())
+            .filter(|u| !u.is_empty());
+        let site_id = match site {
+            Some(site) => match site.as_str().trim().parse::<SiteId>() {
+                Ok(id) => Some(id),
+                Err(_) => {
+                    warn!(peer = %peer, site = %site, "Ignoring caller headers naming an unparsable site");
+                    return None;
+                }
+            },
+            None => None,
+        };
+        if username.is_none() && site_id.is_none() {
             return None;
         }
         Some(EdgeCaller {
             tenant_id,
             username,
+            site_id,
         })
     }
 }
@@ -510,7 +541,8 @@ mod tests {
         ]);
         let expected = Some(EdgeCaller {
             tenant_id: tenant,
-            username: "alice".into(),
+            username: Some("alice".into()),
+            site_id: None,
         });
         assert_eq!(edges.caller(&named, "10.0.0.7".parse().unwrap()), expected);
         assert_eq!(

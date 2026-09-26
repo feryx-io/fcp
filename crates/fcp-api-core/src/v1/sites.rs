@@ -17,6 +17,7 @@ use axum::{
 use base64::Engine;
 use fcp_core::permissions::Permission;
 use fcp_core::site::ENROLLMENT_TOKEN_TTL;
+use fcp_core::storage::TrunkStore;
 use fcp_core::SyncStore;
 use fcp_core::{EnrollmentToken, Site, SiteId, SiteStatus, SiteStore};
 use serde::{Deserialize, Serialize};
@@ -63,6 +64,10 @@ pub struct SiteResponse {
     /// Journal entries the site has not applied yet, as of this answer.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sync_behind: Option<i64>,
+    /// The site's link trunk, made at enrollment when the cloud names a
+    /// SIP address for sites (`docs/HYBRID_CONTROL_PLANE.md` §3.6).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trunk_id: Option<String>,
 }
 
 impl SiteResponse {
@@ -107,6 +112,7 @@ impl From<Site> for SiteResponse {
             sync_applied_at: sync.as_ref().and_then(|s| s.applied_at),
             sync_error: sync.and_then(|s| s.error),
             sync_behind: None,
+            trunk_id: site.trunk_id.map(|id| id.to_string()),
         }
     }
 }
@@ -278,6 +284,16 @@ async fn set_status(
     }
     site.updated_at = SystemTime::now();
     storage.put_site(site.clone()).await?;
+    // The site's link trunk follows: a disabled site's registration is
+    // refused, an enabled one's taken again (`docs/HYBRID_CONTROL_PLANE.md`
+    // §3.6).
+    if let Some(trunk_id) = &site.trunk_id {
+        if let Some(mut trunk) = storage.get_trunk(trunk_id).await? {
+            trunk.enabled = status != SiteStatus::Disabled;
+            trunk.updated_at = SystemTime::now();
+            storage.put_trunk(trunk).await?;
+        }
+    }
     Ok(Json(site.into()))
 }
 
@@ -312,6 +328,9 @@ pub async fn delete_site(
     check_permission(&identity, Permission::SiteManage, state.deployment_mode)?;
     let storage = storage!(state);
     let site = site_in_tenant(storage, &tenant, &id).await?;
+    if let Some(trunk_id) = &site.trunk_id {
+        storage.delete_trunk(trunk_id).await?;
+    }
     storage.delete_site(&site.id).await?;
     Ok(StatusCode::NO_CONTENT)
 }

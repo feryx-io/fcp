@@ -34,6 +34,12 @@ bind = "0.0.0.0:8447"
 cert = "/var/lib/fcp/certs/fcp-admin.crt"
 key = "/var/lib/fcp/certs/fcp-admin.key"
 ca_dir = "/app/data/link-ca"
+# Where a site's calls reach this cloud: the SBC's SIP-over-TLS listener on
+# the host's address, which a site's call manager registers its link trunk
+# to (docs/HYBRID_CONTROL_PLANE.md §3.6). The SBC challenges with its
+# external_domain, which sip_realm must equal.
+sip_host = "${HOST_IP}:5079"
+sip_realm = "fcp.local"
 
 [events]
 # The events server on the bridge network; FCP_ADMIN_EVENTS_AUTH_TOKEN authenticates.

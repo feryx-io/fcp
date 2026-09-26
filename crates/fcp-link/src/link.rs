@@ -187,12 +187,19 @@ impl Link {
         if slot.is_some() {
             return;
         }
-        let (secret, tenant) = {
+        let (secret, tenant, site) = {
             let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
             let Some(e) = &inner.enrollment else {
                 return;
             };
-            (e.secret.clone(), e.tenant_id.clone())
+            (e.secret.clone(), e.tenant_id.clone(), e.site_id.clone())
+        };
+        let site: fcp_core::SiteId = match site.parse() {
+            Ok(s) => s,
+            Err(e) => {
+                warn!(error = %e, "The enrollment's site id does not parse; no sync");
+                return;
+            }
         };
         let tenant: TenantId = match tenant.parse() {
             Ok(t) => t,
@@ -214,6 +221,7 @@ impl Link {
             &self.config.link.link_url,
             secret,
             tenant,
+            site,
             &self.state_dir,
             self.config.site.feed_wait_secs,
         ) {

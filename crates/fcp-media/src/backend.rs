@@ -6,6 +6,7 @@ use crate::{adapters, Error, MediaSession, MediaSessionConfig, Result};
 use async_trait::async_trait;
 use fcp_core::{CallId, DialogId};
 use serde::Serialize;
+use std::net::IpAddr;
 use std::sync::Arc;
 
 /// Information about an active RTP session (for REST API)
@@ -48,6 +49,13 @@ pub struct RtpLegInfo {
     pub bytes_received: u64,
     /// Bytes sent
     pub bytes_sent: u64,
+}
+
+/// One leg of a two-legged session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Leg {
+    A,
+    B,
 }
 
 /// Media backend trait
@@ -95,6 +103,15 @@ pub trait MediaBackend: Send + Sync {
     }
 
     /// Put session on hold
+    /// Learn `leg`'s RTP address from its first packet — one from
+    /// `source`, and from nowhere else — instead of from its SDP, which a
+    /// peer behind NAT states wrong (`docs/HYBRID_CONTROL_PLANE.md` §3.6).
+    /// A backend that cannot leaves the leg as its SDP said.
+    async fn latch_leg(&self, call_id: &CallId, leg: Leg, source: IpAddr) -> Result<()> {
+        let _ = (call_id, leg, source);
+        Ok(())
+    }
+
     async fn hold_session(&self, call_id: &CallId) -> Result<()>;
 
     /// Resume session from hold
@@ -384,6 +401,19 @@ pub mod embedded {
         dialog_id: fcp_core::DialogId,
         /// Cached FCP MediaSession wrapper (preserves SDP state across calls)
         fcp_session: Arc<MediaSession>,
+        /// Per leg, the address its RTP is learned from rather than read
+        /// off its SDP (a peer behind NAT).
+        latched: std::sync::Mutex<[Option<IpAddr>; 2]>,
+    }
+
+    impl SessionInfo {
+        fn latched(&self, leg: Leg) -> Option<IpAddr> {
+            let held = self.latched.lock().unwrap_or_else(|e| e.into_inner());
+            held[match leg {
+                Leg::A => 0,
+                Leg::B => 1,
+            }]
+        }
     }
 
     /// Parse the remote audio RTP endpoint from SDP: the first active audio
@@ -509,6 +539,34 @@ pub mod embedded {
 
     #[async_trait]
     impl MediaBackend for EmbeddedBackend {
+        async fn latch_leg(&self, call_id: &CallId, leg: Leg, source: IpAddr) -> Result<()> {
+            let session_info = self
+                .sessions
+                .get(call_id)
+                .ok_or_else(|| Error::SessionNotFound(call_id.to_string()))?;
+            {
+                let mut held = session_info
+                    .latched
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                held[match leg {
+                    Leg::A => 0,
+                    Leg::B => 1,
+                }] = Some(source);
+            }
+            // Whatever an SDP already pinned is undone: the first packet
+            // from `source` says where the peer really is.
+            let participant = match leg {
+                Leg::A => session_info.forge_session.participant_a(),
+                Leg::B => session_info.forge_session.participant_b(),
+            };
+            let mut p = participant.write().await;
+            p.remote_addr = None;
+            p.latch_allowed_ips = Some(std::iter::once(source).collect());
+            info!(?call_id, ?leg, %source, "Leg's RTP address will be learned from its first packet");
+            Ok(())
+        }
+
         async fn create_session(
             &self,
             call_id: fcp_core::CallId,
@@ -617,6 +675,7 @@ pub mod embedded {
                 _participant_b: participant_b.clone(),
                 dialog_id,
                 fcp_session: fcp_session.clone(),
+                latched: std::sync::Mutex::new([None, None]),
             };
 
             self.sessions.insert(call_id, session_info);
@@ -663,7 +722,15 @@ pub mod embedded {
             // Parse remote SDP to extract client's RTP endpoint and set codec config
             if let Ok(remote_endpoint) = parse_remote_endpoint_from_sdp(&remote_sdp) {
                 let mut pa = session_info.forge_session.participant_a().write().await;
-                pa.remote_addr = Some(remote_endpoint);
+                match session_info.latched(Leg::A) {
+                    // The SDP's address is not where the packets will come
+                    // from: wait for the first one, from the peer's own.
+                    Some(source) => {
+                        pa.remote_addr = None;
+                        pa.latch_allowed_ips = Some(std::iter::once(source).collect());
+                    }
+                    None => pa.remote_addr = Some(remote_endpoint),
+                }
                 pa.codec_config = sdp_codec_to_forge_config(&result.primary_codec);
                 pa.payload_type = result.primary_codec.payload_type;
                 info!(
@@ -759,7 +826,13 @@ pub mod embedded {
 
             if let Ok(remote_endpoint) = parse_remote_endpoint_from_sdp(&remote_sdp) {
                 let mut pb = session_info.forge_session.participant_b().write().await;
-                pb.remote_addr = Some(remote_endpoint);
+                match session_info.latched(Leg::B) {
+                    Some(source) => {
+                        pb.remote_addr = None;
+                        pb.latch_allowed_ips = Some(std::iter::once(source).collect());
+                    }
+                    None => pb.remote_addr = Some(remote_endpoint),
+                }
                 if let Some(first) = b_leg_codecs.first() {
                     pb.codec_config = sdp_codec_to_forge_config(first);
                     pb.payload_type = first.payload_type;

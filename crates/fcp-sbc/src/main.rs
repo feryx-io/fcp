@@ -538,15 +538,41 @@ async fn main() -> Result<()> {
 
     // 12e. Create registrar with event publishing so registration lifecycle
     //      updates admission counters (registration_added / registration_removed)
+    // The trunks this node routes by: its own, and — with storage — the
+    // cloud's ends of the sites' links, whose registrations it takes and
+    // whose numbers it reaches down them (`docs/HYBRID_CONTROL_PLANE.md`
+    // §3.6). No tenant's carriers: the SBC routes by the platform's
+    // trunks alone (`docs/TENANT_TRUNKS.md` §13.8).
+    let trunk_set = Arc::new(
+        fcp_sbc_core::TrunkSet::platform_only(sbc_config.trunks.clone()).link_peers_only(),
+    );
+    if let Some(storage) = &dyn_storage {
+        fcp_sbc_core::spawn_trunk_refresh(
+            Arc::clone(&trunk_set),
+            Arc::clone(storage),
+            Arc::clone(&trunk_health),
+            None,
+            Duration::from_secs(15),
+        )
+        .await;
+    }
     let reg_store: Arc<dyn fcp_core::RegistrationStore> =
         Arc::new(InMemoryRegistrationStore::default());
+    // The registrar takes the sites' links: each REGISTER is challenged
+    // against the link accounts minted at enrollment. With no storage
+    // there are no sites, and nothing registers here.
+    let site_accounts: Arc<dyn fcp_core::CredentialStore> =
+        Arc::new(fcp_sip::link_peers::SiteAccounts::new(
+            Arc::clone(&trunk_set) as Arc<dyn fcp_sip::trunk_ingress::InboundTrunks>,
+            sbc_config.external_domain.clone(),
+        ));
     let registrar = Arc::new(
         FcpRegistrar::with_events(
             reg_store,
-            None, // no credential store — SBC does not authenticate registrations itself
+            Some(site_accounts),
             Some(sbc_config.external_domain.clone()),
             Arc::clone(&sbc_hooks),
-            false, // SBC does not authenticate registrations itself
+            true,
         )
         .with_default_tenant_id(sbc_config.default_tenant_id),
     );
@@ -555,9 +581,6 @@ async fn main() -> Result<()> {
     //
     // The SBC is the platform's own edge: it routes by the trunks in its
     // configuration, not by a tenant's (`docs/TENANT_TRUNKS.md` §13.8).
-    let trunk_set = Arc::new(fcp_sbc_core::TrunkSet::platform_only(
-        sbc_config.trunks.clone(),
-    ));
     let trunk_router = if sbc_config.lcr.enabled {
         if let Some(ref qt) = quality_tracker {
             info!(
@@ -619,6 +642,11 @@ async fn main() -> Result<()> {
             deploy_config.service.node_id.clone(),
         )?
         .with_default_tenant_id(sbc_config.default_tenant_id)
+        // The sites' links: whose REGISTER binds which site, and where a
+        // site's calls come from (`docs/HYBRID_CONTROL_PLANE.md` §3.6).
+        .with_inbound_trunks(Some(
+            Arc::clone(&trunk_set) as Arc<dyn fcp_sip::trunk_ingress::InboundTrunks>
+        ))
         .with_trusted_edges(fcp_sip::emergency::TrustedEdges::parse(
             &sbc_config.e911.trusted_edges,
         )?)
@@ -639,6 +667,7 @@ async fn main() -> Result<()> {
         .collect();
 
     // 19c. Create SbcEnforcementHandler (wraps SipMessageHandler)
+    let link_peers = handler.link_peers();
     let enforcement_handler = Arc::new(SbcEnforcementHandler::new(
         handler as Arc<dyn InboundMessageHandler>,
         sbc_config.security.clone(),
@@ -829,6 +858,7 @@ async fn main() -> Result<()> {
         api_token: cli.health_api_token.clone(),
         drain: Arc::clone(&drain),
         replica: replica_health,
+        link_peers: Some(link_peers),
     });
     tokio::spawn(async move {
         if let Err(e) = health::run_health_server(health_bind, health_state).await {
@@ -880,6 +910,7 @@ async fn main() -> Result<()> {
             ownership: Arc::new(fcp_sbc_core::AloneOnThisNode),
             events: Some(Arc::clone(&sbc_hooks)),
             node_id: deploy_config.service.node_id.clone(),
+            registers_link: false,
         };
         let reg_shutdown = shutdown_rx.clone();
         tokio::spawn(async move {

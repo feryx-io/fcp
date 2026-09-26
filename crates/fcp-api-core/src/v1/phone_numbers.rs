@@ -9,6 +9,7 @@ use axum::{
 };
 use fcp_core::permissions::Permission;
 use fcp_core::storage::{PhoneNumberStore, SiteLocationStore};
+use fcp_core::SiteStore;
 use fcp_core::{E911Address, LocationId, PhoneNumber, PhoneNumberId, TenantId};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
@@ -44,6 +45,10 @@ pub struct PhoneNumberResponse {
 
     // Location
     pub location_id: Option<String>,
+    /// The site whose phones answer this number, in a hybrid deployment
+    /// (`docs/HYBRID_CONTROL_PLANE.md` §3.6).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub site_id: Option<String>,
 
     // Carrier metadata
     pub carrier: Option<String>,
@@ -147,6 +152,7 @@ impl From<PhoneNumber> for PhoneNumberResponse {
             cnam: number.cnam,
             spam_score: number.spam_score,
             location_id: number.location_id.map(|id| id.to_string()),
+            site_id: number.site_id.map(|id| id.to_string()),
             carrier: number.carrier,
             lrn: number.lrn,
             rate_center: number.rate_center,
@@ -173,6 +179,8 @@ pub struct CreatePhoneNumberRequest {
     pub carrier: Option<String>,
     pub tags: Option<Vec<String>>,
     pub location_id: Option<String>,
+    /// The site whose phones answer this number; empty to answer it here.
+    pub site_id: Option<String>,
 }
 
 fn default_tenant_id() -> TenantId {
@@ -204,6 +212,34 @@ pub struct UpdatePhoneNumberRequest {
     pub block_list: Option<Vec<String>>,
     pub tags: Option<Vec<String>>,
     pub location_id: Option<String>,
+    /// The site whose phones answer this number; empty to answer it here.
+    pub site_id: Option<String>,
+}
+
+/// The site a number is answered at, checked to be the tenant's; an empty
+/// value is none (`docs/HYBRID_CONTROL_PLANE.md` §3.6).
+async fn site_for_number(
+    storage: &fcp_core::DynStorage,
+    tenant: &crate::auth::TenantContext,
+    site: &str,
+) -> Result<Option<fcp_core::SiteId>, ApiError> {
+    let site = site.trim();
+    if site.is_empty() {
+        return Ok(None);
+    }
+    let site_id = fcp_core::SiteId::from_str(site)
+        .map_err(|e| ApiError::BadRequest(format!("Invalid site_id: {e}")))?;
+    let found = storage
+        .get_site(&site_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to get site: {e}")))?
+        .ok_or_else(|| ApiError::BadRequest(format!("Site {site_id} not found")))?;
+    if found.tenant_id != tenant.0 {
+        return Err(ApiError::BadRequest(format!(
+            "Site {site_id} is not in the authenticated tenant"
+        )));
+    }
+    Ok(Some(site_id))
 }
 
 /// List phone numbers.
@@ -313,6 +349,9 @@ pub async fn create_phone_number(
             number.location_id = Some(location_id);
         }
     }
+    if let Some(ref site) = req.site_id {
+        number.site_id = site_for_number(storage, &tenant, site).await?;
+    }
 
     // Store the phone number
     storage
@@ -413,6 +452,9 @@ pub async fn update_phone_number(
             }
             number.location_id = Some(location_id);
         }
+    }
+    if let Some(ref site) = req.site_id {
+        number.site_id = site_for_number(storage, &tenant, site).await?;
     }
 
     // Update timestamp

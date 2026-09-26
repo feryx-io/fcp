@@ -110,6 +110,25 @@ pub trait InboundTrunks: Send + Sync {
     /// outbound-only, and taking calls from that address. Most specific
     /// first.
     fn inbound_from(&self, source: IpAddr) -> Vec<Arc<Trunk>>;
+
+    /// The cloud's end of a site's link whose account is `username`
+    /// (`docs/HYBRID_CONTROL_PLANE.md` §3.6): the trunk a site's REGISTER
+    /// binds. `None` where no site links here.
+    fn link_peer_by_account(&self, username: &str) -> Option<Arc<Trunk>> {
+        let _ = username;
+        None
+    }
+
+    /// The cloud's end of `site`'s link, if this node knows it.
+    fn link_peer_for_site(&self, site: fcp_core::SiteId) -> Option<Arc<Trunk>> {
+        let _ = site;
+        None
+    }
+
+    /// Which site this deployment is, when it is one.
+    fn site(&self) -> Option<fcp_core::SiteId> {
+        None
+    }
 }
 
 /// Which trunk a call arrived on, and so whose call it is (§7).

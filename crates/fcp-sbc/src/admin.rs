@@ -16,6 +16,20 @@ use tracing::warn;
 
 // ── Response types ──────────────────────────────────────────────────────────
 
+/// A site bound at this node (`docs/HYBRID_CONTROL_PLANE.md` §3.6).
+#[derive(Serialize)]
+pub struct SiteBindingSummary {
+    pub site_id: String,
+    pub tenant_id: String,
+    pub trunk: String,
+    /// Where the site registered from, as this node sees it.
+    pub peer: String,
+    /// Whether calls to the site go down the connection it opened.
+    pub via_flow: bool,
+    pub bound_at: u64,
+    pub expires_in_secs: u64,
+}
+
 #[derive(Serialize)]
 pub struct TrunkSummary {
     pub name: String,
@@ -190,6 +204,7 @@ pub fn admin_router() -> Router<Arc<HealthState>> {
             "/trunks/:name/register",
             axum::routing::post(force_register),
         )
+        .route("/sites", get(list_sites))
         .route("/calls", get(list_calls))
         .route("/calls/stats", get(call_stats))
         .route("/calls/:id", get(get_call).delete(terminate_call))
@@ -302,6 +317,32 @@ async fn list_trunks(State(state): State<Arc<HealthState>>) -> Json<Vec<TrunkSum
         })
         .collect();
     Json(summaries)
+}
+
+/// The sites whose links are registered here, and how they are reached.
+async fn list_sites(State(state): State<Arc<HealthState>>) -> Json<Vec<SiteBindingSummary>> {
+    let Some((peers, flows)) = &state.link_peers else {
+        return Json(Vec::new());
+    };
+    Json(
+        peers
+            .live(flows)
+            .into_iter()
+            .map(|b| SiteBindingSummary {
+                site_id: b.site_id.to_string(),
+                tenant_id: b.trunk.tenant_id.map(|t| t.to_string()).unwrap_or_default(),
+                trunk: b.trunk.name.clone(),
+                peer: b.peer.to_string(),
+                via_flow: b.flow_token.is_some(),
+                bound_at: b
+                    .bound_at
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or_default(),
+                expires_in_secs: b.remaining().as_secs(),
+            })
+            .collect(),
+    )
 }
 
 async fn get_trunk(
@@ -912,6 +953,7 @@ mod tests {
             lcr_routes: vec![],
             stir_metrics: None,
             stir_verifier: None,
+            link_peers: None,
         })
     }
 

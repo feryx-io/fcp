@@ -41,6 +41,12 @@ pub struct HealthState {
     pub drain: Arc<fcp_sip::drain::Drain>,
     /// The read replica as of its last probe (`docs/DEPLOYMENT_GAPS.md` §1.7).
     pub replica: fcp_storage_postgres::ReplicaHealth,
+    /// The sites bound here by their links' registrations, and the flows
+    /// they are reached on (`docs/HYBRID_CONTROL_PLANE.md` §3.6).
+    pub link_peers: Option<(
+        Arc<fcp_sip::link_peers::LinkPeers>,
+        Arc<fcp_sip::flow::FlowRegistry>,
+    )>,
 }
 
 fn extract_bearer_token(value: &str) -> Option<&str> {
@@ -394,6 +400,7 @@ mod tests {
             stir_verifier: None,
             api_token: None,
             drain,
+            link_peers: None,
         });
 
         let resp = metrics_snapshot(State(state)).await.into_response();

@@ -150,6 +150,32 @@ pub async fn cloud_with_site() -> Option<Cloud> {
 /// As [`cloud_with_site`], the link given the site's database to keep
 /// the tenant's configuration in.
 pub async fn cloud_with_site_at(site_database_url: Option<&str>) -> Option<Cloud> {
+    cloud_with_site_opts(CloudOptions {
+        site_database_url,
+        sip_host: None,
+    })
+    .await
+}
+
+/// What a cloud is started with.
+#[derive(Default)]
+pub struct CloudOptions<'a> {
+    /// The site's database, for the link to keep the tenant's
+    /// configuration in.
+    pub site_database_url: Option<&'a str>,
+    /// The cloud SBC's SIP-over-TLS address, `host:port`: set, every site
+    /// enrolled gets a link trunk to it (`docs/HYBRID_CONTROL_PLANE.md`
+    /// §3.6).
+    pub sip_host: Option<String>,
+}
+
+/// As [`cloud_with_site_at`], with everything a cloud may be started with.
+pub async fn cloud_with_site_opts(opts: CloudOptions<'_>) -> Option<Cloud> {
+    let site_database_url = opts.site_database_url;
+    let sip_section = match &opts.sip_host {
+        Some(host) => format!("sip_host = \"{host}\"\n"),
+        None => String::new(),
+    };
     let db = TestDatabase::create().await?;
     let dir = tempfile::tempdir().expect("tempdir");
     let certs_dir = dir.path().join("certs");
@@ -182,7 +208,7 @@ key = "{key}"
 ca_dir = "{dir}/link-ca"
 heartbeat_interval_secs = 1
 heartbeat_stale_secs = 3
-
+{sip_section}
 [logging]
 level = "info"
 format = "compact"
