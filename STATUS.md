@@ -1039,6 +1039,26 @@ secret in its state directory, and heartbeats what it finds at the site
 the spent token refused, a certificate-less connection refused at TLS,
 disable and enable, the sweep; the sites API by `api_postgres.rs`. The
 compose admin ships with the link on (8446 enroll, 8447 heartbeats).
+Phase 2 done (v0.25.269): the journal, the snapshot and the feed.
+`sync_journal` (migration 079) is written by one trigger function on
+every synced table — the tenant, users, devices, extensions, line
+bindings, numbers, routing rules, LCR routes, trunks, queues, flows,
+prompts, configuration templates, meetings, locations, emergency
+networks and configuration, rate plans and rates (a rate's change
+journaled as its plan's) — as (seq, tenant, table, row, put or delete),
+so nothing can change a synced row without the journal hearing of it;
+`fcp_core::sync::SyncStore` reads it. On the mutual-TLS listener,
+`GET /link/v1/snapshot` is every synced object of the site's tenant
+with the journal's head as its cursor, and `GET /link/v1/changes?since=`
+holds for up to thirty seconds, then answers each journaled change with
+the object as it is now (a row since deleted becomes a delete), in pages
+with `more`. Proved by `sync_journal.rs` (every table has the trigger;
+puts, updates and deletes journal in order under the tenant) and
+`fcp-link/tests/sync.rs` against a live admin (the snapshot holds the
+tenant, a user made in the cloud is on the feed within a second with
+the credentials the site will challenge with, a held feed comes back
+empty on time, and the snapshot plus the feed equal a fresh snapshot).
+The link does not yet apply any of it: that is phase 3.
 
 ## Historical documents
 

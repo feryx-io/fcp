@@ -480,6 +480,7 @@ async fn main() -> Result<()> {
             .context("the link CA")?;
         Some(site_link::LinkState {
             storage: storage.clone(),
+            flows: Arc::clone(&flow_store),
             ca: Arc::new(ca),
             events: Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>,
             config: config.link.clone(),

@@ -7408,6 +7408,51 @@ impl GeoRoutingStore for PostgresStorage {
 // ============================================================================
 
 #[async_trait]
+impl fcp_core::sync::SyncStore for PostgresStorage {
+    async fn journal_head(&self) -> Result<i64> {
+        let head: Option<i64> = sqlx::query_scalar("SELECT max(seq) FROM sync_journal")
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(head.unwrap_or(0))
+    }
+
+    async fn journal_after(
+        &self,
+        tenant_id: &fcp_core::TenantId,
+        since: i64,
+        limit: usize,
+    ) -> Result<Vec<fcp_core::JournalEntry>> {
+        let rows = sqlx::query(
+            "SELECT seq, tenant_id, table_name, row_id, op, at
+             FROM sync_journal
+             WHERE tenant_id = $1 AND seq > $2
+             ORDER BY seq
+             LIMIT $3",
+        )
+        .bind(tenant_id.to_string())
+        .bind(since)
+        .bind(limit.min(10_000) as i64)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                let tenant: String = row.get("tenant_id");
+                let op: String = row.get("op");
+                let at: chrono::DateTime<chrono::Utc> = row.get("at");
+                Ok(fcp_core::JournalEntry {
+                    seq: row.get("seq"),
+                    tenant_id: tenant.parse().context("journal tenant id")?,
+                    table: row.get("table_name"),
+                    row_id: row.get("row_id"),
+                    op: fcp_core::SyncOp::parse(&op).with_context(|| format!("journal op {op}"))?,
+                    at: at.into(),
+                })
+            })
+            .collect()
+    }
+}
+
+#[async_trait]
 impl fcp_core::site::SiteStore for PostgresStorage {
     async fn get_site(&self, id: &fcp_core::SiteId) -> Result<Option<fcp_core::Site>> {
         let row = sqlx::query("SELECT site_json FROM sites WHERE id = $1")
