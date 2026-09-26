@@ -20,6 +20,7 @@ pub mod bins;
 pub mod certs;
 pub mod cluster;
 pub mod compose;
+pub mod cut;
 pub mod db;
 pub mod media;
 pub mod phone;

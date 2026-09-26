@@ -1145,6 +1145,27 @@ retention still runs on its copies; a mailbox made at the site and one
 made in the cloud for the same user are two; files sent up are held in
 memory (512 MB at most); no policy copies a site's files to the cloud's
 archive.
+Phase 6 done (v0.25.273): survivability, proved. `fcp_testkit::cut::CutLink`
+(the partition test's proxy, made shared) stands in front of the admin's
+link listener and the SBC's TLS listener; `fcp-link/tests/survivability.rs`
+cuts both and watches both sides: the cloud says the site's link is down
+within `heartbeat_stale_secs` and the SBC drops its binding as the
+connection closes; at the site, Alice re-registers, calls Bob with
+audio, and calls the outside on the site's own carrier (a trunk with the
+site's `site_id`, priority ahead of the link's) while the shipper's
+cursors and the event consumer's entries wait; Carol is made in the
+cloud; the link returns, the cloud says so, Carol registers at the site,
+the site's two records and its call events reach the cloud naming the
+site, and the site binds again so the carrier's call rings Alice. A call
+that came up a site's link is now answered, re-invited and hung up down
+the connection the site opened: the caller's leg keeps its
+registration's flow (`Call::a_leg.flow_token`), a BYE toward it goes via
+that flow, and a re-INVITE toward either leg with a flow goes via
+`send_reinvite_via_flow`, which the UAC had and the handler never used;
+the SBC's log proves both. Left for later: the site's link re-registers
+on the trunk registration's own retry (up to 35 s after a refusal), and
+a call in progress across the link when it is cut is not proved either
+way.
 
 ## Historical documents
 

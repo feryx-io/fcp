@@ -9,6 +9,7 @@ use fcp_testkit::certs::ClusterCa;
 use fcp_testkit::smoke::{free_port, http_request, loopback, toml_path, trust_ca};
 use fcp_testkit::{bins, Service, TestDatabase};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// What the admin authenticates to the events server ingest with.
@@ -29,6 +30,8 @@ pub struct Cloud {
     pub tenant_id: String,
     pub site_id: String,
     pub token: String,
+    /// The proxy the link reaches the cloud through, when asked for one.
+    pub link_cut: Option<fcp_testkit::cut::CutLink>,
 }
 
 impl Cloud {
@@ -178,6 +181,9 @@ pub struct CloudOptions<'a> {
     /// The directories the link may send files up from and remove files
     /// under.
     pub site_file_roots: Vec<String>,
+    /// Put the link's connection to the cloud through a proxy the test can
+    /// cut (`Cloud::link_cut`), as a network between a site and its cloud.
+    pub cut_able: bool,
 }
 
 /// As [`cloud_with_site_at`], with everything a cloud may be started with.
@@ -200,6 +206,12 @@ pub async fn cloud_with_site_opts(opts: CloudOptions<'_>) -> Option<Cloud> {
     trust_ca(&ca.ca_path);
     let (http, enroll_port, link_port, link_health) =
         (free_port(), free_port(), free_port(), free_port());
+    let link_cut = if opts.cut_able {
+        Some(fcp_testkit::cut::CutLink::open(([127, 0, 0, 1], link_port).into()).await)
+    } else {
+        None
+    };
+    let link_reach_port = link_cut.as_ref().map(|c| c.port()).unwrap_or(link_port);
     let admin_config = format!(
         r#"prompts_dir = "{dir}/prompts"
 
@@ -286,7 +298,7 @@ node_id = "acme-hq-link"
 
 [link]
 cloud_url = "https://127.0.0.1:{enroll_port}"
-link_url = "https://127.0.0.1:{link_port}"
+link_url = "https://127.0.0.1:{link_reach_port}"
 enrollment_token = "{token}"
 state_dir = "{dir}/link-state"
 cloud_ca = "{ca}"
@@ -333,5 +345,169 @@ format = "compact"
         tenant_id,
         site_id,
         token,
+        link_cut,
     })
+}
+
+/// What the stub events server saw: one entry per POST, with its headers.
+#[derive(Debug, Clone)]
+pub struct Posted {
+    pub path: String,
+    pub node_id: Option<String>,
+    pub origin_site: Option<String>,
+    pub body: serde_json::Value,
+}
+
+/// An events server that remembers what was posted to its ingest.
+pub async fn stub_events_server() -> (u16, Arc<Mutex<Vec<Posted>>>) {
+    use axum::{routing::post, Router};
+    let seen: Arc<Mutex<Vec<Posted>>> = Arc::new(Mutex::new(Vec::new()));
+    let port = free_port();
+    let app = {
+        let seen = Arc::clone(&seen);
+        let handler = move |path: &'static str| {
+            let seen = Arc::clone(&seen);
+            move |headers: axum::http::HeaderMap, body: String| async move {
+                let expected = format!("Bearer {EVENTS_TOKEN}");
+                if headers
+                    .get("authorization")
+                    .and_then(|v| v.to_str().ok())
+                    .is_none_or(|v| v != expected)
+                {
+                    return axum::http::StatusCode::UNAUTHORIZED;
+                }
+                let header = |name: &str| {
+                    headers
+                        .get(name)
+                        .and_then(|v| v.to_str().ok())
+                        .map(str::to_string)
+                };
+                seen.lock().unwrap().push(Posted {
+                    path: path.to_string(),
+                    node_id: header("x-node-id"),
+                    origin_site: header("x-origin-site"),
+                    body: serde_json::from_str(&body).unwrap_or(serde_json::Value::Null),
+                });
+                axum::http::StatusCode::ACCEPTED
+            }
+        };
+        Router::new()
+            .route("/ingest", post(handler("/ingest")))
+            .route("/ingest/batch", post(handler("/ingest/batch")))
+    };
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
+        .await
+        .unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (port, seen)
+}
+
+/// Poll `check` until it holds, or fail with `what`.
+pub async fn eventually<F, Fut>(what: &str, within: Duration, mut check: F)
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    let deadline = tokio::time::Instant::now() + within;
+    loop {
+        if check().await {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "{what} did not happen within {within:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+}
+
+/// A call manager's configuration for these tests: the cloud's or a
+/// site's, on its own database, with what the test asks for.
+#[derive(Default)]
+pub struct CallManagerToml<'a> {
+    pub node_id: &'a str,
+    pub sip: u16,
+    pub http: u16,
+    pub db: &'a str,
+    pub dir: &'a str,
+    pub rtp_start: u16,
+    /// The CA the node trusts for the TLS connections it opens (a site's
+    /// link to its cloud).
+    pub tls_ca: Option<&'a str>,
+    /// The node's Redis, and its events published there.
+    pub redis_url: Option<&'a str>,
+}
+
+impl CallManagerToml<'_> {
+    pub fn render(&self) -> String {
+        let tls_ca = match self.tls_ca {
+            Some(path) => format!("tls_ca_path = \"{path}\"\n"),
+            None => String::new(),
+        };
+        let redis = match self.redis_url {
+            Some(url) => format!("redis_url = \"{url}\"\n"),
+            None => String::new(),
+        };
+        let events = match self.redis_url {
+            Some(_) => "[events]\nuse_redis = true\n".to_string(),
+            None => String::new(),
+        };
+        format!(
+            r#"[service]
+node_id = "{node_id}"
+
+[sip]
+udp_bind = "127.0.0.1:{sip}"
+tcp_bind = "127.0.0.1:{sip}"
+local_ip = "127.0.0.1"
+{tls_ca}
+[registrar]
+auth_enabled = true
+realm = "fcp.local"
+
+[storage]
+database_url = "{db}"
+{redis}
+[cdr]
+spool_dir = "{dir}/{node_id}-cdr-spool"
+
+[http]
+bind_address = "127.0.0.1:{http}"
+
+[calls]
+call_timeout_seconds = 8
+
+[b2bua.forking]
+timeout = 8
+
+[media]
+rtp_port_start = {rtp_start}
+rtp_port_end = {rtp_end}
+prompts_dir = "{dir}/{node_id}-prompts"
+tts_cache_dir = "{dir}/{node_id}-tts-cache"
+recording_dir = "{dir}/{node_id}-recordings"
+
+[trunk_routing]
+refresh_secs = 1
+
+# The cloud SBC stands in front of this node and names the site a call
+# came from; the site's phones and the test's carriers are on the loopback.
+[e911]
+trusted_edges = ["127.0.0.0/8"]
+{events}
+[logging]
+level = "info"
+format = "compact"
+"#,
+            node_id = self.node_id,
+            sip = self.sip,
+            http = self.http,
+            db = self.db,
+            dir = self.dir,
+            rtp_start = self.rtp_start,
+            rtp_end = self.rtp_start + 60,
+        )
+    }
 }

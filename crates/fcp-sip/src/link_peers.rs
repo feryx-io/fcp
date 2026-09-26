@@ -112,6 +112,16 @@ impl LinkPeers {
             .map(|b| Arc::clone(&b.trunk))
     }
 
+    /// The flow the site bound from exactly `peer` is reached on, if it
+    /// registered over one: what a call that came up it is answered and
+    /// re-invited down.
+    pub fn flow_token_for_peer(&self, peer: SocketAddr, flows: &FlowRegistry) -> Option<String> {
+        self.bound
+            .iter()
+            .find(|b| b.peer == peer && b.is_live(flows))
+            .and_then(|b| b.flow_token.clone())
+    }
+
     /// Where `site` is bound, if it is.
     pub fn for_site(&self, site: SiteId, flows: &FlowRegistry) -> Option<LinkPeerBinding> {
         self.bound

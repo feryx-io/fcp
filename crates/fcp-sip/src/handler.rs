@@ -2998,8 +2998,16 @@ impl SipMessageHandler {
             call.trunk_name = Some(trunk.name.clone());
             call.trunk_id = Some(trunk.trunk_id());
             call.arrived_on_trunk = Some(trunk.trunk_id());
-            // Up a site's link, the call is the site's own, not a carrier's.
+            // Up a site's link, the call is the site's own, not a carrier's;
+            // and the site is reached down the connection it came on, so
+            // what this call sends the site — its BYE, a re-INVITE — goes
+            // down that flow rather than to a contact behind NAT.
             call.link_site = trunk.site_id.filter(|_| trunk.is_link_peer());
+            if call.link_site.is_some() {
+                call.a_leg.flow_token = self
+                    .link_peers
+                    .flow_token_for_peer(peer, &self.flow_registry);
+            }
         }
         // A caller transferred here carries the call it left, from the
         // Refer-To this B2BUA relayed (see handle_refer).
@@ -9231,15 +9239,17 @@ impl SipMessageHandler {
                     if let Some(a_leg_dialog) = &call.a_leg.dialog {
                         info!(
                             call_id = %call.id,
+                            has_flow_token = call.a_leg.flow_token.is_some(),
                             "BYE from B-leg, forwarding to A-leg"
                         );
-
+                        // A caller that came up a site's link is reached
+                        // down that flow; any other caller by its contact.
                         self.spawn_bye_with_retry(
                             Arc::clone(uac),
                             a_leg_dialog.clone(),
                             call.id,
                             true,
-                            None, // A-leg doesn't use flow tokens
+                            call.a_leg.flow_token.clone(),
                         );
                     } else {
                         debug!(call_id = %call.id, "A-leg has no dialog, skipping BYE forward");
@@ -9462,7 +9472,34 @@ impl SipMessageHandler {
             None,
             None,
         );
-        let peer_resp = match uac.send_reinvite(&mut target_dialog, body.as_deref()).await {
+        // The far leg reached down a flow — a site's link, a phone
+        // registered over TLS — is re-invited down it; any other by its
+        // contact.
+        let target_flow = if is_a_leg {
+            call.b_leg.as_ref().and_then(|b| b.flow_token.clone())
+        } else {
+            call.a_leg.flow_token.clone()
+        }
+        .and_then(|token| self.flow_registry.lookup(&token).map(|flow| (token, flow)));
+        let sent = match target_flow {
+            Some((token, flow)) => {
+                info!(
+                    call_id = %call.id,
+                    flow_token = %token,
+                    peer_addr = %flow.peer_addr,
+                    "Forwarding re-INVITE via RFC 5626 flow"
+                );
+                uac.send_reinvite_via_flow(
+                    &mut target_dialog,
+                    body.as_deref(),
+                    flow.stream,
+                    flow.peer_addr,
+                )
+                .await
+            }
+            None => uac.send_reinvite(&mut target_dialog, body.as_deref()).await,
+        };
+        let peer_resp = match sent {
             Ok(r) => {
                 info!(
                     status = r.start_line().code(),

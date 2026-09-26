@@ -251,6 +251,21 @@ impl SipUserAgentClient {
             .await
     }
 
+    /// A re-INVITE down an existing connection — the flow a site's link
+    /// registered over (`docs/HYBRID_CONTROL_PLANE.md` §3.6), which is
+    /// the only way to reach it.
+    pub async fn send_reinvite_via_flow(
+        &self,
+        dialog: &mut Dialog,
+        sdp_body: Option<&str>,
+        flow_stream: tokio::sync::mpsc::Sender<bytes::Bytes>,
+        peer_addr: std::net::SocketAddr,
+    ) -> Result<sip_core::Response> {
+        self.inner
+            .send_reinvite_via_flow(dialog, sdp_body, Flow::new(flow_stream, peer_addr))
+            .await
+    }
+
     /// Send REGISTER request.
     ///
     /// # Arguments
