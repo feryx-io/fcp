@@ -3,7 +3,7 @@
 //! Trunks represent SIP connections to upstream carriers or downstream PBXes
 //! for originating and terminating calls.
 
-use crate::identifiers::TenantId;
+use crate::identifiers::{SiteId, TenantId};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::time::SystemTime;
@@ -60,6 +60,23 @@ impl std::str::FromStr for TrunkId {
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         Ok(Self(s.to_string()))
     }
+}
+
+/// Which end of a site's link trunk this row is
+/// (`docs/HYBRID_CONTROL_PLANE.md` §3.6). The cloud makes one trunk per
+/// site at enrollment, as its own end; the link, applying it at the site,
+/// turns it into the site's end. An ordinary trunk has none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LinkEnd {
+    /// The cloud's end: the site registers here with the trunk's
+    /// credentials, and calls to the site's numbers go down that
+    /// registration. Never dialled, probed or registered from here.
+    Cloud,
+    /// The site's end: this deployment registers to `hosts` with the
+    /// credentials, takes the cloud's calls on it, and sends the calls it
+    /// cannot carry on a local trunk over it.
+    Site,
 }
 
 /// Direction of a SIP trunk.
@@ -662,6 +679,15 @@ pub struct Trunk {
     /// it does not receive on. Empty means the trunk's `hosts`.
     #[serde(default)]
     pub inbound_sources: Vec<String>,
+    /// The site this trunk runs at, in a hybrid deployment
+    /// (`docs/HYBRID_CONTROL_PLANE.md` §2): a carrier of the site's own,
+    /// or its link trunk. The cloud's nodes route by no trunk that has
+    /// one; the link applies only its own site's to the site.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub site_id: Option<SiteId>,
+    /// Which end of a site's link this trunk is, when it is one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<LinkEnd>,
 
     /// Transport settings.
     #[serde(default)]
@@ -802,6 +828,8 @@ impl Default for Trunk {
             weight: default_weight(),
             hosts: Vec::new(),
             inbound_sources: Vec::new(),
+            site_id: None,
+            link: None,
             transport: TrunkTransport::default(),
             credentials: None,
             register: false,
@@ -912,6 +940,27 @@ impl Trunk {
             return TrunkId::platform(&self.name);
         }
         self.id.clone()
+    }
+
+    /// The cloud's end of a site's link (`docs/HYBRID_CONTROL_PLANE.md`
+    /// §3.6): a peer that registers here, reached down its registration
+    /// and never dialled, probed or registered.
+    pub fn is_link_peer(&self) -> bool {
+        self.link == Some(LinkEnd::Cloud)
+    }
+
+    /// The site's end of its link: the trunk this deployment registers to
+    /// the cloud with, and sends the cloud's calls over.
+    pub fn is_link_to_cloud(&self) -> bool {
+        self.link == Some(LinkEnd::Site)
+    }
+
+    /// Whether this deployment, which is `site` (or the cloud, `None`),
+    /// routes calls out on this trunk: a trunk runs where its `site_id`
+    /// says, and a link peer is reached by its registration, not routed
+    /// to.
+    pub fn routes_from(&self, site: Option<SiteId>) -> bool {
+        !self.is_link_peer() && self.site_id == site
     }
 
     /// [`Trunk::trunk_id`] as the string the runtime maps key on.

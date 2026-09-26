@@ -760,6 +760,7 @@ async fn main() -> Result<()> {
                     ownership,
                     events: Some(Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>),
                     node_id: config.service.node_id.clone(),
+                    registers_link: true,
                 },
                 rx,
             ));
@@ -2198,20 +2199,26 @@ async fn create_transport_dispatcher(
     let mut dispatcher =
         RealTransportDispatcher::new_with_pool(Some(Arc::new(udp_socket)), tcp_pool);
 
-    // Add TLS client config if TLS is enabled (for outbound SIPS connections)
-    // We check if TLS cert is configured, meaning TLS server is enabled
-    if config.sip.tls_cert_path.is_some() {
-        match RealTransportDispatcher::load_tls_client_config() {
-            Ok(tls_config) => {
-                info!("TLS client configuration loaded for outbound SIPS connections");
-                dispatcher = dispatcher.with_tls_config(tls_config);
-            }
-            Err(e) => {
-                warn!(
-                    "Failed to load TLS client config: {}. Outbound TLS will not work.",
-                    e
-                );
-            }
+    // The TLS client for the connections this node opens — a TLS trunk,
+    // a site's link to its cloud (`docs/HYBRID_CONTROL_PLANE.md` §3.6):
+    // the system's roots, and `[sip] tls_ca_path` when set. Loaded whether
+    // or not this node listens on TLS itself.
+    match RealTransportDispatcher::load_tls_client_config_with(
+        config.sip.tls_ca_path.as_deref(),
+        None,
+    ) {
+        Ok(tls_config) => {
+            info!(
+                private_ca = config.sip.tls_ca_path.is_some(),
+                "TLS client configuration loaded for outbound SIPS connections"
+            );
+            dispatcher = dispatcher.with_tls_config(tls_config);
+        }
+        Err(e) => {
+            warn!(
+                "Failed to load TLS client config: {}. Outbound TLS will not work.",
+                e
+            );
         }
     }
 

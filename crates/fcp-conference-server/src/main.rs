@@ -747,6 +747,7 @@ async fn main() -> Result<()> {
                     ownership,
                     events: Some(Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>),
                     node_id: config.service.node_id.clone(),
+                    registers_link: false,
                 },
                 rx,
             ));

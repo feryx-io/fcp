@@ -653,6 +653,9 @@ pub struct SipMessageHandler {
     /// call each is (`docs/TENANT_TRUNKS.md` §7); `None` on a node that
     /// admits by its tenants' stored trunks as before.
     inbound_trunks: Option<Arc<dyn crate::trunk_ingress::InboundTrunks>>,
+    /// The sites bound at this cloud by their links' registrations
+    /// (`docs/HYBRID_CONTROL_PLANE.md` §3.6).
+    link_peers: Arc<crate::link_peers::LinkPeers>,
     /// Every tenant's own routing rules (`docs/TENANT_TRUNKS.md` §12,
     /// phase 6b); `None` on a node that decides by its YAML policy alone.
     tenant_rules: Option<Arc<fcp_policy::TenantRuleSet>>,
@@ -1014,6 +1017,7 @@ impl SipMessageHandler {
             b_leg_srtp: Arc::new(dashmap::DashMap::new()),
             header_rules: None,
             inbound_trunks: None,
+            link_peers: Arc::new(crate::link_peers::LinkPeers::new()),
             tenant_rules: None,
             trunk_calls: None,
             admission: None,
@@ -1109,6 +1113,20 @@ impl SipMessageHandler {
     ) -> Self {
         self.inbound_trunks = trunks;
         self
+    }
+
+    /// The sites bound at this node, and the flows to reach them on
+    /// (`docs/HYBRID_CONTROL_PLANE.md` §3.6), for a status page.
+    pub fn link_peers(
+        &self,
+    ) -> (
+        Arc<crate::link_peers::LinkPeers>,
+        Arc<crate::flow::FlowRegistry>,
+    ) {
+        (
+            Arc::clone(&self.link_peers),
+            Arc::clone(&self.flow_registry),
+        )
     }
 
     /// Every tenant's own routing rules, decided on this node
@@ -1713,9 +1731,12 @@ impl SipMessageHandler {
 
         let mut bindings = Vec::with_capacity(routes.len());
         for r in &routes {
+            // In angle brackets, so the URI's own parameters — a TLS
+            // trunk's `;transport=tls` — stay with it rather than being
+            // read as contact parameters and dropped.
             match sip_registrar::Binding::new(
                 SmolStr::new(destination),
-                SmolStr::new(&r.target_uri),
+                SmolStr::new(format!("<{}>", r.target_uri)),
                 Duration::from_secs(3600),
             ) {
                 Ok(binding) => bindings.push(binding),
@@ -1889,12 +1910,170 @@ impl SipMessageHandler {
 
     /// The trunk a carrier's INVITE arrived on, and whose call that makes it
     /// (`docs/TENANT_TRUNKS.md` §7); `None` when this node has no trunk set.
+    /// A REGISTER that bound a site's link account
+    /// (`docs/HYBRID_CONTROL_PLANE.md` §3.6): the site is bound from
+    /// `peer`, reachable down `flow_token`, for as long as it asked; one
+    /// that asked for nothing is unbound.
+    fn note_link_peer_registration(
+        &self,
+        request: &sip_core::Request,
+        peer: SocketAddr,
+        flow_token: Option<&str>,
+    ) {
+        let Some(trunks) = &self.inbound_trunks else {
+            return;
+        };
+        let Some(user) = crate::link_peers::to_user(request) else {
+            return;
+        };
+        let Some(trunk) = trunks.link_peer_by_account(&user) else {
+            return;
+        };
+        let expiry = crate::link_peers::requested_expiry(request);
+        if expiry == 0 {
+            self.link_peers.unbind(&trunk.key());
+            return;
+        }
+        if flow_token.is_none() {
+            warn!(
+                trunk = %trunk.name,
+                peer = %peer,
+                "A site's link registered over a transport that leaves no flow; its calls are sent to where it registered from"
+            );
+        }
+        self.link_peers.bind(
+            trunk,
+            peer,
+            flow_token.map(str::to_string),
+            Duration::from_secs(u64::from(expiry)),
+        );
+    }
+
+    /// A number answered at a site other than this deployment
+    /// (`docs/HYBRID_CONTROL_PLANE.md` §3.6): the binding the call goes
+    /// down, which is the site's registration at this node, with the
+    /// number as the target's user. `None` when the number is not at
+    /// another site; an error when it is and the site cannot be reached.
+    async fn route_to_site(
+        &self,
+        call_id: &fcp_b2bua_core::CallId,
+        normalized_aor: &str,
+    ) -> Option<std::result::Result<Vec<sip_registrar::Binding>, String>> {
+        let trunks = self.inbound_trunks.as_ref()?;
+        let storage = self.storage.as_ref()?;
+        if !is_e164_number(normalized_aor) {
+            return None;
+        }
+        let number = normalized_aor
+            .strip_prefix("sip:")
+            .or_else(|| normalized_aor.strip_prefix("sips:"))
+            .unwrap_or(normalized_aor)
+            .split('@')
+            .next()
+            .unwrap_or(normalized_aor);
+        let owned = storage
+            .get_phone_number_by_e164(number)
+            .await
+            .ok()
+            .flatten()?;
+        let site = owned.site_id?;
+        if trunks.site() == Some(site) {
+            return None;
+        }
+        let Some(peer) = trunks.link_peer_for_site(site) else {
+            return Some(Err(format!(
+                "number {number} is at site {site}, which has no link trunk here"
+            )));
+        };
+        let Some(bound) = self.link_peers.for_trunk(&peer.key(), &self.flow_registry) else {
+            return Some(Err(format!(
+                "number {number} is at site {site}, which is not registered"
+            )));
+        };
+        let contact = format!("<sip:{number}@{};transport=tls>", bound.peer);
+        let binding = match sip_registrar::Binding::new(
+            SmolStr::new(normalized_aor),
+            SmolStr::new(&contact),
+            bound.remaining().max(Duration::from_secs(1)),
+        ) {
+            Ok(binding) => binding,
+            Err(e) => return Some(Err(format!("the site's binding is not usable: {e}"))),
+        };
+        let binding = match &bound.flow_token {
+            Some(token) => binding.with_flow_token(SmolStr::new(token)),
+            None => binding,
+        };
+        info!(
+            call_id = %call_id,
+            number = %number,
+            site_id = %site,
+            peer = %bound.peer,
+            via_flow = bound.flow_token.is_some(),
+            "Routing a call for a number at a site down the site's link"
+        );
+        let _ = self.call_manager.update_call(call_id, |call| {
+            call.trunk_name = Some(peer.name.clone());
+            call.trunk_id = Some(peer.trunk_id());
+        });
+        // The site's media address is not what its SDP will say.
+        self.latch_leg(call_id, fcp_media::backend::Leg::B, bound.peer.ip())
+            .await;
+        Some(Ok(vec![binding]))
+    }
+
+    /// Learn one leg's RTP address from its first packet from `source`,
+    /// rather than its SDP, on an anchored call.
+    async fn latch_leg(
+        &self,
+        call_id: &fcp_b2bua_core::CallId,
+        leg: fcp_media::backend::Leg,
+        source: std::net::IpAddr,
+    ) {
+        let Some(media_manager) = &self.media_manager else {
+            return;
+        };
+        let Some(session) = self
+            .call_manager
+            .get_call(call_id)
+            .and_then(|c| c.media_session_id)
+        else {
+            return;
+        };
+        if let Err(e) = media_manager.latch_leg(&session, leg, source).await {
+            debug!(call_id = %call_id, ?leg, error = %e, "Could not set the leg to learn its address");
+        }
+    }
+
+    /// A call that came up a site's link has media from wherever the site
+    /// is, not from the address in its SDP.
+    async fn latch_link_peer_a_leg(&self, call_id: &fcp_b2bua_core::CallId) {
+        let Some(peer) = self
+            .call_manager
+            .get_call(call_id)
+            .filter(|c| c.link_site.is_some())
+            .and_then(|c| c.a_leg.contact)
+        else {
+            return;
+        };
+        self.latch_leg(call_id, fcp_media::backend::Leg::A, peer.ip())
+            .await;
+    }
+
     async fn inbound_trunk(
         &self,
         request: &sip_core::Request,
-        peer_ip: std::net::IpAddr,
+        peer: SocketAddr,
     ) -> Option<crate::trunk_ingress::InboundChoice> {
-        let candidates = self.inbound_trunks.as_ref()?.inbound_from(peer_ip);
+        let trunks = self.inbound_trunks.as_ref()?;
+        // A site bound here is known by where it registered from
+        // (`docs/HYBRID_CONTROL_PLANE.md` §3.6): its calls are its
+        // tenant's own, before any carrier's address is looked at.
+        if let Some(trunk) = self.link_peers.from_peer(peer, &self.flow_registry) {
+            if let Some(tenant) = trunk.tenant_id {
+                return Some(crate::trunk_ingress::InboundChoice::Tenant { trunk, tenant });
+            }
+        }
+        let candidates = trunks.inbound_from(peer.ip());
         if candidates.is_empty() {
             return Some(crate::trunk_ingress::InboundChoice::NoTrunk);
         }
@@ -2402,7 +2581,7 @@ impl SipMessageHandler {
         };
         let is_registered_device = registered_tenant.is_some();
         let inbound = if edge_caller.is_none() && !is_registered_device {
-            self.inbound_trunk(request, peer.ip()).await
+            self.inbound_trunk(request, peer).await
         } else {
             None
         };
@@ -2431,7 +2610,8 @@ impl SipMessageHandler {
             debug!(
                 source = %peer,
                 tenant_id = %edge.tenant_id,
-                caller = %edge.username,
+                caller = ?edge.username,
+                site = ?edge.site_id,
                 "INVITE placed by a trusted edge for a tenant user"
             );
             edge.tenant_id
@@ -2699,8 +2879,10 @@ impl SipMessageHandler {
                     routing_service,
                     peer,
                     &tenant_id,
-                    edge_caller.as_ref().map(|e| e.username.as_str()),
-                    inbound_trunk.is_some(),
+                    edge_caller.as_ref().and_then(|e| e.username.as_deref()),
+                    // A site's call was placed by a phone the site already
+                    // authenticated: no user of the cloud's to check.
+                    inbound_trunk.is_some() || edge_caller.as_ref().is_some_and(|e| e.is_site()),
                 )
                 .await
             {
@@ -2816,6 +2998,8 @@ impl SipMessageHandler {
             call.trunk_name = Some(trunk.name.clone());
             call.trunk_id = Some(trunk.trunk_id());
             call.arrived_on_trunk = Some(trunk.trunk_id());
+            // Up a site's link, the call is the site's own, not a carrier's.
+            call.link_site = trunk.site_id.filter(|_| trunk.is_link_peer());
         }
         // A caller transferred here carries the call it left, from the
         // Refer-To this B2BUA relayed (see handle_refer).
@@ -4194,6 +4378,7 @@ impl SipMessageHandler {
         uac: Arc<SipUserAgentClient>,
     ) -> Result<()> {
         let a_leg_handle_arc = Arc::new(a_leg_handle.clone());
+        self.latch_link_peer_a_leg(&call_id).await;
 
         // Extract To header to get destination AOR
         let to = sip_parse::header(request.headers(), "To")
@@ -4273,7 +4458,7 @@ impl SipMessageHandler {
             for r in &routes {
                 match sip_registrar::Binding::new(
                     SmolStr::new(destination_aor),
-                    SmolStr::new(&r.target_uri),
+                    SmolStr::new(format!("<{}>", r.target_uri)),
                     Duration::from_secs(3600),
                 ) {
                     Ok(binding) => bindings.push(binding),
@@ -4303,6 +4488,20 @@ impl SipMessageHandler {
 
         let destination_contacts = if let Some(bindings) = emergency_bindings {
             bindings
+        } else if let Some(at_site) = self.route_to_site(&call_id, &normalized_aor).await {
+            // A number answered at a site goes down that site's link
+            // (`docs/HYBRID_CONTROL_PLANE.md` §3.6).
+            match at_site {
+                Ok(bindings) => bindings,
+                Err(reason) => {
+                    info!(call_id = %call_id, destination = %normalized_aor, reason = %reason, "A call for a number at a site that cannot be reached");
+                    let response =
+                        self.create_simple_response(request, 480, "Temporarily Unavailable");
+                    a_leg_handle.send_final(response).await;
+                    let _ = self.call_manager.terminate_call(&call_id, Some(reason));
+                    return Ok(());
+                }
+            }
         } else if is_e164_number(&normalized_aor) {
             debug!(
                 call_id = %call_id,
@@ -5027,10 +5226,10 @@ impl SipMessageHandler {
                                 // A carrier's call to a number of ours that
                                 // nothing answers is not sent back out to a
                                 // carrier, which would send it straight back.
-                                let from_a_carrier = self
-                                    .call_manager
-                                    .get_call(&call_id)
-                                    .is_some_and(|c| c.arrived_on_trunk.is_some());
+                                let from_a_carrier =
+                                    self.call_manager.get_call(&call_id).is_some_and(|c| {
+                                        c.arrived_on_trunk.is_some() && c.link_site.is_none()
+                                    });
                                 if let Some(registrar) = &self.registrar {
                                     match registrar.get_registrations(destination_aor).await {
                                         Ok(bindings) if !bindings.is_empty() => bindings,
@@ -5259,7 +5458,7 @@ impl SipMessageHandler {
                                     for r in &routes {
                                         match sip_registrar::Binding::new(
                                             SmolStr::new(destination_aor),
-                                            SmolStr::new(&r.target_uri),
+                                            SmolStr::new(format!("<{}>", r.target_uri)),
                                             Duration::from_secs(3600),
                                         ) {
                                             Ok(binding) => failover_bindings.push(binding),
@@ -6258,7 +6457,7 @@ impl SipMessageHandler {
                                     for r in &routes {
                                         match sip_registrar::Binding::new(
                                             SmolStr::new(destination_aor),
-                                            SmolStr::new(&r.target_uri),
+                                            SmolStr::new(format!("<{}>", r.target_uri)),
                                             Duration::from_secs(3600),
                                         ) {
                                             Ok(binding) => failover_bindings.push(binding),
@@ -6695,6 +6894,29 @@ impl SipMessageHandler {
                 Some(headers)
             }
             _ => emergency_headers,
+        };
+
+        // A call that came up a site's link is the site's tenant's own; the
+        // next hop is told so, and believes it from its trusted edges
+        // (`docs/HYBRID_CONTROL_PLANE.md` §3.6).
+        let emergency_headers = match self
+            .call_manager
+            .get_call(&call_id)
+            .and_then(|c| c.link_site.map(|site| (c.tenant_id, site)))
+        {
+            Some((tenant, site)) => {
+                let mut headers = emergency_headers.unwrap_or_default();
+                let _ = headers.push(
+                    SmolStr::new(fcp_core::CALLER_TENANT_HEADER),
+                    SmolStr::new(tenant.to_string()),
+                );
+                let _ = headers.push(
+                    SmolStr::new(fcp_core::CALLER_SITE_HEADER),
+                    SmolStr::new(site.to_string()),
+                );
+                Some(headers)
+            }
+            None => emergency_headers,
         };
 
         if let Some(ref name) = caller_display_name {
@@ -10552,6 +10774,12 @@ impl SipMessageHandler {
                         flow_token = ?flow_token,
                         "REGISTER handled successfully"
                     );
+                    self.note_link_peer_registration(request, peer_addr, flow_token.as_deref());
+                    if flow_token.is_some() {
+                        // Each refresh leaves a token; the ones whose
+                        // connection closed are let go here.
+                        self.flow_registry.cleanup_stale();
+                    }
                 } else if response.start_line().code() == 401 {
                     debug!("REGISTER requires authentication");
                     // Remove flow token if auth failed (we'll create a new one on successful auth)
@@ -10619,7 +10847,7 @@ impl SipMessageHandler {
     ) -> (Option<String>, Option<String>) {
         let from = extract_from_uri(request).ok();
         match edge_caller {
-            Some(edge) => (Some(edge.username.clone()), None),
+            Some(edge) => (edge.username.clone(), None),
             None => (
                 from.as_ref().and_then(|u| u.user().map(str::to_string)),
                 from.as_ref()
@@ -10639,7 +10867,14 @@ impl SipMessageHandler {
     ) {
         let (caller_username, _) = self.emergency_caller(request, edge_caller);
         let caller_uri = match edge_caller {
-            Some(edge) => format!("sip:{}@{}", edge.username, self.local_addr),
+            Some(edge) => format!(
+                "sip:{}@{}",
+                edge.username
+                    .clone()
+                    .or_else(|| edge.site_id.map(|s| s.to_string()))
+                    .unwrap_or_default(),
+                self.local_addr
+            ),
             None => extract_from_uri(request)
                 .map(|u| format!("sip:{}@{}", u.user().unwrap_or_default(), u.host()))
                 .unwrap_or_default(),

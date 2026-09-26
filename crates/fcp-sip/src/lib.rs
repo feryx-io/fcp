@@ -23,6 +23,7 @@ pub mod exports;
 pub mod flow;
 pub mod flow_handler;
 pub mod handler;
+pub mod link_peers;
 pub mod listener;
 pub mod metrics;
 pub mod mwi;

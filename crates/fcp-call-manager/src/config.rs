@@ -225,6 +225,13 @@ pub struct SipSection {
     /// Path to TLS private key file (PEM format)
     pub tls_key_path: Option<String>,
 
+    /// A CA certificate (PEM) trusted for the TLS connections this node
+    /// opens — a trunk to a cloud SBC whose certificate is not from a
+    /// public CA (`docs/HYBRID_CONTROL_PLANE.md` §3.6) — beside the
+    /// system's roots.
+    #[serde(default)]
+    pub tls_ca_path: Option<String>,
+
     /// Optional SIP-over-WebSocket bind address.
     #[serde(default)]
     pub ws_bind: Option<String>,
@@ -256,6 +263,7 @@ impl Default for SipSection {
             sips_bind: default_sips_bind(),
             tls_cert_path: None,
             tls_key_path: None,
+            tls_ca_path: None,
             ws_bind: None,
             wss_bind: None,
             local_ip: None,
@@ -1070,6 +1078,7 @@ redis_stream_key = "custom:stream"
             sips_bind: default_sips_bind(),
             tls_cert_path: None,
             tls_key_path: None,
+            tls_ca_path: None,
             ws_bind: None,
             wss_bind: None,
             local_uri: None,

@@ -132,6 +132,17 @@ impl MediaManager {
             .await
     }
 
+    /// Learn `leg`'s RTP address from its first packet from `source`
+    /// rather than its SDP (`docs/HYBRID_CONTROL_PLANE.md` §3.6).
+    pub async fn latch_leg(
+        &self,
+        call_id: &CallId,
+        leg: crate::backend::Leg,
+        source: std::net::IpAddr,
+    ) -> Result<()> {
+        self.backend.latch_leg(call_id, leg, source).await
+    }
+
     /// Put call on hold (send silence/comfort noise)
     pub async fn hold_session(&self, call_id: &CallId) -> Result<()> {
         self.backend.hold_session(call_id).await

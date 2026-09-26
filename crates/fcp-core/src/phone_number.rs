@@ -12,7 +12,7 @@
 //! - Number portability and lifecycle management
 //! - Flexible routing policies
 
-use crate::identifiers::{LocationId, PhoneNumberId, TenantId};
+use crate::identifiers::{LocationId, PhoneNumberId, SiteId, TenantId};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::str::FromStr;
@@ -112,6 +112,12 @@ pub struct PhoneNumber {
     // ===== Location =====
     /// Associated site location (for E911, regulatory, organizational purposes)
     pub location_id: Option<LocationId>,
+
+    /// The site whose phones answer this number, in a hybrid deployment
+    /// (`docs/HYBRID_CONTROL_PLANE.md` §3.6): the cloud sends a call for
+    /// it down that site's link. `None`: answered here, as ever.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub site_id: Option<SiteId>,
 
     // ===== Audit =====
     /// Created timestamp
@@ -369,6 +375,7 @@ impl PhoneNumber {
             block_list: Vec::new(),
             tags: Vec::new(),
             location_id: None,
+            site_id: None,
             created_at: now,
             updated_at: now,
         })

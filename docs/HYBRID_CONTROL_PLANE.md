@@ -214,6 +214,119 @@ schema they were written under, as CDRs do, and the migration discipline
 (`docs/BACKUP_AND_RESTORE.md` §5) already forbids the contraction that
 would break an older site.
 
+### 3.6 Calls across
+
+*As built in phase 4.* A site reaches the cloud over one trunk, made at
+enrollment, and nothing reaches the site but down the connection the
+site opened.
+
+**The link trunk.** When the admin names `[link] sip_host` — the cloud
+SBC's SIP-over-TLS address, `host:port`, as a site dials it — every site
+enrolled there is given a tenant trunk: `site_id` the site's, `link` set
+to `cloud`, hosts the SIP address, TLS, credentials whose username is
+the site's id and whose password is minted at enrollment (and again at
+every re-enrollment, since the link that held the old one is gone) in
+`[link] sip_realm`, which must equal the SBC's `external_domain`;
+registering, with a two-minute expiry so the connection and any NAT
+binding on the way stay alive between calls; bidirectional; priority
+100, after the site's own carriers; emergency-capable; never probed.
+`Site.trunk_id` names it, `/v1/sites` shows it, disabling a site disables
+it and deleting a site deletes it. With no `sip_host`, sites sync
+configuration and carry no calls across, as before.
+
+**Where a trunk runs.** `Trunk.site_id` says which site a trunk runs at:
+a carrier of the site's own, made through `/v1/trunks` with `site_id`,
+or its link. The cloud's routing nodes route out on no trunk that has
+one, and a link peer is never a route: it is reached by its
+registration. The link applies only its own site's trunks — the cloud's
+carriers never reach the site, which phase 3 had let them do, so a site
+was registering the cloud's carrier accounts — and turns the link
+trunk's end from `cloud` into `site` as it lands, which is how every
+node at the site knows which site it is (`TrunkSet::site`).
+
+**The cloud SBC.** With storage it loads, of the tenants' trunks, the
+link peers alone (`TrunkSet::link_peers_only`) and still routes by the
+platform's trunks (`docs/TENANT_TRUNKS.md` §13.8). Its registrar now
+authenticates: a site's REGISTER is challenged against the link accounts
+(`fcp_sip::link_peers::SiteAccounts`), and a phone's would be refused,
+which none sends there. A registration over TLS leaves an RFC 5626
+flow, and the SBC keeps, per link peer, where the site registered from
+and that flow (`fcp_sip::link_peers::LinkPeers`, `/admin/sites` on the
+SBC): a binding lasts as long as the registration says and no longer
+than its connection. A site's own calls are known by where they come
+from — exactly the connection they share with the REGISTER, nothing
+looser, since two peers may share an address — and are the tenant's
+own, before any carrier's address is looked at.
+
+**A number at a site.** `PhoneNumber.site_id` (`site_id` on
+`/v1/phone-numbers`) says which site answers a number. A call for it,
+from a carrier or from another site of the tenant's, goes down that
+site's flow with the number as the target's user and the site's
+registration as the contact; a site not bound answers 480. At the site
+the call arrives on the link trunk, whose hosts are the SBC, and is the
+tenant's: the number's line binding rings the site's phones as ever.
+
+**A site's call to the outside.** At the SBC it is the site's tenant's
+call (`Call::link_site`), never refused as a carrier's call sent back
+out, and goes to the platform's trunk — the cloud's call manager — with
+`X-FCP-Caller-Tenant` and `X-FCP-Caller-Site`, which the call manager
+believes from its `[e911] trusted_edges`. A site's caller has no user
+of the cloud's to check against — the site authenticated the phone — so
+the routing engine's user check is skipped for it, and the call is
+routed, rated and recorded as the tenant's, out on the tenant's
+carriers or the platform's, as any of the tenant's calls.
+
+**Media behind NAT.** A site's SDP names an address the cloud cannot
+reach. Every leg to or from a site is latched rather than pinned
+(`MediaManager::latch_leg`): the relay learns the leg's RTP address from
+its first packet, from the site's signalling address and nowhere else,
+and sends there. The SBC's own SDP carries `[core.nat] external_ip`.
+
+**The site's call manager.** `[sip] tls_ca_path` trusts a CA beside the
+system's roots — the cloud's, when its SBC's certificate is not from a
+public CA — and the TLS client is built whether or not the node listens
+on TLS. The site's end of a link is registered by call managers alone
+(`TrunkRegistrationContext::registers_link`); the site's IVR, voicemail
+and conference servers route out on it and leave the binding to the
+node the cloud's calls must arrive at.
+
+**Proved** by `fcp-link/tests/calls.rs`: a cloud (admin, SBC with TLS
+from the test's CA, call manager, a carrier on the loopback) and a site
+(link, call manager, Alice's phone). Enrollment made the trunk; the SBC
+lists the site bound down a flow; the carrier's call to the site's
+number rings Alice with audio both ways and the carrier's hangup reaches
+her; Alice's call to the outside is asked of the carrier as hers, with
+audio both ways, and the cloud's call manager recorded it as the
+tenant's out on the tenant's carrier; the site's call manager killed,
+the site is unbound within seconds and the carrier's next call answers
+480.
+
+**Two defects found on the way.** A TLS trunk's INVITE went out over
+UDP: the route's URI was kept as a bare contact, whose parameters are
+contact parameters, so `;transport=tls` was stripped; every route is
+now kept in angle brackets. And the media relay told the two legs of a
+call apart by IP alone, so a leg waiting to learn its peer from a named
+address lost its packets to the other leg whenever that leg's peer
+shared the address — two peers behind one NAT, every node on a
+loopback; forge-media v2026.09.26 classifies a packet by its exact
+address first, then lets a named-address latch claim the first packet
+from its address.
+
+**Left for later.** A site binds at one SBC: a carrier's call landing
+on another SBC of the cloud's finds no binding (an SBC-to-SBC hop, or
+the binding published to the cluster). A site's calls are recognised
+by the exact connection its REGISTER came on; a call on a fresh
+connection, before the next refresh re-binds, is not the site's. Media
+over the link is RTP, signalling TLS: SRTP on the link trunk waits on
+inbound SDES at the SBC. An emergency call from a site leaves on the
+link trunk with ELIN delivery when the site has no emergency-capable
+trunk of its own, and the cloud places it as a site's call with no
+location of its own: the site's PIDF-LO is not yet carried through, and
+the cloud does not yet place the call by the site's E911 location. The
+cloud's BYE to a site goes down the flow, as its INVITE does; that no
+other in-dialog request dials the site's private contact is to be
+proved with the partition harness in phase 6.
+
 ## 4. Tenancy and security at the site
 
 A site belongs to one tenant and holds that tenant's slice only. The
@@ -238,7 +351,7 @@ harness (`docs/TEST_FLOOR.md`, the two-node cluster harness with a
 | 1 | ✅ v0.25.268 — **Sites and enrollment.** The `sites` table and `/v1/sites`; enrollment tokens; the link CA and certificate issue; `fcp-link` enrolls, holds its certificate, heartbeats; the cloud's cluster page shows sites. Test: a link enrolls once, a spent token is refused, a disabled site's certificate is refused. |
 | 2 | ✅ v0.25.269 — **The journal, the snapshot and the feed.** Triggers on every synced table writing the per-tenant journal; `GET /link/v1/snapshot` and `/link/v1/changes`; a test that every put and delete of every synced store journals, and that a snapshot plus the feed reproduce a tenant's slice exactly. As built: `sync_journal` (migration 079) written by one trigger function on nineteen tables, the tenant's own row under its own id, a rate's change journaled as its plan's; `fcp_core::sync::SyncStore`; the snapshot lists every synced store of the tenant and the feed holds up to thirty seconds, fetching each changed object as it is now (a missing one becomes a delete), pages of up to five thousand with `more`. Tests: `fcp-storage-postgres/tests/sync_journal.rs`, `fcp-link/tests/sync.rs`. |
 | 3 | ✅ v0.25.270 — **Configuration at the site.** `fcp-link` applies the snapshot and follows the feed into the site's Postgres, sealing secrets under the site's key; the site's admin API refuses writes to synced objects; lag on the heartbeat. Floor: a user made in the cloud registers at the site within seconds; a password changed in the cloud is the one the site challenges with. As built: `[site] database_url` opens the site's Postgres (its schema migrated as every binary does) and the link applies through the same stores the cloud writes with — `put_*` per table, `FlowStore::put_flow` as an exact copy, a rate plan with its rates — keeping its cursor in `sync.json`; the heartbeat carries `sync` (cursor, applied at, the last error) and the cloud shows `sync_cursor`, `sync_applied_at`, `sync_error` and `sync_behind` on every site; the site's admin with `[api] managed_by` refuses a write to a synced resource with 403 naming the cloud (`fcp_api_core::managed`). Test: `fcp-link/tests/apply.rs`. |
-| 4 | **Calls across.** The link trunk provisioned at enrollment; the cloud SBC knows the site as the tenant's registering trunk; numbers route to the site; inbound reaches the site's phones and outbound leaves through the cloud; emergency per the site's trunks. Floor, with the SBC and a carrier stub in the harness. |
+| 4 | ✅ v0.25.271 — **Calls across.** The link trunk provisioned at enrollment; the cloud SBC knows the site as the tenant's registering trunk; numbers route to the site; inbound reaches the site's phones and outbound leaves through the cloud; emergency per the site's trunks. Floor, with the SBC and a carrier stub in the harness. As built (§3.6): `[link] sip_host` makes one link trunk per site (`site_id`, `link = cloud`, TLS, credentials minted at enrollment); `Trunk.site_id` says where a trunk runs and the link keeps only its site's, turning the link's end to `site`; the SBC loads link peers, authenticates their REGISTER, keeps each site's binding and RFC 5626 flow (`/admin/sites`); `PhoneNumber.site_id` sends a number's calls down its site's flow; a site's calls are the tenant's own, forwarded to the cloud's call manager as a trusted edge's with `X-FCP-Caller-Site`; legs to and from a site latch their media. Test: `fcp-link/tests/calls.rs`. |
 | 5 | **Records up.** CDRs shipped and rated in the cloud, idempotently; events bridged; recording and voicemail rows shipped and files fetched through the link; registration summaries; retention and subject requests reaching the site's rows and files, the report naming the site. |
 | 6 | **Survivability, proved.** The floor cuts the link (a proxy cut, as `fcp-cluster/tests/partition.rs` does): phones keep registering and calling, a local trunk keeps carrying, CDRs and events spool; reconnect catches up; the cloud showed the site unreachable meanwhile and shows it back. |
 | 7 | **The site as a product.** `docs/SITE_SETUP.md` for the customer's operator (enroll, run, upgrade, back up); the runbook's site section; the admin UI's Sites page; the nightly gains a site stack against its cloud stack. |

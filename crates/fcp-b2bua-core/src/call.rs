@@ -379,6 +379,10 @@ pub struct Call {
 
     /// The trunk a carrier's call arrived on (`docs/TENANT_TRUNKS.md` §7).
     pub arrived_on_trunk: Option<fcp_core::TrunkId>,
+    /// The site whose link this call came up, at the cloud: the call is
+    /// that site's tenant's own, placed by a phone the site authenticated
+    /// (`docs/HYBRID_CONTROL_PLANE.md` §3.6), and not a carrier's.
+    pub link_site: Option<fcp_core::SiteId>,
 
     /// Where a tenant's `route_to_trunk` rule confined this call: when it
     /// goes out to a carrier, only this trunk or trunk group may carry it
@@ -516,6 +520,7 @@ impl Call {
             route_trunks: Vec::new(),
             dtmf_carriage: None,
             arrived_on_trunk: None,
+            link_site: None,
             trunk_target: None,
             flow_id: None,
             flow_current_node: None,
@@ -619,6 +624,7 @@ impl Call {
             route_trunks: Vec::new(),
             dtmf_carriage: None,
             arrived_on_trunk: None,
+            link_site: None,
             trunk_target: None,
             flow_id: None,
             flow_current_node: None,

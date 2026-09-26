@@ -24,6 +24,7 @@ use axum::{
 };
 use axum_server::tls_rustls::RustlsConfig;
 use base64::Engine;
+use fcp_core::storage::TrunkStore;
 use fcp_core::{DynStorage, Site, SiteHeartbeat, SiteStatus, SiteStore, SyncStore, TenantId};
 use fcp_events::{EventPublisher, PlatformEvent, SystemEvent};
 use serde::{Deserialize, Serialize};
@@ -262,6 +263,7 @@ async fn enroll(
     site.certificate_expires_at = Some(ends);
     site.secret_hash = Some(sha256_hex(&secret));
     site.updated_at = now;
+    provision_link_trunk(&state, &mut site).await?;
     state.storage.put_site(site.clone()).await?;
     info!(
         site_id = %site.id,
@@ -280,6 +282,91 @@ async fn enroll(
         heartbeat_interval_secs: state.config.heartbeat_interval_secs,
         protocol: LINK_PROTOCOL,
     }))
+}
+
+/// The site's link trunk (`docs/HYBRID_CONTROL_PLANE.md` §3.6): one
+/// tenant trunk per site, the cloud's end, toward `[link] sip_host`, with
+/// credentials minted here. Made at the first enrollment and kept across
+/// re-enrollments with a fresh password, since the link that held the old
+/// one is gone. Nothing is made when the cloud names no SIP address.
+async fn provision_link_trunk(state: &LinkState, site: &mut Site) -> Result<(), LinkError> {
+    let Some(sip_host) = state
+        .config
+        .sip_host
+        .as_deref()
+        .map(str::trim)
+        .filter(|h| !h.is_empty())
+    else {
+        info!(site_id = %site.id, "No [link] sip_host: the site gets no link trunk");
+        return Ok(());
+    };
+    let password_bytes: [u8; 24] = rand::random();
+    let password = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(password_bytes);
+    let credentials = fcp_core::trunk::TrunkCredentials {
+        username: site.id.to_string(),
+        password,
+        realm: Some(state.config.sip_realm.clone()),
+    };
+    let existing = match &site.trunk_id {
+        Some(id) => state.storage.get_trunk(id).await?,
+        None => None,
+    };
+    let now = SystemTime::now();
+    let trunk = match existing {
+        Some(mut trunk) => {
+            trunk.hosts = vec![sip_host.to_string()];
+            trunk.credentials = Some(credentials);
+            trunk.enabled = true;
+            trunk.updated_at = now;
+            trunk
+        }
+        None => {
+            let mut trunk = fcp_core::Trunk::new(format!("link-{}", site.name), site.tenant_id);
+            trunk.description = Some(format!("The link trunk of site {}", site.name));
+            trunk.site_id = Some(site.id);
+            trunk.link = Some(fcp_core::LinkEnd::Cloud);
+            trunk.hosts = vec![sip_host.to_string()];
+            trunk.transport.protocol = fcp_core::transport::TransportType::Tls;
+            trunk.transport.port = None;
+            trunk.transport.verify_tls = true;
+            trunk.credentials = Some(credentials);
+            trunk.register = true;
+            // Refreshed often enough to keep the site's connection, and any
+            // NAT binding on the way, alive between calls.
+            trunk.register_expiry = Some(120);
+            trunk.direction = fcp_core::TrunkDirection::Bidirectional;
+            // After the site's own carriers, which are its first choice.
+            trunk.priority = 100;
+            trunk.emergency_capable = true;
+            trunk.failover.health_check_enabled = false;
+            trunk.created_at = now;
+            trunk.updated_at = now;
+            trunk
+        }
+    };
+    if let Err(e) = trunk.validate() {
+        warn!(site_id = %site.id, error = %e, "The site's link trunk does not validate");
+        return Err(LinkError(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "the site's link trunk could not be made".to_string(),
+        ));
+    }
+    let trunk_id = trunk.id.clone();
+    state.storage.put_trunk(trunk).await?;
+    site.trunk_id = Some(trunk_id.clone());
+    // The cloud's routing nodes re-read the tenants' trunks on this, so the
+    // SBC knows the site before its first REGISTER.
+    let event = PlatformEvent::System(SystemEvent::ConfigChanged {
+        entity_type: "trunk".to_string(),
+        entity_id: trunk_id.to_string(),
+        tenant_id: site.tenant_id,
+        timestamp: SystemTime::now(),
+    });
+    if let Err(e) = state.events.publish(event).await {
+        warn!(error = %e, "Failed to publish the link trunk's change");
+    }
+    info!(site_id = %site.id, trunk_id = %trunk_id, sip_host, "The site's link trunk is provisioned");
+    Ok(())
 }
 
 fn bearer(headers: &HeaderMap) -> Option<&str> {

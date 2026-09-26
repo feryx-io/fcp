@@ -11,9 +11,11 @@ use axum::{
 };
 use fcp_core::permissions::Permission;
 use fcp_core::storage::TrunkStore;
+use fcp_core::SiteStore;
 use fcp_core::{TenantId, Trunk, TrunkDirection, TrunkId};
 use fcp_events::{PlatformEvent, SystemEvent};
 use serde::{Deserialize, Serialize};
+use std::str::FromStr;
 use std::time::SystemTime;
 use tracing::info;
 
@@ -38,6 +40,14 @@ pub struct TrunkResponse {
     pub weight: i32,
     pub hosts: Vec<String>,
     pub inbound_sources: Vec<String>,
+    /// The site this trunk runs at, in a hybrid deployment
+    /// (`docs/HYBRID_CONTROL_PLANE.md` §3.6); absent for the cloud's own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub site_id: Option<String>,
+    /// `cloud` or `site`: which end of a site's link this trunk is, when
+    /// it is one. Made at enrollment, never set through this API.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub link: Option<String>,
     pub transport_protocol: String,
     pub transport_port: i32,
     pub verify_tls: bool,
@@ -97,6 +107,11 @@ impl From<Trunk> for TrunkResponse {
             weight: t.weight as i32,
             hosts: t.hosts,
             inbound_sources: t.inbound_sources,
+            site_id: t.site_id.map(|id| id.to_string()),
+            link: t.link.map(|end| match end {
+                fcp_core::LinkEnd::Cloud => "cloud".to_string(),
+                fcp_core::LinkEnd::Site => "site".to_string(),
+            }),
             // The JSON this API has always answered with, from the one
             // trunk model (`docs/TENANT_TRUNKS.md` §4).
             transport_protocol: t.transport.protocol.to_string().to_lowercase(),
@@ -203,6 +218,9 @@ pub struct CreateTrunkRequest {
     pub hosts: Option<Vec<String>>,
     #[serde(default)]
     pub inbound_sources: Option<Vec<String>>,
+    /// The site this trunk runs at; empty to make it the cloud's own.
+    #[serde(default)]
+    pub site_id: Option<String>,
     #[serde(default)]
     pub transport_protocol: Option<String>,
     #[serde(default)]
@@ -259,6 +277,7 @@ pub struct UpdateTrunkRequest {
     pub weight: Option<i32>,
     pub hosts: Option<Vec<String>>,
     pub inbound_sources: Option<Vec<String>>,
+    pub site_id: Option<String>,
     pub transport_protocol: Option<String>,
     pub transport_port: Option<i32>,
     pub verify_tls: Option<bool>,
@@ -367,6 +386,7 @@ struct TrunkFields {
     weight: Option<i32>,
     hosts: Option<Vec<String>>,
     inbound_sources: Option<Vec<String>>,
+    site_id: Option<String>,
     transport_protocol: Option<String>,
     transport_port: Option<i32>,
     verify_tls: Option<bool>,
@@ -442,6 +462,19 @@ fn apply_trunk_fields(trunk: &mut Trunk, fields: TrunkFields) -> Result<(), ApiE
             fcp_core::trunk::parse_inbound_source(source).map_err(ApiError::BadRequest)?;
         }
         trunk.inbound_sources = sources;
+    }
+    if let Some(site) = fields.site_id {
+        // Where the trunk runs (`docs/HYBRID_CONTROL_PLANE.md` §3.6); that
+        // the site is the tenant's is checked where the storage is.
+        let site = site.trim();
+        trunk.site_id = if site.is_empty() {
+            None
+        } else {
+            Some(
+                fcp_core::SiteId::from_str(site)
+                    .map_err(|e| ApiError::BadRequest(format!("Invalid site_id: {e}")))?,
+            )
+        };
     }
     if let Some(proto) = &fields.transport_protocol {
         trunk.transport.protocol = match proto.to_ascii_lowercase().as_str() {
@@ -572,6 +605,7 @@ impl From<CreateTrunkRequest> for TrunkFields {
             weight: r.weight,
             hosts: r.hosts,
             inbound_sources: r.inbound_sources,
+            site_id: r.site_id,
             transport_protocol: r.transport_protocol,
             transport_port: r.transport_port,
             verify_tls: r.verify_tls,
@@ -613,6 +647,7 @@ impl From<UpdateTrunkRequest> for TrunkFields {
             weight: r.weight,
             hosts: r.hosts,
             inbound_sources: r.inbound_sources,
+            site_id: r.site_id,
             transport_protocol: r.transport_protocol,
             transport_port: r.transport_port,
             verify_tls: r.verify_tls,
@@ -660,6 +695,29 @@ pub(crate) async fn announce_trunk_change(state: &ApiState, entity_id: &str, ten
         .await;
 }
 
+/// A trunk that names a site runs at one of the tenant's own
+/// (`docs/HYBRID_CONTROL_PLANE.md` §3.6).
+async fn site_is_the_tenants(
+    storage: &fcp_core::DynStorage,
+    tenant_id: TenantId,
+    site_id: Option<fcp_core::SiteId>,
+) -> Result<(), ApiError> {
+    let Some(site_id) = site_id else {
+        return Ok(());
+    };
+    let site = storage
+        .get_site(&site_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to get site: {e}")))?
+        .ok_or_else(|| ApiError::BadRequest(format!("Site {site_id} not found")))?;
+    if site.tenant_id != tenant_id {
+        return Err(ApiError::BadRequest(format!(
+            "Site {site_id} is not in the authenticated tenant"
+        )));
+    }
+    Ok(())
+}
+
 /// Create a new trunk.
 pub async fn create_trunk(
     State(state): State<ApiState>,
@@ -678,6 +736,7 @@ pub async fn create_trunk(
     let name = req.name.clone();
     let mut trunk = Trunk::new(name, tenant_id);
     apply_trunk_fields(&mut trunk, TrunkFields::from(req))?;
+    site_is_the_tenants(storage, tenant_id, trunk.site_id).await?;
 
     info!(trunk_name = %trunk.name, trunk_id = %trunk.id, "Creating SIP trunk");
 
@@ -716,6 +775,7 @@ pub async fn update_trunk(
         trunk.name = name;
     }
     apply_trunk_fields(&mut trunk, TrunkFields::from(req))?;
+    site_is_the_tenants(storage, trunk.tenant_id.unwrap_or(tenant.0), trunk.site_id).await?;
 
     trunk.updated_at = SystemTime::now();
 
