@@ -88,6 +88,7 @@ fn shipped_configurations_check() {
         &[
             "fcp-admin-local.toml",
             "deploy/docker-compose/configs/fcp-admin.toml",
+            "deploy/docker-compose/site/configs/fcp-admin.toml",
         ],
         &["crates/fcp-admin/fcp-admin.toml.example"],
     );

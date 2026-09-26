@@ -17,7 +17,7 @@ import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { emergency, phoneNumbers, locations, tenants } from '@/api/endpoints'
+import { emergency, phoneNumbers, locations, sites, tenants } from '@/api/endpoints'
 import type { AddressValidation, PhoneNumber, CreatePhoneNumberRequest } from '@/types'
 import { TenantField, useEffectiveTenantId, useTenantListFilter, useShowTenantColumn } from '@/components/TenantSelector'
 
@@ -26,6 +26,7 @@ const createSchema = z.object({
   cnam: z.string().optional(),
   carrier: z.string().optional(),
   location_id: z.string().optional(),
+  site_id: z.string().optional(),
   tenant_id: z.string().optional(),
 })
 
@@ -34,6 +35,7 @@ const editSchema = z.object({
   recording_enabled: z.boolean().optional(),
   block_anonymous: z.boolean().optional(),
   location_id: z.string().optional(),
+  site_id: z.string().optional(),
   tenant_id: z.string().optional(),
 })
 
@@ -63,6 +65,14 @@ export function PhoneNumbersPage() {
   })
   const items = useTenantListFilter(rawItems)
 
+  const effectiveTenantForSites = useEffectiveTenantId()
+  // The tenant's sites, for a number answered at one
+  // (docs/HYBRID_CONTROL_PLANE.md §3.6).
+  const { data: siteList = [] } = useQuery({
+    queryKey: ['sites', effectiveTenantForSites],
+    queryFn: () => sites.list(effectiveTenantForSites || undefined),
+  })
+  const siteName = (id?: string | null) => siteList.find((s) => s.id === id)?.name ?? (id ? id : '-')
   const { data: locationList = [] } = useQuery({
     queryKey: ['locations'],
     queryFn: locations.list,
@@ -152,6 +162,11 @@ export function PhoneNumbersPage() {
       accessorKey: 'location_id',
       header: 'Location',
       cell: ({ row }) => locationName(row.original.location_id),
+    },
+    {
+      accessorKey: 'site_id',
+      header: 'Site',
+      cell: ({ row }) => siteName(row.original.site_id),
     },
     {
       accessorKey: 'rate_center',
@@ -244,6 +259,7 @@ export function PhoneNumbersPage() {
       recording_enabled: editItem.recording_enabled,
       block_anonymous: editItem.block_anonymous,
       location_id: editItem.location_id || '',
+      site_id: editItem.site_id || '',
       tenant_id: editItem.tenant_id ?? '',
     })
   }
@@ -254,6 +270,7 @@ export function PhoneNumbersPage() {
       cnam: data.cnam || undefined,
       carrier: data.carrier || undefined,
       location_id: data.location_id || undefined,
+      site_id: data.site_id || undefined,
       tenant_id: data.tenant_id || undefined,
     })
   }
@@ -267,6 +284,8 @@ export function PhoneNumbersPage() {
         recording_enabled: data.recording_enabled,
         block_anonymous: data.block_anonymous,
         location_id: data.location_id || undefined,
+        // An empty site clears it: the number is answered here again.
+        site_id: data.site_id ?? '',
         tenant_id: data.tenant_id || undefined,
       },
     })
@@ -336,6 +355,20 @@ export function PhoneNumbersPage() {
                 </SelectContent>
               </Select>
             </div>
+            {siteList.length > 0 && (
+              <div className="space-y-2">
+                <Label>Answered at site</Label>
+                <Select onValueChange={(v) => createForm.setValue('site_id', v === '__none__' ? '' : v)}>
+                  <SelectTrigger><SelectValue placeholder="Here, in the cloud" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none__">Here, in the cloud</SelectItem>
+                    {siteList.map((s) => (
+                      <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
             <div className="flex justify-end gap-2">
               <Button type="button" variant="outline" onClick={() => setCreateOpen(false)}>Cancel</Button>
               <Button type="submit" disabled={createMutation.isPending}>
@@ -384,6 +417,20 @@ export function PhoneNumbersPage() {
                 </SelectContent>
               </Select>
             </div>
+            {siteList.length > 0 && (
+              <div className="space-y-2">
+                <Label>Answered at site</Label>
+                <Select defaultValue={editItem?.site_id || '__none__'} onValueChange={(v) => editForm.setValue('site_id', v === '__none__' ? '' : v)}>
+                  <SelectTrigger><SelectValue placeholder="Here, in the cloud" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none__">Here, in the cloud</SelectItem>
+                    {siteList.map((s) => (
+                      <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
             <div className="flex justify-end gap-2">
               <Button type="button" variant="outline" onClick={() => setEditItem(null)}>Cancel</Button>
               <Button type="submit" disabled={updateMutation.isPending}>

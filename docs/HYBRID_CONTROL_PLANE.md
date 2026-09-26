@@ -454,6 +454,60 @@ registration's own retry (up to 35 s after a refusal) rather than the
 moment the link returns. A call in progress across the link when it is
 cut is not proved either way.
 
+### 3.9 The site as a product, as built
+
+*Phase 7.* What a customer's operator gets, and what proves it.
+
+**The site stack.** `deploy/docker-compose/site` is a compose project
+of its own (`name: site`): the site's Postgres and Redis, the cloud
+stack's `make-certs.sh` making the site's CA, the call manager's
+certificate and `master.key` into `fcp-certs`, the admin with
+`[api] managed_by` from `FCP_CLOUD_ADMIN_URL`, the call manager on the
+host's network on shifted ports (SIP 5090–5092, HTTP 18084, RTP
+12000–12999) with `[sip] tls_ca_path` on the cloud's CA, `[events]
+use_redis` and no CDR stream sink (records stay in the site's database
+for the link), and `fcp-link` in its own image (`Dockerfile.link`, the
+fifteenth in `images.yml`) with `state_dir` on the `link-data` volume.
+The cloud's CA is bind-mounted from `site/cloud-ca.crt`; the cloud's
+three addresses and the token are `FCP_LINK_*` and
+`FCP_CLOUD_ADMIN_URL` in the site's `.env`. `backup.sh`, `restore.sh`
+and `wait-healthy.sh` take `COMPOSE_DIR`, and `link-data` is in the
+backup's volume list, so a site is kept as the cloud is.
+
+**The documents.** `docs/SITE_SETUP.md` for the site's operator — what
+to get from the cloud, the bring-up and the log lines of an
+enrollment, phones, the site's admin and its refusal, life without the
+cloud, the volumes and what is re-derivable, backup and restore,
+upgrade, decommissioning, faults; the runbook's §9 for the cloud's
+operator; the compose README's site section.
+
+**The UI.** A Sites page under Advanced: the tenant's sites with
+status, link, sync, registrations, nodes and link trunk; a site made
+with its token shown once (as API tokens are); a new token; disable,
+enable, delete; a detail dialog with the nodes and who is registered
+at the site. Numbers get *Answered at site* and trunks *Runs at*
+(`site_id`), shown only to a tenant that has sites. A platform admin
+on every tenant sees all sites and makes none.
+
+**Proved** in the nightly's `stack` job: the live tenant gets a site
+through the admin API, the site stack comes up from the same images
+beside the cloud stack, and `fcp-link/tests/compose_site.rs` (gated on
+`FCP_LIVE_SITE`, the site's id) checks the cloud's site record —
+enrolled, link up, the site's call manager on it with its release and
+a link trunk — a user made in the cloud registering at the site, the
+site bound at the cloud's SBC, the site's admin refusing a user with
+the cloud's address, and `sync_behind` at zero; then `backup.sh`
+takes the site with its `link-data`. On every CI run the binaries'
+smoke tests `--check-config` the site's three configurations with the
+site's `.env`, and `fcp-link/tests/smoke.rs` starts the link with
+nowhere to enroll to.
+
+**Left for later.** A call through the live site in the nightly (the
+floor's `calls.rs` proves it on the loopback). A site's own
+`fcp-events-server`, voicemail and conference servers are not in the
+site compose project; the site runs what the call manager carries. The
+link's protocol is versioned but no second version exists to refuse.
+
 ## 4. Tenancy and security at the site
 
 A site belongs to one tenant and holds that tenant's slice only. The
@@ -481,7 +535,7 @@ harness (`docs/TEST_FLOOR.md`, the two-node cluster harness with a
 | 4 | ✅ v0.25.271 — **Calls across.** The link trunk provisioned at enrollment; the cloud SBC knows the site as the tenant's registering trunk; numbers route to the site; inbound reaches the site's phones and outbound leaves through the cloud; emergency per the site's trunks. Floor, with the SBC and a carrier stub in the harness. As built (§3.6): `[link] sip_host` makes one link trunk per site (`site_id`, `link = cloud`, TLS, credentials minted at enrollment); `Trunk.site_id` says where a trunk runs and the link keeps only its site's, turning the link's end to `site`; the SBC loads link peers, authenticates their REGISTER, keeps each site's binding and RFC 5626 flow (`/admin/sites`); `PhoneNumber.site_id` sends a number's calls down its site's flow; a site's calls are the tenant's own, forwarded to the cloud's call manager as a trusted edge's with `X-FCP-Caller-Site`; legs to and from a site latch their media. Test: `fcp-link/tests/calls.rs`. |
 | 5 | ✅ v0.25.272 — **Records up.** CDRs shipped and rated in the cloud, idempotently; events bridged; recording and voicemail rows shipped and files fetched through the link; registration summaries; retention and subject requests reaching the site's rows and files, the report naming the site. As built (§3.7): a `ship_seq` on five tables and a cursor per table in the link; `POST /link/v1/cdrs` rated afresh by the cloud's processor and announced naming the site; `POST /link/v1/records` for recording, mailbox and message rows and the site's logged deletions; `site_requests` collected on the link's long poll for fetches and deletions, answered on its own connection, behind downloads, playback, exports, erasures and the reaper; the site's events forwarded from its stream with `origin_site`; registrations on the heartbeat. Test: `fcp-link/tests/records.rs`. |
 | 6 | ✅ v0.25.273 — **Survivability, proved.** The floor cuts the link (a proxy cut, as `fcp-cluster/tests/partition.rs` does): phones keep registering and calling, a local trunk keeps carrying, CDRs and events spool; reconnect catches up; the cloud showed the site unreachable meanwhile and shows it back. As built (§3.8): `fcp_testkit::cut::CutLink` in front of the link listener and the SBC; the site's own carrier by `site_id`; mid-call requests toward a site down its flow (`Call::a_leg.flow_token`, `send_reinvite_via_flow`). Test: `fcp-link/tests/survivability.rs`. |
-| 7 | **The site as a product.** `docs/SITE_SETUP.md` for the customer's operator (enroll, run, upgrade, back up); the runbook's site section; the admin UI's Sites page; the nightly gains a site stack against its cloud stack. |
+| 7 | ✅ v0.25.274 — **The site as a product.** `docs/SITE_SETUP.md` for the customer's operator (enroll, run, upgrade, back up); the runbook's site section; the admin UI's Sites page; the nightly gains a site stack against its cloud stack. As built (§3.9): the `site` compose project with `Dockerfile.link`, the backup scripts taking `COMPOSE_DIR`, the Sites page and the `site_id` fields on numbers and trunks, `fcp-link/tests/compose_site.rs` in the nightly's `stack` job. **The project is complete.** |
 
 ## 6. Questions
 
@@ -535,7 +589,7 @@ The two-stack floor: the existing two-node cluster harness started as a
 cloud (its own Postgres and Redis) and a site (its own), joined by
 `fcp-link` and the link trunk, with the cut-able proxy from the
 partition test between them. Phases 1 to 6 each add a scenario; phase 7
-adds a site stack to the nightly's compose run. Unit tests cover the
+added a site stack to the nightly's compose run (§3.9). Unit tests cover the
 journal triggers per table and the link's apply order and idempotence.
 
 ## 8. Not in scope

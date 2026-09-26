@@ -18,7 +18,8 @@ import {
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
-import { lcrRoutes, trunks } from '@/api/endpoints'
+import { lcrRoutes, trunks, sites } from '@/api/endpoints'
+import { useEffectiveTenantId } from '@/components/TenantSelector'
 import type { SipTrunk, CreateTrunkRequest, TrunkStatsResponse } from '@/types'
 
 const healthBadge = (status: string) => {
@@ -98,6 +99,8 @@ interface TrunkFormData {
   recovery_interval_secs: number
   health_check_enabled: boolean
   health_check_interval_secs: number
+  /** The site this trunk runs at; empty for the cloud's own. */
+  site_id: string
 }
 
 const defaultValues: TrunkFormData = {
@@ -136,6 +139,7 @@ const defaultValues: TrunkFormData = {
   recovery_interval_secs: 60,
   health_check_enabled: true,
   health_check_interval_secs: 30,
+  site_id: '',
 }
 
 function trunkToForm(trunk: SipTrunk): TrunkFormData {
@@ -169,6 +173,7 @@ function trunkToForm(trunk: SipTrunk): TrunkFormData {
     t38_enabled: trunk.t38_enabled,
     emergency_capable: trunk.emergency_capable,
     outbound_proxy: trunk.outbound_proxy ?? '',
+    site_id: trunk.site_id ?? '',
     trunk_group: trunk.trunk_group ?? '',
     header_rules: trunk.header_rules ?? '',
     max_failures: trunk.max_failures,
@@ -212,6 +217,8 @@ function formToRequest(form: TrunkFormData): CreateTrunkRequest {
     t38_enabled: form.t38_enabled,
     emergency_capable: form.emergency_capable,
     outbound_proxy: form.outbound_proxy || undefined,
+    // An empty site makes the trunk the cloud's own again.
+    site_id: form.site_id,
     trunk_group: form.trunk_group || undefined,
     header_rules: form.header_rules || undefined,
     max_failures: form.max_failures,
@@ -668,6 +675,13 @@ function TrunkForm({ form, onSubmit, isSubmitting, submitLabel = 'Create Trunk' 
   submitLabel?: string
 }) {
   const { register, handleSubmit, watch, setValue } = form
+  const tenantForSites = useEffectiveTenantId()
+  // The tenant's sites: a trunk may run at one, as a carrier of the
+  // site's own (docs/HYBRID_CONTROL_PLANE.md §3.6).
+  const { data: siteList = [] } = useQuery({
+    queryKey: ['sites', tenantForSites],
+    queryFn: () => sites.list(tenantForSites || undefined),
+  })
   const transportProtocol = watch('transport_protocol')
   const registerEnabled = watch('register')
   const healthCheckEnabled = watch('health_check_enabled')
@@ -703,6 +717,20 @@ function TrunkForm({ form, onSubmit, isSubmitting, submitLabel = 'Create Trunk' 
               </SelectContent>
             </Select>
           </div>
+          {siteList.length > 0 && (
+            <div>
+              <Label>Runs at</Label>
+              <Select value={watch('site_id') || '__none__'} onValueChange={(v) => setValue('site_id', v === '__none__' ? '' : v)}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">The cloud (here)</SelectItem>
+                  {siteList.map((site) => (
+                    <SelectItem key={site.id} value={site.id}>Site {site.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
         </div>
       </div>
 

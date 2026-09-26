@@ -1,0 +1,216 @@
+# A site on one Docker host (docs/SITE_SETUP.md): a tenant's own stack on
+# the tenant's network, enrolled to a cloud that is the system of record
+# and kept in step by fcp-link (docs/HYBRID_CONTROL_PLANE.md).
+#
+#   cp <the cloud's ca.crt> cloud-ca.crt
+#   edit .env (the cloud's addresses, the enrollment token, the secrets)
+#   docker compose up -d --build
+#
+# What runs: Postgres and Redis of the site's own, the certs service
+# (the site's CA, the call manager's certificate and the master key its
+# secrets are sealed under), the site's admin (read-only for what the
+# cloud owns, `[api] managed_by`), the call manager on the host's
+# network — the site's phones register at it and stay in service when
+# the cloud is unreachable — and the link. The link enrolls once with
+# the token in .env, keeps the site's database a copy of the tenant's
+# configuration, ships the site's records up and heartbeats.
+#
+# A separate compose project (`site`), so it runs beside the cloud
+# stack on one host, as the nightly does; its ports are shifted from
+# the cloud stack's (none collide):
+#   15432 postgres · 16379 redis · 18080 admin · 18084 call manager
+#   SIP 5090 (UDP, TCP) · SIPS 5091 · WSS 5092 · RTP 12000-12999
+#
+# Secrets come from .env through each binary's FCP_* environment override.
+
+name: site
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: site-postgres
+    environment:
+      POSTGRES_USER: fcp
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: fcp
+    ports:
+      - "15432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fcp -d fcp"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: site-redis
+    ports:
+      - "16379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  # The site's own certificates and master key, made once into the
+  # fcp-certs volume by the cloud stack's script: a CA the site's phones
+  # trust, the call manager's certificate, and master.key, which the
+  # admin, the call manager and the link seal the database's secrets
+  # under (docs/ENCRYPTION.md). The link trunk to the cloud is verified
+  # against the cloud's CA instead, bind-mounted from ./cloud-ca.crt.
+  certs:
+    image: alpine/openssl:latest
+    container_name: site-certs
+    entrypoint: ["/bin/sh", "/make-certs.sh"]
+    environment:
+      HOST_IP: ${HOST_IP}
+      CERT_SERVICES: fcp-call-manager
+    volumes:
+      - ../scripts/make-certs.sh:/make-certs.sh:ro
+      - fcp-certs:/certs
+
+  # The site's admin: the same binary and UI as the cloud's, over the
+  # site's copy of the tenant's configuration. What the cloud owns is
+  # refused here with the cloud's address (`[api] managed_by`).
+  fcp-admin:
+    image: ghcr.io/thevoiceguy/fcp-admin:${FCP_IMAGE_TAG:-local}
+    build:
+      context: ../../..
+      dockerfile: deploy/docker-compose/Dockerfile.admin
+    container_name: site-admin
+    ports:
+      - "18080:8080"
+    volumes:
+      - ./configs/fcp-admin.toml:/app/fcp-admin.toml:ro
+      - fcp-certs:/var/lib/fcp/certs:ro
+      - admin-data:/app/data
+    environment:
+      RUST_LOG: info
+      FCP_ADMIN_LOG_FORMAT: pretty
+      FCP_CLOUD_ADMIN_URL: ${FCP_CLOUD_ADMIN_URL}
+      FCP_ADMIN_DATABASE_URL: postgresql://fcp:${POSTGRES_PASSWORD}@postgres:5432/fcp
+      FCP_ENCRYPTION_PROVIDER: local
+      FCP_MASTER_KEY_FILE: /var/lib/fcp/certs/master.key
+      FCP_ADMIN_AUTH_TOKEN: ${FCP_ADMIN_AUTH_TOKEN}
+      FCP_ADMIN_PROVISIONING_AUTH_TOKEN: ${FCP_ADMIN_PROVISIONING_AUTH_TOKEN}
+      FCP_ADMIN_CALL_MANAGER_AUTH_TOKEN: ${FCP_CALL_MANAGER_API_TOKEN}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      certs:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/v1/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+
+  # The site's call manager, on the host's network: SIP 5090, SIPS 5091,
+  # WSS 5092, HTTP 18084, RTP 12000-12999. It registers the site's link
+  # trunk to the cloud's SBC over TLS and carries the site's calls,
+  # cloud or no cloud (docs/HYBRID_CONTROL_PLANE.md §3.6, §3.8).
+  fcp-call-manager:
+    image: ghcr.io/thevoiceguy/fcp-call-manager:${FCP_IMAGE_TAG:-local}
+    build:
+      context: ../../..
+      dockerfile: deploy/docker-compose/Dockerfile.call-manager
+    container_name: site-call-manager
+    network_mode: host
+    volumes:
+      - ./configs/fcp-call-manager.toml:/app/fcp-call-manager.toml:ro
+      - ./cloud-ca.crt:/var/lib/fcp/cloud/ca.crt:ro
+      - fcp-certs:/var/lib/fcp/certs:ro
+      - call-manager-data:/app/data
+    environment:
+      RUST_LOG: info
+      FCP_CALL_MANAGER_LOG_FORMAT: pretty
+      FCP_CALL_MANAGER_PUBLIC_IP: ${HOST_IP}
+      FCP_CALL_MANAGER_DATABASE_URL: postgresql://fcp:${POSTGRES_PASSWORD}@127.0.0.1:15432/fcp
+      FCP_ENCRYPTION_PROVIDER: local
+      FCP_MASTER_KEY_FILE: /var/lib/fcp/certs/master.key
+      FCP_CALL_MANAGER_API_TOKEN: ${FCP_CALL_MANAGER_API_TOKEN}
+    depends_on:
+      certs:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      fcp-admin:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:18084/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
+  # The link (docs/HYBRID_CONTROL_PLANE.md): enrolls once with the token
+  # in .env, then heartbeats under mutual TLS, keeps the site's database
+  # a copy of the tenant's configuration, ships the site's records and
+  # events up, and executes the cloud's requests. Its state — the key,
+  # the certificate, the site's secret, the sync cursor — is the
+  # link-data volume: keep it (docs/SITE_SETUP.md, "Backing up").
+  fcp-link:
+    image: ghcr.io/thevoiceguy/fcp-link:${FCP_IMAGE_TAG:-local}
+    build:
+      context: ../../..
+      dockerfile: deploy/docker-compose/Dockerfile.link
+    container_name: site-link
+    volumes:
+      - ./configs/fcp-link.toml:/app/fcp-link.toml:ro
+      - ./cloud-ca.crt:/var/lib/fcp/cloud/ca.crt:ro
+      - fcp-certs:/var/lib/fcp/certs:ro
+      - link-data:/app/data
+      - call-manager-data:/var/lib/fcp/call-manager:ro
+    environment:
+      RUST_LOG: info
+      FCP_LINK_LOG_FORMAT: pretty
+      FCP_LINK_CLOUD_URL: ${FCP_LINK_CLOUD_URL}
+      FCP_LINK_LINK_URL: ${FCP_LINK_LINK_URL}
+      FCP_LINK_ENROLLMENT_TOKEN: ${FCP_LINK_ENROLLMENT_TOKEN}
+      FCP_LINK_SITE_DATABASE_URL: postgresql://fcp:${POSTGRES_PASSWORD}@postgres:5432/fcp
+      FCP_ENCRYPTION_PROVIDER: local
+      FCP_MASTER_KEY_FILE: /var/lib/fcp/certs/master.key
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      certs:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      fcp-admin:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8096/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  redis-data:
+  fcp-certs:
+  admin-data:
+  call-manager-data:
+  link-data:
+
+networks:
+  default:
+    name: site-network

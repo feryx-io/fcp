@@ -1,4 +1,4 @@
-//! The shipped stack, live (`docs/NIGHTLY_STACK.md` phase 2): the fourteen
+//! The shipped stack, live (`docs/NIGHTLY_STACK.md` phase 2): the
 //! images the Images workflow built, brought up by `docker compose` with
 //! the shipped `.env`, and used as a phone would. Unlike `compose_stack.rs`
 //! this test starts nothing: it expects the stack on the compose file's

@@ -1,0 +1,39 @@
+# fcp-admin at a site (docs/SITE_SETUP.md): the same admin as the
+# cloud's, over the site's copy of the tenant's configuration. Secrets
+# come from .env through the FCP_ADMIN_* environment overrides; nothing
+# secret is written here.
+
+[service]
+service_type = "admin"
+node_id = "site-admin-01"
+
+[api]
+bind_address = "0.0.0.0:8080"
+# A non-loopback bind needs auth_enabled and a token: FCP_ADMIN_AUTH_TOKEN
+# and FCP_ADMIN_PROVISIONING_AUTH_TOKEN come from .env.
+auth_enabled = true
+# This admin is a site of a cloud: a write to anything the link keeps in
+# sync — the tenant, users, devices, numbers, routes, trunks, flows and
+# the rest — is refused here and names the cloud's admin, where it is
+# made (docs/HYBRID_CONTROL_PLANE.md §4). FCP_CLOUD_ADMIN_URL is in .env.
+managed_by = "${FCP_CLOUD_ADMIN_URL}"
+
+[storage]
+# Overridden by FCP_ADMIN_DATABASE_URL (the password is in .env).
+database_url = "postgresql://fcp:change-me@postgres:5432/fcp"
+
+[cluster]
+# The site's Redis: the cluster page lists the site's own nodes.
+redis_url = "redis://redis:6379"
+
+[call_manager]
+# The site's call manager runs on the host's network;
+# FCP_ADMIN_CALL_MANAGER_AUTH_TOKEN authenticates.
+url = "http://host.docker.internal:18084"
+
+[compliance]
+exports_dir = "/app/data/exports"
+
+[logging]
+level = "info"
+format = "pretty"

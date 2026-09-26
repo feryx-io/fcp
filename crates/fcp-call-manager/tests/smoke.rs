@@ -132,6 +132,7 @@ fn shipped_configurations_check() {
         &[
             "fcp-call-manager-local.toml",
             "deploy/docker-compose/configs/fcp-call-manager.toml",
+            "deploy/docker-compose/site/configs/fcp-call-manager.toml",
         ],
         &[],
     );

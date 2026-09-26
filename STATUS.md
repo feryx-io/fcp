@@ -1166,6 +1166,30 @@ the SBC's log proves both. Left for later: the site's link re-registers
 on the trunk registration's own retry (up to 35 s after a refusal), and
 a call in progress across the link when it is cut is not proved either
 way.
+Phase 7 done (v0.25.274): the site as a product. `deploy/docker-compose/site`
+is a compose project of its own — the site's Postgres and Redis, its
+own CA and master key from the cloud stack's script, the admin under
+`[api] managed_by`, the call manager on the host's network on shifted
+ports trusting the cloud's CA for the link trunk, and `fcp-link` in its
+own image (the fifteenth) — configured from a `.env` that names the
+cloud's three addresses and the token; `backup.sh`, `restore.sh` and
+`wait-healthy.sh` take `COMPOSE_DIR` and the backup lists `link-data`,
+so a site is kept as the cloud is. `docs/SITE_SETUP.md` is the site
+operator's document (what to get from the cloud, the bring-up and its
+log lines, phones, the site's admin and its refusal, life without the
+cloud, the volumes, backup, restore, upgrade, decommissioning, faults);
+the runbook's §9 is the cloud operator's. The admin UI has a Sites page
+(made with the token shown once, new token, disable, enable, delete,
+the nodes and registrations of each) and `site_id` on numbers and
+trunks. The nightly's `stack` job makes a site for the live tenant,
+brings the site stack up beside the cloud stack from the same images,
+and `fcp-link/tests/compose_site.rs` proves it enrolled with the link
+up and the call manager on it, a cloud-made user registering at the
+site, the site bound at the cloud's SBC, the site's admin refusing a
+write with the cloud's address, and nothing behind; then backs the site
+up. **The hybrid control plane project is complete.** Left: a call
+through the live site in the nightly, the site's own events, voicemail
+and conference servers in the site project.
 
 ## Historical documents
 

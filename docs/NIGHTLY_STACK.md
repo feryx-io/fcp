@@ -41,7 +41,7 @@ has never run where it was meant to.
 
 ### 1.2 The images are built nightly and never run
 
-`.github/workflows/images.yml` builds all fourteen images every night,
+`.github/workflows/images.yml` builds all fifteen images (the link's since hybrid phase 7) every night,
 one runner each, and stops: the images are discarded with the runners.
 What proves the compose stack is `crates/fcp-call-manager/tests/compose_stack.rs`,
 which starts the *binaries* with the compose file's configurations,

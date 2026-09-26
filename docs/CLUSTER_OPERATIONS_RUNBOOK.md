@@ -242,3 +242,66 @@ calls and registrations per node and per tenant — is in
 `docs/CAPACITY_AND_SURVIVABILITY.md` §5 with the numbers the load
 harness measured; the `[admission]` section is on every routing
 binary.
+
+## 9. Sites
+
+A site is a tenant's own stack on the tenant's network, enrolled to
+this cloud and run by the customer (`docs/SITE_SETUP.md` is their
+document; `docs/HYBRID_CONTROL_PLANE.md` the design). It is not a node
+of this cluster: it heartbeats into nothing here. Its one process that
+talks to the cloud, `fcp-link`, connects outward to the admin's link
+listeners and the site's call manager registers a link trunk to the
+SBC; nothing here connects to the site.
+
+**What the cloud runs for sites.** The admin's `[link]`: `enabled`,
+`enroll_bind` (TLS, the one-time enrollment) and `bind` (mutual TLS,
+everything after), `cert`/`key` (the listeners' own certificate),
+`ca_dir` (the link CA the admin makes on first start and signs every
+site's certificate with; `Link CA made`, then `Link CA loaded` — keep
+the directory, it is in `admin-data`), `heartbeat_interval_secs` (what
+the admin tells every link to send at), `heartbeat_stale_secs` (a site
+quiet for longer is marked down: `A site's link is down: no heartbeat`),
+`sip_host` (the SBC's TLS listener as `host:port`; without it,
+`No [link] sip_host: the site gets no link trunk`) and `sip_realm` (the
+SBC's `external_domain`). The compose cloud publishes 8446 and 8447 and
+sets `sip_host` to `${HOST_IP}:5079`. Behind a load balancer, the link
+listener must pass the client certificate through (TLS passthrough,
+not termination): the admin verifies it against its own CA.
+
+**A site's life.** A tenant administrator makes the site (`POST
+/v1/sites` in the tenant; the UI's Sites page) and gets a token shown
+once. The site's link enrolls with it (`A site enrolled`; the cloud
+makes the site's link trunk, `The site's link trunk is provisioned`,
+its password rotated at every enrollment), takes the tenant's snapshot
+(`A site took a snapshot`) and follows the journal from there. Every
+heartbeat carries the link's release, the site's nodes and their
+releases, the sync cursor, the registrations at the site; the site
+record (`GET /v1/sites/:id`) shows them with `link_up`, `last_seen_at`,
+`sync_behind` (the journal's head minus the site's cursor) and
+`sync_error`. `GET /v1/cluster/sites` is every tenant's sites for the
+cluster page, and `system.site_link_changed` fires on every up and
+down (`A site's link is up`).
+
+**Watching.** The Sites page, or `GET /v1/sites` in the tenant. The
+SBC's `GET /admin/sites` lists the sites bound to it (the link trunk's
+registration, with its flow). A site whose link is up but whose
+`sync_behind` grows has a sync error: the record names the object, the
+site's link log the cause; the link retries from its cursor.
+
+**Disabling, deleting.** `POST /v1/sites/:id/disable` refuses the
+site's certificate and secret from the next request; its heartbeats
+fail and its trunk registration is refused. `enable` takes it back.
+`DELETE /v1/sites/:id` removes the site and its link trunk; the site's
+own stack is the customer's to stop.
+
+**Upgrading.** The site's releases are on its record and the Sites
+page. The site runs the cloud's images; upgrade the cloud first, then
+the sites, and keep a site within one release of the cloud. The link's
+protocol is versioned (`protocol` on the heartbeat); a site the cloud
+refuses says so in its log.
+
+**Draining and partitions.** Draining a cloud node does not touch a
+site. A site whose link is down (`link_up` false) is not a partition
+of this cluster: it runs alone on its copy and catches up when the
+link returns (`docs/HYBRID_CONTROL_PLANE.md` §3.8); the records it
+writes meanwhile reach the cloud afterwards, naming the site.

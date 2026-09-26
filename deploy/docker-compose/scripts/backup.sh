@@ -30,12 +30,15 @@
 # runs inside the container over its socket.
 set -euo pipefail
 
-COMPOSE_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )/.." && pwd )"
+# COMPOSE_DIR names another compose project to back up: the site stack's
+# directory (docs/SITE_SETUP.md), whose volumes are a subset of the list.
+COMPOSE_DIR="${COMPOSE_DIR:-$( cd "$( dirname "${BASH_SOURCE[0]}" )/.." && pwd )}"
 HELPER_IMAGE="${FCP_BACKUP_HELPER_IMAGE:-alpine:3.20}"
 # The volumes a restore needs, and the ones it does not: postgres-data is
 # the dump, tts-cache and redis-data are re-derivable, prometheus-data and
-# grafana-data are the monitoring stack's own.
-VOLUMES="fcp-certs call-manager-data admin-data voicemail-data conference-recordings conference-cdr-spool media-recordings media-prompts"
+# grafana-data are the monitoring stack's own. link-data is the site
+# stack's link (its identity and cursors); the cloud stack has none.
+VOLUMES="fcp-certs call-manager-data admin-data voicemail-data conference-recordings conference-cdr-spool media-recordings media-prompts link-data"
 
 fail() { echo "backup: $*" >&2; exit 1; }
 say() { echo "backup: $*"; }
