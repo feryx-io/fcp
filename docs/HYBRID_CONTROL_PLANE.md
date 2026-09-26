@@ -409,6 +409,51 @@ site and one made in the cloud for the same user are two mailboxes.
 A file sent up is held in memory on both ends (up to 512 MB); a policy
 copying a site's files to the cloud's archive is not written.
 
+### 3.8 Survivability, as built
+
+*Phase 6.* The floor cuts the link — two TCP proxies the test drops and
+restores (`fcp_testkit::cut::CutLink`), one in front of the admin's link
+listener, one in front of the SBC's TLS listener, as a network between
+a site and its cloud would fail — and watches both sides.
+
+**Cut.** The cloud says the site's link is down within
+`[link] heartbeat_stale_secs` and the SBC drops the site's binding as its
+connection closes. The site goes on with what it has: phones register
+and call one another with audio, a call to the outside leaves on the
+site's own carrier (a trunk with the site's `site_id`, priority ahead of
+the link's), the records and events it writes wait — the shipper's
+cursors do not move, the event consumer's entries stay unacknowledged,
+the link's status says why — and the cloud's requests wait in
+`site_requests`.
+
+**Return.** The cloud says the site is back on the next heartbeat; the
+sync follows the feed from its cursor, so what the cloud changed during
+the cut (a user made) registers at the site; the shipper sends what the
+site wrote during the cut, records and events alike, and the cloud
+stores and announces them naming the site; the site's link registers
+again at the next tick and the cloud's calls reach the site as before.
+
+**Mid-call, down the flow.** A call that came up a site's link is
+answered, re-invited and hung up down the connection the site opened:
+the caller's leg keeps the flow its registration left
+(`Call::a_leg.flow_token`), a BYE toward it goes via that flow (it went
+to the contact before), and a re-INVITE toward either leg that has a
+flow goes via it (`send_reinvite_via_flow`, which the UAC had and the
+handler never used). Proved on the loopback by the SBC's own log.
+
+**Proved** by `fcp-link/tests/survivability.rs`: a carrier's call
+rings the site, is held and hung up down the flow; the link is cut and
+the cloud says so; Alice re-registers, calls Bob with audio, and calls
+the outside on the site's carrier; Carol is made in the cloud; the link
+returns and the cloud says so; Carol registers at the site; the site's
+two records and its call events reach the cloud naming the site; the
+site binds again and the carrier's call rings Alice.
+
+**Left for later.** A site's link trunk re-registers on the trunk
+registration's own retry (up to 35 s after a refusal) rather than the
+moment the link returns. A call in progress across the link when it is
+cut is not proved either way.
+
 ## 4. Tenancy and security at the site
 
 A site belongs to one tenant and holds that tenant's slice only. The
@@ -435,7 +480,7 @@ harness (`docs/TEST_FLOOR.md`, the two-node cluster harness with a
 | 3 | ✅ v0.25.270 — **Configuration at the site.** `fcp-link` applies the snapshot and follows the feed into the site's Postgres, sealing secrets under the site's key; the site's admin API refuses writes to synced objects; lag on the heartbeat. Floor: a user made in the cloud registers at the site within seconds; a password changed in the cloud is the one the site challenges with. As built: `[site] database_url` opens the site's Postgres (its schema migrated as every binary does) and the link applies through the same stores the cloud writes with — `put_*` per table, `FlowStore::put_flow` as an exact copy, a rate plan with its rates — keeping its cursor in `sync.json`; the heartbeat carries `sync` (cursor, applied at, the last error) and the cloud shows `sync_cursor`, `sync_applied_at`, `sync_error` and `sync_behind` on every site; the site's admin with `[api] managed_by` refuses a write to a synced resource with 403 naming the cloud (`fcp_api_core::managed`). Test: `fcp-link/tests/apply.rs`. |
 | 4 | ✅ v0.25.271 — **Calls across.** The link trunk provisioned at enrollment; the cloud SBC knows the site as the tenant's registering trunk; numbers route to the site; inbound reaches the site's phones and outbound leaves through the cloud; emergency per the site's trunks. Floor, with the SBC and a carrier stub in the harness. As built (§3.6): `[link] sip_host` makes one link trunk per site (`site_id`, `link = cloud`, TLS, credentials minted at enrollment); `Trunk.site_id` says where a trunk runs and the link keeps only its site's, turning the link's end to `site`; the SBC loads link peers, authenticates their REGISTER, keeps each site's binding and RFC 5626 flow (`/admin/sites`); `PhoneNumber.site_id` sends a number's calls down its site's flow; a site's calls are the tenant's own, forwarded to the cloud's call manager as a trusted edge's with `X-FCP-Caller-Site`; legs to and from a site latch their media. Test: `fcp-link/tests/calls.rs`. |
 | 5 | ✅ v0.25.272 — **Records up.** CDRs shipped and rated in the cloud, idempotently; events bridged; recording and voicemail rows shipped and files fetched through the link; registration summaries; retention and subject requests reaching the site's rows and files, the report naming the site. As built (§3.7): a `ship_seq` on five tables and a cursor per table in the link; `POST /link/v1/cdrs` rated afresh by the cloud's processor and announced naming the site; `POST /link/v1/records` for recording, mailbox and message rows and the site's logged deletions; `site_requests` collected on the link's long poll for fetches and deletions, answered on its own connection, behind downloads, playback, exports, erasures and the reaper; the site's events forwarded from its stream with `origin_site`; registrations on the heartbeat. Test: `fcp-link/tests/records.rs`. |
-| 6 | **Survivability, proved.** The floor cuts the link (a proxy cut, as `fcp-cluster/tests/partition.rs` does): phones keep registering and calling, a local trunk keeps carrying, CDRs and events spool; reconnect catches up; the cloud showed the site unreachable meanwhile and shows it back. |
+| 6 | ✅ v0.25.273 — **Survivability, proved.** The floor cuts the link (a proxy cut, as `fcp-cluster/tests/partition.rs` does): phones keep registering and calling, a local trunk keeps carrying, CDRs and events spool; reconnect catches up; the cloud showed the site unreachable meanwhile and shows it back. As built (§3.8): `fcp_testkit::cut::CutLink` in front of the link listener and the SBC; the site's own carrier by `site_id`; mid-call requests toward a site down its flow (`Call::a_leg.flow_token`, `send_reinvite_via_flow`). Test: `fcp-link/tests/survivability.rs`. |
 | 7 | **The site as a product.** `docs/SITE_SETUP.md` for the customer's operator (enroll, run, upgrade, back up); the runbook's site section; the admin UI's Sites page; the nightly gains a site stack against its cloud stack. |
 
 ## 6. Questions

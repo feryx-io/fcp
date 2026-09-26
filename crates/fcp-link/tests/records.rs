@@ -13,69 +13,13 @@
 
 mod common;
 
-use axum::{routing::post, Router};
-use common::{cloud_with_site_opts, until, CloudOptions, EVENTS_TOKEN};
+use common::{cloud_with_site_opts, eventually, stub_events_server, until, CloudOptions};
 use fcp_core::recording::{CallRecording, CallRecordingSource, Recording, RecordingConsent};
 use fcp_core::storage::{CdrKind, CdrQuery, CdrStore, RegistrationStore, VoicemailStore};
 use fcp_core::{MessagePriority, MessageStatus, VoicemailMailbox, VoicemailMessage};
-use fcp_testkit::smoke::{free_port, http_request, loopback, toml_path};
+use fcp_testkit::smoke::{http_request, loopback, toml_path};
 use fcp_testkit::TestDatabase;
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
-
-/// What the stub events server saw: one entry per POST, with its headers.
-#[derive(Debug, Clone)]
-struct Posted {
-    path: String,
-    node_id: Option<String>,
-    origin_site: Option<String>,
-    body: serde_json::Value,
-}
-
-/// An events server that remembers what was posted to its ingest.
-async fn stub_events_server() -> (u16, Arc<Mutex<Vec<Posted>>>) {
-    let seen: Arc<Mutex<Vec<Posted>>> = Arc::new(Mutex::new(Vec::new()));
-    let port = free_port();
-    let app = {
-        let seen = Arc::clone(&seen);
-        let handler = move |path: &'static str| {
-            let seen = Arc::clone(&seen);
-            move |headers: axum::http::HeaderMap, body: String| async move {
-                let expected = format!("Bearer {EVENTS_TOKEN}");
-                if headers
-                    .get("authorization")
-                    .and_then(|v| v.to_str().ok())
-                    .is_none_or(|v| v != expected)
-                {
-                    return axum::http::StatusCode::UNAUTHORIZED;
-                }
-                let header = |name: &str| {
-                    headers
-                        .get(name)
-                        .and_then(|v| v.to_str().ok())
-                        .map(str::to_string)
-                };
-                seen.lock().unwrap().push(Posted {
-                    path: path.to_string(),
-                    node_id: header("x-node-id"),
-                    origin_site: header("x-origin-site"),
-                    body: serde_json::from_str(&body).unwrap_or(serde_json::Value::Null),
-                });
-                axum::http::StatusCode::ACCEPTED
-            }
-        };
-        Router::new()
-            .route("/ingest", post(handler("/ingest")))
-            .route("/ingest/batch", post(handler("/ingest/batch")))
-    };
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
-        .await
-        .unwrap();
-    tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
-    });
-    (port, seen)
-}
 
 fn site_storage(
     url: &str,
@@ -92,25 +36,6 @@ fn site_storage(
         })
         .await
         .expect("a database")
-    }
-}
-
-/// Poll `check` until it holds, or fail with `what`.
-async fn eventually<F, Fut>(what: &str, within: Duration, mut check: F)
-where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = bool>,
-{
-    let deadline = tokio::time::Instant::now() + within;
-    loop {
-        if check().await {
-            return;
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "{what} did not happen within {within:?}"
-        );
-        tokio::time::sleep(Duration::from_millis(300)).await;
     }
 }
 
@@ -132,6 +57,7 @@ async fn what_a_site_writes_reaches_the_cloud_and_its_files_are_reached_through_
         events_server_url: Some(loopback(events_port, "/ingest")),
         site_redis_url: Some(site_redis.clone()),
         site_file_roots: vec![toml_path(files_dir.path())],
+        ..Default::default()
     })
     .await
     .expect("the database was there a moment ago");
