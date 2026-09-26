@@ -1207,7 +1207,19 @@ async fn ingest_events(
     #[cfg(feature = "redis-events")]
     if let Some(bus) = &state.ingest_bus {
         let node_id = posting_node(headers).unwrap_or_else(|| "ingest".to_string());
-        return match bus.publish_many_from(&node_id, events).await {
+        // Events a site sent up its link name the site
+        // (`docs/HYBRID_CONTROL_PLANE.md` §3.3) and fire here as this
+        // region's own.
+        let site = headers
+            .get(fcp_events::ORIGIN_SITE_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        return match bus
+            .publish_many_from_site(&node_id, site.as_deref(), events)
+            .await
+        {
             Ok(()) => StatusCode::ACCEPTED,
             Err(e) => {
                 warn!(error = %e, node_id = %node_id, "Ingested events could not be written to the stream");

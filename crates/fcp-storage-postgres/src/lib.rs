@@ -1563,7 +1563,7 @@ impl CdrStore for PostgresStorage {
                     cdr_id, kind, schema_version, direction, node_id, region,
                     correlation_id, trunk_name, trunk_id, rtp_packets_lost, rtp_jitter_ms,
                     rate_plan_id, matched_prefix, billable_seconds, rated_at, created_at,
-                    recording_consent
+                    recording_consent, site_id
                  ) ",
             );
             query.push_values(chunk, |mut b, row| {
@@ -1614,7 +1614,8 @@ impl CdrStore for PostgresStorage {
                     .push_bind(row.r.billable_seconds.map(|s| s as i32))
                     .push_bind(row.rated_at)
                     .push_bind(row.created_at)
-                    .push_bind(row.r.recording_consent.map(|c| c.as_str()));
+                    .push_bind(row.r.recording_consent.map(|c| c.as_str()))
+                    .push_bind(row.r.site_id.map(|id| id.to_string()));
             });
             query.push(" ON CONFLICT (cdr_id, start_time) DO NOTHING RETURNING cdr_id");
             let returned = query
@@ -1648,6 +1649,20 @@ impl CdrStore for PostgresStorage {
             Some(row) => Ok(Some(row_to_cdr(row)?)),
             None => Ok(None),
         }
+    }
+
+    async fn cdrs_after(&self, after: i64, limit: usize) -> Result<Vec<(i64, CallDetailRecord)>> {
+        let rows = sqlx::query("SELECT * FROM cdrs WHERE ship_seq > $1 ORDER BY ship_seq LIMIT $2")
+            .bind(after)
+            .bind(limit.clamp(1, 10_000) as i64)
+            .fetch_all(self.reads())
+            .await?;
+        rows.into_iter()
+            .map(|row| {
+                let seq: i64 = row.try_get("ship_seq")?;
+                Ok((seq, row_to_cdr(row)?))
+            })
+            .collect()
     }
 
     async fn query_cdrs(&self, query: CdrQuery) -> Result<Vec<CallDetailRecord>> {
@@ -3021,6 +3036,11 @@ fn row_to_cdr(row: sqlx::postgres::PgRow) -> Result<CallDetailRecord> {
             .get::<Option<String>, _>("direction")
             .and_then(|d| call_direction_from_name(&d)),
         node_id: row.get("node_id"),
+        site_id: row
+            .try_get::<Option<String>, _>("site_id")
+            .ok()
+            .flatten()
+            .and_then(|s| fcp_core::SiteId::from_str(&s).ok()),
         region: row.get("region"),
         correlation_id,
         trunk_name: row.get("trunk_name"),
@@ -6900,6 +6920,11 @@ impl PostgresStorage {
             priority,
             duration: duration as u32,
             recording_path: std::path::PathBuf::from(recording_path),
+            site_id: row
+                .try_get::<Option<String>, _>("site_id")
+                .ok()
+                .flatten()
+                .and_then(|s| fcp_core::SiteId::from_str(&s).ok()),
             transcription,
             created_at: datetime_to_system_time(created_at),
             accessed_at: accessed_at.map(datetime_to_system_time),
@@ -7116,7 +7141,7 @@ impl VoicemailStore for PostgresStorage {
     async fn get_message(&self, id: &str) -> Result<Option<fcp_core::VoicemailMessage>> {
         let row = sqlx::query(
             "SELECT id, mailbox_id, caller, caller_name, status, priority, duration,
-                    recording_path, transcription, created_at, accessed_at
+                    recording_path, transcription, created_at, accessed_at, site_id
              FROM voicemail_messages WHERE id = $1",
         )
         .bind(id)
@@ -7132,7 +7157,7 @@ impl VoicemailStore for PostgresStorage {
     async fn list_messages(&self, mailbox_id: &str) -> Result<Vec<fcp_core::VoicemailMessage>> {
         let rows = sqlx::query(
             "SELECT id, mailbox_id, caller, caller_name, status, priority, duration,
-                    recording_path, transcription, created_at, accessed_at
+                    recording_path, transcription, created_at, accessed_at, site_id
              FROM voicemail_messages
              WHERE mailbox_id = $1 AND status != 'deleted'
              ORDER BY created_at DESC",
@@ -7155,8 +7180,8 @@ impl VoicemailStore for PostgresStorage {
         sqlx::query(
             "INSERT INTO voicemail_messages
              (id, mailbox_id, caller, caller_name, status, priority, duration,
-              recording_path, transcription, created_at, accessed_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+              recording_path, transcription, created_at, accessed_at, site_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
              ON CONFLICT (id) DO UPDATE SET
                  mailbox_id = EXCLUDED.mailbox_id,
                  caller = EXCLUDED.caller,
@@ -7166,7 +7191,8 @@ impl VoicemailStore for PostgresStorage {
                  duration = EXCLUDED.duration,
                  recording_path = EXCLUDED.recording_path,
                  transcription = EXCLUDED.transcription,
-                 accessed_at = EXCLUDED.accessed_at",
+                 accessed_at = EXCLUDED.accessed_at,
+                 site_id = EXCLUDED.site_id",
         )
         .bind(&message.id)
         .bind(&message.mailbox_id)
@@ -7182,10 +7208,59 @@ impl VoicemailStore for PostgresStorage {
         .bind(message.transcription.as_deref())
         .bind(created_at)
         .bind(accessed_at)
+        .bind(message.site_id.map(|s| s.to_string()))
         .execute(self.writes())
         .await?;
 
         Ok(())
+    }
+
+    async fn messages_after(
+        &self,
+        after: i64,
+        limit: usize,
+    ) -> Result<Vec<(i64, fcp_core::VoicemailMessage)>> {
+        let rows = sqlx::query(
+            "SELECT id, mailbox_id, caller, caller_name, status, priority, duration,
+                    recording_path, transcription, created_at, accessed_at, site_id, ship_seq
+             FROM voicemail_messages
+             WHERE ship_seq > $1 ORDER BY ship_seq LIMIT $2",
+        )
+        .bind(after)
+        .bind(limit.clamp(1, 10_000) as i64)
+        .fetch_all(self.reads())
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                let seq: i64 = row.try_get("ship_seq")?;
+                Ok((seq, Self::map_message_row_pg(row)?))
+            })
+            .collect()
+    }
+
+    async fn mailboxes_after(
+        &self,
+        after: i64,
+        limit: usize,
+    ) -> Result<Vec<(i64, fcp_core::VoicemailMailbox)>> {
+        let rows = sqlx::query(
+            "SELECT id, tenant_id, user_id, line_binding_id, extension, pin, enabled,
+                    max_message_duration, max_messages, email_notification, email_address,
+                    attach_audio, include_transcription, transcription_enabled,
+                    retention_days, created_at, updated_at, ship_seq
+             FROM voicemail_mailboxes
+             WHERE ship_seq > $1 ORDER BY ship_seq LIMIT $2",
+        )
+        .bind(after)
+        .bind(limit.clamp(1, 10_000) as i64)
+        .fetch_all(self.reads())
+        .await?;
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            let seq: i64 = row.try_get("ship_seq")?;
+            out.push((seq, self.map_mailbox_row_pg(row).await?));
+        }
+        Ok(out)
     }
 
     async fn delete_message(&self, id: &str) -> Result<()> {
@@ -7249,7 +7324,7 @@ impl VoicemailStore for PostgresStorage {
     ) -> Result<Vec<fcp_core::VoicemailMessage>> {
         let rows = sqlx::query(
             "SELECT id, mailbox_id, caller, caller_name, status, priority, duration,
-                    recording_path, transcription, created_at, accessed_at
+                    recording_path, transcription, created_at, accessed_at, site_id
              FROM voicemail_messages
              WHERE mailbox_id = $1 AND status = $2
              ORDER BY created_at DESC",
@@ -7634,6 +7709,63 @@ impl fcp_core::site::SiteStore for PostgresStorage {
             .await?;
         row.map(|row| site_from_value(row.get("site_json")))
             .transpose()
+    }
+
+    async fn put_site_request(&self, request: fcp_core::site::SiteRequest) -> Result<()> {
+        let outcome = request.outcome.as_ref();
+        sqlx::query(
+            "INSERT INTO site_requests (id, site_id, tenant_id, request, created_at, taken_at, done_at, ok, detail)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+             ON CONFLICT (id) DO UPDATE SET
+                request = EXCLUDED.request,
+                taken_at = EXCLUDED.taken_at,
+                done_at = EXCLUDED.done_at,
+                ok = EXCLUDED.ok,
+                detail = EXCLUDED.detail",
+        )
+        .bind(request.id.to_string())
+        .bind(request.site_id.to_string())
+        .bind(request.tenant_id.to_string())
+        .bind(serde_json::to_value(&request)?)
+        .bind(system_time_to_datetime(request.created_at))
+        .bind(request.taken_at.map(system_time_to_datetime))
+        .bind(request.done_at.map(system_time_to_datetime))
+        .bind(outcome.map(|o| o.ok))
+        .bind(outcome.and_then(|o| o.detail.clone()))
+        .execute(self.writes())
+        .await?;
+        Ok(())
+    }
+
+    async fn get_site_request(
+        &self,
+        id: &fcp_core::SiteRequestId,
+    ) -> Result<Option<fcp_core::site::SiteRequest>> {
+        let row = sqlx::query("SELECT request FROM site_requests WHERE id = $1")
+            .bind(id.to_string())
+            .fetch_optional(self.reads())
+            .await?;
+        row.map(|row| Ok(serde_json::from_value(row.try_get("request")?)?))
+            .transpose()
+    }
+
+    async fn pending_site_requests(
+        &self,
+        site_id: &fcp_core::SiteId,
+        limit: usize,
+    ) -> Result<Vec<fcp_core::site::SiteRequest>> {
+        let rows = sqlx::query(
+            "SELECT request FROM site_requests
+             WHERE site_id = $1 AND done_at IS NULL
+             ORDER BY created_at LIMIT $2",
+        )
+        .bind(site_id.to_string())
+        .bind(limit.clamp(1, 1000) as i64)
+        .fetch_all(self.reads())
+        .await?;
+        rows.into_iter()
+            .map(|row| Ok(serde_json::from_value(row.try_get("request")?)?))
+            .collect()
     }
 }
 

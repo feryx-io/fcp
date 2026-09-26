@@ -1117,6 +1117,34 @@ known by the exact connection it registered on; the link carries RTP,
 not SRTP; a site's emergency call reaches the cloud without its
 location; in-dialog requests other than BYE to a site behind NAT are
 proved in phase 6.
+Phase 5 done (v0.25.272): records up. Migration 081 gives `cdrs`,
+`call_recordings`, `conference_recordings`, `voicemail_mailboxes` and
+`voicemail_messages` a shipping sequence (`ship_seq`, bumped on every
+change) and a `site_id`, and `pending_file_deletions` the site holding
+the file; the link keeps a cursor per table in `ship.json` and ships
+after it in batches. `POST /link/v1/cdrs`: the cloud sets the site's
+rating aside, marks the record with the site and runs its own
+processor — rated, charged, stored idempotently, `cdr.written` naming
+the site. `POST /link/v1/records`: recording, mailbox and message rows
+written naming the site, the site's logged deletions mirrored under the
+cause `site`. Files stay at the site and are reached through
+`site_requests`: the cloud writes a fetch or a deletion down, the link
+collects it on `GET /link/v1/requests` (a long poll) and answers on
+`POST /link/v1/requests/:id`, touching only `[site] file_roots`; behind
+it stand the recording download, voicemail playback, subject exports
+(the site named in `missing_files` when unreachable), erasures, the
+API's delete and the reaper (`files_asked_of_sites`). The link forwards
+the site's events from its Redis stream (consumer group `link`, without
+`cdr.written`) to `POST /link/v1/events`, which the admin posts to the
+events server's ingest with `x-origin-site`, so the envelope names the
+site and the tenant's webhooks fire in the cloud once. The heartbeat
+carries who is registered at the site, and `/v1/sites` shows it. Proved
+by `fcp-link/tests/records.rs` against a live cloud, a site database, a
+site Redis and a stub events server. Left for later: a site's own
+retention still runs on its copies; a mailbox made at the site and one
+made in the cloud for the same user are two; files sent up are held in
+memory (512 MB at most); no policy copies a site's files to the cloud's
+archive.
 
 ## Historical documents
 

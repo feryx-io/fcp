@@ -19,6 +19,7 @@ path = "src/main.rs"
 # FCP crates
 fcp-core = { path = "../fcp-core" }
 fcp-cdr = { path = "../fcp-cdr" }
+fcp-billing = { path = "../fcp-billing" }
 fcp-api-core = { path = "../fcp-api-core" }
 fcp-admin-ui = { path = "../fcp-admin-ui" }
 fcp-sip = { path = "../fcp-sip" }

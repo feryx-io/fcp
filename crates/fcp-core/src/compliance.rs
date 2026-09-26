@@ -384,6 +384,9 @@ pub enum DeletionCause {
     Erasure,
     /// A tenant's deletion.
     TenantDeletion,
+    /// Deleted at its site, mirrored here as the deletion came up the
+    /// site's link (`docs/HYBRID_CONTROL_PLANE.md` §3.3).
+    Site,
 }
 
 impl DeletionCause {
@@ -395,6 +398,7 @@ impl DeletionCause {
             DeletionCause::Upkeep => "upkeep",
             DeletionCause::Erasure => "erasure",
             DeletionCause::TenantDeletion => "tenant_deletion",
+            DeletionCause::Site => "site",
         }
     }
 }
@@ -486,6 +490,10 @@ pub struct PendingFileDeletion {
     /// A live row still names the path (a greeting rewritten in place):
     /// the entry is dropped and the file kept.
     pub still_referenced: bool,
+    /// The site holding the file, when the row came up a site's link
+    /// (`docs/HYBRID_CONTROL_PLANE.md` §3.3): the site removes it, asked
+    /// through its link, not this host.
+    pub site_id: Option<crate::SiteId>,
 }
 
 /// The instant before which data of a given age is past its window.
@@ -633,6 +641,18 @@ pub trait ComplianceStore: Send + Sync {
 
     /// The deletion log, newest first.
     async fn list_deletions(&self, query: &DeletionQuery) -> anyhow::Result<Vec<DeletionRecord>>;
+
+    /// The deletions logged after entry `after`, oldest first, at most
+    /// `limit`: what a site ships up so the cloud drops its copies
+    /// (`docs/HYBRID_CONTROL_PLANE.md` §3.3).
+    async fn deletions_after(
+        &self,
+        after: i64,
+        limit: usize,
+    ) -> anyhow::Result<Vec<DeletionRecord>> {
+        let _ = (after, limit);
+        Ok(Vec::new())
+    }
 
     /// Log a deletion that removed no row (a file no row named).
     async fn record_deletion(&self, record: &DeletionRecord) -> anyhow::Result<()>;
@@ -976,8 +996,26 @@ async fn apply_retention(storage: &DynStorage, policy: &CompliancePolicy) -> Ret
 // ── Platform upkeep (docs/COMPLIANCE_FOLLOWUPS.md §4) ──────────────────
 
 /// What the platform keeps tidy, whatever the tenants' policies say.
+/// Files a site holds, removed through its link
+/// (`docs/HYBRID_CONTROL_PLANE.md` §3.3): the cloud queues the request,
+/// the site's link collects it and removes the file.
+#[async_trait::async_trait]
+pub trait SiteFileRemover: Send + Sync + std::fmt::Debug {
+    /// Ask `site` to remove `path`; `Ok` once the request is queued for
+    /// the link, which answers on its own time.
+    async fn remove_at_site(
+        &self,
+        site: crate::SiteId,
+        tenant: Option<TenantId>,
+        class: &str,
+        path: &str,
+    ) -> Result<(), String>;
+}
+
 #[derive(Debug, Clone)]
 pub struct UpkeepConfig {
+    /// Who removes a file a site holds; none where no site links here.
+    pub site_files: Option<std::sync::Arc<dyn SiteFileRemover>>,
     /// The directories files may be removed from: the recordings and
     /// voicemail directories this host mounts. A queued path outside them
     /// is never touched.
@@ -996,6 +1034,7 @@ pub struct UpkeepConfig {
 impl Default for UpkeepConfig {
     fn default() -> Self {
         Self {
+            site_files: None,
             file_roots: Vec::new(),
             orphan_files_after: None,
             system_traces_after: None,
@@ -1014,6 +1053,9 @@ pub struct UpkeepReport {
     pub voicemail_expired: u64,
     pub voicemail_purged: u64,
     pub files_removed: u64,
+    /// Files a site holds, whose removal was asked of the site through
+    /// its link (`docs/HYBRID_CONTROL_PLANE.md` §3.3).
+    pub files_asked_of_sites: u64,
     /// Queued files kept because a row still names them.
     pub files_kept: u64,
     pub orphan_files_removed: u64,
@@ -1100,6 +1142,16 @@ async fn reap_files(store: &dyn ComplianceStore, config: &UpkeepConfig, report: 
         let outcome = if entry.still_referenced {
             report.files_kept += 1;
             Ok(())
+        } else if let Some(site) = entry.site_id {
+            // The site holds the file: asked of it through its link, and
+            // the entry is done once the request is queued.
+            match &config.site_files {
+                Some(sites) => sites
+                    .remove_at_site(site, entry.tenant_id, &entry.class, &entry.path)
+                    .await
+                    .map(|()| report.files_asked_of_sites += 1),
+                None => Err(format!("held at site {site}, and no link runs here")),
+            }
         } else if !under_file_root(Path::new(&entry.path), &config.file_roots) {
             Err("not under a configured file root".to_string())
         } else {

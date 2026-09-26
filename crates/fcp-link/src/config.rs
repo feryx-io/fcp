@@ -133,6 +133,22 @@ pub struct SiteConfig {
     /// empty; the link asks again at once.
     #[serde(default = "default_feed_wait_secs")]
     pub feed_wait_secs: u64,
+    /// How often the site's records are looked at for shipping, when
+    /// nothing was found to ship (`docs/HYBRID_CONTROL_PLANE.md` §3.3).
+    #[serde(default = "default_ship_interval_secs")]
+    pub ship_interval_secs: u64,
+    /// Records per batch sent up.
+    #[serde(default = "default_ship_batch")]
+    pub ship_batch: usize,
+    /// The directories holding the site's recordings and voicemail — what
+    /// the link may send up, or remove, at the cloud's request. A path
+    /// outside them is refused. Empty: no file leaves or goes.
+    #[serde(default)]
+    pub file_roots: Vec<String>,
+    /// Forward the site's events (from its Redis stream) to the cloud, so
+    /// the tenant's webhooks fire there.
+    #[serde(default = "default_true")]
+    pub forward_events: bool,
 }
 
 fn default_heartbeat_ttl_secs() -> u64 {
@@ -153,8 +169,20 @@ impl Default for SiteConfig {
             database_url: None,
             max_connections: default_max_connections(),
             feed_wait_secs: default_feed_wait_secs(),
+            ship_interval_secs: default_ship_interval_secs(),
+            ship_batch: default_ship_batch(),
+            file_roots: Vec::new(),
+            forward_events: true,
         }
     }
+}
+
+fn default_ship_interval_secs() -> u64 {
+    5
+}
+
+fn default_ship_batch() -> usize {
+    200
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -238,4 +266,8 @@ pub fn validate_config(config: &LinkFileConfig) -> Result<()> {
         anyhow::bail!("site.feed_wait_secs is at most 30, the longest the cloud holds the feed");
     }
     Ok(())
+}
+
+fn default_true() -> bool {
+    true
 }

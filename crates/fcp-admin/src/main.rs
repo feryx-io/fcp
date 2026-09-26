@@ -45,6 +45,7 @@ mod cli;
 mod cluster_api;
 mod config;
 mod route_preview;
+mod site_files;
 mod site_link;
 mod storage;
 mod subject_requests;
@@ -196,10 +197,17 @@ async fn main() -> Result<()> {
     // Retention sweep: apply every tenant's compliance policy once an hour,
     // then the platform's upkeep (docs/COMPLIANCE_FOLLOWUPS.md §4).
     // Tenants without a policy (or with no retention windows) are skipped.
+    // What the cloud asks of sites and their answers
+    // (docs/HYBRID_CONTROL_PLANE.md §3.3): files fetched through a site's
+    // link, and files the site is asked to remove.
+    let site_requests = Arc::new(site_files::SiteRequests::new(Arc::clone(&storage)));
     {
         let sweep_storage = Arc::clone(&storage);
         let actor = format!("fcp-admin:{}", config.service.node_id);
         let upkeep = fcp_core::compliance::UpkeepConfig {
+            site_files: Some(
+                Arc::clone(&site_requests) as Arc<dyn fcp_core::compliance::SiteFileRemover>
+            ),
             file_roots: [
                 config.call_recordings_dir.as_deref(),
                 config.voicemail_recordings_dir.as_deref(),
@@ -478,12 +486,44 @@ async fn main() -> Result<()> {
         site_link::ensure_crypto_provider();
         let ca = site_link::LinkCa::load_or_create(&site_link::ca_dir(&config.link))
             .context("the link CA")?;
+        // The site's events and the records the cloud writes for it are
+        // announced through the events server's ingest, under the site's
+        // name; without one they are logged and dropped.
+        let ingest = config.events.server_url.clone().map(|url| {
+            site_files::IngestPublisher::new(
+                url,
+                config.events.auth_token.clone(),
+                config.service.node_id.clone(),
+            )
+        });
+        if ingest.is_none() {
+            warn!("No [events] server_url: sites' events are not forwarded, and their records are not announced");
+        }
+        // The cloud's processor for the sites' records: rated with the
+        // cloud's plans, charged to the tenant, announced as cdr.written.
+        let cache = std::time::Duration::from_secs(60);
+        let billing = fcp_billing::BillingEngine::new(Arc::clone(&storage)).with_plan_cache(cache);
+        let mut processor = fcp_cdr::Processor::new(
+            Arc::clone(&storage) as Arc<dyn fcp_core::storage::CdrStore>,
+            Some(Arc::new(billing)),
+        )
+        .with_enricher(Arc::new(fcp_cdr::DirectionEnricher::new(
+            Arc::clone(&storage) as Arc<dyn fcp_core::storage::PhoneNumberStore>,
+            cache,
+        )));
+        if let Some(ingest) = &ingest {
+            processor = processor
+                .with_events(Arc::new(ingest.clone()) as Arc<dyn fcp_events::EventPublisher>);
+        }
         Some(site_link::LinkState {
             storage: storage.clone(),
             flows: Arc::clone(&flow_store),
             ca: Arc::new(ca),
             events: Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>,
             config: config.link.clone(),
+            processor: Some(Arc::new(processor)),
+            ingest,
+            requests: Arc::clone(&site_requests),
         })
     } else {
         info!("Sites cannot enroll here ([link] enabled is false)");
@@ -517,6 +557,9 @@ async fn main() -> Result<()> {
     .with_trunk_health(trunk_health_map)
     .with_deployment_mode(config.api.deployment_mode)
     .with_managed_by(config.api.managed_by.clone())
+    .with_site_files(Some(
+        Arc::clone(&site_requests) as Arc<dyn fcp_api_core::site_files::SiteFiles>
+    ))
     .with_e911_validator(e911_validator);
 
     // Set security policy from config
@@ -595,7 +638,12 @@ async fn main() -> Result<()> {
     // Subject requests: exports run here, beside retention
     // (docs/COMPLIANCE_FOLLOWUPS.md §6.2).
     if let Some(storage) = api_state.storage.clone() {
-        subject_requests::spawn(storage, &config, api_state.clone());
+        subject_requests::spawn(
+            storage,
+            &config,
+            api_state.clone(),
+            Some(Arc::clone(&site_requests)),
+        );
     }
 
     // Initialize cluster reader (optional — only when Redis is configured)

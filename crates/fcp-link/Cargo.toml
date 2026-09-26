@@ -14,7 +14,8 @@ path = "src/main.rs"
 [dependencies]
 fcp-core = { path = "../fcp-core" }
 fcp-cluster = { path = "../fcp-cluster" }
-fcp-storage-redis = { path = "../fcp-storage-redis" }
+fcp-storage-redis = { path = "../fcp-storage-redis", features = ["event-bus"] }
+fcp-events = { path = "../fcp-events" }
 fcp-storage-postgres = { path = "../fcp-storage-postgres" }
 fcp-flow = { path = "../fcp-flow" }
 anyhow = "1"
@@ -30,5 +31,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 uuid = { workspace = true }
 
 [dev-dependencies]
+fcp-cdr = { path = "../fcp-cdr" }
 fcp-testkit = { path = "../fcp-testkit" }
 tempfile = "3"

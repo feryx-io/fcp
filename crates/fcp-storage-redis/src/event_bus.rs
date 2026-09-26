@@ -45,6 +45,12 @@ pub struct EventEnvelope {
     /// by older versions.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub relayed: bool,
+    /// The site the event came up from, when it did
+    /// (`docs/HYBRID_CONTROL_PLANE.md` §3.3): posted by the cloud's admin
+    /// on the site's behalf, under the site's node, and fired here once
+    /// as this region's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_site: Option<String>,
     /// The actual event.
     pub event: PlatformEvent,
 }
@@ -185,6 +191,18 @@ impl RedisEventBus {
     /// says which node and this region, so a bridge relays it once and
     /// every consumer sees it.
     pub async fn publish_many_from(&self, node_id: &str, events: Vec<PlatformEvent>) -> Result<()> {
+        self.publish_many_from_site(node_id, None, events).await
+    }
+
+    /// As [`RedisEventBus::publish_many_from`], for events a site sent up
+    /// its link: the envelope names the site, and the events are this
+    /// region's own — not relayed — so webhooks fire here, once.
+    pub async fn publish_many_from_site(
+        &self,
+        node_id: &str,
+        site: Option<&str>,
+        events: Vec<PlatformEvent>,
+    ) -> Result<()> {
         if events.is_empty() {
             return Ok(());
         }
@@ -196,6 +214,7 @@ impl RedisEventBus {
                 node_id: node_id.to_string(),
                 origin_region: self.region.clone(),
                 relayed: false,
+                origin_site: site.map(str::to_string),
                 event,
             };
             let json = serde_json::to_string(&envelope)?;
@@ -995,6 +1014,7 @@ mod tests {
             node_id: "cm-1".into(),
             origin_region: None,
             relayed: false,
+            origin_site: None,
             event: event(),
         })
         .unwrap();
@@ -1008,6 +1028,7 @@ mod tests {
                 node_id: "cm-us".into(),
                 origin_region: Some("us-east".into()),
                 relayed: false,
+                origin_site: None,
                 event: event(),
             },
             Some("bridge-region"),
@@ -1023,6 +1044,7 @@ mod tests {
                 node_id: "cm-old".into(),
                 origin_region: None,
                 relayed: false,
+                origin_site: None,
                 event: event(),
             },
             Some("us-east"),
@@ -1041,6 +1063,7 @@ mod tests {
             node_id: "cm-1".into(),
             origin_region: Some("eu-west".into()),
             relayed: true,
+            origin_site: None,
             event: event(),
         })
         .unwrap();

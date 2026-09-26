@@ -353,7 +353,7 @@ impl ComplianceStore for PostgresComplianceStore {
 
     async fn due_file_deletions(&self, limit: usize) -> anyhow::Result<Vec<PendingFileDeletion>> {
         let rows = sqlx::query(&format!(
-            "SELECT p.id, p.tenant_id, p.class, p.path, p.attempts,
+            "SELECT p.id, p.tenant_id, p.class, p.path, p.attempts, p.site_id,
                     ({REFERENCED}) AS still_referenced
              FROM pending_file_deletions p
              WHERE p.next_attempt_at <= now()
@@ -373,11 +373,46 @@ impl ComplianceStore for PostgresComplianceStore {
                     tenant_id: tenant.and_then(|t| TenantId::from_str(&t).ok()),
                     class: row.try_get("class")?,
                     path: row.try_get("path")?,
+                    site_id: row
+                        .try_get::<Option<String>, _>("site_id")?
+                        .and_then(|s| fcp_core::SiteId::from_str(&s).ok()),
                     attempts: attempts.max(0) as u32,
                     still_referenced: row.try_get("still_referenced")?,
                 })
             })
             .collect()
+    }
+
+    async fn deletions_after(
+        &self,
+        after: i64,
+        limit: usize,
+    ) -> anyhow::Result<Vec<DeletionRecord>> {
+        sqlx::query(
+            "SELECT id, tenant_id, class, item, detail, cause, actor, request_id, deleted_at
+             FROM deletion_log WHERE id > $1 ORDER BY id LIMIT $2",
+        )
+        .bind(after)
+        .bind(limit.clamp(1, 10_000) as i64)
+        .fetch_all(&self.pool)
+        .await?
+        .into_iter()
+        .map(|row| {
+            let tenant: Option<String> = row.try_get("tenant_id")?;
+            let at: DateTime<Utc> = row.try_get("deleted_at")?;
+            Ok(DeletionRecord {
+                id: row.try_get("id")?,
+                tenant_id: tenant.and_then(|t| TenantId::from_str(&t).ok()),
+                class: row.try_get("class")?,
+                item: row.try_get("item")?,
+                detail: row.try_get("detail")?,
+                cause: row.try_get("cause")?,
+                actor: row.try_get("actor")?,
+                request_id: row.try_get("request_id")?,
+                deleted_at: to_system_time(at),
+            })
+        })
+        .collect()
     }
 
     async fn file_deletion_done(&self, id: i64) -> anyhow::Result<()> {

@@ -195,6 +195,11 @@ pub struct Recording {
     pub room_number: String,
     /// The node holding the file: a download goes through it.
     pub node_id: String,
+    /// The site holding the file, at the cloud: the row came up its link
+    /// (`docs/HYBRID_CONTROL_PLANE.md` §3.3), and the file is fetched
+    /// through it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub site_id: Option<crate::SiteId>,
     /// The file, as that node sees it.
     pub path: String,
     pub format: RecordingFormat,
@@ -237,6 +242,7 @@ impl Recording {
             meeting_id: None,
             room_number: room_number.into(),
             node_id: node_id.into(),
+            site_id: None,
             path: path.into(),
             format,
             trigger,
@@ -318,6 +324,23 @@ pub trait RecordingStore: Send + Sync {
 
     /// Forget a recording. The caller deletes the file.
     async fn delete_recording(&self, id: &RecordingId) -> anyhow::Result<bool>;
+
+    /// Write a recording as another deployment has it, every field
+    /// (`docs/HYBRID_CONTROL_PLANE.md` §3.3).
+    async fn put_recording(&self, recording: &Recording) -> anyhow::Result<()> {
+        self.create_recording(recording).await
+    }
+
+    /// Recordings written or changed after `after` in shipping order
+    /// (`ship_seq`), oldest first, at most `limit`.
+    async fn recordings_after(
+        &self,
+        after: i64,
+        limit: usize,
+    ) -> anyhow::Result<Vec<(i64, Recording)>> {
+        let _ = (after, limit);
+        Ok(Vec::new())
+    }
 
     /// Finished recordings of a tenant that started before `before`, for
     /// the retention sweep.
@@ -409,6 +432,11 @@ pub struct CallRecording {
     pub source: CallRecordingSource,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_id: Option<String>,
+    /// The site holding the file, at the cloud: the row came up its link
+    /// (`docs/HYBRID_CONTROL_PLANE.md` §3.3), and the file is fetched
+    /// through it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub site_id: Option<crate::SiteId>,
     /// Where the file is, as the recording host wrote it.
     pub path: String,
     /// The file's extension (`wav`, `opus`, `mp3`).
@@ -438,6 +466,7 @@ impl CallRecording {
             call_id: call_id.into(),
             source,
             node_id: None,
+            site_id: None,
             path,
             format,
             consent: RecordingConsent::NotRequired,
@@ -495,6 +524,30 @@ pub trait CallRecordingStore: Send + Sync {
 
     /// A call's recordings, oldest first.
     async fn call_recordings_for(&self, call_id: &str) -> anyhow::Result<Vec<CallRecording>>;
+
+    /// Write a call recording as another deployment has it, every field
+    /// (`docs/HYBRID_CONTROL_PLANE.md` §3.3).
+    async fn put_call_recording(&self, recording: &CallRecording) -> anyhow::Result<()> {
+        self.create_call_recording(recording).await
+    }
+
+    /// Delete one call recording's row; the file follows through the
+    /// deletion queue, as every row deletion's does.
+    async fn delete_call_recording(&self, id: &RecordingId) -> anyhow::Result<bool> {
+        let _ = id;
+        anyhow::bail!("this store cannot delete a call recording by id")
+    }
+
+    /// Call recordings written or changed after `after` in shipping
+    /// order (`ship_seq`), oldest first, at most `limit`.
+    async fn call_recordings_after(
+        &self,
+        after: i64,
+        limit: usize,
+    ) -> anyhow::Result<Vec<(i64, CallRecording)>> {
+        let _ = (after, limit);
+        Ok(Vec::new())
+    }
 
     /// Delete a tenant's recordings that started before `before`; their
     /// files are queued for removal with them. Returns how many.

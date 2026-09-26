@@ -24,6 +24,9 @@ pub struct AdminMedia {
     local: LocalMedia,
     conference: Option<(String, Option<String>)>,
     http: reqwest::Client,
+    /// Files a site holds, fetched and removed through its link
+    /// (`docs/HYBRID_CONTROL_PLANE.md` §3.3).
+    sites: Option<Arc<crate::site_files::SiteRequests>>,
 }
 
 impl AdminMedia {
@@ -54,6 +57,30 @@ impl AdminMedia {
                 .connect_timeout(Duration::from_secs(10))
                 .build()
                 .unwrap_or_default(),
+            sites: None,
+        }
+    }
+
+    /// Reach files sites hold through their links.
+    pub fn with_sites(mut self, sites: Option<Arc<crate::site_files::SiteRequests>>) -> Self {
+        self.sites = sites;
+        self
+    }
+
+    /// The site a row's file is at, when it is at one.
+    fn site_of(row: &SubjectRow) -> Option<fcp_core::SiteId> {
+        row.data["site_id"]
+            .as_str()
+            .and_then(|s| s.parse::<fcp_core::SiteId>().ok())
+    }
+
+    /// The class name a site's link knows the file by.
+    fn class_name(class: ExportClass) -> &'static str {
+        match class {
+            ExportClass::CallRecordings => "call_recording",
+            ExportClass::ConferenceRecordings => "conference_recording",
+            ExportClass::VoicemailMessages => "voicemail",
+            _ => "file",
         }
     }
 
@@ -113,6 +140,24 @@ impl MediaFetcher for AdminMedia {
         row: &SubjectRow,
         dest: &Path,
     ) -> Result<u64, String> {
+        // A file a site holds comes through the site's link, whatever its
+        // class; the report says so when the site cannot be reached.
+        if let Some(site) = Self::site_of(row) {
+            let sites = self
+                .sites
+                .as_ref()
+                .ok_or_else(|| format!("held at site {site}, and no link runs here"))?;
+            let path = row.file.as_deref().ok_or("no file")?;
+            let bytes = sites
+                .fetch(site, *tenant, Self::class_name(class), path)
+                .await
+                .map_err(|e| format!("site {site}: {e}"))?;
+            let size = bytes.len() as u64;
+            tokio::fs::write(dest, bytes)
+                .await
+                .map_err(|e| e.to_string())?;
+            return Ok(size);
+        }
         if class == ExportClass::ConferenceRecordings {
             return self.fetch_from_conference_server(tenant, row, dest).await;
         }
@@ -128,6 +173,19 @@ impl MediaRemover for AdminMedia {
         class: ExportClass,
         row: &SubjectRow,
     ) -> Result<(), String> {
+        // A file a site holds is the site's to remove, asked through its
+        // link; done once the request is queued.
+        if let Some(site) = Self::site_of(row) {
+            let sites = self
+                .sites
+                .as_ref()
+                .ok_or_else(|| format!("held at site {site}, and no link runs here"))?;
+            let path = row.file.as_deref().ok_or("no file")?;
+            return sites
+                .queue_delete(site, Some(*tenant), Self::class_name(class), path)
+                .await
+                .map_err(|e| format!("site {site}: {e}"));
+        }
         if class != ExportClass::ConferenceRecordings {
             return self.local.remove(tenant, class, row).await;
         }
@@ -185,9 +243,14 @@ async fn dead_letters(
 }
 
 /// Run the worker until the process ends.
-pub fn spawn(storage: Arc<DynStorage>, config: &AdminConfig, api_state: fcp_api_core::ApiState) {
+pub fn spawn(
+    storage: Arc<DynStorage>,
+    config: &AdminConfig,
+    api_state: fcp_api_core::ApiState,
+    sites: Option<Arc<crate::site_files::SiteRequests>>,
+) {
     let settings = settings(&config.compliance);
-    let media = AdminMedia::new(config);
+    let media = AdminMedia::new(config).with_sites(sites);
     let every = Duration::from_secs(config.compliance.poll_secs.max(5));
     let config = config.clone();
     tokio::spawn(async move {

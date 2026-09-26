@@ -68,6 +68,10 @@ pub struct SiteResponse {
     /// SIP address for sites (`docs/HYBRID_CONTROL_PLANE.md` §3.6).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trunk_id: Option<String>,
+    /// Who is registered at the site, from its last heartbeat
+    /// (`docs/HYBRID_CONTROL_PLANE.md` §3.3).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub registrations: Option<fcp_core::SiteRegistrations>,
 }
 
 impl SiteResponse {
@@ -88,6 +92,10 @@ impl From<Site> for SiteResponse {
     fn from(site: Site) -> Self {
         let versions = site.versions();
         let sync = site.last_heartbeat.as_ref().and_then(|b| b.sync.clone());
+        let registrations = site
+            .last_heartbeat
+            .as_ref()
+            .and_then(|b| b.registrations.clone());
         Self {
             id: site.id.to_string(),
             tenant_id: site.tenant_id.to_string(),
@@ -113,6 +121,7 @@ impl From<Site> for SiteResponse {
             sync_error: sync.and_then(|s| s.error),
             sync_behind: None,
             trunk_id: site.trunk_id.map(|id| id.to_string()),
+            registrations,
         }
     }
 }

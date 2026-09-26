@@ -2201,6 +2201,10 @@ pub enum CdrEvent {
         currency: Option<String>,
         /// The node that owned the call.
         node_id: Option<String>,
+        /// The site the record came up from, at the cloud
+        /// (`docs/HYBRID_CONTROL_PLANE.md` §3.3).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        site_id: Option<String>,
         /// When the record was written.
         #[serde(with = "system_time_serde")]
         timestamp: SystemTime,

@@ -374,6 +374,7 @@ impl VoicemailService {
             priority: MessagePriority::Normal,
             duration,
             recording_path,
+            site_id: None,
             transcription: None,
             created_at: SystemTime::now(),
             accessed_at: None,

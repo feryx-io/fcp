@@ -68,6 +68,17 @@ pub struct LinkStatus {
     pub sync: Option<SiteSync>,
     /// Objects written since start.
     pub sync_applied: u64,
+    /// Where the site's records stand on their way up
+    /// (`docs/HYBRID_CONTROL_PLANE.md` §3.3); absent without a site
+    /// database.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ship: Option<crate::ship::ShipStatus>,
+    /// The site's events forwarded; absent without a site Redis.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub events: Option<crate::events::EventsStatus>,
+    /// The cloud's requests answered.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requests: Option<crate::requests::RequestsStatus>,
 }
 
 struct Inner {
@@ -87,6 +98,11 @@ pub struct Link {
     stores: Option<SiteStores>,
     /// The sync, once enrolled and the stores are known.
     sync: Mutex<Option<Arc<Syncer>>>,
+    /// The site's Redis, for its registrations and its event stream.
+    redis: Option<fcp_storage_redis::RedisStorage>,
+    ship: Mutex<Option<Arc<crate::ship::Shipper>>>,
+    events: Mutex<Option<Arc<crate::events::EventForwarder>>>,
+    requests: Mutex<Option<Arc<crate::requests::Requester>>>,
 }
 
 fn secs(t: SystemTime) -> u64 {
@@ -104,22 +120,20 @@ impl Link {
         if let Some(e) = &enrollment {
             info!(site_id = %e.site_id, name = %e.name, "Enrolled already; the state directory has the certificate");
         }
-        let reader = match &config.site.redis_url {
-            Some(url) => {
-                let storage =
-                    fcp_storage_redis::RedisStorage::new(fcp_storage_redis::RedisConfig {
-                        url: url.clone(),
-                        key_prefix: "fcp:".to_string(),
-                    })
-                    .await
-                    .context("connecting to the site's Redis")?;
-                Some(fcp_cluster::ClusterReader::new(
-                    storage,
-                    config.site.heartbeat_ttl_secs,
-                ))
-            }
+        let redis = match &config.site.redis_url {
+            Some(url) => Some(
+                fcp_storage_redis::RedisStorage::new(fcp_storage_redis::RedisConfig {
+                    url: url.clone(),
+                    key_prefix: "fcp:".to_string(),
+                })
+                .await
+                .context("connecting to the site's Redis")?,
+            ),
             None => None,
         };
+        let reader = redis.clone().map(|storage| {
+            fcp_cluster::ClusterReader::new(storage, config.site.heartbeat_ttl_secs)
+        });
         let stores = match &config.site.database_url {
             Some(url) => {
                 let stores = crate::sync::open_site(url, config.site.max_connections).await?;
@@ -151,6 +165,10 @@ impl Link {
             reader,
             stores,
             sync: Mutex::new(None),
+            redis,
+            ship: Mutex::new(None),
+            events: Mutex::new(None),
+            requests: Mutex::new(None),
         })
     }
 
@@ -174,6 +192,134 @@ impl Link {
             protocol: LINK_PROTOCOL,
             sync: syncer.as_ref().map(|s| s.state()),
             sync_applied: syncer.as_ref().map(|s| s.applied()).unwrap_or(0),
+            ship: self
+                .ship
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+                .map(|s| s.status()),
+            events: self
+                .events
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+                .map(|s| s.status()),
+            requests: self
+                .requests
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+                .map(|s| s.status()),
+        }
+    }
+
+    /// The site's identity and secret, once enrolled.
+    fn enrolled(&self) -> Option<(String, TenantId, fcp_core::SiteId)> {
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let e = inner.enrollment.as_ref()?;
+        let tenant = match e.tenant_id.parse() {
+            Ok(t) => t,
+            Err(err) => {
+                warn!(error = %err, "The enrollment's tenant id does not parse");
+                return None;
+            }
+        };
+        let site = match e.site_id.parse() {
+            Ok(s) => s,
+            Err(err) => {
+                warn!(error = %err, "The enrollment's site id does not parse");
+                return None;
+            }
+        };
+        Some((e.secret.clone(), tenant, site))
+    }
+
+    /// Start what runs for as long as the link does, once enrolled:
+    /// records up, the site's events, the cloud's requests
+    /// (`docs/HYBRID_CONTROL_PLANE.md` §3.3).
+    fn start_records_up(&self) {
+        let Some((secret, tenant, _site)) = self.enrolled() else {
+            return;
+        };
+        let link_url = self.config.link.link_url.clone();
+        // Shipping: with a site database.
+        if let Some(stores) = &self.stores {
+            let mut slot = self.ship.lock().unwrap_or_else(|e| e.into_inner());
+            if slot.is_none() {
+                match self.client(true).and_then(|client| {
+                    crate::ship::Shipper::new(
+                        stores.clone(),
+                        client,
+                        &link_url,
+                        secret.clone(),
+                        tenant,
+                        &self.state_dir,
+                        self.config.site.ship_batch,
+                        Duration::from_secs(self.config.site.ship_interval_secs.max(1)),
+                    )
+                }) {
+                    Ok(shipper) => {
+                        let shipper = Arc::new(shipper);
+                        let run = Arc::clone(&shipper);
+                        tokio::spawn(async move { run.run().await });
+                        *slot = Some(shipper);
+                    }
+                    Err(e) => warn!(error = %e, "Records cannot be shipped"),
+                }
+            }
+        }
+        // Events: with a site Redis.
+        if let (Some(redis), true) = (&self.redis, self.config.site.forward_events) {
+            let mut slot = self.events.lock().unwrap_or_else(|e| e.into_inner());
+            if slot.is_none() {
+                match self.client(true) {
+                    Ok(client) => {
+                        let consumer = fcp_storage_redis::event_bus::RedisStreamConsumer::new(
+                            redis.clone(),
+                            redis.key("event_stream"),
+                            crate::events::CONSUMER_GROUP.to_string(),
+                            self.config.service.node_id.clone(),
+                        );
+                        let forwarder = Arc::new(crate::events::EventForwarder::new(
+                            consumer,
+                            client,
+                            &link_url,
+                            secret.clone(),
+                            tenant,
+                        ));
+                        let run = Arc::clone(&forwarder);
+                        tokio::spawn(async move { run.run().await });
+                        *slot = Some(forwarder);
+                    }
+                    Err(e) => warn!(error = %e, "Events cannot be forwarded"),
+                }
+            }
+        }
+        // The cloud's requests: always, with the files under the roots.
+        {
+            let mut slot = self.requests.lock().unwrap_or_else(|e| e.into_inner());
+            if slot.is_none() {
+                // A file may take a while to send; the poll itself waits
+                // up to 25 s.
+                match self.client_with(true, Duration::from_secs(600)) {
+                    Ok(client) => {
+                        let roots = self
+                            .config
+                            .site
+                            .file_roots
+                            .iter()
+                            .map(PathBuf::from)
+                            .collect();
+                        let requester = Arc::new(crate::requests::Requester::new(
+                            client, &link_url, secret, roots,
+                        ));
+                        let run = Arc::clone(&requester);
+                        tokio::spawn(async move { run.run().await });
+                        *slot = Some(requester);
+                    }
+                    Err(e) => warn!(error = %e, "The cloud's requests cannot be collected"),
+                }
+            }
         }
     }
 
@@ -258,6 +404,7 @@ impl Link {
                 }
             }
             self.start_sync();
+            self.start_records_up();
             let interval = match self.heartbeat().await {
                 Ok(interval) => interval,
                 Err(e) => {
@@ -304,9 +451,14 @@ impl Link {
     /// A client for the cloud: the system's roots plus `cloud_ca`, and the
     /// site's certificate when it has one.
     fn client(&self, with_identity: bool) -> Result<reqwest::Client> {
-        let mut builder = reqwest::Client::builder()
-            .timeout(Duration::from_secs(self.config.link.request_timeout_secs))
-            .use_rustls_tls();
+        self.client_with(
+            with_identity,
+            Duration::from_secs(self.config.link.request_timeout_secs),
+        )
+    }
+
+    fn client_with(&self, with_identity: bool, timeout: Duration) -> Result<reqwest::Client> {
+        let mut builder = reqwest::Client::builder().timeout(timeout).use_rustls_tls();
         if let Some(ca) = &self.config.link.cloud_ca {
             let pem = std::fs::read(ca).with_context(|| format!("reading link.cloud_ca {ca}"))?;
             for cert in reqwest::Certificate::from_pem_bundle(&pem)
@@ -423,7 +575,47 @@ impl Link {
             link_protocol: LINK_PROTOCOL,
             nodes,
             sync: self.syncer().map(|s| s.state()),
+            registrations: self.registrations().await,
         }
+    }
+
+    /// Who is registered at the site, from its Redis, as the cloud's
+    /// pages show it (`docs/HYBRID_CONTROL_PLANE.md` §3.3).
+    async fn registrations(&self) -> Option<fcp_core::SiteRegistrations> {
+        use fcp_core::storage::RegistrationStore;
+        let redis = self.redis.as_ref()?;
+        let (_, tenant, _) = self.enrolled()?;
+        let store = fcp_storage_redis::registration::RedisRegistrationStore::new(redis.clone());
+        let rows = match store.get_all_registrations_in_tenant(&tenant).await {
+            Ok(rows) => rows,
+            Err(e) => {
+                warn!(error = %e, "Could not read the site's registrations");
+                return None;
+            }
+        };
+        let mut by_aor: std::collections::BTreeMap<String, (u32, Option<u64>)> =
+            std::collections::BTreeMap::new();
+        for row in &rows {
+            let entry = by_aor.entry(row.aor.clone()).or_insert((0, None));
+            entry.0 += 1;
+            let since = secs(row.registered_at);
+            entry.1 = Some(entry.1.map_or(since, |s| s.min(since)));
+        }
+        let total_users = by_aor.len() as u32;
+        let users = by_aor
+            .into_iter()
+            .take(fcp_core::SITE_REGISTRATIONS_CAP)
+            .map(|(aor, (contacts, since))| fcp_core::SiteRegistration {
+                aor,
+                contacts,
+                since,
+            })
+            .collect();
+        Some(fcp_core::SiteRegistrations {
+            users,
+            total_users,
+            total_contacts: rows.len() as u32,
+        })
     }
 
     async fn heartbeat(&self) -> Result<Duration> {
