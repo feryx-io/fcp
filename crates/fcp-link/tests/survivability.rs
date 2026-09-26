@@ -324,7 +324,7 @@ max_concurrent_calls = 0
         &[],
     )
     .await;
-    let mut nodes = Nodes {
+    let nodes = Nodes {
         cloud_cm,
         sbc,
         site_cm,

@@ -17,7 +17,7 @@ use common::{cloud_with_site_opts, eventually, stub_events_server, until, CloudO
 use fcp_core::recording::{CallRecording, CallRecordingSource, Recording, RecordingConsent};
 use fcp_core::storage::{CdrKind, CdrQuery, CdrStore, RegistrationStore, VoicemailStore};
 use fcp_core::{MessagePriority, MessageStatus, VoicemailMailbox, VoicemailMessage};
-use fcp_testkit::smoke::{free_port, http_request, loopback, toml_path};
+use fcp_testkit::smoke::{http_request, loopback, toml_path};
 use fcp_testkit::TestDatabase;
 use std::time::{Duration, SystemTime};
 
