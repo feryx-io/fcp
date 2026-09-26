@@ -165,6 +165,9 @@ pub struct ApiState {
     /// §4), when it is one: the objects the link keeps in sync are read-only
     /// here, and a write to one is refused naming this address.
     pub managed_by: Option<String>,
+    /// Who fetches a file a site holds, through its link
+    /// (`docs/HYBRID_CONTROL_PLANE.md` §3.3); none where no site links here.
+    pub site_files: Option<Arc<dyn crate::site_files::SiteFiles>>,
 }
 
 impl ApiState {
@@ -222,6 +225,7 @@ impl ApiState {
             e911_validator: Arc::new(fcp_core::e911::BasicAddressValidator),
             call_recordings_dir: None,
             managed_by: None,
+            site_files: None,
         }
     }
 
@@ -352,6 +356,11 @@ impl ApiState {
 
     /// The cloud this deployment is a site of, if it is one: synced objects
     /// become read-only (see [`crate::managed`]).
+    pub fn with_site_files(mut self, files: Option<Arc<dyn crate::site_files::SiteFiles>>) -> Self {
+        self.site_files = files;
+        self
+    }
+
     pub fn with_managed_by(mut self, cloud: Option<String>) -> Self {
         self.managed_by = cloud
             .map(|c| c.trim().trim_end_matches('/').to_string())

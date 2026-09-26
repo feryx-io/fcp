@@ -327,6 +327,88 @@ cloud's BYE to a site goes down the flow, as its INVITE does; that no
 other in-dialog request dials the site's private contact is to be
 proved with the partition harness in phase 6.
 
+### 3.7 Records up, as built
+
+*Phase 5.* Four flows, each site to cloud, over the link's own
+connection; nothing in the cloud connects to the site.
+
+**A shipping order.** Migration 081 gives `cdrs`, `call_recordings`,
+`conference_recordings`, `voicemail_mailboxes` and `voicemail_messages`
+a `ship_seq`, from one sequence, taken as a row is written and again
+whenever it changes. The link keeps a cursor per table beside its
+certificate (`ship.json`) and reads "everything after my cursor" in
+order (`cdrs_after`, `call_recordings_after`, `recordings_after`,
+`mailboxes_after`, `messages_after`), in batches of `[site] ship_batch`,
+every `[site] ship_interval_secs` when nothing waited. Rows from before
+the migration have no sequence and are not shipped. Deletions come from
+the deletion log, which triggers already write for every recording and
+voicemail row, after a cursor of its own.
+
+**Call records.** `POST /link/v1/cdrs` takes a batch; the cloud sets
+aside whatever the site's copy of the plans said — the site rates with
+the synced plans and charges nobody — marks each record with the site
+(`CallDetailRecord.site_id`, a column on `cdrs`) and hands it to the
+cloud's own processor: rated with the cloud's plans, charged to the
+tenant, stored idempotently by `cdr_id`, announced as `cdr.written`
+naming the site. The site's copy stays its own reporting.
+
+**Recordings and voicemail.** `POST /link/v1/records` takes the rows —
+`ShippedRecords`: puts by table, and deletions by class — each checked
+to be the tenant's and written naming the site (`site_id` on the three
+tables; a mailbox rides up with its messages, since a message names its
+mailbox). A deletion the site logged is mirrored in the cloud under the
+cause `site`. The files stay at the site.
+
+**Files through the link.** A site opens no port, so what the cloud
+wants of a site's file is written down (`site_requests`, migration 081:
+`FetchFile` or `DeleteFile`, with the class and the path), collected by
+the link on a long poll (`GET /link/v1/requests`, up to 30 s) and
+answered on the link's own connection (`POST /link/v1/requests/:id`:
+the outcome in `x-fcp-outcome`, the bytes as the body). The link touches
+only what lies under `[site] file_roots`. In the cloud,
+`fcp_admin::site_files::SiteRequests` does the asking: a recording
+download (`GET /v1/recordings/:id/download`) or a voicemail playback
+(`GET /v1/me/voicemail/messages/:id/audio`) of a row that names a site
+waits up to a minute for the bytes; a subject export fetches a site's
+files the same way, and names the site in `missing_files` when it
+cannot; a deletion — the API's, a subject erasure's, or the reaper's for
+a row retention removed (`pending_file_deletions.site_id`, copied by the
+deletion triggers) — is queued for the site and counted as
+`files_asked_of_sites`.
+
+**Events.** The link reads the site's own event stream as one more
+consumer group (`link`), keeps the tenant's events, leaves `cdr.written`
+behind (the cloud announces its own once it has the record) and sends
+them up (`POST /link/v1/events`) grouped by the node that published
+them. The cloud's admin posts them to its events server's ingest under
+that node with `x-origin-site`; the envelope carries `origin_site`, and
+the events are the cloud's own — not relayed — so the tenant's webhooks
+fire in the cloud, once. The site keeps no webhook endpoints (they are
+not synced), so nothing fires twice.
+
+**Registrations.** The heartbeat carries `registrations`: every address
+of record registered at the site (from the site's Redis), at how many
+contacts, since when, capped at a thousand, with the totals; `/v1/sites`
+shows it.
+
+**Proved** by `fcp-link/tests/records.rs`: a record, a call recording, a
+conference recording, a mailbox and a message written at the site land
+in the cloud naming the site, the record with its site rating set aside
+and `cdr.written` announced naming the site; the cloud's download of the
+conference recording is the site's file, through the link; deleted in
+the cloud, the file goes at the site; deleted at the site, the message
+goes in the cloud; an event published at the site reaches the cloud's
+events server named as the site's under the node that published it;
+and the heartbeat says who is registered.
+
+**Left for later.** Retention and subject requests reach a site's rows
+and files through what is above; a retention policy of the site's own
+still runs there on the site's copies (a message removed at the site by
+its retention is mirrored as a deletion). A site's mailbox made at the
+site and one made in the cloud for the same user are two mailboxes.
+A file sent up is held in memory on both ends (up to 512 MB); a policy
+copying a site's files to the cloud's archive is not written.
+
 ## 4. Tenancy and security at the site
 
 A site belongs to one tenant and holds that tenant's slice only. The
@@ -352,7 +434,7 @@ harness (`docs/TEST_FLOOR.md`, the two-node cluster harness with a
 | 2 | ✅ v0.25.269 — **The journal, the snapshot and the feed.** Triggers on every synced table writing the per-tenant journal; `GET /link/v1/snapshot` and `/link/v1/changes`; a test that every put and delete of every synced store journals, and that a snapshot plus the feed reproduce a tenant's slice exactly. As built: `sync_journal` (migration 079) written by one trigger function on nineteen tables, the tenant's own row under its own id, a rate's change journaled as its plan's; `fcp_core::sync::SyncStore`; the snapshot lists every synced store of the tenant and the feed holds up to thirty seconds, fetching each changed object as it is now (a missing one becomes a delete), pages of up to five thousand with `more`. Tests: `fcp-storage-postgres/tests/sync_journal.rs`, `fcp-link/tests/sync.rs`. |
 | 3 | ✅ v0.25.270 — **Configuration at the site.** `fcp-link` applies the snapshot and follows the feed into the site's Postgres, sealing secrets under the site's key; the site's admin API refuses writes to synced objects; lag on the heartbeat. Floor: a user made in the cloud registers at the site within seconds; a password changed in the cloud is the one the site challenges with. As built: `[site] database_url` opens the site's Postgres (its schema migrated as every binary does) and the link applies through the same stores the cloud writes with — `put_*` per table, `FlowStore::put_flow` as an exact copy, a rate plan with its rates — keeping its cursor in `sync.json`; the heartbeat carries `sync` (cursor, applied at, the last error) and the cloud shows `sync_cursor`, `sync_applied_at`, `sync_error` and `sync_behind` on every site; the site's admin with `[api] managed_by` refuses a write to a synced resource with 403 naming the cloud (`fcp_api_core::managed`). Test: `fcp-link/tests/apply.rs`. |
 | 4 | ✅ v0.25.271 — **Calls across.** The link trunk provisioned at enrollment; the cloud SBC knows the site as the tenant's registering trunk; numbers route to the site; inbound reaches the site's phones and outbound leaves through the cloud; emergency per the site's trunks. Floor, with the SBC and a carrier stub in the harness. As built (§3.6): `[link] sip_host` makes one link trunk per site (`site_id`, `link = cloud`, TLS, credentials minted at enrollment); `Trunk.site_id` says where a trunk runs and the link keeps only its site's, turning the link's end to `site`; the SBC loads link peers, authenticates their REGISTER, keeps each site's binding and RFC 5626 flow (`/admin/sites`); `PhoneNumber.site_id` sends a number's calls down its site's flow; a site's calls are the tenant's own, forwarded to the cloud's call manager as a trusted edge's with `X-FCP-Caller-Site`; legs to and from a site latch their media. Test: `fcp-link/tests/calls.rs`. |
-| 5 | **Records up.** CDRs shipped and rated in the cloud, idempotently; events bridged; recording and voicemail rows shipped and files fetched through the link; registration summaries; retention and subject requests reaching the site's rows and files, the report naming the site. |
+| 5 | ✅ v0.25.272 — **Records up.** CDRs shipped and rated in the cloud, idempotently; events bridged; recording and voicemail rows shipped and files fetched through the link; registration summaries; retention and subject requests reaching the site's rows and files, the report naming the site. As built (§3.7): a `ship_seq` on five tables and a cursor per table in the link; `POST /link/v1/cdrs` rated afresh by the cloud's processor and announced naming the site; `POST /link/v1/records` for recording, mailbox and message rows and the site's logged deletions; `site_requests` collected on the link's long poll for fetches and deletions, answered on its own connection, behind downloads, playback, exports, erasures and the reaper; the site's events forwarded from its stream with `origin_site`; registrations on the heartbeat. Test: `fcp-link/tests/records.rs`. |
 | 6 | **Survivability, proved.** The floor cuts the link (a proxy cut, as `fcp-cluster/tests/partition.rs` does): phones keep registering and calling, a local trunk keeps carrying, CDRs and events spool; reconnect catches up; the cloud showed the site unreachable meanwhile and shows it back. |
 | 7 | **The site as a product.** `docs/SITE_SETUP.md` for the customer's operator (enroll, run, upgrade, back up); the runbook's site section; the admin UI's Sites page; the nightly gains a site stack against its cloud stack. |
 

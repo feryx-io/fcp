@@ -199,6 +199,7 @@ async fn calls_cross_a_sites_link_both_ways() {
     let cloud = cloud_with_site_opts(CloudOptions {
         site_database_url: Some(site_db.url()),
         sip_host: Some(format!("127.0.0.1:{sbc_tls}")),
+        ..Default::default()
     })
     .await
     .expect("the database was there a moment ago");

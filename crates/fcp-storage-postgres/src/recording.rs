@@ -15,7 +15,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const COLUMNS: &str = "id, tenant_id, meeting_id, room_number, node_id, path, format, \
                        trigger, consent, started_at, ended_at, duration_secs, size_bytes, \
-                       participants, kind, participant_id, participant_list";
+                       participants, kind, participant_id, participant_list, site_id, ship_seq";
 
 fn to_datetime(st: SystemTime) -> DateTime<Utc> {
     let d = st.duration_since(UNIX_EPOCH).unwrap_or_default();
@@ -54,6 +54,11 @@ impl PostgresRecordingStore {
             meeting_id: meeting_id.as_deref().map(MeetingId::from_str).transpose()?,
             room_number: row.try_get("room_number")?,
             node_id: row.try_get("node_id")?,
+            site_id: row
+                .try_get::<Option<String>, _>("site_id")
+                .ok()
+                .flatten()
+                .and_then(|s| fcp_core::SiteId::from_str(&s).ok()),
             path: row.try_get("path")?,
             // A row written by a newer node with a format this one does
             // not know still lists and deletes; it just cannot be played
@@ -81,8 +86,8 @@ impl RecordingStore for PostgresRecordingStore {
             "INSERT INTO conference_recordings (
                 id, tenant_id, meeting_id, room_number, node_id, path, format,
                 trigger, consent, started_at, ended_at, duration_secs, size_bytes, participants,
-                kind, participant_id, participant_list
-             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+                kind, participant_id, participant_list, site_id
+             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
              ON CONFLICT (id) DO UPDATE SET
                 path = EXCLUDED.path,
                 format = EXCLUDED.format,
@@ -107,9 +112,81 @@ impl RecordingStore for PostgresRecordingStore {
         .bind(recording.kind.as_str())
         .bind(&recording.participant_id)
         .bind(serde_json::to_value(&recording.participant_list)?)
+        .bind(recording.site_id.map(|s| s.to_string()))
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    /// Every field, as the row came from the site (`docs/HYBRID_CONTROL_PLANE.md`
+    /// §3.3): a finished recording lands finished.
+    async fn put_recording(&self, recording: &Recording) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO conference_recordings (
+                id, tenant_id, meeting_id, room_number, node_id, path, format,
+                trigger, consent, started_at, ended_at, duration_secs, size_bytes, participants,
+                kind, participant_id, participant_list, site_id
+             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+             ON CONFLICT (id) DO UPDATE SET
+                meeting_id = EXCLUDED.meeting_id,
+                room_number = EXCLUDED.room_number,
+                node_id = EXCLUDED.node_id,
+                path = EXCLUDED.path,
+                format = EXCLUDED.format,
+                trigger = EXCLUDED.trigger,
+                consent = EXCLUDED.consent,
+                started_at = EXCLUDED.started_at,
+                ended_at = EXCLUDED.ended_at,
+                duration_secs = EXCLUDED.duration_secs,
+                size_bytes = EXCLUDED.size_bytes,
+                participants = EXCLUDED.participants,
+                kind = EXCLUDED.kind,
+                participant_id = EXCLUDED.participant_id,
+                participant_list = EXCLUDED.participant_list,
+                site_id = EXCLUDED.site_id",
+        )
+        .bind(recording.id.to_string())
+        .bind(recording.tenant_id.to_string())
+        .bind(recording.meeting_id.map(|m| m.to_string()))
+        .bind(&recording.room_number)
+        .bind(&recording.node_id)
+        .bind(&recording.path)
+        .bind(recording.format.as_str())
+        .bind(recording.trigger.as_str())
+        .bind(recording.consent.as_str())
+        .bind(to_datetime(recording.started_at))
+        .bind(recording.ended_at.map(to_datetime))
+        .bind(recording.duration_secs.map(|d| d as i64))
+        .bind(recording.size_bytes.map(|b| b as i64))
+        .bind(recording.participants as i32)
+        .bind(recording.kind.as_str())
+        .bind(&recording.participant_id)
+        .bind(serde_json::to_value(&recording.participant_list)?)
+        .bind(recording.site_id.map(|s| s.to_string()))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn recordings_after(
+        &self,
+        after: i64,
+        limit: usize,
+    ) -> anyhow::Result<Vec<(i64, Recording)>> {
+        let rows = sqlx::query(&format!(
+            "SELECT {COLUMNS} FROM conference_recordings
+             WHERE ship_seq > $1 ORDER BY ship_seq LIMIT $2"
+        ))
+        .bind(after)
+        .bind(limit.clamp(1, 10_000) as i64)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                let seq: i64 = row.try_get("ship_seq")?;
+                Ok((seq, Self::row_to_recording(row)?))
+            })
+            .collect()
     }
 
     async fn finish_recording(
@@ -299,6 +376,11 @@ fn row_to_call_recording(row: sqlx::postgres::PgRow) -> anyhow::Result<CallRecor
         call_id: row.try_get("call_id")?,
         source: CallRecordingSource::parse(&source).unwrap_or(CallRecordingSource::Legacy),
         node_id: row.try_get("node_id")?,
+        site_id: row
+            .try_get::<Option<String>, _>("site_id")
+            .ok()
+            .flatten()
+            .and_then(|s| fcp_core::SiteId::from_str(&s).ok()),
         path: row.try_get("path")?,
         format: row.try_get("format")?,
         consent: RecordingConsent::parse(&consent).unwrap_or_default(),
@@ -307,16 +389,17 @@ fn row_to_call_recording(row: sqlx::postgres::PgRow) -> anyhow::Result<CallRecor
     })
 }
 
-const CALL_COLUMNS: &str =
-    "id, tenant_id, call_id, source, node_id, path, format, consent, started_at, ended_at";
+const CALL_COLUMNS: &str = "id, tenant_id, call_id, source, node_id, path, format, consent, \
+                            started_at, ended_at, site_id, ship_seq";
 
 #[async_trait]
 impl CallRecordingStore for PostgresRecordingStore {
     async fn create_call_recording(&self, recording: &CallRecording) -> anyhow::Result<()> {
         sqlx::query(
             "INSERT INTO call_recordings
-                (id, tenant_id, call_id, source, node_id, path, format, consent, started_at, ended_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                (id, tenant_id, call_id, source, node_id, path, format, consent, started_at,
+                 ended_at, site_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
              ON CONFLICT (id) DO UPDATE SET consent = EXCLUDED.consent",
         )
         .bind(recording.id.to_string())
@@ -329,9 +412,75 @@ impl CallRecordingStore for PostgresRecordingStore {
         .bind(recording.consent.as_str())
         .bind(to_datetime(recording.started_at))
         .bind(recording.ended_at.map(to_datetime))
+        .bind(recording.site_id.map(|s| s.to_string()))
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    /// Every field, as the row came from the site (`docs/HYBRID_CONTROL_PLANE.md`
+    /// §3.3).
+    async fn put_call_recording(&self, recording: &CallRecording) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO call_recordings
+                (id, tenant_id, call_id, source, node_id, path, format, consent, started_at,
+                 ended_at, site_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+             ON CONFLICT (id) DO UPDATE SET
+                call_id = EXCLUDED.call_id,
+                source = EXCLUDED.source,
+                node_id = EXCLUDED.node_id,
+                path = EXCLUDED.path,
+                format = EXCLUDED.format,
+                consent = EXCLUDED.consent,
+                started_at = EXCLUDED.started_at,
+                ended_at = EXCLUDED.ended_at,
+                site_id = EXCLUDED.site_id",
+        )
+        .bind(recording.id.to_string())
+        .bind(recording.tenant_id.to_string())
+        .bind(&recording.call_id)
+        .bind(recording.source.as_str())
+        .bind(&recording.node_id)
+        .bind(&recording.path)
+        .bind(&recording.format)
+        .bind(recording.consent.as_str())
+        .bind(to_datetime(recording.started_at))
+        .bind(recording.ended_at.map(to_datetime))
+        .bind(recording.site_id.map(|s| s.to_string()))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn delete_call_recording(&self, id: &RecordingId) -> anyhow::Result<bool> {
+        let affected = crate::deletion::execute(
+            &self.pool,
+            sqlx::query("DELETE FROM call_recordings WHERE id = $1").bind(id.to_string()),
+        )
+        .await?;
+        Ok(affected > 0)
+    }
+
+    async fn call_recordings_after(
+        &self,
+        after: i64,
+        limit: usize,
+    ) -> anyhow::Result<Vec<(i64, CallRecording)>> {
+        let rows = sqlx::query(&format!(
+            "SELECT {CALL_COLUMNS} FROM call_recordings
+             WHERE ship_seq > $1 ORDER BY ship_seq LIMIT $2"
+        ))
+        .bind(after)
+        .bind(limit.clamp(1, 10_000) as i64)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                let seq: i64 = row.try_get("ship_seq")?;
+                Ok((seq, row_to_call_recording(row)?))
+            })
+            .collect()
     }
 
     async fn finish_call_recording(

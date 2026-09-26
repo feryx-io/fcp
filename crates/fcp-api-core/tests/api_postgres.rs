@@ -503,6 +503,7 @@ impl App {
             currency: cost.map(|_| "USD".to_string()),
             direction: None,
             node_id: None,
+            site_id: None,
             region: None,
             correlation_id: None,
             trunk_name: None,

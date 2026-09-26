@@ -223,8 +223,30 @@ pub async fn delete_recording(
         }
     }
 
-    let file_deleted = match upstream(&state) {
-        Ok((base, token)) => {
+    // A recording a site holds: the site is asked to remove the file
+    // through its link (`docs/HYBRID_CONTROL_PLANE.md` §3.3), which
+    // answers on its own time; the row goes now.
+    let site_asked = match (recording.site_id, state.site_files.as_ref()) {
+        (Some(site), Some(files)) => Some(
+            files
+                .remove(
+                    site,
+                    recording.tenant_id,
+                    "conference_recording",
+                    &recording.path,
+                )
+                .await,
+        ),
+        (Some(site), None) => Some(Err(format!("held at site {site}, and no link runs here"))),
+        (None, _) => None,
+    };
+    let file_deleted = match (site_asked, upstream(&state)) {
+        (Some(Ok(())), _) => true,
+        (Some(Err(e)), _) => {
+            warn!(recording = %recording.id, error = %e, "The site could not be asked to remove the file");
+            false
+        }
+        (None, Ok((base, token))) => {
             let url = format!(
                 "{base}/recordings/{}?node={}",
                 urlencoding::encode(recording.file_name()),
@@ -253,7 +275,7 @@ pub async fn delete_recording(
                 }
             }
         }
-        Err(_) => {
+        (None, Err(_)) => {
             warn!(recording = %recording.id, "No conference server configured; deleting the row only");
             false
         }
@@ -283,6 +305,36 @@ pub async fn download_recording(
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
     let recording = scoped_recording(&state, &tenant.0, &id).await?;
+    // A recording a site holds is fetched through the site's link
+    // (`docs/HYBRID_CONTROL_PLANE.md` §3.3), not from a conference node.
+    if let Some(site) = recording.site_id {
+        let files = state.site_files.as_ref().ok_or_else(|| {
+            ApiError::ServiceUnavailable(
+                "the recording is at a site and no link runs here".to_string(),
+            )
+        })?;
+        let bytes = files
+            .fetch(
+                site,
+                recording.tenant_id,
+                "conference_recording",
+                &recording.path,
+            )
+            .await
+            .map_err(|e| ApiError::ServiceUnavailable(format!("the site did not answer: {e}")))?;
+        return Ok((
+            StatusCode::OK,
+            [
+                ("content-type", recording.format.content_type().to_string()),
+                (
+                    "content-disposition",
+                    format!("attachment; filename=\"{}\"", recording.file_name()),
+                ),
+            ],
+            bytes,
+        )
+            .into_response());
+    }
     let (base, token) = upstream(&state)?;
     let url = format!(
         "{base}/recordings/{}?node={}",

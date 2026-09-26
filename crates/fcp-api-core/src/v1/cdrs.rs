@@ -657,6 +657,7 @@ mod tests {
             currency: None,
             direction: None,
             node_id: None,
+            site_id: None,
             region: None,
             correlation_id: None,
             trunk_name: None,

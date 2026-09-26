@@ -15,6 +15,7 @@ pub mod auth;
 pub mod e911_validator;
 pub mod error;
 pub mod managed;
+pub mod site_files;
 pub mod state;
 pub mod trunk_health;
 

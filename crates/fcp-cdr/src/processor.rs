@@ -272,6 +272,7 @@ impl Processor {
             cost: record.cost,
             currency: record.currency.clone(),
             node_id: record.node_id.clone(),
+            site_id: record.site_id.map(|s| s.to_string()),
             timestamp: record.created_at.unwrap_or_else(SystemTime::now),
         });
         if let Err(e) = events.publish(event).await {

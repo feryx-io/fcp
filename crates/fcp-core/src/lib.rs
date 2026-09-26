@@ -146,7 +146,9 @@ pub use crate::sip_handler::{
 };
 pub use crate::sip_trace::{SipTraceMessage, SipTraceStore};
 pub use crate::site::{
-    EnrollmentToken, Site, SiteHeartbeat, SiteNode, SiteStatus, SiteStore, SiteSync,
+    EnrollmentToken, ShippedAnswer, ShippedDeletion, ShippedEvents, ShippedRecord, ShippedRecords,
+    Site, SiteHeartbeat, SiteNode, SiteRegistration, SiteRegistrations, SiteRequest,
+    SiteRequestKind, SiteRequestOutcome, SiteStatus, SiteStore, SiteSync, SITE_REGISTRATIONS_CAP,
 };
 pub use crate::site_location::SiteLocation;
 pub use crate::storage::{

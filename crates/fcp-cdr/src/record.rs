@@ -518,6 +518,7 @@ impl RecordBuilder {
             sip_reason: reason.detail(),
             direction: None,
             node_id: self.node_id,
+            site_id: None,
             region: self.region,
             correlation_id: self.correlation_id,
             trunk_name: self.trunk_name.clone(),

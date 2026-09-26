@@ -11,6 +11,8 @@ use fcp_testkit::{bins, Service, TestDatabase};
 use std::path::PathBuf;
 use std::time::Duration;
 
+/// What the admin authenticates to the events server ingest with.
+pub const EVENTS_TOKEN: &str = "events-ingest-token-change-me-32-chars";
 pub const ADMIN_TOKEN: &str = "link-test-admin-token-change-me-32";
 pub const A_WHILE: Duration = Duration::from_secs(20);
 
@@ -152,7 +154,7 @@ pub async fn cloud_with_site() -> Option<Cloud> {
 pub async fn cloud_with_site_at(site_database_url: Option<&str>) -> Option<Cloud> {
     cloud_with_site_opts(CloudOptions {
         site_database_url,
-        sip_host: None,
+        ..Default::default()
     })
     .await
 }
@@ -167,6 +169,15 @@ pub struct CloudOptions<'a> {
     /// enrolled gets a link trunk to it (`docs/HYBRID_CONTROL_PLANE.md`
     /// §3.6).
     pub sip_host: Option<String>,
+    /// The cloud's events server ingest URL, where a site's events and the
+    /// records the cloud writes for it are announced (§3.3).
+    pub events_server_url: Option<String>,
+    /// The site's Redis: its registrations for the heartbeat and its
+    /// event stream for forwarding.
+    pub site_redis_url: Option<String>,
+    /// The directories the link may send files up from and remove files
+    /// under.
+    pub site_file_roots: Vec<String>,
 }
 
 /// As [`cloud_with_site_at`], with everything a cloud may be started with.
@@ -174,6 +185,10 @@ pub async fn cloud_with_site_opts(opts: CloudOptions<'_>) -> Option<Cloud> {
     let site_database_url = opts.site_database_url;
     let sip_section = match &opts.sip_host {
         Some(host) => format!("sip_host = \"{host}\"\n"),
+        None => String::new(),
+    };
+    let events_section = match &opts.events_server_url {
+        Some(url) => format!("[events]\nserver_url = \"{url}\"\nauth_token = \"{EVENTS_TOKEN}\"\n"),
         None => String::new(),
     };
     let db = TestDatabase::create().await?;
@@ -209,6 +224,7 @@ ca_dir = "{dir}/link-ca"
 heartbeat_interval_secs = 1
 heartbeat_stale_secs = 3
 {sip_section}
+{events_section}
 [logging]
 level = "info"
 format = "compact"
@@ -249,10 +265,21 @@ format = "compact"
     let site_id = site["id"].as_str().unwrap().to_string();
     let token = site["enrollment_token"].as_str().unwrap().to_string();
 
-    let site_section = match site_database_url {
-        Some(url) => format!("[site]\ndatabase_url = \"{url}\"\nfeed_wait_secs = 5\n"),
-        None => String::new(),
-    };
+    let mut site_section = String::from("[site]\nfeed_wait_secs = 5\nship_interval_secs = 1\n");
+    if let Some(url) = site_database_url {
+        site_section.push_str(&format!("database_url = \"{url}\"\n"));
+    }
+    if let Some(url) = &opts.site_redis_url {
+        site_section.push_str(&format!("redis_url = \"{url}\"\nheartbeat_ttl_secs = 5\n"));
+    }
+    if !opts.site_file_roots.is_empty() {
+        let roots: Vec<String> = opts
+            .site_file_roots
+            .iter()
+            .map(|r| format!("\"{r}\""))
+            .collect();
+        site_section.push_str(&format!("file_roots = [{}]\n", roots.join(", ")));
+    }
     let link_config = format!(
         r#"[service]
 node_id = "acme-hq-link"

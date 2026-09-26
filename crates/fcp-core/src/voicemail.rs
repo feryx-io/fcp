@@ -72,6 +72,12 @@ pub struct VoicemailMessage {
     /// File path to the audio recording
     pub recording_path: PathBuf,
 
+    /// The site holding the file, at the cloud: the row came up its link
+    /// (`docs/HYBRID_CONTROL_PLANE.md` §3.3), and the file is fetched
+    /// through it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub site_id: Option<crate::SiteId>,
+
     /// Optional transcription of the message
     pub transcription: Option<String>,
 
@@ -94,6 +100,7 @@ impl VoicemailMessage {
             priority: MessagePriority::Normal,
             duration,
             recording_path,
+            site_id: None,
             transcription: None,
             created_at: SystemTime::now(),
             accessed_at: None,

@@ -49,8 +49,21 @@ pub async fn open_site(database_url: &str, max_connections: u32) -> Result<SiteS
     let emergency_store = Arc::new(
         fcp_storage_postgres::emergency::PostgresEmergencyStore::new(storage.pool().clone()),
     );
+    let recording_store = Arc::new(
+        fcp_storage_postgres::recording::PostgresRecordingStore::new(storage.pool().clone()),
+    );
+    let compliance_store = Arc::new(
+        fcp_storage_postgres::compliance::PostgresComplianceStore::new(storage.pool().clone()),
+    );
     let dyn_storage = DynStorage::from_all_in_one(storage.clone())
         .with_emergency_store(emergency_store as Arc<dyn fcp_core::e911::EmergencyStore>)
+        .with_recording_store(
+            recording_store.clone() as Arc<dyn fcp_core::recording::RecordingStore>
+        )
+        .with_call_recording_store(
+            recording_store as Arc<dyn fcp_core::recording::CallRecordingStore>,
+        )
+        .with_compliance_store(compliance_store as Arc<dyn fcp_core::compliance::ComplianceStore>)
         .with_encryption_store(storage.clone() as Arc<dyn fcp_core::encryption::EncryptionStore>)
         .with_prompt_store(prompt_store as Arc<dyn fcp_core::prompt::PromptStore>)
         .with_config_template_store(

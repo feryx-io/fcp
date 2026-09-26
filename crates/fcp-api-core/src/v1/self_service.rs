@@ -518,9 +518,31 @@ pub async fn get_message_audio(
         ));
     }
 
-    let data = tokio::fs::read(&message.recording_path)
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to read recording file: {}", e)))?;
+    // A message a site holds is fetched through the site's link
+    // (`docs/HYBRID_CONTROL_PLANE.md` §3.3).
+    let data = match message.site_id {
+        Some(site) => {
+            let files = state.site_files.as_ref().ok_or_else(|| {
+                ApiError::ServiceUnavailable(
+                    "the message is at a site and no link runs here".to_string(),
+                )
+            })?;
+            files
+                .fetch(
+                    site,
+                    mailbox.tenant_id,
+                    "voicemail",
+                    &message.recording_path.to_string_lossy(),
+                )
+                .await
+                .map_err(|e| {
+                    ApiError::ServiceUnavailable(format!("the site did not answer: {e}"))
+                })?
+        }
+        None => tokio::fs::read(&message.recording_path)
+            .await
+            .map_err(|e| ApiError::Internal(format!("Failed to read recording file: {}", e)))?,
+    };
 
     Ok((
         StatusCode::OK,

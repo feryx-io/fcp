@@ -5,7 +5,7 @@
 //! module holds what the cloud knows of a site: its record, the one-time
 //! token it enrolls with, and what its link last reported.
 
-use crate::{SiteId, TenantId, TrunkId};
+use crate::{SiteId, SiteRequestId, TenantId, TrunkId};
 use anyhow::Result as AnyhowResult;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -74,6 +74,139 @@ pub struct SiteHeartbeat {
     /// keeps no site database.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sync: Option<SiteSync>,
+    /// Who is registered at the site, at how many contacts, since when
+    /// (`docs/HYBRID_CONTROL_PLANE.md` §3.3); absent from a link with no
+    /// site Redis. A summary, not the rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registrations: Option<SiteRegistrations>,
+}
+
+/// The site's registrations as its link last saw them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct SiteRegistrations {
+    /// Every registered address of record, up to [`SITE_REGISTRATIONS_CAP`].
+    #[serde(default)]
+    pub users: Vec<SiteRegistration>,
+    /// Addresses of record registered, counted before the cap.
+    pub total_users: u32,
+    /// Contacts registered, counted before the cap.
+    pub total_contacts: u32,
+}
+
+/// How many addresses of record a heartbeat lists, at most.
+pub const SITE_REGISTRATIONS_CAP: usize = 1000;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SiteRegistration {
+    pub aor: String,
+    pub contacts: u32,
+    /// The earliest registration among the contacts, seconds since the
+    /// epoch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since: Option<u64>,
+}
+
+/// What the cloud asks a site to do with a file it holds
+/// (`docs/HYBRID_CONTROL_PLANE.md` §3.3): a site opens no port, so the
+/// cloud queues the request and the link collects it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SiteRequestKind {
+    /// Send the file's bytes up: a download, a playback, an export.
+    FetchFile { class: String, path: String },
+    /// Remove the file: retention, an erasure, a deletion in the cloud.
+    DeleteFile { class: String, path: String },
+}
+
+/// How a site's request ended.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SiteRequestOutcome {
+    pub ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SiteRequest {
+    pub id: SiteRequestId,
+    pub site_id: SiteId,
+    pub tenant_id: TenantId,
+    pub kind: SiteRequestKind,
+    pub created_at: SystemTime,
+    /// When the link collected it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub taken_at: Option<SystemTime>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub done_at: Option<SystemTime>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<SiteRequestOutcome>,
+}
+
+/// A batch of records a site ships up its link
+/// (`docs/HYBRID_CONTROL_PLANE.md` §3.3): rows as the site has them, and
+/// the deletions its log recorded since the last batch.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct ShippedRecords {
+    #[serde(default)]
+    pub puts: Vec<ShippedRecord>,
+    #[serde(default)]
+    pub deletions: Vec<ShippedDeletion>,
+}
+
+/// One row, named by its table: `call_recordings`, `conference_recordings`,
+/// `voicemail_mailboxes` or `voicemail_messages`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ShippedRecord {
+    pub table: String,
+    pub id: String,
+    pub object: serde_json::Value,
+}
+
+/// One deletion, as the site's deletion log has it: the class
+/// (`call_recording`, `conference_recording`, `voicemail`) and the row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShippedDeletion {
+    pub class: String,
+    pub item: String,
+}
+
+/// What the cloud made of a batch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ShippedAnswer {
+    /// Rows written or deleted.
+    pub applied: usize,
+    /// Rows the cloud already had, or would not take (another tenant's,
+    /// a table it does not ship).
+    pub skipped: usize,
+    /// Records the processor refused, with the reason, by position.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rejected: Vec<(usize, String)>,
+}
+
+/// A site's events, as one of its nodes published them, sent up its link.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ShippedEvents {
+    pub node_id: String,
+    pub events: Vec<serde_json::Value>,
+}
+
+impl SiteRequest {
+    pub fn new(site_id: SiteId, tenant_id: TenantId, kind: SiteRequestKind) -> Self {
+        Self {
+            id: SiteRequestId::new(),
+            site_id,
+            tenant_id,
+            kind,
+            created_at: SystemTime::now(),
+            taken_at: None,
+            done_at: None,
+            outcome: None,
+        }
+    }
+
+    pub fn is_done(&self) -> bool {
+        self.done_at.is_some()
+    }
 }
 
 /// A site as the cloud keeps it.
@@ -202,6 +335,28 @@ pub trait SiteStore: Send + Sync {
 
     /// A site by the hash of its secret, for a heartbeat.
     async fn get_site_by_secret_hash(&self, secret_hash: &str) -> AnyhowResult<Option<Site>>;
+
+    /// Write a request for a site, new or with its outcome
+    /// (`docs/HYBRID_CONTROL_PLANE.md` §3.3).
+    async fn put_site_request(&self, request: SiteRequest) -> AnyhowResult<()> {
+        let _ = request;
+        anyhow::bail!("this store keeps no site requests")
+    }
+
+    async fn get_site_request(&self, id: &SiteRequestId) -> AnyhowResult<Option<SiteRequest>> {
+        let _ = id;
+        Ok(None)
+    }
+
+    /// The requests a site has not yet answered, oldest first.
+    async fn pending_site_requests(
+        &self,
+        site_id: &SiteId,
+        limit: usize,
+    ) -> AnyhowResult<Vec<SiteRequest>> {
+        let _ = (site_id, limit);
+        Ok(Vec::new())
+    }
 }
 
 #[cfg(test)]
@@ -249,6 +404,7 @@ mod tests {
                 },
             ],
             sync: None,
+            registrations: None,
         });
         let groups = site.versions();
         assert_eq!(groups["0.25.268"], vec!["cm-1", "cm-2"]);

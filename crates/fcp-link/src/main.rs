@@ -13,7 +13,10 @@
 
 mod cli;
 mod config;
+mod events;
 mod link;
+mod requests;
+mod ship;
 mod sync;
 
 use anyhow::{Context, Result};

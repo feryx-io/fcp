@@ -1155,6 +1155,11 @@ pub struct CallDetailRecord {
     pub node_id: Option<String>,
     #[serde(default)]
     pub region: Option<String>,
+    /// The site whose stack owned the call, at the cloud: set as the
+    /// record comes up the site's link (`docs/HYBRID_CONTROL_PLANE.md`
+    /// §3.3). Absent on a record this deployment's own nodes wrote.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub site_id: Option<crate::SiteId>,
 
     /// The call this one replaced or was transferred from.
     #[serde(default)]
@@ -1384,6 +1389,15 @@ pub trait CdrStore: Send + Sync {
 
     /// Get a CDR by call ID
     async fn get_cdr(&self, call_id: &crate::CallId) -> Result<Option<CallDetailRecord>>;
+
+    /// The records written after `after` in this store's shipping order
+    /// (`ship_seq`, `docs/HYBRID_CONTROL_PLANE.md` §3.3), oldest first,
+    /// each with its sequence, at most `limit`. A store that keeps no
+    /// order has nothing to ship.
+    async fn cdrs_after(&self, after: i64, limit: usize) -> Result<Vec<(i64, CallDetailRecord)>> {
+        let _ = (after, limit);
+        Ok(Vec::new())
+    }
 
     /// Query CDRs with filters
     async fn query_cdrs(&self, query: CdrQuery) -> Result<Vec<CallDetailRecord>>;
@@ -1929,6 +1943,27 @@ pub trait VoicemailStore: Send + Sync {
 
     /// Create or update a message
     async fn put_message(&self, message: crate::VoicemailMessage) -> Result<()>;
+
+    /// Messages written or changed after `after` in shipping order
+    /// (`ship_seq`, `docs/HYBRID_CONTROL_PLANE.md` §3.3), oldest first.
+    async fn messages_after(
+        &self,
+        after: i64,
+        limit: usize,
+    ) -> Result<Vec<(i64, crate::VoicemailMessage)>> {
+        let _ = (after, limit);
+        Ok(Vec::new())
+    }
+
+    /// Mailboxes written or changed after `after` in shipping order.
+    async fn mailboxes_after(
+        &self,
+        after: i64,
+        limit: usize,
+    ) -> Result<Vec<(i64, crate::VoicemailMailbox)>> {
+        let _ = (after, limit);
+        Ok(Vec::new())
+    }
 
     /// Delete a message
     async fn delete_message(&self, id: &str) -> Result<()>;
@@ -3550,6 +3585,10 @@ impl CdrStore for DynStorage {
         self.cdr_store.get_cdr(call_id).await
     }
 
+    async fn cdrs_after(&self, after: i64, limit: usize) -> Result<Vec<(i64, CallDetailRecord)>> {
+        self.cdr_store.cdrs_after(after, limit).await
+    }
+
     async fn query_cdrs(&self, query: CdrQuery) -> Result<Vec<CallDetailRecord>> {
         self.cdr_store.query_cdrs(query).await
     }
@@ -4166,6 +4205,22 @@ impl VoicemailStore for DynStorage {
         self.voicemail_store.get_mwi_status(mailbox_id).await
     }
 
+    async fn messages_after(
+        &self,
+        after: i64,
+        limit: usize,
+    ) -> Result<Vec<(i64, crate::VoicemailMessage)>> {
+        self.voicemail_store.messages_after(after, limit).await
+    }
+
+    async fn mailboxes_after(
+        &self,
+        after: i64,
+        limit: usize,
+    ) -> Result<Vec<(i64, crate::VoicemailMailbox)>> {
+        self.voicemail_store.mailboxes_after(after, limit).await
+    }
+
     async fn get_mailbox_stats(&self, mailbox_id: &str) -> Result<crate::VoicemailStats> {
         self.voicemail_store.get_mailbox_stats(mailbox_id).await
     }
@@ -4273,6 +4328,25 @@ impl crate::site::SiteStore for DynStorage {
         token_hash: &str,
     ) -> Result<Option<crate::EnrollmentToken>> {
         self.site_store.consume_enrollment_token(token_hash).await
+    }
+
+    async fn put_site_request(&self, request: crate::site::SiteRequest) -> Result<()> {
+        self.site_store.put_site_request(request).await
+    }
+
+    async fn get_site_request(
+        &self,
+        id: &crate::SiteRequestId,
+    ) -> Result<Option<crate::site::SiteRequest>> {
+        self.site_store.get_site_request(id).await
+    }
+
+    async fn pending_site_requests(
+        &self,
+        site_id: &crate::SiteId,
+        limit: usize,
+    ) -> Result<Vec<crate::site::SiteRequest>> {
+        self.site_store.pending_site_requests(site_id, limit).await
     }
 
     async fn get_site_by_secret_hash(&self, secret_hash: &str) -> Result<Option<crate::Site>> {

@@ -144,6 +144,15 @@ pub struct LinkState {
     pub ca: Arc<LinkCa>,
     pub events: Arc<dyn EventPublisher>,
     pub config: LinkConfig,
+    /// The cloud's processor for the records sites ship up: it rates,
+    /// stores and announces them as any node's (`docs/HYBRID_CONTROL_PLANE.md`
+    /// §3.3).
+    pub processor: Option<Arc<fcp_cdr::Processor>>,
+    /// The events server's ingest, which a site's events are posted to
+    /// under the site's name; none without `[events] server_url`.
+    pub ingest: Option<crate::site_files::IngestPublisher>,
+    /// What the cloud asks of sites, and their answers.
+    pub requests: Arc<crate::site_files::SiteRequests>,
 }
 
 /// `POST /link/v1/enroll`.
@@ -499,7 +508,332 @@ pub fn link_router(state: LinkState) -> Router {
         .route("/link/v1/heartbeat", post(heartbeat))
         .route("/link/v1/snapshot", get(snapshot))
         .route("/link/v1/changes", get(changes))
+        .route("/link/v1/cdrs", post(cdrs))
+        .route("/link/v1/records", post(records))
+        .route("/link/v1/events", post(events))
+        .route("/link/v1/requests", get(requests))
+        .route("/link/v1/requests/:id", post(request_result))
+        // A file a site sends up is one body; a recording may be large.
+        .layer(axum::extract::DefaultBodyLimit::max(SITE_UPLOAD_LIMIT))
         .layer(Extension(state))
+}
+
+/// The most a site may send up in one request: a batch, or one file.
+pub const SITE_UPLOAD_LIMIT: usize = 512 << 20;
+
+/// The header a link's answer to a request carries its outcome in:
+/// `ok`, or `failed`, with [`REQUEST_DETAIL_HEADER`] saying why.
+pub const REQUEST_OUTCOME_HEADER: &str = "x-fcp-outcome";
+pub const REQUEST_DETAIL_HEADER: &str = "x-fcp-detail";
+
+/// `POST /link/v1/cdrs`: the site's records, batch by batch. Each is
+/// rated afresh here — the site rated with its copy of the plans and
+/// charged nobody — stored under the site's tenant, idempotently by its
+/// id, and announced as `cdr.written` naming the site.
+async fn cdrs(
+    Extension(state): Extension<LinkState>,
+    headers: HeaderMap,
+    Json(records): Json<Vec<fcp_core::storage::CallDetailRecord>>,
+) -> Result<Json<fcp_core::ShippedAnswer>, LinkError> {
+    let site = site_of(&state, &headers).await?;
+    let Some(processor) = &state.processor else {
+        return Err(LinkError(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "this cloud does not process records".to_string(),
+        ));
+    };
+    let mut answer = fcp_core::ShippedAnswer::default();
+    let mut keyed = Vec::with_capacity(records.len());
+    for (index, mut record) in records.into_iter().enumerate() {
+        if record.tenant_id != site.tenant_id {
+            answer.skipped += 1;
+            continue;
+        }
+        record.site_id = Some(site.id);
+        // The cloud bills: whatever the site's copy of the plans said is
+        // set aside and the record rated here.
+        record.cost = None;
+        record.currency = None;
+        record.rate_plan_id = None;
+        record.matched_prefix = None;
+        record.billable_seconds = None;
+        record.rated_at = None;
+        keyed.push((index, record));
+    }
+    if keyed.is_empty() {
+        return Ok(Json(answer));
+    }
+    let outcome = processor
+        .process_keyed(keyed)
+        .await
+        .map_err(|e| anyhow::anyhow!("processing a site's records: {e}"))?;
+    answer.applied = outcome.stored.len();
+    answer.skipped += outcome.duplicates.len();
+    answer.rejected = outcome
+        .rejected
+        .into_iter()
+        .map(|r| (r.key, r.reason))
+        .collect();
+    Ok(Json(answer))
+}
+
+/// `POST /link/v1/records`: the rows of the site's recordings, mailboxes
+/// and messages as it has them, each marked as the site's, and the
+/// deletions its log recorded, mirrored here.
+async fn records(
+    Extension(state): Extension<LinkState>,
+    headers: HeaderMap,
+    Json(batch): Json<fcp_core::ShippedRecords>,
+) -> Result<Json<fcp_core::ShippedAnswer>, LinkError> {
+    use fcp_core::storage::VoicemailStore;
+    let site = site_of(&state, &headers).await?;
+    let storage = &state.storage;
+    let mut answer = fcp_core::ShippedAnswer::default();
+    for put in batch.puts {
+        let applied = match put.table.as_str() {
+            "call_recordings" => {
+                let mut row: fcp_core::recording::CallRecording =
+                    serde_json::from_value(put.object)
+                        .map_err(|e| bad_row(&put.table, &put.id, e))?;
+                if row.tenant_id != site.tenant_id {
+                    false
+                } else if let Some(store) = storage.call_recording_store() {
+                    row.site_id = Some(site.id);
+                    store.put_call_recording(&row).await?;
+                    true
+                } else {
+                    false
+                }
+            }
+            "conference_recordings" => {
+                let mut row: fcp_core::recording::Recording = serde_json::from_value(put.object)
+                    .map_err(|e| bad_row(&put.table, &put.id, e))?;
+                if row.tenant_id != site.tenant_id {
+                    false
+                } else if let Some(store) = storage.recording_store() {
+                    row.site_id = Some(site.id);
+                    store.put_recording(&row).await?;
+                    true
+                } else {
+                    false
+                }
+            }
+            "voicemail_mailboxes" => {
+                let row: fcp_core::VoicemailMailbox = serde_json::from_value(put.object)
+                    .map_err(|e| bad_row(&put.table, &put.id, e))?;
+                if row.tenant_id != site.tenant_id {
+                    false
+                } else {
+                    storage.put_mailbox(row).await?;
+                    true
+                }
+            }
+            "voicemail_messages" => {
+                let mut row: fcp_core::VoicemailMessage = serde_json::from_value(put.object)
+                    .map_err(|e| bad_row(&put.table, &put.id, e))?;
+                let owner = storage.get_mailbox(&row.mailbox_id).await?;
+                if owner.is_none_or(|m| m.tenant_id != site.tenant_id) {
+                    false
+                } else {
+                    row.site_id = Some(site.id);
+                    storage.put_message(row).await?;
+                    true
+                }
+            }
+            _ => false,
+        };
+        if applied {
+            answer.applied += 1;
+        } else {
+            answer.skipped += 1;
+        }
+    }
+    if !batch.deletions.is_empty() {
+        let actor = format!("site:{}", site.id);
+        let deleter =
+            fcp_core::compliance::Deleter::new(fcp_core::compliance::DeletionCause::Site, actor);
+        let (applied, skipped) = fcp_core::compliance::deleting_as(
+            deleter,
+            mirror_deletions(storage, &site, batch.deletions),
+        )
+        .await?;
+        answer.applied += applied;
+        answer.skipped += skipped;
+    }
+    Ok(Json(answer))
+}
+
+fn bad_row(table: &str, id: &str, e: serde_json::Error) -> LinkError {
+    LinkError(
+        StatusCode::BAD_REQUEST,
+        format!("{table} {id} does not parse: {e}"),
+    )
+}
+
+/// Delete here what the site deleted, when the row is the site's.
+async fn mirror_deletions(
+    storage: &DynStorage,
+    site: &Site,
+    deletions: Vec<fcp_core::ShippedDeletion>,
+) -> Result<(usize, usize)> {
+    use fcp_core::storage::VoicemailStore;
+    let (mut applied, mut skipped) = (0, 0);
+    for deletion in deletions {
+        let done = match deletion.class.as_str() {
+            "call_recording" => match (
+                storage.call_recording_store(),
+                deletion.item.parse::<fcp_core::RecordingId>(),
+            ) {
+                (Some(store), Ok(id)) => match store.get_call_recording(&id).await? {
+                    Some(row) if row.site_id == Some(site.id) => {
+                        store.delete_call_recording(&id).await?
+                    }
+                    _ => false,
+                },
+                _ => false,
+            },
+            "conference_recording" => match (
+                storage.recording_store(),
+                deletion.item.parse::<fcp_core::RecordingId>(),
+            ) {
+                (Some(store), Ok(id)) => match store.get_recording(&id).await? {
+                    Some(row) if row.site_id == Some(site.id) => {
+                        store.delete_recording(&id).await?
+                    }
+                    _ => false,
+                },
+                _ => false,
+            },
+            "voicemail" => match storage.get_message(&deletion.item).await? {
+                Some(row) if row.site_id == Some(site.id) => {
+                    storage.delete_message(&deletion.item).await?;
+                    true
+                }
+                _ => false,
+            },
+            _ => false,
+        };
+        if done {
+            applied += 1;
+        } else {
+            skipped += 1;
+        }
+    }
+    Ok((applied, skipped))
+}
+
+/// `POST /link/v1/events`: the site's events, forwarded to this cloud's
+/// events server under the site's name, so webhooks fire here, once.
+/// Only the site's tenant's events are taken; the rest are dropped.
+async fn events(
+    Extension(state): Extension<LinkState>,
+    headers: HeaderMap,
+    Json(batches): Json<Vec<fcp_core::ShippedEvents>>,
+) -> Result<Json<fcp_core::ShippedAnswer>, LinkError> {
+    let site = site_of(&state, &headers).await?;
+    let Some(ingest) = &state.ingest else {
+        return Err(LinkError(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "this cloud has no events server to forward to ([events] server_url)".to_string(),
+        ));
+    };
+    let mut answer = fcp_core::ShippedAnswer::default();
+    for batch in batches {
+        let mut kept = Vec::with_capacity(batch.events.len());
+        for value in batch.events {
+            let Ok(event) = serde_json::from_value::<PlatformEvent>(value) else {
+                answer.skipped += 1;
+                continue;
+            };
+            if event.tenant_id() == Some(&site.tenant_id) {
+                kept.push(event);
+            } else {
+                answer.skipped += 1;
+            }
+        }
+        let count = kept.len();
+        ingest
+            .publish_for_site(site.id, &batch.node_id, &kept)
+            .await
+            .map_err(|e| {
+                warn!(site_id = %site.id, error = %e, "A site's events could not be forwarded");
+                LinkError(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "the events server did not take the events".to_string(),
+                )
+            })?;
+        answer.applied += count;
+    }
+    Ok(Json(answer))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RequestsQuery {
+    #[serde(default = "default_requests_wait")]
+    pub wait_secs: u64,
+    #[serde(default = "default_requests_limit")]
+    pub limit: usize,
+}
+
+fn default_requests_wait() -> u64 {
+    25
+}
+
+fn default_requests_limit() -> usize {
+    20
+}
+
+/// `GET /link/v1/requests`: what the cloud asks of the site, held up to
+/// `wait_secs` for something to ask.
+async fn requests(
+    Extension(state): Extension<LinkState>,
+    headers: HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<RequestsQuery>,
+) -> Result<Json<Vec<fcp_core::SiteRequest>>, LinkError> {
+    let site = site_of(&state, &headers).await?;
+    let pending = state
+        .requests
+        .wait_pending(
+            site.id,
+            Duration::from_secs(query.wait_secs.min(30)),
+            query.limit.clamp(1, 100),
+        )
+        .await?;
+    Ok(Json(pending))
+}
+
+/// `POST /link/v1/requests/:id`: the site's answer — the outcome in
+/// [`REQUEST_OUTCOME_HEADER`], and for a fetch that succeeded, the file
+/// as the body.
+async fn request_result(
+    Extension(state): Extension<LinkState>,
+    headers: HeaderMap,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    body: axum::body::Bytes,
+) -> Result<StatusCode, LinkError> {
+    let site = site_of(&state, &headers).await?;
+    let id: fcp_core::SiteRequestId = id
+        .parse()
+        .map_err(|_| LinkError(StatusCode::BAD_REQUEST, "not a request id".to_string()))?;
+    let ok = headers
+        .get(REQUEST_OUTCOME_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.trim().eq_ignore_ascii_case("ok"));
+    let detail = headers
+        .get(REQUEST_DETAIL_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
+    let outcome = fcp_core::SiteRequestOutcome { ok, detail };
+    let body = ok.then(|| body.to_vec());
+    if state.requests.complete(site.id, &id, outcome, body).await? {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(LinkError(
+            StatusCode::NOT_FOUND,
+            "no such request of this site".to_string(),
+        ))
+    }
 }
 
 // ── Configuration down: the snapshot and the feed (§3.2, phase 2) ────
