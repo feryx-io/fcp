@@ -2173,3 +2173,89 @@ async fn a_node_previews_what_it_would_do_with_a_call() {
 
     stack.finish().await;
 }
+
+/// Call waiting counts a user's calls across the cluster
+/// (`docs/ENTERPRISE_CALLING.md` §3.4): Bob on a call through one node is
+/// busy to a call through the other.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_user_on_a_call_on_one_node_is_busy_on_the_other() {
+    use fcp_core::CallingStore;
+    let Some(redis) = fcp_testkit::cluster::private_redis_url() else {
+        eprintln!("skipped: FCP_TEST_REDIS_URL is not set");
+        return;
+    };
+    let Some(mut first) = Stack::start_as("e2e-waiting-a", Some(&redis), &[]).await else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let alice = first.seed.user("alice", "alice-pw", "1001").await;
+    let bob = first.seed.user("bob", "bob-pw", "1002").await;
+    let carol = first.seed.user("carol", "carol-pw", "1003").await;
+    let bob_id = fcp_core::storage::CredentialStore::get_user_in_tenant(
+        first.seed.storage(),
+        "bob",
+        &first.seed.tenant_id,
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .id;
+    let mut settings = fcp_core::CallingSettings::defaults(first.seed.tenant_id, bob_id);
+    settings.call_waiting = false;
+    first
+        .seed
+        .storage()
+        .put_calling_settings(settings)
+        .await
+        .unwrap();
+
+    let (second, second_sip, _second_http, _second_dir) = spawn_node(
+        first.db.as_ref().expect("the test database").url(),
+        "e2e-waiting-b",
+        Some(&redis),
+        &[],
+        "",
+    )
+    .await;
+
+    let alice_phone = first.phone(&alice).await;
+    let bob_phone = first.phone(&bob).await;
+    let carol_phone = Phone::new(&carol.username, &carol.password, REALM, second_sip)
+        .await
+        .expect("phone binds");
+    assert_eq!(carol_phone.register().await.unwrap(), 200);
+
+    // Alice and Bob through the first node.
+    let call = alice_phone.call(&bob.extension).await.unwrap();
+    let Some(at_bob) = bob_phone.incoming(SOON).await else {
+        first.fail("Bob's phone did not ring").await;
+    };
+    let bob_call = at_bob.answer().await.unwrap();
+    call.answered(SOON).await.expect("answered");
+
+    // Carol through the second node: Bob is busy there too.
+    let from_carol = carol_phone.call(&bob.extension).await.unwrap();
+    let refused = from_carol.failed(SOON).await;
+    if refused != Some(486) {
+        let b_logs = second.kill().await;
+        eprintln!("=== NODE B ===\n{b_logs}");
+        first
+            .fail(&format!("the other node let the call through: {refused:?}"))
+            .await;
+    }
+
+    // Bob off the call: the second node rings him.
+    bob_call.hangup().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let again = carol_phone.call(&bob.extension).await.unwrap();
+    if bob_phone.incoming(SOON).await.is_none() {
+        let b_logs = second.kill().await;
+        eprintln!("=== NODE B ===\n{b_logs}");
+        first
+            .fail("Bob, free again, did not ring through the other node")
+            .await;
+    }
+    let _ = again;
+    let _ = second.kill().await;
+    first.finish().await;
+}

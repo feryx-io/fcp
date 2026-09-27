@@ -326,6 +326,22 @@ impl LegSide {
     }
 }
 
+impl Call {
+    /// The users this call counts against: its parties that are users,
+    /// while it is up (established or parked).
+    pub fn counted_users(&self) -> Vec<fcp_core::UserId> {
+        if !matches!(self.state, CallState::Established | CallState::Parked) {
+            return Vec::new();
+        }
+        let mut users: Vec<fcp_core::UserId> = [self.caller_user_id, self.callee_user_id]
+            .into_iter()
+            .flatten()
+            .collect();
+        users.dedup();
+        users
+    }
+}
+
 /// A B2BUA call with two legs.
 #[derive(Clone)]
 pub struct Call {
@@ -481,6 +497,12 @@ pub struct Call {
     /// user's plan (a device, a trunk, a forward's own legs).
     pub treatments: Option<fcp_core::Treatments>,
 
+    /// The user who placed the call, when a user of the tenant did: with
+    /// `callee_user_id`, who the call counts against while it is up
+    /// (`docs/ENTERPRISE_CALLING.md` §3.4). Cleared when that party leaves
+    /// the call (a transfer, a park).
+    pub caller_user_id: Option<fcp_core::UserId>,
+
     /// The leg that is on hold: its far party sent `sendonly` or
     /// `inactive`, or the node held it (a parked party).
     pub held: Option<LegSide>,
@@ -588,6 +610,7 @@ impl Call {
             callee_user_id: None,
             treatments: None,
             held: None,
+            caller_user_id: None,
             caller_number: None,
             emergency: None,
         }
@@ -695,6 +718,7 @@ impl Call {
             callee_user_id: None,
             treatments: None,
             held: None,
+            caller_user_id: None,
             caller_number: None,
             emergency: None,
         }

@@ -1059,3 +1059,64 @@ async fn a_tenants_hold_music_plays_unless_the_holder_chose_silence() {
     alice_call.hangup().await.unwrap();
     stack.finish().await;
 }
+
+// ─── Call waiting (docs/ENTERPRISE_CALLING.md §3.4) ──────────────────────
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn call_waiting_decides_whether_a_second_call_rings() {
+    let stack = stack_or_skip!();
+    let [(alice, alice_phone), (bob, bob_phone), (_carol, carol_phone)] =
+        three_phones(&stack).await;
+
+    // On by default: a second call rings Bob while he talks to Alice.
+    let (alice_call, _bob_call) = answered(&stack, &alice_phone, &bob, &bob_phone).await;
+    let second = carol_phone.call(&bob.extension).await.unwrap();
+    let Some(waiting) = bob_phone.incoming(SOON).await else {
+        stack
+            .fail("the second call did not ring Bob", &carol_phone)
+            .await;
+    };
+    waiting.reject(486, "Busy Here").await.unwrap();
+    assert_eq!(second.failed(SOON).await, Some(486));
+
+    // *57: off. The second call is busy without ringing.
+    let code = bob_phone.call("*57").await.unwrap();
+    code.answered(SOON).await.expect("*57 accepted");
+    let _ = code.hangup().await;
+    let second = carol_phone.call(&bob.extension).await.unwrap();
+    match second.failed(SOON).await {
+        Some(486) => {}
+        other => {
+            stack
+                .fail(
+                    &format!("call waiting off did not refuse: {other:?}"),
+                    &carol_phone,
+                )
+                .await
+        }
+    }
+    assert!(
+        bob_phone.incoming(QUIET).await.is_none(),
+        "Bob's phone rang with call waiting off"
+    );
+
+    // Off the call, he is free again.
+    alice_call.hangup().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let third = carol_phone.call(&bob.extension).await.unwrap();
+    let Some(at_bob) = bob_phone.incoming(SOON).await else {
+        stack
+            .fail("Bob, free again, did not ring", &carol_phone)
+            .await;
+    };
+    let answered_third = at_bob.answer().await.unwrap();
+    third.answered(SOON).await.expect("Carol reaches Bob");
+
+    // A call Bob placed counts too: while he talks to Carol he is busy to
+    // Alice.
+    let from_alice = alice_phone.call(&bob.extension).await.unwrap();
+    assert_eq!(from_alice.failed(SOON).await, Some(486));
+    answered_third.hangup().await.unwrap();
+    let _ = alice;
+    stack.finish().await;
+}

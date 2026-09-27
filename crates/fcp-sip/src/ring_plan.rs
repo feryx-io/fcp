@@ -35,10 +35,16 @@ pub enum RingPlan<C = Binding> {
     },
 }
 
-/// The plan for a user with these settings, these registered contacts and
-/// a mailbox or not. The rules, in order: forward all; do not disturb;
-/// nobody registered; otherwise ring, then the busy or no-answer treatment.
-pub fn plan<C>(settings: &CallingSettings, contacts: Vec<C>, has_mailbox: bool) -> RingPlan<C> {
+/// The plan for a user with these settings, these registered contacts, a
+/// mailbox or not, and on a call or not. The rules, in order: forward all;
+/// do not disturb, or on a call with call waiting off (§3.4); nobody
+/// registered; otherwise ring, then the busy or no-answer treatment.
+pub fn plan<C>(
+    settings: &CallingSettings,
+    contacts: Vec<C>,
+    has_mailbox: bool,
+    on_a_call: bool,
+) -> RingPlan<C> {
     if let Some(target) = &settings.forward_all {
         return RingPlan::Immediate {
             treatment: Treatment::Forward {
@@ -48,7 +54,7 @@ pub fn plan<C>(settings: &CallingSettings, contacts: Vec<C>, has_mailbox: bool) 
         };
     }
     let busy = fallback(&settings.forward_busy, has_mailbox, 486);
-    if settings.dnd {
+    if settings.dnd || (on_a_call && !settings.call_waiting) {
         return RingPlan::Immediate {
             treatment: busy,
             reason: "busy",
@@ -292,7 +298,7 @@ mod tests {
     #[test]
     fn a_plain_user_rings_then_gets_the_default_treatments() {
         let s = settings();
-        match plan(&s, vec!["a", "b"], false) {
+        match plan(&s, vec!["a", "b"], false, false) {
             RingPlan::Ring {
                 contacts,
                 ring_time,
@@ -310,7 +316,7 @@ mod tests {
     #[test]
     fn a_mailbox_catches_busy_no_answer_and_unreachable() {
         let s = settings();
-        match plan(&s, vec!["a"], true) {
+        match plan(&s, vec!["a"], true, false) {
             RingPlan::Ring { treatments, .. } => {
                 assert_eq!(treatments.busy, Treatment::Voicemail);
                 assert_eq!(treatments.no_answer, Treatment::Voicemail);
@@ -318,7 +324,7 @@ mod tests {
             other => panic!("{other:?}"),
         }
         assert_eq!(
-            plan(&s, Vec::<&str>::new(), true),
+            plan(&s, Vec::<&str>::new(), true, false),
             RingPlan::Immediate {
                 treatment: Treatment::Voicemail,
                 reason: "unreachable"
@@ -334,7 +340,7 @@ mod tests {
         s.forward_no_answer = Some(CallTarget::Voicemail);
         s.forward_unreachable = Some(CallTarget::Number("+15551234567".into()));
         s.no_answer_secs = Some(12);
-        match plan(&s, vec!["a"], true) {
+        match plan(&s, vec!["a"], true, false) {
             RingPlan::Ring {
                 ring_time,
                 treatments,
@@ -357,7 +363,7 @@ mod tests {
             other => panic!("{other:?}"),
         }
         assert_eq!(
-            plan(&s, Vec::<&str>::new(), true),
+            plan(&s, Vec::<&str>::new(), true, false),
             RingPlan::Immediate {
                 treatment: Treatment::Forward {
                     target: CallTarget::Number("+15551234567".into())
@@ -372,7 +378,7 @@ mod tests {
         let mut s = settings();
         s.dnd = true;
         assert_eq!(
-            plan(&s, vec!["a"], false),
+            plan(&s, vec!["a"], false, false),
             RingPlan::Immediate {
                 treatment: Treatment::Refuse { code: 486 },
                 reason: "busy"
@@ -380,11 +386,32 @@ mod tests {
         );
         s.forward_busy = Some(CallTarget::Extension("2002".into()));
         assert_eq!(
-            plan(&s, vec!["a"], true),
+            plan(&s, vec!["a"], true, false),
             RingPlan::Immediate {
                 treatment: Treatment::Forward {
                     target: CallTarget::Extension("2002".into())
                 },
+                reason: "busy"
+            }
+        );
+    }
+
+    #[test]
+    fn a_user_on_a_call_without_call_waiting_is_busy() {
+        let mut s = settings();
+        assert!(matches!(
+            plan(&s, vec!["a"], false, true),
+            RingPlan::Ring { .. }
+        ));
+        s.call_waiting = false;
+        assert!(matches!(
+            plan(&s, vec!["a"], false, false),
+            RingPlan::Ring { .. }
+        ));
+        assert_eq!(
+            plan(&s, vec!["a"], true, true),
+            RingPlan::Immediate {
+                treatment: Treatment::Voicemail,
                 reason: "busy"
             }
         );
@@ -396,7 +423,7 @@ mod tests {
         s.dnd = true;
         s.forward_all = Some(CallTarget::Voicemail);
         assert_eq!(
-            plan(&s, Vec::<&str>::new(), false),
+            plan(&s, Vec::<&str>::new(), false, false),
             RingPlan::Immediate {
                 treatment: Treatment::Forward {
                     target: CallTarget::Voicemail
@@ -410,7 +437,7 @@ mod tests {
     fn the_ring_time_stays_in_range() {
         let mut s = settings();
         s.no_answer_secs = Some(1);
-        match plan(&s, vec!["a"], false) {
+        match plan(&s, vec!["a"], false, false) {
             RingPlan::Ring { ring_time, .. } => assert_eq!(ring_time, Some(Duration::from_secs(5))),
             other => panic!("{other:?}"),
         }

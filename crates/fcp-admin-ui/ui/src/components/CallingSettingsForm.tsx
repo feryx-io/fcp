@@ -22,6 +22,7 @@ interface ForwardState {
 
 interface FormState {
   dnd: boolean
+  call_waiting: boolean
   /** '' is the node's default */
   no_answer_secs: string
   /** 'tenant', 'none' or a prompt's id */
@@ -52,6 +53,7 @@ function forwardState(target: string | null): ForwardState {
 function stateOf(s: CallingSettings): FormState {
   return {
     dnd: s.dnd,
+    call_waiting: s.call_waiting,
     no_answer_secs: s.no_answer_secs === null ? '' : String(s.no_answer_secs),
     hold_music: s.hold_music ?? 'tenant',
     forwards: {
@@ -68,6 +70,7 @@ export function requestOf(form: FormState): UpdateCallingRequest {
   const forward = (f: ForwardState) => (f.enabled ? (f.voicemail ? VM : f.target.trim()) : '')
   return {
     dnd: form.dnd,
+    call_waiting: form.call_waiting,
     no_answer_secs: form.no_answer_secs.trim() === '' ? 0 : parseInt(form.no_answer_secs, 10) || 0,
     hold_music: form.hold_music === 'tenant' ? '' : form.hold_music,
     forward_all: forward(form.forwards.forward_all),
@@ -127,6 +130,19 @@ export function CallingSettingsForm({
           </p>
         </div>
         <Switch checked={form.dnd} onCheckedChange={(dnd) => setForm((prev) => ({ ...prev, dnd }))} />
+      </div>
+
+      <div className="flex items-center justify-between">
+        <div>
+          <Label className="text-sm font-medium">Call Waiting</Label>
+          <p className="text-xs text-muted-foreground">
+            A second call rings while you are on one; off, it gets the busy forward, voicemail, or a busy signal.
+          </p>
+        </div>
+        <Switch
+          checked={form.call_waiting}
+          onCheckedChange={(call_waiting) => setForm((prev) => ({ ...prev, call_waiting }))}
+        />
       </div>
 
       <div className="space-y-1">

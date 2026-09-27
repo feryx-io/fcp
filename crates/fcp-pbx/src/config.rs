@@ -124,6 +124,12 @@ pub struct FeatureCodeConfig {
     pub forward_no_answer_on: String,
     #[serde(default = "default_forward_no_answer_off")]
     pub forward_no_answer_off: String,
+
+    /// Call waiting on ("*56") and off ("*57").
+    #[serde(default = "default_call_waiting_on")]
+    pub call_waiting_on: String,
+    #[serde(default = "default_call_waiting_off")]
+    pub call_waiting_off: String,
 }
 
 fn default_group_pickup() -> String {
@@ -177,6 +183,12 @@ fn default_forward_no_answer_on() -> String {
 fn default_forward_no_answer_off() -> String {
     "*93".to_string()
 }
+fn default_call_waiting_on() -> String {
+    "*56".to_string()
+}
+fn default_call_waiting_off() -> String {
+    "*57".to_string()
+}
 
 impl Default for FeatureCodeConfig {
     fn default() -> Self {
@@ -198,6 +210,8 @@ impl Default for FeatureCodeConfig {
             forward_busy_off: default_forward_busy_off(),
             forward_no_answer_on: default_forward_no_answer_on(),
             forward_no_answer_off: default_forward_no_answer_off(),
+            call_waiting_on: default_call_waiting_on(),
+            call_waiting_off: default_call_waiting_off(),
         }
     }
 }

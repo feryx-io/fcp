@@ -1280,6 +1280,16 @@ party hears the music and not the holder, the tenant's music and the
 holder's silence, the parked party's music) and `calls.rs`'s
 pass-through under `hold_music = false`. Not built: the number's and the
 tenant's switches, the queue naming a prompt.
+Phase 4 done (v0.25.279): call waiting — a user's calls counted as
+leases in the cluster's Redis (`LeaseSubject::User`, the same counting
+as the tenant and trunk limits; this node's own without a cluster),
+kept by a call manager hook on the users a call counts against (its
+caller and its callee, released when either leaves by transfer or park);
+call waiting off with a call up is the busy treatment; `*56`/`*57` and
+the Calling page's switch. Proved by `calling.rs` (a second call rings,
+then is refused with call waiting off, a call Bob placed counting too)
+and `trunks.rs` (Bob on a call through one node is busy through the
+other).
 
 ## Historical documents
 
