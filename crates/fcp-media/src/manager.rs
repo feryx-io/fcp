@@ -282,6 +282,20 @@ impl MediaManager {
         self.backend.play_file(call_id, file_path, target).await
     }
 
+    /// Play an audio file into a call again and again until stopped: hold
+    /// music (`docs/ENTERPRISE_CALLING.md` §3.3). The other leg's audio is
+    /// not relayed to the target meanwhile.
+    pub async fn play_file_looped(
+        &self,
+        call_id: &CallId,
+        file_path: String,
+        target: AudioTarget,
+    ) -> Result<String> {
+        self.backend
+            .play_file_looped(call_id, file_path, target)
+            .await
+    }
+
     /// Play a generated tone into a call
     ///
     /// # Arguments

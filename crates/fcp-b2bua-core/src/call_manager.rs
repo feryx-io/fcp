@@ -12,6 +12,10 @@ use tracing::{debug, info};
 /// What a [`CallManager`] tells of each call it ends or forgets.
 pub type OnEnded = Arc<dyn Fn(&CallId) + Send + Sync>;
 
+/// What is told of a call's held leg changing: the call and the leg now
+/// held, `None` when none is.
+pub type OnHoldChanged = Arc<dyn Fn(CallId, Option<crate::call::LegSide>) + Send + Sync>;
+
 /// Call manager service.
 ///
 /// This service manages the lifecycle of all active calls in the B2BUA.
@@ -47,6 +51,11 @@ pub struct CallManager {
     /// `docs/TENANT_TRUNKS.md` §7) is released here, wherever the call ended.
     on_ended: Option<OnEnded>,
 
+    /// Told whenever a call's held leg changes (`docs/ENTERPRISE_CALLING.md`
+    /// §3.3): what plays and stops hold music, whichever path held or
+    /// released the leg. Set once, after the manager is shared.
+    on_hold_changed: std::sync::OnceLock<OnHoldChanged>,
+
     /// Emergency calls' audit records as their inserts land: the record id
     /// once written, so the call's ending completes the right row however
     /// short the call was.
@@ -65,6 +74,7 @@ impl CallManager {
             cdr: None,
             region: None,
             on_ended: None,
+            on_hold_changed: std::sync::OnceLock::new(),
             emergency_records: Arc::new(DashMap::new()),
         }
     }
@@ -82,6 +92,7 @@ impl CallManager {
             cdr: Some(cdr),
             region: None,
             on_ended: None,
+            on_hold_changed: std::sync::OnceLock::new(),
             emergency_records: Arc::new(DashMap::new()),
         }
     }
@@ -136,6 +147,7 @@ impl CallManager {
             cdr: Some(cdr),
             region: None,
             on_ended: None,
+            on_hold_changed: std::sync::OnceLock::new(),
             emergency_records: Arc::new(DashMap::new()),
         }
     }
@@ -150,6 +162,7 @@ impl CallManager {
             cdr: None,
             region: None,
             on_ended: None,
+            on_hold_changed: std::sync::OnceLock::new(),
             billing: None,
             emergency_records: Arc::new(DashMap::new()),
         }
@@ -185,6 +198,12 @@ impl CallManager {
     }
 
     /// Be told of every call this manager ends or forgets.
+    /// Set what is told when a call's held leg changes; the first setting
+    /// stands.
+    pub fn set_on_hold_changed(&self, hook: OnHoldChanged) {
+        let _ = self.on_hold_changed.set(hook);
+    }
+
     pub fn set_on_ended(&mut self, on_ended: OnEnded) {
         self.on_ended = Some(on_ended);
     }
@@ -498,6 +517,11 @@ impl CallManager {
         let new_state = entry.state;
         let new_held = entry.held;
         let updated_call = entry.value().clone();
+        if old_held != new_held {
+            if let Some(hook) = self.on_hold_changed.get() {
+                hook(*call_id, new_held);
+            }
+        }
 
         debug!(
             call_id = %call_id,

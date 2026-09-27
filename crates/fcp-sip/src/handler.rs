@@ -3661,6 +3661,7 @@ impl SipMessageHandler {
             recording_requested: auto_recording.is_some(),
             dtmf_requested: user_prefs.enable_dtmf_detection || user_prefs.force_media_anchoring,
             conference_call: false, // TODO: Detect conference scenarios
+            hold_music: media_config.hold_music,
         };
 
         // Make anchoring decision
@@ -9111,6 +9112,21 @@ impl SipMessageHandler {
         // holds the far party, and what its answer answers.
         let sender_offer = body.clone();
 
+        // With hold music, the node answers a hold (and its resume) itself
+        // and plays music into the held leg: the far phone is never told
+        // (`docs/ENTERPRISE_CALLING.md` §3.3).
+        if call.media_anchored && self.media_config.as_ref().is_some_and(|m| m.hold_music) {
+            if let Some(offer) = sender_offer.as_deref() {
+                let sender = fcp_b2bua_core::LegSide::of(is_a_leg);
+                let holds = crate::hold::holds(offer);
+                if holds || call.held == Some(sender.other()) {
+                    return self
+                        .answer_hold_locally(request, &call, sender, offer, prior_sdp, holds)
+                        .await;
+                }
+            }
+        }
+
         // If media is anchored, rewrite SDP before forwarding to peer
         if call.media_anchored {
             if let (Some(body_str), Some(ref media_session_id), Some(media_manager)) = (
@@ -9383,6 +9399,63 @@ impl SipMessageHandler {
         }
 
         Ok(self.build_in_dialog_response(request, &peer_resp))
+    }
+
+    /// Answer a hold, or the resume of one, from the node: the holder's
+    /// media side follows its offer if it moved, the answer is the node's
+    /// (`recvonly` to a hold), and the held leg is marked — which starts or
+    /// stops the music (`crate::hold_music`).
+    async fn answer_hold_locally(
+        &self,
+        request: &sip_core::Request,
+        call: &fcp_b2bua_core::Call,
+        sender: fcp_b2bua_core::LegSide,
+        offer: &str,
+        prior_sdp: Option<&str>,
+        holds: bool,
+    ) -> Result<sip_core::Response> {
+        let (Some(session_id), Some(media_manager)) =
+            (call.media_session_id, self.media_manager.as_ref())
+        else {
+            return Ok(self.create_simple_response(request, 500, "Media Unavailable"));
+        };
+        let moved = prior_sdp
+            .map(|prior| crate::conference_migration::media_endpoint_changed(prior, offer))
+            .unwrap_or(true);
+        if moved {
+            let updated = match sender {
+                fcp_b2bua_core::LegSide::A => media_manager
+                    .update_session(&session_id, offer.to_string())
+                    .await
+                    .map(|_| ()),
+                fcp_b2bua_core::LegSide::B => {
+                    media_manager
+                        .update_session_b_leg(&session_id, offer.to_string())
+                        .await
+                }
+            };
+            if let Err(e) = updated {
+                warn!(call_id = %call.id, error = %e, "The holder's new media endpoint was not taken");
+            }
+        }
+        let port = match media_manager.get_session(&session_id).await {
+            Ok(session) => session.ports().0,
+            Err(e) => {
+                warn!(call_id = %call.id, error = %e, "No media session to answer a hold from");
+                return Ok(self.create_simple_response(request, 500, "Media Unavailable"));
+            }
+        };
+        let answer = fcp_media::construct_answer_for_a_leg(offer, &self.local_addr, port, None);
+        store_leg_sdp(
+            &self.call_manager,
+            &call.id,
+            sender == fcp_b2bua_core::LegSide::A,
+            offer.to_string(),
+        );
+        let held = holds.then_some(sender.other());
+        info!(call_id = %call.id, ?held, "Hold answered by the node");
+        let _ = self.call_manager.update_call(&call.id, |c| c.held = held);
+        self.build_final_ok_response(request, None, Some(&answer))
     }
 
     /// Handle in-dialog SUBSCRIBE (e.g., REFER implicit subscription) by forwarding.
@@ -12414,8 +12487,6 @@ impl SipMessageHandler {
                 }
             });
         }
-        let parked = parker.other();
-        let was_held = call.held == Some(parked);
         // The parked party goes to the A slot; its media side follows.
         if parker == fcp_b2bua_core::LegSide::A {
             if let (true, Some(session_id), Some(media_manager), Some(sdp)) = (
@@ -12445,7 +12516,9 @@ impl SipMessageHandler {
             } else {
                 c.b_leg = None;
             }
-            c.held = was_held.then_some(fcp_b2bua_core::LegSide::A);
+            // Held, whatever the parker did: the parked party hears the
+            // hold music (`docs/ENTERPRISE_CALLING.md` §3.3).
+            c.held = Some(fcp_b2bua_core::LegSide::A);
             c.park(orbit, parker_ext.clone());
         })?;
         if let Some(id) = parker_dialog_id {

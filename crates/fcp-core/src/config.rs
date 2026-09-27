@@ -1015,6 +1015,11 @@ pub struct MediaConfig {
 
     /// TURN server for NAT traversal (optional)
     pub turn_server: Option<String>,
+
+    /// Holds answered by the node with music, which anchors every call
+    /// (`docs/ENTERPRISE_CALLING.md` §3.3).
+    #[serde(default)]
+    pub hold_music: bool,
 }
 
 impl Default for MediaConfig {
@@ -1030,6 +1035,7 @@ impl Default for MediaConfig {
             public_ip: None,
             stun_server: None,
             turn_server: None,
+            hold_music: false,
         }
     }
 }

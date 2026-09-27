@@ -90,6 +90,8 @@ pub fn build_fcp_core_media_config(
         public_ip: Some(effective_ip.to_string()),
         stun_server,
         turn_server,
+        // The SBC plays no hold music (docs/ENTERPRISE_CALLING.md §3.3).
+        hold_music: false,
     }
 }
 

@@ -341,6 +341,46 @@ in `evaluate_media_anchoring`), since an unanchored hold cannot be played
 into (§5 Q3). The queue's `moh_class` may name a prompt as well as a
 directory. The flow `Play` node's `loop_count` starts working.
 
+#### 3.3.1 As built (phase 3, v0.25.278)
+
+**The player (forge-media #166).** The injection player sent one-shot
+PCMU on a stream of its own beside the relayed audio. It now hands the
+session's scheduled playout a frame every 20 ms, so music and prompts are
+encoded in the leg's negotiated codec, resampled from the file's rate,
+SRTP-protected and sent on the leg's own stream; `PlaybackOptions`
+adds `looped`, and a `Replace` playback holds back the other leg's audio
+toward its target while it plays (`suppress_relay_to`, counted per leg).
+fcp-media gains `play_file_looped`, and `stop_playback` stops the one
+playback it names instead of every playback on the call.
+
+**Holds.** `[media] hold_music` (default on, in `fcp_core::config::
+MediaConfig` as `hold_music`) is an anchoring reason, so every call is
+anchored; when it is on and the call is anchored, a hold and its resume
+are answered by the node (`answer_hold_locally`) and the far phone is
+not told — the phase 2 pass-through remains for unanchored calls and
+with the switch off. The music follows the held leg, not the SIP path:
+`CallManager::set_on_hold_changed` is told of every change of
+`Call.held`, and `fcp_sip::hold_music::HoldMusic` stops or starts the
+looped music into the held leg — a hold, a park (the parked party is now
+always marked held), a retrieve, a transfer, a take-over.
+
+**The music.** The holder's `hold_music` (a prompt of the tenant, or
+`none` for silence; on the calling settings, the API and the Calling
+dialog, whose list is the tenant's prompts), else the tenant's first
+`moh`-category prompt with audio, else `prompts_dir/hold-music.wav`, a
+slow C-major arpeggio synthesised at startup. The holder is the call's
+callee from the plan when it is the B leg, the parker of a parked call,
+else the user the leg's address names.
+
+**Not built.** The number's `moh_prompt_id` and the tenant's
+`hold_music = false` switch (the holder's `none` and the node's switch
+cover the cases met so far); the queue naming a prompt as its music —
+the queue pre-encodes node-local files and its database configurations
+drop their prompt fields, which is a change of its own; the periodic
+tone in silence. The flow `Play` node's `loop_count` repeats the prompt
+that many times, 0 and 1 being once (every flow written so far carries
+0, which the schema had documented as "infinite").
+
 ### 3.4 Call waiting and busy
 
 `user_calls`: the cluster call registry (`fcp-cluster/src/call_registry.rs`)
@@ -498,7 +538,7 @@ feature crosses nodes, in the two-node cluster harness.
 |---|---|
 | 1 | ✅ v0.25.276 — **Foundations.** `user_calling_settings`, `CallTarget`, `plan_for_user` executed by all four paths (§3.1); forward all, busy, no answer and unreachable working; DND; the extension-to-user path with voicemail; flow `Dial` to a user; the presence listener for every tenant; the feature codes; the calling API and pages. Tests: each forward, DND, a user with no phone reaching voicemail, a flow dialing a user. As built (§3.1.1): one JSON row per user, the plan as `fcp_sip::ring_plan::plan` with the contacts resolved by the path, treatments kept on the call, a forward as a new call into this node at its own port, a flow's `Dial` reporting `busy` or `no_answer` for a plan that does not ring. Test: `fcp-call-manager/tests/calling.rs`. |
 | 2 | ✅ v0.25.277 — **Hold, transfer and pickup** (§3.2). The held state, hold answered locally when anchored, the answer bug fixed, park corrected and retrieve as a leg move, REFER executed blind and attended, INVITE with `Replaces`, dialog-info with ids and held. Tests: hold seen by the B2BUA and BLF, attended transfer among three phones, park and retrieve. As built (§3.2.1): the held leg, the anchored answer fixed, REFER carried out by the node (blind, to a park code, attended through `Replaces`), INVITE with `Replaces`, park and retrieve as leg moves, the orbit's timeout as a transfer back to the parker; hold still passed through (answered locally with phase 3) and dialog-info's ids with phase 9. Test: `fcp-call-manager/tests/calling.rs`. |
-| 3 | **Music on hold** (§3.3). forge-media's looped, transcoded, replacing player (a forge-media release); the resolver, the built-in default, tenant and per-user prompts, park and hold, the anchoring reason. Test: the phone hears the file's tone while its party is held and while parked. |
+| 3 | ✅ v0.25.278 — **Music on hold** (§3.3). forge-media's looped, transcoded, replacing player (a forge-media release); the resolver, the built-in default, tenant and per-user prompts, park and hold, the anchoring reason. Test: the phone hears the file's tone while its party is held and while parked. As built (§3.3.1): forge-media's player through scheduled playout (forge-media #166); holds answered by the node when media is anchored; the music chosen per holder, per tenant, else built in; the parked party held with music; `[media] hold_music` anchors every call; a flow `Play` repeats `loop_count` times; the queue naming a prompt, and the number's and the tenant's switches, not built. Test: `fcp-call-manager/tests/calling.rs`. |
 | 4 | **Call waiting** (§3.4). The per-user call set in the registry, the plan's busy rule, `*56`/`*57`. Tests: a second call rings or is refused by the setting; on two nodes. |
 | 5 | **Schedules** (§3.5). The entity, the tenant timezone, the number's closed and holiday targets, the user's after-hours forward, DB queue hours, the flow node, the pages. Tests: a number answered by a flow after hours, a queue closed on a holiday. |
 | 6 | **Find-me / follow-me** (§3.6). Steps, external legs with confirmation, `Diversion`, the page. Tests: a sequential ring reaching a trunk stub that must press 1. |

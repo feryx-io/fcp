@@ -35,6 +35,8 @@ pub struct CallingResponse {
     pub forward_busy: Option<String>,
     pub forward_no_answer: Option<String>,
     pub forward_unreachable: Option<String>,
+    /// A prompt's id, `none` for silence, or absent for the tenant's music.
+    pub hold_music: Option<String>,
     /// `None`: the node's default ring time.
     pub no_answer_secs: Option<u32>,
     pub updated_at: u64,
@@ -52,6 +54,7 @@ impl CallingResponse {
             forward_busy: target(&settings.forward_busy),
             forward_no_answer: target(&settings.forward_no_answer),
             forward_unreachable: target(&settings.forward_unreachable),
+            hold_music: settings.hold_music.clone(),
             no_answer_secs: settings.no_answer_secs,
             updated_at: settings
                 .updated_at
@@ -72,6 +75,9 @@ pub struct UpdateCallingRequest {
     pub forward_busy: Option<String>,
     pub forward_no_answer: Option<String>,
     pub forward_unreachable: Option<String>,
+    /// A prompt of the tenant, `none`, or an empty string for the
+    /// tenant's hold music.
+    pub hold_music: Option<String>,
     pub no_answer_secs: Option<u32>,
 }
 
@@ -118,6 +124,28 @@ pub async fn apply(
         if let Some(given) = given {
             *slot = parse_target(name, &given)?;
         }
+    }
+    if let Some(music) = req.hold_music {
+        settings.hold_music = match music.trim() {
+            "" => None,
+            fcp_core::calling::HOLD_MUSIC_NONE => {
+                Some(fcp_core::calling::HOLD_MUSIC_NONE.to_string())
+            }
+            id => {
+                let prompt_id = id.parse::<fcp_core::PromptId>().map_err(|_| {
+                    ApiError::BadRequest(format!("hold_music: not a prompt id: {id}"))
+                })?;
+                let prompt = storage
+                    .prompt_store()
+                    .ok_or_else(|| ApiError::BadRequest("hold_music: no prompt store".into()))?
+                    .get_prompt(&prompt_id)
+                    .await
+                    .map_err(|e| ApiError::Internal(e.to_string()))?
+                    .filter(|p| p.tenant_id == user.tenant_id)
+                    .ok_or_else(|| ApiError::BadRequest(format!("hold_music: no prompt {id}")))?;
+                Some(prompt.id.to_string())
+            }
+        };
     }
     if let Some(secs) = req.no_answer_secs {
         settings.no_answer_secs = if secs == 0 { None } else { Some(secs) };

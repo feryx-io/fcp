@@ -173,6 +173,9 @@ pub struct Treatments {
     pub no_answer: Treatment,
 }
 
+/// The hold-music choice for silence.
+pub const HOLD_MUSIC_NONE: &str = "none";
+
 /// The range a ring time may be set to; unset, the node's own forking
 /// timeout applies.
 pub const MIN_NO_ANSWER_SECS: u32 = 5;
@@ -201,6 +204,11 @@ pub struct CallingSettings {
     /// No phone registered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub forward_unreachable: Option<CallTarget>,
+    /// What a party this user holds hears: a prompt's id, or
+    /// [`HOLD_MUSIC_NONE`] for silence; `None` is the tenant's hold music
+    /// (`docs/ENTERPRISE_CALLING.md` §3.3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hold_music: Option<String>,
     /// How long the user's phones ring; `None` is the node's default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub no_answer_secs: Option<u32>,
@@ -224,6 +232,7 @@ impl CallingSettings {
             forward_busy: None,
             forward_no_answer: None,
             forward_unreachable: None,
+            hold_music: None,
             no_answer_secs: None,
             updated_at: SystemTime::now(),
         }

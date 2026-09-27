@@ -92,7 +92,8 @@ pub enum NodeType {
         /// URL or path to audio file
         url: String,
 
-        /// Number of times to loop (0 = infinite)
+        /// How many times the audio is played; 0 and 1 are once (flows
+        /// written before the count was honoured carry 0).
         #[serde(default)]
         loop_count: u32,
 

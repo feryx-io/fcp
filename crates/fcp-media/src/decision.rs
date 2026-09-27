@@ -45,6 +45,10 @@ pub struct MediaDecisionContext {
 
     /// Whether this is a conference call
     pub conference_call: bool,
+
+    /// Holds are answered by the node with music, which needs the media
+    /// (`docs/ENTERPRISE_CALLING.md` §3.3).
+    pub hold_music: bool,
 }
 
 impl MediaDecisionContext {
@@ -60,6 +64,7 @@ impl MediaDecisionContext {
             recording_requested: false,
             dtmf_requested: false,
             conference_call: false,
+            hold_music: false,
         }
     }
 
@@ -123,6 +128,14 @@ pub fn should_anchor_media(ctx: &MediaDecisionContext) -> MediaAnchoringDecision
     if ctx.dtmf_requested && ctx.dtmf_enabled {
         return MediaAnchoringDecision::Anchored {
             reason: "DTMF detection/injection requested".to_string(),
+            requires_transcoding: false,
+        };
+    }
+
+    // Hold music is played into a held leg by the node
+    if ctx.hold_music {
+        return MediaAnchoringDecision::Anchored {
+            reason: "Hold music".to_string(),
             requires_transcoding: false,
         };
     }
@@ -225,6 +238,7 @@ mod tests {
         let ctx = MediaDecisionContext {
             media_enabled: true,
             conference_call: true,
+            hold_music: false,
             ..MediaDecisionContext::new(true)
         };
         let decision = should_anchor_media(&ctx);

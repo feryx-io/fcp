@@ -875,6 +875,26 @@ async fn main() -> Result<()> {
     }
     let call_manager = Arc::new(call_manager_inner);
 
+    // Hold music (docs/ENTERPRISE_CALLING.md §3.3): the built-in default in
+    // `prompts_dir`, and the player driven by every change of a held leg.
+    if config.media.hold_music {
+        let default_music = PathBuf::from(&config.media.prompts_dir).join("hold-music.wav");
+        let default_music = match fcp_sip::hold_music::write_default_music(&default_music) {
+            Ok(()) => Some(default_music),
+            Err(e) => {
+                warn!(path = %default_music.display(), error = %e, "The default hold music could not be written; holds without a tenant prompt are silent");
+                None
+            }
+        };
+        fcp_sip::hold_music::HoldMusic::new(
+            &call_manager,
+            Arc::clone(&media_manager),
+            Some(Arc::clone(&dyn_storage)),
+            default_music,
+        )
+        .install(&call_manager);
+    }
+
     // 15a0. How many registrations this node holds, for the limit that
     // bounds them: bindings also expire on their own, so the count comes
     // from the store rather than from an atomic
@@ -1348,6 +1368,7 @@ async fn main() -> Result<()> {
             rtp_port_end: config.media.rtp_port_end,
             public_ip: config.media.public_ip.clone(),
             enable_recording: config.media.enable_recording,
+            hold_music: config.media.hold_music,
             ..Default::default()
         }),
         Some(Arc::clone(&flow_handler)),

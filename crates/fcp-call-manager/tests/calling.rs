@@ -21,6 +21,9 @@ const SOON: Duration = Duration::from_secs(5);
 const RING_OUT: Duration = Duration::from_secs(15);
 /// Long enough to be sure a phone that should not ring did not.
 const QUIET: Duration = Duration::from_secs(2);
+/// A note of the built-in hold music (its E, 659.25 Hz): the testkit's
+/// detector works in 50 Hz bins, where the C at 523.25 Hz leaks away.
+const DEFAULT_MUSIC_HZ: u32 = 659;
 
 struct Stack {
     service: tokio::sync::Mutex<Option<Service>>,
@@ -800,6 +803,10 @@ async fn a_call_parked_by_transfer_is_retrieved_from_its_orbit() {
         !alice_call.ended(Duration::from_millis(200)).await,
         "Alice was hung up"
     );
+    assert!(
+        alice_call.media().heard(DEFAULT_MUSIC_HZ, SOON).await,
+        "Alice, parked, hears no music"
+    );
 
     // Carol takes her from orbit 701.
     let carol_call = carol_phone.call("*71701").await.unwrap();
@@ -904,5 +911,151 @@ async fn a_parked_call_nobody_takes_rings_its_parker_again() {
         alice_call.ended(SOON).await,
         "Alice's leg outlived the call"
     );
+    stack.finish().await;
+}
+
+// ─── Hold music (docs/ENTERPRISE_CALLING.md §3.3) ────────────────────────
+
+/// A 16-bit 8 kHz mono WAV of a steady tone.
+fn tone_wav(path: &std::path::Path, hz: f32, secs: f32) {
+    let n = (8000.0 * secs) as usize;
+    let mut wav = Vec::new();
+    let data = (n * 2) as u32;
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36 + data).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&8000u32.to_le_bytes());
+    wav.extend_from_slice(&16000u32.to_le_bytes());
+    wav.extend_from_slice(&2u16.to_le_bytes());
+    wav.extend_from_slice(&16u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&data.to_le_bytes());
+    for i in 0..n {
+        let s = (2.0 * std::f32::consts::PI * hz * i as f32 / 8000.0).sin() * 0.4;
+        wav.extend_from_slice(&((s * i16::MAX as f32) as i16).to_le_bytes());
+    }
+    std::fs::write(path, wav).expect("write wav");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_held_party_hears_music_and_not_the_holder() {
+    let stack = stack_or_skip!();
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let bob = stack.seed.user("bob", "bob-pw", "1002").await;
+    let alice_phone = stack.phone(&alice).await;
+    let bob_phone = stack.phone(&bob).await;
+    let (alice_call, bob_call) = answered(&stack, &alice_phone, &bob, &bob_phone).await;
+
+    // Bob holds Alice: the node answers him, and Alice's phone is not told.
+    let (code, answer) = bob_call.reinvite_answered("sendonly").await.unwrap();
+    assert_eq!(code, 200);
+    assert!(
+        answer.contains("a=recvonly"),
+        "the node's answer to a hold: {answer}"
+    );
+    assert!(
+        alice_phone
+            .expect(Duration::from_millis(500), |e| matches!(
+                e,
+                PhoneEvent::ReInvite { .. }
+            ))
+            .await
+            .is_none(),
+        "the hold was passed on to Alice's phone"
+    );
+
+    // Alice hears the music, and not what Bob's phone keeps sending.
+    bob_call.media().play_tone(1400.0, 20_000);
+    let got = alice_call.media().heard(DEFAULT_MUSIC_HZ, SOON).await;
+    if !got {
+        stack
+            .fail("Alice, held, hears no music", &alice_phone)
+            .await;
+    }
+    assert!(
+        !alice_call
+            .media()
+            .heard(1400, Duration::from_millis(1500))
+            .await,
+        "Alice hears Bob while held"
+    );
+
+    // Bob takes her back: the music stops and she hears him again.
+    let (code, answer) = bob_call.reinvite_answered("sendrecv").await.unwrap();
+    assert_eq!(code, 200);
+    assert!(
+        !answer.contains("a=recvonly"),
+        "the node's answer to a resume: {answer}"
+    );
+    assert!(
+        alice_call.media().heard(1400, SOON).await,
+        "Alice does not hear Bob after the resume"
+    );
+    alice_call.hangup().await.unwrap();
+    stack.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_tenants_hold_music_plays_unless_the_holder_chose_silence() {
+    use fcp_core::prompt::{Prompt, PromptCategory};
+    let stack = stack_or_skip!();
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let bob = stack.seed.user("bob", "bob-pw", "1002").await;
+
+    // The tenant's own hold music: a steady 880 Hz.
+    let music = stack._dir.path().join("tenant-music.wav");
+    tone_wav(&music, 880.0, 4.0);
+    use fcp_core::prompt::PromptStore;
+    fcp_storage_postgres::prompt::PostgresPromptStore::new(stack.seed.storage().pool().clone())
+        .put_prompt(Prompt::new_file(
+            stack.seed.tenant_id,
+            "tenant-hold-music",
+            PromptCategory::Moh,
+            "en",
+            music,
+        ))
+        .await
+        .expect("seed prompt");
+
+    let alice_phone = stack.phone(&alice).await;
+    let bob_phone = stack.phone(&bob).await;
+    let (alice_call, bob_call) = answered(&stack, &alice_phone, &bob, &bob_phone).await;
+    assert_eq!(bob_call.hold().await.unwrap(), 200);
+    if !alice_call.media().heard(880, SOON).await {
+        stack
+            .fail("Alice hears no tenant music", &alice_phone)
+            .await;
+    }
+    assert_eq!(bob_call.resume().await.unwrap(), 200);
+    alice_call.hangup().await.unwrap();
+
+    // Bob chooses silence: Alice hears neither the tenant's music nor the
+    // default.
+    stack
+        .calling(&bob, |s| {
+            s.hold_music = Some(fcp_core::calling::HOLD_MUSIC_NONE.to_string())
+        })
+        .await;
+    // A fresh phone for Alice: a phone's media remembers what it heard.
+    let alice_phone = stack.phone(&alice).await;
+    let (alice_call, bob_call) = answered(&stack, &alice_phone, &bob, &bob_phone).await;
+    assert_eq!(bob_call.hold().await.unwrap(), 200);
+    let music = alice_call
+        .media()
+        .heard(880, Duration::from_millis(1500))
+        .await
+        || alice_call
+            .media()
+            .heard(DEFAULT_MUSIC_HZ, Duration::from_millis(500))
+            .await;
+    if music {
+        stack
+            .fail("Alice hears music though Bob chose silence", &alice_phone)
+            .await;
+    }
+    alice_call.hangup().await.unwrap();
     stack.finish().await;
 }

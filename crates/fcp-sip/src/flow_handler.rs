@@ -3058,7 +3058,15 @@ impl FlowCallHandler {
                 use fcp_flow::NodeType;
 
                 match &node.node_type {
-                    NodeType::Play { url, next, .. } => {
+                    NodeType::Play {
+                        url,
+                        next,
+                        loop_count,
+                        ..
+                    } => {
+                        // Played `loop_count` times; 0 and 1 are once, as
+                        // flows written before the count worked expect.
+                        let times = (*loop_count).max(1);
                         info!(
                             call_id = %call_id,
                             node_id = %current_node,
@@ -3135,6 +3143,27 @@ impl FlowCallHandler {
                                             error = %e,
                                             "Audio playback failed or was stopped"
                                         );
+                                    }
+                                }
+
+                                // The repeats, each after the last has ended.
+                                for _ in 1..times {
+                                    match media_manager
+                                        .play_file(
+                                            &session_id,
+                                            resolved_path.clone(),
+                                            AudioTarget::ParticipantA,
+                                        )
+                                        .await
+                                    {
+                                        Ok(again) => {
+                                            let _ =
+                                                media_manager.wait_playback_completion(again).await;
+                                        }
+                                        Err(e) => {
+                                            warn!(call_id = %call_id, error = %e, "A repeat of the prompt was not played");
+                                            break;
+                                        }
                                     }
                                 }
 

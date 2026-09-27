@@ -1266,6 +1266,20 @@ attended, park and retrieve, call pull by `Replaces`, orbit timeout) and
 `calls.rs`'s relayed transfer under `execute = false`. Hold stays passed
 through until phase 3 has music to play; dialog-info's SIP ids and BLF
 pickup by `Replaces` move to phase 9.
+Phase 3 done (v0.25.278, forge-media #166): music on hold — forge-media's
+player now plays through the session's scheduled playout (the leg's own
+codec and SRTP, looped on request, the other leg held back while a
+`Replace` playback runs); `[media] hold_music` (default on) anchors every
+call, and the node answers a hold and its resume itself; the music
+follows `Call.held` through a call manager hook (`fcp_sip::hold_music`),
+so a hold, a park, a retrieve and a transfer all start or stop it; it is
+the holder's choice (a prompt, or `none`), else the tenant's hold-music
+prompt, else a built-in arpeggio written to `prompts_dir` at startup; a
+flow `Play` repeats `loop_count` times. Proved by `calling.rs` (the held
+party hears the music and not the holder, the tenant's music and the
+holder's silence, the parked party's music) and `calls.rs`'s
+pass-through under `hold_music = false`. Not built: the number's and the
+tenant's switches, the queue naming a prompt.
 
 ## Historical documents
 
