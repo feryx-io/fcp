@@ -1002,7 +1002,12 @@ async fn a_call_to_an_unregistered_user_fails() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn hold_and_resume_are_relayed_to_the_far_end() {
-    let stack = stack_or_skip!();
+    // Without hold music the node passes a hold on to the far phone
+    // (with it, the node answers it: docs/ENTERPRISE_CALLING.md §3.3).
+    let Some(stack) = Stack::start_configured("hold_music = false", "", 40).await else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
     let (_alice_phone, alice_call, bob_phone, _bob_call) = answered_call(&stack).await;
 
     assert_eq!(alice_call.hold().await.unwrap(), 200);

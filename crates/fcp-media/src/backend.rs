@@ -190,6 +190,19 @@ pub trait MediaBackend: Send + Sync {
         target: AudioTarget,
     ) -> Result<String>;
 
+    /// As [`MediaBackend::play_file`], starting the file again at its end
+    /// until stopped (hold music, `docs/ENTERPRISE_CALLING.md` §3.3).
+    async fn play_file_looped(
+        &self,
+        _call_id: &CallId,
+        _file_path: String,
+        _target: AudioTarget,
+    ) -> Result<String> {
+        Err(Error::Backend(
+            "this media backend does not loop playback".to_string(),
+        ))
+    }
+
     /// Play text-to-speech into the call
     ///
     /// # Arguments
@@ -356,7 +369,7 @@ pub mod embedded {
     use forge_engine::{
         session::{DtmfConfig, ParticipantCodecConfig, TranscodingConfig},
         AudioTarget as ForgeAudioTarget, MediaSession as ForgeMediaSession, MixMode,
-        PlaybackHandle, PlaybackManager, SessionManager, SessionManagerConfig,
+        PlaybackHandle, PlaybackManager, PlaybackOptions, SessionManager, SessionManagerConfig,
     };
     use forge_injection::FileSource;
     use forge_rtp::PortPoolConfig;
@@ -534,6 +547,63 @@ pub mod embedded {
         match leg {
             MediaLeg::A => forge_engine::ParticipantLabel::A,
             MediaLeg::B => forge_engine::ParticipantLabel::B,
+        }
+    }
+
+    impl EmbeddedBackend {
+        /// A file into the call: a prompt once, or hold music looped.
+        async fn start_file_playback(
+            &self,
+            call_id: &fcp_core::CallId,
+            file_path: String,
+            target: AudioTarget,
+            looped: bool,
+        ) -> Result<String> {
+            debug!(?call_id, path = %file_path, target = ?target, looped, "Starting audio playback");
+            // Get session info to retrieve forge call_id
+            let session_info = self
+                .sessions
+                .get(call_id)
+                .ok_or_else(|| Error::SessionNotFound(call_id.to_string()))?;
+
+            let forge_call_id = session_info.forge_call_id.clone();
+            drop(session_info); // Release lock
+
+            // Create FileSource for the audio file
+            let source = Box::new(
+                FileSource::new(&file_path)
+                    .map_err(|e| Error::ForgeMedia(format!("Failed to open audio file: {}", e)))?,
+            );
+
+            // Convert FCP AudioTarget to forge AudioTarget
+            let forge_target = match target {
+                AudioTarget::ParticipantA => ForgeAudioTarget::ParticipantA,
+                AudioTarget::ParticipantB => ForgeAudioTarget::ParticipantB,
+                AudioTarget::Both => ForgeAudioTarget::Both,
+            };
+
+            // Start playback
+            let handle = self
+                .playback_manager
+                .start_playback_with(forge_call_id, source, {
+                    let options = PlaybackOptions::new(forge_target, MixMode::Replace);
+                    if looped {
+                        options.looped()
+                    } else {
+                        options
+                    }
+                })
+                .await
+                .map_err(|e| Error::ForgeMedia(format!("Failed to start playback: {}", e)))?;
+
+            let playback_id = handle.id().to_string();
+
+            // Store handle so we can wait for completion later
+            self.playback_handles.insert(playback_id.clone(), handle);
+
+            info!(?call_id, playback_id = %playback_id, "Audio playback started");
+
+            Ok(playback_id)
         }
     }
 
@@ -1222,45 +1292,18 @@ pub mod embedded {
             file_path: String,
             target: AudioTarget,
         ) -> Result<String> {
-            debug!(?call_id, path = %file_path, target = ?target, "Starting audio playback");
-
-            // Get session info to retrieve forge call_id
-            let session_info = self
-                .sessions
-                .get(call_id)
-                .ok_or_else(|| Error::SessionNotFound(call_id.to_string()))?;
-
-            let forge_call_id = session_info.forge_call_id.clone();
-            drop(session_info); // Release lock
-
-            // Create FileSource for the audio file
-            let source = Box::new(
-                FileSource::new(&file_path)
-                    .map_err(|e| Error::ForgeMedia(format!("Failed to open audio file: {}", e)))?,
-            );
-
-            // Convert FCP AudioTarget to forge AudioTarget
-            let forge_target = match target {
-                AudioTarget::ParticipantA => ForgeAudioTarget::ParticipantA,
-                AudioTarget::ParticipantB => ForgeAudioTarget::ParticipantB,
-                AudioTarget::Both => ForgeAudioTarget::Both,
-            };
-
-            // Start playback
-            let handle = self
-                .playback_manager
-                .start_playback(forge_call_id, source, forge_target, MixMode::Replace)
+            self.start_file_playback(call_id, file_path, target, false)
                 .await
-                .map_err(|e| Error::ForgeMedia(format!("Failed to start playback: {}", e)))?;
+        }
 
-            let playback_id = handle.id().to_string();
-
-            // Store handle so we can wait for completion later
-            self.playback_handles.insert(playback_id.clone(), handle);
-
-            info!(?call_id, playback_id = %playback_id, "Audio playback started");
-
-            Ok(playback_id)
+        async fn play_file_looped(
+            &self,
+            call_id: &fcp_core::CallId,
+            file_path: String,
+            target: AudioTarget,
+        ) -> Result<String> {
+            self.start_file_playback(call_id, file_path, target, true)
+                .await
         }
 
         async fn play_tone(
@@ -1371,6 +1414,17 @@ pub mod embedded {
             // TODO: Add PlaybackId::from_u64() method to forge-engine
             // For now, we'll use stop_all_playbacks as a workaround
 
+            // The playback's own handle, when this backend started it:
+            // only that playback stops (hold music, not a prompt beside it).
+            if let Some((_, handle)) = self.playback_handles.remove(&playback_id) {
+                handle
+                    .stop()
+                    .await
+                    .map_err(|e| Error::ForgeMedia(format!("Failed to stop playback: {}", e)))?;
+                info!(?call_id, playback_id = %playback_id, "Playback stopped");
+                return Ok(());
+            }
+
             // Get session info to retrieve forge call_id
             let session_info = self
                 .sessions
@@ -1381,7 +1435,6 @@ pub mod embedded {
             drop(session_info);
 
             // Stop all playbacks for this call
-            // TODO: Stop specific playback when PlaybackId reconstruction is available
             self.playback_manager
                 .stop_all_playbacks(&forge_call_id)
                 .await

@@ -4,6 +4,9 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from '@/components/ui/select'
 import { cn } from '@/lib/utils'
 import type { CallingSettings, UpdateCallingRequest } from '@/types'
 
@@ -21,6 +24,8 @@ interface FormState {
   dnd: boolean
   /** '' is the node's default */
   no_answer_secs: string
+  /** 'tenant', 'none' or a prompt's id */
+  hold_music: string
   forwards: Record<ForwardKey, ForwardState>
 }
 
@@ -48,6 +53,7 @@ function stateOf(s: CallingSettings): FormState {
   return {
     dnd: s.dnd,
     no_answer_secs: s.no_answer_secs === null ? '' : String(s.no_answer_secs),
+    hold_music: s.hold_music ?? 'tenant',
     forwards: {
       forward_all: forwardState(s.forward_all),
       forward_busy: forwardState(s.forward_busy),
@@ -63,6 +69,7 @@ export function requestOf(form: FormState): UpdateCallingRequest {
   return {
     dnd: form.dnd,
     no_answer_secs: form.no_answer_secs.trim() === '' ? 0 : parseInt(form.no_answer_secs, 10) || 0,
+    hold_music: form.hold_music === 'tenant' ? '' : form.hold_music,
     forward_all: forward(form.forwards.forward_all),
     forward_busy: forward(form.forwards.forward_busy),
     forward_no_answer: forward(form.forwards.forward_no_answer),
@@ -80,11 +87,14 @@ export function CallingSettingsForm({
   onSave,
   saving,
   message,
+  holdMusicPrompts,
 }: {
   settings: CallingSettings
   onSave: (req: UpdateCallingRequest) => void
   saving: boolean
   message?: { type: 'success' | 'error'; text: string } | null
+  /** The tenant's prompts to choose hold music from (an admin sees them). */
+  holdMusicPrompts?: { id: string; name: string }[]
 }) {
   const [form, setForm] = useState<FormState>(() => stateOf(settings))
   useEffect(() => {
@@ -133,6 +143,27 @@ export function CallingSettingsForm({
           onChange={(e) => setForm((prev) => ({ ...prev, no_answer_secs: e.target.value }))}
           className="w-28"
         />
+      </div>
+
+      <div className="space-y-1">
+        <Label className="text-sm font-medium">Hold music</Label>
+        <p className="text-xs text-muted-foreground">What a caller you put on hold hears.</p>
+        <Select value={form.hold_music} onValueChange={(hold_music) => setForm((prev) => ({ ...prev, hold_music }))}>
+          <SelectTrigger className="w-64">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="tenant">The organisation&apos;s music</SelectItem>
+            <SelectItem value="none">Silence</SelectItem>
+            {(holdMusicPrompts ?? []).map((p) => (
+              <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
+            ))}
+            {form.hold_music !== 'tenant' && form.hold_music !== 'none'
+              && !(holdMusicPrompts ?? []).some((p) => p.id === form.hold_music) && (
+              <SelectItem value={form.hold_music}>A chosen recording</SelectItem>
+            )}
+          </SelectContent>
+        </Select>
       </div>
 
       {FORWARDS.map(({ key, label, hint }) => {

@@ -1428,6 +1428,8 @@ export interface CallingSettings {
   forward_busy: string | null
   forward_no_answer: string | null
   forward_unreachable: string | null
+  /** A prompt's id, `none` for silence, null for the tenant's hold music */
+  hold_music: string | null
   /** null: the node's default ring time */
   no_answer_secs: number | null
   updated_at: number
@@ -1441,6 +1443,8 @@ export interface UpdateCallingRequest {
   forward_busy?: string
   forward_no_answer?: string
   forward_unreachable?: string
+  /** A prompt's id, `none`, or '' for the tenant's hold music */
+  hold_music?: string
   /** 0 clears it: the node's default */
   no_answer_secs?: number
 }

@@ -3152,6 +3152,36 @@ async fn self_service_profile_password_calling_and_voicemail() {
         .await;
     assert_eq!(admin_set.status, StatusCode::OK, "{}", admin_set.text);
     assert_eq!(admin_set.json["dnd"], false);
+    // Hold music: silence, back to the tenant's, and only a real prompt.
+    let silent = app
+        .send_as(
+            &jwt,
+            Method::PUT,
+            "/api/v1/me/calling",
+            Some(json!({ "hold_music": "none" })),
+        )
+        .await;
+    assert_eq!(silent.status, StatusCode::OK, "{}", silent.text);
+    assert_eq!(silent.json["hold_music"], "none");
+    let tenants = app
+        .send_as(
+            &jwt,
+            Method::PUT,
+            "/api/v1/me/calling",
+            Some(json!({ "hold_music": "" })),
+        )
+        .await;
+    assert_eq!(tenants.status, StatusCode::OK, "{}", tenants.text);
+    assert!(tenants.json["hold_music"].is_null(), "{}", tenants.text);
+    let unknown = app
+        .send_as(
+            &jwt,
+            Method::PUT,
+            "/api/v1/me/calling",
+            Some(json!({ "hold_music": "prompt-00000000-0000-0000-0000-000000000000" })),
+        )
+        .await;
+    assert_eq!(unknown.status, StatusCode::BAD_REQUEST, "{}", unknown.text);
 
     let vm = app
         .send_as(&jwt, Method::GET, "/api/v1/me/voicemail", None)

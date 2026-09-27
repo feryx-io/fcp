@@ -35,7 +35,7 @@ wherever it backs up.
 | Binary | Key | Default | Compose stack |
 |---|---|---|---|
 | `fcp-call-manager` | `[media] recording_dir` | `./recordings` (the working directory) | `/app/data/recordings` (`call-manager-data`) |
-| | `[media] prompts_dir` | `/tmp/fcp/audio/prompts` | `/app/data/prompts` |
+| | `[media] prompts_dir` (also the built-in `hold-music.wav`, re-derivable: written at startup) | `/tmp/fcp/audio/prompts` | `/app/data/prompts` |
 | | `[media] tts_cache_dir` | `/tmp/fcp/tts_cache` | `/app/data/tts-cache` |
 | | `[cdr] spool_dir` | — | `/app/data/cdr-spool` |
 | `fcp-conference` | `[conference] recordings_dir` | `/var/fcp/conference/recordings` | the same (`conference-recordings`) |

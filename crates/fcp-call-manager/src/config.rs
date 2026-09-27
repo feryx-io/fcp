@@ -611,6 +611,14 @@ pub struct MediaSection {
     #[serde(default)]
     pub enable_recording: bool,
 
+    /// Holds answered by the node, with music played into the held leg —
+    /// the holder's choice, the tenant's hold-music prompt, or the built-in
+    /// default written to `prompts_dir` at startup. On, every call is
+    /// anchored; off, holds are passed to the far phone
+    /// (`docs/ENTERPRISE_CALLING.md` §3.3).
+    #[serde(default = "default_true")]
+    pub hold_music: bool,
+
     /// Where call recordings are written: under it, each tenant's calls by
     /// day.
     #[serde(default = "default_recording_dir")]
@@ -656,6 +664,7 @@ impl Default for MediaSection {
             tts_remote_token: None,
             prompts_dir: default_prompts_dir(),
             enable_recording: false,
+            hold_music: true,
             recording_dir: default_recording_dir(),
         }
     }

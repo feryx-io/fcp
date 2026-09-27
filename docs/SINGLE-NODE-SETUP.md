@@ -330,6 +330,14 @@ ended before the node did.
 | CPU at 20 calls/s | 3 % of twelve cores |
 | Registration storm | 300 devices, 1200 registrations, **all answered**, none refused |
 
+Hold music (`[media] hold_music`, on by default,
+`docs/ENTERPRISE_CALLING.md` §3.3) anchors every call through the node,
+so every call takes an RTP port pair from `[media] rtp_port_start` to
+`rtp_port_end`: size that range for the concurrent calls you expect, or
+set `hold_music = false` to let calls without another reason to be
+anchored send their media directly — holds are then passed to the far
+phone and held callers hear silence.
+
 What to take from it when sizing: a node's resident memory is roughly
 `35 MiB + 0.3 MiB × concurrent calls` before recordings and conferences,
 the signalling path costs single-digit milliseconds, and the relay does
