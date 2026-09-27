@@ -99,6 +99,31 @@ pub struct FeatureCodeConfig {
     /// prefix + extension checks a specific mailbox.
     #[serde(default = "default_voicemail_access")]
     pub voicemail_access: String,
+
+    /// Do not disturb on (e.g., "*78") and off ("*79").
+    #[serde(default = "default_dnd_on")]
+    pub dnd_on: String,
+    #[serde(default = "default_dnd_off")]
+    pub dnd_off: String,
+
+    /// Forward all calls on, followed by the target ("*72" + number), and
+    /// off ("*73").
+    #[serde(default = "default_forward_all_on")]
+    pub forward_all_on: String,
+    #[serde(default = "default_forward_all_off")]
+    pub forward_all_off: String,
+
+    /// Forward on busy on ("*90" + number) and off ("*91").
+    #[serde(default = "default_forward_busy_on")]
+    pub forward_busy_on: String,
+    #[serde(default = "default_forward_busy_off")]
+    pub forward_busy_off: String,
+
+    /// Forward on no answer on ("*92" + number) and off ("*93").
+    #[serde(default = "default_forward_no_answer_on")]
+    pub forward_no_answer_on: String,
+    #[serde(default = "default_forward_no_answer_off")]
+    pub forward_no_answer_off: String,
 }
 
 fn default_group_pickup() -> String {
@@ -128,6 +153,30 @@ fn default_agent_logout() -> String {
 fn default_voicemail_access() -> String {
     "*98".to_string()
 }
+fn default_dnd_on() -> String {
+    "*78".to_string()
+}
+fn default_dnd_off() -> String {
+    "*79".to_string()
+}
+fn default_forward_all_on() -> String {
+    "*72".to_string()
+}
+fn default_forward_all_off() -> String {
+    "*73".to_string()
+}
+fn default_forward_busy_on() -> String {
+    "*90".to_string()
+}
+fn default_forward_busy_off() -> String {
+    "*91".to_string()
+}
+fn default_forward_no_answer_on() -> String {
+    "*92".to_string()
+}
+fn default_forward_no_answer_off() -> String {
+    "*93".to_string()
+}
 
 impl Default for FeatureCodeConfig {
     fn default() -> Self {
@@ -141,6 +190,14 @@ impl Default for FeatureCodeConfig {
             agent_login: default_agent_login(),
             agent_logout: default_agent_logout(),
             voicemail_access: default_voicemail_access(),
+            dnd_on: default_dnd_on(),
+            dnd_off: default_dnd_off(),
+            forward_all_on: default_forward_all_on(),
+            forward_all_off: default_forward_all_off(),
+            forward_busy_on: default_forward_busy_on(),
+            forward_busy_off: default_forward_busy_off(),
+            forward_no_answer_on: default_forward_no_answer_on(),
+            forward_no_answer_off: default_forward_no_answer_off(),
         }
     }
 }

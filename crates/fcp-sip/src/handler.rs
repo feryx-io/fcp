@@ -197,8 +197,9 @@ use crate::settings::ServerSettings;
 use fcp_b2bua_core::B2buaConfig;
 use fcp_core::storage::{
     CredentialStore, DeviceStore, ExtensionStore, LineBindingStore, PhoneNumberStore, TenantStore,
-    TrunkStore, VoicemailStore,
+    TrunkStore,
 };
+use fcp_core::CallingStore;
 
 /// Result of outbound route resolution.
 #[derive(Debug, Clone, Default)]
@@ -1749,63 +1750,6 @@ impl SipMessageHandler {
             return TrunkBindings::Unavailable;
         }
         TrunkBindings::Routed(bindings)
-    }
-
-    /// Whether an INVITE comes from a device registered here: its From
-    /// AoR has a live registration *at the address the INVITE came from*
-    /// — the address the REGISTER arrived from where the registrar kept
-    /// one, else the contact's parsed host
-    /// (`crate::registrar::registration_is_at`, `docs/EDGE_SECURITY.md` §2.2).
-    /// The registrations at a user's own address of record — `sip:<username>@<d>`
-    /// for each of the tenant's SIP domains, then the INVITE's own domain —
-    /// for a user whose devices, if any, are not registered. A phone that
-    /// registered as the user is the user's phone whether or not anyone
-    /// made a device row for it (found by the nightly stack,
-    /// `docs/NIGHTLY_STACK.md` §4).
-    async fn registrations_at_users_aor(
-        &self,
-        storage: &fcp_core::DynStorage,
-        registrar: &crate::registrar::FcpRegistrar,
-        tenant_id: &fcp_core::TenantId,
-        user_id: &fcp_core::UserId,
-        invite_domain: &str,
-    ) -> Vec<sip_registrar::Binding> {
-        let user = match storage.get_user_by_id(user_id).await {
-            Ok(Some(user)) => user,
-            Ok(None) => return Vec::new(),
-            Err(e) => {
-                warn!(user_id = %user_id, error = %e, "Failed to read the user to ring their own address");
-                return Vec::new();
-            }
-        };
-        let mut domains: Vec<String> = match storage.get_tenant(tenant_id).await {
-            Ok(Some(tenant)) => tenant.sip_domains,
-            _ => Vec::new(),
-        };
-        if !invite_domain.is_empty()
-            && !domains
-                .iter()
-                .any(|d| d.eq_ignore_ascii_case(invite_domain))
-        {
-            domains.push(invite_domain.to_string());
-        }
-        for domain in domains {
-            let aor = format!("sip:{}@{domain}", user.username);
-            match registrar
-                .get_registrations_for_device(tenant_id, &aor, invite_domain)
-                .await
-            {
-                Ok(bindings) if !bindings.is_empty() => {
-                    debug!(user_id = %user_id, aor = %aor, count = bindings.len(), "Ringing the user's own address");
-                    return bindings;
-                }
-                Ok(_) => {}
-                Err(e) => {
-                    warn!(user_id = %user_id, aor = %aor, error = %e, "Failed to read the registrations at the user's own address");
-                }
-            }
-        }
-        Vec::new()
     }
 
     /// The tenant of the registration this INVITE's caller placed it from:
@@ -4544,111 +4488,49 @@ impl SipMessageHandler {
                                     "Found line binding for phone number"
                                 );
 
-                                // Store routing context for CFNA lookup
+                                // The number's line binding, for its mailbox and
+                                // the record.
                                 {
                                     let lb_id = line_binding.id;
                                     let callee = destination_aor.to_string();
-                                    let rna_timeout = line_binding.no_answer_timeout;
                                     let _ = self.call_manager.update_call(&call_id, |call| {
                                         call.line_binding_id = Some(lb_id);
                                         call.original_callee = Some(callee);
-                                        call.no_answer_timeout = Some(rna_timeout);
                                     });
                                 }
 
                                 // Handle different binding types
                                 match line_binding.binding_type {
                                     fcp_core::BindingType::User => {
-                                        // Get devices from line binding and look up their registrations
-                                        let enabled_devices = line_binding.enabled_devices();
-
-                                        if enabled_devices.is_empty() {
-                                            warn!(call_id = %call_id, "Line binding has no enabled devices");
-                                            let response = self.create_simple_response(
-                                                request,
-                                                480,
-                                                "Temporarily Unavailable",
-                                            );
-                                            a_leg_handle.send_final(response).await;
-                                            let _ = self.call_manager.terminate_call(
-                                                &call_id,
-                                                Some("No devices enabled for line".to_string()),
-                                            );
-                                            return Ok(());
-                                        }
-
-                                        // Collect all contact URIs from all device registrations
-                                        let mut all_contacts = Vec::new();
-                                        for device_binding in enabled_devices {
-                                            // Get the device record from storage
-                                            match storage
-                                                .get_device(&device_binding.device_id)
+                                        // The owner's plan rings the binding's devices
+                                        // (`docs/ENTERPRISE_CALLING.md` §3.1).
+                                        let contacts = match &self.registrar {
+                                            Some(registrar) => {
+                                                crate::ring_plan::contacts_for_binding(
+                                                    storage,
+                                                    registrar,
+                                                    &line_binding,
+                                                    None,
+                                                )
                                                 .await
-                                            {
-                                                Ok(Some(device)) => {
-                                                    if let Some(sip_uri) = &device.sip_uri {
-                                                        // Look up registrations for this device's SIP URI
-                                                        if let Some(registrar) = &self.registrar {
-                                                            match registrar
-                                                                .get_registrations(sip_uri)
-                                                                .await
-                                                            {
-                                                                Ok(contacts)
-                                                                    if !contacts.is_empty() =>
-                                                                {
-                                                                    debug!(
-                                                                        call_id = %call_id,
-                                                                        device = %device.name,
-                                                                        sip_uri = %sip_uri,
-                                                                        contacts = contacts.len(),
-                                                                        "Found registrations for device"
-                                                                    );
-                                                                    all_contacts.extend(contacts);
-                                                                }
-                                                                _ => {
-                                                                    debug!(
-                                                                        call_id = %call_id,
-                                                                        device = %device.name,
-                                                                        sip_uri = %sip_uri,
-                                                                        "Device not currently registered"
-                                                                    );
-                                                                }
-                                                            }
-                                                        }
-                                                    } else {
-                                                        debug!(
-                                                            call_id = %call_id,
-                                                            device = %device.name,
-                                                            "Device has no SIP URI configured"
-                                                        );
-                                                    }
-                                                }
-                                                Ok(None) => {
-                                                    warn!(call_id = %call_id, device_id = %device_binding.device_id, "Device not found in storage");
-                                                }
-                                                Err(e) => {
-                                                    error!(call_id = %call_id, device_id = %device_binding.device_id, error = %e, "Failed to get device");
-                                                }
                                             }
-                                        }
-
-                                        // Check if we found any registered contacts
-                                        if all_contacts.is_empty() {
-                                            info!(call_id = %call_id, phone_number = %destination_aor, "No devices registered for phone number");
-                                            let response = self.create_simple_response(
+                                            None => Vec::new(),
+                                        };
+                                        match self
+                                            .ring_by_plan(
                                                 request,
-                                                480,
-                                                "Temporarily Unavailable",
-                                            );
-                                            a_leg_handle.send_final(response).await;
-                                            let _ = self.call_manager.terminate_call(
-                                                &call_id,
-                                                Some("No devices registered".to_string()),
-                                            );
-                                            return Ok(());
+                                                &a_leg_handle_arc,
+                                                call_id,
+                                                &line_binding.tenant_id,
+                                                line_binding.owner_user_id,
+                                                contacts,
+                                                destination_aor,
+                                            )
+                                            .await?
+                                        {
+                                            Some(contacts) => contacts,
+                                            None => return Ok(()),
                                         }
-
-                                        all_contacts
                                     }
                                     fcp_core::BindingType::Ivr => {
                                         // IVR routing - execute a flow
@@ -5624,76 +5506,48 @@ impl SipMessageHandler {
                                             .await
                                         {
                                             Ok(Some(line_binding)) => {
-                                                // Store routing context for CFNA lookup
                                                 {
                                                     let lb_id = line_binding.id;
                                                     let callee = destination_aor.to_string();
-                                                    let rna_timeout =
-                                                        line_binding.no_answer_timeout;
                                                     let _ = self.call_manager.update_call(
                                                         &call_id,
                                                         |call| {
                                                             call.line_binding_id = Some(lb_id);
                                                             call.original_callee = Some(callee);
-                                                            call.no_answer_timeout =
-                                                                Some(rna_timeout);
                                                         },
                                                     );
                                                 }
 
-                                                // Get devices from line binding
-                                                let enabled_devices =
-                                                    line_binding.enabled_devices();
-                                                if enabled_devices.is_empty() {
-                                                    warn!(call_id = %call_id, "Extension target has no enabled devices");
-                                                    let response = self.create_simple_response(
-                                                        request,
-                                                        480,
-                                                        "Temporarily Unavailable",
-                                                    );
-                                                    a_leg_handle.send_final(response).await;
-                                                    let _ = self.call_manager.terminate_call(
-                                                        &call_id,
-                                                        Some("No devices enabled".to_string()),
-                                                    );
-                                                    return Ok(());
-                                                }
-
-                                                // Collect all contact URIs from device registrations
-                                                for device_binding in enabled_devices {
-                                                    if let Ok(Some(device)) = storage
-                                                        .get_device(&device_binding.device_id)
+                                                // The owner's plan rings the binding's
+                                                // devices (`docs/ENTERPRISE_CALLING.md` §3.1).
+                                                let contacts = match &self.registrar {
+                                                    Some(registrar) => {
+                                                        crate::ring_plan::contacts_for_binding(
+                                                            storage,
+                                                            registrar,
+                                                            &line_binding,
+                                                            Some(invite_domain),
+                                                        )
                                                         .await
-                                                    {
-                                                        if let Some(sip_uri) = &device.sip_uri {
-                                                            if let Some(registrar) = &self.registrar
-                                                            {
-                                                                match registrar
-                                                                    .get_registrations_for_device(
-                                                                        &tenant_id,
-                                                                        sip_uri,
-                                                                        invite_domain,
-                                                                    )
-                                                                    .await
-                                                                {
-                                                                    Ok(contacts)
-                                                                        if !contacts.is_empty() =>
-                                                                    {
-                                                                        debug!(
-                                                                            call_id = %call_id,
-                                                                            extension = %extension_number,
-                                                                            device = %device.name,
-                                                                            contacts = contacts.len(),
-                                                                            "Found registrations for extension target device"
-                                                                        );
-                                                                        extension_contacts
-                                                                            .extend(contacts);
-                                                                    }
-                                                                    _ => {}
-                                                                }
-                                                            }
-                                                        }
                                                     }
+                                                    None => Vec::new(),
+                                                };
+                                                match self
+                                                    .ring_by_plan(
+                                                        request,
+                                                        &a_leg_handle_arc,
+                                                        call_id,
+                                                        &tenant_id,
+                                                        line_binding.owner_user_id,
+                                                        contacts,
+                                                        destination_aor,
+                                                    )
+                                                    .await?
+                                                {
+                                                    Some(contacts) => {
+                                                        extension_contacts.extend(contacts)
+                                                    }
+                                                    None => return Ok(()),
                                                 }
                                             }
                                             _ => {
@@ -5710,162 +5564,40 @@ impl SipMessageHandler {
                                 info!(
                                     call_id = %call_id,
                                     user_id = %user_id,
-                                    "Extension routes to user - ring all user's devices"
+                                    "Extension routes to user: their plan"
                                 );
-
-                                // Get all devices owned by this user
-                                match storage.list_devices_by_user(user_id).await {
-                                    Ok(devices) if !devices.is_empty() => {
-                                        debug!(
-                                            call_id = %call_id,
-                                            user_id = %user_id,
-                                            device_count = devices.len(),
-                                            "Found devices for user"
-                                        );
-
-                                        // Get registrations for each device
-                                        if let Some(registrar) = &self.registrar {
-                                            for device in devices {
-                                                if !device.enabled {
-                                                    debug!(
-                                                        call_id = %call_id,
-                                                        device_id = %device.id,
-                                                        "Skipping disabled device"
-                                                    );
-                                                    continue;
-                                                }
-
-                                                if let Some(sip_uri) = &device.sip_uri {
-                                                    match registrar
-                                                        .get_registrations_for_device(
-                                                            &tenant_id,
-                                                            sip_uri,
-                                                            invite_domain,
-                                                        )
-                                                        .await
-                                                    {
-                                                        Ok(registrations)
-                                                            if !registrations.is_empty() =>
-                                                        {
-                                                            debug!(
-                                                                call_id = %call_id,
-                                                                device_id = %device.id,
-                                                                sip_uri = %sip_uri,
-                                                                reg_count = registrations.len(),
-                                                                "Found registrations for user device"
-                                                            );
-                                                            extension_contacts
-                                                                .extend(registrations);
-                                                        }
-                                                        Ok(_) => {
-                                                            debug!(
-                                                                call_id = %call_id,
-                                                                device_id = %device.id,
-                                                                sip_uri = %sip_uri,
-                                                                "Device not registered"
-                                                            );
-                                                        }
-                                                        Err(e) => {
-                                                            warn!(
-                                                                call_id = %call_id,
-                                                                device_id = %device.id,
-                                                                error = %e,
-                                                                "Failed to get registrations for device"
-                                                            );
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        } else {
-                                            warn!(call_id = %call_id, "No registrar available for user device lookup");
-                                        }
-
-                                        if extension_contacts.is_empty() {
-                                            if let Some(registrar) = &self.registrar {
-                                                extension_contacts.extend(
-                                                    self.registrations_at_users_aor(
-                                                        storage,
-                                                        registrar,
-                                                        &tenant_id,
-                                                        user_id,
-                                                        invite_domain,
-                                                    )
-                                                    .await,
-                                                );
-                                            }
-                                        }
-                                        if extension_contacts.is_empty() {
-                                            info!(
-                                                call_id = %call_id,
-                                                user_id = %user_id,
-                                                "User has no registered devices"
-                                            );
-                                            let response = self.create_simple_response(
-                                                request,
-                                                480,
-                                                "Temporarily Unavailable",
-                                            );
-                                            a_leg_handle.send_final(response).await;
-                                            let _ = self.call_manager.terminate_call(
-                                                &call_id,
-                                                Some("User has no registered devices".to_string()),
-                                            );
-                                            return Ok(());
-                                        }
+                                // The user's plan rings every device they own
+                                // (`docs/ENTERPRISE_CALLING.md` §3.1).
+                                let contacts = match &self.registrar {
+                                    Some(registrar) => {
+                                        crate::ring_plan::contacts_for_user(
+                                            storage,
+                                            registrar,
+                                            &tenant_id,
+                                            user_id,
+                                            invite_domain,
+                                        )
+                                        .await
                                     }
-                                    Ok(_) => {
-                                        let own = match &self.registrar {
-                                            Some(registrar) => {
-                                                self.registrations_at_users_aor(
-                                                    storage,
-                                                    registrar,
-                                                    &tenant_id,
-                                                    user_id,
-                                                    invite_domain,
-                                                )
-                                                .await
-                                            }
-                                            None => Vec::new(),
-                                        };
-                                        if own.is_empty() {
-                                            warn!(call_id = %call_id, user_id = %user_id, "User has no devices and is not registered");
-                                            let response = self.create_simple_response(
-                                                request,
-                                                480,
-                                                "Temporarily Unavailable",
-                                            );
-                                            a_leg_handle.send_final(response).await;
-                                            let _ = self.call_manager.terminate_call(
-                                                &call_id,
-                                                Some(
-                                                    "User has no devices and is not registered"
-                                                        .to_string(),
-                                                ),
-                                            );
-                                            return Ok(());
-                                        }
-                                        info!(
-                                            call_id = %call_id,
-                                            user_id = %user_id,
-                                            contacts = own.len(),
-                                            "User has no devices; ringing the registrations at their own address"
-                                        );
-                                        extension_contacts.extend(own);
+                                    None => {
+                                        warn!(call_id = %call_id, "No registrar available for user device lookup");
+                                        Vec::new()
                                     }
-                                    Err(e) => {
-                                        error!(call_id = %call_id, user_id = %user_id, error = %e, "Failed to list user devices");
-                                        let response = self.create_simple_response(
-                                            request,
-                                            500,
-                                            "Internal Server Error",
-                                        );
-                                        a_leg_handle.send_final(response).await;
-                                        let _ = self.call_manager.terminate_call(
-                                            &call_id,
-                                            Some(format!("Failed to list user devices: {}", e)),
-                                        );
-                                        return Ok(());
-                                    }
+                                };
+                                match self
+                                    .ring_by_plan(
+                                        request,
+                                        &a_leg_handle_arc,
+                                        call_id,
+                                        &tenant_id,
+                                        Some(*user_id),
+                                        contacts,
+                                        destination_aor,
+                                    )
+                                    .await?
+                                {
+                                    Some(contacts) => extension_contacts.extend(contacts),
+                                    None => return Ok(()),
                                 }
                             }
                             fcp_core::ExtensionTarget::Device(device_id) => {
@@ -6360,7 +6092,9 @@ impl SipMessageHandler {
                                 "Found registered contacts for destination"
                             );
 
-                            // Look up line binding for the callee user so CFNA/voicemail work
+                            // The address is a user's: their plan
+                            // (`docs/ENTERPRISE_CALLING.md` §3.1).
+                            let mut bindings = bindings;
                             if let Some(storage) = &self.storage {
                                 let callee_username = destination_aor
                                     .strip_prefix("sip:")
@@ -6375,32 +6109,27 @@ impl SipMessageHandler {
                                     .map(|call| call.tenant_id)
                                     .or(self.default_tenant_id)
                                 {
-                                    if let Ok(Some(user)) = storage
-                                        .get_user_in_tenant(callee_username, &tenant_id)
-                                        .await
+                                    if let Some(user_id) = crate::ring_plan::user_of(
+                                        storage,
+                                        &tenant_id,
+                                        callee_username,
+                                    )
+                                    .await
                                     {
-                                        if let Ok(lbs) =
-                                            storage.list_line_bindings_by_user(&user.id).await
+                                        match self
+                                            .ring_by_plan(
+                                                request,
+                                                &a_leg_handle_arc,
+                                                call_id,
+                                                &tenant_id,
+                                                Some(user_id),
+                                                bindings,
+                                                destination_aor,
+                                            )
+                                            .await?
                                         {
-                                            if let Some(lb) = lbs.first() {
-                                                let lb_id = lb.id;
-                                                let callee = destination_aor.to_string();
-                                                let rna_timeout = lb.no_answer_timeout;
-                                                debug!(
-                                                    call_id = %call_id,
-                                                    line_binding_id = %lb_id,
-                                                    tenant_id = %tenant_id,
-                                                    "Stored line binding for direct-registration callee"
-                                                );
-                                                let _ = self.call_manager.update_call(
-                                                    &call_id,
-                                                    |call| {
-                                                        call.line_binding_id = Some(lb_id);
-                                                        call.original_callee = Some(callee);
-                                                        call.no_answer_timeout = Some(rna_timeout);
-                                                    },
-                                                );
-                                            }
+                                            Some(contacts) => bindings = contacts,
+                                            None => return Ok(()),
                                         }
                                     }
                                 }
@@ -8585,93 +8314,22 @@ impl SipMessageHandler {
             }
             self.trunk_fallbacks.remove(&call_id);
 
-            // All B-legs failed (not due to cancellation) — check CFNA
+            // All B-legs failed (not due to cancellation): the plan's
+            // treatment for busy or for no answer, when the call was a
+            // user's (`docs/ENTERPRISE_CALLING.md` §3.1).
             let call = self.call_manager.get_call(&call_id);
-            let cfna_dest = if let Some(ref call) = call {
-                if let Some(ref lb_id) = call.line_binding_id {
-                    self.check_cfna_destination(lb_id).await
+            let busy = crate::ring_plan::is_busy_code(last_failure_code);
+            let treatment = call.as_ref().and_then(|c| c.treatments.as_ref()).map(|t| {
+                if busy {
+                    t.busy.clone()
                 } else {
-                    None
+                    t.no_answer.clone()
                 }
-            } else {
-                None
-            };
-
-            if let Some(dest) = cfna_dest {
-                let reason = match last_failure_code {
-                    Some(486) | Some(600) | Some(603) => Some("busy"),
-                    _ => Some("no-answer"),
-                };
-                info!(call_id = %call_id, destination = %dest, reason = ?reason, "CFNA: routing to forward destination");
-                let callee = call.as_ref().and_then(|c| c.original_callee.as_deref());
-                match self
-                    .route_cfna(&request, &a_leg_handle, call_id, &dest, callee, reason)
-                    .await
-                {
-                    Ok(()) => {} // route_cfna handles forking + response
-                    Err(e) => {
-                        error!(call_id = %call_id, error = %e, "CFNA routing failed, sending 480");
-                        let resp =
-                            self.create_simple_response(&request, 480, "Temporarily Unavailable");
-                        a_leg_handle.send_final(resp).await;
-                        let _ = self
-                            .call_manager
-                            .terminate_call(&call_id, Some(format!("CFNA failed: {}", e)));
-                    }
-                }
-            } else {
-                // No CFNA configured — try voicemail fallback for no-answer/busy
-                let has_voicemail = if let (Some(ref call), Some(storage)) = (&call, &self.storage)
-                {
-                    if let Some(ref lb_id) = call.line_binding_id {
-                        storage
-                            .get_mailbox_by_line_binding(lb_id)
-                            .await
-                            .ok()
-                            .flatten()
-                            .map(|mb| mb.enabled)
-                            .unwrap_or(false)
-                    } else {
-                        false
-                    }
-                } else {
-                    false
-                };
-
-                if has_voicemail {
-                    let reason = match last_failure_code {
-                        Some(486) | Some(600) | Some(603) => "busy",
-                        _ => "no-answer",
-                    };
-                    info!(call_id = %call_id, reason = %reason, "No CFNA configured, falling back to voicemail");
-                    let callee = call.as_ref().and_then(|c| c.original_callee.as_deref());
-                    match self
-                        .route_cfna(
-                            &request,
-                            &a_leg_handle,
-                            call_id,
-                            "voicemail",
-                            callee,
-                            Some(reason),
-                        )
-                        .await
-                    {
-                        Ok(()) => {}
-                        Err(e) => {
-                            error!(call_id = %call_id, error = %e, "Voicemail fallback failed, sending 480");
-                            let resp = self.create_simple_response(
-                                &request,
-                                480,
-                                "Temporarily Unavailable",
-                            );
-                            a_leg_handle.send_final(resp).await;
-                            let _ = self.call_manager.terminate_call(
-                                &call_id,
-                                Some(format!("Voicemail fallback failed: {}", e)),
-                            );
-                        }
-                    }
-                } else {
+            });
+            let callee = call.as_ref().and_then(|c| c.original_callee.clone());
+            let reason = if busy { "busy" } else { "no-answer" };
+            match treatment {
+                Some(fcp_core::Treatment::Refuse { .. }) | None => {
                     // The callee's own refusal, when there was one (a single
                     // phone saying busy or declining is what the caller
                     // should hear), else 480.
@@ -8679,7 +8337,7 @@ impl SipMessageHandler {
                         Some(code @ (400..=699)) if code != 408 => (code, reason_phrase(code)),
                         _ => (480, "Temporarily Unavailable"),
                     };
-                    warn!(call_id = %call_id, code, "All B-legs failed, no voicemail");
+                    warn!(call_id = %call_id, code, "All B-legs failed, no treatment");
                     let response = self.create_simple_response(&request, code, reason);
                     a_leg_handle.send_final(response).await;
                     // The record says what the caller was told and why: the
@@ -8697,6 +8355,18 @@ impl SipMessageHandler {
                         },
                     };
                     let _ = self.call_manager.terminate_call_with(&call_id, termination);
+                }
+                Some(treatment) => {
+                    info!(call_id = %call_id, ?treatment, reason, "All B-legs failed: applying the treatment");
+                    self.apply_treatment(
+                        &request,
+                        &a_leg_handle,
+                        call_id,
+                        treatment,
+                        callee.as_deref(),
+                        reason,
+                    )
+                    .await;
                 }
             }
         }
@@ -12185,6 +11855,10 @@ impl SipMessageHandler {
                 self.handle_voicemail_access_feature(request, handle, call_id, mailbox)
                     .await
             }
+            fcp_pbx::FeatureCodeAction::Calling(code) => {
+                self.handle_calling_code(request, handle, call_id, code)
+                    .await
+            }
         }
     }
 
@@ -13568,6 +13242,25 @@ impl SipMessageHandler {
     }
 
     /// Execute a hunt group plan (ring members in phases).
+    /// Whether a hunt group member is a user in do not disturb
+    /// (`docs/ENTERPRISE_CALLING.md` §3.1).
+    async fn member_in_dnd(&self, call_id: &fcp_b2bua_core::CallId, member: &str) -> bool {
+        let Some(storage) = self.storage.as_ref() else {
+            return false;
+        };
+        let Some(tenant_id) = self.call_manager.get_call(call_id).map(|c| c.tenant_id) else {
+            return false;
+        };
+        match crate::ring_plan::user_of(storage, &tenant_id, member).await {
+            Some(user_id) => {
+                crate::ring_plan::settings_for(storage, &tenant_id, &user_id)
+                    .await
+                    .dnd
+            }
+            None => false,
+        }
+    }
+
     async fn execute_hunt_group_plan(
         &self,
         request: &sip_core::Request,
@@ -13590,6 +13283,10 @@ impl SipMessageHandler {
             let mut contacts = Vec::new();
             if let Some(registrar) = &self.registrar {
                 for member in &phase.members {
+                    if self.member_in_dnd(&call_id, member).await {
+                        debug!(call_id = %call_id, member = %member, "Hunt group member in do not disturb, skipping");
+                        continue;
+                    }
                     let member_aor = format!("sip:{}@{}", member, self.local_addr);
                     match registrar.get_registrations(&member_aor).await {
                         Ok(bindings) if !bindings.is_empty() => {
@@ -13780,28 +13477,261 @@ impl SipMessageHandler {
     // Call Forward No Answer (CFNA)
     // =========================================================================
 
-    /// Look up the CFNA destination for a line binding.
-    ///
-    /// Returns the `forward_on_no_answer` value from the line binding if set.
-    async fn check_cfna_destination(
+    /// Ring a user by their plan (`docs/ENTERPRISE_CALLING.md` §3.1):
+    /// `Some(contacts)` to fork, with the treatments and the ring time on
+    /// the call; `None` when the plan applied at once and the call is
+    /// handled. Without a user (a binding nobody owns) the defaults apply.
+    #[allow(clippy::too_many_arguments)]
+    async fn ring_by_plan(
         &self,
-        line_binding_id: &fcp_core::LineBindingId,
-    ) -> Option<String> {
-        let storage = self.storage.as_ref()?;
-        match storage.get_line_binding(line_binding_id).await {
-            Ok(Some(lb)) => lb.forward_on_no_answer.clone(),
-            Ok(None) => {
-                debug!(line_binding_id = %line_binding_id, "Line binding not found for CFNA check");
-                None
+        request: &sip_core::Request,
+        a_leg_handle: &Arc<ServerTransactionHandle>,
+        call_id: fcp_b2bua_core::CallId,
+        tenant_id: &fcp_core::TenantId,
+        user_id: Option<fcp_core::UserId>,
+        contacts: Vec<sip_registrar::Binding>,
+        callee: &str,
+    ) -> Result<Option<Vec<sip_registrar::Binding>>> {
+        let (settings, has_mailbox) = match (&self.storage, user_id) {
+            (Some(storage), Some(user_id)) => (
+                crate::ring_plan::settings_for(storage, tenant_id, &user_id).await,
+                crate::ring_plan::has_mailbox(storage, &user_id).await,
+            ),
+            _ => (
+                fcp_core::CallingSettings::defaults(*tenant_id, user_id.unwrap_or_default()),
+                false,
+            ),
+        };
+        match crate::ring_plan::plan(&settings, contacts, has_mailbox) {
+            crate::ring_plan::RingPlan::Immediate { treatment, reason } => {
+                info!(call_id = %call_id, ?user_id, ?treatment, reason, "The callee's plan applies without ringing");
+                let _ = self.call_manager.update_call(&call_id, |call| {
+                    call.callee_user_id = user_id;
+                    if call.original_callee.is_none() {
+                        call.original_callee = Some(callee.to_string());
+                    }
+                });
+                self.apply_treatment(
+                    request,
+                    a_leg_handle,
+                    call_id,
+                    treatment,
+                    Some(callee),
+                    reason,
+                )
+                .await;
+                Ok(None)
             }
-            Err(e) => {
-                warn!(line_binding_id = %line_binding_id, error = %e, "Failed to get line binding for CFNA check");
+            crate::ring_plan::RingPlan::Ring {
+                contacts,
+                ring_time,
+                treatments,
+            } => {
+                let _ = self.call_manager.update_call(&call_id, |call| {
+                    call.callee_user_id = user_id;
+                    call.treatments = Some(treatments);
+                    call.no_answer_timeout = ring_time;
+                    if call.original_callee.is_none() {
+                        call.original_callee = Some(callee.to_string());
+                    }
+                });
+                Ok(Some(contacts))
+            }
+        }
+    }
+
+    /// Apply a treatment to the caller: forward, voicemail, or a final
+    /// response. Ends the call on its record when nothing else will.
+    async fn apply_treatment(
+        &self,
+        request: &sip_core::Request,
+        a_leg_handle: &Arc<ServerTransactionHandle>,
+        call_id: fcp_b2bua_core::CallId,
+        treatment: fcp_core::Treatment,
+        callee: Option<&str>,
+        reason: &str,
+    ) {
+        let routed = match treatment {
+            fcp_core::Treatment::Voicemail => {
+                self.route_cfna(
+                    request,
+                    a_leg_handle,
+                    call_id,
+                    "voicemail",
+                    callee,
+                    Some(reason),
+                )
+                .await
+            }
+            fcp_core::Treatment::Forward { target } => {
+                match self.forward_destination(&target).await {
+                    Some(destination) => {
+                        self.route_cfna(
+                            request,
+                            a_leg_handle,
+                            call_id,
+                            &destination,
+                            callee,
+                            Some(reason),
+                        )
+                        .await
+                    }
+                    None => Err(anyhow::anyhow!("forward target {target} cannot be placed")),
+                }
+            }
+            fcp_core::Treatment::Refuse { code } => {
+                let response = self.create_simple_response(request, code, reason_phrase(code));
+                a_leg_handle.send_final(response).await;
+                let termination = if code == 486 {
+                    fcp_cdr::TerminationReason::rejected(code, reason_phrase(code))
+                } else {
+                    fcp_cdr::TerminationReason::Failed {
+                        status: Some(code),
+                        detail: format!("The callee is {reason}"),
+                    }
+                };
+                let _ = self.call_manager.terminate_call_with(&call_id, termination);
+                return;
+            }
+        };
+        if let Err(e) = routed {
+            error!(call_id = %call_id, error = %e, "Applying the treatment failed, sending 480");
+            let response = self.create_simple_response(request, 480, "Temporarily Unavailable");
+            a_leg_handle.send_final(response).await;
+            let _ = self
+                .call_manager
+                .terminate_call(&call_id, Some(format!("The treatment failed: {e}")));
+        }
+    }
+
+    /// What `route_cfna` dials for a forward target: a number or an
+    /// extension at this node, a SIP URI as given, a user by their
+    /// extension or name. A flow or a queue as a target lands with the
+    /// schedules phase.
+    async fn forward_destination(&self, target: &fcp_core::CallTarget) -> Option<String> {
+        match target {
+            fcp_core::CallTarget::Voicemail => Some("voicemail".to_string()),
+            fcp_core::CallTarget::Number(n) => Some(n.clone()),
+            fcp_core::CallTarget::Extension(e) => Some(e.clone()),
+            fcp_core::CallTarget::Sip(u) => Some(u.clone()),
+            fcp_core::CallTarget::User(user_id) => {
+                let storage = self.storage.as_ref()?;
+                match storage.get_user_by_id(user_id).await {
+                    Ok(Some(user)) => Some(user.extension.unwrap_or(user.username)),
+                    Ok(None) => {
+                        warn!(user_id = %user_id, "Forward target user not found");
+                        None
+                    }
+                    Err(e) => {
+                        warn!(user_id = %user_id, error = %e, "Failed to read the forward target user");
+                        None
+                    }
+                }
+            }
+            fcp_core::CallTarget::Flow(_) | fcp_core::CallTarget::Queue(_) => {
+                warn!(target = %target, "A flow or queue forward target is not placed by this release");
                 None
             }
         }
     }
 
-    /// Route a call via CFNA to a forward destination.
+    /// A calling feature code (`docs/ENTERPRISE_CALLING.md` §3.1): the
+    /// caller's own settings changed and the call answered then ended, as
+    /// the agent login codes do.
+    async fn handle_calling_code(
+        &self,
+        request: &sip_core::Request,
+        handle: &ServerTransactionHandle,
+        call_id: &fcp_b2bua_core::CallId,
+        code: fcp_pbx::CallingCode,
+    ) -> Result<()> {
+        let finish = |status: u16, reason: &'static str| async move {
+            let response = self.create_simple_response(request, status, reason);
+            handle.send_final(response).await;
+            let _ = self
+                .call_manager
+                .terminate_call(call_id, Some("Calling feature code".to_string()));
+            Ok(())
+        };
+        let Some(storage) = self.storage.as_ref() else {
+            return finish(500, "Storage Not Configured").await;
+        };
+        let caller = sip_parse::header(request.headers(), "From")
+            .and_then(|from| Self::extract_did_from_uri(from.as_str()))
+            .unwrap_or_default();
+        let tenant_id = match self.resolve_runtime_tenant(request, call_id).await {
+            Ok(tenant_id) => tenant_id,
+            Err(e) => {
+                warn!(call_id = %call_id, caller = %caller, error = %e, "Calling code: tenant resolution failed");
+                return finish(403, "Tenant Context Required").await;
+            }
+        };
+        let user = match storage.get_user_in_tenant(&caller, &tenant_id).await {
+            Ok(Some(user)) => user,
+            Ok(None) => {
+                warn!(call_id = %call_id, caller = %caller, "Calling code from an unknown user");
+                return finish(404, "Unknown Caller").await;
+            }
+            Err(e) => {
+                error!(call_id = %call_id, caller = %caller, error = %e, "Calling code: user lookup failed");
+                return finish(500, "Storage Error").await;
+            }
+        };
+        let mut settings = crate::ring_plan::settings_for(storage, &tenant_id, &user.id).await;
+        let target = |dialed: &str| fcp_core::CallTarget::parse(dialed);
+        use fcp_pbx::CallingCode::*;
+        let changed: Result<(), fcp_core::CallTargetError> = match code {
+            DndOn => {
+                settings.dnd = true;
+                Ok(())
+            }
+            DndOff => {
+                settings.dnd = false;
+                Ok(())
+            }
+            ForwardAllOn { target: t } => target(&t).map(|t| settings.forward_all = Some(t)),
+            ForwardAllOff => {
+                settings.forward_all = None;
+                Ok(())
+            }
+            ForwardBusyOn { target: t } => target(&t).map(|t| settings.forward_busy = Some(t)),
+            ForwardBusyOff => {
+                settings.forward_busy = None;
+                Ok(())
+            }
+            ForwardNoAnswerOn { target: t } => {
+                target(&t).map(|t| settings.forward_no_answer = Some(t))
+            }
+            ForwardNoAnswerOff => {
+                settings.forward_no_answer = None;
+                Ok(())
+            }
+        };
+        if let Err(e) = changed {
+            warn!(call_id = %call_id, caller = %caller, error = %e, "Calling code with a bad target");
+            return finish(404, "Invalid Forward Target").await;
+        }
+        settings.updated_at = std::time::SystemTime::now();
+        if let Err(e) = settings.validate() {
+            warn!(call_id = %call_id, caller = %caller, error = %e, "Calling code refused");
+            return finish(404, "Invalid Forward Target").await;
+        }
+        if let Err(e) = storage.put_calling_settings(settings).await {
+            error!(call_id = %call_id, caller = %caller, error = %e, "Calling code: settings not stored");
+            return finish(500, "Storage Error").await;
+        }
+        info!(call_id = %call_id, caller = %caller, user_id = %user.id, "Calling settings changed by feature code");
+        self.call_manager.publish(fcp_events::PlatformEvent::User(
+            fcp_events::UserEvent::CallingChanged {
+                user_id: user.id.to_string(),
+                username: user.username.clone(),
+                tenant_id,
+                timestamp: std::time::SystemTime::now(),
+            },
+        ));
+        finish(200, "OK").await
+    }
+
     ///
     /// Resolves the destination (including "voicemail" → voicemail server URI),
     /// creates a new B-leg INVITE, and runs parallel forking for the CFNA target.
@@ -13861,8 +13791,12 @@ impl SipMessageHandler {
             } else if destination.starts_with("sip:") || destination.starts_with("sips:") {
                 destination.to_string()
             } else {
-                // Assume it's a number/extension — resolve via registrar or outbound route
-                let host = self.uas.local_uri.host().to_string();
+                // A number or an extension: a new call into this node, at
+                // the port it listens on.
+                let host = match self.uas.local_uri.port() {
+                    Some(port) => format!("{}:{}", self.uas.local_uri.host(), port),
+                    None => self.uas.local_uri.host().to_string(),
+                };
                 format!("sip:{}@{}", destination, host)
             };
 
@@ -13947,10 +13881,12 @@ impl SipMessageHandler {
                 ));
             });
 
-            // Run parallel forking with the single CFNA B-leg
-            // Clear line_binding_id so CFNA doesn't recurse infinitely
+            // Run parallel forking with the single CFNA B-leg. The forward's
+            // own legs have no treatments: a forward that fails is the
+            // caller's answer, not another forward.
             let _ = self.call_manager.update_call(&call_id, |call| {
                 call.line_binding_id = None;
+                call.treatments = None;
             });
 
             self.handle_parallel_forking(

@@ -26,7 +26,7 @@ pub mod pickup;
 pub use codes::AuthorizationRequirement;
 pub use config::PbxConfig;
 pub use error::PbxError;
-pub use feature_codes::FeatureCodeAction;
+pub use feature_codes::{CallingCode, FeatureCodeAction};
 pub use hunt_group::{HuntGroup, HuntGroupPlan};
 pub use intercom::{IntercomMode, IntercomParams};
 pub use parking::{ParkedCall, ParkingManager};

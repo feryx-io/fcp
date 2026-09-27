@@ -1220,6 +1220,35 @@ per-node feature codes with North American defaults, the caller's number
 with `Diversion` on find-me legs, class of service by number
 classification not rules, appearances in Redis with retrieves forwarded
 to the owning node, monitor/whisper/barge last).
+Phase 1 done (v0.25.276): the foundations — `user_calling_settings`
+(migration 082, one JSON row per user keyed by the user, journaled for
+sites and applied by the link; the line binding's forwards and ring time
+seeded into the owner's row, their columns unread from this release),
+`fcp_core::calling` (`CallingSettings`, the typed `CallTarget` —
+`voicemail`, `number:+…`, `ext:…`, `user:…`, `flow:…`, `queue:…`, a SIP
+URI — `Treatment`, `CallingStore` in every store bundle),
+`fcp_sip::ring_plan::plan` (forward all; do not disturb; nobody registered;
+else ring for the user's time (the node's forking timeout when unset), then the busy or no-answer treatment: a
+forward, the mailbox, or the callee's own code) executed by every path to
+a user — a number's binding, an extension, the user's own address, a
+flow's `Dial` (which rang nothing for a user before), and a hunt group's
+members skipped in DND; the call carries `callee_user_id` and
+`treatments`, and a forward is a new call into this node at its own port;
+the presence listener follows each event's tenant instead of the default
+tenant's; `is_busy` counts a member on the phone; the feature codes `*78`/
+`*79` (DND), `*72<target>`/`*73` (forward all), `*90`/`*91` (busy),
+`*92`/`*93` (no answer) under `[pbx.feature_codes]`; `user.calling_changed`;
+`GET`/`PUT /v1/users/:username/calling` and `/v1/me/calling` (replacing
+`/me/forwarding`), the Calling dialog on the users page and the user's
+Calling page, the line binding page without the forwards it never applied;
+the dead `fcp-core` routing engine deleted. Proved by
+`fcp-call-manager/tests/calling.rs`: forward all without ringing, busy,
+no answer after the ring time, DND as busy or as its forward, a user with
+no phone reaching voicemail by extension with `reason=unreachable` and
+the unreachable forward over the mailbox, a flow dialing a user who
+answers and skipping one in DND, and the feature codes from a phone. A
+flow or a queue as a forward target is refused by the API until the
+schedules phase places it.
 
 ## Historical documents
 

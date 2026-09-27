@@ -3020,7 +3020,7 @@ async fn queue_runtime_agents_and_stats() {
 // ─── Self-service (/me) ──────────────────────────────────────────────────
 
 #[tokio::test]
-async fn self_service_profile_password_forwarding_and_voicemail() {
+async fn self_service_profile_password_calling_and_voicemail() {
     let app = require_app!();
     let user_id = app.create_user_with_role("selfie", "end_user").await;
 
@@ -3089,29 +3089,69 @@ async fn self_service_profile_password_forwarding_and_voicemail() {
     assert_eq!(updated.json["display_name"], "Self Service");
     assert_eq!(updated.json["timezone"], "Europe/Berlin");
 
-    let forwarding = app
-        .send_as(&jwt, Method::GET, "/api/v1/me/forwarding", None)
+    // The user's own calling settings: the defaults until set, then what
+    // they set, which the admin sees too (docs/ENTERPRISE_CALLING.md §3.1).
+    let calling = app
+        .send_as(&jwt, Method::GET, "/api/v1/me/calling", None)
         .await;
-    assert_eq!(forwarding.status, StatusCode::OK, "{}", forwarding.text);
-    assert_eq!(
-        forwarding.json.as_array().unwrap().len(),
-        1,
+    assert_eq!(calling.status, StatusCode::OK, "{}", calling.text);
+    assert_eq!(calling.json["username"], "selfie");
+    assert_eq!(calling.json["dnd"], false);
+    assert_eq!(calling.json["call_waiting"], true);
+    assert!(calling.json["no_answer_secs"].is_null(), "{}", calling.text);
+    assert!(
+        calling.json["forward_no_answer"].is_null(),
         "{}",
-        forwarding.text
+        calling.text
     );
-    assert_eq!(forwarding.json[0]["phone_number"], "+15550002222");
-    let fwd_id = forwarding.json[0]["id"].as_str().unwrap().to_string();
-    let set_fwd = app
+    let set_calling = app
         .send_as(
             &jwt,
-            Method::PATCH,
-            &format!("/api/v1/me/forwarding/{fwd_id}"),
-            Some(json!({ "forward_on_no_answer": "+15559990000", "no_answer_timeout_secs": 15 })),
+            Method::PUT,
+            "/api/v1/me/calling",
+            Some(json!({ "forward_no_answer": "+15559990000", "forward_busy": "voicemail", "no_answer_secs": 15, "dnd": true })),
         )
         .await;
-    assert_eq!(set_fwd.status, StatusCode::OK, "{}", set_fwd.text);
-    assert_eq!(set_fwd.json["forward_on_no_answer"], "+15559990000");
-    assert_eq!(set_fwd.json["no_answer_timeout_secs"], 15);
+    assert_eq!(set_calling.status, StatusCode::OK, "{}", set_calling.text);
+    assert_eq!(set_calling.json["forward_no_answer"], "number:+15559990000");
+    assert_eq!(set_calling.json["forward_busy"], "voicemail");
+    assert_eq!(set_calling.json["no_answer_secs"], 15);
+    assert_eq!(set_calling.json["dnd"], true);
+    let cleared = app
+        .send_as(
+            &jwt,
+            Method::PUT,
+            "/api/v1/me/calling",
+            Some(json!({ "forward_busy": "" })),
+        )
+        .await;
+    assert_eq!(cleared.status, StatusCode::OK, "{}", cleared.text);
+    assert!(cleared.json["forward_busy"].is_null(), "{}", cleared.text);
+    assert_eq!(cleared.json["forward_no_answer"], "number:+15559990000");
+    let bad = app
+        .send_as(
+            &jwt,
+            Method::PUT,
+            "/api/v1/me/calling",
+            Some(json!({ "forward_all": "not a target", "no_answer_secs": 2 })),
+        )
+        .await;
+    assert_eq!(bad.status, StatusCode::BAD_REQUEST, "{}", bad.text);
+    let as_admin = app
+        .admin(Method::GET, "/api/v1/users/selfie/calling", None)
+        .await;
+    assert_eq!(as_admin.status, StatusCode::OK, "{}", as_admin.text);
+    assert_eq!(as_admin.json["dnd"], true);
+    assert_eq!(as_admin.json["no_answer_secs"], 15);
+    let admin_set = app
+        .admin(
+            Method::PUT,
+            "/api/v1/users/selfie/calling",
+            Some(json!({ "dnd": false })),
+        )
+        .await;
+    assert_eq!(admin_set.status, StatusCode::OK, "{}", admin_set.text);
+    assert_eq!(admin_set.json["dnd"], false);
 
     let vm = app
         .send_as(&jwt, Method::GET, "/api/v1/me/voicemail", None)

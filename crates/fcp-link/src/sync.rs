@@ -12,6 +12,7 @@
 use anyhow::{Context, Result};
 use fcp_core::billing::BillingStore;
 use fcp_core::storage::*;
+use fcp_core::CallingStore;
 use fcp_core::{DynStorage, SiteId, SiteSync, TenantId};
 use fcp_flow::FlowStore;
 use fcp_storage_postgres::{PostgresConfig, PostgresStorage};
@@ -330,6 +331,7 @@ impl Syncer {
         match table {
             "tenants" => storage.put_tenant(parse!()).await?,
             "users" => storage.put_user(parse!()).await?,
+            "user_calling_settings" => storage.put_calling_settings(parse!()).await?,
             "devices" => storage.put_device(parse!()).await?,
             "extensions" => storage.put_extension(parse!()).await?,
             "line_bindings" => storage.put_line_binding(parse!()).await?,
@@ -440,6 +442,11 @@ impl Syncer {
                         .delete_user_in_tenant(&user.username, &user.tenant_id)
                         .await?;
                 }
+            }
+            "user_calling_settings" => {
+                storage
+                    .delete_calling_settings(&self.tenant, &id!())
+                    .await?
             }
             "devices" => storage.delete_device(&id!()).await?,
             "extensions" => storage.delete_extension(&id!()).await?,

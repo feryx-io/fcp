@@ -91,8 +91,8 @@ import type {
   ChangePasswordRequest,
   MeMailbox,
   MeMailboxStats,
-  MeForwarding,
-  UpdateForwardingRequest,
+  CallingSettings,
+  UpdateCallingRequest,
   MeetingResponse,
   CreateMeetingRequest,
   UpdateMeetingRequest,
@@ -138,6 +138,10 @@ export const users = {
     apiClient.delete<void>(`/users/${encodeURIComponent(username)}/digest-password`),
   unlock: (username: string) =>
     apiClient.post<User>(`/users/${encodeURIComponent(username)}/unlock`),
+  getCalling: (username: string) =>
+    apiClient.get<CallingSettings>(`/users/${encodeURIComponent(username)}/calling`),
+  updateCalling: (username: string, data: UpdateCallingRequest) =>
+    apiClient.put<CallingSettings>(`/users/${encodeURIComponent(username)}/calling`, data),
 }
 
 // Tenants
@@ -774,10 +778,9 @@ export const me = {
   deleteAvatar: (): Promise<void> =>
     apiClient.deleteRaw('/me/profile/avatar'),
 
-  // Forwarding
-  getForwarding: () => apiClient.get<MeForwarding[]>('/me/forwarding'),
-  updateForwarding: (id: string, data: UpdateForwardingRequest) =>
-    apiClient.patch<MeForwarding>(`/me/forwarding/${encodeURIComponent(id)}`, data),
+  // Calling settings (docs/ENTERPRISE_CALLING.md §3.1)
+  getCalling: () => apiClient.get<CallingSettings>('/me/calling'),
+  updateCalling: (data: UpdateCallingRequest) => apiClient.put<CallingSettings>('/me/calling', data),
 
   // Conferences
   listConferences: () => apiClient.get<MeetingResponse[]>('/me/conferences'),

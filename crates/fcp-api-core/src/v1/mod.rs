@@ -3,6 +3,7 @@
 pub mod api_tokens;
 pub mod auth_session;
 pub mod billing;
+pub mod calling;
 pub mod cdrs;
 pub mod compliance;
 pub mod conferences;
@@ -50,7 +51,7 @@ use crate::state::ApiState;
 use axum::{
     extract::DefaultBodyLimit,
     middleware,
-    routing::{delete, get, patch, post, put},
+    routing::{delete, get, post, put},
     Router,
 };
 
@@ -160,8 +161,10 @@ pub fn router() -> Router<ApiState> {
                 .put(self_service::declare_my_location)
                 .delete(self_service::clear_my_location),
         )
-        .route("/me/forwarding", get(self_service::get_forwarding))
-        .route("/me/forwarding/:id", patch(self_service::update_forwarding))
+        .route(
+            "/me/calling",
+            get(self_service::get_my_calling).put(self_service::update_my_calling),
+        )
         .route("/me/conferences", get(self_service::list_my_conferences))
         .route(
             "/me/conferences/:id",
@@ -299,6 +302,10 @@ pub fn router() -> Router<ApiState> {
         .route(
             "/users/:username/digest-password",
             put(users::update_digest_password).delete(users::delete_digest_password),
+        )
+        .route(
+            "/users/:username/calling",
+            get(calling::get_user_calling).put(calling::update_user_calling),
         )
         // Registrations
         .route("/registrations", get(registrations::list_registrations))

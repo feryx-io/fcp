@@ -13,7 +13,7 @@ use axum::{
     Json,
 };
 use fcp_core::{
-    storage::{password, ConferenceStore, LineBindingStore, PhoneNumberStore, VoicemailStore},
+    storage::{password, ConferenceStore, VoicemailStore},
     CredentialStore, GreetingType, MessageStatus, UserId, VoicemailGreeting,
 };
 use serde::{Deserialize, Serialize};
@@ -921,20 +921,6 @@ pub async fn download_voicemail_greeting_audio(
     ))
 }
 
-// ---- Call Forwarding Endpoints ----
-
-/// Forwarding response (line binding subset).
-#[derive(Debug, Serialize)]
-pub struct ForwardingResponse {
-    pub id: String,
-    pub phone_number_id: String,
-    pub phone_number: Option<String>,
-    pub forward_unconditional: Option<String>,
-    pub forward_on_busy: Option<String>,
-    pub forward_on_no_answer: Option<String>,
-    pub no_answer_timeout_secs: u64,
-}
-
 // ─── Where I am (docs/E911_BLOCK_2.md §6.4) ──────────────────────────────
 
 /// A user's declared location: where they are when no network places them.
@@ -1100,119 +1086,34 @@ pub async fn clear_my_location(
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
-pub async fn get_forwarding(
+/// GET /me/calling — the user's own calling settings
+/// (`docs/ENTERPRISE_CALLING.md` §3.1).
+pub async fn get_my_calling(
     State(state): State<ApiState>,
     req: axum::extract::Request,
 ) -> Result<impl IntoResponse, ApiError> {
     let claims = extract_claims(&req, &state)?;
     let storage = require_storage!(state);
-
     let user = load_claims_user(storage, &claims, &state).await?;
-
-    let bindings = storage
-        .list_line_bindings_by_user(&user.id)
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
-
-    let mut responses = Vec::with_capacity(bindings.len());
-    for b in bindings {
-        // Look up the actual phone number (E.164) from the ID
-        let phone_number = storage
-            .get_phone_number(&b.phone_number_id)
-            .await
-            .ok()
-            .flatten()
-            .map(|pn| pn.e164);
-
-        responses.push(ForwardingResponse {
-            id: b.id.to_string(),
-            phone_number_id: b.phone_number_id.to_string(),
-            phone_number,
-            forward_unconditional: b.forward_unconditional,
-            forward_on_busy: b.forward_on_busy,
-            forward_on_no_answer: b.forward_on_no_answer,
-            no_answer_timeout_secs: b.no_answer_timeout.as_secs(),
-        });
-    }
-
-    Ok(Json(responses))
+    let settings = crate::v1::calling::settings_of(&state, &user).await?;
+    Ok(Json(crate::v1::calling::CallingResponse::of(
+        &user, &settings,
+    )))
 }
 
-#[derive(Debug, Deserialize)]
-pub struct UpdateForwardingRequest {
-    pub forward_unconditional: Option<String>,
-    pub forward_on_busy: Option<String>,
-    pub forward_on_no_answer: Option<String>,
-    pub no_answer_timeout_secs: Option<u64>,
-}
-
-/// PATCH /me/forwarding/:id
-pub async fn update_forwarding(
+/// PUT /me/calling
+pub async fn update_my_calling(
     State(state): State<ApiState>,
-    Path(binding_id): Path<String>,
     headers: HeaderMap,
-    Json(body): Json<UpdateForwardingRequest>,
+    Json(body): Json<crate::v1::calling::UpdateCallingRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let claims = extract_claims_from_headers(&headers, &state)?;
     let storage = require_storage!(state);
-
     let user = load_claims_user(storage, &claims, &state).await?;
-
-    let lb_id = fcp_core::LineBindingId::from_str(&binding_id)
-        .map_err(|e| ApiError::BadRequest(format!("Invalid binding ID: {}", e)))?;
-
-    let mut binding = storage
-        .get_line_binding(&lb_id)
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?
-        .ok_or_else(|| ApiError::NotFound("Line binding not found".to_string()))?;
-
-    // Verify ownership
-    if binding.owner_user_id.as_ref() != Some(&user.id) {
-        return Err(ApiError::Forbidden(
-            "Line binding does not belong to you".to_string(),
-        ));
-    }
-
-    // Update only forwarding fields
-    if let Some(fwd) = body.forward_unconditional {
-        binding.forward_unconditional = if fwd.is_empty() { None } else { Some(fwd) };
-    }
-    if let Some(fwd) = body.forward_on_busy {
-        binding.forward_on_busy = if fwd.is_empty() { None } else { Some(fwd) };
-    }
-    if let Some(fwd) = body.forward_on_no_answer {
-        binding.forward_on_no_answer = if fwd.is_empty() { None } else { Some(fwd) };
-    }
-    if let Some(timeout) = body.no_answer_timeout_secs {
-        binding.no_answer_timeout = std::time::Duration::from_secs(timeout);
-    }
-    binding.updated_at = SystemTime::now();
-
-    storage
-        .put_line_binding(binding.clone())
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
-
-    info!(username = %claims.sub, binding_id = %binding_id, "User updated call forwarding");
-
-    // Look up the actual phone number (E.164) from the ID
-    let phone_number = storage
-        .get_phone_number(&binding.phone_number_id)
-        .await
-        .ok()
-        .flatten()
-        .map(|pn| pn.e164);
-
-    Ok(Json(ForwardingResponse {
-        id: binding.id.to_string(),
-        phone_number_id: binding.phone_number_id.to_string(),
-        phone_number,
-        forward_unconditional: binding.forward_unconditional,
-        forward_on_busy: binding.forward_on_busy,
-        forward_on_no_answer: binding.forward_on_no_answer,
-        no_answer_timeout_secs: binding.no_answer_timeout.as_secs(),
-    }))
+    let settings = crate::v1::calling::apply(&state, &user, body, "self").await?;
+    Ok(Json(crate::v1::calling::CallingResponse::of(
+        &user, &settings,
+    )))
 }
 
 // ---- Helper Functions ----

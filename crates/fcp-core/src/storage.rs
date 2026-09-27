@@ -1088,6 +1088,18 @@ fn default_cdr_schema_version() -> u16 {
     CDR_SCHEMA_VERSION
 }
 
+/// Which way a call went, as the tenant's numbers say: stored on the
+/// record by the CDR pipeline's enricher.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CallDirection {
+    /// Inbound call (from external to internal)
+    Inbound,
+    /// Outbound call (from internal to external)
+    Outbound,
+    /// Internal call (between internal endpoints)
+    Internal,
+}
+
 /// Call Detail Record (CDR)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CallDetailRecord {
@@ -1148,7 +1160,7 @@ pub struct CallDetailRecord {
     /// aggregates need not derive it per row. Filled by the pipeline's
     /// enricher (phase 2); `None` until then.
     #[serde(default)]
-    pub direction: Option<crate::call_state::CallDirection>,
+    pub direction: Option<CallDirection>,
 
     /// The node that owned the call and the region it advertised.
     #[serde(default)]
@@ -3063,6 +3075,7 @@ pub struct DynStorage {
     porting_store: Arc<dyn crate::porting::PortingStore>,
     site_store: Arc<dyn crate::site::SiteStore>,
     sync_store: Arc<dyn crate::sync::SyncStore>,
+    calling_store: Arc<dyn crate::calling::CallingStore>,
     tenant_store: Arc<dyn TenantStore>,
     conference_store: Arc<dyn ConferenceStore>,
     queue_store: Arc<dyn QueueStore>,
@@ -3108,6 +3121,7 @@ impl DynStorage {
         porting_store: Arc<dyn crate::porting::PortingStore>,
         site_store: Arc<dyn crate::site::SiteStore>,
         sync_store: Arc<dyn crate::sync::SyncStore>,
+        calling_store: Arc<dyn crate::calling::CallingStore>,
         tenant_store: Arc<dyn TenantStore>,
         conference_store: Arc<dyn ConferenceStore>,
         queue_store: Arc<dyn QueueStore>,
@@ -3133,6 +3147,7 @@ impl DynStorage {
             porting_store,
             site_store,
             sync_store,
+            calling_store,
             tenant_store,
             conference_store,
             queue_store,
@@ -3178,6 +3193,7 @@ impl DynStorage {
             + crate::porting::PortingStore
             + crate::site::SiteStore
             + crate::sync::SyncStore
+            + crate::calling::CallingStore
             + TenantStore
             + ConferenceStore
             + QueueStore
@@ -3205,6 +3221,7 @@ impl DynStorage {
             porting_store: storage.clone(),
             site_store: storage.clone(),
             sync_store: storage.clone(),
+            calling_store: storage.clone(),
             tenant_store: storage.clone(),
             conference_store: storage.clone(),
             queue_store: storage.clone(),
@@ -4294,6 +4311,40 @@ impl crate::sync::SyncStore for DynStorage {
         limit: usize,
     ) -> Result<Vec<crate::JournalEntry>> {
         self.sync_store.journal_after(tenant_id, since, limit).await
+    }
+}
+
+#[async_trait]
+impl crate::calling::CallingStore for DynStorage {
+    async fn get_calling_settings(
+        &self,
+        tenant_id: &crate::TenantId,
+        user_id: &crate::UserId,
+    ) -> Result<Option<crate::CallingSettings>> {
+        self.calling_store
+            .get_calling_settings(tenant_id, user_id)
+            .await
+    }
+
+    async fn list_calling_settings(
+        &self,
+        tenant_id: &crate::TenantId,
+    ) -> Result<Vec<crate::CallingSettings>> {
+        self.calling_store.list_calling_settings(tenant_id).await
+    }
+
+    async fn put_calling_settings(&self, settings: crate::CallingSettings) -> Result<()> {
+        self.calling_store.put_calling_settings(settings).await
+    }
+
+    async fn delete_calling_settings(
+        &self,
+        tenant_id: &crate::TenantId,
+        user_id: &crate::UserId,
+    ) -> Result<()> {
+        self.calling_store
+            .delete_calling_settings(tenant_id, user_id)
+            .await
     }
 }
 

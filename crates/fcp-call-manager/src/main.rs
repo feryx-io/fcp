@@ -3107,7 +3107,7 @@ async fn resolve_device_aor_to_extension_aors(
 async fn run_presence_listener(
     event_bus: Arc<InMemoryEventBus>,
     presence: fcp_presence::PresenceManager,
-    tenant_id: fcp_core::TenantId,
+    default_tenant_id: fcp_core::TenantId,
     storage: Arc<fcp_core::DynStorage>,
 ) {
     use fcp_events::PlatformEvent;
@@ -3128,6 +3128,11 @@ async fn run_presence_listener(
     };
 
     tracing::info!("Presence event listener running");
+    // The tenant of each call in flight, from its `call.initiated`: the
+    // events that follow name only the call. A call nobody announced is
+    // the default tenant's (docs/ENTERPRISE_CALLING.md §1.4).
+    let mut call_tenants: std::collections::HashMap<String, fcp_core::TenantId> =
+        std::collections::HashMap::new();
 
     loop {
         match stream.next().await {
@@ -3136,6 +3141,10 @@ async fn run_presence_listener(
                     // Call answered → update dialog state to Confirmed, transition Ringing→OnThePhone
                     PlatformEvent::Call(fcp_events::CallEvent::Answered { call_id, .. }) => {
                         let call_id_str = call_id.to_string();
+                        let tenant_id = call_tenants
+                            .get(&call_id_str)
+                            .copied()
+                            .unwrap_or(default_tenant_id);
                         // Find AORs with active calls for this call_id
                         let affected_aors = presence.get_aors_with_active_call(&call_id_str);
                         tracing::info!(%call_id, ?affected_aors, "Call answered — updating presence for affected AORs");
@@ -3174,9 +3183,12 @@ async fn run_presence_listener(
                         from,
                         to,
                         call_id,
+                        tenant_id: event_tenant,
                         ..
                     }) => {
                         let call_id_str = call_id.to_string();
+                        let tenant_id = *event_tenant;
+                        call_tenants.insert(call_id_str.clone(), tenant_id);
                         tracing::info!(%call_id, from = %from, to = %to, "Presence: CallEvent::Initiated received");
 
                         if let Some(callee_aor) = extract_aor(to) {
@@ -3381,6 +3393,9 @@ async fn run_presence_listener(
                     PlatformEvent::Call(fcp_events::CallEvent::Ended { call_id, .. })
                     | PlatformEvent::Call(fcp_events::CallEvent::Failed { call_id, .. }) => {
                         let call_id_str = call_id.to_string();
+                        let tenant_id = call_tenants
+                            .remove(&call_id_str)
+                            .unwrap_or(default_tenant_id);
                         // Collect AORs affected before removing the call.
                         // Use active_calls directly (not get_all_presences) so we
                         // find AORs even when no presentity entry exists.
@@ -3433,8 +3448,10 @@ async fn run_presence_listener(
                     // Registration → set Open
                     PlatformEvent::Registration(fcp_events::RegistrationEvent::Registered {
                         aor,
+                        tenant_id: event_tenant,
                         ..
                     }) => {
+                        let tenant_id = *event_tenant;
                         if let Some(aor) = extract_aor(aor) {
                             let update = fcp_presence::PresenceUpdate {
                                 aor: aor.clone(),
@@ -3462,8 +3479,10 @@ async fn run_presence_listener(
                     // Unregistration → set Closed
                     PlatformEvent::Registration(fcp_events::RegistrationEvent::Unregistered {
                         aor,
+                        tenant_id: event_tenant,
                         ..
                     }) => {
+                        let tenant_id = *event_tenant;
                         if let Some(aor) = extract_aor(aor) {
                             let update = fcp_presence::PresenceUpdate {
                                 aor: aor.clone(),
@@ -3535,14 +3554,16 @@ async fn run_presence_listener(
                     }) if *new_messages > 0 => {
                         let aor = resolve_mailbox_aor(mailbox_id, &presence);
                         if let Some(aor) = aor {
-                            if let Some(info) = presence.get_presence_for_tenant(&aor, &tenant_id) {
+                            if let Some(info) =
+                                presence.get_presence_for_tenant(&aor, &default_tenant_id)
+                            {
                                 let note = format!("{} new voicemail(s)", new_messages);
                                 let update = fcp_presence::PresenceUpdate {
                                     aor,
                                     state: info.state,
                                     note: Some(note),
                                 };
-                                let _ = presence.update_presence(update, &tenant_id).await;
+                                let _ = presence.update_presence(update, &default_tenant_id).await;
                             }
                         }
                     }

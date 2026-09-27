@@ -2,7 +2,7 @@
 //!
 //! Controls how the B2BUA forks outbound call attempts when multiple
 //! destinations are available. This is *policy-level* configuration that
-//! feeds into the runtime forking logic in `fcp_core::call_forking::CallForker`.
+//! feeds into the runtime forking logic in `fcp_sip`'s handler.
 //!
 //! - **PBX**: Parallel or sequential forking for ring groups
 //! - **SBC**: Single target (no forking, upstream routing decides)

@@ -1,7 +1,7 @@
 import { useState, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
-import { MoreHorizontal, Plus, ArrowUpDown, Pencil, Trash2, X, Voicemail } from 'lucide-react'
+import { MoreHorizontal, Plus, ArrowUpDown, Pencil, Trash2, X } from 'lucide-react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
@@ -54,19 +54,11 @@ const createSchema = z.object({
   owner_user_id: z.string().optional(),
   binding_type: z.string().min(1, 'Binding type is required'),
   ring_strategy: z.string().default('simultaneous'),
-  no_answer_timeout_secs: z.coerce.number().min(5).max(300).default(30),
   tenant_id: z.string().optional(),
 })
 
 const editSchema = z.object({
   ring_strategy: z.string().optional(),
-  no_answer_timeout_secs: z.coerce.number().min(5).max(300).optional(),
-  forward_on_busy: z.string().optional(),
-  forward_on_no_answer: z.string().optional(),
-  forward_unconditional: z.string().optional(),
-  vm_forward_unconditional: z.boolean().optional(),
-  vm_forward_on_busy: z.boolean().optional(),
-  vm_forward_on_no_answer: z.boolean().optional(),
   outbound_caller_id: z.string().optional(),
   outbound_cnam: z.string().optional(),
   tenant_id: z.string().optional(),
@@ -204,11 +196,6 @@ export function LineBindingsPage() {
       cell: ({ row }) => formatLabel(row.original.ring_strategy),
     },
     {
-      accessorKey: 'no_answer_timeout_secs',
-      header: 'Timeout',
-      cell: ({ row }) => `${row.original.no_answer_timeout_secs}s`,
-    },
-    {
       accessorKey: 'created_at',
       header: 'Created',
       cell: ({ row }) => formatDateTime(row.original.created_at),
@@ -261,7 +248,7 @@ export function LineBindingsPage() {
   const effectiveTenantId = useEffectiveTenantId()
   const createForm = useForm<CreateForm>({
     resolver: zodResolver(createSchema),
-    defaultValues: { binding_type: 'user', ring_strategy: 'simultaneous', no_answer_timeout_secs: 30, tenant_id: effectiveTenantId },
+    defaultValues: { binding_type: 'user', ring_strategy: 'simultaneous', tenant_id: effectiveTenantId },
   })
 
   const editForm = useForm<EditForm>({ resolver: zodResolver(editSchema) })
@@ -271,13 +258,6 @@ export function LineBindingsPage() {
     setLastEditId(editItem.id)
     editForm.reset({
       ring_strategy: editItem.ring_strategy,
-      no_answer_timeout_secs: editItem.no_answer_timeout_secs,
-      vm_forward_unconditional: editItem.forward_unconditional?.toLowerCase() === 'voicemail',
-      forward_unconditional: editItem.forward_unconditional?.toLowerCase() === 'voicemail' ? '' : (editItem.forward_unconditional || ''),
-      vm_forward_on_busy: editItem.forward_on_busy?.toLowerCase() === 'voicemail',
-      forward_on_busy: editItem.forward_on_busy?.toLowerCase() === 'voicemail' ? '' : (editItem.forward_on_busy || ''),
-      vm_forward_on_no_answer: editItem.forward_on_no_answer?.toLowerCase() === 'voicemail',
-      forward_on_no_answer: editItem.forward_on_no_answer?.toLowerCase() === 'voicemail' ? '' : (editItem.forward_on_no_answer || ''),
       outbound_caller_id: editItem.outbound_caller_id || '',
       outbound_cnam: editItem.outbound_cnam || '',
       tenant_id: editItem.tenant_id ?? '',
@@ -291,7 +271,6 @@ export function LineBindingsPage() {
       owner_user_id: data.owner_user_id || undefined,
       binding_type: data.binding_type,
       ring_strategy: data.ring_strategy,
-      no_answer_timeout_secs: data.no_answer_timeout_secs,
       devices: validDevices.length > 0 ? validDevices : undefined,
       flow_id: data.binding_type === 'ivr' && createFlowId ? createFlowId : undefined,
       tenant_id: data.tenant_id || undefined,
@@ -305,11 +284,7 @@ export function LineBindingsPage() {
       id: editItem.id,
       data: {
         ring_strategy: data.ring_strategy || undefined,
-        no_answer_timeout_secs: data.no_answer_timeout_secs,
         devices: validDevices,
-        forward_unconditional: data.vm_forward_unconditional ? 'voicemail' : (data.forward_unconditional || undefined),
-        forward_on_busy: data.vm_forward_on_busy ? 'voicemail' : (data.forward_on_busy || undefined),
-        forward_on_no_answer: data.vm_forward_on_no_answer ? 'voicemail' : (data.forward_on_no_answer || undefined),
         outbound_caller_id: data.outbound_caller_id || undefined,
         outbound_cnam: data.outbound_cnam || undefined,
         flow_id: editItem.binding_type === 'ivr' ? (editFlowId || undefined) : undefined,
@@ -385,7 +360,7 @@ export function LineBindingsPage() {
           <h1 className="text-3xl font-bold tracking-tight">Line Bindings</h1>
           <p className="text-muted-foreground">Bind phone numbers to users, devices, and call handling</p>
         </div>
-        <Button onClick={() => { createForm.reset({ binding_type: 'user', ring_strategy: 'simultaneous', no_answer_timeout_secs: 30, tenant_id: effectiveTenantId }); setCreateDevices([]); setCreateFlowId(''); setCreateBindingType('user'); setCreateOpen(true) }}>
+        <Button onClick={() => { createForm.reset({ binding_type: 'user', ring_strategy: 'simultaneous', tenant_id: effectiveTenantId }); setCreateDevices([]); setCreateFlowId(''); setCreateBindingType('user'); setCreateOpen(true) }}>
           <Plus className="mr-2 h-4 w-4" /> Add Binding
         </Button>
       </div>
@@ -472,11 +447,6 @@ export function LineBindingsPage() {
               </div>
             )}
 
-            <div className="space-y-2">
-              <Label htmlFor="c-timeout">No Answer Timeout (seconds)</Label>
-              <Input id="c-timeout" type="number" min="5" max="300" {...createForm.register('no_answer_timeout_secs')} />
-            </div>
-
             <div className="border-t pt-4 mt-2">
               <div className="flex items-center justify-between mb-3">
                 <h4 className="text-sm font-medium">Devices</h4>
@@ -555,11 +525,6 @@ export function LineBindingsPage() {
                   </SelectContent>
                 </Select>
               </div>
-              <div className="space-y-2">
-                <Label htmlFor="e-timeout">Timeout (seconds)</Label>
-                <Input id="e-timeout" type="number" min="5" max="300" {...editForm.register('no_answer_timeout_secs')} />
-                {editForm.formState.errors.no_answer_timeout_secs && <p className="text-sm text-destructive">{editForm.formState.errors.no_answer_timeout_secs.message}</p>}
-              </div>
             </div>
 
             <div className="border-t pt-4 mt-2">
@@ -582,77 +547,9 @@ export function LineBindingsPage() {
               )}
             </div>
 
-            <div className="border-t pt-4 mt-2">
-              <h4 className="text-sm font-medium mb-3">Call Forwarding</h4>
-              <div className="space-y-3">
-                <div className="space-y-2">
-                  <Label htmlFor="e-forward_unconditional">Forward Unconditional</Label>
-                  <label className="flex items-center gap-2 text-sm cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={editForm.watch('vm_forward_unconditional') || false}
-                      onChange={(e) => {
-                        editForm.setValue('vm_forward_unconditional', e.target.checked)
-                        if (e.target.checked) editForm.setValue('forward_unconditional', '')
-                      }}
-                    />
-                    <Voicemail className="h-4 w-4 text-muted-foreground" />
-                    Send to voicemail
-                  </label>
-                  <Input
-                    id="e-forward_unconditional"
-                    placeholder="Extension or SIP URI"
-                    disabled={editForm.watch('vm_forward_unconditional') || false}
-                    className={editForm.watch('vm_forward_unconditional') ? 'opacity-50' : ''}
-                    {...editForm.register('forward_unconditional')}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="e-forward_on_no_answer">Forward on No Answer</Label>
-                  <label className="flex items-center gap-2 text-sm cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={editForm.watch('vm_forward_on_no_answer') || false}
-                      onChange={(e) => {
-                        editForm.setValue('vm_forward_on_no_answer', e.target.checked)
-                        if (e.target.checked) editForm.setValue('forward_on_no_answer', '')
-                      }}
-                    />
-                    <Voicemail className="h-4 w-4 text-muted-foreground" />
-                    Send to voicemail
-                  </label>
-                  <Input
-                    id="e-forward_on_no_answer"
-                    placeholder="Extension or SIP URI"
-                    disabled={editForm.watch('vm_forward_on_no_answer') || false}
-                    className={editForm.watch('vm_forward_on_no_answer') ? 'opacity-50' : ''}
-                    {...editForm.register('forward_on_no_answer')}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="e-forward_on_busy">Forward on Busy</Label>
-                  <label className="flex items-center gap-2 text-sm cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={editForm.watch('vm_forward_on_busy') || false}
-                      onChange={(e) => {
-                        editForm.setValue('vm_forward_on_busy', e.target.checked)
-                        if (e.target.checked) editForm.setValue('forward_on_busy', '')
-                      }}
-                    />
-                    <Voicemail className="h-4 w-4 text-muted-foreground" />
-                    Send to voicemail
-                  </label>
-                  <Input
-                    id="e-forward_on_busy"
-                    placeholder="Extension or SIP URI"
-                    disabled={editForm.watch('vm_forward_on_busy') || false}
-                    className={editForm.watch('vm_forward_on_busy') ? 'opacity-50' : ''}
-                    {...editForm.register('forward_on_busy')}
-                  />
-                </div>
-              </div>
-            </div>
+            <p className="text-xs text-muted-foreground">
+              Forwarding and the ring time are the owner&apos;s calling settings, on the user&apos;s page.
+            </p>
 
             <div className="border-t pt-4 mt-2">
               <h4 className="text-sm font-medium mb-3">Outbound Caller ID</h4>

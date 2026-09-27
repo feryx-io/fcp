@@ -20,7 +20,9 @@ use sip_transaction::{
 use sip_uac::UserAgentClient;
 
 use crate::registrar::FcpRegistrar;
-use fcp_core::storage::{DeviceStore, ExtensionStore, LineBindingStore, PhoneNumberStore};
+use fcp_core::storage::{
+    CredentialStore, DeviceStore, ExtensionStore, LineBindingStore, PhoneNumberStore,
+};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, LazyLock};
@@ -954,6 +956,131 @@ impl FlowCallHandler {
                                                         }
                                                     }
                                                 }
+                                                fcp_core::ExtensionTarget::User(user_id) => {
+                                                    // The user's plan
+                                                    // (`docs/ENTERPRISE_CALLING.md` §3.1):
+                                                    // their first registered device rings;
+                                                    // a plan that forwards dials the target;
+                                                    // one that refuses is `busy`; one that
+                                                    // ends in voicemail is `no_answer`, for
+                                                    // the flow's own voicemail node.
+                                                    let host = self.local_uri.as_ref().map(|u| {
+                                                        match u.port() {
+                                                            Some(port) => {
+                                                                format!("{}:{}", u.host(), port)
+                                                            }
+                                                            None => u.host().to_string(),
+                                                        }
+                                                    });
+                                                    let contacts =
+                                                        crate::ring_plan::contacts_for_user(
+                                                            storage,
+                                                            registrar,
+                                                            &tenant_id,
+                                                            user_id,
+                                                            self.local_uri
+                                                                .as_ref()
+                                                                .map(|u| u.host())
+                                                                .unwrap_or(""),
+                                                        )
+                                                        .await;
+                                                    let settings = crate::ring_plan::settings_for(
+                                                        storage, &tenant_id, user_id,
+                                                    )
+                                                    .await;
+                                                    let has_mailbox =
+                                                        crate::ring_plan::has_mailbox(
+                                                            storage, user_id,
+                                                        )
+                                                        .await;
+                                                    use crate::ring_plan::RingPlan;
+                                                    use fcp_core::{CallTarget, Treatment};
+                                                    match crate::ring_plan::plan(
+                                                        &settings,
+                                                        contacts,
+                                                        has_mailbox,
+                                                    ) {
+                                                        RingPlan::Ring { contacts, .. } => {
+                                                            resolved = contacts.first().and_then(|c| {
+                                                                sip_core::SipUri::parse(&crate::ring_plan::contact_uri(c)).ok()
+                                                            });
+                                                            info!(a_leg_call_id = %a_leg_call_id, user_id = %user_id, resolved = ?resolved.as_ref().map(|u| u.as_str().to_string()), "Dial to a user: their plan rings");
+                                                        }
+                                                        RingPlan::Immediate {
+                                                            treatment: Treatment::Forward { target },
+                                                            reason,
+                                                        } => {
+                                                            info!(a_leg_call_id = %a_leg_call_id, user_id = %user_id, %target, reason, "Dial to a user: their plan forwards");
+                                                            let at = |user: String| {
+                                                                host.as_ref().and_then(|h| {
+                                                                    sip_core::SipUri::parse(
+                                                                        &format!("sip:{user}@{h}"),
+                                                                    )
+                                                                    .ok()
+                                                                })
+                                                            };
+                                                            resolved = match target {
+                                                                CallTarget::Extension(e) => at(e),
+                                                                CallTarget::Number(n) => at(n),
+                                                                CallTarget::Sip(u) => {
+                                                                    sip_core::SipUri::parse(&u).ok()
+                                                                }
+                                                                CallTarget::User(id) => {
+                                                                    match storage
+                                                                        .get_user_by_id(&id)
+                                                                        .await
+                                                                    {
+                                                                        Ok(Some(u)) => at(u
+                                                                            .extension
+                                                                            .unwrap_or(u.username)),
+                                                                        _ => None,
+                                                                    }
+                                                                }
+                                                                CallTarget::Voicemail => {
+                                                                    return self
+                                                                        .transition_with_status(
+                                                                            a_leg_call_id,
+                                                                            "no_answer",
+                                                                            destination,
+                                                                            on_no_answer
+                                                                                .unwrap_or(next),
+                                                                        )
+                                                                        .await;
+                                                                }
+                                                                CallTarget::Flow(_)
+                                                                | CallTarget::Queue(_) => None,
+                                                            };
+                                                        }
+                                                        RingPlan::Immediate {
+                                                            treatment: Treatment::Voicemail,
+                                                            reason,
+                                                        } => {
+                                                            info!(a_leg_call_id = %a_leg_call_id, user_id = %user_id, reason, "Dial to a user: their plan ends in voicemail");
+                                                            return self
+                                                                .transition_with_status(
+                                                                    a_leg_call_id,
+                                                                    "no_answer",
+                                                                    destination,
+                                                                    on_no_answer.unwrap_or(next),
+                                                                )
+                                                                .await;
+                                                        }
+                                                        RingPlan::Immediate {
+                                                            treatment: Treatment::Refuse { .. },
+                                                            reason,
+                                                        } => {
+                                                            info!(a_leg_call_id = %a_leg_call_id, user_id = %user_id, reason, "Dial to a user: their plan refuses");
+                                                            return self
+                                                                .transition_with_status(
+                                                                    a_leg_call_id,
+                                                                    "busy",
+                                                                    destination,
+                                                                    on_busy.unwrap_or(next),
+                                                                )
+                                                                .await;
+                                                        }
+                                                    }
+                                                }
                                                 other => {
                                                     debug!(
                                                         a_leg_call_id = %a_leg_call_id,
@@ -1762,6 +1889,30 @@ impl FlowCallHandler {
     }
 
     /// Helper: Transition to error node or next node on failure.
+    /// A `Dial` decided without a leg (the callee's plan refused or sent
+    /// the call to voicemail): the status as a leg's outcome would set it,
+    /// then the node the flow names for it.
+    async fn transition_with_status(
+        &self,
+        call_id: CallId,
+        status: &str,
+        destination: String,
+        next_node: String,
+    ) -> Result<()> {
+        let context_entry = self
+            .contexts
+            .get(&call_id)
+            .ok_or_else(|| anyhow::anyhow!("Flow context not found"))?;
+        let context = Arc::clone(context_entry.value());
+        drop(context_entry);
+        let mut context_guard = context.write().await;
+        context_guard.set_variable("dial_status".to_string(), status.to_string());
+        context_guard.set_variable("dial_destination".to_string(), destination);
+        context_guard.current_node = next_node;
+        drop(context_guard);
+        Box::pin(self.execute_next_node(call_id)).await
+    }
+
     async fn transition_to_error(
         &self,
         call_id: CallId,

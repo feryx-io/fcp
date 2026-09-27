@@ -14,7 +14,7 @@ use fcp_core::{
 };
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 use tracing::info;
 
 /// Helper macro to get storage or return error.
@@ -36,10 +36,6 @@ pub struct LineBindingResponse {
     pub devices: Vec<DeviceBindingResponse>,
     pub ring_strategy: String,
     pub tenant_id: String,
-    pub no_answer_timeout_secs: u64,
-    pub forward_on_busy: Option<String>,
-    pub forward_on_no_answer: Option<String>,
-    pub forward_unconditional: Option<String>,
     pub outbound_caller_id: Option<String>,
     pub outbound_cnam: Option<String>,
     pub flow_id: Option<String>,
@@ -91,10 +87,6 @@ impl From<LineBinding> for LineBindingResponse {
             devices: binding.devices.into_iter().map(|d| d.into()).collect(),
             ring_strategy: binding.ring_strategy.to_string(),
             tenant_id: binding.tenant_id.to_string(),
-            no_answer_timeout_secs: binding.no_answer_timeout.as_secs(),
-            forward_on_busy: binding.forward_on_busy,
-            forward_on_no_answer: binding.forward_on_no_answer,
-            forward_unconditional: binding.forward_unconditional,
             outbound_caller_id: binding.outbound_caller_id,
             outbound_cnam: binding.outbound_cnam,
             flow_id: binding.flow_id,
@@ -114,10 +106,6 @@ pub struct CreateLineBindingRequest {
     pub tenant_id: TenantId,
     pub devices: Option<Vec<DeviceBindingResponse>>,
     pub ring_strategy: Option<String>,
-    pub no_answer_timeout_secs: Option<u64>,
-    pub forward_on_busy: Option<String>,
-    pub forward_on_no_answer: Option<String>,
-    pub forward_unconditional: Option<String>,
     pub flow_id: Option<String>,
 }
 
@@ -142,10 +130,6 @@ fn ensure_line_binding_in_tenant(
 pub struct UpdateLineBindingRequest {
     pub devices: Option<Vec<DeviceBindingResponse>>,
     pub ring_strategy: Option<String>,
-    pub no_answer_timeout_secs: Option<u64>,
-    pub forward_on_busy: Option<String>,
-    pub forward_on_no_answer: Option<String>,
-    pub forward_unconditional: Option<String>,
     pub outbound_caller_id: Option<String>,
     pub outbound_cnam: Option<String>,
     pub flow_id: Option<String>,
@@ -266,13 +250,6 @@ pub async fn create_line_binding(
         binding.ring_strategy = parse_ring_strategy(&strategy)?;
     }
 
-    if let Some(timeout) = req.no_answer_timeout_secs {
-        binding.no_answer_timeout = Duration::from_secs(timeout);
-    }
-
-    binding.forward_on_busy = req.forward_on_busy;
-    binding.forward_on_no_answer = req.forward_on_no_answer;
-    binding.forward_unconditional = req.forward_unconditional;
     binding.flow_id = req.flow_id;
 
     // Store the line binding
@@ -336,22 +313,6 @@ pub async fn update_line_binding(
 
     if let Some(strategy) = req.ring_strategy {
         binding.ring_strategy = parse_ring_strategy(&strategy)?;
-    }
-
-    if let Some(timeout) = req.no_answer_timeout_secs {
-        binding.no_answer_timeout = Duration::from_secs(timeout);
-    }
-
-    if req.forward_on_busy.is_some() {
-        binding.forward_on_busy = req.forward_on_busy;
-    }
-
-    if req.forward_on_no_answer.is_some() {
-        binding.forward_on_no_answer = req.forward_on_no_answer;
-    }
-
-    if req.forward_unconditional.is_some() {
-        binding.forward_unconditional = req.forward_unconditional;
     }
 
     if req.outbound_caller_id.is_some() {
