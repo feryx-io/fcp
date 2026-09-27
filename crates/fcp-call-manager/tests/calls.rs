@@ -1061,8 +1061,13 @@ async fn dtmf_crosses_as_rfc_2833_and_as_info() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_blind_transfer_moves_the_caller_to_a_third_phone() {
-    let stack = stack_or_skip!();
+async fn a_relayed_blind_transfer_moves_the_caller_to_a_third_phone() {
+    // The REFER relayed to the far phone, as before the node carried
+    // transfers out itself (docs/ENTERPRISE_CALLING.md §3.2).
+    let Some(stack) = Stack::start_with("[b2bua.transfer]\nexecute = false\n", 40).await else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
     let (alice_phone, alice_call, bob_phone, bob_call) = answered_call(&stack).await;
     let carol = stack.seed.user("carol", "carol-pw", "1003").await;
     let carol_phone = stack.phone(&carol).await;

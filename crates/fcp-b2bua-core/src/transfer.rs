@@ -89,6 +89,13 @@ pub struct TransferConfig {
 
     /// Clean up the original dialog when a transfer fails.
     pub cleanup_on_failure: bool,
+
+    /// The B2BUA carries out a phone's REFER itself — dials the target,
+    /// moves the transferred party onto the new leg, parks it for a park
+    /// code — instead of relaying the REFER to the far phone
+    /// (`docs/ENTERPRISE_CALLING.md` §3.2). Off, the REFER is relayed as
+    /// before.
+    pub execute: bool,
 }
 
 impl Default for TransferConfig {
@@ -101,6 +108,7 @@ impl Default for TransferConfig {
             max_transfer_depth: 5,
             send_notify_progress: true,
             cleanup_on_failure: true,
+            execute: true,
         }
     }
 }
@@ -116,6 +124,7 @@ impl TransferConfig {
             max_transfer_depth: 3,
             send_notify_progress: true,
             cleanup_on_failure: true,
+            execute: true,
         }
     }
 
@@ -134,6 +143,7 @@ impl TransferConfig {
             max_transfer_depth: 0,
             send_notify_progress: false,
             cleanup_on_failure: false,
+            execute: true,
         }
     }
 

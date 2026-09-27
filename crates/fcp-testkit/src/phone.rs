@@ -937,6 +937,13 @@ impl Call {
     /// A re-INVITE with this direction attribute (`sendonly` to hold,
     /// `sendrecv` to resume), returning the status.
     pub async fn reinvite(&self, direction: &str) -> Result<u16> {
+        self.reinvite_answered(direction)
+            .await
+            .map(|(code, _)| code)
+    }
+
+    /// As [`Call::reinvite`], with the SDP the far end answered with.
+    pub async fn reinvite_answered(&self, direction: &str) -> Result<(u16, String)> {
         let mut dialog = self.dialog().await?;
         let sdp = self.state.media.sdp(direction);
         let resp = tokio::time::timeout(
@@ -947,14 +954,24 @@ impl Call {
         .context("re-INVITE timed out")??;
         *self.state.dialog.write().await = Some(dialog);
         let code = resp.start_line().code();
-        if (200..300).contains(&code) && !resp.body().is_empty() {
-            let _ = self
-                .state
-                .media
-                .set_remote(&String::from_utf8_lossy(resp.body()))
-                .await;
+        let answer = String::from_utf8_lossy(resp.body()).to_string();
+        if (200..300).contains(&code) && !answer.is_empty() {
+            let _ = self.state.media.set_remote(&answer).await;
         }
-        Ok(code)
+        Ok((code, answer))
+    }
+
+    /// This call's dialog as a `Replaces` value (RFC 3891): what another
+    /// INVITE, or a Refer-To, names it by.
+    pub async fn replaces(&self) -> Result<String> {
+        let dialog = self.dialog().await?;
+        let id = dialog.id();
+        Ok(format!(
+            "{};to-tag={};from-tag={}",
+            id.call_id(),
+            id.remote_tag(),
+            id.local_tag()
+        ))
     }
 
     pub async fn hold(&self) -> Result<u16> {

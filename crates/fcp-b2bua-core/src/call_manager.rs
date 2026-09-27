@@ -491,10 +491,12 @@ impl CallManager {
 
         // Capture old state for comparison
         let old_state = entry.state;
+        let old_held = entry.held;
 
         update_fn(entry.value_mut());
 
         let new_state = entry.state;
+        let new_held = entry.held;
         let updated_call = entry.value().clone();
 
         debug!(
@@ -514,6 +516,28 @@ impl CallManager {
                         call_id: fcp_core::CallId::from_uuid(*call_id.as_uuid()),
                         timestamp: std::time::SystemTime::now(),
                         node_id: node_id.clone(),
+                    }))
+                }
+                // Parked, and back from the orbit: not a second answer
+                // (`docs/ENTERPRISE_CALLING.md` §3.2).
+                (_, CallState::Parked) if old_state != CallState::Parked => {
+                    Some(PlatformEvent::Call(CallEvent::Parked {
+                        call_id: fcp_core::CallId::from_uuid(*call_id.as_uuid()),
+                        orbit: updated_call.parked_orbit.unwrap_or_default(),
+                        parker_extension: updated_call.parker_extension.clone().unwrap_or_default(),
+                        timestamp: std::time::SystemTime::now(),
+                    }))
+                }
+                (CallState::Parked, CallState::Established) => {
+                    Some(PlatformEvent::Call(CallEvent::Unparked {
+                        call_id: fcp_core::CallId::from_uuid(*call_id.as_uuid()),
+                        orbit: 0,
+                        retriever_extension: updated_call
+                            .b_leg
+                            .as_ref()
+                            .map(|b| b.remote_uri.clone())
+                            .unwrap_or_default(),
+                        timestamp: std::time::SystemTime::now(),
                     }))
                 }
                 // Answered: transition to Established
@@ -539,6 +563,30 @@ impl CallManager {
                 }
                 _ => None,
             };
+
+            let held_change = match (old_held, new_held) {
+                (None, Some(leg)) => Some(PlatformEvent::Call(CallEvent::Held {
+                    call_id: fcp_core::CallId::from_uuid(*call_id.as_uuid()),
+                    held_leg: leg.as_str().to_string(),
+                    timestamp: std::time::SystemTime::now(),
+                    node_id: node_id.clone(),
+                })),
+                (Some(leg), None) => Some(PlatformEvent::Call(CallEvent::Resumed {
+                    call_id: fcp_core::CallId::from_uuid(*call_id.as_uuid()),
+                    held_leg: leg.as_str().to_string(),
+                    timestamp: std::time::SystemTime::now(),
+                    node_id: node_id.clone(),
+                })),
+                _ => None,
+            };
+            if let Some(event) = held_change {
+                let events = Arc::clone(events);
+                tokio::spawn(async move {
+                    if let Err(e) = events.publish(event).await {
+                        tracing::error!(error = %e, "Failed to publish hold event");
+                    }
+                });
+            }
 
             if let Some(event) = should_publish {
                 let events = Arc::clone(events);
@@ -795,6 +843,42 @@ impl CallManager {
         self.calls.len()
     }
 
+    /// The call an in-dialog request belongs to: the leg whose dialog has
+    /// this Call-ID, the request's To tag as its local tag and its From tag
+    /// as its remote tag. A leg the node dials back into itself (a transfer,
+    /// a forward) is one dialog with a leg in two calls under one Call-ID,
+    /// and only the tags tell which end a request arrived at
+    /// (`docs/ENTERPRISE_CALLING.md` §3.2). Falls back to the Call-ID alone.
+    pub fn find_by_request_dialog(
+        &self,
+        dialog_call_id: &str,
+        to_tag: Option<&str>,
+        from_tag: Option<&str>,
+    ) -> Option<Call> {
+        if let (Some(to_tag), Some(from_tag)) = (to_tag, from_tag) {
+            let exact = self.calls.iter().find_map(|entry| {
+                let call = entry.value();
+                let legs = std::iter::once(call.a_leg.dialog.as_ref()).chain(std::iter::once(
+                    call.b_leg.as_ref().and_then(|b| b.dialog.as_ref()),
+                ));
+                for dialog in legs.flatten() {
+                    let id = dialog.id();
+                    if id.call_id() == dialog_call_id
+                        && id.local_tag() == to_tag
+                        && id.remote_tag() == from_tag
+                    {
+                        return Some(call.clone());
+                    }
+                }
+                None
+            });
+            if exact.is_some() {
+                return exact;
+            }
+        }
+        self.find_by_dialog_call_id(dialog_call_id)
+    }
+
     /// Find a call by dialog Call-ID.
     ///
     /// This is useful when receiving an in-dialog request (ACK, BYE) where
@@ -881,6 +965,30 @@ impl CallManager {
                         .unwrap_or(false)
             })
             .map(|entry| entry.value().clone())
+    }
+
+    /// An established call with `user` on either leg, and which leg: the
+    /// call a party dialing a feature code is on
+    /// (`docs/ENTERPRISE_CALLING.md` §3.2).
+    pub fn find_established_by_party(&self, user: &str) -> Option<(Call, crate::call::LegSide)> {
+        self.calls.iter().find_map(|entry| {
+            let call = entry.value();
+            if call.state != CallState::Established {
+                return None;
+            }
+            let is = |uri: &str| {
+                extract_user_from_uri(uri)
+                    .map(|u| u == user)
+                    .unwrap_or(false)
+            };
+            if is(&call.a_leg.remote_uri) {
+                Some((call.clone(), crate::call::LegSide::A))
+            } else if call.b_leg.as_ref().is_some_and(|b| is(&b.remote_uri)) {
+                Some((call.clone(), crate::call::LegSide::B))
+            } else {
+                None
+            }
+        })
     }
 
     /// Clean up terminated calls older than the specified duration.
