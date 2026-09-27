@@ -290,6 +290,42 @@ impl RouteTrunk {
     }
 }
 
+/// One of a call's two legs, by slot: A is the leg the call arrived on,
+/// B the leg it was placed on, until a transfer or a replacement moves
+/// another dialog into a slot (`docs/ENTERPRISE_CALLING.md` §3.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LegSide {
+    A,
+    B,
+}
+
+impl LegSide {
+    /// The side of a leg: `true` for A.
+    pub fn of(is_a_leg: bool) -> Self {
+        if is_a_leg {
+            Self::A
+        } else {
+            Self::B
+        }
+    }
+
+    /// The other leg.
+    pub fn other(self) -> Self {
+        match self {
+            Self::A => Self::B,
+            Self::B => Self::A,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::A => "a",
+            Self::B => "b",
+        }
+    }
+}
+
 /// A B2BUA call with two legs.
 #[derive(Clone)]
 pub struct Call {
@@ -445,6 +481,10 @@ pub struct Call {
     /// user's plan (a device, a trunk, a forward's own legs).
     pub treatments: Option<fcp_core::Treatments>,
 
+    /// The leg that is on hold: its far party sent `sendonly` or
+    /// `inactive`, or the node held it (a parked party).
+    pub held: Option<LegSide>,
+
     /// Caller's phone number or extension.
     pub caller_number: Option<String>,
 
@@ -547,6 +587,7 @@ impl Call {
             original_callee: None,
             callee_user_id: None,
             treatments: None,
+            held: None,
             caller_number: None,
             emergency: None,
         }
@@ -653,6 +694,7 @@ impl Call {
             original_callee: None,
             callee_user_id: None,
             treatments: None,
+            held: None,
             caller_number: None,
             emergency: None,
         }

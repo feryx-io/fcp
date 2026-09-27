@@ -1744,8 +1744,19 @@ impl FlowCallHandler {
                                     }
 
                                     // Add B-leg to the call in CallManager
+                                    // Under the call's lock: a caller who hung up
+                                    // as this leg answered found no leg to end,
+                                    // and this leg is ended here instead.
                                     let callee_uri = dest_uri.as_str().to_string();
+                                    let mut caller_gone = true;
                                     let _ = call_mgr.update_call(&a_leg_call_id, |call| {
+                                        if call.state.is_terminal()
+                                            || call.state
+                                                == fcp_b2bua_core::CallState::Terminating
+                                        {
+                                            return;
+                                        }
+                                        caller_gone = false;
                                         let mut b_leg = fcp_b2bua_core::CallLeg::new_outbound(
                                             callee_uri,
                                             None,
@@ -1753,6 +1764,30 @@ impl FlowCallHandler {
                                         b_leg.dialog = Some(dialog.clone());
                                         call.b_leg = Some(b_leg);
                                     });
+                                    if caller_gone {
+                                        info!(
+                                            a_leg_call_id = %a_leg_call_id,
+                                            "The caller hung up as the dialed leg answered; ending the leg"
+                                        );
+                                        let bye = UserAgentClient::new(
+                                            local_uri.clone(),
+                                            contact_uri.clone(),
+                                        )
+                                        .create_bye(&dialog);
+                                        if let Err(e) = transaction_manager
+                                            .start_client_transaction(
+                                                bye,
+                                                cancel_ctx.clone(),
+                                                Arc::new(PrackTransactionUser),
+                                            )
+                                            .await
+                                        {
+                                            warn!(a_leg_call_id = %a_leg_call_id, error = %e, "BYE to the dialed leg failed");
+                                        }
+                                        if let Some(ref dialog_mgr) = self.dialog_manager {
+                                            dialog_mgr.remove(dialog.id());
+                                        }
+                                    }
                                 } else {
                                     warn!(a_leg_call_id = %a_leg_call_id, "Failed to construct B-leg dialog from 200 OK");
                                 }

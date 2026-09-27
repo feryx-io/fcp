@@ -10,7 +10,7 @@ use fcp_core::{CallTarget, CallingSettings, CallingStore};
 use fcp_testkit::media::allocate_port_pair;
 use fcp_testkit::seed::SeededUser;
 use fcp_testkit::smoke::loopback;
-use fcp_testkit::{free_port, Phone, Seed, Service, TestDatabase};
+use fcp_testkit::{free_port, Phone, PhoneEvent, Seed, Service, TestDatabase};
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
@@ -27,6 +27,7 @@ struct Stack {
     db: Option<TestDatabase>,
     seed: Seed,
     sip: SocketAddr,
+    http: u16,
     /// Where the voicemail server would be: a testkit phone answers here.
     voicemail: SocketAddr,
     _dir: tempfile::TempDir,
@@ -35,6 +36,11 @@ struct Stack {
 impl Stack {
     /// `None` without a database to test against.
     async fn start() -> Option<Self> {
+        Self::start_with("").await
+    }
+
+    /// As [`Stack::start`], with `extra` TOML appended to the config.
+    async fn start_with(extra: &str) -> Option<Self> {
         let db = TestDatabase::create().await?;
         let seed = Seed::new(db.url(), REALM).await;
         let sip_port = free_port();
@@ -84,6 +90,8 @@ recording_dir = "{dir}/recordings"
 [logging]
 level = "info"
 format = "compact"
+
+{extra}
 "#,
             db = db.url(),
             rtp_end = rtp_start + 40,
@@ -96,6 +104,7 @@ format = "compact"
             db: Some(db),
             seed,
             sip: SocketAddr::from(([127, 0, 0, 1], sip_port)),
+            http,
             voicemail: SocketAddr::from(([127, 0, 0, 1], voicemail_port)),
             _dir: dir,
         })
@@ -172,6 +181,16 @@ format = "compact"
         storage.put_phone_number(number).await.expect("number");
         storage.put_line_binding(binding).await.expect("binding");
         storage.put_mailbox(mailbox).await.expect("mailbox");
+    }
+
+    /// The node's view of its calls (`GET /calls`).
+    async fn calls(&self) -> Vec<serde_json::Value> {
+        let (code, body) = fcp_testkit::smoke::http_get(&loopback(self.http, "/calls"))
+            .await
+            .expect("GET /calls");
+        assert_eq!(code, 200, "{body}");
+        let json: serde_json::Value = serde_json::from_str(&body).expect("calls JSON");
+        json["calls"].as_array().cloned().unwrap_or_default()
     }
 
     /// Give up: print the service's logs and what `phone` saw, then panic.
@@ -456,11 +475,13 @@ async fn a_flow_dials_a_user_and_the_user_answers() {
             .await;
     };
     let answered = at_bob.answer().await.unwrap();
-    // The caller hangs up. The leg a flow dialed is not ended with the
-    // caller's today (the emergency test tolerates the same); phase 2's
-    // work in the B2BUA is where that belongs.
+    // The caller hangs up; the leg the flow dialed ends with the call.
     call.hangup().await.unwrap();
-    let _ = answered.ended(SOON).await;
+    if !answered.ended(SOON).await {
+        stack
+            .fail("Bob's leg outlived the caller", &bob_phone)
+            .await;
+    }
 
     stack.calling(&bob, |s| s.dnd = true).await;
     let call = alice_phone.call("+15125550700").await.unwrap();
@@ -557,6 +578,331 @@ async fn feature_codes_change_the_callers_own_settings() {
     assert!(
         settings.forward_all.is_none() && !settings.dnd,
         "{settings:?}"
+    );
+    stack.finish().await;
+}
+
+// ─── Hold, transfer and pickup (docs/ENTERPRISE_CALLING.md §3.2) ─────────
+
+/// `caller` calls `callee`, who answers: both ends of the call.
+async fn answered(
+    stack: &Stack,
+    caller: &Phone,
+    callee: &SeededUser,
+    callee_phone: &Phone,
+) -> (fcp_testkit::Call, fcp_testkit::Call) {
+    let call = caller.call(&callee.extension).await.unwrap();
+    let Some(incoming) = callee_phone.incoming(SOON).await else {
+        stack.fail("the callee's phone did not ring", caller).await;
+    };
+    let answered = incoming.answer().await.unwrap();
+    call.answered(SOON).await.expect("answered");
+    (call, answered)
+}
+
+/// A Replaces value as a Refer-To URI header carries it.
+fn escaped(replaces: &str) -> String {
+    replaces
+        .replace('%', "%25")
+        .replace('@', "%40")
+        .replace(';', "%3B")
+        .replace('=', "%3D")
+}
+
+/// Wait until the node says the only call on it is held on `leg`.
+async fn held_as(stack: &Stack, leg: Option<&str>) -> Vec<serde_json::Value> {
+    let deadline = Instant::now() + SOON;
+    loop {
+        let calls = stack.calls().await;
+        let held: Vec<_> = calls.iter().map(|c| c["held"].as_str()).collect();
+        if held.contains(&leg) || Instant::now() > deadline {
+            return calls;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_node_knows_a_hold_and_answers_it_recvonly() {
+    let Some(stack) = Stack::start_with("[b2bua.media_anchoring]\nmode = \"Always\"\n").await
+    else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let bob = stack.seed.user("bob", "bob-pw", "1002").await;
+    let alice_phone = stack.phone(&alice).await;
+    let bob_phone = stack.phone(&bob).await;
+    let (alice_call, _bob_call) = answered(&stack, &alice_phone, &bob, &bob_phone).await;
+
+    // Alice holds Bob: the answer she gets is the node's, and it answers
+    // a hold (it used to be `sendrecv`, from her first INVITE).
+    let (code, answer) = alice_call.reinvite_answered("sendonly").await.unwrap();
+    assert_eq!(code, 200);
+    assert!(
+        answer.contains("a=recvonly"),
+        "the answer to a hold: {answer}"
+    );
+    let calls = held_as(&stack, Some("b")).await;
+    assert!(
+        calls.iter().any(|c| c["held"] == "b"),
+        "the node does not know Bob is held: {calls:#?}"
+    );
+
+    let (code, answer) = alice_call.reinvite_answered("sendrecv").await.unwrap();
+    assert_eq!(code, 200);
+    assert!(
+        !answer.contains("a=recvonly"),
+        "the answer to a resume: {answer}"
+    );
+    let calls = held_as(&stack, None).await;
+    assert!(
+        calls.iter().all(|c| c["held"].is_null()),
+        "the node still thinks a leg is held: {calls:#?}"
+    );
+    stack.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_node_carries_out_a_blind_transfer() {
+    let stack = stack_or_skip!();
+    let [(_, alice), (bob, bob_phone), (carol, carol_phone)] = three_phones(&stack).await;
+    let (alice_call, bob_call) = answered(&stack, &alice, &bob, &bob_phone).await;
+    assert_eq!(bob_call.hold().await.unwrap(), 200);
+
+    // Bob transfers Alice to Carol: the node dials Carol as Alice, and
+    // Alice's phone never sees the REFER.
+    let refer_to = format!("sip:{}@{}", carol.extension, stack.sip);
+    assert_eq!(bob_call.refer(&refer_to).await.unwrap(), 202);
+    let Some(at_carol) = carol_phone.incoming(SOON).await else {
+        stack
+            .fail("Carol's phone did not ring for the transfer", &bob_phone)
+            .await;
+    };
+    assert!(
+        at_carol.from.contains("alice"),
+        "Carol sees {}",
+        at_carol.from
+    );
+    let carol_call = at_carol.answer().await.unwrap();
+
+    let notified = bob_phone
+        .expect(
+            SOON,
+            |e| matches!(e, PhoneEvent::Notify { body, .. } if body.contains("200")),
+        )
+        .await;
+    assert!(
+        notified.is_some(),
+        "Bob was not told the transfer succeeded"
+    );
+    assert!(bob_call.ended(SOON).await, "Bob's leg was not dropped");
+    assert!(
+        alice
+            .expect(Duration::from_millis(500), |e| matches!(
+                e,
+                PhoneEvent::Refer { .. }
+            ))
+            .await
+            .is_none(),
+        "the REFER was relayed to Alice"
+    );
+
+    // Alice, on her own call still, hears Carol.
+    carol_call.media().play_tone(660.0, 3000);
+    assert!(
+        alice_call.media().heard(660, SOON).await,
+        "Alice does not hear Carol"
+    );
+    alice_call.hangup().await.unwrap();
+    assert!(
+        carol_call.ended(SOON).await,
+        "Carol's leg outlived the call"
+    );
+    stack.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_attended_transfer_joins_the_other_two() {
+    let stack = stack_or_skip!();
+    let [(_, alice), (bob, bob_phone), (carol, carol_phone)] = three_phones(&stack).await;
+    let alice = alice;
+    let (alice_call, bob_first) = answered(&stack, &alice, &bob, &bob_phone).await;
+    assert_eq!(bob_first.hold().await.unwrap(), 200);
+    let (bob_second, carol_call) = answered(&stack, &bob_phone, &carol, &carol_phone).await;
+
+    // Bob completes the transfer: Alice's call replaces his call to Carol.
+    let replaces = bob_second.replaces().await.unwrap();
+    let refer_to = format!(
+        "sip:{}@{}?Replaces={}",
+        carol.extension,
+        stack.sip,
+        escaped(&replaces)
+    );
+    assert_eq!(bob_first.refer(&refer_to).await.unwrap(), 202);
+    assert!(
+        bob_first.ended(RING_OUT).await,
+        "Bob's leg to Alice was not dropped"
+    );
+    assert!(
+        bob_second.ended(SOON).await,
+        "Bob's leg to Carol was not dropped"
+    );
+
+    carol_call.media().play_tone(880.0, 3000);
+    alice_call.media().play_tone(440.0, 3000);
+    assert!(
+        alice_call.media().heard(880, SOON).await,
+        "Alice does not hear Carol"
+    );
+    assert!(
+        carol_call.media().heard(440, SOON).await,
+        "Carol does not hear Alice"
+    );
+    alice_call.hangup().await.unwrap();
+    assert!(
+        carol_call.ended(SOON).await,
+        "Carol's leg outlived the call"
+    );
+    stack.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_call_parked_by_transfer_is_retrieved_from_its_orbit() {
+    let stack = stack_or_skip!();
+    let [(_, alice), (bob, bob_phone), (_carol, carol_phone)] = three_phones(&stack).await;
+    let (alice_call, bob_call) = answered(&stack, &alice, &bob, &bob_phone).await;
+    assert_eq!(bob_call.hold().await.unwrap(), 200);
+
+    // Bob parks Alice: a transfer to the park code.
+    assert_eq!(
+        bob_call
+            .refer(&format!("sip:*70@{}", stack.sip))
+            .await
+            .unwrap(),
+        202
+    );
+    assert!(bob_call.ended(SOON).await, "Bob's leg was not dropped");
+    let deadline = Instant::now() + SOON;
+    loop {
+        let calls = stack.calls().await;
+        if calls.iter().any(|c| c["state"] == "Parked") {
+            break;
+        }
+        if Instant::now() > deadline {
+            stack
+                .fail(&format!("no parked call: {calls:#?}"), &bob_phone)
+                .await;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        !alice_call.ended(Duration::from_millis(200)).await,
+        "Alice was hung up"
+    );
+
+    // Carol takes her from orbit 701.
+    let carol_call = carol_phone.call("*71701").await.unwrap();
+    if let Err(e) = carol_call.answered(SOON).await {
+        stack
+            .fail(&format!("the retrieve was not answered: {e}"), &carol_phone)
+            .await;
+    }
+    carol_call.media().play_tone(660.0, 3000);
+    assert!(
+        alice_call.media().heard(660, SOON).await,
+        "Alice does not hear Carol"
+    );
+    carol_call.hangup().await.unwrap();
+    assert!(
+        alice_call.ended(SOON).await,
+        "Alice's leg outlived the call"
+    );
+    stack.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_invite_with_replaces_takes_over_a_call() {
+    let stack = stack_or_skip!();
+    let [(_, alice), (bob, bob_phone), (_carol, carol_phone)] = three_phones(&stack).await;
+    let (alice_call, bob_call) = answered(&stack, &alice, &bob, &bob_phone).await;
+
+    // Carol's phone takes Bob's call from him.
+    let replaces = bob_call.replaces().await.unwrap();
+    let carol_call = carol_phone
+        .call_with_headers(&bob.extension, &[("Replaces", replaces.as_str())])
+        .await
+        .unwrap();
+    if let Err(e) = carol_call.answered(SOON).await {
+        stack
+            .fail(&format!("the Replaces was not answered: {e}"), &carol_phone)
+            .await;
+    }
+    assert!(bob_call.ended(SOON).await, "Bob's leg was not dropped");
+    carol_call.media().play_tone(660.0, 3000);
+    assert!(
+        alice_call.media().heard(660, SOON).await,
+        "Alice does not hear Carol"
+    );
+
+    // A dialog nobody holds is refused.
+    let stranger = carol_phone
+        .call_with_headers(
+            &bob.extension,
+            &[("Replaces", "nobody@host;to-tag=1;from-tag=2")],
+        )
+        .await
+        .unwrap();
+    assert_eq!(stranger.failed(SOON).await, Some(481));
+    alice_call.hangup().await.unwrap();
+    assert!(
+        carol_call.ended(SOON).await,
+        "Carol's leg outlived the call"
+    );
+    stack.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_parked_call_nobody_takes_rings_its_parker_again() {
+    let Some(stack) =
+        Stack::start_with("[pbx.parking]\nenabled = true\ntimeout_seconds = 2\n").await
+    else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let bob = stack.seed.user("bob", "bob-pw", "1002").await;
+    let alice_phone = stack.phone(&alice).await;
+    let bob_phone = stack.phone(&bob).await;
+    let (alice_call, bob_call) = answered(&stack, &alice_phone, &bob, &bob_phone).await;
+    assert_eq!(bob_call.hold().await.unwrap(), 200);
+    assert_eq!(
+        bob_call
+            .refer(&format!("sip:*70@{}", stack.sip))
+            .await
+            .unwrap(),
+        202
+    );
+    assert!(bob_call.ended(SOON).await, "Bob's leg was not dropped");
+
+    // Nobody retrieves it: after the orbit's time the call rings Bob, as
+    // Alice, through his own plan.
+    let Some(back) = bob_phone.incoming(RING_OUT).await else {
+        stack
+            .fail("the parked call did not come back to Bob", &bob_phone)
+            .await;
+    };
+    assert!(back.from.contains("alice"), "Bob sees {}", back.from);
+    let bob_again = back.answer().await.unwrap();
+    bob_again.media().play_tone(660.0, 3000);
+    assert!(
+        alice_call.media().heard(660, SOON).await,
+        "Alice does not hear Bob"
+    );
+    bob_again.hangup().await.unwrap();
+    assert!(
+        alice_call.ended(SOON).await,
+        "Alice's leg outlived the call"
     );
     stack.finish().await;
 }

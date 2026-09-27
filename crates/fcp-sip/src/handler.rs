@@ -3108,6 +3108,15 @@ impl SipMessageHandler {
         // Evaluate media anchoring decision
         self.evaluate_media_anchoring(request, &call_id).await;
 
+        // An INVITE that replaces a leg of a call this node holds: an
+        // attended transfer's second half, or a phone taking over a call
+        // (RFC 3891, `docs/ENTERPRISE_CALLING.md` §3.2).
+        if let Some(replaces) = sip_parse::header(request.headers(), "Replaces") {
+            return self
+                .handle_replaces(request, handle, &call_id, replaces.as_str())
+                .await;
+        }
+
         // Check if this is a PBX feature code (e.g., *8 pickup, *70 park, *81 intercom)
         if let Some(pbx) = &self.pbx_handler {
             if pbx.is_enabled() {
@@ -8770,11 +8779,8 @@ impl SipMessageHandler {
         let dialog_call_id = sip_parse::header(request.headers(), "Call-ID")
             .ok_or_else(|| anyhow::anyhow!("Missing Call-ID in ACK"))?;
 
-        // Find the call by dialog Call-ID
-        if let Some(call) = self
-            .call_manager
-            .find_by_dialog_call_id(dialog_call_id.as_str())
-        {
+        // Find the call by its dialog: Call-ID and tags.
+        if let Some(call) = self.call_for_request(request, dialog_call_id.as_str()) {
             info!(
                 call_id = %call.id,
                 dialog_call_id = %dialog_call_id,
@@ -8844,11 +8850,8 @@ impl SipMessageHandler {
         };
 
         // Now that we've responded, proceed with forwarding and cleanup
-        // Find the call by dialog Call-ID
-        if let Some(call) = self
-            .call_manager
-            .find_by_dialog_call_id(dialog_call_id.as_str())
-        {
+        // Find the call by its dialog: Call-ID and tags.
+        if let Some(call) = self.call_for_request(request, dialog_call_id.as_str()) {
             info!(
                 call_id = %call.id,
                 dialog_call_id = %dialog_call_id,
@@ -8956,17 +8959,38 @@ impl SipMessageHandler {
                 self.dialog_manager.remove(&dialog_id);
             }
 
-            // Check if both legs are now done (no more dialogs)
-            // If so, terminate the call and clean up
-            if let Some(updated_call) = self.call_manager.get_call(&call.id) {
-                let a_done = updated_call.a_leg.dialog.is_none();
-                let b_done = updated_call
+            // Check if both legs are now done (no more dialogs), and if so
+            // mark the call as ending — in one step, under the call's own
+            // lock: a leg a flow dialed may be answering this instant, and
+            // it either lands before this (and gets the BYE here) or sees
+            // the call ending and hangs itself up
+            // (`docs/ENTERPRISE_CALLING.md` §3.2).
+            let forwarded_to_b = is_a_leg
+                && call
                     .b_leg
                     .as_ref()
-                    .map(|b| b.dialog.is_none())
-                    .unwrap_or(true);
-
-                if a_done && b_done {
+                    .and_then(|b| b.dialog.as_ref())
+                    .is_some();
+            let mut late_b_leg = None;
+            let mut both_done = false;
+            let _ = self.call_manager.update_call(&call.id, |c| {
+                let b_dialog = c.b_leg.as_ref().and_then(|b| b.dialog.clone());
+                if is_a_leg && !forwarded_to_b && b_dialog.is_some() {
+                    late_b_leg =
+                        b_dialog.zip(Some(c.b_leg.as_ref().and_then(|b| b.flow_token.clone())));
+                    return;
+                }
+                if c.a_leg.dialog.is_none() && b_dialog.is_none() {
+                    both_done = true;
+                    c.state = fcp_b2bua_core::CallState::Terminating;
+                }
+            });
+            if let (Some((b_dialog, flow)), Some(uac)) = (late_b_leg, &self.uac) {
+                info!(call_id = %call.id, "A leg answered as the caller hung up; forwarding the BYE to it");
+                self.spawn_bye_with_retry(Arc::clone(uac), b_dialog, call.id, false, flow);
+            }
+            if let Some(updated_call) = self.call_manager.get_call(&call.id) {
+                if both_done {
                     info!(call_id = %call.id, "Both legs terminated, cleaning up call");
 
                     // Cleanup per-dialog state for remaining dialogs to prevent memory leaks
@@ -9016,8 +9040,7 @@ impl SipMessageHandler {
                     self.capture_rtp_stats(&call);
                     debug!(
                         call_id = %call.id,
-                        a_done = a_done,
-                        b_done = b_done,
+                        a_done = updated_call.a_leg.dialog.is_none(),
                         "Waiting for other leg to complete BYE"
                     );
                 }
@@ -9084,6 +9107,9 @@ impl SipMessageHandler {
             return Ok(resp);
         }
         let mut body = validate_sdp_body_static(request, prior_sdp)?;
+        // The sender's own offer, before any rewrite: what says whether it
+        // holds the far party, and what its answer answers.
+        let sender_offer = body.clone();
 
         // If media is anchored, rewrite SDP before forwarding to peer
         if call.media_anchored {
@@ -9250,57 +9276,29 @@ impl SipMessageHandler {
                         Ok(session) => {
                             let (rtp_port, _rtcp_port) = session.ports();
 
-                            // Construct answer for A-leg using A-leg's preferred codec
-                            // This is critical for transcoding: A-leg sees its preferred codec,
-                            // B-leg uses whatever it answered with, and the transcoder handles
-                            // conversion in the middle transparently
-                            let rewritten_sdp = if let Some(original_invite) =
-                                call.original_invite.as_ref()
-                            {
-                                if let Some(a_leg_offer) = crate::body::request_sdp(original_invite)
+                            // The answer to the sender's own offer: its codec
+                            // (the transcoder bridges the far leg's), and the
+                            // direction that answers its direction — `recvonly`
+                            // to a hold. It used to be built from the call's
+                            // first INVITE, which answered every hold
+                            // `sendrecv` (`docs/ENTERPRISE_CALLING.md` §1.2).
+                            let rewritten_sdp = match sender_offer.as_deref() {
+                                Some(offer)
+                                    if !fcp_media::sdp::parse_sdp_codecs(offer).is_empty() =>
                                 {
-                                    let a_leg_codecs =
-                                        fcp_media::sdp::parse_sdp_codecs(&a_leg_offer);
-                                    if let Some(preferred) = a_leg_codecs.first() {
-                                        // Construct answer using A-leg's preferred codec
-                                        let constructed_sdp = fcp_media::construct_answer_for_a_leg(
-                                            &a_leg_offer,
-                                            &self.local_addr,
-                                            rtp_port,
-                                            None,
-                                        );
-                                        info!(
-                                            call_id = %call.id,
-                                            a_leg_codec = %preferred.encoding_name,
-                                            "Constructed A-leg re-INVITE answer with preferred codec"
-                                        );
-                                        constructed_sdp
-                                    } else {
-                                        // Fallback: just rewrite the SDP
-                                        fcp_media::rewrite_sdp_for_anchoring(
-                                            &response_sdp,
-                                            &self.local_addr,
-                                            rtp_port,
-                                            None,
-                                        )
-                                    }
-                                } else {
-                                    // Fallback: just rewrite the SDP
-                                    fcp_media::rewrite_sdp_for_anchoring(
-                                        &response_sdp,
+                                    fcp_media::construct_answer_for_a_leg(
+                                        offer,
                                         &self.local_addr,
                                         rtp_port,
                                         None,
                                     )
                                 }
-                            } else {
-                                // Fallback: just rewrite the SDP
-                                fcp_media::rewrite_sdp_for_anchoring(
+                                _ => fcp_media::rewrite_sdp_for_anchoring(
                                     &response_sdp,
                                     &self.local_addr,
                                     rtp_port,
                                     None,
-                                )
+                                ),
                             };
 
                             info!(
@@ -9341,6 +9339,23 @@ impl SipMessageHandler {
         // Update stored SDP for originating leg if present
         if let Some(body) = body {
             store_leg_sdp(&self.call_manager, &call.id, is_a_leg, body);
+        }
+        // Which leg is on hold, once the far end took the offer.
+        if peer_resp.start_line().is_success() {
+            if let Some(offer) = sender_offer.as_deref() {
+                let sender = fcp_b2bua_core::LegSide::of(is_a_leg);
+                let held = if crate::hold::holds(offer) {
+                    Some(sender.other())
+                } else if call.held == Some(sender.other()) {
+                    None
+                } else {
+                    call.held
+                };
+                if held != call.held {
+                    info!(call_id = %call.id, ?held, "Hold changed");
+                    let _ = self.call_manager.update_call(&call.id, |c| c.held = held);
+                }
+            }
         }
         self.persist_updated_dialog(&call.id, !is_a_leg, target_dialog.clone());
         self.start_session_timer(&target_dialog);
@@ -10248,6 +10263,32 @@ impl SipMessageHandler {
             {
                 return Ok(self.start_conference_migration(request, &call, migration));
             }
+        }
+
+        // The B2BUA carries the transfer out itself
+        // (`docs/ENTERPRISE_CALLING.md` §3.2), after the same policy checks
+        // a relayed REFER passes.
+        if self.b2bua_config.transfer.execute {
+            if !self
+                .b2bua_config
+                .transfer
+                .is_allowed(fcp_b2bua_core::TransferType::Blind)
+                || !self.settings.allow_refer
+            {
+                warn!(call_id = %call.id, "REFER denied by the transfer policy");
+                return Ok(self.create_simple_response(request, 403, "Refer Not Allowed"));
+            }
+            if self.check_rate_limit(
+                "REFER",
+                src_dialog_id.as_ref().unwrap_or(target_dialog.id()),
+                self.b2bua_config.transfer.rate_limit_per_dialog,
+            ) {
+                warn!(call_id = %call.id, "REFER rate limited");
+                return Ok(self.create_simple_response(request, 429, "Too Many Requests"));
+            }
+            return Ok(self
+                .execute_refer(request, &call, is_a_leg, refer_to_raw.as_str())
+                .await);
         }
 
         // The transferred caller's phone copies the Refer-To's URI headers
@@ -11203,9 +11244,28 @@ impl SipMessageHandler {
             None => return false,
         };
 
-        self.call_manager
-            .find_by_dialog_call_id(call_id.as_str())
-            .is_some()
+        self.call_for_request(request, call_id.as_str()).is_some()
+    }
+
+    /// The call an in-dialog request belongs to, by its Call-ID and tags
+    /// (`CallManager::find_by_request_dialog`).
+    fn call_for_request(
+        &self,
+        request: &sip_core::Request,
+        dialog_call_id: &str,
+    ) -> Option<fcp_b2bua_core::Call> {
+        let tag = |name: &str| {
+            sip_parse::header(request.headers(), name).and_then(|h| {
+                h.as_str()
+                    .split(';')
+                    .find_map(|p| p.trim().strip_prefix("tag=").map(str::to_string))
+            })
+        };
+        self.call_manager.find_by_request_dialog(
+            dialog_call_id,
+            tag("To").as_deref(),
+            tag("From").as_deref(),
+        )
     }
 
     /// Find call and which leg the request belongs to.
@@ -11217,8 +11277,7 @@ impl SipMessageHandler {
             .ok_or_else(|| anyhow::anyhow!("Missing Call-ID"))?;
 
         let call = self
-            .call_manager
-            .find_by_dialog_call_id(dialog_call_id.as_str())
+            .call_for_request(request, dialog_call_id.as_str())
             .ok_or_else(|| anyhow::anyhow!("Dialog not found"))?;
 
         let is_a_leg = call
@@ -12181,6 +12240,522 @@ impl SipMessageHandler {
         Ok(())
     }
 
+    /// Carry out a REFER (`docs/ENTERPRISE_CALLING.md` §3.2): a park code
+    /// parks the transferred party; any other target is dialed on the
+    /// transferred party's behalf, in the background, with the outcome
+    /// NOTIFYed to the referrer.
+    async fn execute_refer(
+        &self,
+        request: &sip_core::Request,
+        call: &fcp_b2bua_core::Call,
+        is_a_leg: bool,
+        refer_to: &str,
+    ) -> sip_core::Response {
+        let referrer = fcp_b2bua_core::LegSide::of(is_a_leg);
+        if call.state != fcp_b2bua_core::CallState::Established {
+            return self.create_simple_response(request, 491, "Request Pending");
+        }
+        let Some(target) = crate::transfer::parse_refer_to(refer_to) else {
+            return self.create_simple_response(request, 400, "Bad Refer-To");
+        };
+        let Some(uac) = self.uac.clone() else {
+            return self.create_simple_response(request, 500, "No UAC Configured");
+        };
+        let referrer_dialog = match referrer {
+            fcp_b2bua_core::LegSide::A => call.a_leg.dialog.clone(),
+            fcp_b2bua_core::LegSide::B => call.b_leg.as_ref().and_then(|b| b.dialog.clone()),
+        };
+        let Some(referrer_dialog) = referrer_dialog else {
+            return self.create_simple_response(request, 481, "Call/Transaction Does Not Exist");
+        };
+
+        // A park code: the transferred party waits in an orbit.
+        if target.replaces.is_none() {
+            if let Some(pbx) = self.pbx_handler.as_ref().filter(|p| p.is_enabled()) {
+                if matches!(
+                    pbx.parse_feature_code(&target.user),
+                    Some(fcp_pbx::FeatureCodeAction::ParkCall)
+                ) {
+                    let parker = match referrer {
+                        fcp_b2bua_core::LegSide::A => call.a_leg.remote_uri.clone(),
+                        fcp_b2bua_core::LegSide::B => call
+                            .b_leg
+                            .as_ref()
+                            .map(|b| b.remote_uri.clone())
+                            .unwrap_or_default(),
+                    };
+                    let parker = user_of_uri(&parker).unwrap_or_default();
+                    return match self.park_party(pbx, call, referrer, &parker).await {
+                        Ok(orbit) => {
+                            info!(call_id = %call.id, orbit, parker = %parker, "Parked by transfer");
+                            let local_uri = self.uas.local_uri.clone();
+                            let mut dialog = referrer_dialog.clone();
+                            let flow = match referrer {
+                                fcp_b2bua_core::LegSide::A => call.a_leg.flow_token.clone(),
+                                fcp_b2bua_core::LegSide::B => {
+                                    call.b_leg.as_ref().and_then(|b| b.flow_token.clone())
+                                }
+                            };
+                            let drop = self.leg_dropper(referrer_dialog, flow);
+                            let call_id = call.id;
+                            tokio::spawn(async move {
+                                if let Err(e) = crate::conference_migration::report_refer_outcome(
+                                    &uac,
+                                    &local_uri,
+                                    &mut dialog,
+                                    200,
+                                    "OK",
+                                )
+                                .await
+                                {
+                                    warn!(call_id = %call_id, error = %e, "The park's NOTIFY was not delivered");
+                                }
+                                drop.await;
+                            });
+                            self.create_simple_response(request, 202, "Accepted")
+                        }
+                        Err(e) => {
+                            warn!(call_id = %call.id, error = %e, "Park by transfer failed");
+                            self.create_simple_response(request, 503, "No Parking Orbits Available")
+                        }
+                    };
+                }
+            }
+        }
+
+        if self.conference_migrations.insert(call.id, ()).is_some() {
+            return self.create_simple_response(request, 491, "Request Pending");
+        }
+        let host = match self.uas.local_uri.port() {
+            Some(port) => format!("{}:{}", self.uas.local_uri.host(), port),
+            None => self.uas.local_uri.host().to_string(),
+        };
+        let mut headers = vec![(TRANSFERRED_FROM_HEADER.to_string(), call.id.to_string())];
+        if let Some(replaces) = &target.replaces {
+            headers.push(("Replaces".to_string(), replaces.clone()));
+        }
+        // The target sees the transferred party calling.
+        let caller = call
+            .original_invite
+            .as_ref()
+            .and_then(|invite| match referrer {
+                fcp_b2bua_core::LegSide::B => extract_from_uri(invite)
+                    .ok()
+                    .map(|uri| (extract_from_display_name(invite), normalize_from_uri(uri))),
+                fcp_b2bua_core::LegSide::A => sip_parse::header(invite.headers(), "To")
+                    .and_then(|to| {
+                        let to = to.as_str();
+                        let uri = match (to.find('<'), to.find('>')) {
+                            (Some(a), Some(b)) if a < b => &to[a + 1..b],
+                            _ => to.split(';').next().unwrap_or(to),
+                        };
+                        sip_core::SipUri::parse(uri.trim()).ok()
+                    })
+                    .map(|uri| (None, uri)),
+            });
+        info!(
+            call_id = %call.id,
+            referrer = referrer.as_str(),
+            target = %target.user,
+            attended = target.replaces.is_some(),
+            "Carrying out a transfer"
+        );
+        let run = crate::transfer::TransferRun {
+            uac,
+            local_uri: self.uas.local_uri.clone(),
+            call_manager: self.call_manager.clone(),
+            dialog_manager: Arc::clone(&self.dialog_manager),
+            session_timer_manager: Arc::clone(&self.session_timer_manager),
+            media_manager: self.media_manager.clone(),
+            sip_call_id_map: Arc::clone(&self.sip_call_id_map),
+            in_flight: Arc::clone(&self.conference_migrations),
+            b2bua_config: self.b2bua_config.clone(),
+            local_addr: self.local_addr.clone(),
+            call_id: call.id,
+            referrer,
+            referrer_dialog: Some(referrer_dialog),
+            target: format!("sip:{}@{}", target.user, host),
+            headers,
+            caller,
+        };
+        tokio::spawn(run.run());
+        self.create_simple_response(request, 202, "Accepted")
+    }
+
+    /// Park the party on the other side of `parker`: an orbit taken, the
+    /// parked party moved into the A slot (the retriever takes B), the call
+    /// marked parked. The parker's leg is left for the caller to drop.
+    async fn park_party(
+        &self,
+        pbx: &fcp_pbx::PbxHandler,
+        call: &fcp_b2bua_core::Call,
+        parker: fcp_b2bua_core::LegSide,
+        parker_ext: &str,
+    ) -> Result<u16> {
+        let orbit = pbx
+            .park_call(call.id, parker_ext.to_string(), call.tenant_id)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        if let Some(ref cluster_parking) = self.cluster_parking {
+            let info = fcp_core::ClusterParkedCall {
+                call_id: call.id.to_string(),
+                node_id: self.node_id.clone(),
+                parker_extension: parker_ext.to_string(),
+                tenant_id: call.tenant_id.to_string(),
+                parked_at_unix: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs(),
+            };
+            let timeout_secs = pbx.parking_manager().config().timeout_seconds;
+            let cp = Arc::clone(cluster_parking);
+            tokio::spawn(async move {
+                if let Err(e) = cp.cluster_park(orbit, info, timeout_secs).await {
+                    warn!(orbit = orbit, error = %e, "Failed to write parked call to cluster store");
+                }
+            });
+        }
+        let parked = parker.other();
+        let was_held = call.held == Some(parked);
+        // The parked party goes to the A slot; its media side follows.
+        if parker == fcp_b2bua_core::LegSide::A {
+            if let (true, Some(session_id), Some(media_manager), Some(sdp)) = (
+                call.media_anchored,
+                call.media_session_id,
+                self.media_manager.as_ref(),
+                call.b_leg.as_ref().and_then(|b| b.sdp.clone()),
+            ) {
+                if let Err(e) = media_manager.update_session(&session_id, sdp).await {
+                    warn!(call_id = %call.id, error = %e, "Parked party's media not moved to the A side");
+                }
+            }
+        }
+        let parker_dialog_id = match parker {
+            fcp_b2bua_core::LegSide::A => call.a_leg.dialog.as_ref().map(|d| d.id().clone()),
+            fcp_b2bua_core::LegSide::B => call
+                .b_leg
+                .as_ref()
+                .and_then(|b| b.dialog.as_ref().map(|d| d.id().clone())),
+        };
+        let parker_ext = parker_ext.to_string();
+        self.call_manager.update_call(&call.id, |c| {
+            if parker == fcp_b2bua_core::LegSide::A {
+                if let Some(b) = c.b_leg.take() {
+                    c.a_leg = b;
+                }
+            } else {
+                c.b_leg = None;
+            }
+            c.held = was_held.then_some(fcp_b2bua_core::LegSide::A);
+            c.park(orbit, parker_ext.clone());
+        })?;
+        if let Some(id) = parker_dialog_id {
+            self.sip_call_id_map.remove(id.call_id());
+        }
+        Ok(orbit)
+    }
+
+    /// Drop a leg no call holds any more: its timer stopped, its dialog
+    /// forgotten, a BYE sent (down its flow when it has one). Unlike
+    /// `spawn_bye_with_retry` it touches no call: the slot it was in may
+    /// already hold another leg.
+    fn drop_leg(&self, dialog: sip_dialog::Dialog, flow_token: Option<String>) {
+        tokio::spawn(self.leg_dropper(dialog, flow_token));
+    }
+
+    fn leg_dropper(
+        &self,
+        dialog: sip_dialog::Dialog,
+        flow_token: Option<String>,
+    ) -> impl std::future::Future<Output = ()> + Send + 'static {
+        let uac = self.uac.clone();
+        let flow = flow_token.and_then(|t| self.flow_registry.lookup(&t));
+        self.session_timer_manager.stop_timer(dialog.id());
+        self.dialog_manager.remove(dialog.id());
+        async move {
+            let Some(uac) = uac else { return };
+            let sent = match flow {
+                Some(flow) => {
+                    tokio::time::timeout(
+                        Duration::from_secs(10),
+                        uac.bye_via_flow(&dialog, flow.stream, flow.peer_addr),
+                    )
+                    .await
+                }
+                None => tokio::time::timeout(Duration::from_secs(10), uac.bye(&dialog)).await,
+            };
+            match sent {
+                Ok(Ok(_)) => debug!(dialog = ?dialog.id(), "Dropped a leg"),
+                Ok(Err(e)) => {
+                    debug!(dialog = ?dialog.id(), error = %e, "BYE to a dropped leg failed")
+                }
+                Err(_) => debug!(dialog = ?dialog.id(), "BYE to a dropped leg timed out"),
+            }
+        }
+    }
+
+    /// An INVITE with `Replaces` (RFC 3891): it takes the named leg's
+    /// place, and the named leg is dropped.
+    async fn handle_replaces(
+        &self,
+        request: &sip_core::Request,
+        handle: &ServerTransactionHandle,
+        call_id: &fcp_b2bua_core::CallId,
+        replaces: &str,
+    ) -> Result<()> {
+        let refuse = |code: u16, reason: &'static str, why: String| async move {
+            info!(call_id = %call_id, code, why = %why, "INVITE with Replaces refused");
+            let response = self.create_simple_response(request, code, reason);
+            handle.send_final(response).await;
+            let _ = self
+                .call_manager
+                .terminate_call(call_id, Some(format!("{code} {why}")));
+            Ok(())
+        };
+        let (call, side, old_dialog) =
+            match crate::transfer::replaced_leg(&self.call_manager, replaces) {
+                Ok(found) => found,
+                Err(e) => {
+                    return refuse(481, "Call/Transaction Does Not Exist", e.to_string()).await
+                }
+            };
+        let tenant = self.call_manager.get_call(call_id).map(|c| c.tenant_id);
+        if tenant != Some(call.tenant_id) {
+            return refuse(
+                481,
+                "Call/Transaction Does Not Exist",
+                "another tenant's call".into(),
+            )
+            .await;
+        }
+        if call.id == *call_id {
+            return refuse(482, "Loop Detected", "a call cannot replace itself".into()).await;
+        }
+        if call.state != fcp_b2bua_core::CallState::Established {
+            // An early dialog (a ringing phone) is picked up with the
+            // pickup codes; `early-only` asks for exactly that.
+            return refuse(486, "Busy Here", format!("the call is {:?}", call.state)).await;
+        }
+        let flow = match side {
+            fcp_b2bua_core::LegSide::A => call.a_leg.flow_token.clone(),
+            fcp_b2bua_core::LegSide::B => call.b_leg.as_ref().and_then(|b| b.flow_token.clone()),
+        };
+        self.take_over_leg(
+            request,
+            handle,
+            call_id,
+            &call,
+            side,
+            Some((old_dialog, flow)),
+            "Replaces",
+        )
+        .await
+    }
+
+    /// The INVITE `request` (whose own call is `feature_call_id`) takes
+    /// slot `side` of `call`: the party on the other side is pointed at it
+    /// — the media session's side moved when anchored, a re-INVITE when
+    /// not, and off hold — the INVITE answered, the old leg (if any)
+    /// dropped, and the INVITE's own call ended as completed, pointing at
+    /// the call it joined (`docs/ENTERPRISE_CALLING.md` §3.2).
+    #[allow(clippy::too_many_arguments)]
+    async fn take_over_leg(
+        &self,
+        request: &sip_core::Request,
+        handle: &ServerTransactionHandle,
+        feature_call_id: &fcp_b2bua_core::CallId,
+        call: &fcp_b2bua_core::Call,
+        side: fcp_b2bua_core::LegSide,
+        old: Option<(sip_dialog::Dialog, Option<String>)>,
+        label: &str,
+    ) -> Result<()> {
+        let fail = |code: u16, reason: &'static str, why: String| async move {
+            warn!(call_id = %call.id, code, error = %why, "{label} failed");
+            let response = self.create_simple_response(request, code, reason);
+            handle.send_final(response).await;
+            let _ = self
+                .call_manager
+                .terminate_call(feature_call_id, Some(format!("{label} failed: {why}")));
+            Ok(())
+        };
+        let party = side.other();
+        let party_leg = match party {
+            fcp_b2bua_core::LegSide::A => Some(call.a_leg.clone()),
+            fcp_b2bua_core::LegSide::B => call.b_leg.clone(),
+        };
+        let Some(party_leg) = party_leg else {
+            return fail(
+                481,
+                "Call/Transaction Does Not Exist",
+                "no party to join".into(),
+            )
+            .await;
+        };
+        let Some(mut party_dialog) = party_leg.dialog.clone() else {
+            return fail(
+                481,
+                "Call/Transaction Does Not Exist",
+                "the party has no dialog".into(),
+            )
+            .await;
+        };
+        let Some(offer) = crate::body::request_sdp(request) else {
+            return fail(
+                488,
+                "Not Acceptable Here",
+                "an INVITE without an offer".into(),
+            )
+            .await;
+        };
+        let Some(uac) = self.uac.clone() else {
+            return fail(500, "Server Internal Error", "no UAC".into()).await;
+        };
+        let party_sdp = party_leg.sdp.clone().unwrap_or_default();
+        let held = call.held == Some(party);
+
+        let anchored = call
+            .media_anchored
+            .then_some(call.media_session_id)
+            .flatten()
+            .zip(self.media_manager.clone());
+        let (answer, party_sdp_now) = match anchored {
+            Some((session_id, media_manager)) => {
+                let moved = match side {
+                    fcp_b2bua_core::LegSide::A => media_manager
+                        .update_session(&session_id, offer.clone())
+                        .await
+                        .map(|_| ()),
+                    fcp_b2bua_core::LegSide::B => {
+                        media_manager
+                            .update_session_b_leg(&session_id, offer.clone())
+                            .await
+                    }
+                };
+                if let Err(e) = moved {
+                    return fail(503, "Service Unavailable", format!("media session: {e}")).await;
+                }
+                let port = match media_manager.get_session(&session_id).await {
+                    Ok(session) => session.ports().0,
+                    Err(e) => {
+                        return fail(503, "Service Unavailable", format!("media session: {e}"))
+                            .await
+                    }
+                };
+                if held {
+                    let resume = crate::hold::with_direction(
+                        &fcp_media::rewrite_sdp_for_anchoring(
+                            &party_sdp,
+                            &self.local_addr,
+                            port,
+                            None,
+                        ),
+                        "sendrecv",
+                    );
+                    match uac.send_reinvite(&mut party_dialog, Some(&resume)).await {
+                        Ok(r) if r.start_line().is_success() => {}
+                        Ok(r) => {
+                            warn!(call_id = %call.id, status = r.start_line().code(), "The party refused to come off hold")
+                        }
+                        Err(e) => {
+                            warn!(call_id = %call.id, error = %e, "The re-INVITE taking the party off hold failed")
+                        }
+                    }
+                }
+                (
+                    fcp_media::construct_answer_for_a_leg(&offer, &self.local_addr, port, None),
+                    party_sdp,
+                )
+            }
+            None => {
+                let to_party = crate::hold::with_direction(&offer, "sendrecv");
+                match uac.send_reinvite(&mut party_dialog, Some(&to_party)).await {
+                    Ok(r) if r.start_line().is_success() && !r.body().is_empty() => {
+                        let answered = String::from_utf8_lossy(r.body()).to_string();
+                        (answered.clone(), answered)
+                    }
+                    Ok(r) => {
+                        return fail(
+                            488,
+                            "Not Acceptable Here",
+                            format!("the party answered {}", r.start_line().code()),
+                        )
+                        .await
+                    }
+                    Err(e) => {
+                        return fail(503, "Service Unavailable", format!("re-INVITE: {e}")).await
+                    }
+                }
+            }
+        };
+
+        let response = self.build_final_ok_response(request, None, Some(&answer))?;
+        let new_dialog = self.build_inbound_dialog(request, &response)?;
+        let leg = self.build_pickup_leg(request, new_dialog.clone());
+        let party_dialog_for_call = party_dialog.clone();
+        let updated = self.call_manager.update_call(&call.id, |c| {
+            match side {
+                fcp_b2bua_core::LegSide::A => {
+                    c.a_leg = leg.clone();
+                    if let Some(b) = c.b_leg.as_mut() {
+                        b.dialog = Some(party_dialog_for_call.clone());
+                        b.sdp = Some(party_sdp_now.clone());
+                    }
+                }
+                fcp_b2bua_core::LegSide::B => {
+                    c.b_leg = Some(leg.clone());
+                    c.a_leg.dialog = Some(party_dialog_for_call.clone());
+                    c.a_leg.sdp = Some(party_sdp_now.clone());
+                }
+            }
+            c.held = None;
+            if c.state == fcp_b2bua_core::CallState::Parked {
+                c.unpark();
+            }
+        });
+        if updated.is_err() {
+            return fail(
+                481,
+                "Call/Transaction Does Not Exist",
+                "the call ended".into(),
+            )
+            .await;
+        }
+        let _ = self.dialog_manager.insert(party_dialog.clone());
+        let _ = self.dialog_manager.insert(new_dialog.clone());
+        self.start_session_timer(&new_dialog);
+        self.sip_call_id_map
+            .insert(new_dialog.id().call_id().to_string(), call.id.to_string());
+        handle.send_final(response).await;
+        if let Some((old_dialog, flow)) = old {
+            self.sip_call_id_map.remove(old_dialog.id().call_id());
+            self.drop_leg(old_dialog, flow);
+        }
+
+        // The INVITE's own call: its media session (if it made one) freed,
+        // its record pointing at the call it joined.
+        if let Some(own) = self.call_manager.get_call(feature_call_id) {
+            if let (true, Some(session_id), Some(media_manager)) = (
+                own.media_anchored,
+                own.media_session_id,
+                self.media_manager.as_ref(),
+            ) {
+                if Some(session_id) != call.media_session_id {
+                    let _ = media_manager.terminate_session(&session_id).await;
+                }
+            }
+        }
+        let _ = self.call_manager.update_call(feature_call_id, |c| {
+            c.correlation_id = Some(fcp_core::CallId::from_uuid(*call.id.as_uuid()));
+        });
+        let _ = self.call_manager.terminate_call_with(
+            feature_call_id,
+            fcp_cdr::TerminationReason::Completed {
+                detail: format!("{label} completed"),
+            },
+        );
+        info!(call_id = %call.id, side = side.as_str(), label, "A leg taken over");
+        Ok(())
+    }
+
     /// Handle park call (*70): park the current call in the next available orbit.
     ///
     /// 1. Find the caller's active (Established) call via `find_established_by_caller`
@@ -12207,28 +12782,38 @@ impl SipMessageHandler {
             .and_then(|from| Self::extract_did_from_uri(from.as_str()))
             .unwrap_or_default();
 
-        // Find the caller's active (Established) call
-        let active_call = match self.call_manager.find_established_by_caller(&caller_ext) {
-            Some(c) => c,
-            None => {
-                info!(call_id = %call_id, caller = %caller_ext, "Park: no active call found for caller");
-                let response = self.create_simple_response(request, 480, "No Active Call");
-                handle.send_final(response).await;
-                let _ = self
-                    .call_manager
-                    .terminate_call(call_id, Some("Park: no active call".to_string()));
-                return Ok(());
-            }
+        // The dialer's established call, on either leg: the party at the
+        // other end is parked, the dialer's own leg dropped
+        // (`docs/ENTERPRISE_CALLING.md` §3.2).
+        let Some((active_call, parker_side)) =
+            self.call_manager.find_established_by_party(&caller_ext)
+        else {
+            info!(call_id = %call_id, caller = %caller_ext, "Park: no active call found for caller");
+            let response = self.create_simple_response(request, 480, "No Active Call");
+            handle.send_final(response).await;
+            let _ = self
+                .call_manager
+                .terminate_call(call_id, Some("Park: no active call".to_string()));
+            return Ok(());
         };
-
-        let active_call_id = active_call.id;
-        let tenant_id = active_call.tenant_id;
-
-        // Park the active call in the PBX parking manager
-        let orbit = match pbx.park_call(active_call_id, caller_ext.clone(), tenant_id) {
-            Ok(o) => o,
+        let parker_dialog = match parker_side {
+            fcp_b2bua_core::LegSide::A => active_call.a_leg.dialog.clone(),
+            fcp_b2bua_core::LegSide::B => active_call.b_leg.as_ref().and_then(|b| b.dialog.clone()),
+        };
+        let parker_flow = match parker_side {
+            fcp_b2bua_core::LegSide::A => active_call.a_leg.flow_token.clone(),
+            fcp_b2bua_core::LegSide::B => active_call
+                .b_leg
+                .as_ref()
+                .and_then(|b| b.flow_token.clone()),
+        };
+        let orbit = match self
+            .park_party(pbx, &active_call, parker_side, &caller_ext)
+            .await
+        {
+            Ok(orbit) => orbit,
             Err(e) => {
-                warn!(call_id = %active_call_id, error = %e, "Failed to park call");
+                warn!(call_id = %active_call.id, error = %e, "Failed to park call");
                 let response =
                     self.create_simple_response(request, 503, "No Parking Orbits Available");
                 handle.send_final(response).await;
@@ -12238,86 +12823,8 @@ impl SipMessageHandler {
                 return Ok(());
             }
         };
-
-        info!(
-            call_id = %active_call_id,
-            orbit = orbit,
-            parker = %caller_ext,
-            "Call parked in orbit"
-        );
-
-        // Dual-write to cluster parking store (Redis) for cross-node pickup
-        if let Some(ref cluster_parking) = self.cluster_parking {
-            let info = fcp_core::ClusterParkedCall {
-                call_id: active_call_id.to_string(),
-                node_id: self.node_id.clone(),
-                parker_extension: caller_ext.clone(),
-                tenant_id: tenant_id.to_string(),
-                parked_at_unix: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs(),
-            };
-            let timeout_secs = pbx.parking_manager().config().timeout_seconds;
-            let cp = Arc::clone(cluster_parking);
-            tokio::spawn(async move {
-                if let Err(e) = cp.cluster_park(orbit, info, timeout_secs).await {
-                    warn!(orbit = orbit, error = %e, "Failed to write parked call to cluster store");
-                }
-            });
-        }
-
-        // BYE the B-leg (if present)
-        if let Some(uac) = &self.uac {
-            if let Some(b_leg) = &active_call.b_leg {
-                if let Some(b_dialog) = &b_leg.dialog {
-                    self.spawn_bye_with_retry(
-                        Arc::clone(uac),
-                        b_dialog.clone(),
-                        active_call_id,
-                        false,
-                        b_leg.flow_token.clone(),
-                    );
-                }
-            }
-        }
-
-        // Clear B-leg and mark call as Parked
-        let _ = self.call_manager.update_call(&active_call_id, |c| {
-            c.b_leg = None;
-            c.park(orbit, caller_ext.clone());
-        });
-
-        // Put A-leg on hold via re-INVITE with a=sendonly SDP
-        if let Some(uac) = &self.uac {
-            if let Some(a_dialog) = &active_call.a_leg.dialog {
-                let hold_sdp = generate_hold_sdp(
-                    active_call.a_leg.sdp.as_deref(),
-                    &self.local_addr,
-                    self.rtp_port,
-                );
-                let mut a_dialog_clone = a_dialog.clone();
-                match uac
-                    .send_reinvite(&mut a_dialog_clone, Some(&hold_sdp))
-                    .await
-                {
-                    Ok(resp) => {
-                        debug!(
-                            call_id = %active_call_id,
-                            status = resp.start_line().code(),
-                            "Hold re-INVITE sent to A-leg"
-                        );
-                        // Persist updated dialog
-                        let _ = self.dialog_manager.insert(a_dialog_clone.clone());
-                        let _ = self.call_manager.update_call(&active_call_id, |c| {
-                            c.a_leg.dialog = Some(a_dialog_clone);
-                        });
-                    }
-                    Err(e) => {
-                        warn!(call_id = %active_call_id, error = %e, "Failed to send hold re-INVITE to A-leg");
-                    }
-                }
-            }
+        if let Some(dialog) = parker_dialog {
+            self.drop_leg(dialog, parker_flow);
         }
 
         // Respond 200 OK to the feature-code INVITE with orbit info
@@ -12458,166 +12965,22 @@ impl SipMessageHandler {
             "Retrieved parked call, bridging to retriever"
         );
 
-        let retriever_ext = sip_parse::header(request.headers(), "From")
-            .and_then(|from| Self::extract_did_from_uri(from.as_str()))
-            .unwrap_or_default();
-
-        // Take A-leg off hold via re-INVITE with a=sendrecv SDP
-        if let Some(uac) = &self.uac {
-            if let Some(a_dialog) = &parked_call.a_leg.dialog {
-                let unhold_sdp = generate_unhold_sdp(
-                    parked_call.a_leg.sdp.as_deref(),
-                    &self.local_addr,
-                    self.rtp_port,
-                );
-                let mut a_dialog_clone = a_dialog.clone();
-                match uac
-                    .send_reinvite(&mut a_dialog_clone, Some(&unhold_sdp))
-                    .await
-                {
-                    Ok(resp) => {
-                        debug!(
-                            call_id = %parked_call_id,
-                            status = resp.start_line().code(),
-                            "Unhold re-INVITE sent to A-leg"
-                        );
-                        let _ = self.dialog_manager.insert(a_dialog_clone.clone());
-                        let _ = self.call_manager.update_call(&parked_call_id, |c| {
-                            c.a_leg.dialog = Some(a_dialog_clone);
-                        });
-                    }
-                    Err(e) => {
-                        warn!(call_id = %parked_call_id, error = %e, "Failed to send unhold re-INVITE");
-                    }
-                }
-            }
+        // The retriever's own INVITE becomes the call's second leg: the
+        // parked party, off hold, and the retriever talk on the call that
+        // was parked (`docs/ENTERPRISE_CALLING.md` §3.2).
+        if parked_call.b_leg.is_some() {
+            warn!(call_id = %parked_call_id, "A parked call still has a second leg");
         }
-
-        // Resolve retriever's contact via registrar and create new B-leg
-        let uac = match &self.uac {
-            Some(u) => Arc::clone(u),
-            None => {
-                warn!(call_id = %parked_call_id, "No UAC configured, cannot bridge to retriever");
-                let response = self.create_simple_response(request, 500, "No UAC Configured");
-                handle.send_final(response).await;
-                let _ = self
-                    .call_manager
-                    .terminate_call(call_id, Some("No UAC".to_string()));
-                return Ok(());
-            }
-        };
-
-        // Build the retriever's AOR from their extension and our domain
-        let host = self.uas.local_uri.host().to_string();
-        let retriever_aor = format!("sip:{}@{}", retriever_ext, host);
-
-        // Look up retriever's contact in registrar
-        let target_uri = if let Some(registrar) = &self.registrar {
-            match registrar.get_registrations(&retriever_aor).await {
-                Ok(bindings) if !bindings.is_empty() => bindings[0].contact().to_string(),
-                _ => {
-                    // Fallback: use the retriever's AOR directly
-                    retriever_aor.clone()
-                }
-            }
-        } else {
-            retriever_aor.clone()
-        };
-
-        // Get the A-leg SDP to use as the offer for the new B-leg
-        let a_sdp = self
-            .call_manager
-            .get_call(&parked_call_id)
-            .and_then(|c| c.a_leg.sdp.clone());
-
-        // Send outbound INVITE to retriever (new B-leg)
-        match uac.invite(&target_uri, a_sdp.as_deref()).await {
-            Ok(b_leg_handle) => {
-                let b_leg_handle = Arc::new(b_leg_handle);
-                // Wait for the final response
-                match b_leg_handle.await_final().await {
-                    Ok(resp)
-                        if resp.start_line().code() >= 200 && resp.start_line().code() < 300 =>
-                    {
-                        // Success - bridge the call
-                        let b_dialog = b_leg_handle.dialog.read().await.clone();
-                        let b_sdp = if !resp.body().is_empty() {
-                            Some(String::from_utf8_lossy(resp.body()).to_string())
-                        } else {
-                            None
-                        };
-
-                        let _ = self.call_manager.update_call(&parked_call_id, |c| {
-                            let mut new_b_leg =
-                                fcp_b2bua_core::CallLeg::new_outbound(target_uri.clone(), None);
-                            new_b_leg.dialog = Some(b_dialog);
-                            new_b_leg.sdp = b_sdp;
-                            new_b_leg.outbound_handle = Some(Arc::clone(&b_leg_handle));
-                            c.b_leg = Some(new_b_leg);
-                            c.unpark();
-                        });
-
-                        info!(
-                            call_id = %parked_call_id,
-                            orbit = orbit,
-                            retriever = %retriever_ext,
-                            "Parked call retrieved and bridged to retriever"
-                        );
-
-                        // Respond 200 OK to the feature-code INVITE
-                        let response = self.create_simple_response(request, 200, "OK");
-                        handle.send_final(response).await;
-                    }
-                    Ok(resp) => {
-                        // Non-2xx response — retriever unreachable
-                        let code = resp.start_line().code();
-                        warn!(
-                            call_id = %parked_call_id,
-                            orbit = orbit,
-                            retriever = %retriever_ext,
-                            status = code,
-                            "Retriever returned error, terminating parked call"
-                        );
-                        // BYE the A-leg since we already removed from parking
-                        self.terminate_parked_a_leg(&parked_call_id).await;
-                        let response =
-                            self.create_simple_response(request, 480, "Retriever Unavailable");
-                        handle.send_final(response).await;
-                    }
-                    Err(e) => {
-                        warn!(
-                            call_id = %parked_call_id,
-                            orbit = orbit,
-                            error = %e,
-                            "Failed to reach retriever"
-                        );
-                        self.terminate_parked_a_leg(&parked_call_id).await;
-                        let response =
-                            self.create_simple_response(request, 480, "Retriever Unavailable");
-                        handle.send_final(response).await;
-                    }
-                }
-            }
-            Err(e) => {
-                warn!(
-                    call_id = %parked_call_id,
-                    error = %e,
-                    "Failed to create B-leg INVITE to retriever"
-                );
-                self.terminate_parked_a_leg(&parked_call_id).await;
-                let response = self.create_simple_response(request, 500, "Internal Error");
-                handle.send_final(response).await;
-            }
-        }
-
-        // Terminate the feature-code call; its record points at the parked
-        // call it brought back.
-        let _ = self.call_manager.update_call(call_id, |call| {
-            call.correlation_id = Some(fcp_core::CallId::from_uuid(*parked_call_id.as_uuid()));
-        });
-        let _ = self.call_manager.terminate_call(call_id, None);
-
-        Ok(())
+        self.take_over_leg(
+            request,
+            handle,
+            call_id,
+            &parked_call,
+            fcp_b2bua_core::LegSide::B,
+            None,
+            "Retrieve",
+        )
+        .await
     }
 
     /// Terminate the A-leg of a parked call (BYE + cleanup).
@@ -12677,127 +13040,53 @@ impl SipMessageHandler {
             "Parked call expired, routing back to parker"
         );
 
-        // Build parker's AOR
-        let host = self.uas.local_uri.host().to_string();
-        let parker_aor = format!("sip:{}@{}", parker_ext, host);
-
-        // Look up parker's contact in registrar
-        let target_uri = if let Some(registrar) = &self.registrar {
-            match registrar.get_registrations(&parker_aor).await {
-                Ok(bindings) if !bindings.is_empty() => bindings[0].contact().to_string(),
-                _ => {
-                    warn!(
-                        call_id = %parked_call_id,
-                        parker = %parker_ext,
-                        "Parker not registered, terminating parked call"
-                    );
-                    self.terminate_parked_a_leg(&parked_call_id).await;
-                    return Ok(());
-                }
-            }
-        } else {
-            warn!(call_id = %parked_call_id, "No registrar configured, terminating parked call");
+        // Back to the parker as a transfer from the empty slot
+        // (`docs/ENTERPRISE_CALLING.md` §3.2): the parker is dialed
+        // through this node, so their own plan applies — a forward, their
+        // voicemail — and a failure ends the call.
+        let Some(uac) = self.uac.clone() else {
+            warn!(call_id = %parked_call_id, "No UAC configured, terminating parked call");
             self.terminate_parked_a_leg(&parked_call_id).await;
             return Ok(());
         };
-
-        // Get UAC
-        let uac = match &self.uac {
-            Some(u) => Arc::clone(u),
-            None => {
-                warn!(call_id = %parked_call_id, "No UAC configured, terminating parked call");
-                self.terminate_parked_a_leg(&parked_call_id).await;
-                return Ok(());
-            }
+        if self
+            .conference_migrations
+            .insert(parked_call_id, ())
+            .is_some()
+        {
+            return Ok(());
+        }
+        let host = match self.uas.local_uri.port() {
+            Some(port) => format!("{}:{}", self.uas.local_uri.host(), port),
+            None => self.uas.local_uri.host().to_string(),
         };
-
-        // Take A-leg off hold
-        if let Some(a_dialog) = &parked_call.a_leg.dialog {
-            let unhold_sdp = generate_unhold_sdp(
-                parked_call.a_leg.sdp.as_deref(),
-                &self.local_addr,
-                self.rtp_port,
-            );
-            let mut a_dialog_clone = a_dialog.clone();
-            match uac
-                .send_reinvite(&mut a_dialog_clone, Some(&unhold_sdp))
-                .await
-            {
-                Ok(resp) => {
-                    debug!(
-                        call_id = %parked_call_id,
-                        status = resp.start_line().code(),
-                        "Unhold re-INVITE sent to A-leg for expired park"
-                    );
-                    let _ = self.dialog_manager.insert(a_dialog_clone.clone());
-                    let _ = call_manager.update_call(&parked_call_id, |c| {
-                        c.a_leg.dialog = Some(a_dialog_clone);
-                    });
-                }
-                Err(e) => {
-                    warn!(call_id = %parked_call_id, error = %e, "Failed to unhold A-leg, terminating");
-                    self.terminate_parked_a_leg(&parked_call_id).await;
-                    return Ok(());
-                }
-            }
-        }
-
-        // Get updated A-leg SDP for the outbound INVITE
-        let a_sdp = call_manager
-            .get_call(&parked_call_id)
-            .and_then(|c| c.a_leg.sdp.clone());
-
-        // Send INVITE to parker's contact (new B-leg)
-        match uac.invite(&target_uri, a_sdp.as_deref()).await {
-            Ok(b_leg_handle) => {
-                let b_leg_handle = Arc::new(b_leg_handle);
-                match b_leg_handle.await_final().await {
-                    Ok(resp)
-                        if resp.start_line().code() >= 200 && resp.start_line().code() < 300 =>
-                    {
-                        let b_dialog = b_leg_handle.dialog.read().await.clone();
-                        let b_sdp = if !resp.body().is_empty() {
-                            Some(String::from_utf8_lossy(resp.body()).to_string())
-                        } else {
-                            None
-                        };
-
-                        let _ = call_manager.update_call(&parked_call_id, |c| {
-                            let mut new_b_leg =
-                                fcp_b2bua_core::CallLeg::new_outbound(target_uri.clone(), None);
-                            new_b_leg.dialog = Some(b_dialog);
-                            new_b_leg.sdp = b_sdp;
-                            new_b_leg.outbound_handle = Some(Arc::clone(&b_leg_handle));
-                            c.b_leg = Some(new_b_leg);
-                            c.unpark();
-                        });
-
-                        info!(
-                            call_id = %parked_call_id,
-                            parker = %parker_ext,
-                            "Expired parked call routed back to parker"
-                        );
-                    }
-                    Ok(resp) => {
-                        warn!(
-                            call_id = %parked_call_id,
-                            status = resp.start_line().code(),
-                            "Parker rejected expired parked call, terminating"
-                        );
-                        self.terminate_parked_a_leg(&parked_call_id).await;
-                    }
-                    Err(e) => {
-                        warn!(call_id = %parked_call_id, error = %e, "Failed to reach parker, terminating");
-                        self.terminate_parked_a_leg(&parked_call_id).await;
-                    }
-                }
-            }
-            Err(e) => {
-                warn!(call_id = %parked_call_id, error = %e, "Failed to create INVITE to parker, terminating");
-                self.terminate_parked_a_leg(&parked_call_id).await;
-            }
-        }
-
+        let caller = parked_call
+            .original_invite
+            .as_ref()
+            .and_then(|invite| extract_from_uri(invite).ok().map(|uri| (invite, uri)))
+            .map(|(invite, uri)| (extract_from_display_name(invite), normalize_from_uri(uri)));
+        let run = crate::transfer::TransferRun {
+            uac,
+            local_uri: self.uas.local_uri.clone(),
+            call_manager: self.call_manager.clone(),
+            dialog_manager: Arc::clone(&self.dialog_manager),
+            session_timer_manager: Arc::clone(&self.session_timer_manager),
+            media_manager: self.media_manager.clone(),
+            sip_call_id_map: Arc::clone(&self.sip_call_id_map),
+            in_flight: Arc::clone(&self.conference_migrations),
+            b2bua_config: self.b2bua_config.clone(),
+            local_addr: self.local_addr.clone(),
+            call_id: parked_call_id,
+            referrer: fcp_b2bua_core::LegSide::B,
+            referrer_dialog: None,
+            target: format!("sip:{}@{}", parker_ext, host),
+            headers: vec![(
+                TRANSFERRED_FROM_HEADER.to_string(),
+                parked_call_id.to_string(),
+            )],
+            caller,
+        };
+        run.run().await;
         Ok(())
     }
 
@@ -15238,6 +15527,17 @@ enum RoutingVerdict {
     Refused(String),
 }
 
+/// The user part of a URI (`sip:alice@host` → `alice`).
+fn user_of_uri(uri: &str) -> Option<String> {
+    let uri = uri.trim().trim_start_matches('<');
+    let rest = uri
+        .strip_prefix("sips:")
+        .or_else(|| uri.strip_prefix("sip:"))
+        .unwrap_or(uri);
+    let (user, _) = rest.split_once('@')?;
+    (!user.is_empty()).then(|| user.to_string())
+}
+
 pub const TRANSFERRED_FROM_HEADER: &str = "X-FCP-Transferred-From";
 
 /// `uri` with a URI header added (`?name=value`, or `&name=value` when it
@@ -15661,37 +15961,6 @@ fn generate_hold_sdp(sdp: Option<&str>, local_addr: &str, rtp_port: u16) -> Stri
     }
 }
 
-/// Generate an SDP body that takes the call off hold (a=sendrecv).
-///
-/// If an existing SDP is provided, replaces `a=sendonly` with `a=sendrecv`.
-/// Otherwise generates a minimal SDP with `a=sendrecv`.
-fn generate_unhold_sdp(sdp: Option<&str>, local_addr: &str, rtp_port: u16) -> String {
-    if let Some(existing) = sdp {
-        // Replace sendonly with sendrecv
-        let unheld = existing.replace("a=sendonly", "a=sendrecv");
-        // If there was no explicit sendonly attribute, append sendrecv
-        if !unheld.contains("a=sendrecv") {
-            format!("{}a=sendrecv\r\n", unheld)
-        } else {
-            unheld
-        }
-    } else {
-        // Generate minimal sendrecv SDP
-        format!(
-            "v=0\r\n\
-             o=- 0 0 IN IP4 {addr}\r\n\
-             s=-\r\n\
-             c=IN IP4 {addr}\r\n\
-             t=0 0\r\n\
-             m=audio {port} RTP/AVP 0\r\n\
-             a=rtpmap:0 PCMU/8000\r\n\
-             a=sendrecv\r\n",
-            addr = local_addr,
-            port = rtp_port,
-        )
-    }
-}
-
 /// The reason phrase a final response carries (RFC 3261 §21).
 fn reason_phrase(code: u16) -> &'static str {
     match code {
@@ -15716,7 +15985,7 @@ fn reason_phrase(code: u16) -> &'static str {
 
 /// Arm a leg's session timer from its dialog, or from the B2BUA's own
 /// setting when the timer is forced.
-fn start_session_timer_for(
+pub(crate) fn start_session_timer_for(
     session_timer_manager: &SessionTimerManager,
     b2bua_config: &B2buaConfig,
     dialog: &sip_dialog::Dialog,
@@ -16821,29 +17090,6 @@ mod tests {
     }
 
     #[test]
-    fn test_generate_unhold_sdp_from_existing() {
-        let sdp = "v=0\r\n\
-                    o=- 0 0 IN IP4 192.168.1.1\r\n\
-                    s=-\r\n\
-                    c=IN IP4 192.168.1.1\r\n\
-                    t=0 0\r\n\
-                    m=audio 4000 RTP/AVP 0\r\n\
-                    a=sendonly\r\n";
-
-        let unheld = generate_unhold_sdp(Some(sdp), "10.0.0.1", 5000);
-        assert!(unheld.contains("a=sendrecv"));
-        assert!(!unheld.contains("a=sendonly"));
-    }
-
-    #[test]
-    fn test_generate_unhold_sdp_without_existing() {
-        let unheld = generate_unhold_sdp(None, "10.0.0.1", 5000);
-        assert!(unheld.contains("a=sendrecv"));
-        assert!(unheld.contains("10.0.0.1"));
-        assert!(unheld.contains("5000"));
-    }
-
-    #[test]
     fn test_hold_unhold_roundtrip() {
         let sdp = "v=0\r\n\
                     o=- 0 0 IN IP4 192.168.1.1\r\n\
@@ -16856,7 +17102,7 @@ mod tests {
         let held = generate_hold_sdp(Some(sdp), "10.0.0.1", 5000);
         assert!(held.contains("a=sendonly"));
 
-        let unheld = generate_unhold_sdp(Some(&held), "10.0.0.1", 5000);
+        let unheld = crate::hold::with_direction(&held, "sendrecv");
         assert!(unheld.contains("a=sendrecv"));
         assert!(!unheld.contains("a=sendonly"));
     }

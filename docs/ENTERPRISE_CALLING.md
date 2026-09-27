@@ -269,6 +269,61 @@ party of the consult call, both phone legs end. An incoming INVITE with
 watchers carries the SIP `call-id`, `local-tag` and `remote-tag`, both
 sides of every call, and `+sip.rendering=no` on a held dialog.
 
+#### 3.2.1 As built (phase 2, v0.25.277)
+
+**Hold.** `Call.held: Option<LegSide>` names the held leg: a re-INVITE
+whose offer is `sendonly`, `inactive` or `c=0.0.0.0` (`fcp_sip::hold`)
+holds the other leg once the far end accepts it, and one that is not
+releases it; `call.held` and `call.resumed` are published from
+`update_call`, which also publishes `call.parked` and `call.unparked`
+(a retrieve used to publish a second `call.answered`). `/calls` shows
+`held`. When media is anchored the answer to the holder is now built
+from the holder's own offer, so a hold is answered `recvonly`. The
+re-INVITE is still passed to the far phone in both cases: answering it
+locally only pays once there is something to play into the held leg, so
+it moves to phase 3 with the music.
+
+**Transfer.** `[b2bua.transfer] execute` (default on) makes the node
+carry out a phone's REFER (`fcp_sip::transfer`): the target is dialed
+back into this node on the transferred party's behalf — its identity as
+the caller, `X-FCP-Transferred-From` for the record — so it is routed as
+any call, a user's plan included; on a 2xx the referrer's slot takes the
+new leg, the media session's side is moved (anchored) or the transferred
+party re-INVITEd with the answer (not), a held party is taken off hold,
+the referrer is sent the sipfrag NOTIFY and then a BYE. A failure is
+NOTIFYed and the referrer keeps the call. With `execute = false` the
+REFER is relayed as before. An attended transfer's Refer-To carries
+`Replaces`, which the node's INVITE carries, and the node's own handling
+of it joins the calls: the result is two anchored hops through a leg the
+node dialed to itself. Because such a leg is one SIP dialog with an end
+in two calls, in-dialog requests are now matched by Call-ID and both tags
+(`CallManager::find_by_request_dialog`), not Call-ID alone.
+
+**Replaces.** An INVITE with `Replaces` naming an established leg of a
+call of the same tenant takes that leg's slot (`take_over_leg`): the
+other party is pointed at it, off hold, the INVITE answered, the old leg
+dropped with a BYE that touches no call (`drop_leg`: the slot already
+holds the new leg), and the INVITE's own call ended as completed,
+pointing at the call it joined. An unknown dialog is 481; an early one is
+486 — a ringing call is picked up with the pickup codes, and pickup by
+`Replaces` from a BLF key needs the dialog-info to carry SIP ids, which
+moves to phase 9 with the rest of the dialog state.
+
+**Park.** A REFER to the park code parks the transferred party: an
+orbit, the party moved into the A slot (the retriever takes B), the
+referrer NOTIFYed and dropped. The direct `*70` parks the far party of
+the dialer's established call on either leg (it used to find only a call
+the dialer had placed, and parked the dialer). `*71<orbit>` is the
+retriever's own INVITE taking the empty slot. An orbit that times out is
+a transfer from the empty slot to the parker, through the parker's plan;
+if that fails the call ends.
+
+**Found on the way.** A leg a flow dials that answers as the caller
+hangs up was never ended: the BYE path decided the call was over before
+the flow recorded the leg. Both now decide under the call's lock — the
+BYE path marks the call `Terminating` or forwards to a leg that just
+landed, the flow hangs up a leg whose call is ending.
+
 ### 3.3 Music on hold
 
 forge-media: `FileSource` looped (`reset()` exists), playback encoded in
@@ -442,7 +497,7 @@ feature crosses nodes, in the two-node cluster harness.
 | Phase | What |
 |---|---|
 | 1 | ✅ v0.25.276 — **Foundations.** `user_calling_settings`, `CallTarget`, `plan_for_user` executed by all four paths (§3.1); forward all, busy, no answer and unreachable working; DND; the extension-to-user path with voicemail; flow `Dial` to a user; the presence listener for every tenant; the feature codes; the calling API and pages. Tests: each forward, DND, a user with no phone reaching voicemail, a flow dialing a user. As built (§3.1.1): one JSON row per user, the plan as `fcp_sip::ring_plan::plan` with the contacts resolved by the path, treatments kept on the call, a forward as a new call into this node at its own port, a flow's `Dial` reporting `busy` or `no_answer` for a plan that does not ring. Test: `fcp-call-manager/tests/calling.rs`. |
-| 2 | **Hold, transfer and pickup** (§3.2). The held state, hold answered locally when anchored, the answer bug fixed, park corrected and retrieve as a leg move, REFER executed blind and attended, INVITE with `Replaces`, dialog-info with ids and held. Tests: hold seen by the B2BUA and BLF, attended transfer among three phones, park and retrieve. |
+| 2 | ✅ v0.25.277 — **Hold, transfer and pickup** (§3.2). The held state, hold answered locally when anchored, the answer bug fixed, park corrected and retrieve as a leg move, REFER executed blind and attended, INVITE with `Replaces`, dialog-info with ids and held. Tests: hold seen by the B2BUA and BLF, attended transfer among three phones, park and retrieve. As built (§3.2.1): the held leg, the anchored answer fixed, REFER carried out by the node (blind, to a park code, attended through `Replaces`), INVITE with `Replaces`, park and retrieve as leg moves, the orbit's timeout as a transfer back to the parker; hold still passed through (answered locally with phase 3) and dialog-info's ids with phase 9. Test: `fcp-call-manager/tests/calling.rs`. |
 | 3 | **Music on hold** (§3.3). forge-media's looped, transcoded, replacing player (a forge-media release); the resolver, the built-in default, tenant and per-user prompts, park and hold, the anchoring reason. Test: the phone hears the file's tone while its party is held and while parked. |
 | 4 | **Call waiting** (§3.4). The per-user call set in the registry, the plan's busy rule, `*56`/`*57`. Tests: a second call rings or is refused by the setting; on two nodes. |
 | 5 | **Schedules** (§3.5). The entity, the tenant timezone, the number's closed and holiday targets, the user's after-hours forward, DB queue hours, the flow node, the pages. Tests: a number answered by a flow after hours, a queue closed on a holiday. |

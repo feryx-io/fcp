@@ -1249,6 +1249,23 @@ the unreachable forward over the mailbox, a flow dialing a user who
 answers and skipping one in DND, and the feature codes from a phone. A
 flow or a queue as a forward target is refused by the API until the
 schedules phase places it.
+Phase 2 done (v0.25.277): hold, transfer and pickup in the B2BUA — the
+held leg on the call (`fcp_sip::hold`, `call.held`/`call.resumed`, `held`
+on `/calls`), an anchored hold answered `recvonly` from the holder's own
+offer; the node carries out REFER under `[b2bua.transfer] execute`
+(default on, `fcp_sip::transfer`): blind by dialing the target back into
+itself as the transferred party, to a park code by parking, attended by
+carrying `Replaces`; an INVITE with `Replaces` takes the named leg's slot
+(`take_over_leg`); park moves the parked party to the A slot, `*70` works
+from either leg, `*71` takes the empty slot, an expired orbit is a
+transfer back to the parker through their plan; `call.parked` and
+`call.unparked` published at last; in-dialog requests matched by Call-ID
+and tags; a flow's dialed leg that answered as the caller hung up is now
+ended. Proved by `fcp-call-manager/tests/calling.rs` (hold, blind,
+attended, park and retrieve, call pull by `Replaces`, orbit timeout) and
+`calls.rs`'s relayed transfer under `execute = false`. Hold stays passed
+through until phase 3 has music to play; dialog-info's SIP ids and BLF
+pickup by `Replaces` move to phase 9.
 
 ## Historical documents
 

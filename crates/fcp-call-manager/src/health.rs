@@ -453,6 +453,7 @@ async fn calls_handler(State(state): State<Arc<AppState>>) -> Json<serde_json::V
             serde_json::json!({
                 "call_id": call.id.to_string(),
                 "state": format!("{:?}", call.state),
+                "held": call.held.map(|leg| leg.as_str()),
                 "direction": format!("{:?}", call.a_leg.direction),
                 "caller": call.caller(),
                 "callee": call.callee().unwrap_or(""),

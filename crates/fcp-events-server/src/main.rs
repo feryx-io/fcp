@@ -1575,7 +1575,10 @@ fn extract_node_id_from_call_event(event: &CallEvent) -> Option<String> {
         CallEvent::Emergency { node_id, .. }
         | CallEvent::EmergencyCompleted { node_id, .. }
         | CallEvent::EmergencyNotificationFailed { node_id, .. } => node_id.clone(),
-        CallEvent::Parked { .. } | CallEvent::Unparked { .. } => None,
+        CallEvent::Parked { .. }
+        | CallEvent::Unparked { .. }
+        | CallEvent::Held { .. }
+        | CallEvent::Resumed { .. } => None,
     }
 }
 

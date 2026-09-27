@@ -224,6 +224,8 @@ impl CallStateStore {
             // Parked/Unparked events don't change the aggregated state significantly
             CallEvent::Parked { .. }
             | CallEvent::Unparked { .. }
+            | CallEvent::Held { .. }
+            | CallEvent::Resumed { .. }
             | CallEvent::Emergency { .. }
             | CallEvent::EmergencyCompleted { .. }
             | CallEvent::EmergencyNotificationFailed { .. } => {}

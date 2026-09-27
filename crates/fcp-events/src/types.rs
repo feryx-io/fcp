@@ -323,6 +323,27 @@ pub enum CallEvent {
         #[serde(with = "system_time_serde")]
         timestamp: SystemTime,
     },
+
+    /// A leg put on hold by its far party (`docs/ENTERPRISE_CALLING.md`
+    /// §3.2): `held_leg` is `a` or `b`.
+    Held {
+        call_id: CallId,
+        held_leg: String,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        node_id: Option<String>,
+    },
+
+    /// The held leg taken off hold.
+    Resumed {
+        call_id: CallId,
+        held_leg: String,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        node_id: Option<String>,
+    },
 }
 
 /// Media-related events.
@@ -1511,6 +1532,8 @@ impl PlatformEvent {
                 CallEvent::EmergencyNotificationFailed { .. } => "emergency.notification_failed",
                 CallEvent::Parked { .. } => "call.parked",
                 CallEvent::Unparked { .. } => "call.unparked",
+                CallEvent::Held { .. } => "call.held",
+                CallEvent::Resumed { .. } => "call.resumed",
             },
             PlatformEvent::Media(e) => match e {
                 MediaEvent::SessionStarted { .. } => "media.session_started",
@@ -1894,7 +1917,9 @@ impl CallEvent {
             | CallEvent::EmergencyCompleted { call_id, .. }
             | CallEvent::EmergencyNotificationFailed { call_id, .. }
             | CallEvent::Parked { call_id, .. }
-            | CallEvent::Unparked { call_id, .. } => Some(call_id),
+            | CallEvent::Unparked { call_id, .. }
+            | CallEvent::Held { call_id, .. }
+            | CallEvent::Resumed { call_id, .. } => Some(call_id),
         }
     }
 
@@ -1908,7 +1933,9 @@ impl CallEvent {
             | CallEvent::EmergencyCompleted { timestamp, .. }
             | CallEvent::EmergencyNotificationFailed { timestamp, .. }
             | CallEvent::Parked { timestamp, .. }
-            | CallEvent::Unparked { timestamp, .. } => *timestamp,
+            | CallEvent::Unparked { timestamp, .. }
+            | CallEvent::Held { timestamp, .. }
+            | CallEvent::Resumed { timestamp, .. } => *timestamp,
             CallEvent::Answered { answer_time, .. } => *answer_time,
             CallEvent::Ended { end_time, .. } => *end_time,
         }
