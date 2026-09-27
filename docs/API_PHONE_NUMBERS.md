@@ -217,10 +217,6 @@ Lists all line bindings.
     ],
     "ring_strategy": "simultaneous",
     "tenant_id": "tenant-xyz...",
-    "no_answer_timeout_secs": 30,
-    "forward_on_busy": null,
-    "forward_on_no_answer": "+15185551111",
-    "forward_unconditional": null,
     "outbound_caller_id": null,
     "outbound_cnam": null,
     "created_at": 1640000000,
@@ -259,9 +255,7 @@ Creates a new line binding.
       "enabled": true
     }
   ],
-  "ring_strategy": "simultaneous",
-  "no_answer_timeout_secs": 30,
-  "forward_on_no_answer": "+15185551111"
+  "ring_strategy": "simultaneous"
 }
 ```
 
@@ -274,10 +268,11 @@ Creates a new line binding.
 - `tenant_id` - Tenant ID
 - `devices` - Array of device bindings
 - `ring_strategy` - How to ring devices (default: `simultaneous`)
-- `no_answer_timeout_secs` - Timeout in seconds (default: 30)
-- `forward_on_busy` - Forward destination when busy
-- `forward_on_no_answer` - Forward destination on no answer
-- `forward_unconditional` - Always forward to this destination
+
+Forwarding and the ring time are the owner's calling settings, not the
+line's: `GET`/`PUT /api/v1/users/:username/calling` (and `/api/v1/me/calling`
+for the user themself), see `docs/ENTERPRISE_CALLING.md` §3.1. They apply
+to every call for the user, by number, by extension or from a flow.
 
 **Binding Types:**
 - `user` - Normal user line
@@ -613,9 +608,7 @@ curl -X POST http://localhost:8080/api/v1/line-bindings \
         "shared_line": false,
         "enabled": true
       }
-    ],
-    "no_answer_timeout_secs": 30,
-    "forward_on_no_answer": "+15185551234"
+    ]
   }'
 ```
 

@@ -23,7 +23,7 @@ interface NavItem {
 const navItems: NavItem[] = [
   { label: 'Dashboard', href: '/user', icon: LayoutDashboard },
   { label: 'Voicemail', href: '/user/voicemail', icon: Voicemail },
-  { label: 'Call Forwarding', href: '/user/forwarding', icon: PhoneForwarded },
+  { label: 'Calling', href: '/user/calling', icon: PhoneForwarded },
   { label: 'Conferences', href: '/user/conferences', icon: Users },
   { label: 'Settings', href: '/user/settings', icon: Settings },
 ]

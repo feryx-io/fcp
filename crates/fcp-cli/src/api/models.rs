@@ -619,10 +619,6 @@ pub struct LineBindingResponse {
     pub devices: Vec<DeviceBindingResponse>,
     pub ring_strategy: String,
     pub tenant_id: String,
-    pub no_answer_timeout_secs: u64,
-    pub forward_on_busy: Option<String>,
-    pub forward_on_no_answer: Option<String>,
-    pub forward_unconditional: Option<String>,
     pub outbound_caller_id: Option<String>,
     pub outbound_cnam: Option<String>,
     #[serde(with = "system_time_as_string")]

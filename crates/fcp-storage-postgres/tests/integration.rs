@@ -2465,3 +2465,62 @@ async fn emergency_contacts_saved_as_free_text_read_back_typed() {
 
     db.finish().await;
 }
+
+/// A user's calling settings (docs/ENTERPRISE_CALLING.md §3.1): absent
+/// until put, read back as written, listed by tenant, gone when deleted.
+#[tokio::test]
+async fn calling_settings_round_trip() {
+    use fcp_core::{CallTarget, CallingSettings, CallingStore, TenantId, UserId};
+    let db = require_db!();
+    let storage = db.storage();
+    let tenant = TenantId::new();
+    let user = UserId::new();
+    assert!(storage
+        .get_calling_settings(&tenant, &user)
+        .await
+        .unwrap()
+        .is_none());
+
+    let mut settings = CallingSettings::defaults(tenant, user);
+    settings.dnd = true;
+    settings.no_answer_secs = Some(12);
+    settings.forward_busy = Some(CallTarget::Extension("2002".into()));
+    settings.forward_unreachable = Some(CallTarget::Voicemail);
+    storage
+        .put_calling_settings(settings.clone())
+        .await
+        .unwrap();
+    let got = storage
+        .get_calling_settings(&tenant, &user)
+        .await
+        .unwrap()
+        .expect("stored");
+    assert!(got.dnd);
+    assert_eq!(got.no_answer_secs, Some(12));
+    assert_eq!(got.forward_busy, Some(CallTarget::Extension("2002".into())));
+    assert_eq!(got.forward_unreachable, Some(CallTarget::Voicemail));
+    assert!(got.forward_all.is_none());
+
+    // Put again is an update, listed once.
+    settings.dnd = false;
+    storage.put_calling_settings(settings).await.unwrap();
+    let listed = storage.list_calling_settings(&tenant).await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert!(!listed[0].dnd);
+    assert!(storage
+        .list_calling_settings(&TenantId::new())
+        .await
+        .unwrap()
+        .is_empty());
+
+    storage
+        .delete_calling_settings(&tenant, &user)
+        .await
+        .unwrap();
+    assert!(storage
+        .get_calling_settings(&tenant, &user)
+        .await
+        .unwrap()
+        .is_none());
+    db.finish().await;
+}

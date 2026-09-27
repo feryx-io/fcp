@@ -8,8 +8,8 @@ use fcp_core::storage::{
     CredentialStore, DeviceStore, ExtensionStore, PhoneNumberStore, TenantStore, User,
 };
 use fcp_core::{
-    Device, DeviceType, Extension, ExtensionTarget, PhoneNumber, SyncOp, SyncStore, Tenant,
-    TenantId, SYNC_TABLES,
+    CallingStore, Device, DeviceType, Extension, ExtensionTarget, PhoneNumber, SyncOp, SyncStore,
+    Tenant, TenantId, SYNC_TABLES,
 };
 use fcp_storage_postgres::{PostgresConfig, PostgresStorage};
 use sqlx::{Connection, PgConnection};
@@ -99,6 +99,15 @@ async fn every_synced_table_journals_its_puts_and_deletes_in_order() {
     let ext = Extension::new("1001".to_string(), ExtensionTarget::User(user_id), tenant).unwrap();
     let ext_id = ext.id;
     storage.put_extension(ext).await.unwrap();
+    // A user's calling settings journal under the user
+    // (docs/ENTERPRISE_CALLING.md §3.1).
+    let mut calling = fcp_core::CallingSettings::defaults(tenant, user_id);
+    calling.dnd = true;
+    storage.put_calling_settings(calling).await.unwrap();
+    storage
+        .delete_calling_settings(&tenant, &user_id)
+        .await
+        .unwrap();
     storage.delete_user("alice").await.unwrap();
 
     let entries = storage.journal_after(&tenant, 0, 100).await.unwrap();
@@ -123,6 +132,16 @@ async fn every_synced_table_journals_its_puts_and_deletes_in_order() {
             SyncOp::Delete,
         ),
         ("extensions".to_string(), ext_id.to_string(), SyncOp::Put),
+        (
+            "user_calling_settings".to_string(),
+            user_id.to_string(),
+            SyncOp::Put,
+        ),
+        (
+            "user_calling_settings".to_string(),
+            user_id.to_string(),
+            SyncOp::Delete,
+        ),
         ("users".to_string(), user_id.to_string(), SyncOp::Delete),
     ];
     assert_eq!(shape, expected, "{entries:#?}");

@@ -435,6 +435,16 @@ pub struct Call {
     /// Original callee identifier (phone number or extension) before routing resolution.
     pub original_callee: Option<String>,
 
+    /// The user the call is for, when it is for a user: whose ring plan
+    /// decided the legs and the treatments (`docs/ENTERPRISE_CALLING.md`
+    /// §3.1).
+    pub callee_user_id: Option<fcp_core::UserId>,
+
+    /// What the plan decided for busy and for no answer, applied when
+    /// every leg has failed. `None` on a call whose legs were not a
+    /// user's plan (a device, a trunk, a forward's own legs).
+    pub treatments: Option<fcp_core::Treatments>,
+
     /// Caller's phone number or extension.
     pub caller_number: Option<String>,
 
@@ -535,6 +545,8 @@ impl Call {
             line_binding_id: None,
             no_answer_timeout: None,
             original_callee: None,
+            callee_user_id: None,
+            treatments: None,
             caller_number: None,
             emergency: None,
         }
@@ -639,6 +651,8 @@ impl Call {
             line_binding_id: None,
             no_answer_timeout: None,
             original_callee: None,
+            callee_user_id: None,
+            treatments: None,
             caller_number: None,
             emergency: None,
         }

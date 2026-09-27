@@ -6,7 +6,7 @@
 use crate::identifiers::{DeviceId, LineBindingId, PhoneNumberId, TenantId, UserId};
 use serde::{Deserialize, Serialize};
 use std::fmt;
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 /// A binding that connects a phone number to users and devices.
 ///
@@ -15,7 +15,9 @@ use std::time::{Duration, SystemTime};
 /// - Who owns the number (for billing, voicemail)
 /// - Which devices should ring
 /// - How devices should ring (simultaneously, sequentially, etc.)
-/// - Call forwarding and timeout settings
+///
+/// Forwarding and the ring time are the owner's calling settings
+/// (`crate::calling`, since v0.25.276).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LineBinding {
     /// Unique identifier for this binding
@@ -39,20 +41,6 @@ pub struct LineBinding {
 
     /// Tenant this binding belongs to
     pub tenant_id: TenantId,
-
-    // ===== Call Handling =====
-    /// How long to ring before giving up (seconds)
-    #[serde(with = "duration_serde")]
-    pub no_answer_timeout: Duration,
-
-    /// Forward to this number if busy
-    pub forward_on_busy: Option<String>,
-
-    /// Forward to this number if no answer
-    pub forward_on_no_answer: Option<String>,
-
-    /// Forward all calls unconditionally
-    pub forward_unconditional: Option<String>,
 
     // ===== Caller ID =====
     /// Override outbound caller ID for this line
@@ -91,10 +79,6 @@ impl LineBinding {
             devices: Vec::new(),
             ring_strategy: RingStrategy::Simultaneous,
             tenant_id,
-            no_answer_timeout: Duration::from_secs(30),
-            forward_on_busy: None,
-            forward_on_no_answer: None,
-            forward_unconditional: None,
             outbound_caller_id: None,
             outbound_cnam: None,
             flow_id: None,
@@ -260,27 +244,6 @@ impl fmt::Display for RingStrategy {
             Self::LongestIdle => write!(f, "longest_idle"),
             Self::Primary => write!(f, "primary"),
         }
-    }
-}
-
-/// Serde helper for Duration
-mod duration_serde {
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-    use std::time::Duration;
-
-    pub fn serialize<S>(duration: &Duration, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        duration.as_secs().serialize(serializer)
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Duration, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let secs = u64::deserialize(deserializer)?;
-        Ok(Duration::from_secs(secs))
     }
 }
 

@@ -303,10 +303,6 @@ export interface LineBinding {
   devices: DeviceBinding[]
   ring_strategy: string
   tenant_id: string
-  no_answer_timeout_secs: number
-  forward_on_busy: string | null
-  forward_on_no_answer: string | null
-  forward_unconditional: string | null
   outbound_caller_id: string | null
   outbound_cnam: string | null
   flow_id: string | null
@@ -321,20 +317,12 @@ export interface CreateLineBindingRequest {
   tenant_id?: string
   devices?: DeviceBinding[]
   ring_strategy?: string
-  no_answer_timeout_secs?: number
-  forward_on_busy?: string
-  forward_on_no_answer?: string
-  forward_unconditional?: string
   flow_id?: string
 }
 
 export interface UpdateLineBindingRequest {
   devices?: DeviceBinding[]
   ring_strategy?: string
-  no_answer_timeout_secs?: number
-  forward_on_busy?: string
-  forward_on_no_answer?: string
-  forward_unconditional?: string
   outbound_caller_id?: string
   outbound_cnam?: string
   flow_id?: string
@@ -1430,21 +1418,31 @@ export interface MeMailboxStats {
   saved_messages: number
 }
 
-export interface MeForwarding {
-  id: string
-  phone_number_id: string
-  phone_number: string | null
-  forward_unconditional: string | null
-  forward_on_busy: string | null
-  forward_on_no_answer: string | null
-  no_answer_timeout_secs: number
+/** A user's calling settings (docs/ENTERPRISE_CALLING.md §3.1); targets as `voicemail`, `number:+1…`, `ext:2001`, `user:<id>` or a SIP URI. */
+export interface CallingSettings {
+  user_id: string
+  username: string
+  dnd: boolean
+  call_waiting: boolean
+  forward_all: string | null
+  forward_busy: string | null
+  forward_no_answer: string | null
+  forward_unreachable: string | null
+  /** null: the node's default ring time */
+  no_answer_secs: number | null
+  updated_at: number
 }
 
-export interface UpdateForwardingRequest {
-  forward_unconditional?: string
-  forward_on_busy?: string
-  forward_on_no_answer?: string
-  no_answer_timeout_secs?: number
+/** A forward given as an empty string is cleared; one left out is kept. */
+export interface UpdateCallingRequest {
+  dnd?: boolean
+  call_waiting?: boolean
+  forward_all?: string
+  forward_busy?: string
+  forward_no_answer?: string
+  forward_unreachable?: string
+  /** 0 clears it: the node's default */
+  no_answer_secs?: number
 }
 
 // Locations

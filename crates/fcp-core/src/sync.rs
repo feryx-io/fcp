@@ -15,6 +15,7 @@ use std::time::SystemTime;
 pub const SYNC_TABLES: &[&str] = &[
     "tenants",
     "users",
+    "user_calling_settings",
     "devices",
     "extensions",
     "line_bindings",

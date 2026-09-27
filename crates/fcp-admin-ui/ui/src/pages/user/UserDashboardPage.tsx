@@ -5,12 +5,12 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button'
 import { useAuthStore } from '@/stores/auth'
 import { me } from '@/api/endpoints'
-import type { MeMailboxStats, MeForwarding } from '@/types'
+import type { MeMailboxStats, CallingSettings } from '@/types'
 
 export function UserDashboardPage() {
   const { user } = useAuthStore()
   const [stats, setStats] = useState<MeMailboxStats | null>(null)
-  const [forwarding, setForwarding] = useState<MeForwarding[]>([])
+  const [calling, setCalling] = useState<CallingSettings | null>(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
@@ -18,10 +18,10 @@ export function UserDashboardPage() {
       try {
         const [s, f] = await Promise.allSettled([
           me.getMailboxStats(),
-          me.getForwarding(),
+          me.getCalling(),
         ])
         if (s.status === 'fulfilled') setStats(s.value)
-        if (f.status === 'fulfilled') setForwarding(f.value)
+        if (f.status === 'fulfilled') setCalling(f.value)
       } finally {
         setLoading(false)
       }
@@ -29,8 +29,9 @@ export function UserDashboardPage() {
     load()
   }, [])
 
-  const hasForwarding = forwarding.some(
-    (f) => f.forward_unconditional || f.forward_on_busy || f.forward_on_no_answer,
+  const hasForwarding = !!(
+    calling &&
+    (calling.forward_all || calling.forward_busy || calling.forward_no_answer || calling.forward_unreachable)
   )
 
   return (
@@ -65,13 +66,17 @@ export function UserDashboardPage() {
 
             <Card>
               <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium">Call Forwarding</CardTitle>
+                <CardTitle className="text-sm font-medium">Calling</CardTitle>
                 <PhoneForwarded className="h-4 w-4 text-muted-foreground" />
               </CardHeader>
               <CardContent>
-                <div className="text-2xl font-bold">{hasForwarding ? 'Active' : 'Off'}</div>
+                <div className="text-2xl font-bold">
+                  {calling?.dnd ? 'Do not disturb' : hasForwarding ? 'Forwarding' : 'Ringing'}
+                </div>
                 <p className="text-xs text-muted-foreground">
-                  {forwarding.length} line{forwarding.length !== 1 ? 's' : ''} configured
+                  {calling
+                    ? calling.no_answer_secs === null ? 'Rings for the system default' : `Rings for ${calling.no_answer_secs}s`
+                    : 'Settings unavailable'}
                 </p>
               </CardContent>
             </Card>

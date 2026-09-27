@@ -234,6 +234,20 @@ impl CallManager {
         let _ = self.update_call(call_id, |call| call.termination = Some(reason));
     }
 
+    /// Publish any platform event, best-effort and asynchronous like the
+    /// call events; nothing when the manager has no publisher.
+    pub fn publish(&self, event: PlatformEvent) {
+        let Some(events) = &self.events else {
+            return;
+        };
+        let events = Arc::clone(events);
+        tokio::spawn(async move {
+            if let Err(e) = events.publish(event).await {
+                tracing::warn!(error = %e, "Failed to publish event");
+            }
+        });
+    }
+
     /// Publish `call.emergency` for an emergency call that was just placed.
     /// Best-effort and asynchronous like the other call events.
     pub fn publish_emergency(&self, call: &Call, notify_contacts: Vec<String>) {

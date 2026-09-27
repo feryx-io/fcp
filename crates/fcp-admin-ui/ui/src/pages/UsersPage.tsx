@@ -24,6 +24,7 @@ import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@
 import { users, locations, tenants } from '@/api/endpoints'
 import type { User, CreateUserRequest, UpdateUserRequest, Location } from '@/types'
 import { TenantField, useEffectiveTenantId, useTenantListFilter, useShowTenantColumn } from '@/components/TenantSelector'
+import { CallingDialog } from '@/components/CallingDialog'
 
 const createUserSchema = z.object({
   username: z.string().min(1, 'Username is required').max(64),
@@ -98,6 +99,7 @@ export function UsersPage() {
   const [editUser, setEditUser] = useState<User | null>(null)
   const [passwordUser, setPasswordUser] = useState<User | null>(null)
   const [digestUser, setDigestUser] = useState<User | null>(null)
+  const [callingUser, setCallingUser] = useState<User | null>(null)
   const queryClient = useQueryClient()
 
   const { data: rawUserList = [], isLoading } = useQuery({
@@ -257,6 +259,10 @@ export function UsersPage() {
               <KeyRound className="mr-2 h-4 w-4" />
               Change Password
             </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => setCallingUser(row.original)}>
+              <Phone className="mr-2 h-4 w-4" />
+              Calling Settings
+            </DropdownMenuItem>
             <DropdownMenuItem onClick={() => setDigestUser(row.original)}>
               <Phone className="mr-2 h-4 w-4" />
               Set Digest Credentials
@@ -344,6 +350,9 @@ export function UsersPage() {
         mutation={digestMutation}
         deleteMutation={deleteDigestMutation}
       />
+
+      {/* Calling Settings Dialog */}
+      <CallingDialog user={callingUser} onOpenChange={(open) => { if (!open) setCallingUser(null) }} />
 
       {/* Bulk Import Dialog */}
       <BulkImportDialog

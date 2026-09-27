@@ -212,39 +212,6 @@ fn render_binding_details(
             Span::styled(&binding.ring_strategy, theme.normal()),
         ]));
 
-        lines.push(Line::from(vec![
-            Span::styled("No Answer Timeout: ", theme.title()),
-            Span::styled(
-                format!("{}s", binding.no_answer_timeout_secs),
-                theme.normal(),
-            ),
-        ]));
-
-        lines.push(Line::from(""));
-
-        // Call forwarding
-        lines.push(Line::from(Span::styled("Call Forwarding:", theme.title())));
-
-        let fwd_busy = binding.forward_on_busy.as_deref().unwrap_or("None");
-        lines.push(Line::from(vec![
-            Span::styled("  On Busy: ", theme.muted()),
-            Span::styled(fwd_busy, theme.normal()),
-        ]));
-
-        let fwd_no_answer = binding.forward_on_no_answer.as_deref().unwrap_or("None");
-        lines.push(Line::from(vec![
-            Span::styled("  No Answer: ", theme.muted()),
-            Span::styled(fwd_no_answer, theme.normal()),
-        ]));
-
-        let fwd_unconditional = binding.forward_unconditional.as_deref().unwrap_or("None");
-        lines.push(Line::from(vec![
-            Span::styled("  Unconditional: ", theme.muted()),
-            Span::styled(fwd_unconditional, theme.normal()),
-        ]));
-
-        lines.push(Line::from(""));
-
         // Devices
         lines.push(Line::from(Span::styled(
             format!("Devices ({}):", binding.devices.len()),

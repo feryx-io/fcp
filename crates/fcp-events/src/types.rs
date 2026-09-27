@@ -692,6 +692,17 @@ pub enum UserEvent {
         #[serde(with = "system_time_serde")]
         timestamp: SystemTime,
     },
+
+    /// The user's calling settings changed (`docs/ENTERPRISE_CALLING.md`
+    /// §3.1): DND, call waiting, a forward, the ring time — by the API,
+    /// the self-service page or a feature code.
+    CallingChanged {
+        user_id: String,
+        username: String,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
 }
 
 /// Registration events.
@@ -1544,6 +1555,7 @@ impl PlatformEvent {
                 UserEvent::Deleted { .. } => "user.deleted",
                 UserEvent::Enabled { .. } => "user.enabled",
                 UserEvent::Disabled { .. } => "user.disabled",
+                UserEvent::CallingChanged { .. } => "user.calling_changed",
             },
             PlatformEvent::Registration(e) => match e {
                 RegistrationEvent::Registered { .. } => "registration.registered",
@@ -1666,7 +1678,8 @@ impl PlatformEvent {
                 | UserEvent::Updated { tenant_id, .. }
                 | UserEvent::Deleted { tenant_id, .. }
                 | UserEvent::Enabled { tenant_id, .. }
-                | UserEvent::Disabled { tenant_id, .. } => Some(tenant_id),
+                | UserEvent::Disabled { tenant_id, .. }
+                | UserEvent::CallingChanged { tenant_id, .. } => Some(tenant_id),
             },
             PlatformEvent::Registration(e) => match e {
                 RegistrationEvent::Registered { tenant_id, .. }
@@ -1828,7 +1841,8 @@ impl UserEvent {
             | UserEvent::Updated { timestamp, .. }
             | UserEvent::Deleted { timestamp, .. }
             | UserEvent::Enabled { timestamp, .. }
-            | UserEvent::Disabled { timestamp, .. } => *timestamp,
+            | UserEvent::Disabled { timestamp, .. }
+            | UserEvent::CallingChanged { timestamp, .. } => *timestamp,
         }
     }
 }

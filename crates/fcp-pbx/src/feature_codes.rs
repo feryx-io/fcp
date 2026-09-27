@@ -34,6 +34,30 @@ pub enum FeatureCodeAction {
 
     /// Access voicemail. No suffix = own mailbox, with suffix = specific mailbox.
     VoicemailAccess { mailbox: Option<String> },
+
+    /// A change to the caller's own calling settings
+    /// (`docs/ENTERPRISE_CALLING.md` §3.1).
+    Calling(CallingCode),
+}
+
+/// The calling settings a phone can change by dialing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CallingCode {
+    DndOn,
+    DndOff,
+    /// The target as dialed after the code: a number, an extension.
+    ForwardAllOn {
+        target: String,
+    },
+    ForwardAllOff,
+    ForwardBusyOn {
+        target: String,
+    },
+    ForwardBusyOff,
+    ForwardNoAnswerOn {
+        target: String,
+    },
+    ForwardNoAnswerOff,
 }
 
 /// Extract the user-part from a SIP URI or raw dialed string.
@@ -91,6 +115,27 @@ pub fn parse(dialed: &str, config: &FeatureCodeConfig) -> Option<FeatureCodeActi
             }
         }));
     }
+    if is_enabled(&config.forward_all_on) {
+        prefixes.push((&config.forward_all_on, |suffix| {
+            FeatureCodeAction::Calling(CallingCode::ForwardAllOn {
+                target: suffix.to_string(),
+            })
+        }));
+    }
+    if is_enabled(&config.forward_busy_on) {
+        prefixes.push((&config.forward_busy_on, |suffix| {
+            FeatureCodeAction::Calling(CallingCode::ForwardBusyOn {
+                target: suffix.to_string(),
+            })
+        }));
+    }
+    if is_enabled(&config.forward_no_answer_on) {
+        prefixes.push((&config.forward_no_answer_on, |suffix| {
+            FeatureCodeAction::Calling(CallingCode::ForwardNoAnswerOn {
+                target: suffix.to_string(),
+            })
+        }));
+    }
     if is_enabled(&config.voicemail_access) {
         prefixes.push((&config.voicemail_access, |suffix| {
             FeatureCodeAction::VoicemailAccess {
@@ -120,6 +165,33 @@ pub fn parse(dialed: &str, config: &FeatureCodeConfig) -> Option<FeatureCodeActi
     }
 
     // Exact-match codes (no suffix)
+    let exact: [(&str, FeatureCodeAction); 5] = [
+        (
+            &config.dnd_on,
+            FeatureCodeAction::Calling(CallingCode::DndOn),
+        ),
+        (
+            &config.dnd_off,
+            FeatureCodeAction::Calling(CallingCode::DndOff),
+        ),
+        (
+            &config.forward_all_off,
+            FeatureCodeAction::Calling(CallingCode::ForwardAllOff),
+        ),
+        (
+            &config.forward_busy_off,
+            FeatureCodeAction::Calling(CallingCode::ForwardBusyOff),
+        ),
+        (
+            &config.forward_no_answer_off,
+            FeatureCodeAction::Calling(CallingCode::ForwardNoAnswerOff),
+        ),
+    ];
+    for (code, action) in exact {
+        if is_enabled(code) && user == code {
+            return Some(action);
+        }
+    }
     if is_enabled(&config.group_pickup) && user == config.group_pickup {
         return Some(FeatureCodeAction::GroupPickup);
     }
@@ -206,6 +278,57 @@ mod tests {
             Some(FeatureCodeAction::IntercomOneWay {
                 extension: "1001".to_string()
             })
+        );
+    }
+
+    #[test]
+    fn calling_codes_parse_with_and_without_a_target() {
+        let cfg = default_config();
+        assert_eq!(
+            parse("*78", &cfg),
+            Some(FeatureCodeAction::Calling(CallingCode::DndOn))
+        );
+        assert_eq!(
+            parse("sip:*79@10.0.0.1", &cfg),
+            Some(FeatureCodeAction::Calling(CallingCode::DndOff))
+        );
+        assert_eq!(
+            parse("*72+15551234567", &cfg),
+            Some(FeatureCodeAction::Calling(CallingCode::ForwardAllOn {
+                target: "+15551234567".to_string()
+            }))
+        );
+        assert_eq!(
+            parse("*73", &cfg),
+            Some(FeatureCodeAction::Calling(CallingCode::ForwardAllOff))
+        );
+        assert_eq!(
+            parse("*902002", &cfg),
+            Some(FeatureCodeAction::Calling(CallingCode::ForwardBusyOn {
+                target: "2002".to_string()
+            }))
+        );
+        assert_eq!(
+            parse("*91", &cfg),
+            Some(FeatureCodeAction::Calling(CallingCode::ForwardBusyOff))
+        );
+        assert_eq!(
+            parse("*922002", &cfg),
+            Some(FeatureCodeAction::Calling(CallingCode::ForwardNoAnswerOn {
+                target: "2002".to_string()
+            }))
+        );
+        assert_eq!(
+            parse("*93", &cfg),
+            Some(FeatureCodeAction::Calling(CallingCode::ForwardNoAnswerOff))
+        );
+        // An "on" code without a target is not a code: nothing to forward to.
+        assert_eq!(parse("*72", &cfg), None);
+        // Park's `*70` and retrieve's `*71` are untouched by `*72`/`*73`.
+        assert_eq!(parse("*70", &cfg), Some(FeatureCodeAction::ParkCall));
+        assert_eq!(
+            parse("*71701", &cfg),
+            Some(FeatureCodeAction::RetrieveParkedCall { orbit: 701 })
         );
     }
 

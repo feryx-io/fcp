@@ -3368,8 +3368,7 @@ impl LineBindingStore for PostgresStorage {
     async fn get_line_binding(&self, id: &LineBindingId) -> Result<Option<LineBinding>> {
         let row = sqlx::query(
             "SELECT id, phone_number_id, owner_user_id, binding_type, ring_strategy, tenant_id,
-                    no_answer_timeout_secs, forward_on_busy, forward_on_no_answer,
-                    forward_unconditional, outbound_caller_id, outbound_cnam,
+                    outbound_caller_id, outbound_cnam,
                     flow_id, created_at, updated_at
              FROM line_bindings
              WHERE id = $1",
@@ -3395,8 +3394,7 @@ impl LineBindingStore for PostgresStorage {
     ) -> Result<Option<LineBinding>> {
         let row = sqlx::query(
             "SELECT id, phone_number_id, owner_user_id, binding_type, ring_strategy, tenant_id,
-                    no_answer_timeout_secs, forward_on_busy, forward_on_no_answer,
-                    forward_unconditional, outbound_caller_id, outbound_cnam,
+                    outbound_caller_id, outbound_cnam,
                     flow_id, created_at, updated_at
              FROM line_bindings
              WHERE phone_number_id = $1",
@@ -3418,8 +3416,7 @@ impl LineBindingStore for PostgresStorage {
     async fn list_line_bindings(&self, tenant_id: &TenantId) -> Result<Vec<LineBinding>> {
         let rows = sqlx::query(
             "SELECT id, phone_number_id, owner_user_id, binding_type, ring_strategy, tenant_id,
-                    no_answer_timeout_secs, forward_on_busy, forward_on_no_answer,
-                    forward_unconditional, outbound_caller_id, outbound_cnam,
+                    outbound_caller_id, outbound_cnam,
                     flow_id, created_at, updated_at
              FROM line_bindings
              WHERE tenant_id = $1
@@ -3442,8 +3439,7 @@ impl LineBindingStore for PostgresStorage {
     async fn list_line_bindings_by_user(&self, user_id: &UserId) -> Result<Vec<LineBinding>> {
         let rows = sqlx::query(
             "SELECT id, phone_number_id, owner_user_id, binding_type, ring_strategy, tenant_id,
-                    no_answer_timeout_secs, forward_on_busy, forward_on_no_answer,
-                    forward_unconditional, outbound_caller_id, outbound_cnam,
+                    outbound_caller_id, outbound_cnam,
                     flow_id, created_at, updated_at
              FROM line_bindings
              WHERE owner_user_id = $1
@@ -3466,8 +3462,7 @@ impl LineBindingStore for PostgresStorage {
     async fn list_line_bindings_by_device(&self, device_id: &DeviceId) -> Result<Vec<LineBinding>> {
         let rows = sqlx::query(
             "SELECT lb.id, lb.phone_number_id, lb.owner_user_id, lb.binding_type, lb.ring_strategy, lb.tenant_id,
-                    lb.no_answer_timeout_secs, lb.forward_on_busy, lb.forward_on_no_answer,
-                    lb.forward_unconditional, lb.outbound_caller_id, lb.outbound_cnam,
+                    lb.outbound_caller_id, lb.outbound_cnam,
                     lb.flow_id, lb.created_at, lb.updated_at
              FROM line_bindings lb
              INNER JOIN device_bindings db ON lb.id = db.line_binding_id
@@ -3501,17 +3496,12 @@ impl LineBindingStore for PostgresStorage {
         sqlx::query(
             "INSERT INTO line_bindings (
                 id, phone_number_id, owner_user_id, binding_type, ring_strategy, tenant_id,
-                no_answer_timeout_secs, forward_on_busy, forward_on_no_answer,
-                forward_unconditional, outbound_caller_id, outbound_cnam,
+                outbound_caller_id, outbound_cnam,
                 flow_id, created_at, updated_at
              )
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
              ON CONFLICT(id) DO UPDATE SET
                  ring_strategy = EXCLUDED.ring_strategy,
-                 no_answer_timeout_secs = EXCLUDED.no_answer_timeout_secs,
-                 forward_on_busy = EXCLUDED.forward_on_busy,
-                 forward_on_no_answer = EXCLUDED.forward_on_no_answer,
-                 forward_unconditional = EXCLUDED.forward_unconditional,
                  outbound_caller_id = EXCLUDED.outbound_caller_id,
                  outbound_cnam = EXCLUDED.outbound_cnam,
                  flow_id = EXCLUDED.flow_id,
@@ -3523,10 +3513,6 @@ impl LineBindingStore for PostgresStorage {
         .bind(&binding_type)
         .bind(&ring_strategy)
         .bind(&tenant_id)
-        .bind(binding.no_answer_timeout.as_secs() as i32)
-        .bind(&binding.forward_on_busy)
-        .bind(&binding.forward_on_no_answer)
-        .bind(&binding.forward_unconditional)
         .bind(&binding.outbound_caller_id)
         .bind(&binding.outbound_cnam)
         .bind(&binding.flow_id)
@@ -4377,7 +4363,6 @@ fn row_to_line_binding(row: sqlx::postgres::PgRow) -> Result<LineBinding> {
         _ => RingStrategy::Simultaneous,
     };
 
-    let no_answer_timeout = Duration::from_secs(row.get::<i32, _>("no_answer_timeout_secs") as u64);
     let created_at = datetime_to_system_time(row.get::<DateTime<Utc>, _>("created_at"));
     let updated_at = datetime_to_system_time(row.get::<DateTime<Utc>, _>("updated_at"));
 
@@ -4389,10 +4374,6 @@ fn row_to_line_binding(row: sqlx::postgres::PgRow) -> Result<LineBinding> {
         devices: Vec::new(), // Will be populated by caller
         ring_strategy,
         tenant_id,
-        no_answer_timeout,
-        forward_on_busy: row.get("forward_on_busy"),
-        forward_on_no_answer: row.get("forward_on_no_answer"),
-        forward_unconditional: row.get("forward_unconditional"),
         outbound_caller_id: row.get("outbound_caller_id"),
         outbound_cnam: row.get("outbound_cnam"),
         flow_id: row.try_get("flow_id").unwrap_or(None),
@@ -7588,6 +7569,72 @@ impl fcp_core::sync::SyncStore for PostgresStorage {
             })
             .collect()
     }
+}
+
+#[async_trait]
+impl fcp_core::calling::CallingStore for PostgresStorage {
+    async fn get_calling_settings(
+        &self,
+        tenant_id: &TenantId,
+        user_id: &UserId,
+    ) -> Result<Option<fcp_core::CallingSettings>> {
+        let row = sqlx::query(
+            "SELECT settings_json FROM user_calling_settings WHERE tenant_id = $1 AND user_id = $2",
+        )
+        .bind(tenant_id.to_string())
+        .bind(user_id.to_string())
+        .fetch_optional(self.reads())
+        .await?;
+        row.map(|row| calling_settings_from_value(row.get("settings_json")))
+            .transpose()
+    }
+
+    async fn list_calling_settings(
+        &self,
+        tenant_id: &TenantId,
+    ) -> Result<Vec<fcp_core::CallingSettings>> {
+        let rows = sqlx::query(
+            "SELECT settings_json FROM user_calling_settings WHERE tenant_id = $1 ORDER BY user_id",
+        )
+        .bind(tenant_id.to_string())
+        .fetch_all(self.reads())
+        .await?;
+        rows.into_iter()
+            .map(|row| calling_settings_from_value(row.get("settings_json")))
+            .collect()
+    }
+
+    async fn put_calling_settings(&self, settings: fcp_core::CallingSettings) -> Result<()> {
+        let json = serde_json::to_value(&settings)?;
+        sqlx::query(
+            "INSERT INTO user_calling_settings (user_id, tenant_id, settings_json, updated_at)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT (user_id) DO UPDATE SET
+                 tenant_id = EXCLUDED.tenant_id,
+                 settings_json = EXCLUDED.settings_json,
+                 updated_at = EXCLUDED.updated_at",
+        )
+        .bind(settings.user_id.to_string())
+        .bind(settings.tenant_id.to_string())
+        .bind(json)
+        .bind(system_time_to_datetime(settings.updated_at))
+        .execute(self.writes())
+        .await?;
+        Ok(())
+    }
+
+    async fn delete_calling_settings(&self, tenant_id: &TenantId, user_id: &UserId) -> Result<()> {
+        sqlx::query("DELETE FROM user_calling_settings WHERE tenant_id = $1 AND user_id = $2")
+            .bind(tenant_id.to_string())
+            .bind(user_id.to_string())
+            .execute(self.writes())
+            .await?;
+        Ok(())
+    }
+}
+
+fn calling_settings_from_value(value: serde_json::Value) -> Result<fcp_core::CallingSettings> {
+    serde_json::from_value(value).context("a calling settings row")
 }
 
 #[async_trait]

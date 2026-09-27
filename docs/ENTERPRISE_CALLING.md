@@ -207,6 +207,42 @@ answer), all in `[pbx.feature_codes]` with these defaults (§5 Q6). API:
 tab and the self-service Forwarding page rewritten. Events:
 `user.calling_changed`.
 
+#### 3.1.1 As built (phase 1, v0.25.276)
+
+The row is `user_calling_settings (user_id PK, tenant_id, settings_json,
+updated_at)` — the settings object as JSON, so the phases that follow add
+fields without a migration; migration 082 seeds it from the owner's first
+line binding (`voicemail`, a `+` number as `number:`, digits as `ext:`, a
+SIP URI as it is) and journals it for sites under the user's id, which the
+link applies with `put_calling_settings`. The binding's four columns stay,
+unread, for a later contraction, and `LineBinding` no longer has the
+fields. `CallingDefaults` on the tenant was not needed: the defaults are
+`CallingSettings::defaults`, and a ring time left unset is the node's
+`[b2bua.forking] timeout`, as before (the API clears it with `0`).
+
+`fcp_sip::ring_plan::plan(settings, contacts, has_mailbox)` is the pure
+rule; the path that reaches the user resolves the contacts
+(`contacts_for_binding` for a number's devices, `contacts_for_user` for
+an extension, the registrations found for a direct address) and the
+handler's `ring_by_plan` either applies an immediate treatment or stores
+`callee_user_id`, `treatments` and the ring time on the call and forks.
+When every leg has failed, the call's treatment for busy (486, 600, 603)
+or for no answer applies through `apply_treatment`: `route_cfna` for a
+forward or voicemail — a number or an extension is a new call into this
+node, now at the port it listens on — and a final response otherwise, the
+callee's own code when there was one. A forward's own legs carry no
+treatments, so a forward that fails is the caller's answer. A flow's
+`Dial` to a user rings the plan's first contact, dials a forward's target,
+and for a plan that refuses or ends in voicemail reports `busy` or
+`no_answer` without a leg, for the flow's own branches. A flow or a queue
+as a target is refused by the API until the schedules phase places it.
+
+The feature codes answer the INVITE 200 and end the call, as the agent
+login codes do; a spoken confirmation waits for the media work of phase 3.
+The presence listener keeps each call's tenant from its `call.initiated`
+and takes the tenant from every registration event, so BLF works for
+every tenant; MWI notes still fall back to the default tenant.
+
 ### 3.2 Hold, transfer and pickup in the B2BUA
 
 `CallLeg.held: Option<Held { by: Leg | System, since, private }>`. A
@@ -405,7 +441,7 @@ feature crosses nodes, in the two-node cluster harness.
 
 | Phase | What |
 |---|---|
-| 1 | **Foundations.** `user_calling_settings`, `CallTarget`, `plan_for_user` executed by all four paths (§3.1); forward all, busy, no answer and unreachable working; DND; the extension-to-user path with voicemail; flow `Dial` to a user; the presence listener for every tenant; the feature codes; the calling API and pages. Tests: each forward, DND, a user with no phone reaching voicemail, a flow dialing a user. |
+| 1 | ✅ v0.25.276 — **Foundations.** `user_calling_settings`, `CallTarget`, `plan_for_user` executed by all four paths (§3.1); forward all, busy, no answer and unreachable working; DND; the extension-to-user path with voicemail; flow `Dial` to a user; the presence listener for every tenant; the feature codes; the calling API and pages. Tests: each forward, DND, a user with no phone reaching voicemail, a flow dialing a user. As built (§3.1.1): one JSON row per user, the plan as `fcp_sip::ring_plan::plan` with the contacts resolved by the path, treatments kept on the call, a forward as a new call into this node at its own port, a flow's `Dial` reporting `busy` or `no_answer` for a plan that does not ring. Test: `fcp-call-manager/tests/calling.rs`. |
 | 2 | **Hold, transfer and pickup** (§3.2). The held state, hold answered locally when anchored, the answer bug fixed, park corrected and retrieve as a leg move, REFER executed blind and attended, INVITE with `Replaces`, dialog-info with ids and held. Tests: hold seen by the B2BUA and BLF, attended transfer among three phones, park and retrieve. |
 | 3 | **Music on hold** (§3.3). forge-media's looped, transcoded, replacing player (a forge-media release); the resolver, the built-in default, tenant and per-user prompts, park and hold, the anchoring reason. Test: the phone hears the file's tone while its party is held and while parked. |
 | 4 | **Call waiting** (§3.4). The per-user call set in the registry, the plan's busy rule, `*56`/`*57`. Tests: a second call rings or is refused by the setting; on two nodes. |
