@@ -37,6 +37,7 @@ pub mod recording;
 pub mod region;
 pub mod routing;
 pub mod routing_rule;
+pub mod schedule;
 pub mod secret;
 pub mod service;
 pub mod sip_trace;
@@ -131,6 +132,7 @@ pub use crate::routing::{
     RoutingTarget,
 };
 pub use crate::routing_rule::{RoutingAction, RoutingRule, RoutingRuleId, TrunkTarget};
+pub use crate::schedule::{Holiday, Schedule, ScheduleState, ScheduleStore, WeeklyWindow};
 pub use crate::service::{Service, ServiceManager};
 pub use crate::sip_trace::{SipTraceMessage, SipTraceStore};
 pub use crate::site::{

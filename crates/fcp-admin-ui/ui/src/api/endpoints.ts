@@ -93,6 +93,8 @@ import type {
   MeMailboxStats,
   CallingSettings,
   UpdateCallingRequest,
+  Schedule,
+  ScheduleRequest,
   MeetingResponse,
   CreateMeetingRequest,
   UpdateMeetingRequest,
@@ -533,6 +535,14 @@ export const flows = {
 // implied.
 const tenantHeader = (tenantId?: string): Record<string, string> | undefined =>
   tenantId ? { 'x-fcp-tenant-id': tenantId } : undefined
+export const schedules = {
+  list: () => apiClient.get<Schedule[]>('/schedules'),
+  create: (data: ScheduleRequest) => apiClient.post<Schedule>('/schedules', data),
+  update: (id: string, data: ScheduleRequest) =>
+    apiClient.put<Schedule>(`/schedules/${encodeURIComponent(id)}`, data),
+  delete: (id: string) => apiClient.delete<void>(`/schedules/${encodeURIComponent(id)}`),
+}
+
 export const sites = {
   list: (tenantId?: string) => apiClient.get<SiteInfo[]>('/sites', tenantHeader(tenantId)),
   get: (id: string, tenantId?: string) =>

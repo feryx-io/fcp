@@ -7188,3 +7188,75 @@ async fn sites_are_made_with_a_token_shown_once_and_managed_in_their_tenant() {
 
     app.finish().await;
 }
+
+// ─── Schedules (docs/ENTERPRISE_CALLING.md §3.5) ─────────────────────────
+
+#[tokio::test]
+async fn schedules_are_the_tenants_and_say_their_state() {
+    let app = require_app!();
+    let created = app
+        .admin(
+            Method::POST,
+            "/api/v1/schedules",
+            Some(json!({
+                "name": "Office",
+                "timezone": "America/New_York",
+                "weekly": [{"days": ["Mon", "Tue", "Wed", "Thu", "Fri"], "start": "09:00", "end": "17:00"}],
+                "holidays": [{"name": "Thanksgiving", "from": "2026-11-26", "to": "2026-11-27"}]
+            })),
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.text);
+    let id = created.json["id"].as_str().unwrap().to_string();
+    assert!(
+        ["open", "closed", "holiday"].contains(&created.json["state"].as_str().unwrap()),
+        "{}",
+        created.text
+    );
+    assert_eq!(created.json["weekly"][0]["start"], "09:00");
+
+    let listed = app.admin(Method::GET, "/api/v1/schedules", None).await;
+    assert_eq!(listed.status, StatusCode::OK, "{}", listed.text);
+    assert_eq!(listed.json.as_array().unwrap().len(), 1);
+
+    // Replaced whole; an unknown timezone is refused.
+    let updated = app
+        .admin(
+            Method::PUT,
+            &format!("/api/v1/schedules/{id}"),
+            Some(json!({ "name": "Always", "timezone": "UTC",
+                         "weekly": [{"days": ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"], "start": "00:00", "end": "00:00"}] })),
+        )
+        .await;
+    assert_eq!(updated.status, StatusCode::OK, "{}", updated.text);
+    assert_eq!(updated.json["state"], "open");
+    assert!(updated.json["holidays"].as_array().unwrap().is_empty());
+    let bad = app
+        .admin(
+            Method::PUT,
+            &format!("/api/v1/schedules/{id}"),
+            Some(json!({ "name": "Bad", "timezone": "Mars/Olympus" })),
+        )
+        .await;
+    assert_eq!(bad.status, StatusCode::BAD_REQUEST, "{}", bad.text);
+
+    // Another tenant neither sees it nor can name it.
+    let other = app
+        .admin_in(
+            app.tenant_b,
+            Method::GET,
+            &format!("/api/v1/schedules/{id}"),
+            None,
+        )
+        .await;
+    assert_eq!(other.status, StatusCode::NOT_FOUND, "{}", other.text);
+
+    let gone = app
+        .admin(Method::DELETE, &format!("/api/v1/schedules/{id}"), None)
+        .await;
+    assert_eq!(gone.status, StatusCode::NO_CONTENT, "{}", gone.text);
+    let after = app
+        .admin(Method::GET, &format!("/api/v1/schedules/{id}"), None)
+        .await;
+    assert_eq!(after.status, StatusCode::NOT_FOUND, "{}", after.text);
+}

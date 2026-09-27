@@ -235,7 +235,7 @@ treatments, so a forward that fails is the caller's answer. A flow's
 `Dial` to a user rings the plan's first contact, dials a forward's target,
 and for a plan that refuses or ends in voicemail reports `busy` or
 `no_answer` without a leg, for the flow's own branches. A flow or a queue
-as a target is refused by the API until the schedules phase places it.
+as a target was refused by the API until phase 5 placed it.
 
 The feature codes answer the INVITE 200 and end the call, as the agent
 login codes do; a spoken confirmation waits for the media work of phase 3.
@@ -431,6 +431,37 @@ a flow node `Schedule { schedule_id, open, closed, holiday }`. API
 `/v1/schedules`, a Schedules page, the schedule selects on the number,
 queue and user pages. The routing rules' own time window stays as it is.
 
+#### 3.5.1 As built (phase 5, v0.25.280)
+
+`fcp_core::schedule`: a `Schedule` is weekly windows (days, `HH:MM`
+start and end — an end before its start runs past midnight, an end
+equal to its start is the whole day) and holidays (a day, or `from` to
+`to`), in an IANA timezone; `state_at` gives holiday before hours,
+then open inside any window, else closed, in the schedule's own zone
+through its daylight-saving changes. Stored as JSON (`schedules`,
+migration 083) and journaled for sites; `/v1/schedules` (create, read
+with the state now, replace, delete, under the routing-rule
+permissions) and the Schedules page.
+
+Where a schedule acts: a number's line binding (`schedule_id`,
+`closed_target`, `holiday_target` — a holiday falls back to the closed
+target, no target is 480 "Closed") on the number and the
+extension-to-number paths; a user's `after_hours_schedule_id` and
+`after_hours_forward` in the plan, after forward-all; a database queue's
+`schedule_id` and `closed_target`, decided by the B2BUA before the call
+reaches the queue (the queue's own "closed" routing returned an error
+and failed the call, and still does for TOML queues); and the flow
+`Schedule` node (`open`, `closed`, `holiday`, setting `schedule_state`),
+read by the call manager, whose other runners take the open branch. A
+schedule that is gone or unreadable is open: a route is never closed by a
+database hiccup.
+
+The targets `flow:` and `queue:` are placed now: a flow runs for the
+call (the IVR binding's flow start is `start_flow_for_call`), a queue is
+dialed at its extension. The tenant's own timezone, which the design
+gave schedules as a default, waits for phase 7, which needs the tenant's
+country beside it; a schedule names its zone.
+
 ### 3.6 Find-me / follow-me
 
 `find_me` on the settings (JSONB): `enabled`, `steps: [{ targets, ring_secs,
@@ -564,7 +595,7 @@ feature crosses nodes, in the two-node cluster harness.
 | 2 | ✅ v0.25.277 — **Hold, transfer and pickup** (§3.2). The held state, hold answered locally when anchored, the answer bug fixed, park corrected and retrieve as a leg move, REFER executed blind and attended, INVITE with `Replaces`, dialog-info with ids and held. Tests: hold seen by the B2BUA and BLF, attended transfer among three phones, park and retrieve. As built (§3.2.1): the held leg, the anchored answer fixed, REFER carried out by the node (blind, to a park code, attended through `Replaces`), INVITE with `Replaces`, park and retrieve as leg moves, the orbit's timeout as a transfer back to the parker; hold still passed through (answered locally with phase 3) and dialog-info's ids with phase 9. Test: `fcp-call-manager/tests/calling.rs`. |
 | 3 | ✅ v0.25.278 — **Music on hold** (§3.3). forge-media's looped, transcoded, replacing player (a forge-media release); the resolver, the built-in default, tenant and per-user prompts, park and hold, the anchoring reason. Test: the phone hears the file's tone while its party is held and while parked. As built (§3.3.1): forge-media's player through scheduled playout (forge-media v2026.09.27); holds answered by the node when media is anchored; the music chosen per holder, per tenant, else built in; the parked party held with music; `[media] hold_music` anchors every call; a flow `Play` repeats `loop_count` times; the queue naming a prompt, and the number's and the tenant's switches, not built. Test: `fcp-call-manager/tests/calling.rs`. |
 | 4 | ✅ v0.25.279 — **Call waiting** (§3.4). The per-user call set in the registry, the plan's busy rule, `*56`/`*57`. Tests: a second call rings or is refused by the setting; on two nodes. As built (§3.4.1): a user's calls as leases (`fcp_cluster::CallLeases`, subject `User`) kept by a parties hook on the call manager, this node's own count without a cluster; call waiting off with a call up is the busy treatment; `*56`/`*57`; the Calling page's switch. The class's call limit waits for phase 7. Tests: `calling.rs`, and `trunks.rs` on two nodes. |
-| 5 | **Schedules** (§3.5). The entity, the tenant timezone, the number's closed and holiday targets, the user's after-hours forward, DB queue hours, the flow node, the pages. Tests: a number answered by a flow after hours, a queue closed on a holiday. |
+| 5 | ✅ v0.25.280 — **Schedules** (§3.5). The entity, the tenant timezone, the number's closed and holiday targets, the user's after-hours forward, DB queue hours, the flow node, the pages. Tests: a number answered by a flow after hours, a queue closed on a holiday. As built (§3.5.1): `schedules` (migration 083, JSON rows, synced to sites), the number's `schedule_id`/`closed_target`/`holiday_target`, the user's after-hours forward in the plan, a database queue's hours decided before the queue, the flow `Schedule` node, `flow:` and `queue:` targets placed, `/v1/schedules` and a Schedules page. The tenant's timezone waits for phase 7 with its country. Test: `calling.rs`, `api_postgres.rs`. |
 | 6 | **Find-me / follow-me** (§3.6). Steps, external legs with confirmation, `Diversion`, the page. Tests: a sequential ring reaching a trunk stub that must press 1. |
 | 7 | **Class of service** (§3.7). The entity, classification, enforcement for the effective user, find-me legs and call-on-behalf, the number's screening lists, the line's caller ID applied, the pages. Tests: a premium number refused for one user and placed for another, a withheld caller ID, a blocked caller. |
 | 8 | **Hoteling** (§3.8). Device credentials and the registrar's check, hosts, sessions, login and logout by DTMF, `check-sync`, the effective user in every path, expiry, the API and pages. Tests: a guest logs in on a host phone, is rung there and calls out as themself, expires. |

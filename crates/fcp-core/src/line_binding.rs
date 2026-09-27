@@ -53,6 +53,19 @@ pub struct LineBinding {
     /// Flow ID to execute for IVR bindings
     pub flow_id: Option<String>,
 
+    // ===== Schedule (docs/ENTERPRISE_CALLING.md §3.5) =====
+    /// The number's hours: outside them, calls go to `closed_target`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule_id: Option<crate::ScheduleId>,
+
+    /// Where calls go when the schedule is closed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub closed_target: Option<crate::CallTarget>,
+
+    /// Where calls go on a holiday; the closed target when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub holiday_target: Option<crate::CallTarget>,
+
     // ===== Audit =====
     /// When this binding was created
     pub created_at: SystemTime,
@@ -82,6 +95,9 @@ impl LineBinding {
             outbound_caller_id: None,
             outbound_cnam: None,
             flow_id: None,
+            schedule_id: None,
+            closed_target: None,
+            holiday_target: None,
             created_at: now,
             updated_at: now,
         }

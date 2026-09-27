@@ -36,6 +36,7 @@ pub mod rate_plans;
 pub mod recordings;
 pub mod registrations;
 pub mod routing;
+pub mod schedules;
 pub mod self_service;
 pub mod signup;
 pub mod sip_trace;
@@ -642,6 +643,16 @@ pub fn router() -> Router<ApiState> {
         )
         // Routing Rules
         .route("/routing/preview", get(routing::preview_routing))
+        .route(
+            "/schedules",
+            get(schedules::list_schedules).post(schedules::create_schedule),
+        )
+        .route(
+            "/schedules/:id",
+            get(schedules::get_schedule)
+                .put(schedules::update_schedule)
+                .delete(schedules::delete_schedule),
+        )
         .route(
             "/routing/rules",
             get(routing::list_routing_rules).post(routing::create_routing_rule),

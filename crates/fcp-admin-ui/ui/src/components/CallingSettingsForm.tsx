@@ -27,6 +27,8 @@ interface FormState {
   no_answer_secs: string
   /** 'tenant', 'none' or a prompt's id */
   hold_music: string
+  after_hours_schedule_id: string
+  after_hours_forward: string
   forwards: Record<ForwardKey, ForwardState>
 }
 
@@ -56,6 +58,8 @@ function stateOf(s: CallingSettings): FormState {
     call_waiting: s.call_waiting,
     no_answer_secs: s.no_answer_secs === null ? '' : String(s.no_answer_secs),
     hold_music: s.hold_music ?? 'tenant',
+    after_hours_schedule_id: s.after_hours_schedule_id ?? '',
+    after_hours_forward: s.after_hours_forward ? fieldOf(s.after_hours_forward) : '',
     forwards: {
       forward_all: forwardState(s.forward_all),
       forward_busy: forwardState(s.forward_busy),
@@ -73,6 +77,8 @@ export function requestOf(form: FormState): UpdateCallingRequest {
     call_waiting: form.call_waiting,
     no_answer_secs: form.no_answer_secs.trim() === '' ? 0 : parseInt(form.no_answer_secs, 10) || 0,
     hold_music: form.hold_music === 'tenant' ? '' : form.hold_music,
+    after_hours_schedule_id: form.after_hours_schedule_id,
+    after_hours_forward: form.after_hours_forward.trim(),
     forward_all: forward(form.forwards.forward_all),
     forward_busy: forward(form.forwards.forward_busy),
     forward_no_answer: forward(form.forwards.forward_no_answer),
@@ -91,6 +97,7 @@ export function CallingSettingsForm({
   saving,
   message,
   holdMusicPrompts,
+  schedules,
 }: {
   settings: CallingSettings
   onSave: (req: UpdateCallingRequest) => void
@@ -98,6 +105,8 @@ export function CallingSettingsForm({
   message?: { type: 'success' | 'error'; text: string } | null
   /** The tenant's prompts to choose hold music from (an admin sees them). */
   holdMusicPrompts?: { id: string; name: string }[]
+  /** The tenant's schedules for after-hours (an admin sees them). */
+  schedules?: { id: string; name: string }[]
 }) {
   const [form, setForm] = useState<FormState>(() => stateOf(settings))
   useEffect(() => {
@@ -160,6 +169,33 @@ export function CallingSettingsForm({
           className="w-28"
         />
       </div>
+
+      {schedules && (
+        <div className="space-y-2">
+          <Label className="text-sm font-medium">After hours</Label>
+          <p className="text-xs text-muted-foreground">
+            Outside this schedule&apos;s hours, calls go to the target without ringing.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <select
+              className="flex h-9 w-56 rounded-md border border-input bg-transparent px-3 py-1 text-sm"
+              value={form.after_hours_schedule_id}
+              onChange={(e) => setForm((prev) => ({ ...prev, after_hours_schedule_id: e.target.value }))}
+            >
+              <option value="">No after-hours schedule</option>
+              {schedules.map((sch) => (
+                <option key={sch.id} value={sch.id}>{sch.name}</option>
+              ))}
+            </select>
+            <Input
+              className="w-64"
+              placeholder="voicemail, an extension, +number"
+              value={form.after_hours_forward}
+              onChange={(e) => setForm((prev) => ({ ...prev, after_hours_forward: e.target.value }))}
+            />
+          </div>
+        </div>
+      )}
 
       <div className="space-y-1">
         <Label className="text-sm font-medium">Hold music</Label>

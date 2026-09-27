@@ -349,6 +349,22 @@ pub enum NodeType {
         next: String,
     },
 
+    /// Branch on a schedule (`docs/ENTERPRISE_CALLING.md` §3.5): open,
+    /// closed, or a holiday (the closed branch when there is no holiday
+    /// branch). Read by the call manager; a runner without the tenant's
+    /// schedules takes the open branch.
+    Schedule {
+        /// The schedule's id.
+        schedule_id: String,
+        /// Node when the schedule is open.
+        open: String,
+        /// Node when it is closed.
+        closed: String,
+        /// Node on a holiday.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        holiday: Option<String>,
+    },
+
     /// Access voicemail IVR (PIN entry, message playback, DTMF menu)
     VoicemailAccess {
         /// Target mailbox (variable-interpolated). Empty = derive from caller.

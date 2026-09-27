@@ -204,6 +204,12 @@ pub struct CallingSettings {
     /// No phone registered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub forward_unreachable: Option<CallTarget>,
+    /// The user's hours (`docs/ENTERPRISE_CALLING.md` §3.5): outside them,
+    /// calls go to `after_hours_forward` without ringing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after_hours_schedule_id: Option<crate::ScheduleId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after_hours_forward: Option<CallTarget>,
     /// What a party this user holds hears: a prompt's id, or
     /// [`HOLD_MUSIC_NONE`] for silence; `None` is the tenant's hold music
     /// (`docs/ENTERPRISE_CALLING.md` §3.3).
@@ -232,6 +238,8 @@ impl CallingSettings {
             forward_busy: None,
             forward_no_answer: None,
             forward_unreachable: None,
+            after_hours_schedule_id: None,
+            after_hours_forward: None,
             hold_music: None,
             no_answer_secs: None,
             updated_at: SystemTime::now(),
@@ -263,6 +271,7 @@ impl CallingSettings {
             ("forward_busy", &self.forward_busy),
             ("forward_no_answer", &self.forward_no_answer),
             ("forward_unreachable", &self.forward_unreachable),
+            ("after_hours_forward", &self.after_hours_forward),
         ] {
             if let Some(CallTarget::User(id)) = target {
                 if *id == self.user_id {

@@ -1,8 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Link, Outlet, useLocation } from 'react-router-dom'
 import {
-  LayoutDashboard, Users, Phone, Boxes, MonitorSmartphone, Link2, Building2, MapPin, Settings, LogOut, Moon, Sun, Monitor, Menu, ChevronLeft, PhoneCall, FileText, Headphones, Voicemail, Radio, Activity, Server, Shield, Workflow, Globe, Key, ScrollText, Search, X, FileAudio, Video, Disc, Siren, Coins, Cable,
-} from 'lucide-react'
+  LayoutDashboard, Users, Phone, Boxes, MonitorSmartphone, Link2, Building2, MapPin, Settings, LogOut, Moon, Sun, Monitor, Menu, ChevronLeft, PhoneCall, FileText, Headphones, Voicemail, Radio, Activity, Server, Shield, Workflow, Globe, Key, ScrollText, Search, X, FileAudio, Video, Disc, Siren, Coins, Cable, CalendarClock } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import {
@@ -50,6 +49,7 @@ const navItems: NavItem[] = [
   // Advanced
   { label: 'SIP Trunks', href: '/admin/trunks', icon: Server, section: 'Advanced' },
   { label: 'Routing Rules', href: '/admin/routing', icon: Shield, section: 'Advanced' },
+  { label: 'Schedules', href: '/admin/schedules', icon: CalendarClock, section: 'Advanced' },
   { label: 'Least-Cost Routes', href: '/admin/lcr', icon: Coins, section: 'Advanced' },
   { label: 'IVR Flows', href: '/admin/flows', icon: Workflow, section: 'Advanced' },
   { label: 'Flow Traces', href: '/admin/flow-traces', icon: Activity, section: 'Advanced' },

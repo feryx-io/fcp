@@ -37,6 +37,9 @@ pub struct CallingResponse {
     pub forward_unreachable: Option<String>,
     /// A prompt's id, `none` for silence, or absent for the tenant's music.
     pub hold_music: Option<String>,
+    /// The user's hours and where calls go outside them (§3.5).
+    pub after_hours_schedule_id: Option<String>,
+    pub after_hours_forward: Option<String>,
     /// `None`: the node's default ring time.
     pub no_answer_secs: Option<u32>,
     pub updated_at: u64,
@@ -55,6 +58,8 @@ impl CallingResponse {
             forward_no_answer: target(&settings.forward_no_answer),
             forward_unreachable: target(&settings.forward_unreachable),
             hold_music: settings.hold_music.clone(),
+            after_hours_schedule_id: settings.after_hours_schedule_id.map(|id| id.to_string()),
+            after_hours_forward: settings.after_hours_forward.as_ref().map(|t| t.to_string()),
             no_answer_secs: settings.no_answer_secs,
             updated_at: settings
                 .updated_at
@@ -78,6 +83,10 @@ pub struct UpdateCallingRequest {
     /// A prompt of the tenant, `none`, or an empty string for the
     /// tenant's hold music.
     pub hold_music: Option<String>,
+    /// A schedule of the tenant, or an empty string to clear it.
+    pub after_hours_schedule_id: Option<String>,
+    /// A call target, or an empty string to clear it.
+    pub after_hours_forward: Option<String>,
     pub no_answer_secs: Option<u32>,
 }
 
@@ -125,6 +134,13 @@ pub async fn apply(
             *slot = parse_target(name, &given)?;
         }
     }
+    if let Some(id) = req.after_hours_schedule_id {
+        settings.after_hours_schedule_id =
+            crate::v1::schedules::tenant_schedule(state, &user.tenant_id, &id).await?;
+    }
+    if let Some(given) = req.after_hours_forward {
+        settings.after_hours_forward = parse_target("after_hours_forward", &given)?;
+    }
     if let Some(music) = req.hold_music {
         settings.hold_music = match music.trim() {
             "" => None,
@@ -169,20 +185,14 @@ pub async fn apply(
     Ok(settings)
 }
 
-/// A target from the API: empty clears; a flow or a queue waits for the
-/// schedules phase.
+/// A target from the API: empty clears it.
 fn parse_target(name: &str, given: &str) -> Result<Option<CallTarget>, ApiError> {
     if given.trim().is_empty() {
         return Ok(None);
     }
-    let target =
-        CallTarget::parse(given).map_err(|e| ApiError::BadRequest(format!("{name}: {e}")))?;
-    if matches!(target, CallTarget::Flow(_) | CallTarget::Queue(_)) {
-        return Err(ApiError::BadRequest(format!(
-            "{name}: a flow or a queue is not a forward target in this release"
-        )));
-    }
-    Ok(Some(target))
+    CallTarget::parse(given)
+        .map(Some)
+        .map_err(|e| ApiError::BadRequest(format!("{name}: {e}")))
 }
 
 async fn user_named(

@@ -306,6 +306,9 @@ export interface LineBinding {
   outbound_caller_id: string | null
   outbound_cnam: string | null
   flow_id: string | null
+  schedule_id: string | null
+  closed_target: string | null
+  holiday_target: string | null
   created_at: string
   updated_at: string
 }
@@ -326,6 +329,9 @@ export interface UpdateLineBindingRequest {
   outbound_caller_id?: string
   outbound_cnam?: string
   flow_id?: string
+  schedule_id?: string
+  closed_target?: string
+  holiday_target?: string
   tenant_id?: string
 }
 
@@ -545,6 +551,8 @@ export interface QueueConfigResponse {
   enabled: boolean
   created_at: string
   updated_at: string
+  schedule_id: string | null
+  closed_target: string | null
 }
 
 export interface CreateQueueConfigRequest {
@@ -565,6 +573,8 @@ export interface CreateQueueConfigRequest {
   callback_enabled?: boolean
   timezone?: string
   enabled?: boolean
+  schedule_id?: string
+  closed_target?: string
 }
 
 // Voicemail (matches voicemail.rs)
@@ -1428,6 +1438,8 @@ export interface CallingSettings {
   forward_busy: string | null
   forward_no_answer: string | null
   forward_unreachable: string | null
+  after_hours_schedule_id: string | null
+  after_hours_forward: string | null
   /** A prompt's id, `none` for silence, null for the tenant's hold music */
   hold_music: string | null
   /** null: the node's default ring time */
@@ -1443,6 +1455,9 @@ export interface UpdateCallingRequest {
   forward_busy?: string
   forward_no_answer?: string
   forward_unreachable?: string
+  /** A schedule's id, or '' to clear */
+  after_hours_schedule_id?: string
+  after_hours_forward?: string
   /** A prompt's id, `none`, or '' for the tenant's hold music */
   hold_music?: string
   /** 0 clears it: the node's default */
@@ -1809,4 +1824,38 @@ export interface NumberValidationResponse {
   e164: string
   validated: boolean
   validated_at: number | null
+}
+
+// Schedules (docs/ENTERPRISE_CALLING.md §3.5)
+export type Weekday = 'Mon' | 'Tue' | 'Wed' | 'Thu' | 'Fri' | 'Sat' | 'Sun'
+
+export interface WeeklyWindow {
+  days: Weekday[]
+  /** HH:MM; an end equal to the start is the whole day, before it runs past midnight */
+  start: string
+  end: string
+}
+
+export interface Holiday {
+  name: string
+  from: string
+  to?: string | null
+}
+
+export interface Schedule {
+  id: string
+  tenant_id: string
+  name: string
+  timezone: string
+  weekly: WeeklyWindow[]
+  holidays: Holiday[]
+  state: 'open' | 'closed' | 'holiday'
+  updated_at: number
+}
+
+export interface ScheduleRequest {
+  name: string
+  timezone: string
+  weekly: WeeklyWindow[]
+  holidays: Holiday[]
 }

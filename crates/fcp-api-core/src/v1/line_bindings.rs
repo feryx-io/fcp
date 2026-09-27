@@ -39,6 +39,11 @@ pub struct LineBindingResponse {
     pub outbound_caller_id: Option<String>,
     pub outbound_cnam: Option<String>,
     pub flow_id: Option<String>,
+    /// The number's schedule, and where calls go when it is closed or on a
+    /// holiday (`docs/ENTERPRISE_CALLING.md` §3.5).
+    pub schedule_id: Option<String>,
+    pub closed_target: Option<String>,
+    pub holiday_target: Option<String>,
     pub created_at: SystemTime,
     pub updated_at: SystemTime,
 }
@@ -90,6 +95,9 @@ impl From<LineBinding> for LineBindingResponse {
             outbound_caller_id: binding.outbound_caller_id,
             outbound_cnam: binding.outbound_cnam,
             flow_id: binding.flow_id,
+            schedule_id: binding.schedule_id.map(|id| id.to_string()),
+            closed_target: binding.closed_target.map(|t| t.to_string()),
+            holiday_target: binding.holiday_target.map(|t| t.to_string()),
             created_at: binding.created_at,
             updated_at: binding.updated_at,
         }
@@ -107,6 +115,12 @@ pub struct CreateLineBindingRequest {
     pub devices: Option<Vec<DeviceBindingResponse>>,
     pub ring_strategy: Option<String>,
     pub flow_id: Option<String>,
+    /// A schedule of the tenant; empty clears it.
+    pub schedule_id: Option<String>,
+    /// A call target (`voicemail`, `number:+…`, `ext:…`, `flow:…`,
+    /// `queue:…`, a SIP URI); empty clears it.
+    pub closed_target: Option<String>,
+    pub holiday_target: Option<String>,
 }
 
 fn default_tenant_id() -> TenantId {
@@ -133,6 +147,12 @@ pub struct UpdateLineBindingRequest {
     pub outbound_caller_id: Option<String>,
     pub outbound_cnam: Option<String>,
     pub flow_id: Option<String>,
+    /// A schedule of the tenant; empty clears it.
+    pub schedule_id: Option<String>,
+    /// A call target (`voicemail`, `number:+…`, `ext:…`, `flow:…`,
+    /// `queue:…`, a SIP URI); empty clears it.
+    pub closed_target: Option<String>,
+    pub holiday_target: Option<String>,
 }
 
 /// List line bindings.
@@ -251,6 +271,14 @@ pub async fn create_line_binding(
     }
 
     binding.flow_id = req.flow_id;
+    apply_schedule_fields(
+        &state,
+        &mut binding,
+        req.schedule_id,
+        req.closed_target,
+        req.holiday_target,
+    )
+    .await?;
 
     // Store the line binding
     storage
@@ -326,6 +354,14 @@ pub async fn update_line_binding(
     if req.flow_id.is_some() {
         binding.flow_id = req.flow_id;
     }
+    apply_schedule_fields(
+        &state,
+        &mut binding,
+        req.schedule_id,
+        req.closed_target,
+        req.holiday_target,
+    )
+    .await?;
 
     // Update timestamp
     binding.updated_at = std::time::SystemTime::now();
@@ -401,4 +437,39 @@ fn parse_ring_strategy(s: &str) -> Result<RingStrategy, ApiError> {
             s
         ))),
     }
+}
+
+/// A target given to the API: empty clears it.
+pub(crate) fn optional_target(
+    name: &str,
+    given: &str,
+) -> Result<Option<fcp_core::CallTarget>, ApiError> {
+    if given.trim().is_empty() {
+        return Ok(None);
+    }
+    fcp_core::CallTarget::parse(given)
+        .map(Some)
+        .map_err(|e| ApiError::BadRequest(format!("{name}: {e}")))
+}
+
+/// The schedule fields of a request, each applied when given
+/// (`docs/ENTERPRISE_CALLING.md` §3.5).
+async fn apply_schedule_fields(
+    state: &ApiState,
+    binding: &mut LineBinding,
+    schedule_id: Option<String>,
+    closed_target: Option<String>,
+    holiday_target: Option<String>,
+) -> Result<(), ApiError> {
+    if let Some(id) = schedule_id {
+        binding.schedule_id =
+            crate::v1::schedules::tenant_schedule(state, &binding.tenant_id, &id).await?;
+    }
+    if let Some(t) = closed_target {
+        binding.closed_target = optional_target("closed_target", &t)?;
+    }
+    if let Some(t) = holiday_target {
+        binding.holiday_target = optional_target("holiday_target", &t)?;
+    }
+    Ok(())
 }
