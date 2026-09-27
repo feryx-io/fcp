@@ -1,0 +1,513 @@
+# Enterprise calling
+
+Designed 2026-09-27, after the hybrid control plane (`docs/HYBRID_CONTROL_PLANE.md`)
+closed, as the second recommendation of the 2026-09-25 feature review against
+BroadSoft, CUCM, Zoom, Webex Calling and Twilio: the checklist of calling
+features every enterprise PBX has and FCP does not — shared call appearance,
+do not disturb, call waiting, find-me/follow-me, music on hold, class of
+service, schedules, executive-assistant and hoteling. Nine features, and
+under them one structural gap: FCP has no per-user calling model. This is
+the design for the model and the nine features on it.
+
+## 1. What the code has, and what it lacks
+
+Three surveys of the code on 2026-09-27, each finding checked against the
+file. The live call path is `crates/fcp-sip/src/handler.rs`; the call
+manager binary only wires it.
+
+### 1.1 There is no user calling model
+
+A call reaches a user by one of four paths, and they agree on nothing:
+
+- **A number bound to a user** (`forward_invite_to_b_leg`, handler.rs:4513):
+  the line binding's enabled devices, every registered contact of each,
+  forked at once. The binding's `no_answer_timeout` and `forward_on_no_answer`
+  are honoured (:8114, `check_cfna_destination` :13786). Its
+  `forward_unconditional`, `forward_on_busy`, `ring_strategy`,
+  `DeviceBinding.priority`, `line_appearance`, `shared_line`,
+  `outbound_caller_id` and `outbound_cnam` are stored, shown in the admin
+  UI and the self-service forwarding page, settable through
+  `/v1/line-bindings` and `/v1/me/forwarding/:id`, and read by nothing.
+- **An extension bound to a user** (:5709): every device the user owns,
+  falling back to the user's own AoR. This path sets no `line_binding_id`,
+  so it gets the node's default ring timeout, no forwarding and no
+  voicemail. A caller who dials the extension of a user with voicemail
+  hears 480.
+- **A flow's `Dial`** (`flow_handler.rs:686`): an extension pointing at a
+  user is "not supported" (:957) and falls back to `sip:<ext>@local`,
+  which re-enters the B2BUA.
+- **A hunt group member** (`execute_hunt_group_plan`, :13571): the member's
+  AoR at the local address, with `skip_busy` testing the presence state
+  `Busy`, which is DND, never OnThePhone (`presence.rs:1341`).
+
+No path asks whether the user is on a call, in DND, or wants a second call.
+No contact registered means 480 at once (:4636, :5797), with no forwarding.
+`fcp-core` holds a second, fuller routing engine — `routing_engine.rs`,
+`forwarding.rs` (rules by type, time range and caller list),
+`call_state.rs` (a device state machine with Busy and OnHold),
+`call_forking.rs`, `sip_handler.rs` — that nothing outside its own tests
+constructs.
+
+### 1.2 The B2BUA does not know about hold
+
+`handle_reinvite` (handler.rs:9367) passes every re-INVITE to the other
+leg, rewriting only the address when media is anchored. `a=sendonly` and
+`a=inactive` pass through untouched; no state records that a leg is held;
+`fcp_b2bua_core::CallState` has no held state; `MediaManager::hold_session`
+is a no-op in the forge backend (`backend.rs:931`); no `call.held` event
+exists. When media is anchored, the answer returned to the holder is
+rebuilt from the A-leg's original offer (:9587), so a hold is answered
+`sendrecv`. Park (`handle_park_call`, :12517) sends the parker's own leg a
+`sendonly` re-INVITE and hangs up the far party, and a parked caller hears
+silence.
+
+REFER is always passed to the far leg as a blind transfer (:10535);
+`Replaces` on an incoming INVITE is never parsed; attended transfer from a
+phone therefore fails. Pickup works on ringing calls only.
+
+### 1.3 Audio into a leg is one-shot PCMU
+
+`fcp_media::MediaManager::play_file` plays a file once, as PCMU at 8 kHz
+regardless of the negotiated codec (`forge-engine/src/injection.rs:347`),
+as a second RTP stream beside the relayed audio, with `MixMode` stored and
+ignored. The queue's hold music is a hand-built RTP loop in the call
+manager (`queue_audio.rs`, node-local files under `queue_audio_dir`); the
+conference server has a second, codec-aware player. `PromptCategory::Moh`
+exists (`prompt.rs:22`) and only the conference server reads it. The flow
+`Play` node's `loop_count` is ignored.
+
+### 1.4 Presence is one tenant deep
+
+`run_presence_listener` (`fcp-call-manager/src/main.rs:3107`) turns
+`call.*` events into dialog state for BLF, for `default_tenant_id` only
+(:1769), tracking the callee side only. The dialog-info it sends carries
+FCP's internal call id and no SIP call-id or tags, so a phone cannot pick
+up by `Replaces`. The standalone presence server receives state and note
+over Redis and no calls at all.
+
+### 1.5 Devices have no identity of their own
+
+A device registers with its owner's credentials (`provisioning.rs:181`); the
+registrar does not check that the digest user matches the AoR it registers
+(`registrar.rs:980`); every built-in template renders exactly one account
+(`config_template.rs:81`). A device's owner can be changed by
+`PATCH /v1/devices/:id` but never cleared, and the admin UI cannot set it.
+The registration binding stores no `+sip.instance` or `reg-id`.
+
+### 1.6 Nothing restricts what a user dials, and nothing knows the time
+
+Outbound calls pass the node's YAML policy (roles and departments, file per
+node, default deny when set), the tenant's DB routing rules (pattern, IP,
+time window; allow, deny or trunk) and balance admission. There is no class
+of service, no destination classification, and the number's stored
+`block_anonymous`, `allow_list` and `block_list` are never read. The
+FAC/CMC code in `fcp-pbx/src/codes.rs` is never called.
+
+Time windows exist on routing rules and on TOML-defined queues
+(`is_queue_open`); DB-defined queues get an empty schedule
+(`queue_runtime_config.rs:46`). There is no schedule entity, no holidays,
+no tenant timezone, and nothing that changes where an inbound call goes
+by time. `fcp-flow` has no time node.
+
+### 1.7 What is sound
+
+The B2BUA's parallel fork, the registrar and its cache, the tenant
+resolution and trusted-edge claims, the flow engine, the media relay with
+its per-packet transcoders, the prompt store with tenant uploads, the
+feature-code parser and dispatch, the presence SUBSCRIBE/NOTIFY machinery
+for `dialog` and `presence`, the cluster's call registry, the event bus,
+the CDR pipeline, and the testkit phone that can hold, resume, REFER, take
+a second call and hear a tone. The features below are built on these.
+
+## 2. The model
+
+Three ideas carry all nine features.
+
+**The user's calling settings.** One row per user, `user_calling_settings`,
+created with the tenant's defaults the first time it is read: do not
+disturb, call waiting, four forwards (all, busy, no answer, unreachable)
+with the no-answer time, the find-me steps, the class of service, the hold
+music, the executive and assistant relations, and the schedule that
+switches the forwards after hours. Every feature is a field here or a row
+that points here. The line binding keeps what belongs to the number — its
+type, its destination, its devices, its schedule — and loses the forwards,
+ring strategy and caller ID it never applied (§5 Q1).
+
+**The ring plan.** One function, `plan_for_user`, builds from the settings,
+the user's devices, the hoteling sessions and the live call count an
+ordered plan: steps, each a set of targets rung together for a time, and
+a treatment when the steps are exhausted. Every path that reaches a user —
+number, extension, direct AoR, flow `Dial`, hunt group member, an
+assistant's push, a find-me step naming another user — asks for the plan
+and executes it. DND, call waiting, forwarding, schedules, find-me and
+executive-assistant are all ways the plan is different.
+
+**The effective user of a device.** A call from a phone is from a device;
+the device has an owner, or a hoteling guest, and that user's settings are
+the ones that apply outbound: caller ID, class of service, the CDR's user,
+call-on-behalf. `effective_user(device)` is the one lookup, and the ring
+plan's targets are devices found the same way in reverse.
+
+Two smaller ideas: **a typed call target** (`CallTarget`: a user, an
+extension, an E.164 number, a user's voicemail, a flow, a queue, a SIP URI),
+used by every forward, every schedule branch and every find-me step, with
+one executor; and **the held state of a leg**, known to the B2BUA, which
+music on hold, appearances, transfer and pickup all read.
+
+## 3. The features
+
+### 3.1 Foundations: settings, the ring plan and forwarding
+
+`user_calling_settings` (migration 080): `tenant_id`, `user_id`, `dnd`,
+`call_waiting` (default true), `forward_all`, `forward_busy`,
+`forward_no_answer`, `forward_unreachable` (each a `CallTarget` or null),
+`no_answer_secs` (default 30), `updated_at`; later phases add columns. A
+`CallingDefaults` on the tenant (JSONB) seeds new rows. The binding's
+forwards and timeout are copied into the owner's row by the migration where
+the binding is the owner's first, and the old columns are dropped by a
+later contraction (`scripts/check-migrations.sh` rules).
+
+`fcp_sip::ring_plan::plan_for_user(tenant, user, ctx) -> RingPlan` where
+`ctx` carries the caller, the number or extension dialed, whether the call
+is external, and the time. The plan:
+
+```
+RingPlan { steps: Vec<RingStep>, then: Treatment }
+RingStep { targets: Vec<RingTarget>, ring_secs: u32, confirm: bool }
+RingTarget { Contact(device, contact) | External(e164) }
+Treatment { Voicemail | Forward(CallTarget) | Refuse(code) }
+```
+
+The executor in the handler runs each step as a parallel fork with the
+existing machinery (`send_b_leg_invite`, `handle_parallel_forking`) and the
+step's own timeout, cancels the step's legs when the next begins, and
+applies the treatment: `route_cfna` becomes the `CallTarget` executor.
+Rules applied by `plan_for_user`, in order: `forward_all` set → no steps,
+forward; `dnd` → no steps, `forward_busy` else voicemail else 486; no
+registered contact and no external step → `forward_unreachable` else
+voicemail else 480; on a call and call waiting off or at the class's call
+limit → busy treatment; otherwise the user's devices as step one (later:
+the find-me steps), then `forward_no_answer` else voicemail else the
+callee's last code.
+
+All four paths of §1.1 call it. The extension-to-user path gains what it
+lacked (timeout, forwarding, voicemail). Flow `Dial` to a user extension
+runs the plan on the flow's leg and reports `dial_status` as now. Hunt group
+members that are users get DND and busy honoured. A device extension
+(`ExtensionTarget::Device`) rings the device with its effective user's
+treatment.
+
+The presence listener runs for every tenant, and `is_busy` counts
+OnThePhone. Feature codes `*78`/`*79` (DND on/off), `*72<number>`/`*73`
+(forward all on/off), `*90<number>`/`*91` (busy), `*92<number>`/`*93` (no
+answer), all in `[pbx.feature_codes]` with these defaults (§5 Q6). API:
+`GET/PUT /v1/users/:username/calling` (admin) and `GET/PUT /v1/me/calling`
+(self-service), replacing `/v1/me/forwarding`; the user page's Calling
+tab and the self-service Forwarding page rewritten. Events:
+`user.calling_changed`.
+
+### 3.2 Hold, transfer and pickup in the B2BUA
+
+`CallLeg.held: Option<Held { by: Leg | System, since, private }>`. A
+re-INVITE's direction is read: `sendonly`/`inactive` from a leg holds it,
+`sendrecv` resumes. When media is anchored the B2BUA answers the holder
+itself (`recvonly` or `inactive` in the relay's SDP), stops relaying
+between the legs, and plays the far party what §3.3 decides; the far leg
+is not re-INVITEd. When media is not anchored the re-INVITE passes through
+as today, with the holder's answer derived from the far end's answer, not
+the original offer (the bug at handler.rs:9587). Park becomes a system
+hold of the far party: the parker's party is parked, the parker's leg ends,
+and retrieve moves the held leg to the retriever the way conference
+migration moves a leg (`update_session_b_leg`, a re-INVITE only when
+unanchored). Events `call.held { call_id, leg, by }` and `call.resumed`.
+
+Transfer: the B2BUA executes a phone's REFER. Blind: it dials the
+Refer-To for the far party (one INVITE, `X-FCP-Transferred-From` kept for
+the CDR link), NOTIFYs the transferor, ends the transferor's leg on 200.
+Attended: a Refer-To with `Replaces` names a dialog the B2BUA holds (the
+consult call); the far party of the referring call is bridged to the far
+party of the consult call, both phone legs end. An incoming INVITE with
+`Replaces` for a dialog the node holds replaces that leg (a BLF pickup by
+`Replaces`, later an appearance retrieve). The dialog-info sent to BLF
+watchers carries the SIP `call-id`, `local-tag` and `remote-tag`, both
+sides of every call, and `+sip.rendering=no` on a held dialog.
+
+### 3.3 Music on hold
+
+forge-media: `FileSource` looped (`reset()` exists), playback encoded in
+the leg's negotiated codec through the transcoders already armed per leg,
+resampled from the file's rate, and a `Replace` mix mode that mutes the
+relayed stream while the source plays. FCP: `MediaManager::play_file` gains
+`looped` and `replace`; a `HoldMusic` resolver picks, in order, the held
+party's counterpart's `moh_prompt_id`, the number's `moh_prompt_id`, the
+tenant's default `moh` prompt, and the built-in default — a short piece
+synthesised at startup like the system prompts, no licensed audio in the
+repository (§5 Q4). It plays to the far party on hold and to a parked
+party; a tenant flag `hold_music = false` gives silence with the periodic
+tone instead. Calls of a tenant with hold music anchor at setup (a reason
+in `evaluate_media_anchoring`), since an unanchored hold cannot be played
+into (§5 Q3). The queue's `moh_class` may name a prompt as well as a
+directory. The flow `Play` node's `loop_count` starts working.
+
+### 3.4 Call waiting and busy
+
+`user_calls`: the cluster call registry (`fcp-cluster/src/call_registry.rs`)
+gains a per-user set, `fcp:user_calls:<tenant>:<user>`, written when a
+leg of a user's device establishes and cleared when it ends, with the
+registry's TTL and refresh. `plan_for_user` reads it (the node's own calls
+first). Call waiting on: the second call rings the user's devices as any
+call, phones present the second appearance and their own tone. Off, or the
+class's `max_calls` reached: the busy treatment. `*56`/`*57` turn it off
+and on for the user. A hoteling guest's calls count against the guest.
+
+### 3.5 Schedules
+
+`schedules` (migration 081): `tenant_id`, `name`, `timezone`, `weekly`
+(JSONB list of `{days, start, end}`), `holidays` (JSONB list of
+`{date | from..to, name}`), and `state_at(t) -> Open | Closed | Holiday`.
+The tenant gains `timezone` (schedules and reports default to it; the
+user's own timezone stays the user's) and `country` (§3.7). Attachments:
+a line binding's `schedule_id` with `closed_target` and `holiday_target`
+(both `CallTarget`), a user's `after_hours_schedule_id` with
+`after_hours_forward`, a DB queue's `schedule_id` and `closed_target`
+(the hard-coded empty schedule at `queue_runtime_config.rs:46` goes), and
+a flow node `Schedule { schedule_id, open, closed, holiday }`. API
+`/v1/schedules`, a Schedules page, the schedule selects on the number,
+queue and user pages. The routing rules' own time window stays as it is.
+
+### 3.6 Find-me / follow-me
+
+`find_me` on the settings (JSONB): `enabled`, `steps: [{ targets, ring_secs,
+confirm }]` where a target is `devices` (the user's own), a user, an
+extension or an E.164 number. `plan_for_user` expands the steps into
+`RingStep`s; an external number becomes an outbound leg through the
+tenant's trunk selection with the original caller's number presented and a
+`Diversion` header naming the user's number (§5 Q7 for the alternative).
+`confirm` on a step means an external leg that answers hears "call for
+<name>, press 1 to accept" (`play_tts` on that leg) and is bridged only on
+`1`; anything else, or silence, ends that leg and the step continues — a
+mobile's voicemail can no longer swallow the call. Steps with confirmation
+anchor the call. Self-service on the Calling page; `*60`/`*61` on and off.
+
+### 3.7 Class of service
+
+`classes_of_service` (migration 082): `tenant_id`, `name`, `allowed`
+(a set of `internal, emergency, toll_free, national, international,
+premium, unknown`; `emergency` cannot be removed), `max_calls` (per user,
+default 2), `caller_id` (`line` — the line binding's `outbound_caller_id`
+at last applied — or `withheld`, which sends `Privacy: id` and an anonymous
+From), and `is_default`. A tenant's default class allows every class, so
+an upgrade refuses no call. `classify(tenant, dialed) -> DestinationClass`
+runs on the normalised number: an extension or a tenant user is `internal`,
+the emergency numbers `emergency`, then by the tenant's `country`: the
+country's toll-free and premium prefixes (a built-in table for the
+countries the platform has trunked to, extended by the tenant's
+`destination_overrides`), the country code `national`, another `international`,
+unparseable `unknown`. Enforced in `handle_invite` after the tenant rules
+and before billing, for the effective user of the calling device, and for
+every find-me external leg and call-on-behalf: refused with 403, a
+`Reason` header and `call.failed { reason: class_of_service }`. The
+number's `block_anonymous`, `allow_list` and `block_list` are enforced at
+the DID lookup in the same phase. Assignment: `class_of_service_id` on the
+settings, the class's page and select. FAC/CMC stay unwired (§5 Q8).
+
+### 3.8 Hoteling
+
+Devices gain credentials of their own: `sip_username` and `sip_ha1`
+(nullable; absent means the owner's, as today), rendered by provisioning
+as `${sip_auth_username}`/`${sip_auth_ha1_hash}`; the registrar checks
+that a credential may register the AoR it registers (its own device's, its
+owner's, or a line it is bound to). `devices.hoteling_host` marks a host;
+`owner_user_id` becomes clearable, and the admin UI can set it.
+`hoteling_sessions` (migration 083): `device_id`, `user_id`, `tenant_id`,
+`started_at`, `expires_at`, `ended_at`, `ended_by`. Login: `*88` from a
+host device — the device is identified from the INVITE's registration, the
+call is answered, "extension, then PIN" collected by DTMF (the user's
+`pin`), the session made (ending the user's other session and the
+device's other guest), a `NOTIFY Event: check-sync` sent so a phone that
+re-provisions shows the guest's name (`${effective_user_*}` template
+variables), an MWI NOTIFY for the guest's mailbox. `*89` logs out; the
+tenant's `hoteling_session_hours` (default 12) expires a session by sweep.
+`effective_user(device)` is the guest while a session lives: the ring plan
+rings the host among the guest's devices and leaves it out of the owner's
+(if any), outbound calls from the host are the guest's for caller ID, class
+of service, the CDR and billing, the guest's dialog state is mirrored to
+the host's AoR for BLF. E911 stays the device's, so a guest calls with the
+host's location. API: `GET /v1/hoteling/sessions`, `DELETE
+/v1/hoteling/sessions/:id`, `GET /v1/me/hoteling`, `DELETE /v1/me/hoteling`;
+events `hoteling.login`, `hoteling.logout`.
+
+### 3.9 Shared call appearance
+
+The BroadSoft flavour (§5 Q5): the `call-info` event package with
+`line-seize`, which Yealink, Polycom, Grandstream and Cisco desk phones
+implement. A shared line is a line binding whose `shared` is set with
+`max_appearances` (default 4); its AoR is the number's E.164 user at the
+tenant's domain. A device bound to it registers that AoR as a second
+account with the device's own credentials — the templates render a second
+account and its line keys (`account.2.shared_line`, `reg.2.type=shared`, and
+their Grandstream and Cisco forms). The appearance table lives in Redis,
+`fcp:sca:<tenant>:<line>`, index → `{ state, call_id, node, device }`,
+written by the node that holds the call. Phones SUBSCRIBE `call-info` on the
+line and receive `Call-Info` NOTIFYs with `appearance-index` and
+`appearance-state` (`idle`, `seized`, `progressing`, `alerting`, `active`,
+`held`) fanned out by the presence listener from the appearance events. An
+outgoing call: the phone SUBSCRIBEs `line-seize` for an index, the server
+grants the first free one (or refuses), the INVITE carries it. An incoming
+call to the line: every registered device rings, the index is `alerting`,
+`active` on the first answer, the others are cancelled. Hold from the
+holder's phone marks the index `held` and plays hold music to the far
+party; an INVITE to the line with that index from another phone retrieves
+it — the held far leg is moved to the new phone as park's retrieve does.
+Across nodes: lamps are right because the table is in Redis; a retrieve
+that reaches a node not holding the call is forwarded to the owning node
+over SIP with `X-FCP-Node-Handoff` (§5 Q9). Barge-in on an active
+appearance is §3.11. The `shared_line` toggle appears on the line binding
+page; the testkit phone learns `call-info`, `line-seize` and `Call-Info`.
+
+### 3.10 Executive-assistant
+
+`executive_assistants` (migration 084): `executive_user_id`,
+`assistant_user_id`, `position`, and the assistant's `opted_in`. On the
+executive's settings: `executive: { enabled, filter: all | external | none,
+alert: assistants | assistants_and_executive }`. A call to the executive
+that the filter selects gets a plan whose first step rings every opted-in
+assistant's devices (and the executive's, when `alert` says so) with
+`Alert-Info` for a distinct ring and the executive named in the From
+display ("for <executive>"); the executive's BLF shows the call as theirs.
+Push: `*63` from an assistant on such a call moves the far party to the
+executive's own devices, bypassing the filter. Call on behalf:
+`*64<number>` from an assistant places the call with the executive's
+caller ID and a CDR marking both users, under the assistant's class of
+service. `*65`/`*66`: the executive opts in and out of assistant
+handling; `*67`/`*68`: an assistant opts in and out. Self-service pages for
+both roles; admin sets the relation on the user's Calling tab.
+
+### 3.11 Monitor, whisper and barge on any call
+
+`fcp-media` sessions gain a third participant: `add_party(call_id, offer,
+Mode::Monitor | Whisper | Barge)` implemented in forge-engine through
+forge-mixer — monitor hears both, whisper is heard by the A party only,
+barge hears and is heard by both — and `remove_party`. The queue's
+supervisor path (packet interleaving, `remix_rtp_packet` returns the
+packet unchanged) moves onto it. Exposed as `POST /v1/calls/:id/{monitor,
+whisper,barge}` under a `CallSupervise` permission, and as an INVITE to an
+active shared appearance from a phone with `barge_in` allowed on the line.
+Events `call.party_joined`, `call.party_left`. Last, because every other
+feature stands without it (§5 Q10).
+
+## 4. Phases
+
+One PR each, in order; each proved by end-to-end tests against the running
+binaries with the testkit phone (`docs/TEST_FLOOR.md`), and where a
+feature crosses nodes, in the two-node cluster harness.
+
+| Phase | What |
+|---|---|
+| 1 | **Foundations.** `user_calling_settings`, `CallTarget`, `plan_for_user` executed by all four paths (§3.1); forward all, busy, no answer and unreachable working; DND; the extension-to-user path with voicemail; flow `Dial` to a user; the presence listener for every tenant; the feature codes; the calling API and pages. Tests: each forward, DND, a user with no phone reaching voicemail, a flow dialing a user. |
+| 2 | **Hold, transfer and pickup** (§3.2). The held state, hold answered locally when anchored, the answer bug fixed, park corrected and retrieve as a leg move, REFER executed blind and attended, INVITE with `Replaces`, dialog-info with ids and held. Tests: hold seen by the B2BUA and BLF, attended transfer among three phones, park and retrieve. |
+| 3 | **Music on hold** (§3.3). forge-media's looped, transcoded, replacing player (a forge-media release); the resolver, the built-in default, tenant and per-user prompts, park and hold, the anchoring reason. Test: the phone hears the file's tone while its party is held and while parked. |
+| 4 | **Call waiting** (§3.4). The per-user call set in the registry, the plan's busy rule, `*56`/`*57`. Tests: a second call rings or is refused by the setting; on two nodes. |
+| 5 | **Schedules** (§3.5). The entity, the tenant timezone, the number's closed and holiday targets, the user's after-hours forward, DB queue hours, the flow node, the pages. Tests: a number answered by a flow after hours, a queue closed on a holiday. |
+| 6 | **Find-me / follow-me** (§3.6). Steps, external legs with confirmation, `Diversion`, the page. Tests: a sequential ring reaching a trunk stub that must press 1. |
+| 7 | **Class of service** (§3.7). The entity, classification, enforcement for the effective user, find-me legs and call-on-behalf, the number's screening lists, the line's caller ID applied, the pages. Tests: a premium number refused for one user and placed for another, a withheld caller ID, a blocked caller. |
+| 8 | **Hoteling** (§3.8). Device credentials and the registrar's check, hosts, sessions, login and logout by DTMF, `check-sync`, the effective user in every path, expiry, the API and pages. Tests: a guest logs in on a host phone, is rung there and calls out as themself, expires. |
+| 9 | **Shared call appearance** (§3.9). Shared lines, second-account templates, the appearance table, `call-info` and `line-seize`, retrieve from another phone, the testkit phone's packages. Tests: two phones on one line, lamps through seize, alert, active and held, retrieve on the other phone; lamps right across two nodes. |
+| 10 | **Executive-assistant** (§3.10). The relation, the filter and the plan, push, call on behalf, opt-in codes, the pages. Tests: an external call to the executive rings the assistant, pushed to the executive, a call placed on behalf. |
+| 11 | **Monitor, whisper and barge** (§3.11). The third party in forge-engine (a forge-media release), the API, the queue's supervisor path moved, barge-in on an appearance. Tests: a supervisor hears both parties, a whisper heard by one, the queue supervisor tests still passing. |
+
+## 5. Questions
+
+Ten, each with a recommendation; the phases above assume the
+recommendations.
+
+**Q1. Are calling features per user or per number?** — *Per user.* Every
+platform in the review attaches DND, forwarding, find-me, class of service
+and assistants to the user, and a user reached by extension, by number and
+by a flow expects one behaviour. The line binding keeps the number's
+destination, devices and schedule. The binding's forwards and ring
+strategy are copied into the owner's settings once and their columns
+dropped by a later contraction.
+
+**Q2. The unused routing engine in `fcp-core`.** — *Delete it* in phase 1
+(`routing_engine.rs`, `forwarding.rs`, `call_state.rs`, `call_forking.rs`,
+`sip_handler.rs` and their tests). Reviving it would mean a second call
+path beside the handler's; its forwarding rules run on the server's local
+time; nothing has needed it since it was written.
+
+**Q3. Hold: pass the re-INVITE through, or answer it?** — *Answer it when
+media is anchored, pass it through when not.* Answering locally keeps the
+far phone in an ordinary call so hold music can be played into it and the
+far party can be moved without its phone knowing; pass-through is the
+only option when the phones exchange media directly. A tenant with hold
+music anchors its calls.
+
+**Q4. The default hold music.** — *Synthesised at startup*, a short
+instrumental phrase generated by code, so the repository ships no licensed
+audio and every tenant hears something on day one; a tenant's uploaded
+`moh` prompt replaces it, a user's or number's prompt overrides that.
+
+**Q5. Which shared-line flavour?** — *BroadSoft SCA* (`call-info` and
+`line-seize`), not the draft bridged-line-appearance (`dialog` with
+`Replaces`). It is what the four vendors' desk phones implement first, what
+the platform's provisioning templates target, and Kamailio's `sca` module
+is a public precedent for the server side.
+
+**Q6. Feature codes: per node or per tenant?** — *Per node, in
+`[pbx.feature_codes]`, with the North American conventions as defaults*
+(`*72`/`*73`, `*78`/`*79`, `*90`–`*93`), keeping FCP's `*70`/`*71` for park
+and choosing `*56`/`*57`, `*60`/`*61`, `*63`–`*68`, `*88`/`*89` where the
+conventions collide with park or have no convention. Per-tenant codes are
+a small later project on the same parser.
+
+**Q7. Find-me to an external number: whose number does the carrier see?**
+— *The original caller's, with `Diversion` naming the user*, which is what
+a mobile user expects to see and what carriers accept from a trunk that
+carries a `Diversion` header; a trunk with `caller_id_override` set keeps
+overriding, as it does for every call.
+
+**Q8. Class of service: classification by the number, or by rules?** — *By
+the normalised number against a built-in country table with tenant
+overrides.* A rule language already exists twice (the YAML policy and the
+tenant routing rules); a class of service is what an administrator assigns
+to a person, and it must read as "no international, no premium", not as a
+regex. The routing rules stay for what they do. FAC/CMC authorisation codes
+stay unwired: they need mid-dial DTMF collection and no reviewed platform
+leads with them.
+
+**Q9. Shared lines across nodes.** — *The appearance table in Redis, and a
+retrieve forwarded to the owning node over SIP.* Lamps must be right on
+every node, which the table gives; a retrieve or barge is rare and may
+cost a hop. Moving the call between nodes for it is not worth the
+mechanism.
+
+**Q10. Is three-party audio in this project?** — *Yes, last.* Barge-in is
+part of shared appearances on every reviewed platform and silent
+monitoring is part of executive-assistant, the queue's supervisor path is
+an interleaving that only works by accident, and forge-mixer already mixes.
+It is the one phase that can be dropped without loosening the others.
+
+## 6. Testing
+
+Phases 1 to 8 and 10 are proved in `crates/fcp-call-manager/tests/`
+(new files per feature beside `calls.rs`) with the testkit phone, the seed
+and the carrier stub; phases 4 and 9 add scenarios in the two-node cluster
+harness. The testkit phone gains what the features need: SUBSCRIBE and
+NOTIFY for `dialog`, `call-info` and `line-seize`, `Call-Info` on an
+INVITE, an INVITE with `Replaces`, a REFER with `Replaces`, a second
+account, and `check-sync` reporting. forge-media's player and mixer changes
+are unit-tested in forge-media and proved end to end here. Unit tests
+cover `plan_for_user` for every rule and their order, `classify` for every
+class per country, `state_at` for weekly, overnight and holiday cases in a
+timezone with daylight saving, and the appearance table's transitions.
+
+## 7. Not in scope
+
+Per-tenant feature codes (Q6). Authorisation codes (Q8). Private hold on a
+shared appearance and video on a shared line. A web softphone, SSO, SCIM
+and firmware, which are the review's later recommendations. Voicemail
+changes beyond the treatment reaching it. Distinctive ring per number and
+per caller, which is an `Alert-Info` on the plan's INVITEs and a small
+follow-up. Simultaneous ring to the WebRTC gateway's users, who join
+conferences and do not register. The queue's own hold-music player, which
+keeps its files and gains only a prompt as a source.

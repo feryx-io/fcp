@@ -1191,6 +1191,36 @@ up. **The hybrid control plane project is complete.** Left: a call
 through the live site in the nightly, the site's own events, voicemail
 and conference servers in the site project.
 
+## What is next (chosen 2026-09-27, after the hybrid control plane closed)
+
+**Enterprise calling** — design in `docs/ENTERPRISE_CALLING.md`
+(v0.25.275), the second recommendation of the 2026-09-25 feature review:
+the calling features every enterprise PBX has and FCP does not — shared
+call appearance, do not disturb, call waiting, find-me/follow-me, music
+on hold, class of service, schedules, executive-assistant and hoteling.
+Three surveys of the code found the structural gap under them: there is
+no per-user calling model. A call reaches a user by four paths that agree
+on nothing (a number's binding honours only the no-answer forward and its
+timeout; an extension to a user gets no forwarding and no voicemail; a
+flow cannot dial a user; a hunt group's busy check reads DND), the B2BUA
+passes every hold through and holds no held state, park hangs up the far
+party and a parked caller hears silence, attended transfer fails because
+`Replaces` is never read, audio into a leg is one-shot PCMU, presence is
+one tenant deep, devices have no credentials of their own, nothing
+restricts what a user dials and nothing knows the time. The model: one
+`user_calling_settings` row per user, one ring plan (`plan_for_user`)
+executed by every path, and the effective user of a device (its owner or
+its hoteling guest) for everything outbound; a typed `CallTarget` for
+every forward, schedule branch and find-me step; the held state of a leg
+known to the B2BUA. Eleven phases from the foundations to three-party
+audio; ten questions, each settled on its recommendation (per user not
+per number, the dead `fcp-core` routing engine deleted, hold answered
+locally when anchored, a synthesised default hold music, BroadSoft SCA,
+per-node feature codes with North American defaults, the caller's number
+with `Diversion` on find-me legs, class of service by number
+classification not rules, appearances in Redis with retrieves forwarded
+to the owning node, monitor/whisper/barge last).
+
 ## Historical documents
 
 Superseded status docs live in [`docs/archive/`](docs/archive/README.md) — they describe
