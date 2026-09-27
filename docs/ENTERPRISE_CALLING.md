@@ -392,6 +392,30 @@ call, phones present the second appearance and their own tone. Off, or the
 class's `max_calls` reached: the busy treatment. `*56`/`*57` turn it off
 and on for the user. A hoteling guest's calls count against the guest.
 
+#### 3.4.1 As built (phase 4, v0.25.279)
+
+The per-user set is a lease subject of the cluster's call counting
+(`fcp_cluster::CallLeases`, `LeaseSubject::User("<tenant>:<user>")`),
+the same sorted sets the tenant and trunk limits use, rather than a
+key of the call registry: a node that dies leaves leases that lapse.
+Without a cluster the count is the node's own (`LocalUserCalls`).
+`Call::counted_users` is the users a call counts against while it is
+up — `caller_user_id` (set at the INVITE when the From names a user of
+the tenant, by extension or username) and `callee_user_id` (the plan's
+callee) — and `CallManager::set_on_parties_changed` is told whenever
+that set changes; `fcp_sip::user_calls::UserCalls` takes and releases
+the leases from it and refreshes them every ten minutes. A party that
+leaves a call releases it: a transfer clears the referrer's user, a park
+the parker's, a take-over puts the joining INVITE's caller in the slot.
+
+The plan gains one input: on a call with call waiting off is the busy
+treatment, as do not disturb is. With call waiting on, the second call
+rings the phones as any call and the phone presents it. `*56` turns
+call waiting on and `*57` off (the codes of §3.4 in on/off order, as
+every other pair), and the Calling page and dialog have the switch.
+A flow's `Dial` does not yet consult it. The class of service's
+`max_calls` is phase 7's.
+
 ### 3.5 Schedules
 
 `schedules` (migration 081): `tenant_id`, `name`, `timezone`, `weekly`
@@ -539,7 +563,7 @@ feature crosses nodes, in the two-node cluster harness.
 | 1 | ✅ v0.25.276 — **Foundations.** `user_calling_settings`, `CallTarget`, `plan_for_user` executed by all four paths (§3.1); forward all, busy, no answer and unreachable working; DND; the extension-to-user path with voicemail; flow `Dial` to a user; the presence listener for every tenant; the feature codes; the calling API and pages. Tests: each forward, DND, a user with no phone reaching voicemail, a flow dialing a user. As built (§3.1.1): one JSON row per user, the plan as `fcp_sip::ring_plan::plan` with the contacts resolved by the path, treatments kept on the call, a forward as a new call into this node at its own port, a flow's `Dial` reporting `busy` or `no_answer` for a plan that does not ring. Test: `fcp-call-manager/tests/calling.rs`. |
 | 2 | ✅ v0.25.277 — **Hold, transfer and pickup** (§3.2). The held state, hold answered locally when anchored, the answer bug fixed, park corrected and retrieve as a leg move, REFER executed blind and attended, INVITE with `Replaces`, dialog-info with ids and held. Tests: hold seen by the B2BUA and BLF, attended transfer among three phones, park and retrieve. As built (§3.2.1): the held leg, the anchored answer fixed, REFER carried out by the node (blind, to a park code, attended through `Replaces`), INVITE with `Replaces`, park and retrieve as leg moves, the orbit's timeout as a transfer back to the parker; hold still passed through (answered locally with phase 3) and dialog-info's ids with phase 9. Test: `fcp-call-manager/tests/calling.rs`. |
 | 3 | ✅ v0.25.278 — **Music on hold** (§3.3). forge-media's looped, transcoded, replacing player (a forge-media release); the resolver, the built-in default, tenant and per-user prompts, park and hold, the anchoring reason. Test: the phone hears the file's tone while its party is held and while parked. As built (§3.3.1): forge-media's player through scheduled playout (forge-media v2026.09.27); holds answered by the node when media is anchored; the music chosen per holder, per tenant, else built in; the parked party held with music; `[media] hold_music` anchors every call; a flow `Play` repeats `loop_count` times; the queue naming a prompt, and the number's and the tenant's switches, not built. Test: `fcp-call-manager/tests/calling.rs`. |
-| 4 | **Call waiting** (§3.4). The per-user call set in the registry, the plan's busy rule, `*56`/`*57`. Tests: a second call rings or is refused by the setting; on two nodes. |
+| 4 | ✅ v0.25.279 — **Call waiting** (§3.4). The per-user call set in the registry, the plan's busy rule, `*56`/`*57`. Tests: a second call rings or is refused by the setting; on two nodes. As built (§3.4.1): a user's calls as leases (`fcp_cluster::CallLeases`, subject `User`) kept by a parties hook on the call manager, this node's own count without a cluster; call waiting off with a call up is the busy treatment; `*56`/`*57`; the Calling page's switch. The class's call limit waits for phase 7. Tests: `calling.rs`, and `trunks.rs` on two nodes. |
 | 5 | **Schedules** (§3.5). The entity, the tenant timezone, the number's closed and holiday targets, the user's after-hours forward, DB queue hours, the flow node, the pages. Tests: a number answered by a flow after hours, a queue closed on a holiday. |
 | 6 | **Find-me / follow-me** (§3.6). Steps, external legs with confirmation, `Diversion`, the page. Tests: a sequential ring reaching a trunk stub that must press 1. |
 | 7 | **Class of service** (§3.7). The entity, classification, enforcement for the effective user, find-me legs and call-on-behalf, the number's screening lists, the line's caller ID applied, the pages. Tests: a premium number refused for one user and placed for another, a withheld caller ID, a blocked caller. |

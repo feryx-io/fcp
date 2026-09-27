@@ -44,6 +44,9 @@ pub enum LeaseSubject<'a> {
     Tenant(&'a str),
     /// A trunk's channels, wherever the calls using them run.
     Trunk(&'a str),
+    /// A user's calls, wherever they are (`<tenant>:<user>`): what call
+    /// waiting reads (`docs/ENTERPRISE_CALLING.md` §3.4).
+    User(&'a str),
 }
 
 impl LeaseSubject<'_> {
@@ -51,6 +54,7 @@ impl LeaseSubject<'_> {
         match self {
             Self::Tenant(id) => format!("leases:tenant:{id}"),
             Self::Trunk(id) => format!("leases:trunk:{id}"),
+            Self::User(id) => format!("leases:user:{id}"),
         }
     }
 }

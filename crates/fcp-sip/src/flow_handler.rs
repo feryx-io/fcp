@@ -999,6 +999,7 @@ impl FlowCallHandler {
                                                         &settings,
                                                         contacts,
                                                         has_mailbox,
+                                                        false,
                                                     ) {
                                                         RingPlan::Ring { contacts, .. } => {
                                                             resolved = contacts.first().and_then(|c| {

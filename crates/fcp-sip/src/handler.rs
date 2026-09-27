@@ -535,6 +535,8 @@ pub struct SipMessageHandler {
     /// Explicit default tenant for deployments without tenant-specific SIP domains.
     /// When unset, inbound requests must derive a tenant from SIP addressing.
     default_tenant_id: Option<fcp_core::TenantId>,
+    /// Each user's calls, for call waiting (`docs/ENTERPRISE_CALLING.md` §3.4).
+    user_calls: Option<Arc<crate::user_calls::UserCalls>>,
     /// Edges whose caller headers are believed (`[e911] trusted_edges`).
     trusted_edges: crate::emergency::TrustedEdges,
     /// What reaches this node's SIP port, and what a flood of it costs
@@ -978,6 +980,7 @@ impl SipMessageHandler {
             uac,
             storage,
             default_tenant_id: None,
+            user_calls: None,
             trusted_edges: Default::default(),
             edge_guard: None,
             vouch_client_address: false,
@@ -1183,6 +1186,12 @@ impl SipMessageHandler {
     /// §6.2). The next hop believes it only from its trusted edges.
     pub fn with_client_address_vouching(mut self, vouch: bool) -> Self {
         self.vouch_client_address = vouch;
+        self
+    }
+
+    /// Count each user's calls, for call waiting.
+    pub fn with_user_calls(mut self, user_calls: Arc<crate::user_calls::UserCalls>) -> Self {
+        self.user_calls = Some(user_calls);
         self
     }
 
@@ -3107,6 +3116,11 @@ impl SipMessageHandler {
 
         // Evaluate media anchoring decision
         self.evaluate_media_anchoring(request, &call_id).await;
+
+        // The user placing the call, if one of the tenant's is: the call
+        // counts against them while it is up (`docs/ENTERPRISE_CALLING.md`
+        // §3.4).
+        self.note_caller_user(request, &call_id).await;
 
         // An INVITE that replaces a leg of a call this node holds: an
         // attended transfer's second half, or a phone taking over a call
@@ -12509,6 +12523,13 @@ impl SipMessageHandler {
         };
         let parker_ext = parker_ext.to_string();
         self.call_manager.update_call(&call.id, |c| {
+            // The parker leaves the call; the parked party, now in A, is
+            // who it counts against.
+            if parker == fcp_b2bua_core::LegSide::A {
+                c.caller_user_id = c.callee_user_id.take();
+            } else {
+                c.callee_user_id = None;
+            }
             if parker == fcp_b2bua_core::LegSide::A {
                 if let Some(b) = c.b_leg.take() {
                     c.a_leg = b;
@@ -12764,7 +12785,15 @@ impl SipMessageHandler {
         let new_dialog = self.build_inbound_dialog(request, &response)?;
         let leg = self.build_pickup_leg(request, new_dialog.clone());
         let party_dialog_for_call = party_dialog.clone();
+        let joining_user = self
+            .call_manager
+            .get_call(feature_call_id)
+            .and_then(|c| c.caller_user_id);
         let updated = self.call_manager.update_call(&call.id, |c| {
+            match side {
+                fcp_b2bua_core::LegSide::A => c.caller_user_id = joining_user,
+                fcp_b2bua_core::LegSide::B => c.callee_user_id = joining_user,
+            }
             match side {
                 fcp_b2bua_core::LegSide::A => {
                     c.a_leg = leg.clone();
@@ -13839,6 +13868,32 @@ impl SipMessageHandler {
     // Call Forward No Answer (CFNA)
     // =========================================================================
 
+    /// Mark the call with the user its caller is, when the From names a
+    /// user of the call's tenant (an extension or a username).
+    async fn note_caller_user(
+        &self,
+        request: &sip_core::Request,
+        call_id: &fcp_b2bua_core::CallId,
+    ) {
+        let (Some(storage), Some(tenant)) = (
+            self.storage.as_ref(),
+            self.call_manager.get_call(call_id).map(|c| c.tenant_id),
+        ) else {
+            return;
+        };
+        let Some(from) = extract_from_uri(request)
+            .ok()
+            .and_then(|u| u.user().map(str::to_string))
+        else {
+            return;
+        };
+        if let Some(user_id) = crate::ring_plan::user_of(storage, &tenant, &from).await {
+            let _ = self
+                .call_manager
+                .update_call(call_id, |c| c.caller_user_id = Some(user_id));
+        }
+    }
+
     /// Ring a user by their plan (`docs/ENTERPRISE_CALLING.md` §3.1):
     /// `Some(contacts)` to fork, with the treatments and the ring time on
     /// the call; `None` when the plan applied at once and the call is
@@ -13864,7 +13919,13 @@ impl SipMessageHandler {
                 false,
             ),
         };
-        match crate::ring_plan::plan(&settings, contacts, has_mailbox) {
+        let on_a_call = match (&self.user_calls, user_id) {
+            (Some(user_calls), Some(user_id)) if !settings.call_waiting => {
+                user_calls.count(tenant_id, &user_id).await > 0
+            }
+            _ => false,
+        };
+        match crate::ring_plan::plan(&settings, contacts, has_mailbox, on_a_call) {
             crate::ring_plan::RingPlan::Immediate { treatment, reason } => {
                 info!(call_id = %call_id, ?user_id, ?treatment, reason, "The callee's plan applies without ringing");
                 let _ = self.call_manager.update_call(&call_id, |call| {
@@ -14066,6 +14127,14 @@ impl SipMessageHandler {
             }
             ForwardNoAnswerOff => {
                 settings.forward_no_answer = None;
+                Ok(())
+            }
+            CallWaitingOn => {
+                settings.call_waiting = true;
+                Ok(())
+            }
+            CallWaitingOff => {
+                settings.call_waiting = false;
                 Ok(())
             }
         };

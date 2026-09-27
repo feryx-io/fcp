@@ -58,6 +58,8 @@ pub enum CallingCode {
         target: String,
     },
     ForwardNoAnswerOff,
+    CallWaitingOn,
+    CallWaitingOff,
 }
 
 /// Extract the user-part from a SIP URI or raw dialed string.
@@ -165,7 +167,15 @@ pub fn parse(dialed: &str, config: &FeatureCodeConfig) -> Option<FeatureCodeActi
     }
 
     // Exact-match codes (no suffix)
-    let exact: [(&str, FeatureCodeAction); 5] = [
+    let exact: [(&str, FeatureCodeAction); 7] = [
+        (
+            &config.call_waiting_on,
+            FeatureCodeAction::Calling(CallingCode::CallWaitingOn),
+        ),
+        (
+            &config.call_waiting_off,
+            FeatureCodeAction::Calling(CallingCode::CallWaitingOff),
+        ),
         (
             &config.dnd_on,
             FeatureCodeAction::Calling(CallingCode::DndOn),
@@ -321,6 +331,14 @@ mod tests {
         assert_eq!(
             parse("*93", &cfg),
             Some(FeatureCodeAction::Calling(CallingCode::ForwardNoAnswerOff))
+        );
+        assert_eq!(
+            parse("*56", &cfg),
+            Some(FeatureCodeAction::Calling(CallingCode::CallWaitingOn))
+        );
+        assert_eq!(
+            parse("*57", &cfg),
+            Some(FeatureCodeAction::Calling(CallingCode::CallWaitingOff))
         );
         // An "on" code without a target is not a code: nothing to forward to.
         assert_eq!(parse("*72", &cfg), None);

@@ -14,6 +14,10 @@ pub type OnEnded = Arc<dyn Fn(&CallId) + Send + Sync>;
 
 /// What is told of a call's held leg changing: the call and the leg now
 /// held, `None` when none is.
+/// What is told of the users a call counts against changing: the call and
+/// its users now (none once it has ended).
+pub type OnPartiesChanged = Arc<dyn Fn(CallId, Vec<fcp_core::UserId>) + Send + Sync>;
+
 pub type OnHoldChanged = Arc<dyn Fn(CallId, Option<crate::call::LegSide>) + Send + Sync>;
 
 /// Call manager service.
@@ -56,6 +60,11 @@ pub struct CallManager {
     /// released the leg. Set once, after the manager is shared.
     on_hold_changed: std::sync::OnceLock<OnHoldChanged>,
 
+    /// Told whenever the users a call counts against change
+    /// (`docs/ENTERPRISE_CALLING.md` §3.4): what keeps each user's calls
+    /// counted for call waiting.
+    on_parties_changed: std::sync::OnceLock<OnPartiesChanged>,
+
     /// Emergency calls' audit records as their inserts land: the record id
     /// once written, so the call's ending completes the right row however
     /// short the call was.
@@ -75,6 +84,7 @@ impl CallManager {
             region: None,
             on_ended: None,
             on_hold_changed: std::sync::OnceLock::new(),
+            on_parties_changed: std::sync::OnceLock::new(),
             emergency_records: Arc::new(DashMap::new()),
         }
     }
@@ -93,6 +103,7 @@ impl CallManager {
             region: None,
             on_ended: None,
             on_hold_changed: std::sync::OnceLock::new(),
+            on_parties_changed: std::sync::OnceLock::new(),
             emergency_records: Arc::new(DashMap::new()),
         }
     }
@@ -148,6 +159,7 @@ impl CallManager {
             region: None,
             on_ended: None,
             on_hold_changed: std::sync::OnceLock::new(),
+            on_parties_changed: std::sync::OnceLock::new(),
             emergency_records: Arc::new(DashMap::new()),
         }
     }
@@ -163,6 +175,7 @@ impl CallManager {
             region: None,
             on_ended: None,
             on_hold_changed: std::sync::OnceLock::new(),
+            on_parties_changed: std::sync::OnceLock::new(),
             billing: None,
             emergency_records: Arc::new(DashMap::new()),
         }
@@ -198,6 +211,12 @@ impl CallManager {
     }
 
     /// Be told of every call this manager ends or forgets.
+    /// Set what is told when the users a call counts against change; the
+    /// first setting stands.
+    pub fn set_on_parties_changed(&self, hook: OnPartiesChanged) {
+        let _ = self.on_parties_changed.set(hook);
+    }
+
     /// Set what is told when a call's held leg changes; the first setting
     /// stands.
     pub fn set_on_hold_changed(&self, hook: OnHoldChanged) {
@@ -511,6 +530,7 @@ impl CallManager {
         // Capture old state for comparison
         let old_state = entry.state;
         let old_held = entry.held;
+        let old_users = entry.counted_users();
 
         update_fn(entry.value_mut());
 
@@ -520,6 +540,12 @@ impl CallManager {
         if old_held != new_held {
             if let Some(hook) = self.on_hold_changed.get() {
                 hook(*call_id, new_held);
+            }
+        }
+        let new_users = entry.counted_users();
+        if old_users != new_users {
+            if let Some(hook) = self.on_parties_changed.get() {
+                hook(*call_id, new_users);
             }
         }
 

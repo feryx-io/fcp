@@ -376,6 +376,12 @@ impl TransferRun {
                 }
             }
             c.held = None;
+            // The referrer has left the call; the target counts on the
+            // call the node dialed it on.
+            match referrer {
+                LegSide::A => c.caller_user_id = None,
+                LegSide::B => c.callee_user_id = None,
+            }
             if c.state == fcp_b2bua_core::CallState::Parked {
                 c.unpark();
             }

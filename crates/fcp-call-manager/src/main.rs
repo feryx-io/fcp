@@ -875,6 +875,28 @@ async fn main() -> Result<()> {
     }
     let call_manager = Arc::new(call_manager_inner);
 
+    // Each user's calls, for call waiting (docs/ENTERPRISE_CALLING.md
+    // §3.4): leases in the cluster's Redis when there is a cluster, so a
+    // call on another node counts; this node's own otherwise.
+    let user_call_count: Arc<dyn fcp_sip::user_calls::UserCallCount> = {
+        #[cfg(feature = "storage-redis")]
+        {
+            match redis_storage.clone().filter(|_| config.cluster.enabled) {
+                Some(redis) => {
+                    info!("Users' calls are counted across the cluster");
+                    Arc::new(RedisUserCalls(fcp_cluster::CallLeases::new(redis)))
+                }
+                None => Arc::new(fcp_sip::user_calls::LocalUserCalls::default()),
+            }
+        }
+        #[cfg(not(feature = "storage-redis"))]
+        {
+            Arc::new(fcp_sip::user_calls::LocalUserCalls::default())
+        }
+    };
+    let user_calls = fcp_sip::user_calls::UserCalls::new(user_call_count, &call_manager);
+    user_calls.install(&call_manager, Duration::from_secs(600));
+
     // Hold music (docs/ENTERPRISE_CALLING.md §3.3): the built-in default in
     // `prompts_dir`, and the player driven by every change of a held leg.
     if config.media.hold_music {
@@ -1382,6 +1404,7 @@ async fn main() -> Result<()> {
         config.service.node_id.clone(),
     )?
     .with_default_tenant_id(default_tenant_id)
+    .with_user_calls(Arc::clone(&user_calls))
     .with_trusted_edges(fcp_sip::emergency::TrustedEdges::parse(
         &config.e911.trusted_edges,
     )?)
@@ -3768,5 +3791,68 @@ async fn run_presence_notifier(
                 }
             }
         }
+    }
+}
+
+/// A user's calls as leases in the cluster's Redis
+/// (`docs/ENTERPRISE_CALLING.md` §3.4): subject `User("<tenant>:<user>")`.
+#[cfg(feature = "storage-redis")]
+struct RedisUserCalls(fcp_cluster::CallLeases);
+
+#[cfg(feature = "storage-redis")]
+#[async_trait::async_trait]
+impl fcp_sip::user_calls::UserCallCount for RedisUserCalls {
+    async fn take(
+        &self,
+        tenant: &fcp_core::TenantId,
+        user: &fcp_core::UserId,
+        call_id: &str,
+    ) -> anyhow::Result<()> {
+        let subject = format!("{tenant}:{user}");
+        self.0
+            .take(fcp_cluster::LeaseSubject::User(&subject), call_id)
+            .await
+            .map(|_| ())
+    }
+
+    async fn release(
+        &self,
+        tenant: &fcp_core::TenantId,
+        user: &fcp_core::UserId,
+        call_id: &str,
+    ) -> anyhow::Result<()> {
+        let subject = format!("{tenant}:{user}");
+        self.0
+            .release(fcp_cluster::LeaseSubject::User(&subject), call_id)
+            .await
+    }
+
+    async fn count(
+        &self,
+        tenant: &fcp_core::TenantId,
+        user: &fcp_core::UserId,
+    ) -> anyhow::Result<u64> {
+        let subject = format!("{tenant}:{user}");
+        self.0.held(fcp_cluster::LeaseSubject::User(&subject)).await
+    }
+
+    async fn refresh(
+        &self,
+        held: &[(fcp_core::TenantId, fcp_core::UserId, String)],
+    ) -> anyhow::Result<()> {
+        let mut by_user: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        for (tenant, user, call_id) in held {
+            by_user
+                .entry(format!("{tenant}:{user}"))
+                .or_default()
+                .push(call_id.clone());
+        }
+        for (subject, calls) in by_user {
+            self.0
+                .refresh(fcp_cluster::LeaseSubject::User(&subject), &calls)
+                .await?;
+        }
+        Ok(())
     }
 }
