@@ -3369,7 +3369,7 @@ impl LineBindingStore for PostgresStorage {
         let row = sqlx::query(
             "SELECT id, phone_number_id, owner_user_id, binding_type, ring_strategy, tenant_id,
                     outbound_caller_id, outbound_cnam,
-                    flow_id, created_at, updated_at
+                    flow_id, schedule_id, closed_target, holiday_target, created_at, updated_at
              FROM line_bindings
              WHERE id = $1",
         )
@@ -3395,7 +3395,7 @@ impl LineBindingStore for PostgresStorage {
         let row = sqlx::query(
             "SELECT id, phone_number_id, owner_user_id, binding_type, ring_strategy, tenant_id,
                     outbound_caller_id, outbound_cnam,
-                    flow_id, created_at, updated_at
+                    flow_id, schedule_id, closed_target, holiday_target, created_at, updated_at
              FROM line_bindings
              WHERE phone_number_id = $1",
         )
@@ -3417,7 +3417,7 @@ impl LineBindingStore for PostgresStorage {
         let rows = sqlx::query(
             "SELECT id, phone_number_id, owner_user_id, binding_type, ring_strategy, tenant_id,
                     outbound_caller_id, outbound_cnam,
-                    flow_id, created_at, updated_at
+                    flow_id, schedule_id, closed_target, holiday_target, created_at, updated_at
              FROM line_bindings
              WHERE tenant_id = $1
              ORDER BY created_at",
@@ -3440,7 +3440,7 @@ impl LineBindingStore for PostgresStorage {
         let rows = sqlx::query(
             "SELECT id, phone_number_id, owner_user_id, binding_type, ring_strategy, tenant_id,
                     outbound_caller_id, outbound_cnam,
-                    flow_id, created_at, updated_at
+                    flow_id, schedule_id, closed_target, holiday_target, created_at, updated_at
              FROM line_bindings
              WHERE owner_user_id = $1
              ORDER BY created_at",
@@ -3463,7 +3463,8 @@ impl LineBindingStore for PostgresStorage {
         let rows = sqlx::query(
             "SELECT lb.id, lb.phone_number_id, lb.owner_user_id, lb.binding_type, lb.ring_strategy, lb.tenant_id,
                     lb.outbound_caller_id, lb.outbound_cnam,
-                    lb.flow_id, lb.created_at, lb.updated_at
+                    lb.flow_id, lb.schedule_id, lb.closed_target, lb.holiday_target,
+                    lb.created_at, lb.updated_at
              FROM line_bindings lb
              INNER JOIN device_bindings db ON lb.id = db.line_binding_id
              WHERE db.device_id = $1
@@ -3497,10 +3498,14 @@ impl LineBindingStore for PostgresStorage {
             "INSERT INTO line_bindings (
                 id, phone_number_id, owner_user_id, binding_type, ring_strategy, tenant_id,
                 outbound_caller_id, outbound_cnam,
-                flow_id, created_at, updated_at
+                flow_id, created_at, updated_at,
+                schedule_id, closed_target, holiday_target
              )
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
              ON CONFLICT(id) DO UPDATE SET
+                 schedule_id = EXCLUDED.schedule_id,
+                 closed_target = EXCLUDED.closed_target,
+                 holiday_target = EXCLUDED.holiday_target,
                  ring_strategy = EXCLUDED.ring_strategy,
                  outbound_caller_id = EXCLUDED.outbound_caller_id,
                  outbound_cnam = EXCLUDED.outbound_cnam,
@@ -3518,6 +3523,9 @@ impl LineBindingStore for PostgresStorage {
         .bind(&binding.flow_id)
         .bind(created_at)
         .bind(updated_at)
+        .bind(binding.schedule_id.map(|id| id.to_string()))
+        .bind(binding.closed_target.as_ref().map(|t| t.to_string()))
+        .bind(binding.holiday_target.as_ref().map(|t| t.to_string()))
         .execute(self.writes())
         .await?;
 
@@ -4377,6 +4385,21 @@ fn row_to_line_binding(row: sqlx::postgres::PgRow) -> Result<LineBinding> {
         outbound_caller_id: row.get("outbound_caller_id"),
         outbound_cnam: row.get("outbound_cnam"),
         flow_id: row.try_get("flow_id").unwrap_or(None),
+        schedule_id: row
+            .try_get::<Option<String>, _>("schedule_id")
+            .ok()
+            .flatten()
+            .and_then(|id| id.parse().ok()),
+        closed_target: row
+            .try_get::<Option<String>, _>("closed_target")
+            .ok()
+            .flatten()
+            .and_then(|t| fcp_core::CallTarget::parse(&t).ok()),
+        holiday_target: row
+            .try_get::<Option<String>, _>("holiday_target")
+            .ok()
+            .flatten()
+            .and_then(|t| fcp_core::CallTarget::parse(&t).ok()),
         created_at,
         updated_at,
     })
@@ -5395,6 +5418,16 @@ fn row_to_queue_config(row: sqlx::postgres::PgRow) -> Result<QueueConfigRecord> 
             .unwrap_or_default(),
         record_calls: row.try_get("record_calls").unwrap_or(false),
         callback_enabled: row.try_get("callback_enabled").unwrap_or(false),
+        schedule_id: row
+            .try_get::<Option<String>, _>("schedule_id")
+            .ok()
+            .flatten()
+            .and_then(|id| id.parse().ok()),
+        closed_target: row
+            .try_get::<Option<String>, _>("closed_target")
+            .ok()
+            .flatten()
+            .and_then(|t| fcp_core::CallTarget::parse(&t).ok()),
         timezone: row
             .try_get::<String, _>("timezone")
             .unwrap_or_else(|_| "UTC".to_string()),
@@ -5437,8 +5470,8 @@ impl QueueConfigStore for PostgresStorage {
                     moh_class, announce_position, announce_interval_secs,
                     retry_on_no_answer, agents, priority, required_skills,
                     record_calls, callback_enabled, timezone, enabled,
-                    created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
+                    created_at, updated_at, schedule_id, closed_target)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
              ON CONFLICT (id) DO UPDATE SET
                 name = EXCLUDED.name, extension = EXCLUDED.extension,
                 strategy = EXCLUDED.strategy,
@@ -5456,6 +5489,8 @@ impl QueueConfigStore for PostgresStorage {
                 callback_enabled = EXCLUDED.callback_enabled,
                 timezone = EXCLUDED.timezone,
                 enabled = EXCLUDED.enabled,
+                schedule_id = EXCLUDED.schedule_id,
+                closed_target = EXCLUDED.closed_target,
                 updated_at = EXCLUDED.updated_at",
         )
         .bind(config.id.to_string())
@@ -5479,6 +5514,8 @@ impl QueueConfigStore for PostgresStorage {
         .bind(config.enabled)
         .bind(system_time_to_datetime(config.created_at))
         .bind(system_time_to_datetime(config.updated_at))
+        .bind(config.schedule_id.map(|id| id.to_string()))
+        .bind(config.closed_target.as_ref().map(|t| t.to_string()))
         .execute(self.writes())
         .await?;
         Ok(())
@@ -7568,6 +7605,57 @@ impl fcp_core::sync::SyncStore for PostgresStorage {
                 })
             })
             .collect()
+    }
+}
+
+#[async_trait]
+impl fcp_core::schedule::ScheduleStore for PostgresStorage {
+    async fn get_schedule(&self, id: &fcp_core::ScheduleId) -> Result<Option<fcp_core::Schedule>> {
+        let row = sqlx::query("SELECT schedule_json FROM schedules WHERE id = $1")
+            .bind(id.to_string())
+            .fetch_optional(self.reads())
+            .await?;
+        row.map(|row| serde_json::from_value(row.get("schedule_json")).context("a schedule row"))
+            .transpose()
+    }
+
+    async fn list_schedules(&self, tenant_id: &TenantId) -> Result<Vec<fcp_core::Schedule>> {
+        let rows =
+            sqlx::query("SELECT schedule_json FROM schedules WHERE tenant_id = $1 ORDER BY name")
+                .bind(tenant_id.to_string())
+                .fetch_all(self.reads())
+                .await?;
+        rows.into_iter()
+            .map(|row| serde_json::from_value(row.get("schedule_json")).context("a schedule row"))
+            .collect()
+    }
+
+    async fn put_schedule(&self, schedule: fcp_core::Schedule) -> Result<()> {
+        let json = serde_json::to_value(&schedule)?;
+        sqlx::query(
+            "INSERT INTO schedules (id, tenant_id, name, schedule_json, updated_at)
+             VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT (id) DO UPDATE SET
+                 name = EXCLUDED.name,
+                 schedule_json = EXCLUDED.schedule_json,
+                 updated_at = EXCLUDED.updated_at",
+        )
+        .bind(schedule.id.to_string())
+        .bind(schedule.tenant_id.to_string())
+        .bind(&schedule.name)
+        .bind(json)
+        .bind(system_time_to_datetime(schedule.updated_at))
+        .execute(self.writes())
+        .await?;
+        Ok(())
+    }
+
+    async fn delete_schedule(&self, id: &fcp_core::ScheduleId) -> Result<()> {
+        sqlx::query("DELETE FROM schedules WHERE id = $1")
+            .bind(id.to_string())
+            .execute(self.writes())
+            .await?;
+        Ok(())
     }
 }
 

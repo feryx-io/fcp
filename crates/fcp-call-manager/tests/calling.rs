@@ -1120,3 +1120,347 @@ async fn call_waiting_decides_whether_a_second_call_rings() {
     let _ = alice;
     stack.finish().await;
 }
+
+// ─── Schedules (docs/ENTERPRISE_CALLING.md §3.5) ─────────────────────────
+
+/// A schedule that is never open (no hours), one that always is, and one
+/// on a holiday that spans today wherever the test runs.
+async fn schedules(stack: &Stack) -> (fcp_core::Schedule, fcp_core::Schedule, fcp_core::Schedule) {
+    use chrono::{Duration as Days, NaiveTime, Utc, Weekday};
+    use fcp_core::{Holiday, Schedule, ScheduleStore, WeeklyWindow};
+    let tenant = stack.seed.tenant_id;
+    let closed = Schedule::new(tenant, "never open", "UTC");
+    let mut open = Schedule::new(tenant, "always open", "UTC");
+    let every_day = vec![
+        Weekday::Mon,
+        Weekday::Tue,
+        Weekday::Wed,
+        Weekday::Thu,
+        Weekday::Fri,
+        Weekday::Sat,
+        Weekday::Sun,
+    ];
+    open.weekly.push(WeeklyWindow {
+        days: every_day.clone(),
+        start: NaiveTime::from_hms_opt(0, 0, 0).unwrap(),
+        end: NaiveTime::from_hms_opt(0, 0, 0).unwrap(),
+    });
+    let mut holiday = open.clone();
+    holiday.id = fcp_core::ScheduleId::new();
+    holiday.name = "holiday".into();
+    let today = Utc::now().date_naive();
+    holiday.holidays.push(Holiday {
+        name: "today".into(),
+        from: today - Days::days(1),
+        to: Some(today + Days::days(1)),
+    });
+    for s in [&closed, &open, &holiday] {
+        stack
+            .seed
+            .storage()
+            .put_schedule(s.clone())
+            .await
+            .expect("seed schedule");
+    }
+    (closed, open, holiday)
+}
+
+/// A number bound to `owner`, with the schedule fields given.
+async fn scheduled_number(
+    stack: &Stack,
+    owner: &SeededUser,
+    e164: &str,
+    schedule: Option<&fcp_core::Schedule>,
+    closed: Option<CallTarget>,
+    holiday: Option<CallTarget>,
+) {
+    let storage = stack.seed.storage();
+    let user = fcp_core::storage::CredentialStore::get_user_in_tenant(
+        storage,
+        &owner.username,
+        &stack.seed.tenant_id,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let devices = fcp_core::storage::DeviceStore::list_devices_by_user(storage, &user.id)
+        .await
+        .unwrap();
+    let number = fcp_core::PhoneNumber::new(e164.to_string(), stack.seed.tenant_id).unwrap();
+    let mut binding = fcp_core::LineBinding::new(
+        number.id,
+        Some(user.id),
+        fcp_core::BindingType::User,
+        stack.seed.tenant_id,
+    );
+    for d in devices {
+        binding.add_device(fcp_core::DeviceBinding::new(d.id));
+    }
+    binding.schedule_id = schedule.map(|s| s.id);
+    binding.closed_target = closed;
+    binding.holiday_target = holiday;
+    storage.put_phone_number(number).await.unwrap();
+    storage.put_line_binding(binding).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_closed_number_goes_where_it_says_and_an_open_one_rings() {
+    let stack = stack_or_skip!();
+    let [(_, alice), (bob, bob_phone), (carol, carol_phone)] = three_phones(&stack).await;
+    let (closed, open, holiday) = schedules(&stack).await;
+    let carol_ext = CallTarget::Extension(carol.extension.clone());
+    scheduled_number(
+        &stack,
+        &bob,
+        "+15125550801",
+        Some(&closed),
+        Some(carol_ext.clone()),
+        None,
+    )
+    .await;
+    scheduled_number(
+        &stack,
+        &bob,
+        "+15125550802",
+        Some(&open),
+        Some(carol_ext.clone()),
+        None,
+    )
+    .await;
+    scheduled_number(
+        &stack,
+        &bob,
+        "+15125550803",
+        Some(&holiday),
+        Some(carol_ext.clone()),
+        Some(CallTarget::Voicemail),
+    )
+    .await;
+    stack.mailbox(&bob, "+15125550899").await;
+    let voicemail = stack.voicemail_server().await;
+
+    // Closed: Carol, not Bob.
+    let call = alice.call("+15125550801").await.unwrap();
+    let Some(at_carol) = carol_phone.incoming(SOON).await else {
+        stack
+            .fail("the closed number did not go to Carol", &alice)
+            .await;
+    };
+    assert!(
+        bob_phone
+            .incoming(Duration::from_millis(300))
+            .await
+            .is_none(),
+        "Bob rang while closed"
+    );
+    let answered = at_carol.answer().await.unwrap();
+    call.answered(SOON).await.unwrap();
+    answered.hangup().await.unwrap();
+
+    // Open: Bob.
+    let call = alice.call("+15125550802").await.unwrap();
+    let Some(at_bob) = bob_phone.incoming(SOON).await else {
+        stack.fail("the open number did not ring Bob", &alice).await;
+    };
+    let answered = at_bob.answer().await.unwrap();
+    call.answered(SOON).await.unwrap();
+    answered.hangup().await.unwrap();
+
+    // A holiday: its own target, voicemail, and the reason says so.
+    let call = alice.call("+15125550803").await.unwrap();
+    let Some(at_voicemail) = voicemail.incoming(SOON).await else {
+        stack
+            .fail("the holiday did not go to voicemail", &alice)
+            .await;
+    };
+    assert!(
+        at_voicemail.request_uri().contains("reason=holiday"),
+        "{}",
+        at_voicemail.request_uri()
+    );
+    let answered = at_voicemail.answer().await.unwrap();
+    call.answered(SOON).await.unwrap();
+    answered.hangup().await.unwrap();
+    stack.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_closed_number_can_run_a_flow_and_a_user_forwards_after_hours() {
+    let stack = stack_or_skip!();
+    let [(_, alice), (bob, bob_phone), (carol, carol_phone)] = three_phones(&stack).await;
+    let (closed, _, _) = schedules(&stack).await;
+
+    // The closed number runs a flow that answers and hangs up.
+    let flow: fcp_flow::FlowDefinition = serde_json::from_value(serde_json::json!({
+        "id": "closed-greeting",
+        "name": "Closed",
+        "version": 1,
+        "initial_node": "answer",
+        "enabled": true,
+        "tenant_id": stack.seed.tenant_id.to_string(),
+        "nodes": {
+            "answer": {"id": "answer", "name": "Answer", "type": "answer", "next": "wait"},
+            "wait": {"id": "wait", "name": "Wait", "type": "pause", "duration": 1, "next": "done"},
+            "done": {"id": "done", "name": "Hang up", "type": "hangup"}
+        }
+    }))
+    .unwrap();
+    fcp_flow::FlowStore::insert_flow(stack.seed.storage(), flow)
+        .await
+        .unwrap();
+    scheduled_number(
+        &stack,
+        &bob,
+        "+15125550811",
+        Some(&closed),
+        Some(CallTarget::Flow("closed-greeting".into())),
+        None,
+    )
+    .await;
+    let call = alice.call("+15125550811").await.unwrap();
+    if let Err(e) = call.answered(SOON).await {
+        stack
+            .fail(
+                &format!("the closed number's flow did not answer: {e}"),
+                &alice,
+            )
+            .await;
+    }
+    assert!(call.ended(SOON).await, "the flow did not hang up");
+    assert!(
+        bob_phone
+            .incoming(Duration::from_millis(300))
+            .await
+            .is_none(),
+        "Bob rang"
+    );
+
+    // Bob's own hours are never open: his calls go to Carol.
+    stack
+        .calling(&bob, |s| {
+            s.after_hours_schedule_id = Some(closed.id);
+            s.after_hours_forward = Some(CallTarget::Extension(carol.extension.clone()));
+        })
+        .await;
+    let call = alice.call(&bob.extension).await.unwrap();
+    let Some(at_carol) = carol_phone.incoming(SOON).await else {
+        stack
+            .fail("Bob's after-hours forward did not reach Carol", &alice)
+            .await;
+    };
+    let answered = at_carol.answer().await.unwrap();
+    call.answered(SOON).await.unwrap();
+    answered.hangup().await.unwrap();
+    stack.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_flow_branches_on_a_schedule() {
+    let stack = stack_or_skip!();
+    let [(_, alice), (bob, bob_phone), _] = three_phones(&stack).await;
+    let (closed, open, _) = schedules(&stack).await;
+    for (id, schedule, number) in [
+        ("hours-open", &open, "+15125550821"),
+        ("hours-closed", &closed, "+15125550822"),
+    ] {
+        let flow: fcp_flow::FlowDefinition = serde_json::from_value(serde_json::json!({
+            "id": id,
+            "name": id,
+            "version": 1,
+            "initial_node": "answer",
+            "enabled": true,
+            "tenant_id": stack.seed.tenant_id.to_string(),
+            "nodes": {
+                "answer": {"id": "answer", "name": "Answer", "type": "answer", "next": "hours"},
+                "hours": {
+                    "id": "hours", "name": "Hours", "type": "schedule",
+                    "schedule_id": schedule.id.to_string(),
+                    "open": "dial", "closed": "done"
+                },
+                "dial": {
+                    "id": "dial", "name": "Dial Bob", "type": "dial",
+                    "destination": bob.extension, "timeout": 10, "next": "done",
+                    "on_error": "done", "on_no_answer": "done", "on_busy": "done"
+                },
+                "done": {"id": "done", "name": "Hang up", "type": "hangup"}
+            }
+        }))
+        .unwrap();
+        fcp_flow::FlowStore::insert_flow(stack.seed.storage(), flow)
+            .await
+            .unwrap();
+        let number = fcp_core::PhoneNumber::new(number.to_string(), stack.seed.tenant_id).unwrap();
+        let mut binding = fcp_core::LineBinding::new(
+            number.id,
+            None,
+            fcp_core::BindingType::Ivr,
+            stack.seed.tenant_id,
+        );
+        binding.flow_id = Some(id.to_string());
+        stack.seed.storage().put_phone_number(number).await.unwrap();
+        stack
+            .seed
+            .storage()
+            .put_line_binding(binding)
+            .await
+            .unwrap();
+    }
+
+    // Open: the flow dials Bob.
+    let call = alice.call("+15125550821").await.unwrap();
+    call.answered(SOON).await.expect("the flow answers");
+    let Some(at_bob) = bob_phone.incoming(SOON).await else {
+        stack.fail("the open branch did not dial Bob", &alice).await;
+    };
+    let answered = at_bob.answer().await.unwrap();
+    call.hangup().await.unwrap();
+    let _ = answered.ended(SOON).await;
+
+    // Closed: the flow hangs up without dialing.
+    let call = alice.call("+15125550822").await.unwrap();
+    call.answered(SOON).await.expect("the flow answers");
+    assert!(call.ended(SOON).await, "the closed branch did not hang up");
+    assert!(
+        bob_phone
+            .incoming(Duration::from_millis(300))
+            .await
+            .is_none(),
+        "Bob was dialed while closed"
+    );
+    stack.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_closed_queue_sends_its_callers_on() {
+    let Some(stack) = Stack::start_with("[queue]\nenabled = true\n").await else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let [(_, alice), _, (carol, carol_phone)] = three_phones(&stack).await;
+    let (closed, _, _) = schedules(&stack).await;
+    let mut queue = fcp_core::QueueConfigRecord::new(
+        "support".to_string(),
+        "7100".to_string(),
+        stack.seed.tenant_id,
+    );
+    queue.schedule_id = Some(closed.id);
+    queue.closed_target = Some(CallTarget::Extension(carol.extension.clone()));
+    fcp_core::storage::QueueConfigStore::put_queue_config(stack.seed.storage(), queue)
+        .await
+        .unwrap();
+    let (code, body) = fcp_testkit::smoke::http_post(&loopback(stack.http, "/queues/reload"), "")
+        .await
+        .expect("reload queues");
+    assert_eq!(code, 200, "{body}");
+
+    let call = alice.call("7100").await.unwrap();
+    let Some(at_carol) = carol_phone.incoming(SOON).await else {
+        stack
+            .fail("the closed queue did not send the caller to Carol", &alice)
+            .await;
+    };
+    let answered = at_carol.answer().await.unwrap();
+    call.answered(SOON).await.unwrap();
+    answered.hangup().await.unwrap();
+    stack.finish().await;
+}

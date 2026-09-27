@@ -998,8 +998,10 @@ impl FlowCallHandler {
                                                     match crate::ring_plan::plan(
                                                         &settings,
                                                         contacts,
-                                                        has_mailbox,
-                                                        false,
+                                                        crate::ring_plan::PlanInputs {
+                                                            has_mailbox,
+                                                            ..Default::default()
+                                                        },
                                                     ) {
                                                         RingPlan::Ring { contacts, .. } => {
                                                             resolved = contacts.first().and_then(|c| {
@@ -3012,6 +3014,51 @@ impl FlowCallHandler {
                         drop(context_guard);
                         return Box::pin(self.execute_next_node(call_id)).await;
                     }
+                }
+
+                NodeType::Schedule {
+                    schedule_id,
+                    open,
+                    closed,
+                    holiday,
+                } => {
+                    // The tenant's schedule, now (`docs/ENTERPRISE_CALLING.md`
+                    // §3.5). A schedule that cannot be read is open: a flow
+                    // is not closed by a database hiccup.
+                    use fcp_core::ScheduleStore;
+                    let tenant = self
+                        .call_manager
+                        .as_ref()
+                        .and_then(|cm| cm.get_call(&call_id))
+                        .map(|c| c.tenant_id);
+                    let state = match (&self.storage, schedule_id.parse::<fcp_core::ScheduleId>()) {
+                        (Some(storage), Ok(id)) => match storage.get_schedule(&id).await {
+                            Ok(Some(schedule)) if Some(schedule.tenant_id) == tenant => {
+                                schedule.state_now()
+                            }
+                            other => {
+                                warn!(call_id = %call_id, schedule = %schedule_id, found = ?other.as_ref().map(|o| o.is_some()), "Schedule node: schedule not readable; taking the open branch");
+                                fcp_core::ScheduleState::Open
+                            }
+                        },
+                        _ => {
+                            warn!(call_id = %call_id, schedule = %schedule_id, "Schedule node: no storage or a bad id; taking the open branch");
+                            fcp_core::ScheduleState::Open
+                        }
+                    };
+                    let next = match state {
+                        fcp_core::ScheduleState::Open => open.clone(),
+                        fcp_core::ScheduleState::Closed => closed.clone(),
+                        fcp_core::ScheduleState::Holiday => {
+                            holiday.clone().unwrap_or_else(|| closed.clone())
+                        }
+                    };
+                    info!(call_id = %call_id, node_id = %current_node, state = state.as_str(), next = %next, "Schedule node");
+                    context_guard
+                        .set_variable("schedule_state".to_string(), state.as_str().to_string());
+                    context_guard.current_node = next;
+                    drop(context_guard);
+                    return Box::pin(self.execute_next_node(call_id)).await;
                 }
 
                 NodeType::Hangup { reason } => {

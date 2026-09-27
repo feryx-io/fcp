@@ -15,7 +15,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { lineBindings, users, devices, phoneNumbers, flows, tenants } from '@/api/endpoints'
+import { lineBindings, users, devices, phoneNumbers, flows, tenants, schedules } from '@/api/endpoints'
 import type { LineBinding, DeviceBinding, UpdateLineBindingRequest } from '@/types'
 import { formatDateTime } from '@/lib/utils'
 import { TenantField, useEffectiveTenantId, useTenantListFilter, useShowTenantColumn } from '@/components/TenantSelector'
@@ -61,6 +61,9 @@ const editSchema = z.object({
   ring_strategy: z.string().optional(),
   outbound_caller_id: z.string().optional(),
   outbound_cnam: z.string().optional(),
+  schedule_id: z.string().optional(),
+  closed_target: z.string().optional(),
+  holiday_target: z.string().optional(),
   tenant_id: z.string().optional(),
 })
 
@@ -245,6 +248,7 @@ export function LineBindingsPage() {
     },
   ]
 
+  const { data: scheduleList = [] } = useQuery({ queryKey: ['schedules'], queryFn: schedules.list })
   const effectiveTenantId = useEffectiveTenantId()
   const createForm = useForm<CreateForm>({
     resolver: zodResolver(createSchema),
@@ -260,6 +264,9 @@ export function LineBindingsPage() {
       ring_strategy: editItem.ring_strategy,
       outbound_caller_id: editItem.outbound_caller_id || '',
       outbound_cnam: editItem.outbound_cnam || '',
+      schedule_id: editItem.schedule_id || '',
+      closed_target: editItem.closed_target || '',
+      holiday_target: editItem.holiday_target || '',
       tenant_id: editItem.tenant_id ?? '',
     })
   }
@@ -287,6 +294,9 @@ export function LineBindingsPage() {
         devices: validDevices,
         outbound_caller_id: data.outbound_caller_id || undefined,
         outbound_cnam: data.outbound_cnam || undefined,
+        schedule_id: data.schedule_id ?? '',
+        closed_target: data.closed_target ?? '',
+        holiday_target: data.holiday_target ?? '',
         flow_id: editItem.binding_type === 'ivr' ? (editFlowId || undefined) : undefined,
         tenant_id: data.tenant_id || undefined,
       },
@@ -550,6 +560,37 @@ export function LineBindingsPage() {
             <p className="text-xs text-muted-foreground">
               Forwarding and the ring time are the owner&apos;s calling settings, on the user&apos;s page.
             </p>
+
+            <div className="border-t pt-4 mt-2">
+              <h4 className="text-sm font-medium mb-1">Schedule</h4>
+              <p className="text-xs text-muted-foreground mb-3">
+                Outside the schedule&apos;s hours calls go to the closed target; on a holiday to the holiday target, else the
+                closed one. Targets: voicemail, +number, extension, flow:&lt;id&gt;, queue:&lt;name&gt; or a SIP URI.
+              </p>
+              <div className="grid grid-cols-3 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="e-schedule">Schedule</Label>
+                  <select
+                    id="e-schedule"
+                    className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm"
+                    {...editForm.register('schedule_id')}
+                  >
+                    <option value="">Always open</option>
+                    {scheduleList.map((sch) => (
+                      <option key={sch.id} value={sch.id}>{sch.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="e-closed">When closed</Label>
+                  <Input id="e-closed" placeholder="voicemail" {...editForm.register('closed_target')} />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="e-holiday">On a holiday</Label>
+                  <Input id="e-holiday" placeholder="as when closed" {...editForm.register('holiday_target')} />
+                </div>
+              </div>
+            </div>
 
             <div className="border-t pt-4 mt-2">
               <h4 className="text-sm font-medium mb-3">Outbound Caller ID</h4>

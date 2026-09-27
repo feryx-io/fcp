@@ -101,6 +101,15 @@ pub struct QueueConfigRecord {
     /// Whether the queue is enabled
     pub enabled: bool,
 
+    /// The queue's hours (`docs/ENTERPRISE_CALLING.md` §3.5): outside them a
+    /// caller goes to `closed_target`, or is told 480.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule_id: Option<crate::ScheduleId>,
+
+    /// Where a caller goes when the queue's schedule is not open.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub closed_target: Option<crate::CallTarget>,
+
     /// Created timestamp
     pub created_at: SystemTime,
 
@@ -132,6 +141,8 @@ impl QueueConfigRecord {
             callback_enabled: false,
             timezone: "UTC".to_string(),
             enabled: true,
+            schedule_id: None,
+            closed_target: None,
             created_at: now,
             updated_at: now,
         }

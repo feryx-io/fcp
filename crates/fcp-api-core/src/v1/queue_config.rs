@@ -99,6 +99,9 @@ pub struct QueueConfigResponse {
     pub record_calls: bool,
     pub callback_enabled: bool,
     pub timezone: String,
+    /// The queue's hours and where a caller goes outside them (§3.5).
+    pub schedule_id: Option<String>,
+    pub closed_target: Option<String>,
     pub enabled: bool,
     pub created_at: SystemTime,
     pub updated_at: SystemTime,
@@ -125,6 +128,8 @@ impl From<QueueConfigRecord> for QueueConfigResponse {
             record_calls: c.record_calls,
             callback_enabled: c.callback_enabled,
             timezone: c.timezone,
+            schedule_id: c.schedule_id.map(|id| id.to_string()),
+            closed_target: c.closed_target.map(|t| t.to_string()),
             enabled: c.enabled,
             created_at: c.created_at,
             updated_at: c.updated_at,
@@ -162,6 +167,10 @@ pub struct CreateQueueConfigRequest {
     #[serde(default)]
     pub callback_enabled: Option<bool>,
     pub timezone: Option<String>,
+    /// A schedule of the tenant; empty clears it.
+    pub schedule_id: Option<String>,
+    /// A call target; empty clears it.
+    pub closed_target: Option<String>,
     #[serde(default)]
     pub enabled: Option<bool>,
 }
@@ -185,6 +194,10 @@ pub struct UpdateQueueConfigRequest {
     pub record_calls: Option<bool>,
     pub callback_enabled: Option<bool>,
     pub timezone: Option<String>,
+    /// A schedule of the tenant; empty clears it.
+    pub schedule_id: Option<String>,
+    /// A call target; empty clears it.
+    pub closed_target: Option<String>,
     pub enabled: Option<bool>,
 }
 
@@ -286,6 +299,13 @@ pub async fn create_queue_config(
     if let Some(tz) = req.timezone {
         config.timezone = tz;
     }
+    if let Some(id) = req.schedule_id {
+        config.schedule_id =
+            crate::v1::schedules::tenant_schedule(&state, &config.tenant_id, &id).await?;
+    }
+    if let Some(t) = req.closed_target {
+        config.closed_target = crate::v1::line_bindings::optional_target("closed_target", &t)?;
+    }
     if let Some(v) = req.enabled {
         config.enabled = v;
     }
@@ -366,6 +386,13 @@ pub async fn update_queue_config(
     }
     if let Some(tz) = req.timezone {
         config.timezone = tz;
+    }
+    if let Some(id) = req.schedule_id {
+        config.schedule_id =
+            crate::v1::schedules::tenant_schedule(&state, &config.tenant_id, &id).await?;
+    }
+    if let Some(t) = req.closed_target {
+        config.closed_target = crate::v1::line_bindings::optional_target("closed_target", &t)?;
     }
     if let Some(v) = req.enabled {
         config.enabled = v;

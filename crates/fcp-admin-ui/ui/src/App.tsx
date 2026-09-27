@@ -24,6 +24,7 @@ const PresencePage = lazy(() => import('@/pages/PresencePage').then((m) => ({ de
 const ConferencesPage = lazy(() => import('@/pages/ConferencesPage').then((m) => ({ default: m.ConferencesPage })))
 const TrunksPage = lazy(() => import('@/pages/TrunksPage').then((m) => ({ default: m.TrunksPage })))
 const RoutingPage = lazy(() => import('@/pages/RoutingPage').then((m) => ({ default: m.RoutingPage })))
+const SchedulesPage = lazy(() => import('@/pages/SchedulesPage').then((m) => ({ default: m.SchedulesPage })))
 const LcrRoutesPage = lazy(() => import('@/pages/LcrRoutesPage').then((m) => ({ default: m.LcrRoutesPage })))
 const FlowsPage = lazy(() => import('@/pages/FlowsPage').then((m) => ({ default: m.FlowsPage })))
 const FlowBuilderPage = lazy(() => import('@/pages/FlowBuilderPage').then((m) => ({ default: m.FlowBuilderPage })))
@@ -129,6 +130,7 @@ export function App() {
               {/* Advanced */}
               <Route path="trunks" element={<Suspense fallback={<PageLoader />}><TrunksPage /></Suspense>} />
               <Route path="routing" element={<Suspense fallback={<PageLoader />}><RoutingPage /></Suspense>} />
+              <Route path="schedules" element={<Suspense fallback={<PageLoader />}><SchedulesPage /></Suspense>} />
               <Route path="lcr" element={<Suspense fallback={<PageLoader />}><LcrRoutesPage /></Suspense>} />
               <Route path="flows" element={<Suspense fallback={<PageLoader />}><FlowsPage /></Suspense>} />
               <Route path="flows/:id" element={<Suspense fallback={<PageLoader />}><FlowBuilderPage /></Suspense>} />

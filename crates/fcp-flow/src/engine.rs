@@ -574,6 +574,14 @@ impl FlowEngine {
                 Ok(FlowExecutionResult::Continue(next.clone()))
             }
 
+            NodeType::Schedule { open, .. } => {
+                warn!(
+                    call_id = %context.call_id,
+                    "A Schedule node is read by the call manager; this runner takes the open branch"
+                );
+                Ok(FlowExecutionResult::Continue(open.clone()))
+            }
+
             NodeType::VoicemailAccess {
                 mailbox,
                 max_pin_attempts,

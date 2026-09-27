@@ -3076,6 +3076,7 @@ pub struct DynStorage {
     site_store: Arc<dyn crate::site::SiteStore>,
     sync_store: Arc<dyn crate::sync::SyncStore>,
     calling_store: Arc<dyn crate::calling::CallingStore>,
+    schedule_store: Arc<dyn crate::schedule::ScheduleStore>,
     tenant_store: Arc<dyn TenantStore>,
     conference_store: Arc<dyn ConferenceStore>,
     queue_store: Arc<dyn QueueStore>,
@@ -3122,6 +3123,7 @@ impl DynStorage {
         site_store: Arc<dyn crate::site::SiteStore>,
         sync_store: Arc<dyn crate::sync::SyncStore>,
         calling_store: Arc<dyn crate::calling::CallingStore>,
+        schedule_store: Arc<dyn crate::schedule::ScheduleStore>,
         tenant_store: Arc<dyn TenantStore>,
         conference_store: Arc<dyn ConferenceStore>,
         queue_store: Arc<dyn QueueStore>,
@@ -3148,6 +3150,7 @@ impl DynStorage {
             site_store,
             sync_store,
             calling_store,
+            schedule_store,
             tenant_store,
             conference_store,
             queue_store,
@@ -3194,6 +3197,7 @@ impl DynStorage {
             + crate::site::SiteStore
             + crate::sync::SyncStore
             + crate::calling::CallingStore
+            + crate::schedule::ScheduleStore
             + TenantStore
             + ConferenceStore
             + QueueStore
@@ -3222,6 +3226,7 @@ impl DynStorage {
             site_store: storage.clone(),
             sync_store: storage.clone(),
             calling_store: storage.clone(),
+            schedule_store: storage.clone(),
             tenant_store: storage.clone(),
             conference_store: storage.clone(),
             queue_store: storage.clone(),
@@ -4311,6 +4316,25 @@ impl crate::sync::SyncStore for DynStorage {
         limit: usize,
     ) -> Result<Vec<crate::JournalEntry>> {
         self.sync_store.journal_after(tenant_id, since, limit).await
+    }
+}
+
+#[async_trait]
+impl crate::schedule::ScheduleStore for DynStorage {
+    async fn get_schedule(&self, id: &crate::ScheduleId) -> Result<Option<crate::Schedule>> {
+        self.schedule_store.get_schedule(id).await
+    }
+
+    async fn list_schedules(&self, tenant_id: &crate::TenantId) -> Result<Vec<crate::Schedule>> {
+        self.schedule_store.list_schedules(tenant_id).await
+    }
+
+    async fn put_schedule(&self, schedule: crate::Schedule) -> Result<()> {
+        self.schedule_store.put_schedule(schedule).await
+    }
+
+    async fn delete_schedule(&self, id: &crate::ScheduleId) -> Result<()> {
+        self.schedule_store.delete_schedule(id).await
     }
 }
 

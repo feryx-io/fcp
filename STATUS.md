@@ -1290,6 +1290,16 @@ the Calling page's switch. Proved by `calling.rs` (a second call rings,
 then is refused with call waiting off, a call Bob placed counting too)
 and `trunks.rs` (Bob on a call through one node is busy through the
 other).
+Phase 5 done (v0.25.280): schedules — `fcp_core::schedule` (weekly
+windows past midnight or all day, holidays, IANA zones), `schedules`
+(migration 083, synced to sites), `/v1/schedules` and the Schedules page;
+a number closed or on a holiday goes to its `closed_target` or
+`holiday_target`, a user's after-hours forward applies in the plan, a
+database queue's hours are decided before the queue, the flow `Schedule`
+node branches; `flow:` and `queue:` targets are placed (a flow runs for
+the call, a queue is dialed at its extension). Proved by `calling.rs`
+(closed, open and holiday numbers; a closed number's flow; a user after
+hours; a flow branching; a closed queue) and `api_postgres.rs`.
 
 ## Historical documents
 

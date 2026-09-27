@@ -16,7 +16,7 @@ import {
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
-import { queues, queueConfigs } from '@/api/endpoints'
+import { queues, queueConfigs, schedules } from '@/api/endpoints'
 import { formatDuration } from '@/lib/utils'
 import type { QueueStatsResponse, QueueConfigResponse, CreateQueueConfigRequest } from '@/types'
 
@@ -48,6 +48,8 @@ interface QueueFormData {
   callback_enabled: boolean
   timezone: string
   enabled: boolean
+  schedule_id: string
+  closed_target: string
 }
 
 const defaultFormValues: QueueFormData = {
@@ -68,6 +70,8 @@ const defaultFormValues: QueueFormData = {
   callback_enabled: false,
   timezone: 'UTC',
   enabled: true,
+  schedule_id: '',
+  closed_target: '',
 }
 
 function configToForm(c: QueueConfigResponse): QueueFormData {
@@ -89,6 +93,8 @@ function configToForm(c: QueueConfigResponse): QueueFormData {
     callback_enabled: c.callback_enabled,
     timezone: c.timezone,
     enabled: c.enabled,
+    schedule_id: c.schedule_id ?? '',
+    closed_target: c.closed_target ?? '',
   }
 }
 
@@ -111,6 +117,8 @@ function formToRequest(f: QueueFormData): CreateQueueConfigRequest {
     callback_enabled: f.callback_enabled,
     timezone: f.timezone,
     enabled: f.enabled,
+    schedule_id: f.schedule_id,
+    closed_target: f.closed_target,
   }
 }
 
@@ -407,6 +415,7 @@ function QueueForm({ form, onSubmit, isSubmitting, submitLabel = 'Create Queue' 
   isSubmitting: boolean
   submitLabel?: string
 }) {
+  const { data: scheduleList = [] } = useQuery({ queryKey: ['schedules'], queryFn: schedules.list })
   const { register, handleSubmit, watch, setValue } = form
 
   return (
@@ -481,6 +490,23 @@ function QueueForm({ form, onSubmit, isSubmitting, submitLabel = 'Create Queue' 
           <div>
             <Label htmlFor="overflow_destination">Overflow Destination</Label>
             <Input id="overflow_destination" placeholder="e.g. voicemail:6000" {...register('overflow_destination')} />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="schedule_id">Hours</Label>
+            <select
+              id="schedule_id"
+              className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm"
+              {...register('schedule_id')}
+            >
+              <option value="">Always open</option>
+              {scheduleList.map((sch) => (
+                <option key={sch.id} value={sch.id}>{sch.name}</option>
+              ))}
+            </select>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="closed_target">When closed</Label>
+            <Input id="closed_target" placeholder="voicemail, an extension, flow:<id>" {...register('closed_target')} />
           </div>
         </div>
         <div className="flex items-center gap-6">

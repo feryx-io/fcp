@@ -195,6 +195,7 @@ use crate::prelude::*;
 use crate::registrar::FcpRegistrar;
 use crate::settings::ServerSettings;
 use fcp_b2bua_core::B2buaConfig;
+use fcp_core::storage::QueueConfigStore;
 use fcp_core::storage::{
     CredentialStore, DeviceStore, ExtensionStore, LineBindingStore, PhoneNumberStore, TenantStore,
     TrunkStore,
@@ -3165,6 +3166,15 @@ impl SipMessageHandler {
         // Check if a queue handler wants this call (before flow routing)
         if let Some(queue_handler) = &self.queue_handler {
             if queue_handler.can_handle(request).await {
+                // The queue's hours, decided here where a closed caller can
+                // be sent on (`docs/ENTERPRISE_CALLING.md` §3.5).
+                if let Some((state, target)) = self.queue_schedule_divert(request, &call_id).await {
+                    let a_leg = Arc::new(handle.clone());
+                    let callee = request.start_line().uri().to_string();
+                    return self
+                        .divert_for_schedule(request, &a_leg, call_id, state, target, &callee)
+                        .await;
+                }
                 debug!(call_id = %call_id, "Routing to queue handler");
                 let result = queue_handler
                     .handle_invite(request, handle, peer, call_id)
@@ -4523,6 +4533,32 @@ impl SipMessageHandler {
                                     });
                                 }
 
+                                // The number's hours (`docs/ENTERPRISE_CALLING.md`
+                                // §3.5): closed, the call goes where the
+                                // number says.
+                                if let Some(schedule_id) = line_binding.schedule_id {
+                                    if let Some((state, target)) = self
+                                        .schedule_divert(
+                                            &schedule_id,
+                                            &line_binding.tenant_id,
+                                            line_binding.closed_target.clone(),
+                                            line_binding.holiday_target.clone(),
+                                        )
+                                        .await
+                                    {
+                                        return self
+                                            .divert_for_schedule(
+                                                request,
+                                                &a_leg_handle_arc,
+                                                call_id,
+                                                state,
+                                                target,
+                                                destination_aor,
+                                            )
+                                            .await;
+                                    }
+                                }
+
                                 // Handle different binding types
                                 match line_binding.binding_type {
                                     fcp_core::BindingType::User => {
@@ -4559,369 +4595,18 @@ impl SipMessageHandler {
                                     fcp_core::BindingType::Ivr => {
                                         // IVR routing - execute a flow
                                         let flow_id = line_binding.flow_id.clone();
-                                        if let (Some(flow_id), Some(flow_handler)) =
+                                        if let (Some(flow_id), Some(_)) =
                                             (flow_id, &self.flow_handler)
                                         {
-                                            info!(
-                                                call_id = %call_id,
-                                                flow_id = %flow_id,
-                                                "Starting IVR flow execution for inbound call"
-                                            );
-
-                                            // IVR flows need media anchored for prompt
-                                            // playback and DTMF detection. If
-                                            // evaluate_media_anchoring chose PassThrough,
-                                            // create a media session now.
-                                            if let Some(call_entry) =
-                                                self.call_manager.get_call(&call_id)
-                                            {
-                                                if call_entry.media_session_id.is_none() {
-                                                    if let Some(ref media_manager) =
-                                                        self.media_manager
-                                                    {
-                                                        let fcp_call_id = fcp_core::CallId::new();
-                                                        let fcp_dialog_id =
-                                                            fcp_core::DialogId::new();
-                                                        match media_manager
-                                                            .create_session_default(
-                                                                fcp_call_id,
-                                                                fcp_dialog_id,
-                                                            )
-                                                            .await
-                                                        {
-                                                            Ok(_session) => {
-                                                                if let Some(a_leg_sdp) =
-                                                                    crate::body::request_sdp(
-                                                                        request,
-                                                                    )
-                                                                {
-                                                                    if let Err(e) = media_manager
-                                                                        .update_session(
-                                                                            &fcp_call_id,
-                                                                            a_leg_sdp,
-                                                                        )
-                                                                        .await
-                                                                    {
-                                                                        warn!(call_id = %call_id, error = %e, "Failed to set A-leg media endpoint for IVR");
-                                                                    }
-                                                                }
-                                                                let _ =
-                                                                    self.call_manager.update_call(
-                                                                        &call_id,
-                                                                        |call| {
-                                                                            call.media_session_id =
-                                                                                Some(fcp_call_id);
-                                                                            call.media_anchored =
-                                                                                true;
-                                                                        },
-                                                                    );
-                                                                info!(call_id = %call_id, "Created media session for IVR flow (was not anchored)");
-                                                            }
-                                                            Err(e) => {
-                                                                error!(call_id = %call_id, error = %e, "Failed to create media session for IVR");
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
-
-                                            // Build initial variables from call context
-                                            let mut initial_variables =
-                                                std::collections::HashMap::new();
-
-                                            if let Some(from_header) =
-                                                sip_parse::header(request.headers(), "From")
-                                            {
-                                                let from_str = from_header.as_str();
-                                                if let Some(caller) =
-                                                    Self::extract_did_from_uri(from_str)
-                                                {
-                                                    initial_variables.insert(
-                                                        "caller_number".to_string(),
-                                                        caller.clone(),
-                                                    );
-                                                    initial_variables
-                                                        .insert("caller".to_string(), caller);
-                                                }
-                                                if let Some(display_name) =
-                                                    Self::extract_display_name(from_str)
-                                                {
-                                                    initial_variables.insert(
-                                                        "caller_name".to_string(),
-                                                        display_name,
-                                                    );
-                                                }
-                                            }
-
-                                            initial_variables.insert(
-                                                "called_number".to_string(),
-                                                destination_aor.to_string(),
-                                            );
-
-                                            if let Some(sip_call_id) =
-                                                sip_parse::header(request.headers(), "Call-ID")
-                                            {
-                                                initial_variables.insert(
-                                                    "sip_call_id".to_string(),
-                                                    sip_call_id.to_string(),
-                                                );
-                                            }
-
-                                            // Create answer callback
-                                            let answer_handle = a_leg_handle.clone();
-                                            let answer_request = request.clone();
-                                            let answer_call_id = call_id;
-                                            let answer_call_manager =
-                                                Arc::clone(&self.call_manager);
-                                            let answer_media_manager = self.media_manager.clone();
-                                            let answer_uas = self.uas.clone();
-                                            let answer_dialog_manager =
-                                                Arc::clone(&self.dialog_manager);
-                                            let answer_callback: fcp_flow::AnswerCallback =
-                                                Arc::new(move || {
-                                                    let handle = answer_handle.clone();
-                                                    let request = answer_request.clone();
-                                                    let call_id = answer_call_id;
-                                                    let call_manager =
-                                                        Arc::clone(&answer_call_manager);
-                                                    let media_manager =
-                                                        answer_media_manager.clone();
-                                                    let uas = answer_uas.clone();
-                                                    let dialog_manager =
-                                                        Arc::clone(&answer_dialog_manager);
-                                                    Box::pin(async move {
-                                                        info!(call_id = %call_id, "IVR Answer callback executing - creating 200 OK");
-                                                        let mut response = sip_uas::UserAgentServer::create_response(&request, 200, "OK");
-                                                        add_response_headers(
-                                                            &request,
-                                                            &mut response,
-                                                            &uas,
-                                                        );
-
-                                                        if let Some(media_mgr) = media_manager {
-                                                            if let Some(call) =
-                                                                call_manager.get_call(&call_id)
-                                                            {
-                                                                if let Some(ref media_session_id) =
-                                                                    call.media_session_id
-                                                                {
-                                                                    if let Some(remote_sdp) =
-                                                                        crate::body::request_sdp(
-                                                                            &request,
-                                                                        )
-                                                                    {
-                                                                        match media_mgr
-                                                                            .update_session(
-                                                                                media_session_id,
-                                                                                remote_sdp,
-                                                                            )
-                                                                            .await
-                                                                        {
-                                                                            Ok(local_sdp) => {
-                                                                                let sdp_bytes = bytes::Bytes::from(local_sdp);
-                                                                                let mut headers =
-                                                                                    response
-                                                                                        .headers()
-                                                                                        .clone();
-                                                                                let _ = headers.push(smol_str::SmolStr::new("Content-Type"), smol_str::SmolStr::new("application/sdp"));
-                                                                                let _ = headers.push(smol_str::SmolStr::new("Content-Length"), smol_str::SmolStr::new(sdp_bytes.len().to_string()));
-                                                                                response = sip_core::Response::new(response.start_line().clone(), headers, sdp_bytes).expect("Failed to create response with SDP");
-                                                                                info!(call_id = %call_id, "Added SDP to 200 OK response");
-                                                                            }
-                                                                            Err(e) => {
-                                                                                error!(call_id = %call_id, error = %e, "Failed to update media session with SDP");
-                                                                            }
-                                                                        }
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-
-                                                        // The dialog before the 200 OK: a caller
-                                                        // that hangs up on the answer must find the
-                                                        // call to end it (see the same order above).
-                                                        if let Some(a_leg_dialog) =
-                                                            sip_dialog::Dialog::new_uas(
-                                                                &request,
-                                                                &response,
-                                                                uas.local_uri.clone(),
-                                                                extract_from_uri(&request)
-                                                                    .unwrap_or_else(|_| {
-                                                                        sip_core::SipUri::parse(
-                                                                            "sip:unknown@unknown",
-                                                                        )
-                                                                        .unwrap()
-                                                                    }),
-                                                            )
-                                                        {
-                                                            let _ = dialog_manager
-                                                                .insert(a_leg_dialog.clone());
-                                                            // `establish` for the answer time, as above.
-                                                            let _ = call_manager.update_call(
-                                                                &call_id,
-                                                                |call| {
-                                                                    call.a_leg.dialog =
-                                                                        Some(a_leg_dialog.clone());
-                                                                    call.establish();
-                                                                },
-                                                            );
-                                                        }
-
-                                                        handle.send_final(response.clone()).await;
-
-                                                        Ok(())
-                                                    })
-                                                });
-
-                                            // Create hangup callback
-                                            let hangup_call_id = call_id;
-                                            let hangup_call_manager =
-                                                Arc::clone(&self.call_manager);
-                                            let hangup_uac = self.uac.clone();
-                                            let hangup_dialog_manager =
-                                                Arc::clone(&self.dialog_manager);
-                                            let hangup_media_manager = self.media_manager.clone();
-                                            let hangup_callback: fcp_flow::HangupCallback =
-                                                Arc::new(move |reason| {
-                                                    let call_id = hangup_call_id;
-                                                    let call_manager =
-                                                        Arc::clone(&hangup_call_manager);
-                                                    let uac_opt = hangup_uac.clone();
-                                                    let dialog_manager =
-                                                        Arc::clone(&hangup_dialog_manager);
-                                                    let media_manager =
-                                                        hangup_media_manager.clone();
-                                                    Box::pin(async move {
-                                                        info!(call_id = %call_id, "IVR Hangup callback executing");
-                                                        // On a task of its own, and awaited so nothing
-                                                        // changes but the stack it runs on. The flow
-                                                        // executor polls this callback deep inside its
-                                                        // own chain and the BYE below is deeper still:
-                                                        // together they overflow a worker's stack and
-                                                        // abort the process. A spawned task is polled
-                                                        // from the top of one.
-                                                        let teardown = tokio::spawn(async move {
-                                                            if let Some(call_entry) =
-                                                                call_manager.get_call(&call_id)
-                                                            {
-                                                                if call_entry.media_anchored {
-                                                                    if let (
-                                                                        Some(ref media_session_id),
-                                                                        Some(ref media_mgr),
-                                                                    ) = (
-                                                                        &call_entry
-                                                                            .media_session_id,
-                                                                        &media_manager,
-                                                                    ) {
-                                                                        let _ = media_mgr
-                                                                            .terminate_session(
-                                                                                media_session_id,
-                                                                            )
-                                                                            .await;
-                                                                    }
-                                                                }
-                                                                // BYE A-leg (caller)
-                                                                if let Some(dialog) =
-                                                                    call_entry.a_leg.dialog.clone()
-                                                                {
-                                                                    if let Some(ref uac) = uac_opt {
-                                                                        match uac.bye(&dialog).await
-                                                                        {
-                                                                            Ok(_) => {
-                                                                                dialog_manager
-                                                                                    .remove(
-                                                                                        dialog.id(),
-                                                                                    );
-                                                                            }
-                                                                            Err(e) => {
-                                                                                error!(call_id = %call_id, error = %e, "Failed to send A-leg BYE");
-                                                                            }
-                                                                        }
-                                                                    }
-                                                                }
-                                                                // BYE B-leg (callee from Dial node)
-                                                                if let Some(ref b_leg) =
-                                                                    call_entry.b_leg
-                                                                {
-                                                                    if let Some(dialog) =
-                                                                        b_leg.dialog.clone()
-                                                                    {
-                                                                        if let Some(ref uac) =
-                                                                            uac_opt
-                                                                        {
-                                                                            match uac
-                                                                                .bye(&dialog)
-                                                                                .await
-                                                                            {
-                                                                                Ok(_) => {
-                                                                                    dialog_manager
-                                                                                        .remove(
-                                                                                            dialog
-                                                                                                .id(
-                                                                                                ),
-                                                                                        );
-                                                                                }
-                                                                                Err(e) => {
-                                                                                    error!(call_id = %call_id, error = %e, "Failed to send B-leg BYE");
-                                                                                }
-                                                                            }
-                                                                        }
-                                                                    }
-                                                                }
-                                                            }
-                                                            let _ = call_manager
-                                                                .terminate_call(&call_id, reason);
-                                                        });
-                                                        if let Err(e) = teardown.await {
-                                                            error!(call_id = %call_id, error = %e, "Hangup teardown did not finish");
-                                                        }
-                                                        Ok(())
-                                                    })
-                                                });
-
-                                            // Start the flow
-                                            if let Some(mut call_entry) =
-                                                self.call_manager.get_call(&call_id)
-                                            {
-                                                match flow_handler
-                                                    .start_flow(
-                                                        &mut call_entry,
-                                                        flow_id,
-                                                        initial_variables,
-                                                        answer_callback,
-                                                        hangup_callback,
-                                                    )
-                                                    .await
-                                                {
-                                                    Ok(()) => {
-                                                        info!(call_id = %call_id, "IVR flow execution started successfully");
-                                                        let mut progress = sip_uas::UserAgentServer::create_response(request, 183, "Session Progress");
-                                                        self.ensure_response_hygiene(
-                                                            request,
-                                                            &mut progress,
-                                                        );
-                                                        a_leg_handle
-                                                            .send_provisional(progress)
-                                                            .await;
-                                                        return Ok(());
-                                                    }
-                                                    Err(e) => {
-                                                        error!(call_id = %call_id, error = %e, "Failed to start IVR flow execution");
-                                                        let response = self.create_simple_response(
-                                                            request,
-                                                            500,
-                                                            "Internal Server Error",
-                                                        );
-                                                        a_leg_handle.send_final(response).await;
-                                                        let _ = self.call_manager.terminate_call(
-                                                            &call_id,
-                                                            Some("IVR flow error".to_string()),
-                                                        );
-                                                        return Ok(());
-                                                    }
-                                                }
-                                            }
-                                            return Ok(());
+                                            return self
+                                                .start_flow_for_call(
+                                                    request,
+                                                    a_leg_handle,
+                                                    call_id,
+                                                    flow_id,
+                                                    destination_aor,
+                                                )
+                                                .await;
                                         } else {
                                             let detail = if line_binding.flow_id.is_none() {
                                                 "No flow configured for IVR binding"
@@ -5540,6 +5225,31 @@ impl SipMessageHandler {
                                                             call.original_callee = Some(callee);
                                                         },
                                                     );
+                                                }
+
+                                                // The number's hours (§3.5).
+                                                if let Some(schedule_id) = line_binding.schedule_id
+                                                {
+                                                    if let Some((state, target)) = self
+                                                        .schedule_divert(
+                                                            &schedule_id,
+                                                            &tenant_id,
+                                                            line_binding.closed_target.clone(),
+                                                            line_binding.holiday_target.clone(),
+                                                        )
+                                                        .await
+                                                    {
+                                                        return self
+                                                            .divert_for_schedule(
+                                                                request,
+                                                                &a_leg_handle_arc,
+                                                                call_id,
+                                                                state,
+                                                                target,
+                                                                destination_aor,
+                                                            )
+                                                            .await;
+                                                    }
                                                 }
 
                                                 // The owner's plan rings the binding's
@@ -13868,6 +13578,368 @@ impl SipMessageHandler {
     // Call Forward No Answer (CFNA)
     // =========================================================================
 
+    /// What a schedule says now, when it is not open: its state, and the
+    /// target for it (a holiday falls back to the closed target). `None`
+    /// when open, or when the schedule is gone (a missing schedule never
+    /// closes a number).
+    async fn schedule_divert(
+        &self,
+        schedule_id: &fcp_core::ScheduleId,
+        tenant: &fcp_core::TenantId,
+        closed: Option<fcp_core::CallTarget>,
+        holiday: Option<fcp_core::CallTarget>,
+    ) -> Option<(fcp_core::ScheduleState, Option<fcp_core::CallTarget>)> {
+        use fcp_core::ScheduleStore;
+        let storage = self.storage.as_ref()?;
+        let schedule = match storage.get_schedule(schedule_id).await {
+            Ok(Some(schedule)) if schedule.tenant_id == *tenant => schedule,
+            Ok(_) => {
+                warn!(schedule_id = %schedule_id, "A schedule named by a route is gone; treating it as open");
+                return None;
+            }
+            Err(e) => {
+                warn!(schedule_id = %schedule_id, error = %e, "A schedule could not be read; treating it as open");
+                return None;
+            }
+        };
+        match schedule.state_now() {
+            fcp_core::ScheduleState::Open => None,
+            fcp_core::ScheduleState::Closed => Some((fcp_core::ScheduleState::Closed, closed)),
+            fcp_core::ScheduleState::Holiday => {
+                Some((fcp_core::ScheduleState::Holiday, holiday.or(closed)))
+            }
+        }
+    }
+
+    /// A database-configured queue's schedule for a call dialing it: the
+    /// queue is the one whose extension the Request-URI names.
+    async fn queue_schedule_divert(
+        &self,
+        request: &sip_core::Request,
+        call_id: &fcp_b2bua_core::CallId,
+    ) -> Option<(fcp_core::ScheduleState, Option<fcp_core::CallTarget>)> {
+        let storage = self.storage.as_ref()?;
+        let tenant = self.call_manager.get_call(call_id)?.tenant_id;
+        let dialed = request.start_line().uri().to_string();
+        let extension = user_of_uri(&dialed)?;
+        let queue = storage
+            .list_queue_configs(&tenant)
+            .await
+            .ok()?
+            .into_iter()
+            .find(|q| q.extension == extension)?;
+        let schedule_id = queue.schedule_id?;
+        self.schedule_divert(&schedule_id, &tenant, queue.closed_target.clone(), None)
+            .await
+    }
+
+    /// Send a call where a closed schedule says: its target, or 480.
+    async fn divert_for_schedule(
+        &self,
+        request: &sip_core::Request,
+        a_leg_handle: &Arc<ServerTransactionHandle>,
+        call_id: fcp_b2bua_core::CallId,
+        state: fcp_core::ScheduleState,
+        target: Option<fcp_core::CallTarget>,
+        callee: &str,
+    ) -> Result<()> {
+        info!(call_id = %call_id, state = state.as_str(), ?target, "The schedule is not open");
+        let _ = self.call_manager.update_call(&call_id, |c| {
+            if c.original_callee.is_none() {
+                c.original_callee = Some(callee.to_string());
+            }
+        });
+        match target {
+            Some(target) => {
+                self.apply_treatment(
+                    request,
+                    a_leg_handle,
+                    call_id,
+                    fcp_core::Treatment::Forward { target },
+                    Some(callee),
+                    state.as_str(),
+                )
+                .await
+            }
+            None => {
+                let response = self.create_simple_response(request, 480, "Closed");
+                a_leg_handle.send_final(response).await;
+                let _ = self.call_manager.terminate_call_with(
+                    &call_id,
+                    fcp_cdr::TerminationReason::Failed {
+                        status: Some(480),
+                        detail: format!("Schedule {}", state.as_str()),
+                    },
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Run a flow for a call that has not been answered: the IVR a
+    /// number is bound to, or a schedule's or a forward's `flow:` target
+    /// (`docs/ENTERPRISE_CALLING.md` §3.5). Anchors the media if it is not,
+    /// answers when the flow does, and ends the call when the flow does.
+    async fn start_flow_for_call(
+        &self,
+        request: &sip_core::Request,
+        a_leg_handle: &ServerTransactionHandle,
+        call_id: fcp_b2bua_core::CallId,
+        flow_id: String,
+        destination_aor: &str,
+    ) -> Result<()> {
+        let Some(flow_handler) = self.flow_handler.as_ref() else {
+            let response = self.create_simple_response(request, 501, "Not Implemented");
+            a_leg_handle.send_final(response).await;
+            let _ = self
+                .call_manager
+                .terminate_call(&call_id, Some("Flow handler not available".to_string()));
+            return Ok(());
+        };
+
+        info!(
+            call_id = %call_id,
+            flow_id = %flow_id,
+            "Starting IVR flow execution for inbound call"
+        );
+
+        // IVR flows need media anchored for prompt
+        // playback and DTMF detection. If
+        // evaluate_media_anchoring chose PassThrough,
+        // create a media session now.
+        if let Some(call_entry) = self.call_manager.get_call(&call_id) {
+            if call_entry.media_session_id.is_none() {
+                if let Some(ref media_manager) = self.media_manager {
+                    let fcp_call_id = fcp_core::CallId::new();
+                    let fcp_dialog_id = fcp_core::DialogId::new();
+                    match media_manager
+                        .create_session_default(fcp_call_id, fcp_dialog_id)
+                        .await
+                    {
+                        Ok(_session) => {
+                            if let Some(a_leg_sdp) = crate::body::request_sdp(request) {
+                                if let Err(e) =
+                                    media_manager.update_session(&fcp_call_id, a_leg_sdp).await
+                                {
+                                    warn!(call_id = %call_id, error = %e, "Failed to set A-leg media endpoint for IVR");
+                                }
+                            }
+                            let _ = self.call_manager.update_call(&call_id, |call| {
+                                call.media_session_id = Some(fcp_call_id);
+                                call.media_anchored = true;
+                            });
+                            info!(call_id = %call_id, "Created media session for IVR flow (was not anchored)");
+                        }
+                        Err(e) => {
+                            error!(call_id = %call_id, error = %e, "Failed to create media session for IVR");
+                        }
+                    }
+                }
+            }
+        }
+
+        // Build initial variables from call context
+        let mut initial_variables = std::collections::HashMap::new();
+
+        if let Some(from_header) = sip_parse::header(request.headers(), "From") {
+            let from_str = from_header.as_str();
+            if let Some(caller) = Self::extract_did_from_uri(from_str) {
+                initial_variables.insert("caller_number".to_string(), caller.clone());
+                initial_variables.insert("caller".to_string(), caller);
+            }
+            if let Some(display_name) = Self::extract_display_name(from_str) {
+                initial_variables.insert("caller_name".to_string(), display_name);
+            }
+        }
+
+        initial_variables.insert("called_number".to_string(), destination_aor.to_string());
+
+        if let Some(sip_call_id) = sip_parse::header(request.headers(), "Call-ID") {
+            initial_variables.insert("sip_call_id".to_string(), sip_call_id.to_string());
+        }
+
+        // Create answer callback
+        let answer_handle = a_leg_handle.clone();
+        let answer_request = request.clone();
+        let answer_call_id = call_id;
+        let answer_call_manager = Arc::clone(&self.call_manager);
+        let answer_media_manager = self.media_manager.clone();
+        let answer_uas = self.uas.clone();
+        let answer_dialog_manager = Arc::clone(&self.dialog_manager);
+        let answer_callback: fcp_flow::AnswerCallback = Arc::new(move || {
+            let handle = answer_handle.clone();
+            let request = answer_request.clone();
+            let call_id = answer_call_id;
+            let call_manager = Arc::clone(&answer_call_manager);
+            let media_manager = answer_media_manager.clone();
+            let uas = answer_uas.clone();
+            let dialog_manager = Arc::clone(&answer_dialog_manager);
+            Box::pin(async move {
+                info!(call_id = %call_id, "IVR Answer callback executing - creating 200 OK");
+                let mut response = sip_uas::UserAgentServer::create_response(&request, 200, "OK");
+                add_response_headers(&request, &mut response, &uas);
+
+                if let Some(media_mgr) = media_manager {
+                    if let Some(call) = call_manager.get_call(&call_id) {
+                        if let Some(ref media_session_id) = call.media_session_id {
+                            if let Some(remote_sdp) = crate::body::request_sdp(&request) {
+                                match media_mgr.update_session(media_session_id, remote_sdp).await {
+                                    Ok(local_sdp) => {
+                                        let sdp_bytes = bytes::Bytes::from(local_sdp);
+                                        let mut headers = response.headers().clone();
+                                        let _ = headers.push(
+                                            smol_str::SmolStr::new("Content-Type"),
+                                            smol_str::SmolStr::new("application/sdp"),
+                                        );
+                                        let _ = headers.push(
+                                            smol_str::SmolStr::new("Content-Length"),
+                                            smol_str::SmolStr::new(sdp_bytes.len().to_string()),
+                                        );
+                                        response = sip_core::Response::new(
+                                            response.start_line().clone(),
+                                            headers,
+                                            sdp_bytes,
+                                        )
+                                        .expect("Failed to create response with SDP");
+                                        info!(call_id = %call_id, "Added SDP to 200 OK response");
+                                    }
+                                    Err(e) => {
+                                        error!(call_id = %call_id, error = %e, "Failed to update media session with SDP");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // The dialog before the 200 OK: a caller
+                // that hangs up on the answer must find the
+                // call to end it (see the same order above).
+                if let Some(a_leg_dialog) = sip_dialog::Dialog::new_uas(
+                    &request,
+                    &response,
+                    uas.local_uri.clone(),
+                    extract_from_uri(&request).unwrap_or_else(|_| {
+                        sip_core::SipUri::parse("sip:unknown@unknown").unwrap()
+                    }),
+                ) {
+                    let _ = dialog_manager.insert(a_leg_dialog.clone());
+                    // `establish` for the answer time, as above.
+                    let _ = call_manager.update_call(&call_id, |call| {
+                        call.a_leg.dialog = Some(a_leg_dialog.clone());
+                        call.establish();
+                    });
+                }
+
+                handle.send_final(response.clone()).await;
+
+                Ok(())
+            })
+        });
+
+        // Create hangup callback
+        let hangup_call_id = call_id;
+        let hangup_call_manager = Arc::clone(&self.call_manager);
+        let hangup_uac = self.uac.clone();
+        let hangup_dialog_manager = Arc::clone(&self.dialog_manager);
+        let hangup_media_manager = self.media_manager.clone();
+        let hangup_callback: fcp_flow::HangupCallback = Arc::new(move |reason| {
+            let call_id = hangup_call_id;
+            let call_manager = Arc::clone(&hangup_call_manager);
+            let uac_opt = hangup_uac.clone();
+            let dialog_manager = Arc::clone(&hangup_dialog_manager);
+            let media_manager = hangup_media_manager.clone();
+            Box::pin(async move {
+                info!(call_id = %call_id, "IVR Hangup callback executing");
+                // On a task of its own, and awaited so nothing
+                // changes but the stack it runs on. The flow
+                // executor polls this callback deep inside its
+                // own chain and the BYE below is deeper still:
+                // together they overflow a worker's stack and
+                // abort the process. A spawned task is polled
+                // from the top of one.
+                let teardown = tokio::spawn(async move {
+                    if let Some(call_entry) = call_manager.get_call(&call_id) {
+                        if call_entry.media_anchored {
+                            if let (Some(ref media_session_id), Some(ref media_mgr)) =
+                                (&call_entry.media_session_id, &media_manager)
+                            {
+                                let _ = media_mgr.terminate_session(media_session_id).await;
+                            }
+                        }
+                        // BYE A-leg (caller)
+                        if let Some(dialog) = call_entry.a_leg.dialog.clone() {
+                            if let Some(ref uac) = uac_opt {
+                                match uac.bye(&dialog).await {
+                                    Ok(_) => {
+                                        dialog_manager.remove(dialog.id());
+                                    }
+                                    Err(e) => {
+                                        error!(call_id = %call_id, error = %e, "Failed to send A-leg BYE");
+                                    }
+                                }
+                            }
+                        }
+                        // BYE B-leg (callee from Dial node)
+                        if let Some(ref b_leg) = call_entry.b_leg {
+                            if let Some(dialog) = b_leg.dialog.clone() {
+                                if let Some(ref uac) = uac_opt {
+                                    match uac.bye(&dialog).await {
+                                        Ok(_) => {
+                                            dialog_manager.remove(dialog.id());
+                                        }
+                                        Err(e) => {
+                                            error!(call_id = %call_id, error = %e, "Failed to send B-leg BYE");
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    let _ = call_manager.terminate_call(&call_id, reason);
+                });
+                if let Err(e) = teardown.await {
+                    error!(call_id = %call_id, error = %e, "Hangup teardown did not finish");
+                }
+                Ok(())
+            })
+        });
+
+        // Start the flow
+        if let Some(mut call_entry) = self.call_manager.get_call(&call_id) {
+            match flow_handler
+                .start_flow(
+                    &mut call_entry,
+                    flow_id,
+                    initial_variables,
+                    answer_callback,
+                    hangup_callback,
+                )
+                .await
+            {
+                Ok(()) => {
+                    info!(call_id = %call_id, "IVR flow execution started successfully");
+                    let mut progress =
+                        sip_uas::UserAgentServer::create_response(request, 183, "Session Progress");
+                    self.ensure_response_hygiene(request, &mut progress);
+                    a_leg_handle.send_provisional(progress).await;
+                    return Ok(());
+                }
+                Err(e) => {
+                    error!(call_id = %call_id, error = %e, "Failed to start IVR flow execution");
+                    let response =
+                        self.create_simple_response(request, 500, "Internal Server Error");
+                    a_leg_handle.send_final(response).await;
+                    let _ = self
+                        .call_manager
+                        .terminate_call(&call_id, Some("IVR flow error".to_string()));
+                    return Ok(());
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Mark the call with the user its caller is, when the From names a
     /// user of the call's tenant (an extension or a username).
     async fn note_caller_user(
@@ -13925,7 +13997,24 @@ impl SipMessageHandler {
             }
             _ => false,
         };
-        match crate::ring_plan::plan(&settings, contacts, has_mailbox, on_a_call) {
+        // The user's own hours (§3.5): only worth reading with somewhere to
+        // send the call.
+        let after_hours = match (
+            &settings.after_hours_schedule_id,
+            &settings.after_hours_forward,
+        ) {
+            (Some(schedule_id), Some(_)) => self
+                .schedule_divert(schedule_id, tenant_id, None, None)
+                .await
+                .is_some(),
+            _ => false,
+        };
+        let inputs = crate::ring_plan::PlanInputs {
+            has_mailbox,
+            on_a_call,
+            after_hours,
+        };
+        match crate::ring_plan::plan(&settings, contacts, inputs) {
             crate::ring_plan::RingPlan::Immediate { treatment, reason } => {
                 info!(call_id = %call_id, ?user_id, ?treatment, reason, "The callee's plan applies without ringing");
                 let _ = self.call_manager.update_call(&call_id, |call| {
@@ -13986,8 +14075,22 @@ impl SipMessageHandler {
                 )
                 .await
             }
+            // A flow runs for the call itself (`docs/ENTERPRISE_CALLING.md`
+            // §3.5).
+            fcp_core::Treatment::Forward {
+                target: fcp_core::CallTarget::Flow(flow_id),
+            } => {
+                self.start_flow_for_call(
+                    request,
+                    a_leg_handle,
+                    call_id,
+                    flow_id,
+                    callee.unwrap_or_default(),
+                )
+                .await
+            }
             fcp_core::Treatment::Forward { target } => {
-                match self.forward_destination(&target).await {
+                match self.forward_destination(call_id, &target).await {
                     Some(destination) => {
                         self.route_cfna(
                             request,
@@ -14031,7 +14134,11 @@ impl SipMessageHandler {
     /// extension at this node, a SIP URI as given, a user by their
     /// extension or name. A flow or a queue as a target lands with the
     /// schedules phase.
-    async fn forward_destination(&self, target: &fcp_core::CallTarget) -> Option<String> {
+    async fn forward_destination(
+        &self,
+        call_id: fcp_b2bua_core::CallId,
+        target: &fcp_core::CallTarget,
+    ) -> Option<String> {
         match target {
             fcp_core::CallTarget::Voicemail => Some("voicemail".to_string()),
             fcp_core::CallTarget::Number(n) => Some(n.clone()),
@@ -14051,10 +14158,26 @@ impl SipMessageHandler {
                     }
                 }
             }
-            fcp_core::CallTarget::Flow(_) | fcp_core::CallTarget::Queue(_) => {
-                warn!(target = %target, "A flow or queue forward target is not placed by this release");
-                None
+            // A queue is dialed at its extension, where the queue answers.
+            fcp_core::CallTarget::Queue(name) => {
+                let storage = self.storage.as_ref()?;
+                let tenant = self.call_manager.get_call(&call_id)?.tenant_id;
+                match storage.list_queue_configs(&tenant).await {
+                    Ok(queues) => {
+                        let found = queues.into_iter().find(|q| q.name == *name);
+                        if found.is_none() {
+                            warn!(queue = %name, "Forward target queue not found");
+                        }
+                        found.map(|q| q.extension)
+                    }
+                    Err(e) => {
+                        warn!(queue = %name, error = %e, "Failed to read the forward target queue");
+                        None
+                    }
+                }
             }
+            // Run for the call by `apply_treatment`, not dialed.
+            fcp_core::CallTarget::Flow(_) => None,
         }
     }
 
