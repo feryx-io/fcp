@@ -1464,3 +1464,128 @@ async fn a_closed_queue_sends_its_callers_on() {
     answered.hangup().await.unwrap();
     stack.finish().await;
 }
+
+// ─── Find-me / follow-me (docs/ENTERPRISE_CALLING.md §3.6) ───────────────
+
+fn find_me(steps: serde_json::Value) -> fcp_core::FindMe {
+    serde_json::from_value(serde_json::json!({ "enabled": true, "steps": steps })).expect("find-me")
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn find_me_rings_the_next_step_when_the_phones_do_not_answer() {
+    let stack = stack_or_skip!();
+    let [(_, alice), (bob, bob_phone), (carol, carol_phone)] = three_phones(&stack).await;
+    let steps =
+        serde_json::json!([{ "targets": [format!("ext:{}", carol.extension)], "ring_secs": 10 }]);
+    stack
+        .calling(&bob, |s| {
+            s.no_answer_secs = Some(5);
+            s.find_me = Some(find_me(steps));
+        })
+        .await;
+
+    let call = alice.call(&bob.extension).await.unwrap();
+    let Some(at_bob) = bob_phone.incoming(SOON).await else {
+        stack.fail("Bob's phone did not ring first", &alice).await;
+    };
+    let ringing = at_bob.leave_ringing();
+    let Some(at_carol) = carol_phone.incoming(RING_OUT).await else {
+        stack
+            .fail("the find-me step did not ring Carol", &alice)
+            .await;
+    };
+    assert!(ringing.ended(SOON).await, "Bob's phone kept ringing");
+    let answered = at_carol.answer().await.unwrap();
+    call.answered(SOON).await.expect("Alice reaches Carol");
+    answered.hangup().await.unwrap();
+    stack.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_confirmed_step_connects_only_on_a_one() {
+    let stack = stack_or_skip!();
+    let [(_, alice), (bob, bob_phone), (carol, carol_phone)] = three_phones(&stack).await;
+    let steps = serde_json::json!([{ "targets": [format!("ext:{}", carol.extension)], "ring_secs": 10, "confirm": true }]);
+    stack
+        .calling(&bob, |s| {
+            s.no_answer_secs = Some(5);
+            s.find_me = Some(find_me(steps));
+        })
+        .await;
+
+    // Carol answers and presses 1: Alice is connected.
+    let call = alice.call(&bob.extension).await.unwrap();
+    let _ringing = bob_phone
+        .incoming(SOON)
+        .await
+        .expect("Bob rings")
+        .leave_ringing();
+    let Some(at_carol) = carol_phone.incoming(RING_OUT).await else {
+        stack
+            .fail("the find-me step did not ring Carol", &alice)
+            .await;
+    };
+    let carol_call = at_carol.answer().await.unwrap();
+    assert!(
+        call.answered(Duration::from_millis(1500)).await.is_err(),
+        "Alice was connected before Carol confirmed"
+    );
+    carol_call.media().send_dtmf('1');
+    if let Err(e) = call.answered(SOON).await {
+        stack
+            .fail(&format!("Carol's 1 did not connect Alice: {e}"), &alice)
+            .await;
+    }
+    carol_call.hangup().await.unwrap();
+    let _ = call.ended(SOON).await;
+
+    // Carol answers and presses 2: her leg is dropped and Alice is refused.
+    let call = alice.call(&bob.extension).await.unwrap();
+    let _ringing = bob_phone
+        .incoming(SOON)
+        .await
+        .expect("Bob rings")
+        .leave_ringing();
+    let Some(at_carol) = carol_phone.incoming(RING_OUT).await else {
+        stack
+            .fail("the find-me step did not ring Carol again", &alice)
+            .await;
+    };
+    let carol_call = at_carol.answer().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    carol_call.media().send_dtmf('2');
+    assert!(
+        carol_call.ended(SOON).await,
+        "Carol's unconfirmed leg was not dropped"
+    );
+    assert!(call.failed(SOON).await.is_some(), "Alice was not refused");
+    stack.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn find_me_rings_even_with_no_phone_of_the_users_up() {
+    let stack = stack_or_skip!();
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let bob = stack.seed.user("bob", "bob-pw", "1002").await;
+    let carol = stack.seed.user("carol", "carol-pw", "1003").await;
+    let alice_phone = stack.phone(&alice).await;
+    let carol_phone = stack.phone(&carol).await;
+    let steps = serde_json::json!([{ "targets": ["devices", format!("ext:{}", carol.extension)], "ring_secs": 10 }]);
+    stack
+        .calling(&bob, |s| s.find_me = Some(find_me(steps)))
+        .await;
+
+    let call = alice_phone.call(&bob.extension).await.unwrap();
+    let Some(at_carol) = carol_phone.incoming(SOON).await else {
+        stack
+            .fail(
+                "find-me did not ring Carol for an unregistered Bob",
+                &alice_phone,
+            )
+            .await;
+    };
+    let answered = at_carol.answer().await.unwrap();
+    call.answered(SOON).await.expect("Alice reaches Carol");
+    answered.hangup().await.unwrap();
+    stack.finish().await;
+}

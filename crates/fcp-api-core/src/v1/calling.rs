@@ -40,6 +40,10 @@ pub struct CallingResponse {
     /// The user's hours and where calls go outside them (§3.5).
     pub after_hours_schedule_id: Option<String>,
     pub after_hours_forward: Option<String>,
+    /// Find-me / follow-me (§3.6): `enabled`, and `steps` of `targets`
+    /// (`devices`, `ext:…`, `number:+…`, `user:…`, a SIP URI), `ring_secs`
+    /// and `confirm`.
+    pub find_me: Option<fcp_core::FindMe>,
     /// `None`: the node's default ring time.
     pub no_answer_secs: Option<u32>,
     pub updated_at: u64,
@@ -60,6 +64,7 @@ impl CallingResponse {
             hold_music: settings.hold_music.clone(),
             after_hours_schedule_id: settings.after_hours_schedule_id.map(|id| id.to_string()),
             after_hours_forward: settings.after_hours_forward.as_ref().map(|t| t.to_string()),
+            find_me: settings.find_me.clone(),
             no_answer_secs: settings.no_answer_secs,
             updated_at: settings
                 .updated_at
@@ -87,6 +92,8 @@ pub struct UpdateCallingRequest {
     pub after_hours_schedule_id: Option<String>,
     /// A call target, or an empty string to clear it.
     pub after_hours_forward: Option<String>,
+    /// Replaces the find-me whole when given.
+    pub find_me: Option<fcp_core::FindMe>,
     pub no_answer_secs: Option<u32>,
 }
 
@@ -140,6 +147,9 @@ pub async fn apply(
     }
     if let Some(given) = req.after_hours_forward {
         settings.after_hours_forward = parse_target("after_hours_forward", &given)?;
+    }
+    if let Some(find_me) = req.find_me {
+        settings.find_me = Some(find_me);
     }
     if let Some(music) = req.hold_music {
         settings.hold_music = match music.trim() {

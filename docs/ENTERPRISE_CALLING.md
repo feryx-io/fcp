@@ -476,6 +476,34 @@ tenant's trunk selection with the original caller's number presented and a
 mobile's voicemail can no longer swallow the call. Steps with confirmation
 anchor the call. Self-service on the Calling page; `*60`/`*61` on and off.
 
+#### 3.6.1 As built (phase 6, v0.25.281)
+
+`CallingSettings.find_me` holds `enabled` and up to five `steps`, each
+`targets` (`devices` for the user's own phones, a user, an extension, a
+number, a SIP URI), `ring_secs` and `confirm`. The steps ring after the
+user's phones have rung for their own time — `devices` in a step rings
+them again with the rest — and before the no-answer treatment; when none
+of the user's phones is registered, they ring at once and the
+unreachable treatment follows them. The call keeps the steps still to
+ring (`Call.find_me_steps`), and when a fork's legs have all failed the
+next step is forked with its own ring time (`next_find_me_step`): a user,
+or an extension that is a user, by their registered contacts; any other
+extension, a number or a URI dialed back into this node with the
+caller's identity, so a number leaves by the tenant's trunks.
+
+Confirmation: a leg of a `confirm` step that answers has its media set
+on the call's session and hears, alone, "Call for <name>. Press 1 to
+accept." (a tone where there is no speech), and the caller is connected
+only on a 1 within ten seconds; any other digit or none drops that leg
+and the call goes on as though nobody had answered — the next step, or
+the treatment. A call whose media is not anchored cannot be asked, and
+its answer stands. `*60` and `*61` turn find-me on and off; the Calling
+page and dialog edit the steps.
+
+Not built: the `Diversion` header naming the user on a number's leg (the
+leg presents the caller, as a forward does, but the node's INVITE back to
+itself carries no header the trunk would pass on).
+
 ### 3.7 Class of service
 
 `classes_of_service` (migration 082): `tenant_id`, `name`, `allowed`
@@ -596,7 +624,7 @@ feature crosses nodes, in the two-node cluster harness.
 | 3 | ✅ v0.25.278 — **Music on hold** (§3.3). forge-media's looped, transcoded, replacing player (a forge-media release); the resolver, the built-in default, tenant and per-user prompts, park and hold, the anchoring reason. Test: the phone hears the file's tone while its party is held and while parked. As built (§3.3.1): forge-media's player through scheduled playout (forge-media v2026.09.27); holds answered by the node when media is anchored; the music chosen per holder, per tenant, else built in; the parked party held with music; `[media] hold_music` anchors every call; a flow `Play` repeats `loop_count` times; the queue naming a prompt, and the number's and the tenant's switches, not built. Test: `fcp-call-manager/tests/calling.rs`. |
 | 4 | ✅ v0.25.279 — **Call waiting** (§3.4). The per-user call set in the registry, the plan's busy rule, `*56`/`*57`. Tests: a second call rings or is refused by the setting; on two nodes. As built (§3.4.1): a user's calls as leases (`fcp_cluster::CallLeases`, subject `User`) kept by a parties hook on the call manager, this node's own count without a cluster; call waiting off with a call up is the busy treatment; `*56`/`*57`; the Calling page's switch. The class's call limit waits for phase 7. Tests: `calling.rs`, and `trunks.rs` on two nodes. |
 | 5 | ✅ v0.25.280 — **Schedules** (§3.5). The entity, the tenant timezone, the number's closed and holiday targets, the user's after-hours forward, DB queue hours, the flow node, the pages. Tests: a number answered by a flow after hours, a queue closed on a holiday. As built (§3.5.1): `schedules` (migration 083, JSON rows, synced to sites), the number's `schedule_id`/`closed_target`/`holiday_target`, the user's after-hours forward in the plan, a database queue's hours decided before the queue, the flow `Schedule` node, `flow:` and `queue:` targets placed, `/v1/schedules` and a Schedules page. The tenant's timezone waits for phase 7 with its country. Test: `calling.rs`, `api_postgres.rs`. |
-| 6 | **Find-me / follow-me** (§3.6). Steps, external legs with confirmation, `Diversion`, the page. Tests: a sequential ring reaching a trunk stub that must press 1. |
+| 6 | ✅ v0.25.281 — **Find-me / follow-me** (§3.6). Steps, external legs with confirmation, `Diversion`, the page. Tests: a sequential ring reaching a trunk stub that must press 1. As built (§3.6.1): steps after the user's phones (or instead of them when none is up), each forked with its own ring time; confirmation by a prompt to the answering leg alone and one digit; `*60`/`*61`; the Calling page's editor. The `Diversion` header is not sent. Test: `calling.rs`. |
 | 7 | **Class of service** (§3.7). The entity, classification, enforcement for the effective user, find-me legs and call-on-behalf, the number's screening lists, the line's caller ID applied, the pages. Tests: a premium number refused for one user and placed for another, a withheld caller ID, a blocked caller. |
 | 8 | **Hoteling** (§3.8). Device credentials and the registrar's check, hosts, sessions, login and logout by DTMF, `check-sync`, the effective user in every path, expiry, the API and pages. Tests: a guest logs in on a host phone, is rung there and calls out as themself, expires. |
 | 9 | **Shared call appearance** (§3.9). Shared lines, second-account templates, the appearance table, `call-info` and `line-seize`, retrieve from another phone, the testkit phone's packages. Tests: two phones on one line, lamps through seize, alert, active and held, retrieve on the other phone; lamps right across two nodes. |
