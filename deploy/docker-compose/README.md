@@ -177,7 +177,7 @@ right token.
 Every configuration under `configs/` is checked by its binary's smoke
 test with this `.env` (`--check-config` must accept it), the compose
 file is validated by CI's packaging job on every pull request (alone,
-with the GPU overlay, with the registrar and tts profiles), the fourteen images are
+with the GPU overlay, with the registrar and tts profiles), the fifteen images are
 built nightly, and the stack test starts every service (the TTS server
 apart), waits for each to be healthy and carries a call.
 Check a file by hand:
@@ -193,7 +193,7 @@ removes the volumes too, the database included.
 
 ## Pull instead of build
 
-The Images workflow builds the fourteen images every night and pushes
+The Images workflow builds the fifteen images every night and pushes
 them to `ghcr.io/thevoiceguy/fcp-<service>` as `nightly` and as the
 commit's sha, then brings that stack up on a runner, carries a call
 through it, backs it up, drops it, restores it and calls again
@@ -228,6 +228,22 @@ is the backup (`docs/BACKUP_AND_RESTORE.md` §5). The call manager
 heartbeats into the stack's Redis and the admin reads it, so the admin
 UI's cluster page lists it with its version — a cluster of one, until
 a second call manager on the same Redis joins.
+
+## A site
+
+`site/` is a second compose project: a tenant's own stack on the
+tenant's network — its own Postgres, Redis, certificates, admin and
+call manager, and `fcp-link` — enrolled to a cloud running this stack
+and kept in step by the link (`docs/SITE_SETUP.md`, the operator's
+document; `docs/HYBRID_CONTROL_PLANE.md`, the design). It runs beside
+this stack on one host, as the nightly runs it, on shifted ports
+(Postgres 15432, Redis 16379, admin 18080, call manager 18084, SIP
+5090–5092, RTP 12000–12999). What it needs from here is `ca.crt` from
+the `fcp-certs` volume (as `site/cloud-ca.crt`), the admin's link
+listeners (8446, 8447) and the SBC's TLS listener (5079) reachable, and
+an enrollment token from the admin UI's Sites page. `scripts/backup.sh`,
+`restore.sh` and `wait-healthy.sh` take `COMPOSE_DIR=$PWD/site` to work
+on it.
 
 ## When it does not come up
 

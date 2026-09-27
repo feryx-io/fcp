@@ -3,12 +3,15 @@
 # healthy and every other one is running (`certs` runs once and exits,
 # and is not waited for), or fail after the given seconds with what
 # `docker compose ps` shows (docs/NIGHTLY_STACK.md phase 2). Run from
-# anywhere; needs docker (with compose).
+# anywhere; needs docker (with compose). COMPOSE_DIR names another
+# compose project to wait for — the site stack's directory, say
+# (docs/SITE_SETUP.md).
 #
 #   scripts/wait-healthy.sh 300
+#   COMPOSE_DIR=$PWD/site scripts/wait-healthy.sh 300
 set -euo pipefail
 
-COMPOSE_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )/.." && pwd )"
+COMPOSE_DIR="${COMPOSE_DIR:-$( cd "$( dirname "${BASH_SOURCE[0]}" )/.." && pwd )}"
 DEADLINE=$(( $(date +%s) + ${1:-300} ))
 cd "$COMPOSE_DIR"
 

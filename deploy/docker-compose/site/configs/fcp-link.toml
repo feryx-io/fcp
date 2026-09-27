@@ -1,0 +1,34 @@
+# fcp-link at a site (docs/SITE_SETUP.md): the link to the cloud. The
+# cloud's addresses and the enrollment token come from .env through the
+# FCP_LINK_* environment overrides; the site's database password too.
+
+[service]
+node_id = "site-link-01"
+
+[link]
+# cloud_url and link_url: FCP_LINK_CLOUD_URL and FCP_LINK_LINK_URL from
+# .env; the enrollment token: FCP_LINK_ENROLLMENT_TOKEN, needed until
+# state_dir holds a certificate.
+# The link's key, certificate, the site's secret and the sync cursor:
+# the link-data volume.
+state_dir = "/app/data"
+# The CA that signs the cloud's listeners, beside the system's roots:
+# ./cloud-ca.crt, copied from the cloud.
+cloud_ca = "/var/lib/fcp/cloud/ca.crt"
+
+[site]
+# The site's Postgres, kept a copy of the tenant's configuration:
+# FCP_LINK_SITE_DATABASE_URL from .env.
+# The site's Redis: its nodes and registrations for the heartbeat, its
+# event stream for forwarding.
+redis_url = "redis://redis:6379"
+# What the link may send up or remove at the cloud's request: the call
+# manager's recordings and voicemail, its data volume mounted read-only.
+file_roots = ["/var/lib/fcp/call-manager"]
+
+[health]
+bind_address = "0.0.0.0:8096"
+
+[logging]
+level = "info"
+format = "pretty"

@@ -1,11 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Link, Outlet, useLocation } from 'react-router-dom'
 import {
-  LayoutDashboard, Users, Phone, Boxes, MonitorSmartphone,
-  Link2, Building2, MapPin, Settings, LogOut, Moon, Sun, Monitor, Menu,
-  ChevronLeft, PhoneCall, FileText, Headphones, Voicemail,
-  Radio, Activity, Server, Shield, Workflow, Globe, Key,
-  ScrollText, Search, X, FileAudio, Video, Disc, Siren, Coins,
+  LayoutDashboard, Users, Phone, Boxes, MonitorSmartphone, Link2, Building2, MapPin, Settings, LogOut, Moon, Sun, Monitor, Menu, ChevronLeft, PhoneCall, FileText, Headphones, Voicemail, Radio, Activity, Server, Shield, Workflow, Globe, Key, ScrollText, Search, X, FileAudio, Video, Disc, Siren, Coins, Cable,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -58,6 +54,7 @@ const navItems: NavItem[] = [
   { label: 'IVR Flows', href: '/admin/flows', icon: Workflow, section: 'Advanced' },
   { label: 'Flow Traces', href: '/admin/flow-traces', icon: Activity, section: 'Advanced' },
   { label: 'Cluster', href: '/admin/cluster', icon: Globe, section: 'Advanced' },
+  { label: 'Sites', href: '/admin/sites', icon: Cable, section: 'Advanced' },
   { label: 'Number Porting', href: '/admin/porting', icon: Phone, section: 'Advanced' },
   { label: 'Audit Log', href: '/admin/audit', icon: ScrollText, section: 'Advanced' },
   { label: 'API Tokens', href: '/admin/tokens', icon: Key, section: 'Advanced' },

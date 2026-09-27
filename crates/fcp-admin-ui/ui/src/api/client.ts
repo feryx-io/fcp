@@ -53,14 +53,15 @@ export class ApiClient {
     return response.json()
   }
 
-  get<T>(path: string): Promise<T> {
-    return this.request<T>(path, { method: 'GET' })
+  get<T>(path: string, headers?: Record<string, string>): Promise<T> {
+    return this.request<T>(path, { method: 'GET', headers })
   }
 
-  post<T>(path: string, body?: unknown): Promise<T> {
+  post<T>(path: string, body?: unknown, headers?: Record<string, string>): Promise<T> {
     return this.request<T>(path, {
       method: 'POST',
       body: body ? JSON.stringify(body) : undefined,
+      headers,
     })
   }
 
@@ -78,8 +79,8 @@ export class ApiClient {
     })
   }
 
-  delete<T>(path: string): Promise<T> {
-    return this.request<T>(path, { method: 'DELETE' })
+  delete<T>(path: string, headers?: Record<string, string>): Promise<T> {
+    return this.request<T>(path, { method: 'DELETE', headers })
   }
 
   /** Upload a FormData body (multipart). No Content-Type header — browser sets boundary. */

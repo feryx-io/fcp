@@ -1,10 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
-  LayoutDashboard, Users, Phone, MonitorSmartphone, Link2,
-  Building2, PhoneCall, FileText, Headphones, Voicemail,
-  Radio, Server, Shield, Workflow, Globe, Key, Coins,
-  ScrollText, Search, Disc, Siren,
+  LayoutDashboard, Users, Phone, MonitorSmartphone, Link2, Building2, PhoneCall, FileText, Headphones, Voicemail, Radio, Server, Shield, Workflow, Globe, Key, Coins, ScrollText, Search, Disc, Siren, Cable,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import {
@@ -36,6 +33,7 @@ const commands: CommandItem[] = [
   { label: 'Least-Cost Routes', href: '/admin/lcr', icon: Coins, keywords: ['lcr', 'cost', 'rates', 'carriers'] },
   { label: 'IVR Flows', href: '/admin/flows', icon: Workflow, keywords: ['ivr', 'menu', 'builder'] },
   { label: 'Cluster Monitor', href: '/admin/cluster', icon: Globe, keywords: ['nodes', 'health', 'system'] },
+  { label: 'Sites', href: '/admin/sites', icon: Cable, keywords: ['site', 'hybrid', 'link', 'enroll', 'premises'] },
   { label: 'Number Porting', href: '/admin/porting', icon: Phone, keywords: ['port', 'transfer', 'carrier'] },
   { label: 'Recordings', href: '/admin/recordings', icon: Disc, keywords: ['recording', 'conference', 'webm', 'mp4', 'wav', 'playback'] },
   { label: 'Audit Log', href: '/admin/audit', icon: ScrollText, keywords: ['audit', 'who', 'changes'] },

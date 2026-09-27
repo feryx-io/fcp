@@ -227,6 +227,8 @@ export interface PhoneNumber {
   cnam: string | null
   spam_score: number | null
   location_id: string | null
+  /** The site whose phones answer this number (docs/HYBRID_CONTROL_PLANE.md §3.6). */
+  site_id?: string | null
   carrier: string | null
   lrn: string | null
   rate_center: string | null
@@ -281,6 +283,8 @@ export interface CreatePhoneNumberRequest {
   carrier?: string
   tags?: string[]
   location_id?: string
+  /** The site whose phones answer this number; empty to answer it here. */
+  site_id?: string
 }
 
 export interface DeviceBinding {
@@ -705,6 +709,10 @@ export interface SipTrunk {
   hosts: string[]
   /** Where the carrier's calls come from: addresses and CIDR ranges. Empty means the hosts. */
   inbound_sources: string[]
+  /** The site this trunk runs at, in a hybrid deployment (docs/HYBRID_CONTROL_PLANE.md §3.6). */
+  site_id?: string
+  /** Which end of a site's link this trunk is, when it is one; made at enrollment. */
+  link?: 'cloud' | 'site'
   transport_protocol: string // "udp" | "tcp" | "tls"
   transport_port: number
   verify_tls: boolean
@@ -836,6 +844,8 @@ export interface CreateTrunkRequest {
   weight?: number
   hosts?: string[]
   inbound_sources?: string[]
+  /** The site this trunk runs at; empty to make it the cloud's own. */
+  site_id?: string
   transport_protocol?: string
   transport_port?: number
   verify_tls?: boolean
@@ -1151,6 +1161,22 @@ export interface SiteInfo {
   sync_error?: string
   /** Journal entries the site has not applied yet. */
   sync_behind?: number
+  /** The site's link trunk, made at enrollment when the cloud names a SIP address for sites. */
+  trunk_id?: string
+  /** Who is registered at the site, from its last heartbeat (§3.3). */
+  registrations?: SiteRegistrations
+}
+
+export interface SiteRegistrations {
+  users: { aor: string; contacts: number; since?: number }[]
+  total_users: number
+  total_contacts: number
+}
+
+/** A site with the one-time enrollment token the cloud shows once. */
+export interface SiteWithToken extends SiteInfo {
+  enrollment_token: string
+  enrollment_token_expires_at: number
 }
 
 export interface ClusterSitesResponse {

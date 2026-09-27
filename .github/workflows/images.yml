@@ -1,5 +1,5 @@
 # The shipped stack, built, published and run (docs/NIGHTLY_STACK.md phase
-# 2). Every night: the fourteen images are built one to a runner and
+# 2). Every night: the fifteen images are built one to a runner and
 # pushed to ghcr.io/thevoiceguy/fcp-<name> as `nightly` and as the commit
 # sha; then one runner pulls them, brings the stack up with the shipped
 # .env, carries a call through it with the testkit's phone, backs it up,
@@ -52,6 +52,7 @@ jobs:
           - voicemail
           - presence
           - tts
+          - link
     steps:
       - uses: actions/checkout@v5
         with:
@@ -147,18 +148,77 @@ jobs:
           FCP_LIVE_STACK: restored
           FCP_LIVE_CA: ${{ runner.temp }}/ca.crt
         run: cargo test -p fcp-call-manager --test compose_live -- --nocapture
+      # A site against this cloud (docs/SITE_SETUP.md, hybrid phase 7):
+      # the live tenant gets a site through the admin API, and the site
+      # stack — its own Postgres, Redis, admin, call manager and link —
+      # comes up beside the cloud stack as a second compose project from
+      # the same images, its .env holding the site's token and this
+      # runner's addresses for the cloud, its cloud-ca.crt the CA above.
+      - name: A site for the live tenant
+        id: site
+        run: |
+          ip=$(hostname -I | awk '{print $1}')
+          admin_token=$(grep '^FCP_ADMIN_AUTH_TOKEN=' .env | cut -d= -f2-)
+          tenant=$(curl -fsS -H "Authorization: Bearer $admin_token" http://127.0.0.1:8080/api/v1/tenants \
+            | jq -r '(.tenants // .)[] | select(.name == "live") | .id')
+          test -n "$tenant"
+          site=$(curl -fsS -X POST -H "Authorization: Bearer $admin_token" -H "x-fcp-tenant-id: $tenant" \
+            -H 'Content-Type: application/json' -d '{"name":"live-site"}' http://127.0.0.1:8080/api/v1/sites)
+          site_id=$(echo "$site" | jq -r .id)
+          token=$(echo "$site" | jq -r .enrollment_token)
+          test -n "$site_id" && test -n "$token"
+          echo "site_id=$site_id" >> "$GITHUB_OUTPUT"
+          cp "$RUNNER_TEMP/ca.crt" site/cloud-ca.crt
+          sed -i "s/^HOST_IP=.*/HOST_IP=$ip/; s/^FCP_IMAGE_TAG=.*/FCP_IMAGE_TAG=$IMAGE_TAG/; \
+            s#^FCP_LINK_CLOUD_URL=.*#FCP_LINK_CLOUD_URL=https://$ip:8446#; \
+            s#^FCP_LINK_LINK_URL=.*#FCP_LINK_LINK_URL=https://$ip:8447#; \
+            s#^FCP_CLOUD_ADMIN_URL=.*#FCP_CLOUD_ADMIN_URL=https://$ip:8444#; \
+            s/^FCP_LINK_ENROLLMENT_TOKEN=.*/FCP_LINK_ENROLLMENT_TOKEN=$token/" site/.env
+          grep -E '^(HOST_IP|FCP_IMAGE_TAG|FCP_LINK_CLOUD_URL|FCP_LINK_LINK_URL|FCP_CLOUD_ADMIN_URL)=' site/.env
+          echo "site $site_id for tenant $tenant"
+      - name: Pull and start the site
+        working-directory: deploy/docker-compose/site
+        run: |
+          docker compose config --quiet
+          docker compose pull --quiet
+          docker compose up -d --no-build
+          COMPOSE_DIR=$PWD ../scripts/wait-healthy.sh 300
+      # The site enrolled and in step: the link up on the cloud's site
+      # record with the site's call manager on it, a user made in the
+      # cloud registering at the site, the site bound at the cloud's SBC,
+      # the site's admin refusing what the cloud owns.
+      - name: The site, enrolled and in step
+        working-directory: .
+        env:
+          FCP_LIVE_SITE: ${{ steps.site.outputs.site_id }}
+          FCP_LIVE_CA: ${{ runner.temp }}/ca.crt
+        run: cargo test -p fcp-link --test compose_site -- --nocapture
+      # The site is kept the way the cloud is: the same script, pointed
+      # at the site's project, takes its dump, its key and its link.
+      - name: Back up the site
+        run: |
+          COMPOSE_DIR=$PWD/site scripts/backup.sh "$RUNNER_TEMP/site-backup"
+          cat "$RUNNER_TEMP/site-backup/manifest"
+          grep -q 'link-data' "$RUNNER_TEMP/site-backup/manifest"
       - name: The stack's logs
         if: failure()
         run: |
           docker compose ps
           docker compose logs --no-color > "$RUNNER_TEMP/stack.log" 2>&1 || true
+          if [ -f site/cloud-ca.crt ]; then
+            (cd site && docker compose ps && docker compose logs --no-color > "$RUNNER_TEMP/site.log" 2>&1) || true
+          fi
       - name: Keep the logs
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: stack-logs
-          path: ${{ runner.temp }}/stack.log
+          path: |
+            ${{ runner.temp }}/stack.log
+            ${{ runner.temp }}/site.log
           if-no-files-found: ignore
       - name: Down
         if: always()
-        run: docker compose down -v
+        run: |
+          if [ -f site/cloud-ca.crt ]; then (cd site && docker compose down -v) || true; fi
+          docker compose down -v

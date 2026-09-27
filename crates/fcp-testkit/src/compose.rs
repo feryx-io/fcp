@@ -61,6 +61,7 @@ fn binary_for(dockerfile: &str) -> Option<(&'static str, &'static str)> {
         "voicemail" => ("fcp-voicemail-server", "fcp-voicemail"),
         "presence" => ("fcp-presence-server", "fcp-presence"),
         "tts" => ("fcp-tts-server", "fcp-tts"),
+        "link" => ("fcp-link", "fcp-link"),
         _ => return None,
     })
 }
@@ -94,11 +95,23 @@ fn interpolate(s: &str, vars: &BTreeMap<String, String>) -> String {
 impl ComposeStack {
     /// Read `deploy/docker-compose/docker-compose.yml` and `.env`.
     pub fn load() -> Self {
+        Self::load_at("deploy/docker-compose")
+    }
+
+    /// The site stack, `deploy/docker-compose/site` — a tenant's own
+    /// stack with its link (`docs/SITE_SETUP.md`).
+    pub fn load_site() -> Self {
+        Self::load_at("deploy/docker-compose/site")
+    }
+
+    /// Read the `docker-compose.yml` and `.env` of the compose project at
+    /// `rel` from the repository root.
+    pub fn load_at(rel: &str) -> Self {
         let root = repo_root();
-        let dir = root.join("deploy/docker-compose");
+        let dir = root.join(rel);
         let text = std::fs::read_to_string(dir.join("docker-compose.yml")).expect("compose file");
         let doc: serde_yaml::Value = serde_yaml::from_str(&text).expect("compose yaml");
-        let dotenv = crate::smoke::compose_env();
+        let dotenv = crate::smoke::compose_env_at(rel);
         let mut vars: BTreeMap<String, String> = dotenv.iter().cloned().collect();
         vars.insert("HOST_IP".into(), "127.0.0.1".into());
 
@@ -127,9 +140,8 @@ impl ComposeStack {
                 .filter_map(|v| v.as_str())
                 .find_map(|v| {
                     let src = v.split(':').next()?;
-                    src.ends_with(".toml").then(|| {
-                        PathBuf::from("deploy/docker-compose").join(src.trim_start_matches("./"))
-                    })
+                    src.ends_with(".toml")
+                        .then(|| PathBuf::from(rel).join(src.trim_start_matches("./")))
                 })
                 .unwrap_or_else(|| panic!("{name}: no configuration mounted"));
             let mut env = Vec::new();
@@ -184,7 +196,7 @@ impl ComposeStack {
             .iter()
             .find(|(k, _)| k == key)
             .map(|(_, v)| v.clone())
-            .unwrap_or_else(|| panic!("{key} is not in deploy/docker-compose/.env"))
+            .unwrap_or_else(|| panic!("{key} is not in the compose project's .env"))
     }
 
     /// The service's configuration as the test runs it: the compose

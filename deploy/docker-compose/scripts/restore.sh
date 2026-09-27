@@ -32,7 +32,9 @@
 # Needs: docker (with compose), sha256sum, base64. Reads the stack's .env.
 set -euo pipefail
 
-COMPOSE_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )/.." && pwd )"
+# COMPOSE_DIR names another compose project to restore into: the site
+# stack's directory (docs/SITE_SETUP.md).
+COMPOSE_DIR="${COMPOSE_DIR:-$( cd "$( dirname "${BASH_SOURCE[0]}" )/.." && pwd )}"
 HELPER_IMAGE="${FCP_BACKUP_HELPER_IMAGE:-alpine:3.20}"
 
 fail() { echo "restore: $*" >&2; exit 1; }

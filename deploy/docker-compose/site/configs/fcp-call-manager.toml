@@ -1,0 +1,87 @@
+# fcp-call-manager at a site (docs/SITE_SETUP.md), on the host's network.
+# Secrets come from .env through the FCP_CALL_MANAGER_* environment
+# overrides; the host's address through FCP_CALL_MANAGER_PUBLIC_IP.
+
+[service]
+service_type = "call-manager"
+node_id = "site-cm-01"
+
+[sip]
+udp_bind = "0.0.0.0:5090"
+tcp_bind = "0.0.0.0:5090"
+# SIPS and WSS for the site's phones, from the certificate the site's
+# `certs` service made; phones trust the site's CA beside it.
+sips_bind = "0.0.0.0:5091"
+wss_bind = "0.0.0.0:5092"
+tls_cert_path = "/var/lib/fcp/certs/fcp-call-manager.crt"
+tls_key_path = "/var/lib/fcp/certs/fcp-call-manager.key"
+# The CA that signs the cloud's SBC, trusted beside the system's roots
+# when the link trunk registers to it over TLS (docs/HYBRID_CONTROL_PLANE.md
+# §3.6): ./cloud-ca.crt, copied from the cloud.
+tls_ca_path = "/var/lib/fcp/cloud/ca.crt"
+
+[security]
+max_invite_cps_per_source = 20
+
+[registrar]
+auth_enabled = true     # Required on a public SIP bind; users come down the link
+auth_invites = false
+realm = "fcp.local"
+default_expires = 3600
+min_expires = 60
+max_expires = 86400
+domain_aliases = ["fcp.local"]
+
+[calls]
+call_timeout_seconds = 60
+enable_sdp = true
+enable_refer = true
+
+[admission]
+max_concurrent_calls = 100
+
+[media]
+rtp_port_start = 12000
+rtp_port_end = 12999
+codecs = ["PCMU", "PCMA", "G722"]
+# Everything this node writes to disk lives under /app/data, the
+# call-manager-data volume, which the link reads the site's recordings
+# and voicemail from when the cloud asks for them.
+recording_dir = "/app/data/recordings"
+prompts_dir = "/app/data/prompts"
+tts_cache_dir = "/app/data/tts-cache"
+
+[storage]
+# Overridden by FCP_CALL_MANAGER_DATABASE_URL; the site's Postgres and
+# Redis publish their ports on the host, which this container shares.
+database_url = "postgresql://fcp:change-me@127.0.0.1:15432/fcp"
+redis_url = "redis://127.0.0.1:16379"
+
+[cluster]
+# The site's cluster of one: the link reads its nodes from the site's
+# Redis and carries them on the heartbeat, so the cloud's Sites page
+# lists this node with its release.
+enabled = true
+
+[cdr]
+spool_dir = "/app/data/cdr-spool"
+# No `sink = "stream"`: the site runs no job worker. Records are written
+# to the site's database and the link ships them up
+# (docs/HYBRID_CONTROL_PLANE.md §3.7).
+
+[trunk_routing]
+# The link trunk arrives down the link; pick it up soon after.
+refresh_secs = 5
+
+[http]
+bind_address = "0.0.0.0:18084"
+# api_token: FCP_CALL_MANAGER_API_TOKEN, required on a non-loopback bind.
+
+[events]
+# The site's events go to its Redis stream, from which the link forwards
+# them to the cloud, where the tenant's webhooks fire.
+use_redis = true
+
+[logging]
+level = "info"
+format = "pretty"

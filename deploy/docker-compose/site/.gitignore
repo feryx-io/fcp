@@ -1,0 +1,3 @@
+# The CA that signs the cloud's listeners, copied from the cloud
+# (docs/SITE_SETUP.md); never the repository's.
+cloud-ca.crt

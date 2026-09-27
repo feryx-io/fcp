@@ -541,6 +541,7 @@ pub fn assert_configs_check(
 ) {
     let root = repo_root();
     let compose_env = compose_env();
+    let site_env = compose_env_at("deploy/docker-compose/site");
     let run = |rel: &str| {
         let path = root.join(rel);
         assert!(path.is_file(), "{rel} is listed but does not exist");
@@ -548,8 +549,11 @@ pub fn assert_configs_check(
         let mut args: Vec<&str> = vec!["--check-config", "--config", &path];
         args.extend_from_slice(extra_args);
         // A compose configuration is checked the way the compose file
-        // runs it: with the stack's .env in the environment.
-        let env: &[(String, String)] = if rel.starts_with("deploy/docker-compose/") {
+        // runs it: with the stack's .env in the environment — the site
+        // stack's for the site's configurations.
+        let env: &[(String, String)] = if rel.starts_with("deploy/docker-compose/site/") {
+            &site_env
+        } else if rel.starts_with("deploy/docker-compose/") {
             &compose_env
         } else {
             &[]
@@ -577,7 +581,13 @@ pub fn assert_configs_check(
 /// The compose stack's `.env` (`deploy/docker-compose/.env`), as the
 /// variables it sets: what the compose file hands its services.
 pub fn compose_env() -> Vec<(String, String)> {
-    let path = repo_root().join("deploy/docker-compose/.env");
+    compose_env_at("deploy/docker-compose")
+}
+
+/// The `.env` of the compose project at `rel` (from the repository root):
+/// the cloud stack's, or the site stack's under `site/`.
+pub fn compose_env_at(rel: &str) -> Vec<(String, String)> {
+    let path = repo_root().join(rel).join(".env");
     let text = std::fs::read_to_string(&path).unwrap_or_default();
     text.lines()
         .map(str::trim)
