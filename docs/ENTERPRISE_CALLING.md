@@ -7,7 +7,8 @@ features every enterprise PBX has and FCP does not — shared call appearance,
 do not disturb, call waiting, find-me/follow-me, music on hold, class of
 service, schedules, executive-assistant and hoteling. Nine features, and
 under them one structural gap: FCP has no per-user calling model. This is
-the design for the model and the nine features on it.
+the design for the model and the nine features on it. Agreed 2026-09-27:
+the ten questions in §5, each settled on its recommendation.
 
 ## 1. What the code has, and what it lacks
 
@@ -418,8 +419,8 @@ feature crosses nodes, in the two-node cluster harness.
 
 ## 5. Questions
 
-Ten, each with a recommendation; the phases above assume the
-recommendations.
+Ten, settled by the user on 2026-09-27, each on its recommendation,
+which is what the phases above assume.
 
 **Q1. Are calling features per user or per number?** — *Per user.* Every
 platform in the review attaches DND, forwarding, find-me, class of service
