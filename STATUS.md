@@ -1266,7 +1266,7 @@ attended, park and retrieve, call pull by `Replaces`, orbit timeout) and
 `calls.rs`'s relayed transfer under `execute = false`. Hold stays passed
 through until phase 3 has music to play; dialog-info's SIP ids and BLF
 pickup by `Replaces` move to phase 9.
-Phase 3 done (v0.25.278, forge-media #166): music on hold — forge-media's
+Phase 3 done (v0.25.278, forge-media v2026.09.27): music on hold — forge-media's
 player now plays through the session's scheduled playout (the leg's own
 codec and SRTP, looped on request, the other leg held back while a
 `Replace` playback runs); `[media] hold_music` (default on) anchors every
