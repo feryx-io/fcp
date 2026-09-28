@@ -85,7 +85,7 @@ run it triggers, a test by running it.
 | 1 | ✅ v0.25.265 — **Fuzzing running and watched** (§1.1). Both fuzz steps name the host triple (`--target x86_64-unknown-linux-gnu`); each target is built before it is run, and a target that does not build is reported as such, apart from one that crashes. FCP's weekly CI gets a `submodule-nightlies` job: the latest scheduled Fuzz run of each submodule, from the GitHub API, must have succeeded and be less than two days old. |
 | 2 | ✅ v0.25.266 — **The images published, then run** (§1.2). `images.yml` pushes each image to `ghcr.io/thevoiceguy/fcp-<name>:nightly` (and `:<sha>`); the compose file names `image: ghcr.io/thevoiceguy/fcp-<name>:${FCP_IMAGE_TAG:-local}` beside each `build:`, so a checkout still builds and CI pulls. A `stack` job after the matrix pulls the fourteen, brings the stack up with the shipped `.env` and `--no-build`, waits for every health check, and runs `crates/fcp-call-manager/tests/compose_live.rs` (gated on `FCP_LIVE_STACK`): a phone registers over SIP and SIPS, calls a room, is on the admin's node list; then `backup.sh`, `down -v`, `restore.sh`, `up -d --no-build`, and the phone registers again with the sealed password. Operators get pullable images: `FCP_IMAGE_TAG=nightly docker compose up -d --no-build`. |
 | 3 | ✅ v0.25.287 — **A test's Redis is its own** (§1.3). `private_redis_url` flushes the database it hands out — test binaries run one at a time, and within one binary the indexes are distinct — so a leak from an earlier binary reaches nobody; the helper says so, and the pipeline test's own deletion goes. As built: `emptied` flushes the database before `private_redis_url` returns it, a binary asking for a sixteenth is refused, and `cdr_pipeline.rs` no longer deletes `fcp:cdrs` itself; `private_redis_tests` proves two acquisitions differ and a database left dirty is handed out empty. |
-| 4 | **What the nightly finds, written down.** The first runs' findings fixed or recorded; `docs/TEST_FLOOR.md` gets the live stack as its top layer; the compose README and the runbook point at the images. |
+| 4 | ✅ v0.25.288 — **What the nightly finds, written down.** The first runs' findings fixed or recorded; `docs/TEST_FLOOR.md` gets the live stack as its top layer; the compose README and the runbook point at the images. As built: §6 below; the four findings since phase 2 merged fixed (the restore's Postgres race, the site step's `jq`, the compose health checks, forge-bfcp's parser in forge-media #168) and one recorded for the owner (the packages are private). |
 
 ## 3. Questions
 
@@ -128,6 +128,36 @@ are.
 - Phase 3: a test in the testkit that two acquisitions in one process
   get different indexes and that an acquisition finds its index empty.
 - Phase 4: the documents match what the job does.
+
+## 6. What the nightly found
+
+**Before phase 2 merged** (the branch's own runs, 2026-09-25): seven
+fixes, all in the phase 2 PR — the proxy's health check probing IPv6,
+an id the live test read in the wrong shape, the setup guide's extension
+shape, an INVITE dialled at the node's address naming no tenant (a
+registered caller's tenant now comes from its registration), a user
+created through the API with no device ringing nowhere (their own
+address is rung), a dead registration's CANCEL holding up the winner's
+200 (the losers' CANCELs spawned), and every service racing to create
+the first data key on an empty ring (an advisory lock, and
+`start_period` on the slower health checks).
+
+**After it merged**, one scheduled run a night:
+
+| Night | What failed | What it was | Where fixed |
+|---|---|---|---|
+| 2026-09-26 | every job, unstarted | the account's Actions spending limit | the owner's billing — nothing in the code |
+| 2026-09-27 | the stack job, *Back up, drop, restore* | `restore.sh` waited for Postgres with `pg_isready` on the socket: on an empty volume the image's temporary init server answers there, then restarts — the loop passed and the check after it did not | v0.25.288: `pg_isready -h 127.0.0.1` in `restore.sh` and in both compose files' Postgres health checks |
+| 2026-09-27, -28 | the stack job, *A site for the live tenant* | the step's `jq` read `(.tenants // .)[]`, which is an error when the admin API answers a bare array — so the site stack has never run in the nightly | v0.25.288: `if type == "array" then . else .tenants end` |
+| 2026-09-27, -28 | forge-media's Fuzz, `bfcp_parse` | a grouped BFCP attribute whose last child's padding was cut short was read, but could not be written back within its one-octet length | forge-media #168 (forge-bfcp 0.1.1), the input kept as a regression test |
+
+siphon-rs's nightly fuzzing has been green every night since phase 1.
+
+**Open, for the owner:** the GHCR packages are private — an anonymous
+pull is refused (401) — so `FCP_IMAGE_TAG=nightly docker compose pull`
+works only after `docker login ghcr.io`. Making the fourteen
+`fcp-<service>` packages public (package settings, *Change visibility*)
+is what the compose README's "Pull instead of build" assumes.
 
 ## 5. Not in scope
 

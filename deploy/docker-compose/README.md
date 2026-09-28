@@ -205,6 +205,10 @@ docker compose pull
 docker compose up -d --no-build
 ```
 
+The packages are private until their owner makes them public: until
+then, `docker login ghcr.io` with a token that can read them first
+(`docs/NIGHTLY_STACK.md` §6).
+
 `FCP_IMAGE_TAG=local`, the default, is what `up -d --build` builds
 here. The NVIDIA conference image is built here only.
 
