@@ -3077,6 +3077,7 @@ pub struct DynStorage {
     sync_store: Arc<dyn crate::sync::SyncStore>,
     calling_store: Arc<dyn crate::calling::CallingStore>,
     schedule_store: Arc<dyn crate::schedule::ScheduleStore>,
+    class_of_service_store: Arc<dyn crate::class_of_service::ClassOfServiceStore>,
     tenant_store: Arc<dyn TenantStore>,
     conference_store: Arc<dyn ConferenceStore>,
     queue_store: Arc<dyn QueueStore>,
@@ -3124,6 +3125,7 @@ impl DynStorage {
         sync_store: Arc<dyn crate::sync::SyncStore>,
         calling_store: Arc<dyn crate::calling::CallingStore>,
         schedule_store: Arc<dyn crate::schedule::ScheduleStore>,
+        class_of_service_store: Arc<dyn crate::class_of_service::ClassOfServiceStore>,
         tenant_store: Arc<dyn TenantStore>,
         conference_store: Arc<dyn ConferenceStore>,
         queue_store: Arc<dyn QueueStore>,
@@ -3151,6 +3153,7 @@ impl DynStorage {
             sync_store,
             calling_store,
             schedule_store,
+            class_of_service_store,
             tenant_store,
             conference_store,
             queue_store,
@@ -3198,6 +3201,7 @@ impl DynStorage {
             + crate::sync::SyncStore
             + crate::calling::CallingStore
             + crate::schedule::ScheduleStore
+            + crate::class_of_service::ClassOfServiceStore
             + TenantStore
             + ConferenceStore
             + QueueStore
@@ -3227,6 +3231,7 @@ impl DynStorage {
             sync_store: storage.clone(),
             calling_store: storage.clone(),
             schedule_store: storage.clone(),
+            class_of_service_store: storage.clone(),
             tenant_store: storage.clone(),
             conference_store: storage.clone(),
             queue_store: storage.clone(),
@@ -4316,6 +4321,37 @@ impl crate::sync::SyncStore for DynStorage {
         limit: usize,
     ) -> Result<Vec<crate::JournalEntry>> {
         self.sync_store.journal_after(tenant_id, since, limit).await
+    }
+}
+
+#[async_trait]
+impl crate::class_of_service::ClassOfServiceStore for DynStorage {
+    async fn get_class_of_service(
+        &self,
+        id: &crate::ClassOfServiceId,
+    ) -> Result<Option<crate::ClassOfService>> {
+        self.class_of_service_store.get_class_of_service(id).await
+    }
+
+    async fn list_classes_of_service(
+        &self,
+        tenant_id: &crate::TenantId,
+    ) -> Result<Vec<crate::ClassOfService>> {
+        self.class_of_service_store
+            .list_classes_of_service(tenant_id)
+            .await
+    }
+
+    async fn put_class_of_service(&self, class: crate::ClassOfService) -> Result<()> {
+        self.class_of_service_store
+            .put_class_of_service(class)
+            .await
+    }
+
+    async fn delete_class_of_service(&self, id: &crate::ClassOfServiceId) -> Result<()> {
+        self.class_of_service_store
+            .delete_class_of_service(id)
+            .await
     }
 }
 

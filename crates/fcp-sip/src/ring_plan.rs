@@ -40,7 +40,9 @@ pub enum RingPlan<C = Binding> {
 pub struct PlanInputs {
     /// The user has an enabled mailbox.
     pub has_mailbox: bool,
-    /// A call already counts against the user (§3.4).
+    /// The user can take no more calls: on one with call waiting off
+    /// (§3.4), or on as many as their class of service allows (§3.7). The
+    /// caller decides; the plan treats it as busy.
     pub on_a_call: bool,
     /// The user's after-hours schedule is not open (§3.5).
     pub after_hours: bool,
@@ -70,7 +72,7 @@ pub fn plan<C>(settings: &CallingSettings, contacts: Vec<C>, inputs: PlanInputs)
         };
     }
     let busy = fallback(&settings.forward_busy, has_mailbox, 486);
-    if settings.dnd || (on_a_call && !settings.call_waiting) {
+    if settings.dnd || on_a_call {
         return RingPlan::Immediate {
             treatment: busy,
             reason: "busy",
@@ -445,13 +447,8 @@ mod tests {
     }
 
     #[test]
-    fn a_user_on_a_call_without_call_waiting_is_busy() {
-        let mut s = settings();
-        assert!(matches!(
-            plan(&s, vec!["a"], inputs(false, true)),
-            RingPlan::Ring { .. }
-        ));
-        s.call_waiting = false;
+    fn a_user_who_can_take_no_more_calls_is_busy() {
+        let s = settings();
         assert!(matches!(
             plan(&s, vec!["a"], inputs(false, false)),
             RingPlan::Ring { .. }

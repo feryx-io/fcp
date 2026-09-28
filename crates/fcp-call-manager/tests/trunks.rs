@@ -2259,3 +2259,134 @@ async fn a_user_on_a_call_on_one_node_is_busy_on_the_other() {
     let _ = second.kill().await;
     first.finish().await;
 }
+
+// ─── Class of service (docs/ENTERPRISE_CALLING.md §3.7) ──────────────────
+
+/// Give `user` a line whose outbound caller ID is `caller_id`, and the
+/// class `class` (stored, and the user's).
+async fn line_and_class(
+    stack: &Stack,
+    user: &SeededUser,
+    caller_id: &str,
+    class: Option<fcp_core::ClassOfService>,
+) {
+    use fcp_core::storage::{CredentialStore, LineBindingStore, PhoneNumberStore};
+    use fcp_core::{CallingStore, ClassOfServiceStore};
+    let storage = stack.seed.storage();
+    let tenant = stack.seed.tenant_id;
+    let row = storage
+        .get_user_in_tenant(&user.username, &tenant)
+        .await
+        .unwrap()
+        .unwrap();
+    if storage
+        .list_line_bindings_by_user(&row.id)
+        .await
+        .unwrap()
+        .is_empty()
+    {
+        let number = fcp_core::PhoneNumber::new(caller_id.to_string(), tenant).unwrap();
+        let mut binding = fcp_core::LineBinding::new(
+            number.id,
+            Some(row.id),
+            fcp_core::BindingType::User,
+            tenant,
+        );
+        binding.outbound_caller_id = Some(caller_id.to_string());
+        storage.put_phone_number(number).await.unwrap();
+        storage.put_line_binding(binding).await.unwrap();
+    }
+    let mut settings = fcp_core::CallingSettings::defaults(tenant, row.id);
+    if let Some(class) = class {
+        settings.class_of_service_id = Some(class.id);
+        storage.put_class_of_service(class).await.unwrap();
+    }
+    storage.put_calling_settings(settings).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_users_class_decides_what_leaves_and_under_which_caller_id() {
+    let carrier = Carrier::new("cos-carrier").await;
+    let mut stack = stack_or_skip!(&[]);
+    let acme = stack.seed.tenant_id;
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    stack
+        .seed
+        .trunk_with(acme, "cos-carrier", carrier.port(), |_| {})
+        .await;
+    tokio::time::sleep(REFRESHED).await;
+    let alice_phone = stack.phone(&alice).await;
+    let alice_caller = Caller::new(acme, "alice");
+
+    // The line's own number is what the carrier sees, and is asserted.
+    line_and_class(&stack, &alice, "+15185550123", None).await;
+    let call = alice_phone
+        .call_with_headers("+15125559999", &alice_caller.headers())
+        .await
+        .unwrap();
+    let Some(incoming) = carrier.phone.incoming(SOON).await else {
+        let why = format!("the carrier never rang; the call is {:?}", call.phase());
+        stack.fail(&why).await;
+    };
+    assert!(
+        incoming.from.contains("+15185550123@"),
+        "From: {}",
+        incoming.from
+    );
+    assert!(
+        incoming
+            .header("P-Asserted-Identity")
+            .is_some_and(|pai| pai.contains("+15185550123@")),
+        "P-Asserted-Identity: {:?}",
+        incoming.header("P-Asserted-Identity")
+    );
+    assert!(incoming.header("Privacy").is_none());
+    incoming.reject(486, "Busy Here").await.unwrap();
+    assert_eq!(call.failed(SOON).await, Some(486));
+
+    // A class that withholds it: anonymous to the far end, the identity
+    // kept for the carrier alone.
+    let mut withheld = fcp_core::ClassOfService::new(acme, "Withheld");
+    withheld.caller_id = fcp_core::CallerIdPolicy::Withheld;
+    line_and_class(&stack, &alice, "+15185550123", Some(withheld)).await;
+    let call = alice_phone
+        .call_with_headers("+15125559999", &alice_caller.headers())
+        .await
+        .unwrap();
+    let Some(incoming) = carrier.phone.incoming(SOON).await else {
+        let why = format!("the withheld call never left; it is {:?}", call.phase());
+        stack.fail(&why).await;
+    };
+    assert!(
+        incoming.from.contains("anonymous@anonymous.invalid")
+            && incoming.from.contains("Anonymous"),
+        "From: {}",
+        incoming.from
+    );
+    assert_eq!(incoming.header("Privacy").as_deref(), Some("id"));
+    assert!(
+        incoming
+            .header("P-Asserted-Identity")
+            .is_some_and(|pai| pai.contains("+15185550123@")),
+        "P-Asserted-Identity: {:?}",
+        incoming.header("P-Asserted-Identity")
+    );
+    incoming.reject(486, "Busy Here").await.unwrap();
+    assert_eq!(call.failed(SOON).await, Some(486));
+
+    // A class without national calls: refused here, never at the carrier.
+    let mut internal = fcp_core::ClassOfService::new(acme, "Internal");
+    internal.allowed = vec![fcp_core::DestinationClass::Internal];
+    line_and_class(&stack, &alice, "+15185550123", Some(internal)).await;
+    let refused = alice_phone
+        .call_with_headers("+15125559999", &alice_caller.headers())
+        .await
+        .unwrap();
+    assert_eq!(refused.failed(SOON).await, Some(403));
+    assert!(
+        carrier.phone.incoming(NEVER).await.is_none(),
+        "a refused class's call reached the carrier"
+    );
+
+    stack.finish().await;
+}

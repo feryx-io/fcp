@@ -16,7 +16,7 @@ import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { tenants } from '@/api/endpoints'
-import type { Tenant, CreateTenantRequest } from '@/types'
+import type { Tenant, CreateTenantRequest, DestinationClass, DestinationOverride } from '@/types'
 import { formatDateTime } from '@/lib/utils'
 import { useIsPlatformAdmin } from '@/components/TenantSelector'
 
@@ -42,10 +42,24 @@ const editSchema = z.object({
   max_concurrent_calls: z.coerce.number().positive().optional().or(z.literal(0).transform(() => undefined)),
   sip_domains: z.string().optional(),
   platform_trunk_fallback: z.boolean().optional(),
+  calling_country: z.string().optional(),
+  calling_timezone: z.string().optional(),
+  calling_overrides: z.string().optional(),
 })
 
 type CreateForm = z.infer<typeof createSchema>
 type EditForm = z.infer<typeof editSchema>
+
+const COUNTRIES = ['US', 'CA', 'GB', 'DE', 'FR', 'AU', 'NZ']
+
+/** `prefix class` per line, e.g. `+1900 premium` or `118 premium`. */
+function parseOverrides(input: string | undefined): DestinationOverride[] {
+  return (input ?? '')
+    .split('\n')
+    .map((l) => l.trim().split(/\s+/))
+    .filter((parts) => parts.length === 2 && parts[0])
+    .map(([prefix, cls]) => ({ prefix, class: cls as DestinationClass }))
+}
 
 /** Split a free-form sip_domains textarea into a clean array. */
 function parseSipDomains(input: string | undefined): string[] {
@@ -197,6 +211,11 @@ export function TenantsPage() {
       max_concurrent_calls: editItem.max_concurrent_calls ?? undefined,
       sip_domains: (editItem.sip_domains ?? []).join('\n'),
       platform_trunk_fallback: editItem.platform_trunk_fallback ?? true,
+      calling_country: editItem.calling?.country ?? '',
+      calling_timezone: editItem.calling?.timezone ?? '',
+      calling_overrides: (editItem.calling?.destination_overrides ?? [])
+        .map((o) => `${o.prefix} ${o.class}`)
+        .join('\n'),
     })
   }
 
@@ -213,11 +232,22 @@ export function TenantsPage() {
 
   const onEditSubmit = (data: EditForm) => {
     if (!editItem) return
-    const { sip_domains: rawDomains, ...rest } = data
+    const {
+      sip_domains: rawDomains,
+      calling_country,
+      calling_timezone,
+      calling_overrides,
+      ...rest
+    } = data
     updateMutation.mutate({
       id: editItem.id,
       data: {
         ...rest,
+        calling: {
+          country: calling_country || null,
+          timezone: calling_timezone || null,
+          destination_overrides: parseOverrides(calling_overrides),
+        },
         description: data.description || undefined,
         contact_email: data.contact_email || undefined,
         contact_phone: data.contact_phone || undefined,
@@ -391,6 +421,40 @@ export function TenantsPage() {
                 One per line. SIP REGISTER / INVITE requests whose From or
                 Request-URI host matches one of these will be routed to this
                 tenant. Leave blank to use only the default-tenant fallback.
+              </p>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="e-calling_country">Country</Label>
+                <select
+                  id="e-calling_country"
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  {...editForm.register('calling_country')}
+                >
+                  <option value="">North American numbering</option>
+                  {COUNTRIES.map((c) => (
+                    <option key={c} value={c}>{c}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="e-calling_timezone">Timezone</Label>
+                <Input id="e-calling_timezone" placeholder="America/New_York" {...editForm.register('calling_timezone')} />
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="e-calling_overrides">Number ranges</Label>
+              <textarea
+                id="e-calling_overrides"
+                rows={3}
+                placeholder="+1900 premium&#10;118 premium"
+                className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring font-mono"
+                {...editForm.register('calling_overrides')}
+              />
+              <p className="text-xs text-muted-foreground">
+                The country decides how dialled numbers are read for classes of service. One range per line: a
+                prefix (E.164 with +, or digits as dialled) and internal, toll_free, national, international,
+                premium or unknown. The timezone is the default for new schedules.
               </p>
             </div>
             <div className="flex items-center justify-between rounded-md border p-3">

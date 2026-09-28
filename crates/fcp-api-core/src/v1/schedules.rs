@@ -12,7 +12,7 @@ use axum::{
     Extension, Json,
 };
 use fcp_core::permissions::Permission;
-use fcp_core::{Holiday, Schedule, ScheduleId, ScheduleStore, WeeklyWindow};
+use fcp_core::{Holiday, Schedule, ScheduleId, ScheduleStore, TenantStore, WeeklyWindow};
 use fcp_events::{PlatformEvent, SystemEvent};
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -61,7 +61,10 @@ impl From<Schedule> for ScheduleResponse {
 #[derive(Debug, Deserialize)]
 pub struct ScheduleRequest {
     pub name: String,
-    pub timezone: String,
+    /// IANA; unset, the tenant's timezone (§3.7), else UTC — and on an
+    /// update, the schedule's own.
+    #[serde(default)]
+    pub timezone: Option<String>,
     #[serde(default)]
     pub weekly: Vec<WeeklyWindow>,
     #[serde(default)]
@@ -153,7 +156,16 @@ pub async fn create_schedule(
         state.deployment_mode,
     )?;
     let storage = require_storage!(state);
-    let mut schedule = Schedule::new(tenant.0, req.name, req.timezone);
+    let timezone = match req.timezone {
+        Some(tz) => tz,
+        None => storage
+            .get_tenant(&tenant.0)
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+            .and_then(|t| t.calling.timezone)
+            .unwrap_or_else(|| "UTC".to_string()),
+    };
+    let mut schedule = Schedule::new(tenant.0, req.name, timezone);
     schedule.weekly = req.weekly;
     schedule.holidays = req.holidays;
     schedule.validate().map_err(ApiError::BadRequest)?;
@@ -181,7 +193,9 @@ pub async fn update_schedule(
     let storage = require_storage!(state);
     let mut schedule = owned(&state, &tenant.0, &id).await?;
     schedule.name = req.name;
-    schedule.timezone = req.timezone;
+    if let Some(tz) = req.timezone {
+        schedule.timezone = tz;
+    }
     schedule.weekly = req.weekly;
     schedule.holidays = req.holidays;
     schedule.updated_at = SystemTime::now();

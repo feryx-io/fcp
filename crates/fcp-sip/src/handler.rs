@@ -2971,6 +2971,54 @@ impl SipMessageHandler {
         // Store call in CallManager
         let call_id = self.call_manager.create_call(call);
 
+        // The caller's class of service (`docs/ENTERPRISE_CALLING.md` §3.7):
+        // what a user may dial, and how many calls they may be on. Not an
+        // emergency call's, not a carrier's or a site's (the site checks its
+        // own), and not a leg this node placed to itself for a forward — the
+        // forwarding user's class was checked before it was placed.
+        let forwarded_leg = request.headers().contains(FORWARDED_FOR_HEADER);
+        if emergency.is_none()
+            && inbound_trunk.is_none()
+            && !forwarded_leg
+            && !edge_caller.as_ref().is_some_and(|e| e.is_site())
+        {
+            let caller = edge_caller
+                .as_ref()
+                .and_then(|e| e.username.clone())
+                .or_else(|| {
+                    extract_from_uri(request)
+                        .ok()
+                        .and_then(|u| u.user().map(str::to_string))
+                });
+            if let Some(refusal) = self
+                .class_of_service_refusal(request, &tenant_id, caller.as_deref())
+                .await
+            {
+                info!(
+                    call_id = %call_id,
+                    tenant_id = %tenant_id,
+                    caller = ?caller,
+                    class = %refusal.class_name,
+                    "Refusing INVITE: {}",
+                    refusal.detail()
+                );
+                let mut response = self.create_simple_response(request, 403, "Forbidden");
+                let _ = response.headers_mut().push(
+                    SmolStr::new("Reason"),
+                    SmolStr::new(refusal.reason_header()),
+                );
+                handle.send_final(response).await;
+                let _ = self.call_manager.terminate_call_with(
+                    &call_id,
+                    fcp_cdr::TerminationReason::Failed {
+                        status: Some(403),
+                        detail: refusal.detail(),
+                    },
+                );
+                return Ok(());
+            }
+        }
+
         // What this node and this tenant will carry
         // (`docs/CAPACITY_AND_SURVIVABILITY.md` §5). Checked before the
         // work of a call, and never for an emergency call.
@@ -4509,6 +4557,29 @@ impl SipMessageHandler {
                 // First, get the phone number by E.164
                 match storage.get_phone_number_by_e164(e164_number).await {
                     Ok(Some(phone_number)) => {
+                        // The number's own screening (§3.7): anonymous
+                        // callers, its allow list, its block list.
+                        let screening = phone_number.screen(caller_number(request).as_deref());
+                        if screening != fcp_core::Screening::Allowed {
+                            // RFC 5079: 433 says anonymity is what was refused.
+                            let (code, phrase) = match screening {
+                                fcp_core::Screening::Anonymous => (433, "Anonymity Disallowed"),
+                                _ => (603, "Decline"),
+                            };
+                            info!(
+                                call_id = %call_id,
+                                number = %phone_number.e164,
+                                screening = screening.as_str(),
+                                "Refusing the call: the number screens its caller out"
+                            );
+                            let response = self.create_simple_response(request, code, phrase);
+                            a_leg_handle_arc.send_final(response).await;
+                            let _ = self.call_manager.terminate_call_with(
+                                &call_id,
+                                fcp_cdr::TerminationReason::rejected(code, phrase),
+                            );
+                            return Ok(());
+                        }
                         // Then get the line binding by phone number ID
                         match storage
                             .get_line_binding_by_phone_number(&phone_number.id)
@@ -6416,13 +6487,27 @@ impl SipMessageHandler {
             if !route_trunks.is_empty() {
                 let emergency = emergency_ctx.is_some();
                 let caller = caller_from_uri.as_ref().map(|u| u.as_str().to_string());
+                // The caller's line and whether their class withholds it
+                // (`docs/ENTERPRISE_CALLING.md` §3.7); an emergency call
+                // presents its callback number whatever either says.
+                let (line, withheld) = if emergency {
+                    (None, false)
+                } else {
+                    self.caller_presentation(&call_id, caller.as_deref()).await
+                };
                 for target in &mut target_contacts {
                     if let Some(route) = answering_trunk(&route_trunks, &target.uri) {
                         target.egress = crate::trunk_egress::TrunkEgress::of(
                             &route.trunk,
-                            caller.as_deref(),
+                            line.as_deref().or(caller.as_deref()),
                             emergency,
                         );
+                        if let Some(line) = &line {
+                            target.egress.present_as(line);
+                        }
+                        if withheld {
+                            target.egress.withhold(caller.as_deref());
+                        }
                         // The numbers the carrier will see are the ones the
                         // call is signed over (RFC 8224).
                         let orig_tn = tn_of(target.egress.from.as_deref().or(caller.as_deref()));
@@ -14059,11 +14144,17 @@ impl SipMessageHandler {
                             None => uris.push((format!("sip:{ext}@{host}"), step.confirm)),
                         }
                     }
+                    // A number or a SIP URI is rung only when the user's
+                    // class of service lets them dial it (§3.7).
                     fcp_core::FindMeTarget::Target(fcp_core::CallTarget::Number(n)) => {
-                        uris.push((format!("sip:{n}@{host}"), step.confirm))
+                        if self.forward_allowed(&call_id, n).await {
+                            uris.push((format!("sip:{n}@{host}"), step.confirm))
+                        }
                     }
                     fcp_core::FindMeTarget::Target(fcp_core::CallTarget::Sip(u)) => {
-                        uris.push((u.clone(), step.confirm))
+                        if self.forward_allowed(&call_id, u).await {
+                            uris.push((u.clone(), step.confirm))
+                        }
                     }
                     fcp_core::FindMeTarget::Target(_) => {}
                 }
@@ -14103,7 +14194,13 @@ impl SipMessageHandler {
             let mut legs = Vec::new();
             for (uri, _) in &uris {
                 match self
-                    .create_outbound_call(request, uri, &uac, sdp_override.clone())
+                    .create_outbound_call_for(
+                        request,
+                        uri,
+                        &uac,
+                        sdp_override.clone(),
+                        Some(call_id),
+                    )
                     .await
                 {
                     Ok(outbound) => legs.push((uri.clone(), outbound, None)),
@@ -14192,6 +14289,114 @@ impl SipMessageHandler {
         }
     }
 
+    /// How the caller of a call leaving on a trunk is presented (§3.7):
+    /// their line's outbound caller ID as a URI at the caller's host, and
+    /// whether their class of service withholds it.
+    async fn caller_presentation(
+        &self,
+        call_id: &fcp_b2bua_core::CallId,
+        caller_from: Option<&str>,
+    ) -> (Option<String>, bool) {
+        let (Some(storage), Some(call)) = (&self.storage, self.call_manager.get_call(call_id))
+        else {
+            return (None, false);
+        };
+        let Some(user) = call.caller_user_id else {
+            return (None, false);
+        };
+        let withheld = crate::class_of_service::class_for(storage, &call.tenant_id, &user)
+            .await
+            .is_some_and(|c| c.caller_id == fcp_core::CallerIdPolicy::Withheld);
+        let number = match storage.list_line_bindings_by_user(&user).await {
+            Ok(bindings) => bindings
+                .into_iter()
+                .filter(|b| b.tenant_id == call.tenant_id)
+                .find_map(|b| b.outbound_caller_id.filter(|id| !id.trim().is_empty())),
+            Err(e) => {
+                warn!(call_id = %call_id, user_id = %user, error = %e, "Failed to read the caller's lines");
+                None
+            }
+        };
+        let host = caller_from
+            .and_then(|from| {
+                sip_core::SipUri::parse(from.trim_matches(|c| c == '<' || c == '>')).ok()
+            })
+            .map(|uri| uri.host().to_string())
+            .unwrap_or_else(|| self.uas.local_uri.host().to_string());
+        let line = number.map(|n| format!("sip:{}@{host}", n.trim()));
+        (line, withheld)
+    }
+
+    /// Whether the class of service of the user `caller` names refuses
+    /// this INVITE: what it dials, or one call more than the class allows
+    /// (`docs/ENTERPRISE_CALLING.md` §3.7). `None` when the caller is no
+    /// user of the tenant, or has no class.
+    async fn class_of_service_refusal(
+        &self,
+        request: &sip_core::Request,
+        tenant_id: &fcp_core::TenantId,
+        caller: Option<&str>,
+    ) -> Option<crate::class_of_service::Refusal> {
+        let storage = self.storage.as_ref()?;
+        let user = crate::ring_plan::user_of(storage, tenant_id, caller?).await?;
+        let dialed = request.uri().to_string();
+        let dialed = crate::class_of_service::uri_user(&dialed);
+        let class = match crate::class_of_service::check_dial(
+            storage,
+            tenant_id,
+            &user,
+            dialed,
+            self.b2bua_config.max_extension_digits as usize,
+        )
+        .await
+        {
+            Ok(class) => class?,
+            Err(refusal) => return Some(refusal),
+        };
+        let (max, user_calls) = (class.max_calls?, self.user_calls.as_ref()?);
+        (user_calls.count(tenant_id, &user).await >= u64::from(max)).then(|| {
+            crate::class_of_service::Refusal {
+                class_name: class.name.clone(),
+                kind: crate::class_of_service::RefusalKind::CallLimit(max),
+            }
+        })
+    }
+
+    /// Whether the class of service of the user a forward or a find-me
+    /// step is for lets it dial `destination` (§3.7): a number, or a SIP
+    /// URI whose user is one. Logged when it does not.
+    async fn forward_allowed(&self, call_id: &fcp_b2bua_core::CallId, destination: &str) -> bool {
+        let (Some(storage), Some(call)) = (&self.storage, self.call_manager.get_call(call_id))
+        else {
+            return true;
+        };
+        let Some(user) = call.callee_user_id else {
+            return true;
+        };
+        match crate::class_of_service::check_dial(
+            storage,
+            &call.tenant_id,
+            &user,
+            crate::class_of_service::uri_user(destination),
+            self.b2bua_config.max_extension_digits as usize,
+        )
+        .await
+        {
+            Ok(_) => true,
+            Err(refusal) => {
+                info!(
+                    call_id = %call_id,
+                    user_id = %user,
+                    destination = %destination,
+                    class = %refusal.class_name,
+                    "Not forwarding: {}",
+                    refusal.detail()
+                );
+                false
+            }
+        }
+    }
+
     /// Mark the call with the user its caller is, when the From names a
     /// user of the call's tenant (an extension or a username).
     async fn note_caller_user(
@@ -14243,9 +14448,21 @@ impl SipMessageHandler {
                 false,
             ),
         };
+        // Busy: on a call with call waiting off, or on as many calls as
+        // the user's class of service allows (§3.7).
+        let max_calls = match (&self.storage, user_id) {
+            (Some(storage), Some(user_id)) => {
+                crate::class_of_service::class_for(storage, tenant_id, &user_id)
+                    .await
+                    .and_then(|c| c.max_calls)
+            }
+            _ => None,
+        };
         let on_a_call = match (&self.user_calls, user_id) {
-            (Some(user_calls), Some(user_id)) if !settings.call_waiting => {
-                user_calls.count(tenant_id, &user_id).await > 0
+            (Some(user_calls), Some(user_id)) if !settings.call_waiting || max_calls.is_some() => {
+                let count = user_calls.count(tenant_id, &user_id).await;
+                (!settings.call_waiting && count > 0)
+                    || max_calls.is_some_and(|max| count >= u64::from(max))
             }
             _ => false,
         };
@@ -14465,9 +14682,15 @@ impl SipMessageHandler {
     ) -> Option<String> {
         match target {
             fcp_core::CallTarget::Voicemail => Some("voicemail".to_string()),
-            fcp_core::CallTarget::Number(n) => Some(n.clone()),
+            // The forwarding user's class of service decides whether a
+            // number is dialled for them (§3.7).
+            fcp_core::CallTarget::Number(n) => {
+                self.forward_allowed(&call_id, n).await.then(|| n.clone())
+            }
             fcp_core::CallTarget::Extension(e) => Some(e.clone()),
-            fcp_core::CallTarget::Sip(u) => Some(u.clone()),
+            fcp_core::CallTarget::Sip(u) => {
+                self.forward_allowed(&call_id, u).await.then(|| u.clone())
+            }
             fcp_core::CallTarget::User(user_id) => {
                 let storage = self.storage.as_ref()?;
                 match storage.get_user_by_id(user_id).await {
@@ -14752,7 +14975,13 @@ impl SipMessageHandler {
 
             // Create the outbound call
             let outbound_call = self
-                .create_outbound_call(original_request, &target_uri, uac, sdp_override)
+                .create_outbound_call_for(
+                    original_request,
+                    &target_uri,
+                    uac,
+                    sdp_override,
+                    Some(call_id),
+                )
                 .await?;
 
             // Clear caller identity overrides after INVITE sent
@@ -14805,6 +15034,22 @@ impl SipMessageHandler {
         uac: &Arc<SipUserAgentClient>,
         sdp_override: Option<String>,
     ) -> Result<Arc<crate::uac::OutboundCall>> {
+        self.create_outbound_call_for(request, target_uri, uac, sdp_override, None)
+            .await
+    }
+
+    /// [`Self::create_outbound_call`] for a leg forwarding `forwarded_for`:
+    /// a leg to this node itself names the call it forwards for
+    /// ([`FORWARDED_FOR_HEADER`]), so the new call is not checked against
+    /// the original caller's class of service.
+    async fn create_outbound_call_for(
+        &self,
+        request: &sip_core::Request,
+        target_uri: &str,
+        uac: &Arc<SipUserAgentClient>,
+        sdp_override: Option<String>,
+        forwarded_for: Option<fcp_b2bua_core::CallId>,
+    ) -> Result<Arc<crate::uac::OutboundCall>> {
         // Use SDP override if provided, otherwise extract from A-leg request
         let mut a_leg_sdp = sdp_override.or_else(|| crate::body::request_sdp(request));
 
@@ -14816,7 +15061,19 @@ impl SipMessageHandler {
             ));
         }
 
-        let extra_headers = self.collect_outbound_intercom_headers(request);
+        let mut extra_headers = self.collect_outbound_intercom_headers(request);
+        if let Some(call_id) = forwarded_for {
+            let own = match self.uas.local_uri.port() {
+                Some(port) => format!("@{}:{}", self.uas.local_uri.host(), port),
+                None => format!("@{}", self.uas.local_uri.host()),
+            };
+            if target_uri.contains(&own) {
+                let _ = extra_headers.push(
+                    SmolStr::new(FORWARDED_FOR_HEADER),
+                    SmolStr::new(call_id.to_string()),
+                );
+            }
+        }
         let call = if extra_headers.iter().next().is_some() {
             uac.invite_with_headers(target_uri, a_leg_sdp.as_deref(), extra_headers)
                 .await?
@@ -16145,6 +16402,13 @@ const CONFIRM_WAIT: Duration = Duration::from_secs(10);
 
 pub const TRANSFERRED_FROM_HEADER: &str = "X-FCP-Transferred-From";
 
+/// The call a leg this node placed to itself forwards for — a user's
+/// forward, a find-me step — so the new call is not checked again against
+/// the original caller's class of service: the forwarding user's was
+/// checked before the leg was placed (`docs/ENTERPRISE_CALLING.md` §3.7).
+/// Believed only when it names a call this node has.
+pub const FORWARDED_FOR_HEADER: &str = "X-FCP-Forwarded-For";
+
 /// `uri` with a URI header added (`?name=value`, or `&name=value` when it
 /// has headers already).
 fn with_uri_header(uri: &str, name: &str, value: &str) -> String {
@@ -16318,6 +16582,27 @@ fn stop_timers_for_call(session_timer_manager: &SessionTimerManager, call: &fcp_
 }
 
 /// Helper to extract SIP URI from From header.
+/// The caller's number for screening: the From user, `None` when the
+/// caller withheld it (`Privacy: id`, an anonymous From, no user).
+fn caller_number(request: &sip_core::Request) -> Option<String> {
+    let private = request
+        .headers()
+        .get_all("Privacy")
+        .any(|v| v.split(';').any(|p| p.trim().eq_ignore_ascii_case("id")));
+    if private {
+        return None;
+    }
+    let from = extract_from_uri(request).ok()?;
+    let user = from.user()?.to_string();
+    if user.is_empty()
+        || user.eq_ignore_ascii_case("anonymous")
+        || from.host().eq_ignore_ascii_case("anonymous.invalid")
+    {
+        return None;
+    }
+    Some(user)
+}
+
 fn extract_from_uri(request: &sip_core::Request) -> anyhow::Result<sip_core::SipUri> {
     let from_header = sip_parse::header(request.headers(), "From")
         .ok_or_else(|| anyhow::anyhow!("Missing From header"))?;

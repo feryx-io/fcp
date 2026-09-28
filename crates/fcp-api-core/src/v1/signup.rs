@@ -121,6 +121,7 @@ pub async fn signup(
         // A new tenant calls out on the platform's trunks until it has its
         // own (`docs/TENANT_TRUNKS.md` §5).
         platform_trunk_fallback: true,
+        calling: Default::default(),
         created_at: now,
         updated_at: now,
         trial_expires_at: Some(now + Duration::from_secs(14 * 24 * 3600)),

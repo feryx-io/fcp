@@ -5,6 +5,7 @@ pub mod auth_session;
 pub mod billing;
 pub mod calling;
 pub mod cdrs;
+pub mod classes_of_service;
 pub mod compliance;
 pub mod conferences;
 pub mod conferences_live;
@@ -643,6 +644,20 @@ pub fn router() -> Router<ApiState> {
         )
         // Routing Rules
         .route("/routing/preview", get(routing::preview_routing))
+        .route(
+            "/classes-of-service",
+            get(classes_of_service::list_classes).post(classes_of_service::create_class),
+        )
+        .route(
+            "/classes-of-service/classify",
+            get(classes_of_service::classify),
+        )
+        .route(
+            "/classes-of-service/:id",
+            get(classes_of_service::get_class)
+                .put(classes_of_service::update_class)
+                .delete(classes_of_service::delete_class),
+        )
         .route(
             "/schedules",
             get(schedules::list_schedules).post(schedules::create_schedule),

@@ -7,6 +7,7 @@ pub mod billing;
 pub mod cached_storage;
 pub mod calling;
 pub mod cdr_archive;
+pub mod class_of_service;
 pub mod codec;
 pub mod compliance;
 pub mod config;
@@ -109,6 +110,9 @@ pub const CALLER_SITE_HEADER: &str = "X-FCP-Caller-Site";
 /// call reached it from the edge (`docs/E911_BLOCK_2.md` §6.2). Believed
 /// only from `[e911] trusted_edges`, and never forwarded further.
 pub const CLIENT_ADDRESS_HEADER: &str = "X-FCP-Client-Address";
+pub use crate::class_of_service::{
+    CallerIdPolicy, ClassOfService, ClassOfServiceStore, DestinationClass, DestinationOverride,
+};
 pub use crate::lcr_route::{LcrRoute, LcrRouteId};
 pub use crate::line_binding::{BindingType, DeviceBinding, LineBinding, RingStrategy};
 pub use crate::meeting::Meeting;
@@ -116,7 +120,7 @@ pub use crate::migration_ticket::{
     MigrationTicket, MigrationTicketError, MIGRATION_TICKET_HEADER, MIGRATION_TICKET_TTL,
 };
 pub use crate::permissions::{DeploymentMode, Permission, UserRole};
-pub use crate::phone_number::{E911Address, NumberState, PhoneNumber};
+pub use crate::phone_number::{E911Address, NumberState, PhoneNumber, Screening};
 pub use crate::porting::{
     PortRejectionReason, PortRequest, PortRequestId, PortStatus, PortType, PortingManager,
     PortingStore,
@@ -153,7 +157,7 @@ pub use crate::storage::{
     WebhookEndpoint, WebhookStore,
 };
 pub use crate::sync::{JournalEntry, SyncOp, SyncStore, SYNC_TABLES};
-pub use crate::tenant::{is_host_literal, Tenant, TenantStatus};
+pub use crate::tenant::{is_host_literal, Tenant, TenantCalling, TenantStatus};
 pub use crate::transport::{
     ConnectionId, ConnectionMetadata, ConnectionState, Transport, TransportMessage,
     TransportReceiver, TransportType,

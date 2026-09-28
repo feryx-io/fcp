@@ -1589,3 +1589,134 @@ async fn find_me_rings_even_with_no_phone_of_the_users_up() {
     answered.hangup().await.unwrap();
     stack.finish().await;
 }
+
+// ─── Class of service (docs/ENTERPRISE_CALLING.md §3.7) ──────────────────
+
+/// Store `class` and make it `user`'s, keeping their other settings.
+async fn give_class(stack: &Stack, user: &SeededUser, class: &fcp_core::ClassOfService) {
+    use fcp_core::ClassOfServiceStore;
+    stack
+        .seed
+        .storage()
+        .put_class_of_service(class.clone())
+        .await
+        .expect("store class");
+    let id = class.id;
+    stack
+        .calling(user, |s| s.class_of_service_id = Some(id))
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_class_limits_the_calls_a_user_is_on() {
+    let stack = stack_or_skip!();
+    let [(_, alice), (bob, bob_phone), (carol, carol_phone)] = three_phones(&stack).await;
+    let mut one = fcp_core::ClassOfService::new(stack.seed.tenant_id, "One at a time");
+    one.max_calls = Some(1);
+    give_class(&stack, &bob, &one).await;
+
+    // Call waiting is on, but the class allows one call: a second to Bob
+    // is busy without ringing.
+    let (alice_call, _) = answered(&stack, &alice, &bob, &bob_phone).await;
+    let second = carol_phone.call(&bob.extension).await.unwrap();
+    match second.failed(SOON).await {
+        Some(486) => {}
+        other => {
+            stack
+                .fail(
+                    &format!("the class's limit did not refuse: {other:?}"),
+                    &carol_phone,
+                )
+                .await
+        }
+    }
+    assert!(
+        bob_phone.incoming(QUIET).await.is_none(),
+        "Bob's phone rang past his class's limit"
+    );
+
+    // And Bob cannot place one either.
+    let placed = bob_phone.call(&carol.extension).await.unwrap();
+    assert_eq!(placed.failed(SOON).await, Some(403));
+    assert!(carol_phone.incoming(QUIET).await.is_none());
+
+    alice_call.hangup().await.unwrap();
+    stack.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_forward_the_class_forbids_is_not_followed() {
+    let stack = stack_or_skip!();
+    let [(_, alice), (bob, _bob_phone), (carol, carol_phone)] = three_phones(&stack).await;
+    let mut internal = fcp_core::ClassOfService::new(stack.seed.tenant_id, "Internal");
+    internal.allowed = vec![fcp_core::DestinationClass::Internal];
+    give_class(&stack, &bob, &internal).await;
+    let class_id = internal.id;
+    stack
+        .calling(&bob, |s| {
+            s.class_of_service_id = Some(class_id);
+            s.forward_all = Some(CallTarget::Number("+442079460000".into()));
+        })
+        .await;
+
+    // Bob may not call London, so his forward does not either.
+    let call = alice.call(&bob.extension).await.unwrap();
+    assert_eq!(call.failed(SOON).await, Some(480));
+
+    // An extension is internal: the same class forwards there.
+    stack
+        .calling(&bob, |s| {
+            s.class_of_service_id = Some(class_id);
+            s.forward_all = Some(CallTarget::Extension(carol.extension.clone()));
+        })
+        .await;
+    let call = alice.call(&bob.extension).await.unwrap();
+    let Some(at_carol) = carol_phone.incoming(SOON).await else {
+        stack
+            .fail("the internal forward did not ring Carol", &alice)
+            .await;
+    };
+    let leg = at_carol.answer().await.unwrap();
+    call.answered(SOON).await.expect("Alice reaches Carol");
+    leg.hangup().await.unwrap();
+    stack.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_number_screens_anonymous_and_unlisted_callers() {
+    use fcp_core::storage::PhoneNumberStore;
+    let stack = stack_or_skip!();
+    let [(_, alice), (bob, bob_phone), _] = three_phones(&stack).await;
+    scheduled_number(&stack, &bob, "+15125550901", None, None, None).await;
+    let storage = stack.seed.storage();
+    let mut number = storage
+        .get_phone_number_by_e164("+15125550901")
+        .await
+        .unwrap()
+        .unwrap();
+    number.block_anonymous = true;
+    storage.put_phone_number(number.clone()).await.unwrap();
+
+    // A withheld caller is refused (RFC 5079); a known one rings.
+    let anonymous = alice
+        .call_with_headers("+15125550901", &[("Privacy", "id")])
+        .await
+        .unwrap();
+    assert_eq!(anonymous.failed(SOON).await, Some(433));
+    let known = alice.call("+15125550901").await.unwrap();
+    let Some(at_bob) = bob_phone.incoming(SOON).await else {
+        stack
+            .fail("an unscreened caller did not ring Bob", &alice)
+            .await;
+    };
+    at_bob.reject(486, "Busy Here").await.unwrap();
+    let _ = known.failed(SOON).await;
+
+    // An allow list lets in only who it names.
+    number.allow_list = vec!["+15125550000".into()];
+    storage.put_phone_number(number).await.unwrap();
+    let unlisted = alice.call("+15125550901").await.unwrap();
+    assert_eq!(unlisted.failed(SOON).await, Some(603));
+    assert!(bob_phone.incoming(QUIET).await.is_none());
+    stack.finish().await;
+}

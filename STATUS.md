@@ -1308,6 +1308,21 @@ a 1, so a mobile's voicemail cannot take the call; `*60`/`*61`; the
 Calling page's editor. Proved by `calling.rs` (the next step after the
 phones, confirmation by 1 and refusal by 2, an unregistered user). The
 `Diversion` header is not sent.
+Phase 7 done (v0.25.282): class of service — numbers classified by the
+tenant's country (US, CA, GB, DE, FR, AU, NZ; the tenant's `calling`,
+migration 084) and its prefix overrides into internal, emergency,
+toll-free, national, international, premium and unknown; classes
+(`/v1/classes-of-service`, a default, synced to sites) name what a user
+may dial, how many calls they may be on and whether their caller ID is
+withheld; placed calls are refused with 403 and a `Reason`, a forward or
+find-me step the forwarder may not dial is not followed, `max_calls`
+applies both ways; a number's `block_anonymous`, allow and block lists
+refuse with 433 or 603; the caller's line's `outbound_caller_id` leaves
+on the trunk, or `Privacy: id` with an anonymous From. A schedule without
+a timezone takes the tenant's. Proved by `calling.rs` (the call limit, a
+refused forward, screening), `trunks.rs` (the line's caller ID, withheld,
+a refused national call never reaching the carrier) and
+`api_postgres.rs`.
 
 ## Historical documents
 

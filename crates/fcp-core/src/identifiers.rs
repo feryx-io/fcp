@@ -99,6 +99,7 @@ define_id!(EmergencyNetworkId, "enet");
 define_id!(SiteId, "site");
 define_id!(SiteRequestId, "sitereq");
 define_id!(ScheduleId, "sched");
+define_id!(ClassOfServiceId, "cos");
 
 /// SIP Call-ID header value (not our internal CallId).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
