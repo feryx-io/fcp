@@ -1068,9 +1068,33 @@ impl CallManager {
     /// call a party dialing a feature code is on
     /// (`docs/ENTERPRISE_CALLING.md` §3.2).
     pub fn find_established_by_party(&self, user: &str) -> Option<(Call, crate::call::LegSide)> {
+        self.find_established_by_party_where(user, |_| true)
+    }
+
+    /// An established call and one of its sides that `side_of` picks:
+    /// what an assistant's push looks for (`docs/ENTERPRISE_CALLING.md`
+    /// §3.10), where a leg is known by the phone that answered it.
+    pub fn find_established_where(
+        &self,
+        side_of: impl Fn(&Call) -> Option<crate::call::LegSide>,
+    ) -> Option<(Call, crate::call::LegSide)> {
         self.calls.iter().find_map(|entry| {
             let call = entry.value();
             if call.state != CallState::Established {
+                return None;
+            }
+            side_of(call).map(|side| (call.clone(), side))
+        })
+    }
+
+    fn find_established_by_party_where(
+        &self,
+        user: &str,
+        wanted: impl Fn(&Call) -> bool,
+    ) -> Option<(Call, crate::call::LegSide)> {
+        self.calls.iter().find_map(|entry| {
+            let call = entry.value();
+            if call.state != CallState::Established || !wanted(call) {
                 return None;
             }
             let is = |uri: &str| {

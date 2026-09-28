@@ -227,6 +227,82 @@ pub struct FindMe {
 /// The most steps a find-me may have.
 pub const MAX_FIND_ME_STEPS: usize = 5;
 
+/// Which of an executive's calls their assistants take first
+/// (`docs/ENTERPRISE_CALLING.md` §3.10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutiveFilter {
+    /// Every call.
+    #[default]
+    All,
+    /// Calls from outside the tenant: a carrier's, a caller who is no user.
+    External,
+    /// None: the executive's phones ring as if there were no assistants.
+    None,
+}
+
+/// Who rings for a call the filter takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutiveAlert {
+    /// The assistants alone.
+    #[default]
+    Assistants,
+    /// The assistants and the executive together.
+    AssistantsAndExecutive,
+}
+
+/// An assistant of an executive, in the order they are listed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Assistant {
+    pub user_id: UserId,
+    /// The assistant takes the executive's calls (`*67`/`*68`, their own
+    /// page). Theirs to set, not the executive's.
+    #[serde(default = "default_true")]
+    pub opted_in: bool,
+}
+
+/// A user as an executive: their assistants, and which calls those take.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct Executive {
+    /// The executive's own switch (`*65`/`*66`).
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub filter: ExecutiveFilter,
+    #[serde(default)]
+    pub alert: ExecutiveAlert,
+    #[serde(default)]
+    pub assistants: Vec<Assistant>,
+}
+
+/// The most assistants an executive may have.
+pub const MAX_ASSISTANTS: usize = 10;
+
+impl Executive {
+    /// Whether a call is the assistants' to take first: the executive's
+    /// handling on, the filter selecting it, and someone opted in.
+    /// `external` is a call from outside the tenant.
+    pub fn screens(&self, external: bool) -> bool {
+        self.enabled
+            && match self.filter {
+                ExecutiveFilter::All => true,
+                ExecutiveFilter::External => external,
+                ExecutiveFilter::None => false,
+            }
+            && self.assistants.iter().any(|a| a.opted_in)
+    }
+
+    /// The assistants who take calls now, in order.
+    pub fn opted_in(&self) -> Vec<UserId> {
+        self.assistants
+            .iter()
+            .filter(|a| a.opted_in)
+            .map(|a| a.user_id)
+            .collect()
+    }
+}
+
 /// What happens to a call for a user when it is not answered by ringing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -300,6 +376,9 @@ pub struct CallingSettings {
     /// class, or no restriction when it has none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub class_of_service_id: Option<crate::ClassOfServiceId>,
+    /// The user as an executive, with assistants (§3.10).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executive: Option<Executive>,
     #[serde(default = "SystemTime::now")]
     pub updated_at: SystemTime,
 }
@@ -326,8 +405,18 @@ impl CallingSettings {
             hold_music: None,
             no_answer_secs: None,
             class_of_service_id: None,
+            executive: None,
             updated_at: SystemTime::now(),
         }
+    }
+
+    /// Whether `user` is one of this executive's assistants, and opted in.
+    pub fn assistant(&self, user: &UserId) -> Option<&Assistant> {
+        self.executive
+            .as_ref()?
+            .assistants
+            .iter()
+            .find(|a| a.user_id == *user)
     }
 
     /// The ring time the user set, within the allowed range; `None` for
@@ -376,6 +465,20 @@ impl CallingSettings {
                         "find_me: step {} names the user; use `devices`",
                         i + 1
                     ));
+                }
+            }
+        }
+        if let Some(executive) = &self.executive {
+            if executive.assistants.len() > MAX_ASSISTANTS {
+                return Err(format!("executive: at most {MAX_ASSISTANTS} assistants"));
+            }
+            let mut seen = std::collections::HashSet::new();
+            for assistant in &executive.assistants {
+                if assistant.user_id == self.user_id {
+                    return Err("executive: a user cannot be their own assistant".into());
+                }
+                if !seen.insert(assistant.user_id) {
+                    return Err("executive: an assistant is listed twice".into());
                 }
             }
         }
@@ -434,6 +537,70 @@ pub trait CallingStore: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_executive_screens_the_calls_its_filter_takes() {
+        let assistant = UserId::new();
+        let mut executive = Executive {
+            enabled: true,
+            filter: ExecutiveFilter::External,
+            alert: ExecutiveAlert::Assistants,
+            assistants: vec![Assistant {
+                user_id: assistant,
+                opted_in: true,
+            }],
+        };
+        assert!(executive.screens(true));
+        assert!(
+            !executive.screens(false),
+            "an internal call rings the executive"
+        );
+        executive.filter = ExecutiveFilter::All;
+        assert!(executive.screens(false));
+        executive.assistants[0].opted_in = false;
+        assert!(!executive.screens(true), "nobody opted in takes nothing");
+        executive.assistants[0].opted_in = true;
+        executive.enabled = false;
+        assert!(!executive.screens(true), "the executive's switch is off");
+    }
+
+    #[test]
+    fn an_executive_lists_each_assistant_once_and_not_themself() {
+        let user = UserId::new();
+        let other = UserId::new();
+        let mut settings = CallingSettings::defaults(TenantId::new(), user);
+        settings.executive = Some(Executive {
+            assistants: vec![
+                Assistant {
+                    user_id: other,
+                    opted_in: true,
+                },
+                Assistant {
+                    user_id: other,
+                    opted_in: false,
+                },
+            ],
+            ..Default::default()
+        });
+        assert!(settings.validate().is_err());
+        settings.executive = Some(Executive {
+            assistants: vec![Assistant {
+                user_id: user,
+                opted_in: true,
+            }],
+            ..Default::default()
+        });
+        assert!(settings.validate().is_err());
+        settings.executive = Some(Executive {
+            assistants: vec![Assistant {
+                user_id: other,
+                opted_in: true,
+            }],
+            ..Default::default()
+        });
+        assert!(settings.validate().is_ok());
+        assert!(settings.assistant(&other).is_some());
+    }
 
     #[test]
     fn targets_round_trip_through_their_string_form() {

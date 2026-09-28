@@ -2316,3 +2316,164 @@ async fn a_phone_seizes_an_appearance_and_a_full_line_is_busy() {
     }
     stack.finish().await;
 }
+
+// ---------------------------------------------------------------------------
+// Executive-assistant (docs/ENTERPRISE_CALLING.md §3.10)
+// ---------------------------------------------------------------------------
+
+/// Make `executive` an executive whose `assistants` take the calls
+/// `filter` selects.
+async fn make_executive(
+    stack: &Stack,
+    executive: &SeededUser,
+    assistants: &[&SeededUser],
+    filter: fcp_core::ExecutiveFilter,
+) {
+    use fcp_core::storage::CredentialStore;
+    let storage = stack.seed.storage();
+    let id_of = |user: &SeededUser| {
+        let username = user.username.clone();
+        async move {
+            storage
+                .get_user_in_tenant(&username, &stack.seed.tenant_id)
+                .await
+                .expect("read user")
+                .expect("seeded user")
+                .id
+        }
+    };
+    let mut settings = CallingSettings::defaults(stack.seed.tenant_id, id_of(executive).await);
+    let mut listed = Vec::new();
+    for assistant in assistants {
+        listed.push(fcp_core::Assistant {
+            user_id: id_of(assistant).await,
+            opted_in: true,
+        });
+    }
+    settings.executive = Some(fcp_core::Executive {
+        enabled: true,
+        filter,
+        alert: fcp_core::ExecutiveAlert::Assistants,
+        assistants: listed,
+    });
+    settings.validate().expect("valid settings");
+    storage
+        .put_calling_settings(settings)
+        .await
+        .expect("store settings");
+}
+
+/// Dial a feature code and hang up once it is taken.
+async fn dial_code(stack: &Stack, phone: &Phone, code: &str) {
+    let call = phone.call(code).await.unwrap();
+    if let Err(e) = call.answered(SOON).await {
+        stack
+            .fail(&format!("{code} was not taken: {e}"), phone)
+            .await;
+    }
+    let _ = call.hangup().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_executives_call_rings_the_assistant_who_pushes_it_on() {
+    let stack = stack_or_skip!();
+    let [(_, alice), (bob, bob_phone), (carol, carol_phone)] = three_phones(&stack).await;
+    make_executive(&stack, &bob, &[&carol], fcp_core::ExecutiveFilter::All).await;
+
+    // Alice calls Bob: Carol's phone rings, told whose call it is and
+    // with a ring of its own; Bob's does not.
+    let call = alice.call(&bob.extension).await.unwrap();
+    let Some(at_carol) = carol_phone.incoming(SOON).await else {
+        stack.fail("the assistant did not ring", &alice).await;
+    };
+    assert!(
+        at_carol
+            .header("Alert-Info")
+            .is_some_and(|a| a.contains("info=executive")),
+        "Alert-Info: {:?}",
+        at_carol.header("Alert-Info")
+    );
+    let from = at_carol.header("From").unwrap_or_default();
+    assert!(from.contains(" for "), "From: {from}");
+    assert!(
+        bob_phone
+            .incoming(Duration::from_millis(500))
+            .await
+            .is_none(),
+        "the executive's phone rang with the assistant taking the call"
+    );
+    let carol_call = at_carol.answer().await.unwrap();
+    if let Err(e) = call.answered(SOON).await {
+        stack
+            .fail(&format!("Alice did not reach Carol: {e}"), &alice)
+            .await;
+    }
+
+    // *63: Carol pushes the call to Bob, whose phone rings though his
+    // calls are Carol's to take; she is let go once he answers.
+    dial_code(&stack, &carol_phone, "*63").await;
+    let Some(at_bob) = bob_phone.incoming(SOON).await else {
+        stack
+            .fail("the pushed call did not ring the executive", &carol_phone)
+            .await;
+    };
+    let bob_call = at_bob.answer().await.unwrap();
+    assert!(
+        carol_call.ended(SOON).await,
+        "the assistant is let go after the push"
+    );
+    assert!(
+        !call.ended(QUIET).await,
+        "Alice stays on the call, with Bob"
+    );
+    bob_call.hangup().await.unwrap();
+    assert!(call.ended(SOON).await);
+    stack.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_executive_and_the_assistant_each_turn_the_handling_off() {
+    let stack = stack_or_skip!();
+    let [(_, alice), (bob, bob_phone), (carol, carol_phone)] = three_phones(&stack).await;
+    make_executive(&stack, &bob, &[&carol], fcp_core::ExecutiveFilter::All).await;
+
+    // A call from Alice rings Bob directly when...
+    let rings_bob = |why: &'static str| {
+        let (alice, bob_phone, bob) = (&alice, &bob_phone, &bob);
+        let stack = &stack;
+        async move {
+            let call = alice.call(&bob.extension).await.unwrap();
+            let Some(at_bob) = bob_phone.incoming(SOON).await else {
+                stack.fail(why, alice).await;
+            };
+            let answered = at_bob.answer().await.unwrap();
+            call.answered(SOON).await.expect("answered");
+            answered.hangup().await.unwrap();
+        }
+    };
+    // ...the assistant opts out (*68)...
+    dial_code(&stack, &carol_phone, "*68").await;
+    rings_bob("an opted-out assistant still took the call").await;
+    dial_code(&stack, &carol_phone, "*67").await;
+    // ...the executive turns the handling off (*66)...
+    dial_code(&stack, &bob_phone, "*66").await;
+    rings_bob("the executive's handling was off and the call did not ring him").await;
+    dial_code(&stack, &bob_phone, "*65").await;
+    // ...and the filter takes external calls only: Alice is internal.
+    make_executive(&stack, &bob, &[&carol], fcp_core::ExecutiveFilter::External).await;
+    rings_bob("an internal call was taken by the assistant").await;
+    // Back on: the assistant takes it again.
+    make_executive(&stack, &bob, &[&carol], fcp_core::ExecutiveFilter::All).await;
+    let call = alice.call(&bob.extension).await.unwrap();
+    if carol_phone.incoming(SOON).await.is_none() {
+        stack
+            .fail("the assistant did not take the call once back on", &alice)
+            .await;
+    }
+    drop(call);
+
+    // A user who assists nobody cannot opt in.
+    let code = alice.call("*67").await.unwrap();
+    assert_eq!(code.failed(SOON).await, Some(404));
+    stack.finish().await;
+}

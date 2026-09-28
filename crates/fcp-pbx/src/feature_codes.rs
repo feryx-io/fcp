@@ -44,6 +44,13 @@ pub enum FeatureCodeAction {
 
     /// Log out of the host phone dialing.
     HotelingLogout,
+
+    /// An assistant pushes the call they are on to its executive (§3.10).
+    ExecutivePush,
+
+    /// An assistant places a call for their executive: the number dialed
+    /// after the code.
+    CallOnBehalf { target: String },
 }
 
 /// The calling settings a phone can change by dialing.
@@ -68,6 +75,12 @@ pub enum CallingCode {
     CallWaitingOff,
     FindMeOn,
     FindMeOff,
+    /// The executive's assistants take their calls (§3.10) — or not.
+    ExecutiveOn,
+    ExecutiveOff,
+    /// The assistant takes their executives' calls — or not.
+    AssistantOn,
+    AssistantOff,
 }
 
 /// Extract the user-part from a SIP URI or raw dialed string.
@@ -146,6 +159,13 @@ pub fn parse(dialed: &str, config: &FeatureCodeConfig) -> Option<FeatureCodeActi
             })
         }));
     }
+    if is_enabled(&config.call_on_behalf) {
+        prefixes.push((&config.call_on_behalf, |suffix| {
+            FeatureCodeAction::CallOnBehalf {
+                target: suffix.to_string(),
+            }
+        }));
+    }
     if is_enabled(&config.voicemail_access) {
         prefixes.push((&config.voicemail_access, |suffix| {
             FeatureCodeAction::VoicemailAccess {
@@ -175,7 +195,24 @@ pub fn parse(dialed: &str, config: &FeatureCodeConfig) -> Option<FeatureCodeActi
     }
 
     // Exact-match codes (no suffix)
-    let exact: [(&str, FeatureCodeAction); 9] = [
+    let exact: [(&str, FeatureCodeAction); 14] = [
+        (&config.executive_push, FeatureCodeAction::ExecutivePush),
+        (
+            &config.executive_on,
+            FeatureCodeAction::Calling(CallingCode::ExecutiveOn),
+        ),
+        (
+            &config.executive_off,
+            FeatureCodeAction::Calling(CallingCode::ExecutiveOff),
+        ),
+        (
+            &config.assistant_on,
+            FeatureCodeAction::Calling(CallingCode::AssistantOn),
+        ),
+        (
+            &config.assistant_off,
+            FeatureCodeAction::Calling(CallingCode::AssistantOff),
+        ),
         (
             &config.find_me_on,
             FeatureCodeAction::Calling(CallingCode::FindMeOn),
@@ -456,5 +493,34 @@ mod tests {
         assert_eq!(parse("*9", &cfg), None);
         // "*71" alone (retrieve prefix but no orbit) → no match
         assert_eq!(parse("*71", &cfg), None);
+    }
+
+    #[test]
+    fn executive_assistant_codes_parse() {
+        let cfg = default_config();
+        assert_eq!(parse("*63", &cfg), Some(FeatureCodeAction::ExecutivePush));
+        assert_eq!(
+            parse("sip:*6415551230000@pbx", &cfg),
+            Some(FeatureCodeAction::CallOnBehalf {
+                target: "15551230000".into()
+            })
+        );
+        assert_eq!(parse("*64", &cfg), None, "a call on behalf names a number");
+        assert_eq!(
+            parse("*65", &cfg),
+            Some(FeatureCodeAction::Calling(CallingCode::ExecutiveOn))
+        );
+        assert_eq!(
+            parse("*66", &cfg),
+            Some(FeatureCodeAction::Calling(CallingCode::ExecutiveOff))
+        );
+        assert_eq!(
+            parse("*67", &cfg),
+            Some(FeatureCodeAction::Calling(CallingCode::AssistantOn))
+        );
+        assert_eq!(
+            parse("*68", &cfg),
+            Some(FeatureCodeAction::Calling(CallingCode::AssistantOff))
+        );
     }
 }

@@ -48,7 +48,46 @@ pub struct CallingResponse {
     pub no_answer_secs: Option<u32>,
     /// The user's class of service (§3.7); `None` is the tenant's default.
     pub class_of_service_id: Option<String>,
+    /// The user as an executive (§3.10): `enabled`, `filter` (`all`,
+    /// `external`, `none`), `alert` (`assistants`,
+    /// `assistants_and_executive`), and `assistants` (`user_id`,
+    /// `opted_in`) in order.
+    pub executive: Option<ExecutiveView>,
     pub updated_at: u64,
+}
+
+/// A user as an executive, as the API shows it: user ids in their
+/// prefixed form, as everywhere else.
+#[derive(Debug, Serialize)]
+pub struct ExecutiveView {
+    pub enabled: bool,
+    pub filter: fcp_core::ExecutiveFilter,
+    pub alert: fcp_core::ExecutiveAlert,
+    pub assistants: Vec<AssistantView>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AssistantView {
+    pub user_id: String,
+    pub opted_in: bool,
+}
+
+impl From<&fcp_core::Executive> for ExecutiveView {
+    fn from(e: &fcp_core::Executive) -> Self {
+        Self {
+            enabled: e.enabled,
+            filter: e.filter,
+            alert: e.alert,
+            assistants: e
+                .assistants
+                .iter()
+                .map(|a| AssistantView {
+                    user_id: a.user_id.to_string(),
+                    opted_in: a.opted_in,
+                })
+                .collect(),
+        }
+    }
 }
 
 impl CallingResponse {
@@ -69,6 +108,7 @@ impl CallingResponse {
             find_me: settings.find_me.clone(),
             no_answer_secs: settings.no_answer_secs,
             class_of_service_id: settings.class_of_service_id.map(|id| id.to_string()),
+            executive: settings.executive.as_ref().map(ExecutiveView::from),
             updated_at: settings
                 .updated_at
                 .duration_since(UNIX_EPOCH)
@@ -101,6 +141,20 @@ pub struct UpdateCallingRequest {
     /// A class of service of the tenant, or an empty string for the
     /// tenant's default. An admin's to set: refused at `/me/calling`.
     pub class_of_service_id: Option<String>,
+    /// The user as an executive (§3.10); each field kept when left out.
+    pub executive: Option<ExecutiveRequest>,
+}
+
+/// What may change of a user as an executive.
+#[derive(Debug, Default, Deserialize)]
+pub struct ExecutiveRequest {
+    pub enabled: Option<bool>,
+    pub filter: Option<fcp_core::ExecutiveFilter>,
+    pub alert: Option<fcp_core::ExecutiveAlert>,
+    /// The assistants in order, each a username or a user id of the
+    /// tenant; replaces the list, keeping each one's opt-in. An admin's to
+    /// set: refused at `/me/calling`.
+    pub assistants: Option<Vec<String>>,
 }
 
 /// A user's settings, the defaults when none are stored.
@@ -199,6 +253,41 @@ pub async fn apply(
     if let Some(secs) = req.no_answer_secs {
         settings.no_answer_secs = if secs == 0 { None } else { Some(secs) };
     }
+    if let Some(given) = req.executive {
+        let mut executive = settings.executive.clone().unwrap_or_default();
+        if let Some(enabled) = given.enabled {
+            executive.enabled = enabled;
+        }
+        if let Some(filter) = given.filter {
+            executive.filter = filter;
+        }
+        if let Some(alert) = given.alert {
+            executive.alert = alert;
+        }
+        if let Some(names) = given.assistants {
+            if by != "admin" {
+                return Err(ApiError::Forbidden(
+                    "executive.assistants: an executive's assistants are set by an admin".into(),
+                ));
+            }
+            let mut assistants = Vec::with_capacity(names.len());
+            for name in names {
+                let assistant = assistant_named(state, &user.tenant_id, name.trim()).await?;
+                let opted_in = executive
+                    .assistants
+                    .iter()
+                    .find(|a| a.user_id == assistant.id)
+                    .map(|a| a.opted_in)
+                    .unwrap_or(true);
+                assistants.push(fcp_core::Assistant {
+                    user_id: assistant.id,
+                    opted_in,
+                });
+            }
+            executive.assistants = assistants;
+        }
+        settings.executive = Some(executive);
+    }
     settings.updated_at = SystemTime::now();
     settings.validate().map_err(ApiError::BadRequest)?;
     storage
@@ -216,6 +305,27 @@ pub async fn apply(
         }))
         .await;
     Ok(settings)
+}
+
+/// An assistant named by username or user id: an enabled user of the
+/// tenant.
+async fn assistant_named(
+    state: &ApiState,
+    tenant: &fcp_core::TenantId,
+    name: &str,
+) -> Result<User, ApiError> {
+    let storage = require_storage!(state);
+    let found = match name.parse::<fcp_core::UserId>() {
+        Ok(id) => storage.get_user_by_id(&id).await?,
+        Err(_) => storage.get_user_in_tenant(name, tenant).await?,
+    };
+    found
+        .filter(|u| u.tenant_id == *tenant && u.enabled)
+        .ok_or_else(|| {
+            ApiError::BadRequest(format!(
+                "executive.assistants: no user '{name}' in the tenant"
+            ))
+        })
 }
 
 /// A target from the API: empty clears it.

@@ -45,6 +45,18 @@ pub fn uri_user(uri: &str) -> &str {
     user.split(';').next().unwrap_or(user)
 }
 
+/// The host part of a URI with its port, if it has one (`sip:1001@h:5060`
+/// → `h:5060`).
+pub fn uri_host(uri: &str) -> &str {
+    let uri = uri.trim().trim_start_matches('<');
+    let rest = uri
+        .strip_prefix("sip:")
+        .or_else(|| uri.strip_prefix("sips:"))
+        .unwrap_or(uri);
+    let host = rest.rsplit_once('@').map(|(_, h)| h).unwrap_or(rest);
+    host.split([';', '>', '?']).next().unwrap_or(host)
+}
+
 /// What `dialed` (a URI's user part) is to the tenant: its country and
 /// overrides decide, and a number of the tenant's own is internal.
 pub async fn classify_for_tenant(

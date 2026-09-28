@@ -8,7 +8,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
-import type { CallingSettings, FindMe, UpdateCallingRequest } from '@/types'
+import type { CallingSettings, ExecutiveAlert, ExecutiveFilter, FindMe, UpdateCallingRequest } from '@/types'
 
 const VM = 'voicemail'
 
@@ -33,6 +33,15 @@ interface FormState {
   forwards: Record<ForwardKey, ForwardState>
   /** '' is the tenant's default class */
   class_of_service_id: string
+  executive: {
+    enabled: boolean
+    filter: ExecutiveFilter
+    alert: ExecutiveAlert
+    /** User ids, in order */
+    assistants: string[]
+  }
+  /** Whether the user is, or is being made, an executive */
+  has_executive: boolean
 }
 
 const FORWARDS: { key: ForwardKey; label: string; hint: string }[] = [
@@ -65,6 +74,13 @@ function stateOf(s: CallingSettings): FormState {
     after_hours_forward: s.after_hours_forward ? fieldOf(s.after_hours_forward) : '',
     find_me: s.find_me ?? { enabled: false, steps: [] },
     class_of_service_id: s.class_of_service_id ?? '',
+    executive: {
+      enabled: s.executive?.enabled ?? false,
+      filter: s.executive?.filter ?? 'all',
+      alert: s.executive?.alert ?? 'assistants',
+      assistants: (s.executive?.assistants ?? []).map((a) => a.user_id),
+    },
+    has_executive: s.executive !== null,
     forwards: {
       forward_all: forwardState(s.forward_all),
       forward_busy: forwardState(s.forward_busy),
@@ -95,6 +111,10 @@ export function requestOf(form: FormState): UpdateCallingRequest {
     forward_busy: forward(form.forwards.forward_busy),
     forward_no_answer: forward(form.forwards.forward_no_answer),
     forward_unreachable: forward(form.forwards.forward_unreachable),
+    // Only a user who is, or is being made, an executive carries the block.
+    executive: form.has_executive || form.executive.enabled
+      ? { enabled: form.executive.enabled, filter: form.executive.filter, alert: form.executive.alert }
+      : undefined,
   }
 }
 
@@ -111,6 +131,7 @@ export function CallingSettingsForm({
   holdMusicPrompts,
   schedules,
   classes,
+  people,
 }: {
   settings: CallingSettings
   onSave: (req: UpdateCallingRequest) => void
@@ -122,6 +143,8 @@ export function CallingSettingsForm({
   schedules?: { id: string; name: string }[]
   /** The tenant's classes of service; given, an admin sets the user's. */
   classes?: { id: string; name: string; is_default: boolean }[]
+  /** The tenant's users; given, an admin names the user's assistants. */
+  people?: { id: string; name: string }[]
 }) {
   const [form, setForm] = useState<FormState>(() => stateOf(settings))
   useEffect(() => {
@@ -395,10 +418,120 @@ export function CallingSettingsForm({
         )
       })}
 
+      {(form.has_executive || people) && (
+        <div className="space-y-3 border-t pt-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <Label className="text-sm font-medium">Assistants take calls</Label>
+              <p className="text-xs text-muted-foreground">
+                Calls ring the assistants first, who may push one on (*63) or place calls for the executive (*64).
+                Also *65 on, *66 off.
+              </p>
+            </div>
+            <Switch
+              checked={form.executive.enabled}
+              onCheckedChange={(enabled) =>
+                setForm((prev) => ({ ...prev, executive: { ...prev.executive, enabled } }))
+              }
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-1">
+              <Label className="text-xs">Which calls</Label>
+              <Select
+                value={form.executive.filter}
+                onValueChange={(filter) =>
+                  setForm((prev) => ({ ...prev, executive: { ...prev.executive, filter: filter as ExecutiveFilter } }))
+                }
+              >
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Every call</SelectItem>
+                  <SelectItem value="external">Calls from outside</SelectItem>
+                  <SelectItem value="none">None</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">Who rings</Label>
+              <Select
+                value={form.executive.alert}
+                onValueChange={(alert) =>
+                  setForm((prev) => ({ ...prev, executive: { ...prev.executive, alert: alert as ExecutiveAlert } }))
+                }
+              >
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="assistants">The assistants</SelectItem>
+                  <SelectItem value="assistants_and_executive">The assistants and the executive</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <div className="space-y-2">
+            <Label className="text-xs">Assistants</Label>
+            {form.executive.assistants.length === 0 && (
+              <p className="text-xs text-muted-foreground">None.</p>
+            )}
+            {form.executive.assistants.map((id) => {
+              const opted = settings.executive?.assistants.find((a) => a.user_id === id)?.opted_in ?? true
+              return (
+                <div key={id} className="flex items-center justify-between text-sm">
+                  <span>
+                    {people?.find((p) => p.id === id)?.name ?? id}
+                    {!opted && <span className="ml-2 text-xs text-muted-foreground">(opted out)</span>}
+                  </span>
+                  {people && (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() =>
+                        setForm((prev) => ({
+                          ...prev,
+                          executive: { ...prev.executive, assistants: prev.executive.assistants.filter((a) => a !== id) },
+                        }))
+                      }
+                    >
+                      Remove
+                    </Button>
+                  )}
+                </div>
+              )
+            })}
+            {people && (
+              <select
+                className="flex h-9 w-64 rounded-md border border-input bg-transparent px-3 py-1 text-sm"
+                value=""
+                onChange={(e) => {
+                  const id = e.target.value
+                  if (!id) return
+                  setForm((prev) => ({
+                    ...prev,
+                    has_executive: true,
+                    executive: { ...prev.executive, assistants: [...prev.executive.assistants, id] },
+                  }))
+                }}
+              >
+                <option value="">Add an assistant…</option>
+                {people
+                  .filter((p) => p.id !== settings.user_id && !form.executive.assistants.includes(p.id))
+                  .map((p) => (
+                    <option key={p.id} value={p.id}>{p.name}</option>
+                  ))}
+              </select>
+            )}
+          </div>
+        </div>
+      )}
+
       <Button
-        onClick={() =>
-          onSave(classes ? { ...requestOf(form), class_of_service_id: form.class_of_service_id } : requestOf(form))
-        }
+        onClick={() => {
+          const req = requestOf(form)
+          if (classes) req.class_of_service_id = form.class_of_service_id
+          if (people && req.executive) req.executive.assistants = form.executive.assistants
+          onSave(req)
+        }}
         disabled={saving}
       >
         {saving ? 'Saving...' : 'Save Changes'}

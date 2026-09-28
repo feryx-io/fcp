@@ -1547,7 +1547,30 @@ export interface CallingSettings {
   no_answer_secs: number | null
   /** null: the tenant's default class (§3.7) */
   class_of_service_id: string | null
+  /** The user as an executive, with assistants (§3.10) */
+  executive: Executive | null
   updated_at: number
+}
+
+export type ExecutiveFilter = 'all' | 'external' | 'none'
+export type ExecutiveAlert = 'assistants' | 'assistants_and_executive'
+
+export interface Executive {
+  enabled: boolean
+  filter: ExecutiveFilter
+  alert: ExecutiveAlert
+  /** In order; `opted_in` is the assistant's own choice. */
+  assistants: { user_id: string; opted_in: boolean }[]
+}
+
+/** An executive the signed-in user assists (§3.10). */
+export interface MyExecutive {
+  user_id: string
+  username: string
+  display_name: string | null
+  opted_in: boolean
+  enabled: boolean
+  filter: ExecutiveFilter
 }
 
 /** A forward given as an empty string is cleared; one left out is kept. */
@@ -1568,6 +1591,13 @@ export interface UpdateCallingRequest {
   no_answer_secs?: number
   /** A class's id, or '' for the tenant's default. Admins only. */
   class_of_service_id?: string
+  /** `assistants` (usernames or ids, in order) is an admin's to set. */
+  executive?: {
+    enabled?: boolean
+    filter?: ExecutiveFilter
+    alert?: ExecutiveAlert
+    assistants?: string[]
+  }
 }
 
 // Locations

@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { CallingSettingsForm } from '@/components/CallingSettingsForm'
 import { me } from '@/api/endpoints'
-import type { CallingSettings, UpdateCallingRequest } from '@/types'
+import { Switch } from '@/components/ui/switch'
+import type { CallingSettings, MyExecutive, UpdateCallingRequest } from '@/types'
 
 /** The user's own calling settings (docs/ENTERPRISE_CALLING.md §3.1). */
 export function UserCallingPage() {
@@ -10,11 +11,13 @@ export function UserCallingPage() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
+  const [executives, setExecutives] = useState<MyExecutive[]>([])
 
   useEffect(() => {
     async function load() {
       try {
         setSettings(await me.getCalling())
+        setExecutives(await me.getExecutives().catch(() => []))
       } catch (err) {
         setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Failed to load' })
       } finally {
@@ -23,6 +26,16 @@ export function UserCallingPage() {
     }
     load()
   }, [])
+
+  /** Take an executive's calls, or not (docs/ENTERPRISE_CALLING.md §3.10). */
+  const setOptedIn = async (executive: MyExecutive, optedIn: boolean) => {
+    try {
+      await me.setExecutive(executive.user_id, optedIn)
+      setExecutives((prev) => prev.map((e) => (e.user_id === executive.user_id ? { ...e, opted_in: optedIn } : e)))
+    } catch (err) {
+      setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Failed to update' })
+    }
+  }
 
   const handleSave = async (req: UpdateCallingRequest) => {
     setSaving(true)
@@ -66,6 +79,36 @@ export function UserCallingPage() {
           )}
         </CardContent>
       </Card>
+      {executives.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Executives you assist</CardTitle>
+            <CardDescription>
+              Their calls ring you first when you take them. *67 takes every executive&apos;s calls, *68 stops; *63 pushes
+              the call you are on to its executive, *64 and a number calls for them.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {executives.map((e) => (
+              <div key={e.user_id} className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium">{e.display_name || e.username}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {!e.enabled
+                      ? 'Their assistants are not taking calls.'
+                      : e.filter === 'external'
+                        ? 'Calls from outside.'
+                        : e.filter === 'none'
+                          ? 'No calls.'
+                          : 'Every call.'}
+                  </p>
+                </div>
+                <Switch checked={e.opted_in} onCheckedChange={(on) => setOptedIn(e, on)} />
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
     </div>
   )
 }
