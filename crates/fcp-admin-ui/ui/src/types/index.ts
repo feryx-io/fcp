@@ -1428,6 +1428,18 @@ export interface MeMailboxStats {
   saved_messages: number
 }
 
+/** Find-me / follow-me (docs/ENTERPRISE_CALLING.md §3.6): targets are `devices`, `ext:…`, `number:+…`, `user:…` or a SIP URI. */
+export interface FindMeStep {
+  targets: string[]
+  ring_secs: number
+  confirm: boolean
+}
+
+export interface FindMe {
+  enabled: boolean
+  steps: FindMeStep[]
+}
+
 /** A user's calling settings (docs/ENTERPRISE_CALLING.md §3.1); targets as `voicemail`, `number:+1…`, `ext:2001`, `user:<id>` or a SIP URI. */
 export interface CallingSettings {
   user_id: string
@@ -1440,6 +1452,7 @@ export interface CallingSettings {
   forward_unreachable: string | null
   after_hours_schedule_id: string | null
   after_hours_forward: string | null
+  find_me: FindMe | null
   /** A prompt's id, `none` for silence, null for the tenant's hold music */
   hold_music: string | null
   /** null: the node's default ring time */
@@ -1458,6 +1471,7 @@ export interface UpdateCallingRequest {
   /** A schedule's id, or '' to clear */
   after_hours_schedule_id?: string
   after_hours_forward?: string
+  find_me?: FindMe
   /** A prompt's id, `none`, or '' for the tenant's hold music */
   hold_music?: string
   /** 0 clears it: the node's default */

@@ -8,7 +8,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
-import type { CallingSettings, UpdateCallingRequest } from '@/types'
+import type { CallingSettings, FindMe, UpdateCallingRequest } from '@/types'
 
 const VM = 'voicemail'
 
@@ -29,6 +29,7 @@ interface FormState {
   hold_music: string
   after_hours_schedule_id: string
   after_hours_forward: string
+  find_me: FindMe
   forwards: Record<ForwardKey, ForwardState>
 }
 
@@ -60,6 +61,7 @@ function stateOf(s: CallingSettings): FormState {
     hold_music: s.hold_music ?? 'tenant',
     after_hours_schedule_id: s.after_hours_schedule_id ?? '',
     after_hours_forward: s.after_hours_forward ? fieldOf(s.after_hours_forward) : '',
+    find_me: s.find_me ?? { enabled: false, steps: [] },
     forwards: {
       forward_all: forwardState(s.forward_all),
       forward_busy: forwardState(s.forward_busy),
@@ -79,6 +81,13 @@ export function requestOf(form: FormState): UpdateCallingRequest {
     hold_music: form.hold_music === 'tenant' ? '' : form.hold_music,
     after_hours_schedule_id: form.after_hours_schedule_id,
     after_hours_forward: form.after_hours_forward.trim(),
+    find_me: {
+      enabled: form.find_me.enabled,
+      steps: form.find_me.steps.map((st) => ({
+        ...st,
+        targets: st.targets.map((t) => t.trim()).filter(Boolean),
+      })),
+    },
     forward_all: forward(form.forwards.forward_all),
     forward_busy: forward(form.forwards.forward_busy),
     forward_no_answer: forward(form.forwards.forward_no_answer),
@@ -196,6 +205,109 @@ export function CallingSettingsForm({
           </div>
         </div>
       )}
+
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <div>
+            <Label className="text-sm font-medium">Find Me</Label>
+            <p className="text-xs text-muted-foreground">
+              When your phones are not answered, ring these one after another before the no-answer forward. Targets:
+              devices (your phones), an extension, a +number. Confirm asks whoever answers to press 1.
+            </p>
+          </div>
+          <Switch
+            checked={form.find_me.enabled}
+            onCheckedChange={(enabled) => setForm((prev) => ({ ...prev, find_me: { ...prev.find_me, enabled } }))}
+          />
+        </div>
+        {form.find_me.enabled && (
+          <div className="space-y-2">
+            {form.find_me.steps.map((st, i) => (
+              <div key={i} className="flex flex-wrap items-center gap-2 rounded-md border p-2">
+                <span className="text-xs text-muted-foreground">Step {i + 1}</span>
+                <Input
+                  className="w-64"
+                  placeholder="devices, 2002, +15551234567"
+                  value={st.targets.join(', ')}
+                  onChange={(e) =>
+                    setForm((prev) => ({
+                      ...prev,
+                      find_me: {
+                        ...prev.find_me,
+                        steps: prev.find_me.steps.map((x, j) => (j === i ? { ...x, targets: e.target.value.split(',') } : x)),
+                      },
+                    }))
+                  }
+                />
+                <Input
+                  type="number"
+                  min={5}
+                  max={300}
+                  className="w-20"
+                  value={st.ring_secs}
+                  onChange={(e) =>
+                    setForm((prev) => ({
+                      ...prev,
+                      find_me: {
+                        ...prev.find_me,
+                        steps: prev.find_me.steps.map((x, j) => (j === i ? { ...x, ring_secs: parseInt(e.target.value) || 20 } : x)),
+                      },
+                    }))
+                  }
+                />
+                <span className="text-xs">s</span>
+                <label className="flex items-center gap-1 text-xs">
+                  <input
+                    type="checkbox"
+                    checked={st.confirm}
+                    onChange={(e) =>
+                      setForm((prev) => ({
+                        ...prev,
+                        find_me: {
+                          ...prev.find_me,
+                          steps: prev.find_me.steps.map((x, j) => (j === i ? { ...x, confirm: e.target.checked } : x)),
+                        },
+                      }))
+                    }
+                  />
+                  Confirm
+                </label>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() =>
+                    setForm((prev) => ({
+                      ...prev,
+                      find_me: { ...prev.find_me, steps: prev.find_me.steps.filter((_, j) => j !== i) },
+                    }))
+                  }
+                >
+                  Remove
+                </Button>
+              </div>
+            ))}
+            {form.find_me.steps.length < 5 && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() =>
+                  setForm((prev) => ({
+                    ...prev,
+                    find_me: {
+                      ...prev.find_me,
+                      steps: [...prev.find_me.steps, { targets: [''], ring_secs: 20, confirm: false }],
+                    },
+                  }))
+                }
+              >
+                Add step
+              </Button>
+            )}
+          </div>
+        )}
+      </div>
 
       <div className="space-y-1">
         <Label className="text-sm font-medium">Hold music</Label>

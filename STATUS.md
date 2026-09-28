@@ -1300,6 +1300,14 @@ node branches; `flow:` and `queue:` targets are placed (a flow runs for
 the call, a queue is dialed at its extension). Proved by `calling.rs`
 (closed, open and holiday numbers; a closed number's flow; a user after
 hours; a flow branching; a closed queue) and `api_postgres.rs`.
+Phase 6 done (v0.25.281): find-me / follow-me — steps of targets
+(`devices`, users, extensions, numbers) rung one after another after the
+user's phones, or at once when none is up, each with its own ring time;
+a `confirm` step's answerer hears a prompt alone and is connected only on
+a 1, so a mobile's voicemail cannot take the call; `*60`/`*61`; the
+Calling page's editor. Proved by `calling.rs` (the next step after the
+phones, confirmation by 1 and refusal by 2, an unregistered user). The
+`Diversion` header is not sent.
 
 ## Historical documents
 

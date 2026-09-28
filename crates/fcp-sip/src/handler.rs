@@ -7691,6 +7691,38 @@ impl SipMessageHandler {
             }
         }
 
+        // A find-me leg that must be confirmed is connected only when its
+        // answerer presses 1 (`docs/ENTERPRISE_CALLING.md` §3.6); otherwise
+        // it is dropped and the call goes on as though nobody answered.
+        let (winning_target, winning_response, winning_handle) = match (
+            winning_target,
+            winning_response,
+            winning_handle,
+        ) {
+            (Some(target), Some(response), Some(handle))
+                if self
+                    .call_manager
+                    .get_call(&call_id)
+                    .is_some_and(|c| c.confirm_targets.contains(&target)) =>
+            {
+                if self.confirm_answer(&call_id, &response).await {
+                    (Some(target), Some(response), Some(handle))
+                } else {
+                    info!(call_id = %call_id, target = %target, "Find-me answer not confirmed; dropping that leg");
+                    let dialog = handle.dialog.read().await.clone();
+                    if let Some(uac) = self.uac.clone() {
+                        tokio::spawn(async move {
+                            let _ = tokio::time::timeout(Duration::from_secs(10), uac.bye(&dialog))
+                                .await;
+                        });
+                    }
+                    last_failure_code = Some(603);
+                    (None, None, None)
+                }
+            }
+            other => other,
+        };
+
         // If we have a winner, relay the response to A-leg
         if let (Some(target), Some(response), Some(handle)) =
             (winning_target, winning_response, winning_handle)
@@ -8047,6 +8079,22 @@ impl SipMessageHandler {
                 }
             }
             self.trunk_fallbacks.remove(&call_id);
+
+            // Find-me: the next step rings before any treatment (§3.6).
+            if let Some(legs) = self.next_find_me_step(&request, call_id).await {
+                let cancel_notify = Arc::new(tokio::sync::Notify::new());
+                let _ = self.call_manager.update_call(&call_id, |call| {
+                    call.cancel_notify = Some(Arc::clone(&cancel_notify));
+                });
+                return Box::pin(self.handle_parallel_forking(
+                    request,
+                    a_leg_handle,
+                    legs,
+                    call_id,
+                    cancel_notify,
+                ))
+                .await;
+            }
 
             // All B-legs failed (not due to cancellation): the plan's
             // treatment for busy or for no answer, when the call was a
@@ -13940,6 +13988,210 @@ impl SipMessageHandler {
         Ok(())
     }
 
+    /// The legs of the next find-me step that has anyone to ring: its
+    /// targets resolved (the callee's phones, another user's, an extension
+    /// or a number dialed back into this node so it is routed — out a trunk
+    /// for a number — with the caller's identity), its ring time and the
+    /// legs to confirm set on the call. `None` when no step is left.
+    async fn next_find_me_step(
+        &self,
+        request: &sip_core::Request,
+        call_id: fcp_b2bua_core::CallId,
+    ) -> Option<Vec<(String, Arc<crate::uac::OutboundCall>, Option<String>)>> {
+        let uac = self.uac.clone()?;
+        loop {
+            let mut step = None;
+            let _ = self.call_manager.update_call(&call_id, |c| {
+                if !c.find_me_steps.is_empty() {
+                    step = Some(c.find_me_steps.remove(0));
+                }
+            });
+            let step = step?;
+            let call = self.call_manager.get_call(&call_id)?;
+            let host = match self.uas.local_uri.port() {
+                Some(port) => format!("{}:{}", self.uas.local_uri.host(), port),
+                None => self.uas.local_uri.host().to_string(),
+            };
+            // (uri, confirm)
+            let mut uris: Vec<(String, bool)> = Vec::new();
+            for target in &step.targets {
+                let contacts_of = |user: fcp_core::UserId| async move {
+                    match (&self.storage, &self.registrar) {
+                        (Some(storage), Some(registrar)) => {
+                            crate::ring_plan::contacts_for_user(
+                                storage,
+                                registrar,
+                                &call.tenant_id,
+                                &user,
+                                "",
+                            )
+                            .await
+                        }
+                        _ => Vec::new(),
+                    }
+                };
+                match target {
+                    fcp_core::FindMeTarget::Devices => {
+                        if let Some(user) = call.callee_user_id {
+                            for c in contacts_of(user).await {
+                                uris.push((crate::ring_plan::contact_uri(&c), false));
+                            }
+                        }
+                    }
+                    fcp_core::FindMeTarget::Target(fcp_core::CallTarget::User(user)) => {
+                        for c in contacts_of(*user).await {
+                            uris.push((crate::ring_plan::contact_uri(&c), step.confirm));
+                        }
+                    }
+                    fcp_core::FindMeTarget::Target(fcp_core::CallTarget::Extension(ext)) => {
+                        let user = match &self.storage {
+                            Some(storage) => {
+                                crate::ring_plan::user_of(storage, &call.tenant_id, ext).await
+                            }
+                            None => None,
+                        };
+                        match user {
+                            Some(user) => {
+                                for c in contacts_of(user).await {
+                                    uris.push((crate::ring_plan::contact_uri(&c), step.confirm));
+                                }
+                            }
+                            None => uris.push((format!("sip:{ext}@{host}"), step.confirm)),
+                        }
+                    }
+                    fcp_core::FindMeTarget::Target(fcp_core::CallTarget::Number(n)) => {
+                        uris.push((format!("sip:{n}@{host}"), step.confirm))
+                    }
+                    fcp_core::FindMeTarget::Target(fcp_core::CallTarget::Sip(u)) => {
+                        uris.push((u.clone(), step.confirm))
+                    }
+                    fcp_core::FindMeTarget::Target(_) => {}
+                }
+            }
+            let mut seen = std::collections::HashSet::new();
+            uris.retain(|(u, _)| seen.insert(u.clone()));
+            if uris.is_empty() {
+                info!(call_id = %call_id, "A find-me step has nobody to ring; trying the next");
+                continue;
+            }
+
+            // The offer: the caller's SDP, the node's own when anchored.
+            let original = crate::body::request_sdp(request);
+            let sdp_override = match (
+                call.media_anchored,
+                call.media_session_id,
+                &self.media_manager,
+                &original,
+            ) {
+                (true, Some(session), Some(media), Some(sdp)) => {
+                    match media.get_session(&session).await {
+                        Ok(session) => Some(fcp_media::rewrite_sdp_for_anchoring(
+                            sdp,
+                            &self.local_addr,
+                            session.ports().0,
+                            None,
+                        )),
+                        Err(_) => None,
+                    }
+                }
+                _ => None,
+            };
+            let caller_display_name = extract_from_display_name(request);
+            let caller_from_uri = extract_from_uri(request).ok().map(normalize_from_uri);
+            uac.inner().set_display_name(caller_display_name).await;
+            uac.inner().set_from_uri(caller_from_uri).await;
+            let mut legs = Vec::new();
+            for (uri, _) in &uris {
+                match self
+                    .create_outbound_call(request, uri, &uac, sdp_override.clone())
+                    .await
+                {
+                    Ok(outbound) => legs.push((uri.clone(), outbound, None)),
+                    Err(e) => {
+                        warn!(call_id = %call_id, target = %uri, error = %e, "A find-me leg could not be placed")
+                    }
+                }
+            }
+            uac.inner().set_display_name(None).await;
+            uac.inner().set_from_uri(None).await;
+            if legs.is_empty() {
+                continue;
+            }
+            let confirm: Vec<String> = uris
+                .iter()
+                .filter(|(_, c)| *c)
+                .map(|(u, _)| u.clone())
+                .collect();
+            let first = legs[0].0.clone();
+            info!(call_id = %call_id, legs = legs.len(), ring_secs = step.ring_secs, confirm = confirm.len(), "Ringing the next find-me step");
+            let _ = self.call_manager.update_call(&call_id, |c| {
+                c.no_answer_timeout = Some(Duration::from_secs(u64::from(step.ring_secs)));
+                c.confirm_targets = confirm;
+                c.b_leg = Some(fcp_b2bua_core::CallLeg::new_outbound(first, None));
+            });
+            return Some(legs);
+        }
+    }
+
+    /// Ask the leg that answered to confirm: its media pointed at the
+    /// node's session, a prompt played to it alone ("call for <name>,
+    /// press 1"), one digit awaited. True when it pressed 1. Without an
+    /// anchored session there is nothing to ask with, and the answer
+    /// stands.
+    async fn confirm_answer(
+        &self,
+        call_id: &fcp_b2bua_core::CallId,
+        answer: &sip_core::Response,
+    ) -> bool {
+        let Some(call) = self.call_manager.get_call(call_id) else {
+            return false;
+        };
+        let (Some(session), Some(media)) = (
+            call.media_session_id.filter(|_| call.media_anchored),
+            self.media_manager.as_ref(),
+        ) else {
+            warn!(call_id = %call_id, "A find-me answer cannot be confirmed without the media here; connecting it");
+            return true;
+        };
+        let answer_sdp = String::from_utf8_lossy(answer.body()).to_string();
+        if !answer_sdp.is_empty() {
+            if let Err(e) = media.update_session_b_leg(&session, answer_sdp).await {
+                warn!(call_id = %call_id, error = %e, "The confirming leg's media was not set");
+            }
+        }
+        let collector = media.create_dtmf_collector(&session, 1, None);
+        let name = call
+            .confirm_for
+            .clone()
+            .unwrap_or_else(|| "you".to_string());
+        let spoken = media
+            .play_tts(
+                &session,
+                format!("Call for {name}. Press 1 to accept."),
+                "en".to_string(),
+                None,
+                fcp_media::AudioTarget::ParticipantB,
+            )
+            .await;
+        if spoken.is_err() {
+            // No speech here: a short tone is the cue.
+            let _ = media
+                .play_tone(
+                    &session,
+                    880.0,
+                    400,
+                    0.5,
+                    fcp_media::AudioTarget::ParticipantB,
+                )
+                .await;
+        }
+        match collector.collect(CONFIRM_WAIT).await {
+            fcp_media::dtmf_collector::CollectionResult::Complete(d) => d == "1",
+            fcp_media::dtmf_collector::CollectionResult::Timeout(d) => d == "1",
+            fcp_media::dtmf_collector::CollectionResult::Cancelled => false,
+        }
+    }
+
     /// Mark the call with the user its caller is, when the From names a
     /// user of the call's tenant (an extension or a username).
     async fn note_caller_user(
@@ -14015,6 +14267,63 @@ impl SipMessageHandler {
             after_hours,
         };
         match crate::ring_plan::plan(&settings, contacts, inputs) {
+            // No phone of theirs is up, but find-me has somewhere to ring
+            // (§3.6): its steps, then the unreachable treatment.
+            crate::ring_plan::RingPlan::Immediate {
+                treatment,
+                reason: "unreachable",
+            } if !settings.find_me_steps().is_empty() => {
+                let steps = settings.find_me_steps();
+                let confirm_for = match (&self.storage, user_id) {
+                    (Some(storage), Some(user_id)) => storage
+                        .get_user_by_id(&user_id)
+                        .await
+                        .ok()
+                        .flatten()
+                        .map(|u| u.display_name.unwrap_or(u.username)),
+                    _ => None,
+                };
+                let _ = self.call_manager.update_call(&call_id, |call| {
+                    call.callee_user_id = user_id;
+                    call.treatments = Some(fcp_core::Treatments {
+                        busy: treatment.clone(),
+                        no_answer: treatment.clone(),
+                    });
+                    call.find_me_steps = steps;
+                    call.confirm_for = confirm_for;
+                    if call.original_callee.is_none() {
+                        call.original_callee = Some(callee.to_string());
+                    }
+                });
+                match self.next_find_me_step(request, call_id).await {
+                    Some(legs) => {
+                        let cancel_notify = Arc::new(tokio::sync::Notify::new());
+                        let _ = self.call_manager.update_call(&call_id, |call| {
+                            call.cancel_notify = Some(Arc::clone(&cancel_notify));
+                        });
+                        self.handle_parallel_forking(
+                            request.clone(),
+                            Arc::clone(a_leg_handle),
+                            legs,
+                            call_id,
+                            cancel_notify,
+                        )
+                        .await?;
+                    }
+                    None => {
+                        self.apply_treatment(
+                            request,
+                            a_leg_handle,
+                            call_id,
+                            treatment,
+                            Some(callee),
+                            "unreachable",
+                        )
+                        .await;
+                    }
+                }
+                Ok(None)
+            }
             crate::ring_plan::RingPlan::Immediate { treatment, reason } => {
                 info!(call_id = %call_id, ?user_id, ?treatment, reason, "The callee's plan applies without ringing");
                 let _ = self.call_manager.update_call(&call_id, |call| {
@@ -14039,10 +14348,25 @@ impl SipMessageHandler {
                 ring_time,
                 treatments,
             } => {
+                // Find-me: the steps to ring after these phones, and the name
+                // a confirming answerer hears (§3.6).
+                let find_me_steps = settings.find_me_steps();
+                let confirm_for = match (&self.storage, user_id, find_me_steps.is_empty()) {
+                    (Some(storage), Some(user_id), false) => storage
+                        .get_user_by_id(&user_id)
+                        .await
+                        .ok()
+                        .flatten()
+                        .map(|u| u.display_name.unwrap_or(u.username)),
+                    _ => None,
+                };
                 let _ = self.call_manager.update_call(&call_id, |call| {
                     call.callee_user_id = user_id;
                     call.treatments = Some(treatments);
                     call.no_answer_timeout = ring_time;
+                    call.find_me_steps = find_me_steps;
+                    call.confirm_for = confirm_for;
+                    call.confirm_targets.clear();
                     if call.original_callee.is_none() {
                         call.original_callee = Some(callee.to_string());
                     }
@@ -14258,6 +14582,19 @@ impl SipMessageHandler {
             }
             CallWaitingOff => {
                 settings.call_waiting = false;
+                Ok(())
+            }
+            FindMeOn => {
+                settings
+                    .find_me
+                    .get_or_insert_with(Default::default)
+                    .enabled = true;
+                Ok(())
+            }
+            FindMeOff => {
+                if let Some(find_me) = settings.find_me.as_mut() {
+                    find_me.enabled = false;
+                }
                 Ok(())
             }
         };
@@ -15802,6 +16139,9 @@ fn user_of_uri(uri: &str) -> Option<String> {
     let (user, _) = rest.split_once('@')?;
     (!user.is_empty()).then(|| user.to_string())
 }
+
+/// How long a find-me answerer has to press 1 (§3.6).
+const CONFIRM_WAIT: Duration = Duration::from_secs(10);
 
 pub const TRANSFERRED_FROM_HEADER: &str = "X-FCP-Transferred-From";
 

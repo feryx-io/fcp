@@ -503,6 +503,16 @@ pub struct Call {
     /// the call (a transfer, a park).
     pub caller_user_id: Option<fcp_core::UserId>,
 
+    /// Find-me steps still to ring once the legs ringing now have failed
+    /// (`docs/ENTERPRISE_CALLING.md` §3.6).
+    pub find_me_steps: Vec<fcp_core::FindMeStep>,
+
+    /// The target URIs of the legs ringing now whose answer must be
+    /// confirmed (press 1) before the caller is connected, and the name
+    /// the prompt says the call is for.
+    pub confirm_targets: Vec<String>,
+    pub confirm_for: Option<String>,
+
     /// The leg that is on hold: its far party sent `sendonly` or
     /// `inactive`, or the node held it (a parked party).
     pub held: Option<LegSide>,
@@ -611,6 +621,9 @@ impl Call {
             treatments: None,
             held: None,
             caller_user_id: None,
+            find_me_steps: Vec::new(),
+            confirm_targets: Vec::new(),
+            confirm_for: None,
             caller_number: None,
             emergency: None,
         }
@@ -719,6 +732,9 @@ impl Call {
             treatments: None,
             held: None,
             caller_user_id: None,
+            find_me_steps: Vec::new(),
+            confirm_targets: Vec::new(),
+            confirm_for: None,
             caller_number: None,
             emergency: None,
         }

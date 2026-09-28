@@ -60,7 +60,8 @@ pub use crate::cached_storage::{
     CacheStats, CachedCredentialStore, CachedDeviceStore, CachedExtensionStore,
 };
 pub use crate::calling::{
-    CallTarget, CallTargetError, CallingSettings, CallingStore, Treatment, Treatments,
+    CallTarget, CallTargetError, CallingSettings, CallingStore, FindMe, FindMeStep, FindMeTarget,
+    Treatment, Treatments,
 };
 pub use crate::codec::{AudioCodec, Codec, CodecPreferences, VideoCodec};
 pub use crate::config::{

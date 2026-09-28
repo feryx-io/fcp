@@ -60,6 +60,8 @@ pub enum CallingCode {
     ForwardNoAnswerOff,
     CallWaitingOn,
     CallWaitingOff,
+    FindMeOn,
+    FindMeOff,
 }
 
 /// Extract the user-part from a SIP URI or raw dialed string.
@@ -167,7 +169,15 @@ pub fn parse(dialed: &str, config: &FeatureCodeConfig) -> Option<FeatureCodeActi
     }
 
     // Exact-match codes (no suffix)
-    let exact: [(&str, FeatureCodeAction); 7] = [
+    let exact: [(&str, FeatureCodeAction); 9] = [
+        (
+            &config.find_me_on,
+            FeatureCodeAction::Calling(CallingCode::FindMeOn),
+        ),
+        (
+            &config.find_me_off,
+            FeatureCodeAction::Calling(CallingCode::FindMeOff),
+        ),
         (
             &config.call_waiting_on,
             FeatureCodeAction::Calling(CallingCode::CallWaitingOn),

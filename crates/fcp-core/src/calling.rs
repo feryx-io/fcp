@@ -152,6 +152,81 @@ pub enum CallTargetError {
     Invalid(String),
 }
 
+/// Who a find-me step rings (`docs/ENTERPRISE_CALLING.md` §3.6): the
+/// user's own phones, or a target — a user, an extension, a number, a SIP
+/// URI. Serialised as `devices` or the target's string form.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FindMeTarget {
+    Devices,
+    Target(CallTarget),
+}
+
+impl FindMeTarget {
+    pub fn parse(s: &str) -> Result<Self, CallTargetError> {
+        if s.trim().eq_ignore_ascii_case("devices") {
+            return Ok(Self::Devices);
+        }
+        let target = CallTarget::parse(s)?;
+        match target {
+            CallTarget::Voicemail | CallTarget::Flow(_) | CallTarget::Queue(_) => Err(
+                CallTargetError::Invalid(format!("{target} cannot be rung by a find-me step")),
+            ),
+            _ => Ok(Self::Target(target)),
+        }
+    }
+}
+
+impl fmt::Display for FindMeTarget {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Devices => f.write_str("devices"),
+            Self::Target(t) => t.fmt(f),
+        }
+    }
+}
+
+impl Serialize for FindMeTarget {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for FindMeTarget {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        Self::parse(&s).map_err(serde::de::Error::custom)
+    }
+}
+
+/// One step of find-me: these targets rung together for `ring_secs`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FindMeStep {
+    pub targets: Vec<FindMeTarget>,
+    #[serde(default = "default_step_secs")]
+    pub ring_secs: u32,
+    /// A leg of this step that answers must press 1 before it is
+    /// connected: a mobile's voicemail does not take the call.
+    #[serde(default)]
+    pub confirm: bool,
+}
+
+fn default_step_secs() -> u32 {
+    20
+}
+
+/// A user's find-me: steps rung one after another once the user's own
+/// phones have rung, before the no-answer treatment.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct FindMe {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub steps: Vec<FindMeStep>,
+}
+
+/// The most steps a find-me may have.
+pub const MAX_FIND_ME_STEPS: usize = 5;
+
 /// What happens to a call for a user when it is not answered by ringing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -210,6 +285,9 @@ pub struct CallingSettings {
     pub after_hours_schedule_id: Option<crate::ScheduleId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub after_hours_forward: Option<CallTarget>,
+    /// Find-me / follow-me (§3.6).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub find_me: Option<FindMe>,
     /// What a party this user holds hears: a prompt's id, or
     /// [`HOLD_MUSIC_NONE`] for silence; `None` is the tenant's hold music
     /// (`docs/ENTERPRISE_CALLING.md` §3.3).
@@ -240,6 +318,7 @@ impl CallingSettings {
             forward_unreachable: None,
             after_hours_schedule_id: None,
             after_hours_forward: None,
+            find_me: None,
             hold_music: None,
             no_answer_secs: None,
             updated_at: SystemTime::now(),
@@ -256,9 +335,45 @@ impl CallingSettings {
         })
     }
 
+    /// The find-me steps to ring after the user's phones, when find-me is
+    /// on.
+    pub fn find_me_steps(&self) -> Vec<FindMeStep> {
+        self.find_me
+            .as_ref()
+            .filter(|f| f.enabled)
+            .map(|f| f.steps.clone())
+            .unwrap_or_default()
+    }
+
     /// Refuse what cannot be stored: a ring time out of range, a forward
-    /// that names the user themself.
+    /// that names the user themself, a find-me that cannot be rung.
     pub fn validate(&self) -> Result<(), String> {
+        if let Some(find_me) = &self.find_me {
+            if find_me.steps.len() > MAX_FIND_ME_STEPS {
+                return Err(format!("find_me: at most {MAX_FIND_ME_STEPS} steps"));
+            }
+            for (i, step) in find_me.steps.iter().enumerate() {
+                if step.targets.is_empty() {
+                    return Err(format!("find_me: step {} rings nobody", i + 1));
+                }
+                if !(MIN_NO_ANSWER_SECS..=MAX_NO_ANSWER_SECS).contains(&step.ring_secs) {
+                    return Err(format!(
+                        "find_me: step {} rings for {}s, not between {MIN_NO_ANSWER_SECS} and {MAX_NO_ANSWER_SECS}",
+                        i + 1,
+                        step.ring_secs
+                    ));
+                }
+                if step
+                    .targets
+                    .contains(&FindMeTarget::Target(CallTarget::User(self.user_id)))
+                {
+                    return Err(format!(
+                        "find_me: step {} names the user; use `devices`",
+                        i + 1
+                    ));
+                }
+            }
+        }
         if let Some(secs) = self.no_answer_secs {
             if !(MIN_NO_ANSWER_SECS..=MAX_NO_ANSWER_SECS).contains(&secs) {
                 return Err(format!(
@@ -354,6 +469,31 @@ mod tests {
         );
         assert_eq!(CallTarget::parse("  ").unwrap_err(), CallTargetError::Empty);
         assert!(CallTarget::parse("bob").is_err());
+    }
+
+    #[test]
+    fn find_me_targets_and_steps_validate() {
+        assert_eq!(
+            FindMeTarget::parse("devices").unwrap(),
+            FindMeTarget::Devices
+        );
+        assert_eq!(
+            FindMeTarget::parse("+15551234567").unwrap(),
+            FindMeTarget::Target(CallTarget::Number("+15551234567".into()))
+        );
+        assert!(FindMeTarget::parse("voicemail").is_err());
+        assert!(FindMeTarget::parse("flow:x").is_err());
+        let json = r#"{"enabled":true,"steps":[{"targets":["devices","ext:2002"],"ring_secs":15,"confirm":true}]}"#;
+        let fm: FindMe = serde_json::from_str(json).unwrap();
+        assert_eq!(serde_json::to_string(&fm).unwrap(), json);
+        let mut s = CallingSettings::defaults(TenantId::new(), UserId::new());
+        s.find_me = Some(fm);
+        assert!(s.validate().is_ok());
+        assert_eq!(s.find_me_steps().len(), 1);
+        s.find_me.as_mut().unwrap().steps[0].ring_secs = 1;
+        assert!(s.validate().is_err());
+        s.find_me.as_mut().unwrap().enabled = false;
+        assert!(s.find_me_steps().is_empty());
     }
 
     #[test]

@@ -130,6 +130,12 @@ pub struct FeatureCodeConfig {
     pub call_waiting_on: String,
     #[serde(default = "default_call_waiting_off")]
     pub call_waiting_off: String,
+
+    /// Find-me on ("*60") and off ("*61").
+    #[serde(default = "default_find_me_on")]
+    pub find_me_on: String,
+    #[serde(default = "default_find_me_off")]
+    pub find_me_off: String,
 }
 
 fn default_group_pickup() -> String {
@@ -189,6 +195,12 @@ fn default_call_waiting_on() -> String {
 fn default_call_waiting_off() -> String {
     "*57".to_string()
 }
+fn default_find_me_on() -> String {
+    "*60".to_string()
+}
+fn default_find_me_off() -> String {
+    "*61".to_string()
+}
 
 impl Default for FeatureCodeConfig {
     fn default() -> Self {
@@ -212,6 +224,8 @@ impl Default for FeatureCodeConfig {
             forward_no_answer_off: default_forward_no_answer_off(),
             call_waiting_on: default_call_waiting_on(),
             call_waiting_off: default_call_waiting_off(),
+            find_me_on: default_find_me_on(),
+            find_me_off: default_find_me_off(),
         }
     }
 }
