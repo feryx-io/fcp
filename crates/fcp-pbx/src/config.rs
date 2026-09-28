@@ -153,6 +153,24 @@ pub struct FeatureCodeConfig {
     pub hoteling_login: String,
     #[serde(default = "default_hoteling_logout")]
     pub hoteling_logout: String,
+
+    /// Executive-assistant (`docs/ENTERPRISE_CALLING.md` §3.10): an
+    /// assistant pushes the call they are on to the executive ("*63"),
+    /// places one for them ("*64" + number); the executive turns their
+    /// assistants' handling on ("*65") and off ("*66"); an assistant opts
+    /// in ("*67") and out ("*68").
+    #[serde(default = "default_executive_push")]
+    pub executive_push: String,
+    #[serde(default = "default_call_on_behalf")]
+    pub call_on_behalf: String,
+    #[serde(default = "default_executive_on")]
+    pub executive_on: String,
+    #[serde(default = "default_executive_off")]
+    pub executive_off: String,
+    #[serde(default = "default_assistant_on")]
+    pub assistant_on: String,
+    #[serde(default = "default_assistant_off")]
+    pub assistant_off: String,
 }
 
 fn default_group_pickup() -> String {
@@ -224,6 +242,24 @@ fn default_hoteling_login() -> String {
 fn default_hoteling_logout() -> String {
     "*89".to_string()
 }
+fn default_executive_push() -> String {
+    "*63".to_string()
+}
+fn default_call_on_behalf() -> String {
+    "*64".to_string()
+}
+fn default_executive_on() -> String {
+    "*65".to_string()
+}
+fn default_executive_off() -> String {
+    "*66".to_string()
+}
+fn default_assistant_on() -> String {
+    "*67".to_string()
+}
+fn default_assistant_off() -> String {
+    "*68".to_string()
+}
 
 impl Default for FeatureCodeConfig {
     fn default() -> Self {
@@ -251,6 +287,12 @@ impl Default for FeatureCodeConfig {
             find_me_off: default_find_me_off(),
             hoteling_login: default_hoteling_login(),
             hoteling_logout: default_hoteling_logout(),
+            executive_push: default_executive_push(),
+            call_on_behalf: default_call_on_behalf(),
+            executive_on: default_executive_on(),
+            executive_off: default_executive_off(),
+            assistant_on: default_assistant_on(),
+            assistant_off: default_assistant_off(),
         }
     }
 }

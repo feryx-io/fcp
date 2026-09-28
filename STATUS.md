@@ -1355,6 +1355,19 @@ nodes, and an INVITE naming a held appearance takes the line's leg — on
 another node through `X-FCP-Node-Handoff`. siphon-rs gained
 `IntegratedUAC::send_request` (sip-uac 0.7.6). Proved by `calling.rs`,
 `trunks.rs` (two nodes), `line_appearances.rs` and `api_postgres.rs`.
+Phase 10 done (v0.25.285): executive-assistant — an executive's calling
+settings list their assistants (named by an admin, each opting in or out
+for themself) and which calls they take (`all`, `external`, `none`) and
+who rings (`assistants`, or with the executive). Such a call rings the
+opted-in assistants' phones with a distinct `Alert-Info` and the caller
+shown "for" the executive, the executive's ring time and no-answer
+treatment kept; a call from an assistant or pushed by one rings the
+executive. `*63` pushes the assistant's call to the executive (a
+node-run transfer), `*64<number>` calls for the executive under their
+line with the assistant's class and both users on the record, `*65`/`*66`
+and `*67`/`*68` switch the executive's handling and the assistant's
+opt-in. `/v1/me/executives`, the Calling dialog and page. Proved by
+`calling.rs`, `trunks.rs` and `api_postgres.rs`.
 
 ## Historical documents
 

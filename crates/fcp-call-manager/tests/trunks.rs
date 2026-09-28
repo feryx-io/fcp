@@ -2402,6 +2402,80 @@ async fn a_users_class_decides_what_leaves_and_under_which_caller_id() {
     stack.finish().await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_assistant_calls_for_the_executive_under_the_executives_number() {
+    use fcp_core::storage::CredentialStore;
+    use fcp_core::CallingStore;
+    let carrier = Carrier::new("behalf-carrier").await;
+    let mut stack = stack_or_skip!(&[]);
+    let acme = stack.seed.tenant_id;
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let bob = stack.seed.user("bob", "bob-pw", "1002").await;
+    stack
+        .seed
+        .trunk_with(acme, "behalf-carrier", carrier.port(), |_| {})
+        .await;
+    tokio::time::sleep(REFRESHED).await;
+    let alice_phone = stack.phone(&alice).await;
+    let alice_caller = Caller::new(acme, "alice");
+    line_and_class(&stack, &alice, "+15185550123", None).await;
+    line_and_class(&stack, &bob, "+15185550188", None).await;
+
+    // Not yet Bob's assistant: *64 is refused.
+    let refused = alice_phone
+        .call_with_headers("*64+15125559999", &alice_caller.headers())
+        .await
+        .unwrap();
+    assert_eq!(refused.failed(SOON).await, Some(403));
+
+    let storage = stack.seed.storage();
+    let id_of = |name: &'static str| async move {
+        storage
+            .get_user_in_tenant(name, &acme)
+            .await
+            .unwrap()
+            .unwrap()
+            .id
+    };
+    let mut settings = storage
+        .get_calling_settings(&acme, &id_of("bob").await)
+        .await
+        .unwrap()
+        .unwrap();
+    settings.executive = Some(fcp_core::Executive {
+        enabled: true,
+        assistants: vec![fcp_core::Assistant {
+            user_id: id_of("alice").await,
+            opted_in: true,
+        }],
+        ..Default::default()
+    });
+    storage.put_calling_settings(settings).await.unwrap();
+
+    // Now the call leaves with Bob's number.
+    let call = alice_phone
+        .call_with_headers("*64+15125559999", &alice_caller.headers())
+        .await
+        .unwrap();
+    let Some(incoming) = carrier.phone.incoming(SOON).await else {
+        let why = format!("the call on behalf never left; it is {:?}", call.phase());
+        stack.fail(&why).await;
+    };
+    assert!(
+        incoming.from.contains("+15185550188@"),
+        "From: {}",
+        incoming.from
+    );
+    assert!(
+        incoming.request_uri().contains("+15125559999"),
+        "Request-URI: {}",
+        incoming.request_uri()
+    );
+    incoming.reject(486, "Busy Here").await.unwrap();
+    assert_eq!(call.failed(SOON).await, Some(486));
+    stack.finish().await;
+}
+
 // ─── Shared call appearance across nodes (docs/ENTERPRISE_CALLING.md §3.9) ─
 
 /// Both nodes hear each other's events, which is how a line's lamps cross.

@@ -93,6 +93,7 @@ import type {
   MeMailbox,
   MeMailboxStats,
   CallingSettings,
+  MyExecutive,
   UpdateCallingRequest,
   Schedule,
   ScheduleRequest,
@@ -812,6 +813,10 @@ export const me = {
   // Calling settings (docs/ENTERPRISE_CALLING.md §3.1)
   getCalling: () => apiClient.get<CallingSettings>('/me/calling'),
   updateCalling: (data: UpdateCallingRequest) => apiClient.put<CallingSettings>('/me/calling', data),
+  /** The executives the user assists, and whether they take their calls (§3.10). */
+  getExecutives: () => apiClient.get<MyExecutive[]>('/me/executives'),
+  setExecutive: (userId: string, optedIn: boolean) =>
+    apiClient.put<void>(`/me/executives/${encodeURIComponent(userId)}`, { opted_in: optedIn }),
 
   // Conferences
   listConferences: () => apiClient.get<MeetingResponse[]>('/me/conferences'),

@@ -3150,6 +3150,122 @@ async fn queue_runtime_agents_and_stats() {
 
 // ─── Self-service (/me) ──────────────────────────────────────────────────
 
+/// Executive-assistant (`docs/ENTERPRISE_CALLING.md` §3.10): an admin
+/// names an executive's assistants, the executive sets their own handling
+/// but not who assists them, and the assistant sees and opts out of the
+/// executives they assist.
+#[tokio::test]
+async fn an_admin_names_assistants_and_the_assistant_opts_out() {
+    let app = require_app!();
+    let boss_id = app.create_user_with_role("boss", "end_user").await;
+    let aide_id = app.create_user_with_role("aide", "end_user").await;
+
+    let set = app
+        .admin(
+            Method::PUT,
+            "/api/v1/users/boss/calling",
+            Some(json!({ "executive": {
+                "enabled": true,
+                "filter": "external",
+                "assistants": ["aide"],
+            } })),
+        )
+        .await;
+    assert_eq!(set.status, StatusCode::OK, "{}", set.text);
+    assert_eq!(set.json["executive"]["filter"], "external");
+    assert_eq!(set.json["executive"]["assistants"][0]["user_id"], aide_id);
+    assert_eq!(set.json["executive"]["assistants"][0]["opted_in"], true);
+
+    // Nobody who is not a user, nor the executive themself.
+    for bad in [json!(["nobody"]), json!(["boss"])] {
+        let refused = app
+            .admin(
+                Method::PUT,
+                "/api/v1/users/boss/calling",
+                Some(json!({ "executive": { "assistants": bad } })),
+            )
+            .await;
+        assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.text);
+    }
+
+    // The executive turns it off, but cannot name assistants.
+    let boss = app.login("boss", PASSWORD).await.json["token"]
+        .as_str()
+        .expect("jwt")
+        .to_string();
+    let off = app
+        .send_as(
+            &boss,
+            Method::PUT,
+            "/api/v1/me/calling",
+            Some(json!({ "executive": { "enabled": false, "alert": "assistants_and_executive" } })),
+        )
+        .await;
+    assert_eq!(off.status, StatusCode::OK, "{}", off.text);
+    assert_eq!(off.json["executive"]["enabled"], false);
+    assert_eq!(off.json["executive"]["alert"], "assistants_and_executive");
+    assert_eq!(off.json["executive"]["assistants"][0]["user_id"], aide_id);
+    let naming = app
+        .send_as(
+            &boss,
+            Method::PUT,
+            "/api/v1/me/calling",
+            Some(json!({ "executive": { "assistants": [] } })),
+        )
+        .await;
+    assert_eq!(naming.status, StatusCode::FORBIDDEN, "{}", naming.text);
+
+    // The assistant sees the executive and opts out.
+    let aide = app.login("aide", PASSWORD).await.json["token"]
+        .as_str()
+        .expect("jwt")
+        .to_string();
+    let mine = app
+        .send_as(&aide, Method::GET, "/api/v1/me/executives", None)
+        .await;
+    assert_eq!(mine.status, StatusCode::OK, "{}", mine.text);
+    assert_eq!(mine.json[0]["user_id"], boss_id);
+    assert_eq!(mine.json[0]["username"], "boss");
+    assert_eq!(mine.json[0]["opted_in"], true);
+    let out = app
+        .send_as(
+            &aide,
+            Method::PUT,
+            &format!("/api/v1/me/executives/{boss_id}"),
+            Some(json!({ "opted_in": false })),
+        )
+        .await;
+    assert_eq!(out.status, StatusCode::NO_CONTENT, "{}", out.text);
+    let seen = app
+        .admin(Method::GET, "/api/v1/users/boss/calling", None)
+        .await;
+    assert_eq!(seen.json["executive"]["assistants"][0]["opted_in"], false);
+    // Re-naming the assistants keeps the assistant's own choice.
+    let renamed = app
+        .admin(
+            Method::PUT,
+            "/api/v1/users/boss/calling",
+            Some(json!({ "executive": { "assistants": [aide_id] } })),
+        )
+        .await;
+    assert_eq!(
+        renamed.json["executive"]["assistants"][0]["opted_in"],
+        false
+    );
+    // Not an assistant of someone else.
+    let stranger = app
+        .send_as(
+            &boss,
+            Method::PUT,
+            &format!("/api/v1/me/executives/{aide_id}"),
+            Some(json!({ "opted_in": true })),
+        )
+        .await;
+    assert_eq!(stranger.status, StatusCode::NOT_FOUND, "{}", stranger.text);
+
+    app.finish().await;
+}
+
 #[tokio::test]
 async fn self_service_profile_password_calling_and_voicemail() {
     let app = require_app!();

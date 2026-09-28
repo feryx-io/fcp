@@ -6607,7 +6607,13 @@ impl SipMessageHandler {
             .call_manager
             .get_call(&call_id)
             .and_then(|c| c.a_leg.contact);
-        let caller_display_name = extract_from_display_name(request);
+        // A call an assistant takes for an executive shows whose it is
+        // (`docs/ENTERPRISE_CALLING.md` §3.10).
+        let caller_display_name = self
+            .call_manager
+            .get_call(&call_id)
+            .and_then(|c| c.leg_display_name)
+            .or_else(|| extract_from_display_name(request));
         let caller_from_uri = extract_from_uri(request).ok().map(normalize_from_uri);
 
         // Emergency calls go out with the location's callback number (ELIN)
@@ -6970,6 +6976,14 @@ impl SipMessageHandler {
         let mut extra_headers = emergency_headers_clone.clone().unwrap_or_default();
         for (name, value) in &egress.headers {
             let _ = extra_headers.push(SmolStr::new(name), SmolStr::new(value));
+        }
+        // An executive's call rings its assistants differently (§3.10).
+        if let Some(alert) = self
+            .call_manager
+            .get_call(&call_id_clone)
+            .and_then(|c| c.leg_alert_info)
+        {
+            let _ = extra_headers.push(SmolStr::new("Alert-Info"), SmolStr::new(alert));
         }
         // A retrieve handed to the node holding the call carries the
         // appearance's handoff token (§3.9).
@@ -12079,6 +12093,12 @@ impl SipMessageHandler {
                 self.handle_hoteling_code(request, handle, call_id, false)
                     .await
             }
+            fcp_pbx::FeatureCodeAction::ExecutivePush => {
+                Box::pin(self.handle_executive_push(request, handle, call_id)).await
+            }
+            fcp_pbx::FeatureCodeAction::CallOnBehalf { target } => {
+                Box::pin(self.handle_call_on_behalf(request, handle, call_id, &target)).await
+            }
         }
     }
 
@@ -14792,6 +14812,9 @@ impl SipMessageHandler {
         let withheld = crate::class_of_service::class_for(storage, &call.tenant_id, &user)
             .await
             .is_some_and(|c| c.caller_id == fcp_core::CallerIdPolicy::Withheld);
+        // A call an assistant places for an executive leaves with the
+        // executive's line (§3.10); the assistant's class still decides.
+        let user = call.on_behalf_of.unwrap_or(user);
         let number = match storage.list_line_bindings_by_user(&user).await {
             Ok(bindings) => bindings
                 .into_iter()
@@ -15051,6 +15074,15 @@ impl SipMessageHandler {
                 ring_time,
                 treatments,
             } => {
+                // An executive's call their assistants take first (§3.10).
+                let contacts = match user_id {
+                    Some(executive) => Box::pin(self.executive_screening(
+                        request, call_id, tenant_id, &executive, &settings, &contacts,
+                    ))
+                    .await
+                    .unwrap_or(contacts),
+                    None => contacts,
+                };
                 // Find-me: the steps to ring after these phones, and the name
                 // a confirming answerer hears (§3.6).
                 let find_me_steps = settings.find_me_steps();
@@ -15214,6 +15246,314 @@ impl SipMessageHandler {
         }
     }
 
+    /// The phones a call to `executive` rings when their assistants take
+    /// it first (`docs/ENTERPRISE_CALLING.md` §3.10): every opted-in
+    /// assistant's, with the executive's own when they are alerted too.
+    /// The legs carry a distinct `Alert-Info` and show the caller "for" the
+    /// executive; the no-answer treatment stays the executive's. `None`
+    /// rings the executive as usual: the filter does not take the call, it
+    /// was pushed by an assistant or placed by one, or no assistant's
+    /// phone is up.
+    async fn executive_screening(
+        &self,
+        request: &sip_core::Request,
+        call_id: fcp_b2bua_core::CallId,
+        tenant_id: &fcp_core::TenantId,
+        executive: &fcp_core::UserId,
+        settings: &fcp_core::CallingSettings,
+        own: &[sip_registrar::Binding],
+    ) -> Option<Vec<sip_registrar::Binding>> {
+        let handling = settings.executive.as_ref()?;
+        let (storage, registrar) = (self.storage.as_ref()?, self.registrar.as_ref()?);
+        let call = self.call_manager.get_call(&call_id)?;
+        // A call an assistant pushed here rings the executive.
+        if let Some(from) = sip_parse::header(request.headers(), TRANSFERRED_FROM_HEADER) {
+            let pushed = from
+                .trim()
+                .parse::<fcp_core::CallId>()
+                .ok()
+                .map(|id| fcp_b2bua_core::CallId::from_uuid(*id.as_uuid()))
+                .and_then(|id| self.call_manager.get_call(&id))
+                .is_some_and(|c| c.executive_for == Some(*executive));
+            if pushed {
+                return None;
+            }
+        }
+        // An assistant calling their executive reaches them.
+        if call
+            .caller_user_id
+            .is_some_and(|u| handling.assistants.iter().any(|a| a.user_id == u))
+        {
+            return None;
+        }
+        if !handling.screens(call.caller_user_id.is_none()) {
+            return None;
+        }
+        let host = crate::class_of_service::uri_host(&request.uri().to_string()).to_string();
+        let domain = host.split(':').next().unwrap_or(&host).to_string();
+        let mut contacts: Vec<sip_registrar::Binding> = Vec::new();
+        for assistant in handling.opted_in() {
+            for contact in crate::ring_plan::contacts_for_user(
+                storage, registrar, tenant_id, &assistant, &domain,
+            )
+            .await
+            {
+                if !contacts.iter().any(|c| c.contact() == contact.contact()) {
+                    contacts.push(contact);
+                }
+            }
+        }
+        if contacts.is_empty() {
+            info!(call_id = %call_id, executive = %executive, "No assistant's phone is up; the executive's ring");
+            return None;
+        }
+        if handling.alert == fcp_core::ExecutiveAlert::AssistantsAndExecutive {
+            for contact in own {
+                if !contacts.iter().any(|c| c.contact() == contact.contact()) {
+                    contacts.push(contact.clone());
+                }
+            }
+        }
+        let executive_name = storage
+            .get_user_by_id(executive)
+            .await
+            .ok()
+            .flatten()
+            .map(|u| u.display_name.unwrap_or(u.username))
+            .unwrap_or_default();
+        let caller_name = extract_from_display_name(request)
+            .or_else(|| {
+                sip_parse::header(request.headers(), "From")
+                    .and_then(|from| Self::extract_did_from_uri(from.as_str()))
+            })
+            .unwrap_or_else(|| "Unknown".to_string());
+        let shown = crate::executive::for_executive(&caller_name, &executive_name);
+        info!(call_id = %call_id, executive = %executive, legs = contacts.len(), "An executive's call rings their assistants");
+        let executive = *executive;
+        let _ = self.call_manager.update_call(&call_id, |c| {
+            c.executive_for = Some(executive);
+            c.leg_alert_info = Some(crate::executive::EXECUTIVE_ALERT_INFO.to_string());
+            c.leg_display_name = Some(shown);
+        });
+        Some(contacts)
+    }
+
+    /// `*63` from an assistant (§3.10): the far party of the call they took
+    /// for an executive is sent on to the executive's own phones — a blind
+    /// transfer this node carries out, which the executive's screening
+    /// lets through — and the assistant's leg is let go once it lands.
+    async fn handle_executive_push(
+        &self,
+        request: &sip_core::Request,
+        handle: &ServerTransactionHandle,
+        call_id: &fcp_b2bua_core::CallId,
+    ) -> Result<()> {
+        let finish = |status: u16, reason: &'static str| async move {
+            let response = self.create_simple_response(request, status, reason);
+            handle.send_final(response).await;
+            let _ = self
+                .call_manager
+                .terminate_call(call_id, Some("Executive push".to_string()));
+            Ok(())
+        };
+        let (Some(storage), Some(uac)) = (self.storage.as_ref(), self.uac.clone()) else {
+            return finish(500, "Not Configured").await;
+        };
+        let dialer = sip_parse::header(request.headers(), "From")
+            .and_then(|from| Self::extract_did_from_uri(from.as_str()))
+            .unwrap_or_default();
+        // The dialer's leg of an executive's call: the phone that answered
+        // it (its dialog's remote target), or the one that placed it.
+        let is_dialer = |leg: &fcp_b2bua_core::CallLeg| {
+            let target = leg
+                .dialog
+                .as_ref()
+                .and_then(|d| d.remote_target().user().map(str::to_string));
+            target.as_deref() == Some(dialer.as_str())
+                || crate::class_of_service::uri_user(&leg.remote_uri) == dialer
+        };
+        let Some((call, side)) = self.call_manager.find_established_where(|c| {
+            c.executive_for?;
+            if c.b_leg.as_ref().is_some_and(is_dialer) {
+                Some(fcp_b2bua_core::LegSide::B)
+            } else if is_dialer(&c.a_leg) {
+                Some(fcp_b2bua_core::LegSide::A)
+            } else {
+                None
+            }
+        }) else {
+            info!(call_id = %call_id, dialer = %dialer, "Push: no executive's call to push");
+            return finish(480, "No Executive Call").await;
+        };
+        let Some(executive) = call.executive_for else {
+            return finish(480, "No Executive Call").await;
+        };
+        let dialer_user = crate::hoteling::caller_user(storage, &call.tenant_id, &dialer).await;
+        let settings = crate::ring_plan::settings_for(storage, &call.tenant_id, &executive).await;
+        if !dialer_user.is_some_and(|u| settings.assistant(&u).is_some()) {
+            info!(call_id = %call_id, dialer = %dialer, "Push refused: not the executive's assistant");
+            return finish(403, "Not an Assistant").await;
+        }
+        let Some(executive_user) = storage.get_user_by_id(&executive).await.ok().flatten() else {
+            return finish(404, "No Such Executive").await;
+        };
+        let referrer_dialog = match side {
+            fcp_b2bua_core::LegSide::A => call.a_leg.dialog.clone(),
+            fcp_b2bua_core::LegSide::B => call.b_leg.as_ref().and_then(|b| b.dialog.clone()),
+        };
+        let Some(referrer_dialog) = referrer_dialog else {
+            return finish(480, "No Executive Call").await;
+        };
+        if self.conference_migrations.insert(call.id, ()).is_some() {
+            return finish(491, "Request Pending").await;
+        }
+        let host = match self.uas.local_uri.port() {
+            Some(port) => format!("{}:{}", self.uas.local_uri.host(), port),
+            None => self.uas.local_uri.host().to_string(),
+        };
+        // Dialed back into this node as the executive's extension, so it
+        // is routed as any call to them; by name at the tenant's domain
+        // when they have none.
+        let target = match executive_user
+            .extension
+            .as_deref()
+            .filter(|e| !e.is_empty())
+        {
+            Some(extension) => format!("sip:{extension}@{host}"),
+            None => {
+                let domain = storage
+                    .get_tenant(&call.tenant_id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .and_then(|t| t.sip_domains.into_iter().next())
+                    .unwrap_or_else(|| host.clone());
+                format!("sip:{}@{domain}", executive_user.username)
+            }
+        };
+        // The executive sees the pushed party calling.
+        let caller = call.original_invite.as_ref().and_then(|invite| match side {
+            fcp_b2bua_core::LegSide::B => extract_from_uri(invite)
+                .ok()
+                .map(|uri| (extract_from_display_name(invite), normalize_from_uri(uri))),
+            fcp_b2bua_core::LegSide::A => None,
+        });
+        info!(call_id = %call.id, executive = %executive_user.username, "An assistant pushes a call to the executive");
+        let run = crate::transfer::TransferRun {
+            uac,
+            local_uri: self.uas.local_uri.clone(),
+            call_manager: self.call_manager.clone(),
+            dialog_manager: Arc::clone(&self.dialog_manager),
+            session_timer_manager: Arc::clone(&self.session_timer_manager),
+            media_manager: self.media_manager.clone(),
+            sip_call_id_map: Arc::clone(&self.sip_call_id_map),
+            in_flight: Arc::clone(&self.conference_migrations),
+            b2bua_config: self.b2bua_config.clone(),
+            local_addr: self.local_addr.clone(),
+            call_id: call.id,
+            referrer: side,
+            referrer_dialog: Some(referrer_dialog),
+            target,
+            headers: vec![(TRANSFERRED_FROM_HEADER.to_string(), call.id.to_string())],
+            caller,
+        };
+        tokio::spawn(run.run());
+        finish(200, "OK").await
+    }
+
+    /// `*64<number>` from an assistant (§3.10): the number called for the
+    /// executive they act for — the executive's caller ID at the trunk,
+    /// the assistant's class of service deciding what may be dialed, and
+    /// the record naming both.
+    async fn handle_call_on_behalf(
+        &self,
+        request: &sip_core::Request,
+        handle: &ServerTransactionHandle,
+        call_id: &fcp_b2bua_core::CallId,
+        target: &str,
+    ) -> Result<()> {
+        let refuse = |status: u16, reason: &'static str| async move {
+            let response = self.create_simple_response(request, status, reason);
+            handle.send_final(response).await;
+            let _ = self.call_manager.terminate_call_with(
+                call_id,
+                fcp_cdr::TerminationReason::rejected(status, reason),
+            );
+            Ok(())
+        };
+        let (Some(storage), Some(uac)) = (self.storage.as_ref(), self.uac.clone()) else {
+            return refuse(500, "Not Configured").await;
+        };
+        let Ok(tenant_id) = self.resolve_runtime_tenant(request, call_id).await else {
+            return refuse(403, "Tenant Context Required").await;
+        };
+        let dialer = sip_parse::header(request.headers(), "From")
+            .and_then(|from| Self::extract_did_from_uri(from.as_str()))
+            .unwrap_or_default();
+        let Some(assistant) = crate::hoteling::caller_user(storage, &tenant_id, &dialer).await
+        else {
+            return refuse(403, "Not an Assistant").await;
+        };
+        let Some(executive) =
+            crate::executive::first_executive(storage, &tenant_id, &assistant).await
+        else {
+            info!(call_id = %call_id, dialer = %dialer, "Call on behalf refused: no executive");
+            return refuse(403, "Not an Assistant").await;
+        };
+        // The number, at the host the phone dialed.
+        let host = crate::class_of_service::uri_host(&request.uri().to_string()).to_string();
+        let Ok(uri) = sip_core::SipUri::parse(&format!("sip:{target}@{host}")) else {
+            return refuse(484, "Address Incomplete").await;
+        };
+        let mut headers = request.headers().clone();
+        let _ = headers.set_or_push("To", format!("<{}>", uri.as_str()));
+        let Ok(placed) = sip_core::Request::new(
+            sip_core::RequestLine::new(sip_core::Method::Invite, uri),
+            headers,
+            request.body().clone(),
+        ) else {
+            return refuse(484, "Address Incomplete").await;
+        };
+        if let Some(refusal) = self
+            .class_of_service_refusal(&placed, &tenant_id, Some(&dialer))
+            .await
+        {
+            info!(call_id = %call_id, class = %refusal.class_name, "Call on behalf refused: {}", refusal.detail());
+            let mut response = self.create_simple_response(request, 403, "Forbidden");
+            let _ = response.headers_mut().push(
+                SmolStr::new("Reason"),
+                SmolStr::new(refusal.reason_header()),
+            );
+            handle.send_final(response).await;
+            let _ = self.call_manager.terminate_call_with(
+                call_id,
+                fcp_cdr::TerminationReason::Failed {
+                    status: Some(403),
+                    detail: refusal.detail(),
+                },
+            );
+            return Ok(());
+        }
+        info!(call_id = %call_id, executive = %executive, target, "An assistant calls for their executive");
+        let _ = self.call_manager.update_call(call_id, |c| {
+            c.on_behalf_of = Some(executive);
+            let mut data = c
+                .custom_data
+                .take()
+                .and_then(|d| d.as_object().cloned())
+                .unwrap_or_default();
+            data.insert(
+                "on_behalf_of".to_string(),
+                serde_json::json!({
+                    "executive_user_id": executive.to_string(),
+                    "assistant_user_id": assistant.to_string(),
+                }),
+            );
+            c.custom_data = Some(serde_json::Value::Object(data));
+        });
+        Box::pin(self.forward_invite_to_b_leg(&placed, handle, *call_id, uac)).await
+    }
+
     /// A calling feature code (`docs/ENTERPRISE_CALLING.md` §3.1): the
     /// caller's own settings changed and the call answered then ended, as
     /// the agent login codes do.
@@ -15263,8 +15603,34 @@ impl SipMessageHandler {
                 return finish(500, "Storage Error").await;
             }
         };
+        // An assistant's opt-in is on each executive's settings (§3.10).
+        if let fcp_pbx::CallingCode::AssistantOn | fcp_pbx::CallingCode::AssistantOff = code {
+            let on = code == fcp_pbx::CallingCode::AssistantOn;
+            return match crate::executive::set_opted_in(storage, &tenant_id, &user.id, on).await {
+                Ok(executives) if executives.is_empty() => finish(404, "Not an Assistant").await,
+                Ok(executives) => {
+                    info!(call_id = %call_id, user_id = %user.id, on, executives = executives.len(), "An assistant opted in or out");
+                    for executive in executives {
+                        self.call_manager.publish(fcp_events::PlatformEvent::User(
+                            fcp_events::UserEvent::CallingChanged {
+                                user_id: executive.to_string(),
+                                username: String::new(),
+                                tenant_id,
+                                timestamp: std::time::SystemTime::now(),
+                            },
+                        ));
+                    }
+                    finish(200, "OK").await
+                }
+                Err(e) => {
+                    error!(call_id = %call_id, error = %e, "An assistant's opt-in not stored");
+                    finish(500, "Storage Error").await
+                }
+            };
+        }
         let mut settings = crate::ring_plan::settings_for(storage, &tenant_id, &user.id).await;
         let target = |dialed: &str| fcp_core::CallTarget::parse(dialed);
+        let executive_on = code == fcp_pbx::CallingCode::ExecutiveOn;
         use fcp_pbx::CallingCode::*;
         let changed: Result<(), fcp_core::CallTargetError> = match code {
             DndOn => {
@@ -15313,6 +15679,20 @@ impl SipMessageHandler {
                 }
                 Ok(())
             }
+            ExecutiveOn | ExecutiveOff => {
+                if settings
+                    .executive
+                    .as_ref()
+                    .is_none_or(|e| e.assistants.is_empty())
+                {
+                    return finish(404, "No Assistants").await;
+                }
+                if let Some(executive) = settings.executive.as_mut() {
+                    executive.enabled = executive_on;
+                }
+                Ok(())
+            }
+            AssistantOn | AssistantOff => Ok(()),
         };
         if let Err(e) = changed {
             warn!(call_id = %call_id, caller = %caller, error = %e, "Calling code with a bad target");

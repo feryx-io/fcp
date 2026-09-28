@@ -1116,6 +1116,106 @@ pub async fn update_my_calling(
     )))
 }
 
+/// An executive the user assists (`docs/ENTERPRISE_CALLING.md` §3.10).
+#[derive(Debug, Serialize)]
+pub struct MyExecutive {
+    pub user_id: String,
+    pub username: String,
+    pub display_name: Option<String>,
+    /// Whether the user takes this executive's calls.
+    pub opted_in: bool,
+    /// Whether the executive has their assistants' handling on.
+    pub enabled: bool,
+    pub filter: fcp_core::ExecutiveFilter,
+}
+
+/// GET /me/executives — the executives the user assists.
+pub async fn get_my_executives(
+    State(state): State<ApiState>,
+    req: axum::extract::Request,
+) -> Result<impl IntoResponse, ApiError> {
+    use fcp_core::CallingStore;
+    let claims = extract_claims(&req, &state)?;
+    let storage = require_storage!(state);
+    let user = load_claims_user(storage, &claims, &state).await?;
+    let mut executives = Vec::new();
+    for settings in storage
+        .list_calling_settings(&user.tenant_id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+    {
+        let (Some(executive), Some(me)) = (&settings.executive, settings.assistant(&user.id))
+        else {
+            continue;
+        };
+        let Some(row) = storage.get_user_by_id(&settings.user_id).await? else {
+            continue;
+        };
+        executives.push(MyExecutive {
+            user_id: row.id.to_string(),
+            username: row.username,
+            display_name: row.display_name,
+            opted_in: me.opted_in,
+            enabled: executive.enabled,
+            filter: executive.filter,
+        });
+    }
+    executives.sort_by(|a, b| a.username.cmp(&b.username));
+    Ok(Json(executives))
+}
+
+/// What an assistant changes of their own part in an executive's handling.
+#[derive(Debug, Deserialize)]
+pub struct UpdateMyExecutive {
+    pub opted_in: bool,
+}
+
+/// PUT /me/executives/:user_id — take an executive's calls, or not.
+pub async fn update_my_executive(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Path(executive_id): Path<String>,
+    Json(body): Json<UpdateMyExecutive>,
+) -> Result<impl IntoResponse, ApiError> {
+    use fcp_core::CallingStore;
+    let claims = extract_claims_from_headers(&headers, &state)?;
+    let storage = require_storage!(state);
+    let user = load_claims_user(storage, &claims, &state).await?;
+    let executive_id = executive_id
+        .parse::<fcp_core::UserId>()
+        .map_err(|_| ApiError::BadRequest(format!("not a user id: {executive_id}")))?;
+    let not_found = || ApiError::NotFound("Not an assistant of that user".to_string());
+    let mut settings = storage
+        .get_calling_settings(&user.tenant_id, &executive_id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or_else(not_found)?;
+    let assistant = settings
+        .executive
+        .as_mut()
+        .and_then(|e| e.assistants.iter_mut().find(|a| a.user_id == user.id))
+        .ok_or_else(not_found)?;
+    assistant.opted_in = body.opted_in;
+    settings.updated_at = std::time::SystemTime::now();
+    storage
+        .put_calling_settings(settings)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    tracing::info!(assistant = %user.username, executive = %executive_id, opted_in = body.opted_in, "An assistant opted in or out");
+    let _ = state
+        .event_bus
+        .publish(fcp_events::PlatformEvent::User(
+            fcp_events::UserEvent::CallingChanged {
+                user_id: executive_id.to_string(),
+                username: String::new(),
+                tenant_id: user.tenant_id,
+                timestamp: std::time::SystemTime::now(),
+            },
+        ))
+        .await;
+    Ok(axum::http::StatusCode::NO_CONTENT)
+}
+
 /// GET /me/hoteling — the host phone the user is logged in on, or `null`
 /// (`docs/ENTERPRISE_CALLING.md` §3.8).
 pub async fn get_my_hoteling(

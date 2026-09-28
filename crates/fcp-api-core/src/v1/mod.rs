@@ -168,6 +168,11 @@ pub fn router() -> Router<ApiState> {
             "/me/calling",
             get(self_service::get_my_calling).put(self_service::update_my_calling),
         )
+        .route("/me/executives", get(self_service::get_my_executives))
+        .route(
+            "/me/executives/:user_id",
+            axum::routing::put(self_service::update_my_executive),
+        )
         .route(
             "/me/hoteling",
             get(self_service::get_my_hoteling).delete(self_service::logout_my_hoteling),

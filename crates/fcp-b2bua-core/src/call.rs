@@ -564,6 +564,20 @@ pub struct Call {
     /// is the line's (`docs/ENTERPRISE_CALLING.md` §3.9).
     pub appearance: Option<CallAppearance>,
 
+    /// The executive whose assistants this call rings first
+    /// (`docs/ENTERPRISE_CALLING.md` §3.10): what an assistant's push
+    /// reads, and what spares the pushed call the screening.
+    pub executive_for: Option<fcp_core::UserId>,
+
+    /// What the legs this call rings carry: an `Alert-Info` for a distinct
+    /// ring, and the caller's name as shown ("… for <executive>").
+    pub leg_alert_info: Option<String>,
+    pub leg_display_name: Option<String>,
+
+    /// The executive an assistant placed this call for: whose caller ID it
+    /// leaves with (§3.10).
+    pub on_behalf_of: Option<fcp_core::UserId>,
+
     /// Caller's phone number or extension.
     pub caller_number: Option<String>,
 
@@ -668,6 +682,10 @@ impl Call {
             treatments: None,
             held: None,
             appearance: None,
+            executive_for: None,
+            leg_alert_info: None,
+            leg_display_name: None,
+            on_behalf_of: None,
             caller_user_id: None,
             find_me_steps: Vec::new(),
             confirm_targets: Vec::new(),
@@ -780,6 +798,10 @@ impl Call {
             treatments: None,
             held: None,
             appearance: None,
+            executive_for: None,
+            leg_alert_info: None,
+            leg_display_name: None,
+            on_behalf_of: None,
             caller_user_id: None,
             find_me_steps: Vec::new(),
             confirm_targets: Vec::new(),

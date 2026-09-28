@@ -820,6 +820,57 @@ service. `*65`/`*66`: the executive opts in and out of assistant
 handling; `*67`/`*68`: an assistant opts in and out. Self-service pages for
 both roles; admin sets the relation on the user's Calling tab.
 
+#### 3.10.1 As built (phase 10, v0.25.285)
+
+**The relation** lives on the executive's calling settings, not in a
+table of its own: `executive: { enabled, filter, alert, assistants: [{
+user_id, opted_in }] }` in `user_calling_settings` (no migration; it is
+synced to sites with the row). An admin names the assistants, in order,
+by username or id (`PUT /v1/users/:username/calling`, re-naming keeps each
+one's opt-in); the executive sets `enabled`, `filter` and `alert` at
+`/v1/me/calling` but not who assists them (403); the assistant sees the
+executives they assist at `GET /v1/me/executives` and opts in or out of
+one at `PUT /v1/me/executives/:user_id`. At most ten assistants, none
+twice, never the executive. Which executives a user assists is a scan of
+the tenant's settings (`fcp_sip::executive`), asked by a feature code or
+a page and never by a call being routed.
+
+**Screening.** When the executive's plan would ring
+(`ring_by_plan`), `executive_screening` rings every opted-in assistant's
+phones instead — and the executive's too under
+`assistants_and_executive` — when the handling is on, the filter takes
+the call (`external`: the caller is no user of the tenant) and some
+assistant's phone is up. The legs carry `Alert-Info:
+<http://127.0.0.1/executive>;info=executive` for a distinct ring and show
+the caller as "<caller> for <executive>"; the ring time and the no-answer
+treatment stay the executive's. A call from one of the assistants, and a
+call an assistant pushed, ring the executive.
+
+**Codes.** `*63` from an assistant finds the executive's call they
+answered (by their leg's dialog, not the dialed address) and has the node
+carry out a blind transfer of the far party to the executive's extension
+(`TransferRun`, `X-FCP-Transferred-From` naming the call, which is what
+spares it the screening); the assistant is let go once the executive
+answers. `*64<number>` places the number for the executive the assistant
+serves (the first, by username, they are opted in for): the assistant's
+class of service decides what may be dialed, the executive's line is the
+caller ID at the trunk (`Call.on_behalf_of` in `caller_presentation`),
+and the record's `custom_data.on_behalf_of` names both users. `*65`/`*66`
+turn the executive's handling on and off (404 with no assistants);
+`*67`/`*68` opt the assistant in and out for every executive listing
+them (404 for a user who assists nobody).
+
+**Pages.** The user's Calling dialog (admin) and Calling page (self)
+carry the handling: on/off, which calls, who rings, and — for an admin —
+the assistants. The Calling page lists the executives the user assists
+with a switch each.
+
+Deviations: no `executive_assistants` table (above); a call to an
+executive whose phones are all down is not screened (the unreachable
+treatment applies); the executive's BLF shows the call as the assistant
+answering it, not as the executive's; the executive a `*64` call is for
+cannot be chosen at the phone.
+
 ### 3.11 Monitor, whisper and barge on any call
 
 `fcp-media` sessions gain a third participant: `add_party(call_id, offer,
@@ -850,7 +901,7 @@ feature crosses nodes, in the two-node cluster harness.
 | 7 | ✅ v0.25.282 — **Class of service** (§3.7). The entity, classification, enforcement for the effective user, find-me legs and call-on-behalf, the number's screening lists, the line's caller ID applied, the pages. Tests: a premium number refused for one user and placed for another, a withheld caller ID, a blocked caller. As built (§3.7.1): classification by the tenant's country (US, CA, GB, DE, FR, AU, NZ) and overrides, `classes_of_service` and the tenant's `calling` (migration 084), placed calls, forwards and find-me steps checked, `max_calls` both ways, the number's screening (433/603), the line's caller ID and `withheld` at trunk egress, `/v1/classes-of-service` and its page. Call-on-behalf waits for phase 10. Test: `calling.rs`, `trunks.rs`, `api_postgres.rs`. |
 | 8 | ✅ v0.25.283 — **Hoteling** (§3.8). Device credentials and the registrar's check, hosts, sessions, login and logout by DTMF, `check-sync`, the effective user in every path, expiry, the API and pages. Tests: a guest logs in on a host phone, is rung there and calls out as themself, expires. As built (§3.8.1): device credentials sealed at rest and one "may act as" rule for REGISTER and INVITE, `hoteling_sessions` (migration 085) with one guest per host, `*88` through an inline flow's `HotelingLogin` node and `*89`, `check-sync` and MWI to the host, the sweep, the effective user for the caller, the class of service, the calling codes and `*98`, the ring plan and presence, `/v1/hoteling/sessions`, `/v1/me/hoteling` and the Hoteling page. Tests: `calling.rs` (a login after a wrong PIN, the guest rung at the host and calling there under their class and codes, `*89`, a session run out, credentials registering only what is theirs) and `api_postgres.rs`. |
 | 9 | ✅ v0.25.284 — **Shared call appearance** (§3.9). Shared lines, second-account templates, the appearance table, `call-info` and `line-seize`, retrieve from another phone, the testkit phone's packages. Tests: two phones on one line, lamps through seize, alert, active and held, retrieve on the other phone; lamps right across two nodes. As built (§3.9.1): `shared`/`max_appearances` on the line binding (migration 086), the second account in provisioning and the four templates, the appearance table in memory or Redis (`fcp:sca:…`, one Lua claim), `call-info` NOTIFYs inside the subscription and `line-seize`, the call manager's appearance hook and `line.appearance_changed`, a retrieve by `Call-Info` taking the line's leg, handed to the owning node with `X-FCP-Node-Handoff` (siphon-rs `IntegratedUAC::send_request`, sip-uac 0.7.6). Tests: `calling.rs` (two phones, lamps, hold and retrieve, seize, a full line), `trunks.rs` (lamps and a retrieve across two nodes), `line_appearances.rs`, `api_postgres.rs`. |
-| 10 | **Executive-assistant** (§3.10). The relation, the filter and the plan, push, call on behalf, opt-in codes, the pages. Tests: an external call to the executive rings the assistant, pushed to the executive, a call placed on behalf. |
+| 10 | ✅ v0.25.285 — **Executive-assistant** (§3.10). The relation, the filter and the plan, push, call on behalf, opt-in codes, the pages. Tests: an external call to the executive rings the assistant, pushed to the executive, a call placed on behalf. As built (§3.10.1): the relation on the executive's calling settings (no table), screening in the plan with a distinct ring and "for <executive>", `*63` push as a node-run transfer, `*64` on behalf under the executive's line and the assistant's class with the record naming both, `*65`–`*68`, `/v1/me/executives` and the pages. Tests: `calling.rs` (screen, push, the four switches, the filter), `trunks.rs` (a call on behalf at the carrier), `api_postgres.rs`. |
 | 11 | **Monitor, whisper and barge** (§3.11). The third party in forge-engine (a forge-media release), the API, the queue's supervisor path moved, barge-in on an appearance. Tests: a supervisor hears both parties, a whisper heard by one, the queue supervisor tests still passing. |
 
 ## 5. Questions

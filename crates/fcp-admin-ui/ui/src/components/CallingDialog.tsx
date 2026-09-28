@@ -32,6 +32,11 @@ export function CallingDialog({ user, onOpenChange }: { user: User | null; onOpe
     queryFn: classesOfService.list,
     enabled: !!user,
   })
+  const people = useQuery({
+    queryKey: ['users'],
+    queryFn: users.list,
+    enabled: !!user,
+  })
   const mutation = useMutation({
     mutationFn: (data: UpdateCallingRequest) => users.updateCalling(username, data),
     onSuccess: (updated) => {
@@ -64,6 +69,7 @@ export function CallingDialog({ user, onOpenChange }: { user: User | null; onOpe
             message={message}
             schedules={(scheduleList.data ?? []).map((s) => ({ id: s.id, name: s.name }))}
             classes={(classList.data ?? []).map((c) => ({ id: c.id, name: c.name, is_default: c.is_default }))}
+            people={(people.data ?? []).map((u) => ({ id: u.id, name: u.display_name || u.username }))}
             holdMusicPrompts={(music.data ?? []).map((p) => ({ id: p.id, name: `${p.name} (${p.category})` }))}
           />
         )}
