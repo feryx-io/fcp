@@ -1004,7 +1004,10 @@ registration decides now); a user without a device row was unreachable
 contact's CANCEL before relaying the answer (losers cancelled in their
 own tasks); and every service inserting the first data encryption key
 at once on first boot (made under an advisory lock now, and the five
-health checks without a start period have one).
+health checks without a start period have one). Phase 3 done (v0.25.287): a test's Redis database is emptied when the
+testkit hands it out (`private_redis_url`), so what one test binary left
+reaches no other; a binary asking for more than the fifteen databases is
+refused.
 
 ## What is next (chosen 2026-09-25, to follow the nightly stack)
 

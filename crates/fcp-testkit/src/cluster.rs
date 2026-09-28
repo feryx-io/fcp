@@ -15,20 +15,39 @@ use std::time::Duration;
 /// The secret every node of a test cluster shares (`cluster.secret`).
 pub const CLUSTER_SECRET: &str = "e2e-cluster-secret";
 
-/// A Redis logical database (1–15) of this test's own: a random base
-/// per process, then one per test, so membership and the registry never
-/// see another test's nodes. `None` without `FCP_TEST_REDIS_URL`.
+/// A Redis logical database (1–15) of this test's own, emptied before it
+/// is handed out: a random base per process, then one per acquisition,
+/// so membership, the registry and the streams never see another test's
+/// nodes or records (`docs/NIGHTLY_STACK.md` §1.3). `None` without
+/// `FCP_TEST_REDIS_URL`.
+///
+/// The flush is safe because cargo runs test binaries one at a time, so
+/// whatever is in the database was left by an earlier binary; within a
+/// binary the indexes are distinct, and a binary that asks for more than
+/// the fifteen there are is refused rather than handed one in use.
 pub fn private_redis_url() -> Option<String> {
     static BASE: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
     static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let redis = std::env::var("FCP_TEST_REDIS_URL").ok()?;
     let base = *BASE.get_or_init(|| (uuid::Uuid::new_v4().as_u128() % 15) as u32);
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    Some(format!(
-        "{}/{}",
-        redis.trim_end_matches('/'),
-        1 + (base + n) % 15
-    ))
+    assert!(
+        n < 15,
+        "a test binary asked for a sixteenth private Redis database; there are fifteen"
+    );
+    Some(emptied(&redis, 1 + (base + n) % 15))
+}
+
+/// Database `index` of the Redis at `redis`, flushed; its URL.
+fn emptied(redis: &str, index: u32) -> String {
+    let url = format!("{}/{index}", redis.trim_end_matches('/'));
+    let flushed = redis::Client::open(url.as_str())
+        .and_then(|client| client.get_connection())
+        .and_then(|mut conn| redis::cmd("FLUSHDB").query::<()>(&mut conn));
+    if let Err(e) = flushed {
+        panic!("the test's Redis database {index} could not be emptied: {e}");
+    }
+    url
 }
 
 /// The heartbeat record a node wrote under `cluster:node:<node_id>` in
@@ -299,5 +318,39 @@ format = "compact"
                 s.stop().await;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod private_redis_tests {
+    use super::*;
+
+    /// Two acquisitions are two databases, and each is empty when handed
+    /// out, whatever an earlier binary left there.
+    #[test]
+    fn a_tests_redis_is_its_own_and_empty() {
+        let Ok(redis) = std::env::var("FCP_TEST_REDIS_URL") else {
+            eprintln!("skipped: FCP_TEST_REDIS_URL is not set");
+            return;
+        };
+        let first = private_redis_url().unwrap();
+        let second = private_redis_url().unwrap();
+        assert_ne!(first, second, "two acquisitions, two databases");
+
+        // What an earlier binary left in a database...
+        let index: u32 = first.rsplit('/').next().unwrap().parse().unwrap();
+        let mut conn = redis::Client::open(first.as_str())
+            .unwrap()
+            .get_connection()
+            .unwrap();
+        let _: () = redis::cmd("SET")
+            .arg("fcp:cdrs:left-behind")
+            .arg("1")
+            .query(&mut conn)
+            .unwrap();
+        // ...is gone when the database is handed out again.
+        emptied(&redis, index);
+        let size: u64 = redis::cmd("DBSIZE").query(&mut conn).unwrap();
+        assert_eq!(size, 0);
     }
 }

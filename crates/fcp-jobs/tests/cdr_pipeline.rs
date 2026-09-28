@@ -174,21 +174,6 @@ async fn records_cross_the_stream_to_the_processor_rated_charged_once_and_announ
         eprintln!("skipped: FCP_TEST_DATABASE_URL or FCP_TEST_REDIS_URL is not set");
         return;
     };
-    // The stream is `fcp:cdrs` in whichever Redis database this test
-    // was given, and an earlier test binary's call manager may have left
-    // records on it (every node writes under the one prefix); the
-    // processor would store and charge them here. Start from an empty
-    // stream — test binaries run one at a time, so nothing else is
-    // writing it now.
-    {
-        let client = redis::Client::open(redis.as_str()).unwrap();
-        let mut conn = client.get_multiplexed_async_connection().await.unwrap();
-        let _: () = redis::cmd("DEL")
-            .arg("fcp:cdrs")
-            .query_async(&mut conn)
-            .await
-            .unwrap();
-    }
     let dir = tempfile::tempdir().unwrap();
     let seed = Seed::new(db.url(), REALM).await;
     let alice_user = seed.user("alice", "alice-pw", "1001").await;
