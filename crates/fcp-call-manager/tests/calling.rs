@@ -1426,9 +1426,10 @@ async fn a_flow_branches_on_a_schedule() {
     call.hangup().await.unwrap();
     let _ = answered.ended(SOON).await;
 
-    // Closed: the flow hangs up without dialing.
+    // Closed: the flow hangs up without dialing. It answers and hangs up at
+    // once, so the phone may see the hangup before the answer settles.
     let call = alice.call("+15125550822").await.unwrap();
-    call.answered(SOON).await.expect("the flow answers");
+    let _ = call.answered(SOON).await;
     assert!(call.ended(SOON).await, "the closed branch did not hang up");
     assert!(
         bob_phone
