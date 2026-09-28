@@ -1340,6 +1340,21 @@ it. `/v1/hoteling/sessions`, `/v1/me/hoteling`, the Hoteling page, the
 device dialog's owner, host and credentials. Proved by `calling.rs` and
 `api_postgres.rs`. The CDR carries the host's `From` (it has no user);
 MWI reaches the host at login only.
+Phase 9 done (v0.25.284): shared call appearance, BroadSoft flavour — a
+user's line may be `shared` with `max_appearances` (migration 086); its
+devices register the number as an account of their own, rendered as each
+device's second account by provisioning and the four starter templates.
+Appearances live in the node's memory or, with a cluster, a Redis hash per
+line claimed by one Lua script; phones watch them with `call-info`
+(NOTIFYs inside the subscription with `Call-Info`) and claim one with
+`line-seize`. A call to the line rings every phone at the lowest free
+appearance (486 when full), a call from it takes the phone's seize or the
+index it names, the lamps follow alerting, active, held and idle through
+the call manager's appearance hook and `line.appearance_changed` across
+nodes, and an INVITE naming a held appearance takes the line's leg — on
+another node through `X-FCP-Node-Handoff`. siphon-rs gained
+`IntegratedUAC::send_request` (sip-uac 0.7.6). Proved by `calling.rs`,
+`trunks.rs` (two nodes), `line_appearances.rs` and `api_postgres.rs`.
 
 ## Historical documents
 

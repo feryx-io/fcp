@@ -6,7 +6,8 @@ use axum::{
     http::{header, HeaderMap, StatusCode},
     response::IntoResponse,
 };
-use fcp_core::{storage::DeviceStore, CredentialStore, Device, HotelingStore};
+use fcp_core::storage::{DeviceStore, LineBindingStore, PhoneNumberStore};
+use fcp_core::{CredentialStore, Device, HotelingStore};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
@@ -283,6 +284,43 @@ pub async fn auto_provision(
         vars.insert("effective_user_id".to_string(), user.id.to_string());
     }
     vars.insert("hoteling_guest".to_string(), session.is_some().to_string());
+
+    // A shared line the device is on renders as its second account
+    // (`docs/ENTERPRISE_CALLING.md` §3.9): the line's number as the
+    // address, the device's credentials, the line's appearances as keys.
+    // A device on none gets the account turned off, so a template never
+    // shows a placeholder.
+    let shared = storage
+        .list_line_bindings_by_device(&device.id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .into_iter()
+        .find(|b| b.shared && b.tenant_id == device.tenant_id);
+    let shared_number = match &shared {
+        Some(binding) => storage
+            .get_phone_number(&binding.phone_number_id)
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+            .map(|n| n.e164),
+        None => None,
+    };
+    match (shared, shared_number) {
+        (Some(binding), Some(number)) => {
+            vars.insert("shared_line_enabled".to_string(), "1".to_string());
+            vars.insert("shared_line_yes_no".to_string(), "Yes".to_string());
+            vars.insert("shared_line_number".to_string(), number);
+            vars.insert(
+                "shared_line_appearances".to_string(),
+                binding.max_appearances.to_string(),
+            );
+        }
+        _ => {
+            vars.insert("shared_line_enabled".to_string(), "0".to_string());
+            vars.insert("shared_line_yes_no".to_string(), "No".to_string());
+            vars.insert("shared_line_number".to_string(), String::new());
+            vars.insert("shared_line_appearances".to_string(), "0".to_string());
+        }
+    }
 
     // Add SIP server info
     vars.insert("sip_server".to_string(), state.realm.clone());

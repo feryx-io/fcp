@@ -44,6 +44,9 @@ pub struct LineBindingResponse {
     pub schedule_id: Option<String>,
     pub closed_target: Option<String>,
     pub holiday_target: Option<String>,
+    /// A shared line and its appearances (`docs/ENTERPRISE_CALLING.md` §3.9).
+    pub shared: bool,
+    pub max_appearances: u8,
     pub created_at: SystemTime,
     pub updated_at: SystemTime,
 }
@@ -98,6 +101,8 @@ impl From<LineBinding> for LineBindingResponse {
             schedule_id: binding.schedule_id.map(|id| id.to_string()),
             closed_target: binding.closed_target.map(|t| t.to_string()),
             holiday_target: binding.holiday_target.map(|t| t.to_string()),
+            shared: binding.shared,
+            max_appearances: binding.max_appearances,
             created_at: binding.created_at,
             updated_at: binding.updated_at,
         }
@@ -121,6 +126,10 @@ pub struct CreateLineBindingRequest {
     /// `queue:…`, a SIP URI); empty clears it.
     pub closed_target: Option<String>,
     pub holiday_target: Option<String>,
+    /// A shared line: its devices share its appearances (§3.9).
+    pub shared: Option<bool>,
+    /// How many calls a shared line carries at once (1 to 24).
+    pub max_appearances: Option<u8>,
 }
 
 fn default_tenant_id() -> TenantId {
@@ -153,6 +162,10 @@ pub struct UpdateLineBindingRequest {
     /// `queue:…`, a SIP URI); empty clears it.
     pub closed_target: Option<String>,
     pub holiday_target: Option<String>,
+    /// A shared line: its devices share its appearances (§3.9).
+    pub shared: Option<bool>,
+    /// How many calls a shared line carries at once (1 to 24).
+    pub max_appearances: Option<u8>,
 }
 
 /// List line bindings.
@@ -279,6 +292,7 @@ pub async fn create_line_binding(
         req.holiday_target,
     )
     .await?;
+    apply_shared_fields(&mut binding, req.shared, req.max_appearances)?;
 
     // Store the line binding
     storage
@@ -362,6 +376,7 @@ pub async fn update_line_binding(
         req.holiday_target,
     )
     .await?;
+    apply_shared_fields(&mut binding, req.shared, req.max_appearances)?;
 
     // Update timestamp
     binding.updated_at = std::time::SystemTime::now();
@@ -470,6 +485,34 @@ async fn apply_schedule_fields(
     }
     if let Some(t) = holiday_target {
         binding.holiday_target = optional_target("holiday_target", &t)?;
+    }
+    Ok(())
+}
+
+/// The shared-line fields of a request, each applied when given
+/// (`docs/ENTERPRISE_CALLING.md` §3.9). Only a user's line is shared: a
+/// flow's or a conference's number has no appearances to share.
+fn apply_shared_fields(
+    binding: &mut LineBinding,
+    shared: Option<bool>,
+    max_appearances: Option<u8>,
+) -> Result<(), ApiError> {
+    if let Some(n) = max_appearances {
+        if !(1..=fcp_core::line_binding::MAX_APPEARANCES_LIMIT).contains(&n) {
+            return Err(ApiError::BadRequest(format!(
+                "max_appearances must be 1 to {}",
+                fcp_core::line_binding::MAX_APPEARANCES_LIMIT
+            )));
+        }
+        binding.max_appearances = n;
+    }
+    if let Some(shared) = shared {
+        if shared && binding.binding_type != BindingType::User {
+            return Err(ApiError::BadRequest(
+                "only a user's line can be shared".to_string(),
+            ));
+        }
+        binding.shared = shared;
     }
     Ok(())
 }

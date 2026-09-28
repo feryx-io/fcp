@@ -141,6 +141,22 @@ impl<'a> Claims<'a> {
 
     /// Whether this one header survives despite the peer being untrusted.
     fn believable(&self, request: &Request, name: &str) -> bool {
+        // A shared line's phone names the appearance it calls from or picks
+        // up (`docs/ENTERPRISE_CALLING.md` §3.9). That is the phone's to
+        // say — the node checks it against the line's appearances — and is
+        // never passed to another leg; it forces no answer.
+        if name.eq_ignore_ascii_case("Call-Info") {
+            let values = request.headers().get_all(name);
+            let mut any = false;
+            for value in values {
+                let value = value.to_ascii_lowercase();
+                if !value.contains("appearance-index") || value.contains("answer-after") {
+                    return false;
+                }
+                any = true;
+            }
+            return any;
+        }
         if !name.eq_ignore_ascii_case(crate::handler::TRANSFERRED_FROM_HEADER)
             && !name.eq_ignore_ascii_case(crate::handler::FORWARDED_FOR_HEADER)
         {
@@ -158,6 +174,23 @@ impl<'a> Claims<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A phone naming its appearance keeps it; one asking the far end to
+    /// answer by itself does not, even beside one.
+    #[test]
+    fn an_appearance_is_the_phones_to_name_and_an_auto_answer_is_not() {
+        let claims = Claims::from(PeerTrust::Untrusted);
+        let seizing = request(&["Call-Info: <sip:10.0.0.1>;appearance-index=2"]);
+        assert!(claims.strip(&seizing).is_none());
+        let forcing = request(&[
+            "Call-Info: <sip:10.0.0.1>;appearance-index=2",
+            "Call-Info: <sip:10.0.0.1>;answer-after=0",
+        ]);
+        let stripped = claims.strip(&forcing).expect("stripped");
+        assert!(!has(&stripped, "Call-Info"));
+        let sneaking = request(&["Call-Info: <sip:10.0.0.1>;appearance-index=2;answer-after=0"]);
+        assert!(claims.strip(&sneaking).is_some());
+    }
 
     /// A request carrying `headers`, each a `Name: value` line.
     fn request(headers: &[&str]) -> Request {

@@ -727,6 +727,81 @@ over SIP with `X-FCP-Node-Handoff` (§5 Q9). Barge-in on an active
 appearance is §3.11. The `shared_line` toggle appears on the line binding
 page; the testkit phone learns `call-info`, `line-seize` and `Call-Info`.
 
+#### 3.9.1 As built (phase 9, v0.25.284)
+
+**The line.** A user's line binding may be `shared` with
+`max_appearances` (1 to 24, default 4; migration 086, synced to sites
+with the binding). Every device bound to it registers the number as an
+account of its own: with the device's own credentials (§3.8.1), or the
+owner's, since one "may act as" rule already lets both be the line.
+Provisioning renders the account as the device's second
+(`${shared_line_enabled}`, `${shared_line_yes_no}`,
+`${shared_line_number}`, `${shared_line_appearances}`; set to off on a
+device on no shared line so nothing is left unrendered), and the four
+starter templates carry it: Yealink `account.2.shared_line = 1`, Polycom
+`reg.2.type="shared"` with `reg.2.lineKeys`, Cisco `Share_Ext_2_` and
+`Shared_User_ID_2_`, Grandstream account 2 with its SCA switch left to
+the operator (its P-value differs between models). The API refuses
+`shared` on a binding that is not a user's; the line binding dialog sets
+both fields and the list shows the line shared.
+
+**The table.** Appearances live in an `AppearanceTable`
+(`fcp_sip::sca`): the node's memory, or — with a cluster — one Redis hash
+per line, `fcp:sca:<tenant>:<line>`, index → appearance
+(`fcp_cluster::LineAppearances`), claimed by one Lua script so two nodes
+cannot take an index. An appearance names its owner (`call:<id>` or
+`seize:<SIP Call-ID>`), state, node, the node's SIP URI, a handoff token,
+the phone and the far party, and carries its own expiry: a seize lapses
+in at most 30 seconds, a call's half an hour after its node last
+refreshed it (every five minutes), so a dead node frees its keys.
+
+**Subscriptions.** A SUBSCRIBE for `call-info` or `line-seize` goes to
+the node's `Sca` before presence. The line is found by the Request-URI's
+number; the subscriber must be the line (its `From`), with credentials
+that may be it when `auth_invites` is on (challenged as an INVITE is).
+`call-info` watchers are kept per node and sent NOTIFYs inside their
+subscription (their Call-ID and tags, our CSeq) — `Call-Info` with each
+appearance's `appearance-index`, `appearance-state` and `appearance-uri`,
+then `appearance-index=*;appearance-state=idle` — and no body.
+`line-seize` claims the index its `Call-Info` names (or the phone's own
+seize, or the lowest free), 480 when taken; the phone is sent a
+`line-seize` NOTIFY and every watcher the seize. Ending it frees an index
+the call did not take.
+
+**Calls.** The call manager's appearance hook
+(`CallManager::set_on_appearance_changed`) tells the node every change to
+a call's `CallAppearance`: progressing (a call from the line) or alerting
+(to it) until answered, active, held when the line's phone holds the far
+party (not when the far party holds the line), gone when it ends or is
+parked away. Changes are written in order by one task and announced as
+`line.appearance_changed`; the node's own watchers are told at once,
+every other node's when the event reaches them (so a cluster needs
+`[events] use_redis`, and the node warns without it). A call to the
+line claims the lowest free appearance once the owner's plan rings the
+line's phones (the phones registered at the number are added to the
+binding's contacts), and a full line is 486. A call from the line takes
+the appearance its INVITE's `Call-Info` names, the phone's seize, or the
+lowest free; an index another phone seized, or one in use, is 403; the
+appearance never reaches the far party. A phone's `Call-Info` naming an
+appearance is believed from an untrusted peer (`claims.rs`); one asking
+for an auto-answer is not.
+
+**Retrieve.** An INVITE from the line naming a held appearance takes the
+line's leg of that call (`take_over_leg`, as `Replaces` does): the far
+party comes off hold to the new phone, the phone that held it is sent a
+BYE. When the call is on another node, the INVITE's B-leg goes to that
+node's SIP URI carrying `X-FCP-Node-Handoff` with the appearance's token;
+the owning node takes it before any tenant, auth or routing work — the
+token, which only a node that read the table can know, stands for the
+phone's credentials, which the first node checked — and the call runs
+through both nodes.
+
+Deviations: the owner's plan decides whether a shared line rings (DND,
+forwards and call waiting are the owner's); the devices' INVITEs are not
+given the appearance index (phones take it from the lamps); no barge-in
+or private hold (§3.11, §7); an appearance's live state is not in the
+API; pickup by `Replaces` from a BLF key stays as §3.2.1 left it.
+
 ### 3.10 Executive-assistant
 
 `executive_assistants` (migration 084): `executive_user_id`,
@@ -774,7 +849,7 @@ feature crosses nodes, in the two-node cluster harness.
 | 6 | ✅ v0.25.281 — **Find-me / follow-me** (§3.6). Steps, external legs with confirmation, `Diversion`, the page. Tests: a sequential ring reaching a trunk stub that must press 1. As built (§3.6.1): steps after the user's phones (or instead of them when none is up), each forked with its own ring time; confirmation by a prompt to the answering leg alone and one digit; `*60`/`*61`; the Calling page's editor. The `Diversion` header is not sent. Test: `calling.rs`. |
 | 7 | ✅ v0.25.282 — **Class of service** (§3.7). The entity, classification, enforcement for the effective user, find-me legs and call-on-behalf, the number's screening lists, the line's caller ID applied, the pages. Tests: a premium number refused for one user and placed for another, a withheld caller ID, a blocked caller. As built (§3.7.1): classification by the tenant's country (US, CA, GB, DE, FR, AU, NZ) and overrides, `classes_of_service` and the tenant's `calling` (migration 084), placed calls, forwards and find-me steps checked, `max_calls` both ways, the number's screening (433/603), the line's caller ID and `withheld` at trunk egress, `/v1/classes-of-service` and its page. Call-on-behalf waits for phase 10. Test: `calling.rs`, `trunks.rs`, `api_postgres.rs`. |
 | 8 | ✅ v0.25.283 — **Hoteling** (§3.8). Device credentials and the registrar's check, hosts, sessions, login and logout by DTMF, `check-sync`, the effective user in every path, expiry, the API and pages. Tests: a guest logs in on a host phone, is rung there and calls out as themself, expires. As built (§3.8.1): device credentials sealed at rest and one "may act as" rule for REGISTER and INVITE, `hoteling_sessions` (migration 085) with one guest per host, `*88` through an inline flow's `HotelingLogin` node and `*89`, `check-sync` and MWI to the host, the sweep, the effective user for the caller, the class of service, the calling codes and `*98`, the ring plan and presence, `/v1/hoteling/sessions`, `/v1/me/hoteling` and the Hoteling page. Tests: `calling.rs` (a login after a wrong PIN, the guest rung at the host and calling there under their class and codes, `*89`, a session run out, credentials registering only what is theirs) and `api_postgres.rs`. |
-| 9 | **Shared call appearance** (§3.9). Shared lines, second-account templates, the appearance table, `call-info` and `line-seize`, retrieve from another phone, the testkit phone's packages. Tests: two phones on one line, lamps through seize, alert, active and held, retrieve on the other phone; lamps right across two nodes. |
+| 9 | ✅ v0.25.284 — **Shared call appearance** (§3.9). Shared lines, second-account templates, the appearance table, `call-info` and `line-seize`, retrieve from another phone, the testkit phone's packages. Tests: two phones on one line, lamps through seize, alert, active and held, retrieve on the other phone; lamps right across two nodes. As built (§3.9.1): `shared`/`max_appearances` on the line binding (migration 086), the second account in provisioning and the four templates, the appearance table in memory or Redis (`fcp:sca:…`, one Lua claim), `call-info` NOTIFYs inside the subscription and `line-seize`, the call manager's appearance hook and `line.appearance_changed`, a retrieve by `Call-Info` taking the line's leg, handed to the owning node with `X-FCP-Node-Handoff` (siphon-rs `IntegratedUAC::send_request`, sip-uac 0.7.6). Tests: `calling.rs` (two phones, lamps, hold and retrieve, seize, a full line), `trunks.rs` (lamps and a retrieve across two nodes), `line_appearances.rs`, `api_postgres.rs`. |
 | 10 | **Executive-assistant** (§3.10). The relation, the filter and the plan, push, call on behalf, opt-in codes, the pages. Tests: an external call to the executive rings the assistant, pushed to the executive, a call placed on behalf. |
 | 11 | **Monitor, whisper and barge** (§3.11). The third party in forge-engine (a forge-media release), the API, the queue's supervisor path moved, barge-in on an appearance. Tests: a supervisor hears both parties, a whisper heard by one, the queue supervisor tests still passing. |
 

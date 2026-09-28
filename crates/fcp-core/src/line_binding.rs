@@ -66,6 +66,18 @@ pub struct LineBinding {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub holiday_target: Option<crate::CallTarget>,
 
+    // ===== Shared call appearance (docs/ENTERPRISE_CALLING.md §3.9) =====
+    /// The line is shared: every device bound to it registers the number as
+    /// an account of its own, and they share its appearances (BroadSoft
+    /// `call-info` and `line-seize`).
+    #[serde(default)]
+    pub shared: bool,
+
+    /// How many calls a shared line carries at once, each an appearance
+    /// (1 to 24).
+    #[serde(default = "default_max_appearances")]
+    pub max_appearances: u8,
+
     // ===== Audit =====
     /// When this binding was created
     pub created_at: SystemTime,
@@ -98,6 +110,8 @@ impl LineBinding {
             schedule_id: None,
             closed_target: None,
             holiday_target: None,
+            shared: false,
+            max_appearances: DEFAULT_MAX_APPEARANCES,
             created_at: now,
             updated_at: now,
         }
@@ -124,6 +138,17 @@ impl LineBinding {
         devices.sort_by_key(|d| d.priority);
         devices
     }
+}
+
+/// A shared line's appearances unless it says otherwise.
+pub const DEFAULT_MAX_APPEARANCES: u8 = 4;
+
+/// The most appearances a shared line may have: more line keys than any
+/// desk phone carries.
+pub const MAX_APPEARANCES_LIMIT: u8 = 24;
+
+fn default_max_appearances() -> u8 {
+    DEFAULT_MAX_APPEARANCES
 }
 
 /// Type of line binding.

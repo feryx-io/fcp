@@ -1410,6 +1410,24 @@ pub enum PresenceEvent {
         #[serde(with = "system_time_serde")]
         timestamp: SystemTime,
     },
+
+    /// An appearance of a shared line changed (`line.appearance_changed`,
+    /// `docs/ENTERPRISE_CALLING.md` §3.9): every node sends the line's
+    /// watchers its lamps. `state` is `idle` when the index was freed.
+    AppearanceChanged {
+        line_binding_id: String,
+        number: String,
+        index: u8,
+        state: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        call_id: Option<String>,
+        /// The node that changed it: it has told its own watchers.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        node_id: Option<String>,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
 }
 
 /// Voicemail-related events.
@@ -1684,6 +1702,7 @@ impl PlatformEvent {
                 PresenceEvent::DialogChanged { .. } => "presence.dialog_changed",
                 PresenceEvent::PublishExpiryWarning { .. } => "presence.publish_expiry_warning",
                 PresenceEvent::PublishExpired { .. } => "presence.publish_expired",
+                PresenceEvent::AppearanceChanged { .. } => "line.appearance_changed",
             },
             PlatformEvent::Sip(e) => match e {
                 SipTraceEvent::MessageCaptured { .. } => "sip.message_captured",
@@ -1800,7 +1819,8 @@ impl PlatformEvent {
                 | PresenceEvent::PublishReceived { tenant_id, .. }
                 | PresenceEvent::DialogChanged { tenant_id, .. }
                 | PresenceEvent::PublishExpiryWarning { tenant_id, .. }
-                | PresenceEvent::PublishExpired { tenant_id, .. } => Some(tenant_id),
+                | PresenceEvent::PublishExpired { tenant_id, .. }
+                | PresenceEvent::AppearanceChanged { tenant_id, .. } => Some(tenant_id),
             },
             PlatformEvent::System(e) => match e {
                 SystemEvent::ConfigChanged { tenant_id, .. } => Some(tenant_id),
@@ -2147,7 +2167,8 @@ impl PresenceEvent {
             | PresenceEvent::PublishReceived { timestamp, .. }
             | PresenceEvent::DialogChanged { timestamp, .. }
             | PresenceEvent::PublishExpiryWarning { timestamp, .. }
-            | PresenceEvent::PublishExpired { timestamp, .. } => *timestamp,
+            | PresenceEvent::PublishExpired { timestamp, .. }
+            | PresenceEvent::AppearanceChanged { timestamp, .. } => *timestamp,
         }
     }
 }

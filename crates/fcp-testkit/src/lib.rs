@@ -33,7 +33,7 @@ pub mod wav;
 
 pub use db::TestDatabase;
 pub use media::StreamStats;
-pub use phone::{Call, CallTimings, IncomingCall, Phone, PhoneEvent};
+pub use phone::{Call, CallTimings, IncomingCall, Phone, PhoneEvent, PhoneSubscription};
 pub use seed::Seed;
 pub use service::Service;
 pub use sinks::{Email, HttpSink, SmtpSink};

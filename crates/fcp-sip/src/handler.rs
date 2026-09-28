@@ -540,6 +540,12 @@ pub struct SipMessageHandler {
     user_calls: Option<Arc<crate::user_calls::UserCalls>>,
     /// Hoteling sessions, for `*88` and `*89` (§3.8).
     hoteling: Option<Arc<crate::hoteling::Hoteling>>,
+    /// Shared lines' appearances (§3.9).
+    sca: Option<Arc<crate::sca::Sca>>,
+    /// Retrieves sent to the node holding the call: the call here → that
+    /// node's SIP URI, the one destination its B-leg is sent to, and the
+    /// handoff token the INVITE carries.
+    sca_handoff_targets: Arc<dashmap::DashMap<fcp_b2bua_core::CallId, (String, String)>>,
     /// Edges whose caller headers are believed (`[e911] trusted_edges`).
     trusted_edges: crate::emergency::TrustedEdges,
     /// What reaches this node's SIP port, and what a flood of it costs
@@ -985,6 +991,8 @@ impl SipMessageHandler {
             default_tenant_id: None,
             user_calls: None,
             hoteling: None,
+            sca: None,
+            sca_handoff_targets: Arc::new(dashmap::DashMap::new()),
             trusted_edges: Default::default(),
             edge_guard: None,
             vouch_client_address: false,
@@ -1190,6 +1198,13 @@ impl SipMessageHandler {
     /// §6.2). The next hop believes it only from its trusted edges.
     pub fn with_client_address_vouching(mut self, vouch: bool) -> Self {
         self.vouch_client_address = vouch;
+        self
+    }
+
+    /// Keep shared lines' appearances (`call-info`, `line-seize`,
+    /// `docs/ENTERPRISE_CALLING.md` §3.9).
+    pub fn with_sca(mut self, sca: Arc<crate::sca::Sca>) -> Self {
+        self.sca = Some(sca);
         self
     }
 
@@ -2283,6 +2298,19 @@ impl SipMessageHandler {
                 handle.send_final(response).await;
             }
             Method::Subscribe => {
+                // A shared line's appearances (`call-info`, `line-seize`,
+                // `docs/ENTERPRISE_CALLING.md` §3.9), in or out of dialog.
+                if let Some(sca) = &self.sca {
+                    if crate::sca::Sca::handles_event(request) {
+                        if let Err(e) = sca.handle_subscribe(request, handle).await {
+                            warn!(error = %e, "A shared-line SUBSCRIBE failed");
+                            let response =
+                                self.create_simple_response(request, 500, "Server Internal Error");
+                            handle.send_final(response).await;
+                        }
+                        return Ok(());
+                    }
+                }
                 // Check presence handler first (RFC 3856 presence, RFC 4235 dialog/BLF)
                 if let Some(ref pres) = self.presence_handler {
                     if let Ok(()) = pres.handle_subscribe(request, handle).await {
@@ -2504,6 +2532,38 @@ impl SipMessageHandler {
                 handle.send_final(reject).await;
                 return Ok(());
             }
+        }
+
+        // A retrieve another node sent here for a held appearance of a call
+        // this node holds (`docs/ENTERPRISE_CALLING.md` §3.9). The handoff
+        // token is the appearance's own, which only a node that read the
+        // table knows; it stands for the phone's credentials, which that
+        // node checked. The INVITE takes the line's leg of the call and
+        // nothing else, so no tenant, route or admission is looked at.
+        if let Some(token) = sip_parse::header(request.headers(), crate::sca::NODE_HANDOFF_HEADER) {
+            let held = self
+                .sca
+                .as_ref()
+                .and_then(|sca| sca.handoff_call(token.as_str()))
+                .and_then(|id| self.call_manager.get_call(&id));
+            return match held {
+                Some(call) => {
+                    info!(call_id = %call.id, source = %peer, "A retrieve handed over from another node");
+                    Box::pin(self.retrieve_appearance(
+                        request,
+                        handle,
+                        &fcp_b2bua_core::CallId::new(),
+                        &call,
+                    ))
+                    .await
+                }
+                None => {
+                    info!(source = %peer, "Refusing a handoff that names no appearance held here");
+                    let response = self.create_simple_response(request, 481, "No Such Appearance");
+                    handle.send_final(response).await;
+                    Ok(())
+                }
+            };
         }
 
         // What this peer may claim about the call
@@ -3187,6 +3247,70 @@ impl SipMessageHandler {
             return self
                 .handle_replaces(request, handle, &call_id, replaces.as_str())
                 .await;
+        }
+
+        // A call from a shared line's phone takes an appearance of it, and
+        // one naming a held appearance picks that call up (§3.9). A leg
+        // this node placed to itself for a forward or a transfer is not a
+        // phone's.
+        if let Some(sca) = &self.sca {
+            let own_leg = sip_parse::header(request.headers(), FORWARDED_FOR_HEADER).is_some()
+                || sip_parse::header(request.headers(), TRANSFERRED_FROM_HEADER).is_some();
+            if !own_leg {
+                match Box::pin(sca.outbound(request, call_id)).await {
+                    crate::sca::Outbound::NotShared => {}
+                    crate::sca::Outbound::Claimed(appearance) => {
+                        debug!(call_id = %call_id, line = %appearance.number, index = appearance.index, "A call from a shared line");
+                        let _ = self
+                            .call_manager
+                            .update_call(&call_id, |c| c.appearance = Some(appearance));
+                    }
+                    crate::sca::Outbound::RetrieveHere(held) => {
+                        return match self.call_manager.get_call(&held) {
+                            Some(call) => {
+                                Box::pin(self.retrieve_appearance(request, handle, &call_id, &call))
+                                    .await
+                            }
+                            None => {
+                                let response = self.create_simple_response(
+                                    request,
+                                    481,
+                                    "Call/Transaction Does Not Exist",
+                                );
+                                handle.send_final(response).await;
+                                let _ = self
+                                    .call_manager
+                                    .terminate_call(&call_id, Some("retrieve: no call".into()));
+                                Ok(())
+                            }
+                        };
+                    }
+                    crate::sca::Outbound::RetrieveThere { node_uri, handoff } => {
+                        if let Some(uac) = &self.uac {
+                            info!(call_id = %call_id, node = %node_uri, "Retrieving a held appearance on another node");
+                            self.sca_handoff_targets
+                                .insert(call_id, (node_uri, handoff));
+                            return Box::pin(self.forward_invite_to_b_leg(
+                                request,
+                                handle,
+                                call_id,
+                                uac.clone(),
+                            ))
+                            .await;
+                        }
+                    }
+                    crate::sca::Outbound::Refuse(code, reason) => {
+                        info!(call_id = %call_id, code, reason, "A call from a shared line refused");
+                        let response = self.create_simple_response(request, code, reason);
+                        handle.send_final(response).await;
+                        let _ = self.call_manager.terminate_call_with(
+                            &call_id,
+                            fcp_cdr::TerminationReason::rejected(code, reason),
+                        );
+                        return Ok(());
+                    }
+                }
+            }
         }
 
         // Check if this is a PBX feature code (e.g., *8 pickup, *70 park, *81 intercom)
@@ -3995,6 +4119,11 @@ impl SipMessageHandler {
         let mut headers = sip_core::Headers::new();
         for name in ["Alert-Info", "Call-Info", "X-FCP-Intercom-Mode"] {
             for value in request.headers().get_all(name) {
+                // A shared line's appearance is the line's business, not
+                // the far party's (§3.9).
+                if name == "Call-Info" && value.to_ascii_lowercase().contains("appearance-index") {
+                    continue;
+                }
                 let _ = headers.push(SmolStr::new(name), value);
             }
         }
@@ -4529,7 +4658,30 @@ impl SipMessageHandler {
             (None, Vec::new())
         };
 
-        let destination_contacts = if let Some(bindings) = emergency_bindings {
+        let destination_contacts = if let Some(node_uri) =
+            self.sca_handoff_targets.get(&call_id).map(|t| t.0.clone())
+        {
+            // A retrieve of an appearance held on another node goes there,
+            // carrying its handoff (§3.9).
+            match sip_registrar::Binding::new(
+                SmolStr::new(destination_aor),
+                SmolStr::new(format!("<{node_uri}>")),
+                Duration::from_secs(3600),
+            ) {
+                Ok(binding) => vec![binding],
+                Err(e) => {
+                    warn!(call_id = %call_id, node = %node_uri, error = %e, "A retrieve's node is not a SIP URI");
+                    self.sca_handoff_targets.remove(&call_id);
+                    let response =
+                        self.create_simple_response(request, 480, "Temporarily Unavailable");
+                    a_leg_handle.send_final(response).await;
+                    let _ = self
+                        .call_manager
+                        .terminate_call(&call_id, Some("retrieve: bad node URI".into()));
+                    return Ok(());
+                }
+            }
+        } else if let Some(bindings) = emergency_bindings {
             bindings
         } else if let Some(at_site) = self.route_to_site(&call_id, &normalized_aor).await {
             // A number answered at a site goes down that site's link
@@ -4668,7 +4820,21 @@ impl SipMessageHandler {
                                             )
                                             .await?
                                         {
-                                            Some(contacts) => contacts,
+                                            Some(contacts) => {
+                                                if !self
+                                                    .take_line_appearance(
+                                                        request,
+                                                        &a_leg_handle_arc,
+                                                        call_id,
+                                                        &line_binding,
+                                                        &phone_number.e164,
+                                                    )
+                                                    .await
+                                                {
+                                                    return Ok(());
+                                                }
+                                                contacts
+                                            }
                                             None => return Ok(()),
                                         }
                                     }
@@ -5359,6 +5525,18 @@ impl SipMessageHandler {
                                                     .await?
                                                 {
                                                     Some(contacts) => {
+                                                        if !self
+                                                            .take_line_appearance(
+                                                                request,
+                                                                &a_leg_handle_arc,
+                                                                call_id,
+                                                                &line_binding,
+                                                                &phone_number.e164,
+                                                            )
+                                                            .await
+                                                        {
+                                                            return Ok(());
+                                                        }
                                                         extension_contacts.extend(contacts)
                                                     }
                                                     None => return Ok(()),
@@ -6792,6 +6970,14 @@ impl SipMessageHandler {
         let mut extra_headers = emergency_headers_clone.clone().unwrap_or_default();
         for (name, value) in &egress.headers {
             let _ = extra_headers.push(SmolStr::new(name), SmolStr::new(value));
+        }
+        // A retrieve handed to the node holding the call carries the
+        // appearance's handoff token (§3.9).
+        if let Some((_, (_, token))) = self.sca_handoff_targets.remove(&call_id_clone) {
+            let _ = extra_headers.push(
+                SmolStr::new(crate::sca::NODE_HANDOFF_HEADER),
+                SmolStr::new(token),
+            );
         }
         let invite_options = |sdp: Option<&str>| sip_uac::InviteOptions {
             body: sdp.map(sip_uac::InviteBody::sdp),
@@ -12646,6 +12832,86 @@ impl SipMessageHandler {
             "Replaces",
         )
         .await
+    }
+
+    /// A call about to ring a shared line's phones takes an appearance of
+    /// the line (`docs/ENTERPRISE_CALLING.md` §3.9). `false` when every
+    /// appearance is in use: the caller has been told busy.
+    async fn take_line_appearance(
+        &self,
+        request: &sip_core::Request,
+        a_leg: &Arc<ServerTransactionHandle>,
+        call_id: fcp_b2bua_core::CallId,
+        binding: &fcp_core::LineBinding,
+        number: &str,
+    ) -> bool {
+        let (true, Some(sca)) = (binding.shared, self.sca.as_ref()) else {
+            return true;
+        };
+        let line = crate::sca::SharedLine {
+            binding: binding.clone(),
+            number: number.to_string(),
+        };
+        match Box::pin(sca.inbound(&line, call_id)).await {
+            crate::sca::Inbound::Claimed(appearance) => {
+                debug!(call_id = %call_id, line = %number, index = appearance.index, "A call to a shared line");
+                let _ = self
+                    .call_manager
+                    .update_call(&call_id, |c| c.appearance = Some(appearance));
+                true
+            }
+            crate::sca::Inbound::Unkept => true,
+            crate::sca::Inbound::Busy => {
+                info!(call_id = %call_id, line = %number, "Every appearance of the shared line is in use");
+                let reason = "All Appearances In Use";
+                let response = self.create_simple_response(request, 486, reason);
+                a_leg.send_final(response).await;
+                let _ = self.call_manager.terminate_call_with(
+                    &call_id,
+                    fcp_cdr::TerminationReason::rejected(486, reason),
+                );
+                false
+            }
+        }
+    }
+
+    /// A phone on a shared line picks up the held appearance `call`
+    /// (`docs/ENTERPRISE_CALLING.md` §3.9): the INVITE takes the line's
+    /// leg, the far party comes off hold to it, and the phone that held
+    /// the call is sent a BYE. `own` is the INVITE's own call, ended once
+    /// joined (one that does not exist — a retrieve handed over from
+    /// another node — is fine).
+    async fn retrieve_appearance(
+        &self,
+        request: &sip_core::Request,
+        handle: &ServerTransactionHandle,
+        own: &fcp_b2bua_core::CallId,
+        call: &fcp_b2bua_core::Call,
+    ) -> Result<()> {
+        let held = call.appearance_state() == Some(fcp_core::sca::AppearanceState::Held);
+        let Some(appearance) = call.appearance.clone().filter(|_| held) else {
+            info!(call_id = %call.id, "A retrieve of an appearance that is not held");
+            let response = self.create_simple_response(request, 403, "Appearance Not Held");
+            handle.send_final(response).await;
+            let _ = self
+                .call_manager
+                .terminate_call(own, Some("retrieve: not held".into()));
+            return Ok(());
+        };
+        let side = appearance.side;
+        let old = match side {
+            fcp_b2bua_core::LegSide::A => call
+                .a_leg
+                .dialog
+                .clone()
+                .map(|d| (d, call.a_leg.flow_token.clone())),
+            fcp_b2bua_core::LegSide::B => call
+                .b_leg
+                .as_ref()
+                .and_then(|b| b.dialog.clone().map(|d| (d, b.flow_token.clone()))),
+        };
+        info!(call_id = %call.id, line = %appearance.number, index = appearance.index, "A held appearance retrieved");
+        Box::pin(self.take_over_leg(request, handle, own, call, side, old, "Retrieve")).await
     }
 
     /// The INVITE `request` (whose own call is `feature_call_id`) takes

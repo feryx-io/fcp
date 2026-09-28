@@ -8,7 +8,7 @@
 
 use crate::registrar::FcpRegistrar;
 use fcp_core::storage::{
-    CredentialStore, DeviceStore, ExtensionStore, TenantStore, VoicemailStore,
+    CredentialStore, DeviceStore, ExtensionStore, PhoneNumberStore, TenantStore, VoicemailStore,
 };
 use fcp_core::{
     CallingSettings, CallingStore, DynStorage, LineBinding, TenantId, Treatment, Treatments, UserId,
@@ -205,6 +205,32 @@ pub async fn contacts_for_binding(
             }
         }
     }
+    // A shared line's phones registered its number as an account of
+    // their own (§3.9).
+    if binding.shared {
+        match storage.get_phone_number(&binding.phone_number_id).await {
+            Ok(Some(number)) => {
+                let domain = invite_domain.unwrap_or("");
+                for line in registrations_at_name(
+                    storage,
+                    registrar,
+                    &binding.tenant_id,
+                    &number.e164,
+                    domain,
+                )
+                .await
+                {
+                    if !contacts.iter().any(|c| c.contact() == line.contact()) {
+                        contacts.push(line);
+                    }
+                }
+            }
+            Ok(None) => {}
+            Err(e) => {
+                warn!(line = %binding.id, error = %e, "A shared line's number could not be read")
+            }
+        }
+    }
     // The owner's calls also ring the host they are logged in on.
     if let Some(owner) = binding.owner_user_id {
         let domain = invite_domain.unwrap_or("");
@@ -319,6 +345,18 @@ pub async fn registrations_at_users_aor(
             return Vec::new();
         }
     };
+    registrations_at_name(storage, registrar, tenant_id, &user.username, invite_domain).await
+}
+
+/// The registrations at `sip:<name>@<domain>` for the first of the
+/// tenant's domains, and the one the INVITE named, that has any.
+pub async fn registrations_at_name(
+    storage: &DynStorage,
+    registrar: &FcpRegistrar,
+    tenant_id: &TenantId,
+    name: &str,
+    invite_domain: &str,
+) -> Vec<Binding> {
     let mut domains: Vec<String> = match storage.get_tenant(tenant_id).await {
         Ok(Some(tenant)) => tenant.sip_domains,
         _ => Vec::new(),
@@ -331,18 +369,18 @@ pub async fn registrations_at_users_aor(
         domains.push(invite_domain.to_string());
     }
     for domain in domains {
-        let aor = format!("sip:{}@{domain}", user.username);
+        let aor = format!("sip:{name}@{domain}");
         match registrar
             .get_registrations_for_device(tenant_id, &aor, invite_domain)
             .await
         {
             Ok(bindings) if !bindings.is_empty() => {
-                debug!(user_id = %user_id, aor = %aor, count = bindings.len(), "Ringing the user's own address");
+                debug!(aor = %aor, count = bindings.len(), "Ringing the registrations at an address");
                 return bindings;
             }
             Ok(_) => {}
             Err(e) => {
-                warn!(user_id = %user_id, aor = %aor, error = %e, "Failed to read the registrations at the user's own address");
+                warn!(aor = %aor, error = %e, "Failed to read the registrations at an address");
             }
         }
     }

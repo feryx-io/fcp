@@ -39,6 +39,7 @@ pub mod recording;
 pub mod region;
 pub mod routing;
 pub mod routing_rule;
+pub mod sca;
 pub mod schedule;
 pub mod secret;
 pub mod service;

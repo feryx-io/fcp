@@ -10,6 +10,7 @@
 pub mod call_leases;
 pub mod call_registry;
 pub mod conference_registry;
+pub mod line_appearances;
 pub mod membership;
 pub mod node_client;
 pub mod reader;
@@ -24,6 +25,7 @@ pub use conference_registry::{
     CONFERENCE_NODE_TYPE,
 };
 pub use fcp_core::transport::advertised_address;
+pub use line_appearances::LineAppearances;
 pub use membership::{
     choose_handover_node, resolve_region, tenant_probe, ClusterManager, ClusterMember,
     DatabaseProbe, EngineBudget, NodeCapacity, VideoBudgetHandle, VideoDeviceBudget, VideoEngines,
