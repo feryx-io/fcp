@@ -134,6 +134,52 @@ pub struct Tenant {
     /// never leave on a shared carrier.
     #[serde(default = "default_platform_trunk_fallback")]
     pub platform_trunk_fallback: bool,
+
+    /// How the tenant dials and keeps time (`docs/ENTERPRISE_CALLING.md`
+    /// §3.7): its country, its timezone, and its own word on number ranges.
+    #[serde(default)]
+    pub calling: TenantCalling,
+}
+
+/// A tenant's calling defaults.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TenantCalling {
+    /// ISO 3166-1 alpha-2 (`US`, `GB`, …), for classifying the numbers the
+    /// tenant's users dial; unset reads numbers as North American.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub country: Option<String>,
+    /// IANA timezone, the default for the tenant's new schedules.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timezone: Option<String>,
+    /// The tenant's own classification of number ranges, over the
+    /// built-in table.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub destination_overrides: Vec<crate::class_of_service::DestinationOverride>,
+}
+
+impl TenantCalling {
+    /// Refuse a country the table does not know, a timezone that is not
+    /// IANA's, an override that is not a prefix.
+    pub fn validate(&self) -> Result<(), String> {
+        if let Some(country) = &self.country {
+            let known = crate::class_of_service::known_countries();
+            if !known.iter().any(|k| k.eq_ignore_ascii_case(country)) {
+                return Err(format!(
+                    "country `{country}` is not one the platform classifies numbers for ({})",
+                    known.join(", ")
+                ));
+            }
+        }
+        if let Some(tz) = &self.timezone {
+            if tz.parse::<chrono_tz::Tz>().is_err() {
+                return Err(format!("timezone `{tz}` is not an IANA timezone"));
+            }
+        }
+        for o in &self.destination_overrides {
+            o.validate()?;
+        }
+        Ok(())
+    }
 }
 
 fn default_platform_trunk_fallback() -> bool {
@@ -161,6 +207,7 @@ impl Tenant {
             metadata: None,
             sip_domains: Vec::new(),
             platform_trunk_fallback: true,
+            calling: TenantCalling::default(),
         }
     }
 

@@ -17,6 +17,7 @@ pub const SYNC_TABLES: &[&str] = &[
     "users",
     "user_calling_settings",
     "schedules",
+    "classes_of_service",
     "devices",
     "extensions",
     "line_bindings",

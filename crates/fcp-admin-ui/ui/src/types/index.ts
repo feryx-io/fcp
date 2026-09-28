@@ -84,6 +84,57 @@ export interface Tenant {
    * its own cannot (docs/TENANT_TRUNKS.md §5).
    */
   platform_trunk_fallback: boolean
+  /** Country, timezone and number-range overrides (docs/ENTERPRISE_CALLING.md §3.7). */
+  calling: TenantCalling
+}
+
+export type DestinationClass =
+  | 'internal'
+  | 'emergency'
+  | 'toll_free'
+  | 'national'
+  | 'international'
+  | 'premium'
+  | 'unknown'
+
+export interface DestinationOverride {
+  /** E.164 with a leading `+`, or the digits as dialled */
+  prefix: string
+  class: DestinationClass
+}
+
+export interface TenantCalling {
+  /** ISO 3166-1 alpha-2: US, CA, GB, DE, FR, AU, NZ */
+  country?: string | null
+  /** IANA; the default for new schedules */
+  timezone?: string | null
+  destination_overrides?: DestinationOverride[]
+}
+
+export interface ClassOfService {
+  id: string
+  tenant_id: string
+  name: string
+  allowed: DestinationClass[]
+  /** null: no limit */
+  max_calls: number | null
+  caller_id: 'line' | 'withheld'
+  is_default: boolean
+  updated_at: number
+}
+
+export interface ClassOfServiceRequest {
+  name: string
+  allowed: DestinationClass[]
+  max_calls: number | null
+  caller_id: 'line' | 'withheld'
+  is_default: boolean
+}
+
+export interface ClassifyResponse {
+  dialed: string
+  class: DestinationClass
+  e164: string | null
 }
 
 export type TenantStatus = 'active' | 'suspended' | 'trial' | 'disabled'
@@ -101,6 +152,8 @@ export interface CreateTenantRequest {
   sip_domains?: string[]
   /** Leave unset to allow the platform's trunks to carry this tenant's calls. */
   platform_trunk_fallback?: boolean
+  /** Replaces the tenant's calling defaults whole. */
+  calling?: TenantCalling
 }
 
 export interface ExtensionTarget {
@@ -1457,6 +1510,8 @@ export interface CallingSettings {
   hold_music: string | null
   /** null: the node's default ring time */
   no_answer_secs: number | null
+  /** null: the tenant's default class (§3.7) */
+  class_of_service_id: string | null
   updated_at: number
 }
 
@@ -1476,6 +1531,8 @@ export interface UpdateCallingRequest {
   hold_music?: string
   /** 0 clears it: the node's default */
   no_answer_secs?: number
+  /** A class's id, or '' for the tenant's default. Admins only. */
+  class_of_service_id?: string
 }
 
 // Locations

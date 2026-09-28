@@ -7260,3 +7260,195 @@ async fn schedules_are_the_tenants_and_say_their_state() {
         .await;
     assert_eq!(after.status, StatusCode::NOT_FOUND, "{}", after.text);
 }
+
+// ─── Class of service (docs/ENTERPRISE_CALLING.md §3.7) ──────────────────
+
+#[tokio::test]
+async fn classes_of_service_are_assigned_by_an_admin_and_numbers_read_by_the_tenants_country() {
+    let app = require_app!();
+    app.create_user_with_role("classy", "end_user").await;
+
+    // The tenant dials as the UK does, keeps London time, and calls 118
+    // numbers premium.
+    let tenant = app
+        .admin(
+            Method::PUT,
+            &format!("/api/v1/tenants/{}", app.tenant_a),
+            Some(json!({ "calling": {
+                "country": "gb",
+                "timezone": "Europe/London",
+                "destination_overrides": [{ "prefix": "118", "class": "premium" }]
+            }})),
+        )
+        .await;
+    assert_eq!(tenant.status, StatusCode::OK, "{}", tenant.text);
+    assert_eq!(tenant.json["calling"]["country"], "GB");
+    let bad_country = app
+        .admin(
+            Method::PUT,
+            &format!("/api/v1/tenants/{}", app.tenant_a),
+            Some(json!({ "calling": { "country": "XX" } })),
+        )
+        .await;
+    assert_eq!(
+        bad_country.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        bad_country.text
+    );
+    for (dialed, class) in [
+        ("02079460000", "national"),
+        ("08001234567", "toll_free"),
+        ("0015185550100", "international"),
+        ("118118", "premium"),
+        ("2001", "internal"),
+        ("999", "emergency"),
+    ] {
+        let got = app
+            .admin(
+                Method::GET,
+                &format!("/api/v1/classes-of-service/classify?dialed={dialed}"),
+                None,
+            )
+            .await;
+        assert_eq!(got.status, StatusCode::OK, "{}", got.text);
+        assert_eq!(got.json["class"], class, "{dialed}: {}", got.text);
+    }
+
+    // A new schedule without a timezone keeps the tenant's.
+    let schedule = app
+        .admin(
+            Method::POST,
+            "/api/v1/schedules",
+            Some(json!({ "name": "Office" })),
+        )
+        .await;
+    assert_eq!(schedule.status, StatusCode::CREATED, "{}", schedule.text);
+    assert_eq!(schedule.json["timezone"], "Europe/London");
+
+    // Two classes; the second default takes the mark from the first.
+    let local = app
+        .admin(
+            Method::POST,
+            "/api/v1/classes-of-service",
+            Some(
+                json!({ "name": "Local", "allowed": ["internal", "national"], "is_default": true }),
+            ),
+        )
+        .await;
+    assert_eq!(local.status, StatusCode::CREATED, "{}", local.text);
+    assert_eq!(local.json["max_calls"], 2, "two unless said");
+    assert!(
+        local.json["allowed"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("emergency")),
+        "emergency is always allowed: {}",
+        local.text
+    );
+    let local_id = local.json["id"].as_str().unwrap().to_string();
+    let lobby = app
+        .admin(
+            Method::POST,
+            "/api/v1/classes-of-service",
+            Some(
+                json!({ "name": "Lobby", "allowed": ["internal"], "max_calls": null,
+                         "caller_id": "withheld", "is_default": true }),
+            ),
+        )
+        .await;
+    assert_eq!(lobby.status, StatusCode::CREATED, "{}", lobby.text);
+    assert!(lobby.json["max_calls"].is_null(), "{}", lobby.text);
+    let lobby_id = lobby.json["id"].as_str().unwrap().to_string();
+    let listed = app
+        .admin(Method::GET, "/api/v1/classes-of-service", None)
+        .await;
+    let defaults: Vec<_> = listed
+        .json
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|c| c["is_default"] == true)
+        .map(|c| c["name"].clone())
+        .collect();
+    assert_eq!(defaults, vec![json!("Lobby")], "{}", listed.text);
+    let dup = app
+        .admin(
+            Method::POST,
+            "/api/v1/classes-of-service",
+            Some(json!({ "name": "local" })),
+        )
+        .await;
+    assert_eq!(dup.status, StatusCode::CONFLICT, "{}", dup.text);
+
+    // An admin gives the user a class; the user cannot change it.
+    let assigned = app
+        .admin(
+            Method::PUT,
+            "/api/v1/users/classy/calling",
+            Some(json!({ "class_of_service_id": local_id })),
+        )
+        .await;
+    assert_eq!(assigned.status, StatusCode::OK, "{}", assigned.text);
+    assert_eq!(assigned.json["class_of_service_id"], local_id.as_str());
+    let jwt = app.login("classy", PASSWORD).await.json["token"]
+        .as_str()
+        .expect("jwt")
+        .to_string();
+    let own = app
+        .send_as(
+            &jwt,
+            Method::PUT,
+            "/api/v1/me/calling",
+            Some(json!({ "class_of_service_id": lobby_id })),
+        )
+        .await;
+    assert_eq!(own.status, StatusCode::FORBIDDEN, "{}", own.text);
+    let other_tenants = app
+        .admin_in(
+            app.tenant_b,
+            Method::GET,
+            &format!("/api/v1/classes-of-service/{local_id}"),
+            None,
+        )
+        .await;
+    assert_eq!(
+        other_tenants.status,
+        StatusCode::NOT_FOUND,
+        "{}",
+        other_tenants.text
+    );
+
+    // A class a user has is not deleted from under them.
+    let in_use = app
+        .admin(
+            Method::DELETE,
+            &format!("/api/v1/classes-of-service/{local_id}"),
+            None,
+        )
+        .await;
+    assert_eq!(in_use.status, StatusCode::CONFLICT, "{}", in_use.text);
+    let cleared = app
+        .admin(
+            Method::PUT,
+            "/api/v1/users/classy/calling",
+            Some(json!({ "class_of_service_id": "" })),
+        )
+        .await;
+    assert_eq!(cleared.status, StatusCode::OK, "{}", cleared.text);
+    assert!(
+        cleared.json["class_of_service_id"].is_null(),
+        "{}",
+        cleared.text
+    );
+    let gone = app
+        .admin(
+            Method::DELETE,
+            &format!("/api/v1/classes-of-service/{local_id}"),
+            None,
+        )
+        .await;
+    assert_eq!(gone.status, StatusCode::NO_CONTENT, "{}", gone.text);
+
+    app.finish().await;
+}

@@ -526,6 +526,71 @@ number's `block_anonymous`, `allow_list` and `block_list` are enforced at
 the DID lookup in the same phase. Assignment: `class_of_service_id` on the
 settings, the class's page and select. FAC/CMC stay unwired (§5 Q8).
 
+#### 3.7.1 As built (phase 7, v0.25.282)
+
+`fcp_core::class_of_service` classifies what a user dials: a feature
+code, a name or a short number (up to `[b2bua] max_extension_digits`) is
+`internal`, as is a number of the tenant's own; the country's emergency
+numbers are `emergency`; the rest is read by the tenant's country — its
+international prefix, its trunk prefix, NANP's bare ten digits,
+Australia's `1…` service numbers — into E.164, then `premium` and
+`toll_free` by the country's ranges, `national` in its country code,
+`international` outside it, `unknown` when it cannot be read. The table
+holds US, CA, GB, DE, FR, AU and NZ; a tenant with no country reads
+numbers as North American, which is how the node normalised them before.
+The tenant's `destination_overrides` win by longest prefix, in E.164
+(`+1900`) or as dialled (`118`).
+
+The tenant gains `calling` (`country`, `timezone`,
+`destination_overrides`; `tenants.calling_json`, migration 084), edited
+on the Tenants page; a schedule created without a timezone takes the
+tenant's. `classes_of_service` (migration 084, JSON rows, synced to
+sites) hold `allowed`, `max_calls` (two unless said, `null` for none),
+`caller_id` (`line` or `withheld`) and `is_default`; one class is the
+default, and marking another takes the mark from it. A user's
+`class_of_service_id` is set by an admin (`/me/calling` refuses it);
+unset, the default class applies; with no default, nothing is refused.
+`/v1/classes-of-service` (routing-rule permissions) manages them,
+`/v1/classes-of-service/classify?dialed=` says what a number is to the
+tenant, and the Classes of Service page does both.
+
+Enforced:
+
+- **A call a user places** is checked once the call exists — so it has a
+  record, and `call.failed` says `class_of_service: …` — before
+  admission: refused with 403 and `Reason: SIP;cause=403;text="class of
+  service: premium calls not allowed"`. Not an emergency call, not a
+  carrier's, not a site's (the site's node checks its own), and not a leg
+  the node placed to itself for a forward: those carry
+  `X-FCP-Forwarded-For`, believed only when it names a live call on the
+  node, like a transfer origin. The caller is the trusted edge's named
+  user, else the From's.
+- **A forward or a find-me step to a number or a URI** is checked against
+  the forwarding user's class; a forward refused is not followed (the
+  caller hears 480), a step's refused target is left out.
+- **`max_calls`** counts the user's calls as call waiting does (§3.4): an
+  incoming call past it gets the busy treatment, a call placed past it
+  is refused.
+- **The number's screening**: at the number's lookup, a withheld caller
+  (`Privacy: id`, an anonymous From) is refused with 433 when the number
+  has `block_anonymous` or an allow list, a caller on the block list or
+  off the allow list with 603. Entries match on digits, a national form
+  matching its E.164, or a prefix ending in `*`.
+- **Caller ID** on a leg a trunk carries: the caller's line's
+  `outbound_caller_id` is the From and `P-Asserted-Identity` unless the
+  trunk names an identity of its own; `withheld` makes the From
+  `"Anonymous" <sip:anonymous@anonymous.invalid>`, adds `Privacy: id` and
+  keeps the identity in `P-Asserted-Identity` for the carrier. An
+  emergency call presents its callback number whatever the class says.
+
+A site's admin refuses writes to classes of service, and to schedules,
+which phase 5 synced without listing, as it does to every synced resource.
+
+Deviations: the check runs after billing admission, not before — a call
+the class refuses may first be refused for balance. Call-on-behalf is
+phase 10's and will be checked there. A tenant's country covers only the
+table's countries; others are refused until the table grows.
+
 ### 3.8 Hoteling
 
 Devices gain credentials of their own: `sip_username` and `sip_ha1`
@@ -625,7 +690,7 @@ feature crosses nodes, in the two-node cluster harness.
 | 4 | ✅ v0.25.279 — **Call waiting** (§3.4). The per-user call set in the registry, the plan's busy rule, `*56`/`*57`. Tests: a second call rings or is refused by the setting; on two nodes. As built (§3.4.1): a user's calls as leases (`fcp_cluster::CallLeases`, subject `User`) kept by a parties hook on the call manager, this node's own count without a cluster; call waiting off with a call up is the busy treatment; `*56`/`*57`; the Calling page's switch. The class's call limit waits for phase 7. Tests: `calling.rs`, and `trunks.rs` on two nodes. |
 | 5 | ✅ v0.25.280 — **Schedules** (§3.5). The entity, the tenant timezone, the number's closed and holiday targets, the user's after-hours forward, DB queue hours, the flow node, the pages. Tests: a number answered by a flow after hours, a queue closed on a holiday. As built (§3.5.1): `schedules` (migration 083, JSON rows, synced to sites), the number's `schedule_id`/`closed_target`/`holiday_target`, the user's after-hours forward in the plan, a database queue's hours decided before the queue, the flow `Schedule` node, `flow:` and `queue:` targets placed, `/v1/schedules` and a Schedules page. The tenant's timezone waits for phase 7 with its country. Test: `calling.rs`, `api_postgres.rs`. |
 | 6 | ✅ v0.25.281 — **Find-me / follow-me** (§3.6). Steps, external legs with confirmation, `Diversion`, the page. Tests: a sequential ring reaching a trunk stub that must press 1. As built (§3.6.1): steps after the user's phones (or instead of them when none is up), each forked with its own ring time; confirmation by a prompt to the answering leg alone and one digit; `*60`/`*61`; the Calling page's editor. The `Diversion` header is not sent. Test: `calling.rs`. |
-| 7 | **Class of service** (§3.7). The entity, classification, enforcement for the effective user, find-me legs and call-on-behalf, the number's screening lists, the line's caller ID applied, the pages. Tests: a premium number refused for one user and placed for another, a withheld caller ID, a blocked caller. |
+| 7 | ✅ v0.25.282 — **Class of service** (§3.7). The entity, classification, enforcement for the effective user, find-me legs and call-on-behalf, the number's screening lists, the line's caller ID applied, the pages. Tests: a premium number refused for one user and placed for another, a withheld caller ID, a blocked caller. As built (§3.7.1): classification by the tenant's country (US, CA, GB, DE, FR, AU, NZ) and overrides, `classes_of_service` and the tenant's `calling` (migration 084), placed calls, forwards and find-me steps checked, `max_calls` both ways, the number's screening (433/603), the line's caller ID and `withheld` at trunk egress, `/v1/classes-of-service` and its page. Call-on-behalf waits for phase 10. Test: `calling.rs`, `trunks.rs`, `api_postgres.rs`. |
 | 8 | **Hoteling** (§3.8). Device credentials and the registrar's check, hosts, sessions, login and logout by DTMF, `check-sync`, the effective user in every path, expiry, the API and pages. Tests: a guest logs in on a host phone, is rung there and calls out as themself, expires. |
 | 9 | **Shared call appearance** (§3.9). Shared lines, second-account templates, the appearance table, `call-info` and `line-seize`, retrieve from another phone, the testkit phone's packages. Tests: two phones on one line, lamps through seize, alert, active and held, retrieve on the other phone; lamps right across two nodes. |
 | 10 | **Executive-assistant** (§3.10). The relation, the filter and the plan, push, call on behalf, opt-in codes, the pages. Tests: an external call to the executive rings the assistant, pushed to the executive, a call placed on behalf. |

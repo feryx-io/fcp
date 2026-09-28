@@ -95,6 +95,9 @@ import type {
   UpdateCallingRequest,
   Schedule,
   ScheduleRequest,
+  ClassOfService,
+  ClassOfServiceRequest,
+  ClassifyResponse,
   MeetingResponse,
   CreateMeetingRequest,
   UpdateMeetingRequest,
@@ -541,6 +544,16 @@ export const schedules = {
   update: (id: string, data: ScheduleRequest) =>
     apiClient.put<Schedule>(`/schedules/${encodeURIComponent(id)}`, data),
   delete: (id: string) => apiClient.delete<void>(`/schedules/${encodeURIComponent(id)}`),
+}
+
+export const classesOfService = {
+  list: () => apiClient.get<ClassOfService[]>('/classes-of-service'),
+  create: (data: ClassOfServiceRequest) => apiClient.post<ClassOfService>('/classes-of-service', data),
+  update: (id: string, data: ClassOfServiceRequest) =>
+    apiClient.put<ClassOfService>(`/classes-of-service/${encodeURIComponent(id)}`, data),
+  delete: (id: string) => apiClient.delete<void>(`/classes-of-service/${encodeURIComponent(id)}`),
+  classify: (dialed: string) =>
+    apiClient.get<ClassifyResponse>(`/classes-of-service/classify?dialed=${encodeURIComponent(dialed)}`),
 }
 
 export const sites = {

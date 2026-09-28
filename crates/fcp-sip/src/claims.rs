@@ -40,9 +40,13 @@ use tracing::debug;
 ///   node's decision, not the caller's.
 /// - `X-FCP-Intercom-Mode` mutes the caller's own audio on the far leg,
 ///   which turns a forced answer into a one-way listen.
+/// - `X-FCP-Forwarded-For` spares a leg the node placed to itself the
+///   caller's class of service; believed, like a transfer origin, only
+///   when it names a call this node has.
 pub const CLAIMED_HEADERS: &[&str] = &[
     fcp_core::CALL_ID_HEADER,
     crate::handler::TRANSFERRED_FROM_HEADER,
+    crate::handler::FORWARDED_FOR_HEADER,
     "P-Asserted-Identity",
     "P-Preferred-Identity",
     "Remote-Party-ID",
@@ -137,7 +141,9 @@ impl<'a> Claims<'a> {
 
     /// Whether this one header survives despite the peer being untrusted.
     fn believable(&self, request: &Request, name: &str) -> bool {
-        if !name.eq_ignore_ascii_case(crate::handler::TRANSFERRED_FROM_HEADER) {
+        if !name.eq_ignore_ascii_case(crate::handler::TRANSFERRED_FROM_HEADER)
+            && !name.eq_ignore_ascii_case(crate::handler::FORWARDED_FOR_HEADER)
+        {
             return false;
         }
         let Some(knows_call) = self.knows_call else {

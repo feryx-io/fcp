@@ -727,6 +727,104 @@ impl fmt::Display for ParseError {
 
 impl std::error::Error for ParseError {}
 
+/// What a number's screening says of a caller (`docs/ENTERPRISE_CALLING.md`
+/// §3.7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Screening {
+    Allowed,
+    /// The caller withheld their number and the number blocks that.
+    Anonymous,
+    /// The number has an allow list and the caller is not on it.
+    NotAllowed,
+    /// The caller is on the number's block list.
+    Blocked,
+}
+
+impl Screening {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Allowed => "allowed",
+            Self::Anonymous => "anonymous",
+            Self::NotAllowed => "not_allowed",
+            Self::Blocked => "blocked",
+        }
+    }
+}
+
+/// Whether a list entry names a caller: the digits equal, one a national
+/// form of the other (the shorter at least seven digits), or the entry a
+/// prefix ending in `*`.
+fn list_matches(entry: &str, caller_digits: &str) -> bool {
+    let entry = entry.trim();
+    if let Some(prefix) = entry.strip_suffix('*') {
+        let prefix: String = prefix.chars().filter(char::is_ascii_digit).collect();
+        return !prefix.is_empty() && caller_digits.starts_with(&prefix);
+    }
+    let entry: String = entry.chars().filter(char::is_ascii_digit).collect();
+    if entry.is_empty() || caller_digits.is_empty() {
+        return false;
+    }
+    if entry == caller_digits {
+        return true;
+    }
+    let (short, long) = if entry.len() < caller_digits.len() {
+        (entry.as_str(), caller_digits)
+    } else {
+        (caller_digits, entry.as_str())
+    };
+    short.len() >= 7 && long.ends_with(short)
+}
+
+impl PhoneNumber {
+    /// Screen a caller: `caller` is the calling number (the From user),
+    /// `None` when withheld. The block list is read first, then the
+    /// allow list; an anonymous caller is blocked only by
+    /// `block_anonymous`, and an allow list lets no anonymous caller in.
+    pub fn screen(&self, caller: Option<&str>) -> Screening {
+        let Some(caller) = caller else {
+            if self.block_anonymous || !self.allow_list.is_empty() {
+                return Screening::Anonymous;
+            }
+            return Screening::Allowed;
+        };
+        let digits: String = caller.chars().filter(char::is_ascii_digit).collect();
+        if self.block_list.iter().any(|e| list_matches(e, &digits)) {
+            return Screening::Blocked;
+        }
+        if !self.allow_list.is_empty() && !self.allow_list.iter().any(|e| list_matches(e, &digits))
+        {
+            return Screening::NotAllowed;
+        }
+        Screening::Allowed
+    }
+}
+
+#[cfg(test)]
+mod screening_tests {
+    use super::*;
+
+    fn number() -> PhoneNumber {
+        PhoneNumber::new("+15185550100".to_string(), crate::TenantId::new()).expect("a number")
+    }
+
+    #[test]
+    fn the_block_list_then_the_allow_list_then_anonymity() {
+        let mut n = number();
+        assert_eq!(n.screen(None), Screening::Allowed);
+        assert_eq!(n.screen(Some("+12125550199")), Screening::Allowed);
+        n.block_anonymous = true;
+        assert_eq!(n.screen(None), Screening::Anonymous);
+        n.block_list = vec!["+1 212 555 0199".into(), "1900*".into()];
+        assert_eq!(n.screen(Some("2125550199")), Screening::Blocked);
+        assert_eq!(n.screen(Some("+19005550100")), Screening::Blocked);
+        n.allow_list = vec!["+13125550100".into()];
+        assert_eq!(n.screen(Some("+13125550100")), Screening::Allowed);
+        assert_eq!(n.screen(Some("+13125550101")), Screening::NotAllowed);
+        n.block_anonymous = false;
+        assert_eq!(n.screen(None), Screening::Anonymous);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

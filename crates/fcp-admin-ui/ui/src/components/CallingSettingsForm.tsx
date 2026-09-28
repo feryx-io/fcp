@@ -31,6 +31,8 @@ interface FormState {
   after_hours_forward: string
   find_me: FindMe
   forwards: Record<ForwardKey, ForwardState>
+  /** '' is the tenant's default class */
+  class_of_service_id: string
 }
 
 const FORWARDS: { key: ForwardKey; label: string; hint: string }[] = [
@@ -62,6 +64,7 @@ function stateOf(s: CallingSettings): FormState {
     after_hours_schedule_id: s.after_hours_schedule_id ?? '',
     after_hours_forward: s.after_hours_forward ? fieldOf(s.after_hours_forward) : '',
     find_me: s.find_me ?? { enabled: false, steps: [] },
+    class_of_service_id: s.class_of_service_id ?? '',
     forwards: {
       forward_all: forwardState(s.forward_all),
       forward_busy: forwardState(s.forward_busy),
@@ -107,6 +110,7 @@ export function CallingSettingsForm({
   message,
   holdMusicPrompts,
   schedules,
+  classes,
 }: {
   settings: CallingSettings
   onSave: (req: UpdateCallingRequest) => void
@@ -116,6 +120,8 @@ export function CallingSettingsForm({
   holdMusicPrompts?: { id: string; name: string }[]
   /** The tenant's schedules for after-hours (an admin sees them). */
   schedules?: { id: string; name: string }[]
+  /** The tenant's classes of service; given, an admin sets the user's. */
+  classes?: { id: string; name: string; is_default: boolean }[]
 }) {
   const [form, setForm] = useState<FormState>(() => stateOf(settings))
   useEffect(() => {
@@ -178,6 +184,29 @@ export function CallingSettingsForm({
           className="w-28"
         />
       </div>
+
+      {classes && (
+        <div className="space-y-1">
+          <Label className="text-sm font-medium">Class of service</Label>
+          <p className="text-xs text-muted-foreground">
+            What the user may dial, how many calls they may be on, and how their caller ID leaves.
+          </p>
+          <select
+            className="flex h-9 w-64 rounded-md border border-input bg-transparent px-3 py-1 text-sm"
+            value={form.class_of_service_id}
+            onChange={(e) => setForm((prev) => ({ ...prev, class_of_service_id: e.target.value }))}
+          >
+            <option value="">
+              {classes.find((c) => c.is_default)
+                ? `The default (${classes.find((c) => c.is_default)!.name})`
+                : 'No restriction (no default class)'}
+            </option>
+            {classes.map((c) => (
+              <option key={c.id} value={c.id}>{c.name}</option>
+            ))}
+          </select>
+        </div>
+      )}
 
       {schedules && (
         <div className="space-y-2">
@@ -366,7 +395,12 @@ export function CallingSettingsForm({
         )
       })}
 
-      <Button onClick={() => onSave(requestOf(form))} disabled={saving}>
+      <Button
+        onClick={() =>
+          onSave(classes ? { ...requestOf(form), class_of_service_id: form.class_of_service_id } : requestOf(form))
+        }
+        disabled={saving}
+      >
         {saving ? 'Saving...' : 'Save Changes'}
       </Button>
     </div>

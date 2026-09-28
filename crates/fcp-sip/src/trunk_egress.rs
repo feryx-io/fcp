@@ -60,6 +60,20 @@ pub struct TrunkEgress {
     /// The header manipulation rules the trunk names, run on the finished
     /// INVITE by whatever [`TrunkHeaderRules`] the node has.
     pub header_rules: Vec<String>,
+    /// The caller's identity is withheld: the From says `Anonymous`.
+    pub anonymous: bool,
+}
+
+/// The From URI of a withheld caller (RFC 3323 §4.1.1.3).
+pub const ANONYMOUS_URI: &str = "sip:anonymous@anonymous.invalid";
+
+/// A URI without its angle brackets and header parameters.
+fn bare_uri(uri: &str) -> &str {
+    let uri = uri.trim();
+    match (uri.find('<'), uri.find('>')) {
+        (Some(start), Some(end)) if start < end => &uri[start + 1..end],
+        _ => uri.split(';').next().unwrap_or(uri),
+    }
 }
 
 impl TrunkEgress {
@@ -103,7 +117,41 @@ impl TrunkEgress {
             headers,
             offer_telephone_event: matches!(trunk.dtmf.mode, TrunkDtmfMode::Relay),
             header_rules: trunk.header_rules.clone(),
+            anonymous: false,
         }
+    }
+
+    /// Present `uri` — the caller's line (`docs/ENTERPRISE_CALLING.md`
+    /// §3.7) — when the trunk named no identity of its own.
+    pub fn present_as(&mut self, uri: &str) {
+        if self.from.is_some() {
+            return;
+        }
+        self.from = Some(uri.to_string());
+        self.headers
+            .insert(0, ("P-Asserted-Identity".to_string(), format!("<{uri}>")));
+    }
+
+    /// Withhold the caller's identity (RFC 3323, RFC 3325): an anonymous
+    /// From, `Privacy: id`, and the identity the leg would have presented
+    /// kept in `P-Asserted-Identity` for the carrier, which must not pass
+    /// it on.
+    pub fn withhold(&mut self, caller_from: Option<&str>) {
+        let identity = self
+            .from
+            .clone()
+            .or_else(|| caller_from.map(|c| bare_uri(c).to_string()));
+        self.headers
+            .retain(|(name, _)| !name.eq_ignore_ascii_case("P-Asserted-Identity"));
+        if let Some(identity) = identity {
+            self.headers.insert(
+                0,
+                ("P-Asserted-Identity".to_string(), format!("<{identity}>")),
+            );
+        }
+        self.headers.push(("Privacy".to_string(), "id".to_string()));
+        self.from = Some(ANONYMOUS_URI.to_string());
+        self.anonymous = true;
     }
 
     /// Nothing: a leg that no trunk carries.
@@ -113,6 +161,7 @@ impl TrunkEgress {
             headers: Vec::new(),
             offer_telephone_event: true,
             header_rules: Vec::new(),
+            anonymous: false,
         }
     }
 
@@ -153,15 +202,42 @@ impl TrunkEgress {
         &self,
         rules: Option<&std::sync::Arc<dyn TrunkHeaderRules>>,
     ) -> Option<sip_uac::RequestFilter> {
-        if self.header_rules.is_empty() {
+        let rules = rules
+            .filter(|_| !self.header_rules.is_empty())
+            .map(std::sync::Arc::clone);
+        if rules.is_none() && !self.anonymous {
             return None;
         }
-        let rules = std::sync::Arc::clone(rules?);
         let names = self.header_rules.clone();
+        let anonymous = self.anonymous;
         Some(sip_uac::RequestFilter::new(move |request| {
-            rules.apply_egress(&names, request)
+            if anonymous {
+                anonymous_display(request);
+            }
+            if let Some(rules) = &rules {
+                rules.apply_egress(&names, request)
+            }
         }))
     }
+}
+
+/// Name the From `Anonymous`, keeping its URI and tag: the UAC writes a
+/// display name of its own, which a withheld caller must not carry.
+fn anonymous_display(request: &mut sip_core::Request) {
+    let Some(from) = request.headers().get("From").map(|v| v.to_string()) else {
+        return;
+    };
+    let params = match (from.rfind('>'), from.find(';')) {
+        (Some(end), _) => from[end + 1..].to_string(),
+        (None, Some(semi)) => from[semi..].to_string(),
+        (None, None) => String::new(),
+    };
+    let value = format!("\"Anonymous\" <{ANONYMOUS_URI}>{params}");
+    request.headers_mut().remove("From");
+    let _ = request.headers_mut().push(
+        smol_str::SmolStr::new("From"),
+        smol_str::SmolStr::new(value),
+    );
 }
 
 /// The content type SIP INFO carries a digit in.
@@ -355,6 +431,40 @@ mod tests {
 
     fn trunk() -> Trunk {
         Trunk::new("carrier-a".to_string(), TenantId::new())
+    }
+
+    #[test]
+    fn a_line_is_presented_unless_the_trunk_names_its_own() {
+        let mut egress = TrunkEgress::of(&trunk(), Some("sip:alice@pbx.local"), false);
+        egress.present_as("sip:+15185550100@pbx.local");
+        assert_eq!(egress.from.as_deref(), Some("sip:+15185550100@pbx.local"));
+        assert_eq!(
+            header(&egress, "P-Asserted-Identity"),
+            Some("<sip:+15185550100@pbx.local>")
+        );
+        let mut t = trunk();
+        t.caller_id_override = Some("+15125550100".into());
+        t.from_domain = Some("carrier.example".into());
+        let mut egress = TrunkEgress::of(&t, Some("sip:alice@pbx.local"), false);
+        egress.present_as("sip:+15185550100@pbx.local");
+        assert_eq!(
+            egress.from.as_deref(),
+            Some("sip:+15125550100@carrier.example")
+        );
+    }
+
+    #[test]
+    fn a_withheld_caller_is_anonymous_with_the_identity_asserted() {
+        let mut egress = TrunkEgress::of(&trunk(), Some("<sip:alice@pbx.local>;tag=1"), false);
+        egress.withhold(Some("<sip:alice@pbx.local>;tag=1"));
+        assert_eq!(egress.from.as_deref(), Some(ANONYMOUS_URI));
+        assert_eq!(header(&egress, "Privacy"), Some("id"));
+        assert_eq!(
+            header(&egress, "P-Asserted-Identity"),
+            Some("<sip:alice@pbx.local>")
+        );
+        assert!(egress.anonymous);
+        assert!(egress.request_filter(None).is_some(), "the From is renamed");
     }
 
     fn header<'a>(egress: &'a TrunkEgress, name: &str) -> Option<&'a str> {

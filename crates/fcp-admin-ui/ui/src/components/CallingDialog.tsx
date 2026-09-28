@@ -4,7 +4,7 @@ import {
   Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog'
 import { CallingSettingsForm } from '@/components/CallingSettingsForm'
-import { prompts, schedules, users } from '@/api/endpoints'
+import { classesOfService, prompts, schedules, users } from '@/api/endpoints'
 import type { UpdateCallingRequest, User } from '@/types'
 
 /** An admin's view of a user's calling settings (docs/ENTERPRISE_CALLING.md §3.1). */
@@ -25,6 +25,11 @@ export function CallingDialog({ user, onOpenChange }: { user: User | null; onOpe
   const scheduleList = useQuery({
     queryKey: ['schedules'],
     queryFn: schedules.list,
+    enabled: !!user,
+  })
+  const classList = useQuery({
+    queryKey: ['classes-of-service'],
+    queryFn: classesOfService.list,
     enabled: !!user,
   })
   const mutation = useMutation({
@@ -58,6 +63,7 @@ export function CallingDialog({ user, onOpenChange }: { user: User | null; onOpe
             saving={mutation.isPending}
             message={message}
             schedules={(scheduleList.data ?? []).map((s) => ({ id: s.id, name: s.name }))}
+            classes={(classList.data ?? []).map((c) => ({ id: c.id, name: c.name, is_default: c.is_default }))}
             holdMusicPrompts={(music.data ?? []).map((p) => ({ id: p.id, name: `${p.name} (${p.category})` }))}
           />
         )}

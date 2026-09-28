@@ -39,6 +39,8 @@ pub const SYNCED_RESOURCES: &[&str] = &[
     "emergency/config",
     "emergency/networks",
     "rate-plans",
+    "schedules",
+    "classes-of-service",
 ];
 
 /// Whether `path` (relative to the v1 root, no leading slash) is a synced
@@ -104,5 +106,10 @@ mod tests {
             Some("queue-configs")
         );
         assert_eq!(synced_resource("userspace"), None);
+        assert_eq!(
+            synced_resource("classes-of-service/cos-1"),
+            Some("classes-of-service")
+        );
+        assert_eq!(synced_resource("schedules"), Some("schedules"));
     }
 }

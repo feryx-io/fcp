@@ -82,6 +82,9 @@ pub struct TenantResponse {
     /// Whether this tenant's calls may leave on the platform's trunks when
     /// it has none of its own that can take them (`docs/TENANT_TRUNKS.md`).
     pub platform_trunk_fallback: bool,
+    /// Country, timezone and number-range overrides
+    /// (`docs/ENTERPRISE_CALLING.md` §3.7).
+    pub calling: fcp_core::TenantCalling,
 }
 
 impl From<Tenant> for TenantResponse {
@@ -115,6 +118,7 @@ impl From<Tenant> for TenantResponse {
             metadata: tenant.metadata,
             sip_domains: tenant.sip_domains,
             platform_trunk_fallback: tenant.platform_trunk_fallback,
+            calling: tenant.calling,
         }
     }
 }
@@ -141,6 +145,9 @@ pub struct CreateTenantRequest {
     /// unless said otherwise.
     #[serde(default)]
     pub platform_trunk_fallback: Option<bool>,
+    /// How the tenant dials and keeps time.
+    #[serde(default)]
+    pub calling: Option<fcp_core::TenantCalling>,
 }
 
 /// Request to update a tenant
@@ -162,6 +169,25 @@ pub struct UpdateTenantRequest {
     pub sip_domains: Option<Vec<String>>,
     /// Whether the platform's trunks may carry this tenant's calls.
     pub platform_trunk_fallback: Option<bool>,
+    /// Replaces the tenant's calling defaults whole when given.
+    pub calling: Option<fcp_core::TenantCalling>,
+}
+
+/// A tenant's calling defaults as stored: the country upper-cased, blanks
+/// cleared, and the whole validated.
+fn normalize_calling(
+    mut calling: fcp_core::TenantCalling,
+) -> Result<fcp_core::TenantCalling, ApiError> {
+    calling.country = calling
+        .country
+        .map(|c| c.trim().to_ascii_uppercase())
+        .filter(|c| !c.is_empty());
+    calling.timezone = calling
+        .timezone
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty());
+    calling.validate().map_err(ApiError::BadRequest)?;
+    Ok(calling)
 }
 
 /// Normalize and validate a list of user-supplied SIP domains.
@@ -336,6 +362,7 @@ pub async fn create_tenant(
         metadata: req.metadata,
         sip_domains,
         platform_trunk_fallback: req.platform_trunk_fallback.unwrap_or(true),
+        calling: normalize_calling(req.calling.unwrap_or_default())?,
     };
 
     storage.put_tenant(tenant.clone()).await?;
@@ -442,6 +469,10 @@ pub async fn update_tenant(
         .is_some_and(|fallback| fallback != tenant.platform_trunk_fallback);
     if let Some(fallback) = req.platform_trunk_fallback {
         tenant.platform_trunk_fallback = fallback;
+    }
+
+    if let Some(calling) = req.calling {
+        tenant.calling = normalize_calling(calling)?;
     }
 
     tenant.updated_at = SystemTime::now();

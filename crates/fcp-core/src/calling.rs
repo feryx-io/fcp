@@ -296,6 +296,10 @@ pub struct CallingSettings {
     /// How long the user's phones ring; `None` is the node's default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub no_answer_secs: Option<u32>,
+    /// The user's class of service (§3.7); `None` is the tenant's default
+    /// class, or no restriction when it has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub class_of_service_id: Option<crate::ClassOfServiceId>,
     #[serde(default = "SystemTime::now")]
     pub updated_at: SystemTime,
 }
@@ -321,6 +325,7 @@ impl CallingSettings {
             find_me: None,
             hold_music: None,
             no_answer_secs: None,
+            class_of_service_id: None,
             updated_at: SystemTime::now(),
         }
     }

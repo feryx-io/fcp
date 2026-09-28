@@ -1324,7 +1324,7 @@ impl RegistrationStore for PostgresStorage {
 const TENANT_SELECT_COLS: &str = "id, name, description, status, contact_email, contact_phone,
     max_users, max_phone_numbers, max_concurrent_calls, billing_id,
     created_at, updated_at, trial_expires_at, metadata, sip_domains,
-    platform_trunk_fallback";
+    platform_trunk_fallback, calling_json";
 
 #[async_trait]
 impl TenantStore for PostgresStorage {
@@ -1424,9 +1424,9 @@ impl TenantStore for PostgresStorage {
                 id, name, description, status, contact_email, contact_phone,
                 max_users, max_phone_numbers, max_concurrent_calls, billing_id,
                 created_at, updated_at, trial_expires_at, metadata, sip_domains,
-                platform_trunk_fallback, data
+                platform_trunk_fallback, data, calling_json
              )
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, '{}'::jsonb)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, '{}'::jsonb, $17)
              ON CONFLICT(id) DO UPDATE SET
                  name = EXCLUDED.name,
                  description = EXCLUDED.description,
@@ -1441,7 +1441,8 @@ impl TenantStore for PostgresStorage {
                  trial_expires_at = EXCLUDED.trial_expires_at,
                  metadata = EXCLUDED.metadata,
                  sip_domains = EXCLUDED.sip_domains,
-                 platform_trunk_fallback = EXCLUDED.platform_trunk_fallback",
+                 platform_trunk_fallback = EXCLUDED.platform_trunk_fallback,
+                 calling_json = EXCLUDED.calling_json",
         )
         .bind(&id)
         .bind(&tenant.name)
@@ -1459,6 +1460,7 @@ impl TenantStore for PostgresStorage {
         .bind(&tenant.metadata)
         .bind(&sip_domains)
         .bind(tenant.platform_trunk_fallback)
+        .bind(serde_json::to_value(&tenant.calling)?)
         .execute(self.writes())
         .await?;
 
@@ -1520,6 +1522,7 @@ fn row_to_tenant(row: sqlx::postgres::PgRow) -> Result<Tenant> {
         // defaults is a mapping that can lie about what a tenant said
         // (`docs/TENANT_TRUNKS.md` §5).
         platform_trunk_fallback: row.get("platform_trunk_fallback"),
+        calling: serde_json::from_value(row.get("calling_json")).context("a tenant's calling")?,
     })
 }
 
@@ -7605,6 +7608,68 @@ impl fcp_core::sync::SyncStore for PostgresStorage {
                 })
             })
             .collect()
+    }
+}
+
+#[async_trait]
+impl fcp_core::class_of_service::ClassOfServiceStore for PostgresStorage {
+    async fn get_class_of_service(
+        &self,
+        id: &fcp_core::ClassOfServiceId,
+    ) -> Result<Option<fcp_core::ClassOfService>> {
+        let row = sqlx::query("SELECT class_json FROM classes_of_service WHERE id = $1")
+            .bind(id.to_string())
+            .fetch_optional(self.reads())
+            .await?;
+        row.map(|row| {
+            serde_json::from_value(row.get("class_json")).context("a class of service row")
+        })
+        .transpose()
+    }
+
+    async fn list_classes_of_service(
+        &self,
+        tenant_id: &TenantId,
+    ) -> Result<Vec<fcp_core::ClassOfService>> {
+        let rows = sqlx::query(
+            "SELECT class_json FROM classes_of_service WHERE tenant_id = $1 ORDER BY name",
+        )
+        .bind(tenant_id.to_string())
+        .fetch_all(self.reads())
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                serde_json::from_value(row.get("class_json")).context("a class of service row")
+            })
+            .collect()
+    }
+
+    async fn put_class_of_service(&self, class: fcp_core::ClassOfService) -> Result<()> {
+        let json = serde_json::to_value(&class)?;
+        sqlx::query(
+            "INSERT INTO classes_of_service (id, tenant_id, name, class_json, updated_at)
+             VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT (id) DO UPDATE SET
+                 name = EXCLUDED.name,
+                 class_json = EXCLUDED.class_json,
+                 updated_at = EXCLUDED.updated_at",
+        )
+        .bind(class.id.to_string())
+        .bind(class.tenant_id.to_string())
+        .bind(&class.name)
+        .bind(json)
+        .bind(system_time_to_datetime(class.updated_at))
+        .execute(self.writes())
+        .await?;
+        Ok(())
+    }
+
+    async fn delete_class_of_service(&self, id: &fcp_core::ClassOfServiceId) -> Result<()> {
+        sqlx::query("DELETE FROM classes_of_service WHERE id = $1")
+            .bind(id.to_string())
+            .execute(self.writes())
+            .await?;
+        Ok(())
     }
 }
 

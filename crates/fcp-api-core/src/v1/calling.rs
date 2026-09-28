@@ -46,6 +46,8 @@ pub struct CallingResponse {
     pub find_me: Option<fcp_core::FindMe>,
     /// `None`: the node's default ring time.
     pub no_answer_secs: Option<u32>,
+    /// The user's class of service (§3.7); `None` is the tenant's default.
+    pub class_of_service_id: Option<String>,
     pub updated_at: u64,
 }
 
@@ -66,6 +68,7 @@ impl CallingResponse {
             after_hours_forward: settings.after_hours_forward.as_ref().map(|t| t.to_string()),
             find_me: settings.find_me.clone(),
             no_answer_secs: settings.no_answer_secs,
+            class_of_service_id: settings.class_of_service_id.map(|id| id.to_string()),
             updated_at: settings
                 .updated_at
                 .duration_since(UNIX_EPOCH)
@@ -95,6 +98,9 @@ pub struct UpdateCallingRequest {
     /// Replaces the find-me whole when given.
     pub find_me: Option<fcp_core::FindMe>,
     pub no_answer_secs: Option<u32>,
+    /// A class of service of the tenant, or an empty string for the
+    /// tenant's default. An admin's to set: refused at `/me/calling`.
+    pub class_of_service_id: Option<String>,
 }
 
 /// A user's settings, the defaults when none are stored.
@@ -170,6 +176,23 @@ pub async fn apply(
                     .filter(|p| p.tenant_id == user.tenant_id)
                     .ok_or_else(|| ApiError::BadRequest(format!("hold_music: no prompt {id}")))?;
                 Some(prompt.id.to_string())
+            }
+        };
+    }
+    if let Some(given) = req.class_of_service_id {
+        if by != "admin" {
+            return Err(ApiError::Forbidden(
+                "class_of_service_id: a user's class of service is set by an admin".into(),
+            ));
+        }
+        settings.class_of_service_id = match given.trim() {
+            "" => None,
+            id => {
+                let id = id.parse::<fcp_core::ClassOfServiceId>().map_err(|_| {
+                    ApiError::BadRequest(format!("class_of_service_id: not a class id: {id}"))
+                })?;
+                crate::v1::classes_of_service::tenant_class(state, &user.tenant_id, &id).await?;
+                Some(id)
             }
         };
     }

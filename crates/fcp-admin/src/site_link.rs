@@ -951,6 +951,7 @@ async fn slice_of(state: &LinkState, tenant: &TenantId) -> Result<Vec<SyncItem>>
     use fcp_core::billing::BillingStore;
     use fcp_core::storage::*;
     use fcp_core::CallingStore;
+    use fcp_core::ClassOfServiceStore;
     use fcp_core::ScheduleStore;
     let storage = state.storage.as_ref();
     let mut items = Vec::new();
@@ -967,6 +968,9 @@ async fn slice_of(state: &LinkState, tenant: &TenantId) -> Result<Vec<SyncItem>>
     }
     for sched in storage.list_schedules(tenant).await? {
         items.push(item("schedules", &sched.id, &sched)?);
+    }
+    for class in storage.list_classes_of_service(tenant).await? {
+        items.push(item("classes_of_service", &class.id, &class)?);
     }
     for d in storage.list_devices(tenant).await? {
         items.push(item("devices", &d.id, &d)?);
@@ -1042,6 +1046,7 @@ async fn object_now(
     use fcp_core::billing::BillingStore;
     use fcp_core::storage::*;
     use fcp_core::CallingStore;
+    use fcp_core::ClassOfServiceStore;
     use fcp_core::ScheduleStore;
     let storage = state.storage.as_ref();
     macro_rules! same_tenant {
@@ -1067,6 +1072,10 @@ async fn object_now(
         },
         "schedules" => match id.parse() {
             Ok(id) => same_tenant!(storage.get_schedule(&id).await?),
+            Err(_) => None,
+        },
+        "classes_of_service" => match id.parse() {
+            Ok(id) => same_tenant!(storage.get_class_of_service(&id).await?),
             Err(_) => None,
         },
         "user_calling_settings" => match id.parse() {
