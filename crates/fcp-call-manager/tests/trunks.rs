@@ -127,9 +127,19 @@ impl Stack {
     /// As [`Stack::start`], with a node id of its own and, when a cluster
     /// is wanted, the Redis every node of it shares.
     async fn start_as(node_id: &str, redis: Option<&str>, platform: &[&Carrier]) -> Option<Self> {
+        Self::start_as_with(node_id, redis, platform, "").await
+    }
+
+    /// As [`Stack::start_as`], with `extra` appended to the configuration.
+    async fn start_as_with(
+        node_id: &str,
+        redis: Option<&str>,
+        platform: &[&Carrier],
+        extra: &str,
+    ) -> Option<Self> {
         let db = TestDatabase::create().await?;
         let seed = Seed::new(db.url(), REALM).await;
-        Self::node_on(db, seed, node_id, redis, platform).await
+        Self::node_on(db, seed, node_id, redis, platform, extra).await
     }
 
     async fn node_on(
@@ -138,8 +148,9 @@ impl Stack {
         node_id: &str,
         redis: Option<&str>,
         platform: &[&Carrier],
+        extra: &str,
     ) -> Option<Self> {
-        let (service, sip, http, dir) = spawn_node(db.url(), node_id, redis, platform, "").await;
+        let (service, sip, http, dir) = spawn_node(db.url(), node_id, redis, platform, extra).await;
         Some(Self {
             service: Some(service),
             db: Some(db),
@@ -2389,4 +2400,166 @@ async fn a_users_class_decides_what_leaves_and_under_which_caller_id() {
     );
 
     stack.finish().await;
+}
+
+// ─── Shared call appearance across nodes (docs/ENTERPRISE_CALLING.md §3.9) ─
+
+/// Both nodes hear each other's events, which is how a line's lamps cross.
+const SHARED_EVENTS: &str = "[events]\nuse_redis = true\n";
+const SHARED_LINE: &str = "+15550199";
+const DESK_PASSWORD: &str = "desk-phone-pw";
+
+/// A shared line owned by `owner`, on a device of its own for each desk.
+async fn shared_line(stack: &Stack, owner: &SeededUser, desks: &[&str]) {
+    use fcp_core::storage::{CredentialStore, DeviceStore, LineBindingStore, PhoneNumberStore};
+    let storage = stack.seed.storage();
+    let owner = storage
+        .get_user_in_tenant(&owner.username, &stack.seed.tenant_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let number = fcp_core::PhoneNumber::new(SHARED_LINE.to_string(), stack.seed.tenant_id).unwrap();
+    let mut binding = fcp_core::LineBinding::new(
+        number.id,
+        Some(owner.id),
+        fcp_core::BindingType::User,
+        stack.seed.tenant_id,
+    );
+    binding.shared = true;
+    for desk in desks {
+        let mut device = fcp_core::Device::new(
+            format!("{desk} phone"),
+            fcp_core::DeviceType::DeskPhone,
+            stack.seed.tenant_id,
+        );
+        device.sip_uri = Some(format!("sip:{desk}@{REALM}"));
+        device.sip_username = Some(desk.to_string());
+        device.sip_ha1_hash = Some(fcp_core::storage::password::compute_ha1(
+            desk,
+            REALM,
+            DESK_PASSWORD,
+        ));
+        binding.add_device(fcp_core::DeviceBinding::with_settings(
+            device.id, 1, 2, true,
+        ));
+        storage.put_device(device).await.unwrap();
+    }
+    storage.put_phone_number(number).await.unwrap();
+    storage.put_line_binding(binding).await.unwrap();
+}
+
+/// The line's account on `desk`, registered and watching the line through
+/// the node at `server`.
+async fn watching_line_phone(desk: &str, server: SocketAddr) -> Phone {
+    let phone = Phone::with_credentials(SHARED_LINE, desk, DESK_PASSWORD, REALM, server)
+        .await
+        .expect("phone binds");
+    assert_eq!(
+        phone.register().await.unwrap(),
+        200,
+        "{desk} registers the line"
+    );
+    assert_eq!(
+        phone
+            .subscribe(SHARED_LINE, "call-info", 3600, None)
+            .await
+            .unwrap()
+            .code,
+        200
+    );
+    phone
+}
+
+/// Wait for lamps reading `want` on `phone`.
+async fn shown(phone: &Phone, want: &[(Option<u8>, &str)]) -> bool {
+    let want: Vec<(Option<u8>, String)> = want.iter().map(|(i, s)| (*i, s.to_string())).collect();
+    phone
+        .expect(SOON, |e| {
+            matches!(e, fcp_testkit::PhoneEvent::Notify { event, call_info: Some(info), .. }
+                if event.starts_with("call-info")
+                    && fcp_core::sca::appearance_states(info) == want)
+        })
+        .await
+        .is_some()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_shared_lines_held_call_on_one_node_is_picked_up_through_the_other() {
+    let Some(redis) = fcp_testkit::cluster::private_redis_url() else {
+        eprintln!("skipped: FCP_TEST_REDIS_URL is not set");
+        return;
+    };
+    let Some(mut first) = Stack::start_as_with("e2e-sca-a", Some(&redis), &[], SHARED_EVENTS).await
+    else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let alice = first.seed.user("alice", "alice-pw", "1001").await;
+    let carol = first.seed.user("carol", "carol-pw", "1003").await;
+    shared_line(&first, &alice, &["desk-a", "desk-b"]).await;
+    let (second, second_sip, _second_http, _second_dir) = spawn_node(
+        first.db.as_ref().expect("the test database").url(),
+        "e2e-sca-b",
+        Some(&redis),
+        &[],
+        SHARED_EVENTS,
+    )
+    .await;
+
+    // Desk B is on the first node, desk A on the second.
+    let b = watching_line_phone("desk-b", first.sip).await;
+    let a = watching_line_phone("desk-a", second_sip).await;
+    assert!(shown(&a, &[(None, "idle")]).await);
+    assert!(shown(&b, &[(None, "idle")]).await);
+    let carol_phone = first.phone(&carol).await;
+
+    // Carol calls the line through the first node; desk B answers. Desk A,
+    // watching through the second node, sees it.
+    let call = carol_phone.call(SHARED_LINE).await.unwrap();
+    let Some(at_b) = b.incoming(SOON).await else {
+        let _ = second.kill().await;
+        first.fail("desk B did not ring").await;
+    };
+    let b_call = at_b.answer().await.unwrap();
+    call.answered(SOON).await.expect("carol is connected");
+    if !shown(&a, &[(Some(1), "active"), (None, "idle")]).await {
+        let b_logs = second.kill().await;
+        eprintln!("=== NODE B ===\n{b_logs}");
+        first
+            .fail("the other node's phone was not shown the call")
+            .await;
+    }
+
+    // Desk B holds; desk A picks it up through the second node, which
+    // hands the retrieve to the first.
+    assert_eq!(b_call.hold().await.unwrap(), 200);
+    assert!(shown(&a, &[(Some(1), "held"), (None, "idle")]).await);
+    let a_call = a
+        .call_with_headers(
+            SHARED_LINE,
+            &[("Call-Info", "<sip:127.0.0.1>;appearance-index=1")],
+        )
+        .await
+        .unwrap();
+    if let Err(e) = a_call.answered(SOON).await {
+        let b_logs = second.kill().await;
+        eprintln!("=== NODE B ===\n{b_logs}");
+        first
+            .fail(&format!("the retrieve through the other node failed: {e}"))
+            .await;
+    }
+    assert!(
+        b_call.ended(SOON).await,
+        "the phone that held the call is let go"
+    );
+    assert!(shown(&b, &[(Some(1), "active"), (None, "idle")]).await);
+    assert!(!call.ended(NEVER).await, "carol stays on the call");
+
+    // Desk A hangs up: Carol's call ends, the line goes idle everywhere.
+    a_call.hangup().await.unwrap();
+    assert!(call.ended(SOON).await, "carol's call ends with desk A's");
+    assert!(shown(&b, &[(None, "idle")]).await);
+    assert!(shown(&a, &[(None, "idle")]).await);
+    let _ = second.kill().await;
+    first.finish().await;
 }

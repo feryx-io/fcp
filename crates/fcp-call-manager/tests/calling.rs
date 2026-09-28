@@ -44,6 +44,11 @@ impl Stack {
 
     /// As [`Stack::start`], with `extra` TOML appended to the config.
     async fn start_with(extra: &str) -> Option<Self> {
+        Self::start_configured(extra, "").await
+    }
+
+    /// As [`Stack::start_with`], with `registrar` lines in `[registrar]`.
+    async fn start_configured(extra: &str, registrar: &str) -> Option<Self> {
         let db = TestDatabase::create().await?;
         let seed = Seed::new(db.url(), REALM).await;
         let sip_port = free_port();
@@ -64,6 +69,7 @@ local_ip = "127.0.0.1"
 [registrar]
 auth_enabled = true
 realm = "{REALM}"
+{registrar}
 
 [storage]
 database_url = "{db}"
@@ -369,7 +375,11 @@ async fn do_not_disturb_is_busy_without_ringing() {
             .await;
     };
     let answered = at_carol.answer().await.unwrap();
-    call.answered(SOON).await.expect("Alice reaches Carol");
+    if let Err(e) = call.answered(SOON).await {
+        stack
+            .fail(&format!("Alice did not reach Carol: {e}"), &alice)
+            .await;
+    }
     answered.hangup().await.unwrap();
     stack.finish().await;
 }
@@ -1996,5 +2006,313 @@ async fn credentials_register_only_what_is_theirs() {
     assert_eq!(register("alice", "lobby", HOST_PASSWORD).await, 403);
     // A wrong password is still challenged, not refused.
     assert_eq!(register("lobby", "lobby", "wrong-password").await, 401);
+    stack.finish().await;
+}
+
+// ---------------------------------------------------------------------------
+// Shared call appearance (docs/ENTERPRISE_CALLING.md §3.9)
+// ---------------------------------------------------------------------------
+
+/// A shared line's number.
+const LINE: &str = "+15550188";
+const DESK_PASSWORD: &str = "desk-phone-pw";
+/// What a phone puts in `Call-Info` to name an appearance.
+fn appearance(index: u8) -> String {
+    format!("<sip:127.0.0.1>;appearance-index={index}")
+}
+
+/// A shared line owned by `owner` with `max` appearances, on a device of
+/// its own with its own credentials for each of `desks`.
+async fn shared_line(stack: &Stack, owner: &SeededUser, desks: &[&str], max: u8) {
+    use fcp_core::storage::{CredentialStore, DeviceStore};
+    let storage = stack.seed.storage();
+    let owner = storage
+        .get_user_in_tenant(&owner.username, &stack.seed.tenant_id)
+        .await
+        .expect("read owner")
+        .expect("seeded owner");
+    let number =
+        fcp_core::PhoneNumber::new(LINE.to_string(), stack.seed.tenant_id).expect("number");
+    let mut binding = fcp_core::LineBinding::new(
+        number.id,
+        Some(owner.id),
+        fcp_core::BindingType::User,
+        stack.seed.tenant_id,
+    );
+    binding.shared = true;
+    binding.max_appearances = max;
+    for desk in desks {
+        let mut device = fcp_core::Device::new(
+            format!("{desk} phone"),
+            fcp_core::DeviceType::DeskPhone,
+            stack.seed.tenant_id,
+        );
+        device.sip_uri = Some(format!("sip:{desk}@{REALM}"));
+        device.sip_username = Some(desk.to_string());
+        device.sip_ha1_hash = Some(fcp_core::storage::password::compute_ha1(
+            desk,
+            REALM,
+            DESK_PASSWORD,
+        ));
+        binding.add_device(fcp_core::DeviceBinding::with_settings(
+            device.id, 1, 2, true,
+        ));
+        storage.put_device(device).await.expect("store desk");
+    }
+    storage.put_phone_number(number).await.expect("number");
+    storage.put_line_binding(binding).await.expect("binding");
+}
+
+/// The line's account on `desk`, registered with the desk's credentials.
+async fn line_phone(stack: &Stack, desk: &str) -> Phone {
+    let phone = Phone::with_credentials(LINE, desk, DESK_PASSWORD, REALM, stack.sip)
+        .await
+        .expect("phone binds");
+    assert_eq!(
+        phone.register().await.unwrap(),
+        200,
+        "{desk} registers the line"
+    );
+    phone
+}
+
+/// Wait until `phone` is sent lamps reading `want`: each index and state
+/// in order, `None` for the `*` idle entry that ends every list.
+async fn lamps(phone: &Phone, want: &[(Option<u8>, &str)]) -> bool {
+    let want: Vec<(Option<u8>, String)> = want.iter().map(|(i, s)| (*i, s.to_string())).collect();
+    phone
+        .expect(SOON, |e| {
+            matches!(e, PhoneEvent::Notify { event, call_info: Some(info), .. }
+                if event.starts_with("call-info")
+                    && fcp_core::sca::appearance_states(info) == want)
+        })
+        .await
+        .is_some()
+}
+
+const IDLE: (Option<u8>, &str) = (None, "idle");
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_shared_line_rings_every_phone_and_any_picks_up_a_held_call() {
+    let Some(stack) = Stack::start_configured("", "auth_invites = true").await else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let carol = stack.seed.user("carol", "carol-pw", "1003").await;
+    shared_line(&stack, &alice, &["desk-a", "desk-b"], 2).await;
+    let a = line_phone(&stack, "desk-a").await;
+    let b = line_phone(&stack, "desk-b").await;
+    let carol_phone = stack.phone(&carol).await;
+
+    // Both watch the line; neither may be watched by someone who is not it.
+    let alice_phone = stack.phone(&alice).await;
+    assert_eq!(
+        alice_phone
+            .subscribe(LINE, "call-info", 3600, None)
+            .await
+            .unwrap()
+            .code,
+        403,
+        "a subscriber that is not the line is refused"
+    );
+    for phone in [&a, &b] {
+        assert_eq!(
+            phone
+                .subscribe(LINE, "call-info", 3600, None)
+                .await
+                .unwrap()
+                .code,
+            200
+        );
+        if !lamps(phone, &[IDLE]).await {
+            stack
+                .fail("a watcher was not sent the idle line", phone)
+                .await;
+        }
+    }
+
+    // A call to the line rings both phones at its first appearance.
+    let call = carol_phone.call(LINE).await.unwrap();
+    let Some(ring_a) = a.incoming(SOON).await else {
+        stack.fail("the line's first phone did not ring", &a).await;
+    };
+    let Some(_ring_b) = b.incoming(SOON).await else {
+        stack.fail("the line's second phone did not ring", &b).await;
+    };
+    if !lamps(&b, &[(Some(1), "alerting"), IDLE]).await {
+        stack
+            .fail("the line's phones were not shown it alerting", &b)
+            .await;
+    }
+    let a_call = ring_a.answer().await.unwrap();
+    call.answered(SOON).await.expect("the caller is connected");
+    if !lamps(&b, &[(Some(1), "active"), IDLE]).await {
+        stack
+            .fail("the other phone was not shown the call active", &b)
+            .await;
+    }
+
+    // The phone that answered holds; every phone sees it held.
+    assert_eq!(a_call.hold().await.unwrap(), 200);
+    if !lamps(&b, &[(Some(1), "held"), IDLE]).await {
+        stack
+            .fail("the other phone was not shown the call held", &b)
+            .await;
+    }
+
+    // The other phone picks it up: it has the caller, the first is let go.
+    let b_call = b
+        .call_with_headers(LINE, &[("Call-Info", &appearance(1))])
+        .await
+        .unwrap();
+    if let Err(e) = b_call.answered(SOON).await {
+        stack
+            .fail(&format!("the retrieve was not answered: {e}"), &b)
+            .await;
+    }
+    assert!(
+        a_call.ended(SOON).await,
+        "the phone that held the call is let go"
+    );
+    if !lamps(&a, &[(Some(1), "active"), IDLE]).await {
+        stack
+            .fail("the first phone was not shown the call active again", &a)
+            .await;
+    }
+    assert!(!call.ended(QUIET).await, "the caller stays on the call");
+
+    // A retrieve of a call that is not held is refused.
+    let again = a
+        .call_with_headers(LINE, &[("Call-Info", &appearance(1))])
+        .await
+        .unwrap();
+    assert_eq!(again.failed(SOON).await, Some(403));
+
+    // The call ends; the line goes idle on every phone.
+    b_call.hangup().await.unwrap();
+    assert!(
+        call.ended(SOON).await,
+        "the caller's call ends with the line's"
+    );
+    if !lamps(&a, &[IDLE]).await {
+        stack.fail("the line did not go idle", &a).await;
+    }
+    stack.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_phone_seizes_an_appearance_and_a_full_line_is_busy() {
+    let Some(stack) = Stack::start_configured("", "auth_invites = true").await else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let carol = stack.seed.user("carol", "carol-pw", "1003").await;
+    let dave = stack.seed.user("dave", "dave-pw", "1004").await;
+    shared_line(&stack, &alice, &["desk-a", "desk-b"], 2).await;
+    let a = line_phone(&stack, "desk-a").await;
+    let b = line_phone(&stack, "desk-b").await;
+    let carol_phone = stack.phone(&carol).await;
+    let dave_phone = stack.phone(&dave).await;
+    assert_eq!(
+        b.subscribe(LINE, "call-info", 3600, None)
+            .await
+            .unwrap()
+            .code,
+        200
+    );
+    assert!(lamps(&b, &[IDLE]).await);
+
+    // The first phone seizes the second appearance; the other phone sees
+    // it seized and cannot have it.
+    let seize = a
+        .subscribe(LINE, "line-seize", 15, Some(&appearance(2)))
+        .await
+        .unwrap();
+    assert_eq!(seize.code, 200);
+    let told = a
+        .expect(SOON, |e| {
+            matches!(e, PhoneEvent::Notify { event, call_info: Some(info), .. }
+            if event.starts_with("line-seize")
+                && fcp_core::sca::appearance_states(info) == vec![(Some(2), "seized".to_string())])
+        })
+        .await;
+    assert!(told.is_some(), "the seizing phone is told its appearance");
+    if !lamps(&b, &[(Some(2), "seized"), IDLE]).await {
+        stack
+            .fail("the other phone was not shown the seize", &b)
+            .await;
+    }
+    assert_eq!(
+        b.subscribe(LINE, "line-seize", 15, Some(&appearance(2)))
+            .await
+            .unwrap()
+            .code,
+        480,
+        "a seized appearance is not the other phone's"
+    );
+
+    // The call from it takes that appearance; the far party is not told.
+    let out = a
+        .call_with_headers("1003", &[("Call-Info", &appearance(2))])
+        .await
+        .unwrap();
+    let Some(ringing) = carol_phone.incoming(SOON).await else {
+        stack
+            .fail("the call from the line did not ring", &carol_phone)
+            .await;
+    };
+    assert!(
+        ringing
+            .headers_named("Call-Info")
+            .iter()
+            .all(|v| !v.contains("appearance-index")),
+        "the line's appearance stays the line's"
+    );
+    if !lamps(&b, &[(Some(2), "progressing"), IDLE]).await {
+        stack
+            .fail("the other phone was not shown the call progressing", &b)
+            .await;
+    }
+    let carol_call = ringing.answer().await.unwrap();
+    out.answered(SOON)
+        .await
+        .expect("the call from the line is answered");
+    if !lamps(&b, &[(Some(2), "active"), IDLE]).await {
+        stack
+            .fail("the other phone was not shown the call active", &b)
+            .await;
+    }
+
+    // A call to the line takes the one appearance left; the next is busy.
+    let first = carol_phone.call(LINE).await.unwrap();
+    if !lamps(&b, &[(Some(1), "alerting"), (Some(2), "active"), IDLE]).await {
+        stack
+            .fail("the call to the line was not shown alerting", &b)
+            .await;
+    }
+    let second = dave_phone.call(LINE).await.unwrap();
+    assert_eq!(
+        second.failed(SOON).await,
+        Some(486),
+        "every appearance is in use"
+    );
+
+    // The free phone takes the call ringing on the line; all hang up.
+    let Some(ring) = b.incoming(SOON).await else {
+        stack.fail("the free phone did not ring", &b).await;
+    };
+    let _b_call = ring.answer().await.unwrap();
+    first
+        .answered(SOON)
+        .await
+        .expect("the call to the line is answered");
+    first.hangup().await.unwrap();
+    out.hangup().await.unwrap();
+    assert!(carol_call.ended(SOON).await);
+    if !lamps(&b, &[IDLE]).await {
+        stack.fail("the line did not go idle", &b).await;
+    }
     stack.finish().await;
 }

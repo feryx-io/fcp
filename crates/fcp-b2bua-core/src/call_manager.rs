@@ -20,6 +20,15 @@ pub type OnPartiesChanged = Arc<dyn Fn(CallId, Vec<fcp_core::UserId>) + Send + S
 
 pub type OnHoldChanged = Arc<dyn Fn(CallId, Option<crate::call::LegSide>) + Send + Sync>;
 
+/// What is told of a call's appearance on a shared line changing: the call,
+/// its appearance, and the state its phones should show — `None` when the
+/// call no longer occupies the index (`docs/ENTERPRISE_CALLING.md` §3.9).
+pub type OnAppearanceChanged = Arc<
+    dyn Fn(CallId, crate::call::CallAppearance, Option<fcp_core::sca::AppearanceState>)
+        + Send
+        + Sync,
+>;
+
 /// Call manager service.
 ///
 /// This service manages the lifecycle of all active calls in the B2BUA.
@@ -65,6 +74,11 @@ pub struct CallManager {
     /// counted for call waiting.
     on_parties_changed: std::sync::OnceLock<OnPartiesChanged>,
 
+    /// Told whenever the state of a call's appearance on a shared line
+    /// changes (`docs/ENTERPRISE_CALLING.md` §3.9): what keeps the line's
+    /// lamps.
+    on_appearance_changed: std::sync::OnceLock<OnAppearanceChanged>,
+
     /// Emergency calls' audit records as their inserts land: the record id
     /// once written, so the call's ending completes the right row however
     /// short the call was.
@@ -85,6 +99,7 @@ impl CallManager {
             on_ended: None,
             on_hold_changed: std::sync::OnceLock::new(),
             on_parties_changed: std::sync::OnceLock::new(),
+            on_appearance_changed: std::sync::OnceLock::new(),
             emergency_records: Arc::new(DashMap::new()),
         }
     }
@@ -104,6 +119,7 @@ impl CallManager {
             on_ended: None,
             on_hold_changed: std::sync::OnceLock::new(),
             on_parties_changed: std::sync::OnceLock::new(),
+            on_appearance_changed: std::sync::OnceLock::new(),
             emergency_records: Arc::new(DashMap::new()),
         }
     }
@@ -160,6 +176,7 @@ impl CallManager {
             on_ended: None,
             on_hold_changed: std::sync::OnceLock::new(),
             on_parties_changed: std::sync::OnceLock::new(),
+            on_appearance_changed: std::sync::OnceLock::new(),
             emergency_records: Arc::new(DashMap::new()),
         }
     }
@@ -176,6 +193,7 @@ impl CallManager {
             on_ended: None,
             on_hold_changed: std::sync::OnceLock::new(),
             on_parties_changed: std::sync::OnceLock::new(),
+            on_appearance_changed: std::sync::OnceLock::new(),
             billing: None,
             emergency_records: Arc::new(DashMap::new()),
         }
@@ -215,6 +233,12 @@ impl CallManager {
     /// first setting stands.
     pub fn set_on_parties_changed(&self, hook: OnPartiesChanged) {
         let _ = self.on_parties_changed.set(hook);
+    }
+
+    /// Set what is told when a call's appearance changes state; the first
+    /// setting stands.
+    pub fn set_on_appearance_changed(&self, hook: OnAppearanceChanged) {
+        let _ = self.on_appearance_changed.set(hook);
     }
 
     /// Set what is told when a call's held leg changes; the first setting
@@ -258,7 +282,15 @@ impl CallManager {
     /// handed to a handler that keeps its own record of it (a conference
     /// node's leg).
     pub fn discard_call(&self, call_id: &CallId) {
-        self.calls.remove(call_id);
+        if let Some((_, call)) = self.calls.remove(call_id) {
+            if let (Some(appearance), Some(hook)) =
+                (call.appearance.clone(), self.on_appearance_changed.get())
+            {
+                if call.appearance_state().is_some() {
+                    hook(*call_id, appearance, None);
+                }
+            }
+        }
         if let Some(on_ended) = &self.on_ended {
             on_ended(call_id);
         }
@@ -531,6 +563,7 @@ impl CallManager {
         let old_state = entry.state;
         let old_held = entry.held;
         let old_users = entry.counted_users();
+        let old_appearance = (entry.appearance.clone(), entry.appearance_state());
 
         update_fn(entry.value_mut());
 
@@ -546,6 +579,20 @@ impl CallManager {
         if old_users != new_users {
             if let Some(hook) = self.on_parties_changed.get() {
                 hook(*call_id, new_users);
+            }
+        }
+        let new_appearance = (entry.appearance.clone(), entry.appearance_state());
+        if old_appearance != new_appearance {
+            if let Some(hook) = self.on_appearance_changed.get() {
+                // An appearance taken off the call leaves its index.
+                if let Some(old) = old_appearance.0.filter(|old| {
+                    old_appearance.1.is_some() && new_appearance.0.as_ref() != Some(old)
+                }) {
+                    hook(*call_id, old, None);
+                }
+                if let Some(appearance) = new_appearance.0 {
+                    hook(*call_id, appearance, new_appearance.1);
+                }
             }
         }
 
@@ -1199,6 +1246,56 @@ mod tests {
         .expect("Failed to create request");
 
         Call::from_invite(request, peer, fcp_core::TenantId::nil())
+    }
+
+    /// A shared line's lamps follow the call (`docs/ENTERPRISE_CALLING.md`
+    /// §3.9): alerting, active, held when the line's phone holds the far
+    /// party (not when the far party holds the line), and gone at the end.
+    #[test]
+    fn an_appearance_is_told_as_its_call_moves() {
+        use crate::call::LegSide;
+        use fcp_core::sca::AppearanceState as S;
+        let manager = CallManager::new();
+        let seen: Arc<std::sync::Mutex<Vec<Option<S>>>> = Arc::default();
+        let sink = Arc::clone(&seen);
+        manager.set_on_appearance_changed(Arc::new(move |_, appearance, state| {
+            assert_eq!(appearance.index, 2);
+            sink.lock().unwrap().push(state);
+        }));
+        let call_id = manager.create_call(create_test_call());
+        let appearance = crate::call::CallAppearance {
+            tenant_id: fcp_core::TenantId::nil(),
+            line_binding_id: fcp_core::LineBindingId::new(),
+            number: "+15550100".into(),
+            index: 2,
+            side: LegSide::B,
+            handoff: "t".into(),
+        };
+        manager
+            .update_call(&call_id, |c| c.appearance = Some(appearance))
+            .unwrap();
+        manager
+            .update_call(&call_id, |c| c.state = CallState::Established)
+            .unwrap();
+        manager
+            .update_call(&call_id, |c| c.held = Some(LegSide::B))
+            .unwrap();
+        manager
+            .update_call(&call_id, |c| c.held = Some(LegSide::A))
+            .unwrap();
+        manager.update_call(&call_id, |c| c.held = None).unwrap();
+        manager.terminate_call(&call_id, None).unwrap();
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![
+                Some(S::Alerting),
+                Some(S::Active),
+                Some(S::Held),
+                Some(S::Active),
+                None
+            ],
+            "the far party holding the line changes nothing"
+        );
     }
 
     #[test]

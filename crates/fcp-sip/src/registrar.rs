@@ -238,7 +238,7 @@ fn from_aor(request: &Request) -> Option<String> {
 
 /// The user part of a request's `From` — who the request says placed it —
 /// or `None` when it names no user.
-fn from_user(request: &Request) -> Option<String> {
+pub(crate) fn from_user(request: &Request) -> Option<String> {
     extract_username_from_aor(&from_aor(request)?)
 }
 

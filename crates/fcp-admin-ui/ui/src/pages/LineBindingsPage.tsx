@@ -64,6 +64,8 @@ const editSchema = z.object({
   schedule_id: z.string().optional(),
   closed_target: z.string().optional(),
   holiday_target: z.string().optional(),
+  shared: z.boolean().optional(),
+  max_appearances: z.coerce.number().int().min(1, 'At least 1').max(24, 'At most 24').optional(),
   tenant_id: z.string().optional(),
 })
 
@@ -168,7 +170,16 @@ export function LineBindingsPage() {
     {
       accessorKey: 'binding_type',
       header: 'Type',
-      cell: ({ row }) => <Badge variant="outline">{formatLabel(row.original.binding_type)}</Badge>,
+      cell: ({ row }) => (
+        <div className="flex gap-1">
+          <Badge variant="outline">{formatLabel(row.original.binding_type)}</Badge>
+          {row.original.shared && (
+            <Badge variant="secondary" title="Shared call appearance">
+              Shared ×{row.original.max_appearances}
+            </Badge>
+          )}
+        </div>
+      ),
     },
     {
       accessorKey: 'flow_id',
@@ -267,6 +278,8 @@ export function LineBindingsPage() {
       schedule_id: editItem.schedule_id || '',
       closed_target: editItem.closed_target || '',
       holiday_target: editItem.holiday_target || '',
+      shared: editItem.shared ?? false,
+      max_appearances: editItem.max_appearances ?? 4,
       tenant_id: editItem.tenant_id ?? '',
     })
   }
@@ -298,6 +311,8 @@ export function LineBindingsPage() {
         closed_target: data.closed_target ?? '',
         holiday_target: data.holiday_target ?? '',
         flow_id: editItem.binding_type === 'ivr' ? (editFlowId || undefined) : undefined,
+        shared: editItem.binding_type === 'user' ? (data.shared ?? false) : undefined,
+        max_appearances: editItem.binding_type === 'user' ? data.max_appearances : undefined,
         tenant_id: data.tenant_id || undefined,
       },
     })
@@ -560,6 +575,37 @@ export function LineBindingsPage() {
             <p className="text-xs text-muted-foreground">
               Forwarding and the ring time are the owner&apos;s calling settings, on the user&apos;s page.
             </p>
+
+            {editItem?.binding_type === 'user' && (
+              <div className="border-t pt-4 mt-2">
+                <h4 className="text-sm font-medium mb-1">Shared line</h4>
+                <p className="text-xs text-muted-foreground mb-3">
+                  Every device above registers the number as an account of its own (its second account when
+                  provisioned) and they share its appearances: a call rings them all, a held call can be picked up
+                  from any. Each device needs credentials of its own unless it is the owner&apos;s.
+                </p>
+                <div className="grid grid-cols-2 gap-4 items-end">
+                  <label className="flex items-center gap-2 text-sm">
+                    <input type="checkbox" {...editForm.register('shared')} />
+                    Shared call appearance
+                  </label>
+                  <div className="space-y-2">
+                    <Label htmlFor="e-max-appearances">Appearances</Label>
+                    <Input
+                      id="e-max-appearances"
+                      type="number"
+                      min="1"
+                      max="24"
+                      disabled={!editForm.watch('shared')}
+                      {...editForm.register('max_appearances')}
+                    />
+                    {editForm.formState.errors.max_appearances && (
+                      <p className="text-sm text-destructive">{editForm.formState.errors.max_appearances.message}</p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
 
             <div className="border-t pt-4 mt-2">
               <h4 className="text-sm font-medium mb-1">Schedule</h4>

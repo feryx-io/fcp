@@ -66,7 +66,11 @@ pub struct ConfigTemplate {
 /// `mac_address`, `device_name`, `model`, `sip_server`, `sip_port`, and (for
 /// devices with an owner) `sip_uri`, `sip_username`, `sip_auth_username`,
 /// `sip_auth_ha1_hash`, `sip_password`, `owner_username`,
-/// `owner_display_name`, `owner_email`.
+/// `owner_display_name`, `owner_email`, and for a device on a shared line
+/// (its second account, `docs/ENTERPRISE_CALLING.md` §3.9)
+/// `shared_line_enabled` (`1` or `0`), `shared_line_yes_no` (`Yes` or
+/// `No`), `shared_line_number`,
+/// `shared_line_appearances`.
 #[derive(Debug, Clone, Copy)]
 pub struct BuiltinTemplate {
     pub vendor: PhoneVendor,
@@ -92,6 +96,19 @@ account.1.password = ${sip_password}
 account.1.sip_server.1.address = ${sip_server}
 account.1.sip_server.1.port = ${sip_port}
 account.1.sip_server.1.transport_type = 0
+
+# Account 2: the shared line the device is on, if any (BroadSoft SCA).
+account.2.enable = ${shared_line_enabled}
+account.2.label = ${shared_line_number}
+account.2.display_name = ${shared_line_number}
+account.2.user_name = ${shared_line_number}
+account.2.auth_name = ${sip_auth_username}
+account.2.password = ${sip_password}
+account.2.sip_server.1.address = ${sip_server}
+account.2.sip_server.1.port = ${sip_port}
+account.2.sip_server.1.transport_type = 0
+account.2.shared_line = 1
+account.2.line_seize.expires = 15
 ";
 
     const POLYCOM: &str = r#"<?xml version="1.0" encoding="utf-8" standalone="yes"?>
@@ -106,6 +123,16 @@ account.1.sip_server.1.transport_type = 0
     reg.1.server.1.address="${sip_server}"
     reg.1.server.1.port="${sip_port}"
     reg.1.server.1.transport="UDPOnly"
+    reg.2.address="${shared_line_number}"
+    reg.2.displayName="${shared_line_number}"
+    reg.2.label="${shared_line_number}"
+    reg.2.type="shared"
+    reg.2.lineKeys="${shared_line_appearances}"
+    reg.2.auth.userId="${sip_auth_username}"
+    reg.2.auth.password="${sip_password}"
+    reg.2.server.1.address="${sip_server}"
+    reg.2.server.1.port="${sip_port}"
+    reg.2.server.1.transport="UDPOnly"
   />
 </PHONE_CONFIG>
 "#;
@@ -126,6 +153,15 @@ account.1.sip_server.1.transport_type = 0
     <P36>${sip_auth_username}</P36>
     <!-- Authenticate password -->
     <P34>${sip_password}</P34>
+    <!-- Account 2: the shared line the device is on, if any. Turn on
+         "Shared Call Appearance" (BroadSoft SCA) for it in the account's
+         SIP settings: its P-value differs between models. -->
+    <P401>${shared_line_enabled}</P401>
+    <P417>${shared_line_number}</P417>
+    <P402>${sip_server}</P402>
+    <P404>${shared_line_number}</P404>
+    <P405>${sip_auth_username}</P405>
+    <P406>${sip_password}</P406>
   </config>
 </gs_provision>
 "#;
@@ -141,6 +177,16 @@ account.1.sip_server.1.transport_type = 0
   <Password_1_ ua="na">${sip_password}</Password_1_>
   <Proxy_1_ ua="na">${sip_server}</Proxy_1_>
   <Register_1_ ua="na">Yes</Register_1_>
+  <!-- Line 2: the shared line the device is on, if any. -->
+  <Line_Enable_2_ ua="na">${shared_line_yes_no}</Line_Enable_2_>
+  <Display_Name_2_ ua="na">${shared_line_number}</Display_Name_2_>
+  <User_ID_2_ ua="na">${shared_line_number}</User_ID_2_>
+  <Shared_User_ID_2_ ua="na">${shared_line_number}</Shared_User_ID_2_>
+  <Share_Ext_2_ ua="na">shared</Share_Ext_2_>
+  <Use_Auth_ID_2_ ua="na">Yes</Use_Auth_ID_2_>
+  <Auth_ID_2_ ua="na">${sip_auth_username}</Auth_ID_2_>
+  <Password_2_ ua="na">${sip_password}</Password_2_>
+  <Proxy_2_ ua="na">${sip_server}</Proxy_2_>
 </flat-profile>
 "#;
 
@@ -201,6 +247,10 @@ mod tests {
             "owner_display_name",
             "owner_email",
             "owner_user_id",
+            "shared_line_enabled",
+            "shared_line_yes_no",
+            "shared_line_number",
+            "shared_line_appearances",
         ];
         for template in builtin_templates() {
             let body = template.body;

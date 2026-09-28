@@ -300,6 +300,23 @@ pub enum LegSide {
     B,
 }
 
+/// The appearance of a shared line a call is (`docs/ENTERPRISE_CALLING.md`
+/// §3.9): the line, the index its phones show it at, and the call's leg
+/// that is the line's — A for a call a phone placed from it, B for a call
+/// to it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallAppearance {
+    pub tenant_id: fcp_core::TenantId,
+    pub line_binding_id: fcp_core::LineBindingId,
+    /// The line's number, E.164.
+    pub number: String,
+    pub index: u8,
+    pub side: LegSide,
+    /// What a retrieve forwarded from another node must carry
+    /// (`X-FCP-Node-Handoff`).
+    pub handoff: String,
+}
+
 impl LegSide {
     /// The side of a leg: `true` for A.
     pub fn of(is_a_leg: bool) -> Self {
@@ -329,6 +346,32 @@ impl LegSide {
 impl Call {
     /// The users this call counts against: its parties that are users,
     /// while it is up (established or parked).
+    /// The state of the call's appearance, as the line's phones should
+    /// show it; `None` when it is not one, or no longer occupies its index
+    /// (ended, or parked away from the line).
+    pub fn appearance_state(&self) -> Option<fcp_core::sca::AppearanceState> {
+        use fcp_core::sca::AppearanceState as S;
+        let appearance = self.appearance.as_ref()?;
+        match self.state {
+            CallState::Initiated
+            | CallState::RoutingPending
+            | CallState::LookingUpDestination
+            | CallState::Inviting
+            | CallState::Proceeding => Some(match appearance.side {
+                LegSide::A => S::Progressing,
+                LegSide::B => S::Alerting,
+            }),
+            // The line's phone holding its far party lights the key held
+            // on every phone; the far party holding the line does not.
+            CallState::Established if self.held == Some(appearance.side.other()) => Some(S::Held),
+            CallState::Established => Some(S::Active),
+            CallState::Parked
+            | CallState::Terminating
+            | CallState::Terminated
+            | CallState::Failed => None,
+        }
+    }
+
     pub fn counted_users(&self) -> Vec<fcp_core::UserId> {
         if !matches!(self.state, CallState::Established | CallState::Parked) {
             return Vec::new();
@@ -517,6 +560,10 @@ pub struct Call {
     /// `inactive`, or the node held it (a parked party).
     pub held: Option<LegSide>,
 
+    /// The appearance of a shared line this call is, and which of its legs
+    /// is the line's (`docs/ENTERPRISE_CALLING.md` §3.9).
+    pub appearance: Option<CallAppearance>,
+
     /// Caller's phone number or extension.
     pub caller_number: Option<String>,
 
@@ -620,6 +667,7 @@ impl Call {
             callee_user_id: None,
             treatments: None,
             held: None,
+            appearance: None,
             caller_user_id: None,
             find_me_steps: Vec::new(),
             confirm_targets: Vec::new(),
@@ -731,6 +779,7 @@ impl Call {
             callee_user_id: None,
             treatments: None,
             held: None,
+            appearance: None,
             caller_user_id: None,
             find_me_steps: Vec::new(),
             confirm_targets: Vec::new(),

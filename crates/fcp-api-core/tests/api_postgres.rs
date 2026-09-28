@@ -1101,6 +1101,137 @@ async fn provisioning_renders_the_template_for_an_authorized_phone() {
     app.finish().await;
 }
 
+/// A shared line (`docs/ENTERPRISE_CALLING.md` §3.9): set on a user's
+/// line through the API, refused on a number that is not a user's, and
+/// rendered as the second account of every device bound to it.
+#[tokio::test]
+async fn a_shared_line_is_set_through_the_api_and_provisioned_as_a_second_account() {
+    let app = require_app!();
+    let owner = app.create_user("dana", Some("Sip-Secret-456")).await;
+    let (device, token) = app
+        .create_phone("Dana's phone", "AA:BB:CC:DD:EE:31", Some(&owner))
+        .await;
+    let template = app
+        .create_template(
+            app.tenant_a,
+            "account.2.enable=${shared_line_enabled}\n\
+             account.2.user_name=${shared_line_number}\n\
+             keys=${shared_line_appearances}\n\
+             cisco=${shared_line_yes_no}\n",
+        )
+        .await;
+    let attached = app
+        .patch_device(&device, json!({ "config_template_id": template }))
+        .await;
+    assert_eq!(attached.status, StatusCode::OK, "{}", attached.text);
+
+    // On no shared line, the second account is off and nothing is left
+    // unrendered.
+    let off = app.provision("aabbccddee31", Some(&token)).await;
+    assert_eq!(off.status, StatusCode::OK, "{}", off.text);
+    assert!(off.text.contains("account.2.enable=0"), "{}", off.text);
+    assert!(
+        off.text.contains("keys=0") && off.text.contains("cisco=No"),
+        "{}",
+        off.text
+    );
+    assert!(!off.text.contains("${"), "{}", off.text);
+
+    let number = app
+        .admin(
+            Method::POST,
+            "/api/v1/phone-numbers",
+            Some(json!({ "e164": "+15550003333", "tenant_id": app.tenant_a })),
+        )
+        .await;
+    assert_eq!(number.status, StatusCode::CREATED, "{}", number.text);
+    let refused = app
+        .admin(
+            Method::POST,
+            "/api/v1/line-bindings",
+            Some(json!({
+                "phone_number_id": number.json["id"],
+                "binding_type": "voicemail",
+                "tenant_id": app.tenant_a,
+                "shared": true,
+            })),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.text);
+
+    let binding = app
+        .admin(
+            Method::POST,
+            "/api/v1/line-bindings",
+            Some(json!({
+                "phone_number_id": number.json["id"],
+                "owner_user_id": owner,
+                "binding_type": "user",
+                "tenant_id": app.tenant_a,
+                "devices": [{
+                    "device_id": device,
+                    "priority": 1,
+                    "line_appearance": 2,
+                    "shared_line": true,
+                    "enabled": true,
+                }],
+                "shared": true,
+                "max_appearances": 3,
+            })),
+        )
+        .await;
+    assert_eq!(binding.status, StatusCode::CREATED, "{}", binding.text);
+    assert_eq!(binding.json["shared"], true);
+    assert_eq!(binding.json["max_appearances"], 3);
+    let binding_id = binding.json["id"].as_str().expect("binding id").to_string();
+
+    let too_many = app
+        .admin(
+            Method::PATCH,
+            &format!("/api/v1/line-bindings/{binding_id}"),
+            Some(json!({ "max_appearances": 30 })),
+        )
+        .await;
+    assert_eq!(
+        too_many.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        too_many.text
+    );
+
+    let on = app.provision("aabbccddee31", Some(&token)).await;
+    assert_eq!(on.status, StatusCode::OK, "{}", on.text);
+    assert!(on.text.contains("account.2.enable=1"), "{}", on.text);
+    assert!(
+        on.text.contains("account.2.user_name=+15550003333"),
+        "{}",
+        on.text
+    );
+    assert!(
+        on.text.contains("keys=3") && on.text.contains("cisco=Yes"),
+        "{}",
+        on.text
+    );
+
+    let unshared = app
+        .admin(
+            Method::PATCH,
+            &format!("/api/v1/line-bindings/{binding_id}"),
+            Some(json!({ "shared": false })),
+        )
+        .await;
+    assert_eq!(unshared.status, StatusCode::OK, "{}", unshared.text);
+    assert_eq!(unshared.json["shared"], false);
+    let off_again = app.provision("aabbccddee31", Some(&token)).await;
+    assert!(
+        off_again.text.contains("account.2.enable=0"),
+        "{}",
+        off_again.text
+    );
+
+    app.finish().await;
+}
+
 #[tokio::test]
 async fn provisioning_failures_are_indistinguishable_404s() {
     let app = require_app!();

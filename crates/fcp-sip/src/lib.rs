@@ -38,6 +38,7 @@ pub mod recording;
 pub mod registrar;
 pub mod registration_cache;
 pub mod ring_plan;
+pub mod sca;
 pub mod service;
 pub mod settings;
 pub mod transfer;

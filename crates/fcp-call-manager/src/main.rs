@@ -47,8 +47,23 @@ use cli::Cli;
 use config::CallManagerConfig;
 use fcp_sip::presence::{extract_aor, SipPresenceHandler};
 
-#[tokio::main]
-async fn main() -> Result<()> {
+/// Each runtime worker's stack. The call path's futures nest deep — a
+/// call forwarded back through this node relays its answer through two
+/// B2BUA layers, each with its forking, plan and appearance steps — and a
+/// debug build's frames overflowed tokio's 2 MiB default there
+/// (`docs/ENTERPRISE_CALLING.md` phase 9). Eight leaves room.
+const WORKER_STACK_BYTES: usize = 8 * 1024 * 1024;
+
+fn main() -> Result<()> {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_stack_size(WORKER_STACK_BYTES)
+        .build()
+        .context("Failed to start the runtime")?
+        .block_on(run())
+}
+
+async fn run() -> Result<()> {
     // 1. Parse CLI arguments
     let cli = Cli::parse();
 
@@ -897,6 +912,55 @@ async fn main() -> Result<()> {
     let user_calls = fcp_sip::user_calls::UserCalls::new(user_call_count, &call_manager);
     user_calls.install(&call_manager, Duration::from_secs(600));
 
+    // Shared lines' appearances (docs/ENTERPRISE_CALLING.md §3.9): in the
+    // cluster's Redis where there is a cluster, so every node's phones see
+    // every node's calls; this node's own otherwise.
+    let sca = {
+        let table: Arc<dyn fcp_sip::sca::AppearanceTable> = {
+            #[cfg(feature = "storage-redis")]
+            {
+                match redis_storage.clone().filter(|_| config.cluster.enabled) {
+                    Some(redis) => {
+                        info!("Shared lines' appearances are kept across the cluster");
+                        Arc::new(RedisLineAppearances(fcp_cluster::LineAppearances::new(
+                            redis,
+                        )))
+                    }
+                    None => Arc::new(fcp_sip::sca::LocalAppearances::default()),
+                }
+            }
+            #[cfg(not(feature = "storage-redis"))]
+            {
+                Arc::new(fcp_sip::sca::LocalAppearances::default())
+            }
+        };
+        let sip_address = fcp_core::transport::advertised_address(
+            config
+                .sip
+                .udp_bind
+                .parse()
+                .unwrap_or_else(|_| "0.0.0.0:5060".parse().unwrap()),
+            config.sip.local_ip.as_deref(),
+        );
+        let sca = fcp_sip::sca::Sca::new(
+            table,
+            Arc::clone(&dyn_storage),
+            Arc::clone(&uac),
+            registrar.clone(),
+            config.service.node_id.clone(),
+            sip_address.to_string(),
+        );
+        sca.install(&call_manager);
+        spawn_sca_listener(Arc::clone(&sca), Arc::clone(&event_bus));
+        if config.cluster.enabled && !config.events.use_redis {
+            warn!(
+                "[cluster] is on but [events] use_redis is off: a shared line's phones are \
+                 shown only the calls of the node they watch through"
+            );
+        }
+        sca
+    };
+
     // Hold music (docs/ENTERPRISE_CALLING.md §3.3): the built-in default in
     // `prompts_dir`, and the player driven by every change of a held leg.
     if config.media.hold_music {
@@ -1424,6 +1488,7 @@ async fn main() -> Result<()> {
     .with_default_tenant_id(default_tenant_id)
     .with_user_calls(Arc::clone(&user_calls))
     .with_hoteling(Arc::clone(&hoteling))
+    .with_sca(Arc::clone(&sca))
     .with_trusted_edges(fcp_sip::emergency::TrustedEdges::parse(
         &config.e911.trusted_edges,
     )?)
@@ -3188,6 +3253,26 @@ async fn resolve_device_aor_to_extension_aors(
 /// Subscribe to call and registration events, update presence accordingly.
 /// The hoteling sweep, and the phones of sessions the API ended told to
 /// re-read their configuration (`docs/ENTERPRISE_CALLING.md` §3.8).
+/// Another node's change to a shared line reaches this node's watchers
+/// (`line.appearance_changed`, docs/ENTERPRISE_CALLING.md §3.9).
+fn spawn_sca_listener(sca: Arc<fcp_sip::sca::Sca>, event_bus: Arc<InMemoryEventBus>) {
+    tokio::spawn(async move {
+        let filter = EventFilter::new().types(vec![EventType::Presence]);
+        let mut stream = match event_bus.subscribe(filter).await {
+            Ok(stream) => stream,
+            Err(e) => {
+                warn!(error = %e, "Shared lines: no event subscription; other nodes' calls do not light this node's phones");
+                return;
+            }
+        };
+        while let Some(event) = stream.next().await {
+            if let fcp_events::PlatformEvent::Presence(presence) = &event {
+                sca.on_event(presence).await;
+            }
+        }
+    });
+}
+
 fn spawn_hoteling(
     hoteling: Arc<fcp_sip::hoteling::Hoteling>,
     event_bus: Arc<InMemoryEventBus>,
@@ -3872,6 +3957,56 @@ async fn run_presence_notifier(
                 }
             }
         }
+    }
+}
+
+/// A shared line's appearances in the cluster's Redis
+/// (`docs/ENTERPRISE_CALLING.md` §3.9).
+#[cfg(feature = "storage-redis")]
+struct RedisLineAppearances(fcp_cluster::LineAppearances);
+
+#[cfg(feature = "storage-redis")]
+#[async_trait::async_trait]
+impl fcp_sip::sca::AppearanceTable for RedisLineAppearances {
+    async fn list(
+        &self,
+        tenant: &fcp_core::TenantId,
+        line: &fcp_core::LineBindingId,
+    ) -> anyhow::Result<Vec<fcp_core::sca::Appearance>> {
+        self.0.list(&tenant.to_string(), &line.to_string()).await
+    }
+
+    async fn claim(
+        &self,
+        tenant: &fcp_core::TenantId,
+        line: &fcp_core::LineBindingId,
+        index: Option<u8>,
+        max: u8,
+        entry: fcp_core::sca::Appearance,
+        replacing: Option<&str>,
+    ) -> anyhow::Result<Option<u8>> {
+        self.0
+            .claim(
+                &tenant.to_string(),
+                &line.to_string(),
+                index,
+                max,
+                entry,
+                replacing,
+            )
+            .await
+    }
+
+    async fn release(
+        &self,
+        tenant: &fcp_core::TenantId,
+        line: &fcp_core::LineBindingId,
+        index: u8,
+        owner: &str,
+    ) -> anyhow::Result<()> {
+        self.0
+            .release(&tenant.to_string(), &line.to_string(), index, owner)
+            .await
     }
 }
 

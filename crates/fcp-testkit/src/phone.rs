@@ -50,9 +50,12 @@ pub enum PhoneEvent {
     /// A NOTIFY with this body, answered 200.
     Notify {
         call_id: String,
-        /// The `Event` header: `refer`, `check-sync`, `message-summary`.
+        /// The `Event` header: `refer`, `check-sync`, `message-summary`,
+        /// `call-info`, `line-seize`.
         event: String,
         body: String,
+        /// The `Call-Info` header: a shared line's lamps.
+        call_info: Option<String>,
     },
 }
 
@@ -438,6 +441,19 @@ fn multipart_of(request: &Request) -> Option<sip_core::MultipartBody> {
     sip_core::MultipartBody::parse(content_type.as_str(), request.body()).ok()
 }
 
+/// A subscription a [`Phone`] made: enough to refresh or end it.
+#[derive(Debug, Clone)]
+pub struct PhoneSubscription {
+    pub target: String,
+    pub event: String,
+    pub call_id: String,
+    pub from_tag: String,
+    pub to_tag: Option<String>,
+    pub cseq: u32,
+    /// The last final response's status.
+    pub code: u16,
+}
+
 /// A SIP phone on loopback.
 pub struct Phone {
     pub username: String,
@@ -791,6 +807,130 @@ impl Phone {
             .map_err(|e| anyhow!("body: {e}"))?;
         }
         self.inner.place_call_with_body(target, body, extra).await
+    }
+
+    /// SUBSCRIBE to `event` at `target` (a bare name is at the server),
+    /// with a `Call-Info` header when given: what a shared-line phone
+    /// sends for `call-info` and `line-seize` (`docs/ENTERPRISE_CALLING.md`
+    /// §3.9). The NOTIFYs arrive as [`PhoneEvent::Notify`].
+    pub async fn subscribe(
+        &self,
+        target: &str,
+        event: &str,
+        expires: u32,
+        call_info: Option<&str>,
+    ) -> Result<PhoneSubscription> {
+        let target = if target.starts_with("sip:") || target.starts_with("sips:") {
+            target.to_string()
+        } else {
+            format!("sip:{target}@{}{}", self.server, self.inner.transport_param)
+        };
+        let mut sub = PhoneSubscription {
+            target,
+            event: event.to_string(),
+            call_id: format!("{}@{}", uuid::Uuid::new_v4().simple(), self.local_addr.ip()),
+            from_tag: uuid::Uuid::new_v4().simple().to_string()[..10].to_string(),
+            to_tag: None,
+            cseq: 0,
+            code: 0,
+        };
+        sub.code = self.send_subscribe(&mut sub, expires, call_info).await?;
+        Ok(sub)
+    }
+
+    /// Refresh `sub` for `expires` seconds (0 ends it), inside its dialog.
+    pub async fn resubscribe(
+        &self,
+        sub: &mut PhoneSubscription,
+        expires: u32,
+        call_info: Option<&str>,
+    ) -> Result<u16> {
+        sub.code = self.send_subscribe(sub, expires, call_info).await?;
+        Ok(sub.code)
+    }
+
+    async fn send_subscribe(
+        &self,
+        sub: &mut PhoneSubscription,
+        expires: u32,
+        call_info: Option<&str>,
+    ) -> Result<u16> {
+        sub.cseq += 1;
+        let uri = SipUri::parse(&sub.target).map_err(|e| anyhow!("target: {e}"))?;
+        let mut headers = sip_core::Headers::new();
+        let mut push = |name: &str, value: String| {
+            headers
+                .push(name, value)
+                .map_err(|e| anyhow!("header {name}: {e}"))
+        };
+        push(
+            "Via",
+            format!(
+                "SIP/2.0/UDP placeholder;branch=z9hG4bK{}",
+                uuid::Uuid::new_v4().simple()
+            ),
+        )?;
+        push("Max-Forwards", "70".into())?;
+        push(
+            "From",
+            format!(
+                "<sip:{}@{}>;tag={}",
+                self.username, self.realm, sub.from_tag
+            ),
+        )?;
+        push(
+            "To",
+            match &sub.to_tag {
+                Some(tag) => format!("<{}>;tag={tag}", sub.target),
+                None => format!("<{}>", sub.target),
+            },
+        )?;
+        push("Call-ID", sub.call_id.clone())?;
+        push("CSeq", format!("{} SUBSCRIBE", sub.cseq))?;
+        push(
+            "Contact",
+            format!(
+                "<sip:{}@{}{}>",
+                self.username, self.local_addr, self.inner.transport_param
+            ),
+        )?;
+        push("Event", sub.event.clone())?;
+        push("Expires", expires.to_string())?;
+        if let Some(value) = call_info {
+            push("Call-Info", value.to_string())?;
+        }
+        push("Content-Length", "0".into())?;
+        let request = Request::new(
+            sip_core::RequestLine::new(sip_core::Method::Subscribe, uri),
+            headers,
+            Bytes::new(),
+        )
+        .map_err(|e| anyhow!("SUBSCRIBE: {e}"))?;
+        let server = SipUri::parse(&format!(
+            "sip:{}{}",
+            self.server, self.inner.transport_param
+        ))
+        .map_err(|e| anyhow!("server: {e}"))?;
+        let response = tokio::time::timeout(
+            Duration::from_secs(10),
+            self.uac()
+                .send_request(request, sip_uac::integrated::RequestTarget::Uri(server)),
+        )
+        .await
+        .context("SUBSCRIBE timed out")??;
+        if response.start_line().is_success() && sub.to_tag.is_none() {
+            sub.to_tag = sip_parse::header(response.headers(), "To").and_then(|to| {
+                to.rsplit_once("tag=")
+                    .map(|(_, t)| t.split(';').next().unwrap_or(t).trim().to_string())
+            });
+        }
+        // A digest retry is sent with the next CSeq.
+        if let Some(cseq) = sip_parse::header(response.headers(), "CSeq")
+            .and_then(|c| c.split_whitespace().next().and_then(|n| n.parse().ok()))
+        {
+            sub.cseq = sub.cseq.max(cseq);
+        }
+        Ok(response.start_line().code())
     }
 
     /// Every REGISTER this phone has accepted, in order: a carrier's view
@@ -1484,10 +1624,12 @@ impl UasRequestHandler for Handler {
         let event = sip_parse::header(request.headers(), "Event")
             .map(|v| v.to_string())
             .unwrap_or_default();
+        let call_info = sip_parse::header(request.headers(), "Call-Info").map(|v| v.to_string());
         self.0.emit(PhoneEvent::Notify {
             call_id,
             event,
             body: String::from_utf8_lossy(request.body()).to_string(),
+            call_info,
         });
         Ok(())
     }

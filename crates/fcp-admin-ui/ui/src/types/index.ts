@@ -392,6 +392,9 @@ export interface LineBinding {
   schedule_id: string | null
   closed_target: string | null
   holiday_target: string | null
+  /** A shared line: its devices share its appearances (BroadSoft SCA). */
+  shared: boolean
+  max_appearances: number
   created_at: string
   updated_at: string
 }
@@ -415,6 +418,8 @@ export interface UpdateLineBindingRequest {
   schedule_id?: string
   closed_target?: string
   holiday_target?: string
+  shared?: boolean
+  max_appearances?: number
   tenant_id?: string
 }
 

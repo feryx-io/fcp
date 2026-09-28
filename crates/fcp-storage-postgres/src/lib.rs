@@ -3378,7 +3378,8 @@ impl LineBindingStore for PostgresStorage {
         let row = sqlx::query(
             "SELECT id, phone_number_id, owner_user_id, binding_type, ring_strategy, tenant_id,
                     outbound_caller_id, outbound_cnam,
-                    flow_id, schedule_id, closed_target, holiday_target, created_at, updated_at
+                    flow_id, schedule_id, closed_target, holiday_target, shared, max_appearances,
+                    created_at, updated_at
              FROM line_bindings
              WHERE id = $1",
         )
@@ -3404,7 +3405,8 @@ impl LineBindingStore for PostgresStorage {
         let row = sqlx::query(
             "SELECT id, phone_number_id, owner_user_id, binding_type, ring_strategy, tenant_id,
                     outbound_caller_id, outbound_cnam,
-                    flow_id, schedule_id, closed_target, holiday_target, created_at, updated_at
+                    flow_id, schedule_id, closed_target, holiday_target, shared, max_appearances,
+                    created_at, updated_at
              FROM line_bindings
              WHERE phone_number_id = $1",
         )
@@ -3426,7 +3428,8 @@ impl LineBindingStore for PostgresStorage {
         let rows = sqlx::query(
             "SELECT id, phone_number_id, owner_user_id, binding_type, ring_strategy, tenant_id,
                     outbound_caller_id, outbound_cnam,
-                    flow_id, schedule_id, closed_target, holiday_target, created_at, updated_at
+                    flow_id, schedule_id, closed_target, holiday_target, shared, max_appearances,
+                    created_at, updated_at
              FROM line_bindings
              WHERE tenant_id = $1
              ORDER BY created_at",
@@ -3449,7 +3452,8 @@ impl LineBindingStore for PostgresStorage {
         let rows = sqlx::query(
             "SELECT id, phone_number_id, owner_user_id, binding_type, ring_strategy, tenant_id,
                     outbound_caller_id, outbound_cnam,
-                    flow_id, schedule_id, closed_target, holiday_target, created_at, updated_at
+                    flow_id, schedule_id, closed_target, holiday_target, shared, max_appearances,
+                    created_at, updated_at
              FROM line_bindings
              WHERE owner_user_id = $1
              ORDER BY created_at",
@@ -3473,6 +3477,7 @@ impl LineBindingStore for PostgresStorage {
             "SELECT lb.id, lb.phone_number_id, lb.owner_user_id, lb.binding_type, lb.ring_strategy, lb.tenant_id,
                     lb.outbound_caller_id, lb.outbound_cnam,
                     lb.flow_id, lb.schedule_id, lb.closed_target, lb.holiday_target,
+                    lb.shared, lb.max_appearances,
                     lb.created_at, lb.updated_at
              FROM line_bindings lb
              INNER JOIN device_bindings db ON lb.id = db.line_binding_id
@@ -3508,10 +3513,12 @@ impl LineBindingStore for PostgresStorage {
                 id, phone_number_id, owner_user_id, binding_type, ring_strategy, tenant_id,
                 outbound_caller_id, outbound_cnam,
                 flow_id, created_at, updated_at,
-                schedule_id, closed_target, holiday_target
+                schedule_id, closed_target, holiday_target, shared, max_appearances
              )
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
              ON CONFLICT(id) DO UPDATE SET
+                 shared = EXCLUDED.shared,
+                 max_appearances = EXCLUDED.max_appearances,
                  schedule_id = EXCLUDED.schedule_id,
                  closed_target = EXCLUDED.closed_target,
                  holiday_target = EXCLUDED.holiday_target,
@@ -3535,6 +3542,8 @@ impl LineBindingStore for PostgresStorage {
         .bind(binding.schedule_id.map(|id| id.to_string()))
         .bind(binding.closed_target.as_ref().map(|t| t.to_string()))
         .bind(binding.holiday_target.as_ref().map(|t| t.to_string()))
+        .bind(binding.shared)
+        .bind(i16::from(binding.max_appearances))
         .execute(self.writes())
         .await?;
 
@@ -4451,6 +4460,12 @@ fn row_to_line_binding(row: sqlx::postgres::PgRow) -> Result<LineBinding> {
             .ok()
             .flatten()
             .and_then(|t| fcp_core::CallTarget::parse(&t).ok()),
+        shared: row.try_get("shared").unwrap_or(false),
+        max_appearances: row
+            .try_get::<i16, _>("max_appearances")
+            .ok()
+            .and_then(|n| u8::try_from(n).ok())
+            .unwrap_or(fcp_core::line_binding::DEFAULT_MAX_APPEARANCES),
         created_at,
         updated_at,
     })
