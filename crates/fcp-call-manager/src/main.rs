@@ -877,10 +877,18 @@ async fn run() -> Result<()> {
             .context("Failed to start the CDR spool")?
     };
     call_manager_inner.set_cdr_writer(cdr_writer.clone());
+    // Calls with a supervisor (docs/ENTERPRISE_CALLING.md §3.11), built once
+    // the call manager is shared; a call that ends lets its supervisor go.
+    let supervisions_slot: Arc<std::sync::OnceLock<Arc<fcp_sip::supervision::Supervisions>>> =
+        Arc::new(std::sync::OnceLock::new());
     {
         let trunk_calls = Arc::clone(&trunk_calls);
         let admission = Arc::clone(&admission);
+        let supervisions = Arc::clone(&supervisions_slot);
         call_manager_inner.set_on_ended(Arc::new(move |call_id| {
+            if let Some(supervisions) = supervisions.get() {
+                supervisions.ended(call_id);
+            }
             let id = call_id.to_string();
             fcp_sip::trunk_ingress::TrunkCallCounter::ended(&*trunk_calls, &id);
             // The place the call held on this node and against its tenant
@@ -889,6 +897,14 @@ async fn run() -> Result<()> {
         }));
     }
     let call_manager = Arc::new(call_manager_inner);
+    let supervisions = fcp_sip::supervision::Supervisions::new(
+        Arc::clone(&call_manager),
+        Arc::clone(&media_manager),
+        Arc::clone(&uac),
+        Some(Arc::clone(&dyn_storage)),
+        registrar.clone(),
+    );
+    let _ = supervisions_slot.set(Arc::clone(&supervisions));
 
     // Each user's calls, for call waiting (docs/ENTERPRISE_CALLING.md
     // §3.4): leases in the cluster's Redis when there is a cluster, so a
@@ -1489,6 +1505,7 @@ async fn run() -> Result<()> {
     .with_user_calls(Arc::clone(&user_calls))
     .with_hoteling(Arc::clone(&hoteling))
     .with_sca(Arc::clone(&sca))
+    .with_supervisions(Arc::clone(&supervisions))
     .with_trusted_edges(fcp_sip::emergency::TrustedEdges::parse(
         &config.e911.trusted_edges,
     )?)
@@ -1740,6 +1757,7 @@ async fn run() -> Result<()> {
         pbx_handler: pbx_handler.clone(),
         cluster_parking: cluster_parking.clone(),
         call_recorder: Arc::clone(&call_recorder),
+        supervisions: Some(Arc::clone(&supervisions)),
         trunks: config.trunks.clone(),
         trunk_health,
         trunk_set: Some(Arc::clone(&trunk_set)),

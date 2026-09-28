@@ -344,6 +344,31 @@ pub enum CallEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         node_id: Option<String>,
     },
+
+    /// A supervisor joined the call (`docs/ENTERPRISE_CALLING.md` §3.11):
+    /// `mode` is `monitor`, `whisper` or `barge`; `party` the supervisor's
+    /// address, `user_id` theirs when a user.
+    PartyJoined {
+        call_id: CallId,
+        mode: String,
+        party: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        user_id: Option<String>,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        node_id: Option<String>,
+    },
+
+    /// The supervisor left (hung up, was removed, or the call ended).
+    PartyLeft {
+        call_id: CallId,
+        party: String,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        node_id: Option<String>,
+    },
 }
 
 /// Media-related events.
@@ -1583,6 +1608,8 @@ impl PlatformEvent {
                 CallEvent::Unparked { .. } => "call.unparked",
                 CallEvent::Held { .. } => "call.held",
                 CallEvent::Resumed { .. } => "call.resumed",
+                CallEvent::PartyJoined { .. } => "call.party_joined",
+                CallEvent::PartyLeft { .. } => "call.party_left",
             },
             PlatformEvent::Media(e) => match e {
                 MediaEvent::SessionStarted { .. } => "media.session_started",
@@ -1976,7 +2003,9 @@ impl CallEvent {
             | CallEvent::Parked { call_id, .. }
             | CallEvent::Unparked { call_id, .. }
             | CallEvent::Held { call_id, .. }
-            | CallEvent::Resumed { call_id, .. } => Some(call_id),
+            | CallEvent::Resumed { call_id, .. }
+            | CallEvent::PartyJoined { call_id, .. }
+            | CallEvent::PartyLeft { call_id, .. } => Some(call_id),
         }
     }
 
@@ -1992,7 +2021,9 @@ impl CallEvent {
             | CallEvent::Parked { timestamp, .. }
             | CallEvent::Unparked { timestamp, .. }
             | CallEvent::Held { timestamp, .. }
-            | CallEvent::Resumed { timestamp, .. } => *timestamp,
+            | CallEvent::Resumed { timestamp, .. }
+            | CallEvent::PartyJoined { timestamp, .. }
+            | CallEvent::PartyLeft { timestamp, .. } => *timestamp,
             CallEvent::Answered { answer_time, .. } => *answer_time,
             CallEvent::Ended { end_time, .. } => *end_time,
         }

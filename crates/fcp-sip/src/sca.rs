@@ -798,7 +798,13 @@ impl Sca {
         let index = match wanted {
             Some(AppearanceIndex::Index(i)) => {
                 match appearances.iter().find(|a| a.index == i && !a.lapsed(now)) {
-                    Some(a) if a.state == AppearanceState::Held => {
+                    // A held appearance is picked up; an active one is barged
+                    // into where the line allows it (§3.11). The call takes
+                    // the INVITE either way and decides which.
+                    Some(a)
+                        if a.state == AppearanceState::Held
+                            || (a.state == AppearanceState::Active && line.binding.barge_in) =>
+                    {
                         let Some(held_call) =
                             a.call_id().and_then(|c| c.parse::<fcp_core::CallId>().ok())
                         else {

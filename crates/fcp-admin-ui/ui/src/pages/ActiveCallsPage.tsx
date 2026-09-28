@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 import {
   PhoneOff, Pause, Play, ArrowRightLeft, ArrowUpDown,
-  Phone, RefreshCw, FileText,
+  Phone, RefreshCw, FileText, Headphones,
 } from 'lucide-react'
 import { DataTable } from '@/components/DataTable'
 import { Button } from '@/components/ui/button'
@@ -34,6 +34,10 @@ export function ActiveCallsPage() {
   const [transferDialog, setTransferDialog] = useState<string | null>(null)
   const [transferTarget, setTransferTarget] = useState('')
   const [selectedCall, setSelectedCall] = useState<CallInfo | null>(null)
+  const [superviseCall, setSuperviseCall] = useState<string | null>(null)
+  const [supervisor, setSupervisor] = useState('')
+  const [superviseMode, setSuperviseMode] = useState<'monitor' | 'whisper' | 'barge'>('monitor')
+  const [heardBy, setHeardBy] = useState<'a' | 'b'>('b')
   const queryClient = useQueryClient()
   const { connected } = useWebSocketStore()
 
@@ -66,6 +70,17 @@ export function ActiveCallsPage() {
       setTransferDialog(null)
       setTransferTarget('')
     },
+  })
+
+  // A supervisor on the call (docs/ENTERPRISE_CALLING.md §3.11).
+  const superviseMutation = useMutation({
+    mutationFn: ({ callId }: { callId: string }) =>
+      calls.supervise(callId, superviseMode, supervisor.trim(), superviseMode === 'whisper' ? heardBy : undefined),
+    onSuccess: () => setSuperviseCall(null),
+  })
+  const leaveMutation = useMutation({
+    mutationFn: calls.leaveSupervisor,
+    onSuccess: () => setSuperviseCall(null),
   })
 
   const columns: ColumnDef<CallInfo>[] = [
@@ -165,6 +180,20 @@ export function ActiveCallsPage() {
                 <Play className="h-4 w-4" />
               </Button>
             )}
+            {isActive && call.media_anchored && (
+              <Button
+                variant="ghost"
+                size="icon"
+                title="Supervise"
+                onClick={() => {
+                  setSuperviseCall(call.id)
+                  superviseMutation.reset()
+                  leaveMutation.reset()
+                }}
+              >
+                <Headphones className="h-4 w-4" />
+              </Button>
+            )}
             {(isActive || isHeld) && (
               <Button
                 variant="ghost"
@@ -261,6 +290,79 @@ export function ActiveCallsPage() {
                 }}
               >
                 {transferMutation.isPending ? 'Transferring...' : 'Transfer'}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Supervise Dialog */}
+      <Dialog open={!!superviseCall} onOpenChange={() => setSuperviseCall(null)}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Supervise Call</DialogTitle>
+            <DialogDescription>
+              The supervisor&apos;s phone is dialed and joins when they answer. Monitor hears both parties; a whisper is
+              heard by one party alone; a barge by both.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="supervisor">Supervisor</Label>
+              <Input
+                id="supervisor"
+                placeholder="Extension, username or SIP URI"
+                value={supervisor}
+                onChange={(e) => setSupervisor(e.target.value)}
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="supervise-mode">Mode</Label>
+                <select
+                  id="supervise-mode"
+                  className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm"
+                  value={superviseMode}
+                  onChange={(e) => setSuperviseMode(e.target.value as 'monitor' | 'whisper' | 'barge')}
+                >
+                  <option value="monitor">Monitor</option>
+                  <option value="whisper">Whisper</option>
+                  <option value="barge">Barge</option>
+                </select>
+              </div>
+              {superviseMode === 'whisper' && (
+                <div className="space-y-2">
+                  <Label htmlFor="heard-by">Heard by</Label>
+                  <select
+                    id="heard-by"
+                    className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm"
+                    value={heardBy}
+                    onChange={(e) => setHeardBy(e.target.value as 'a' | 'b')}
+                  >
+                    <option value="b">The callee</option>
+                    <option value="a">The caller</option>
+                  </select>
+                </div>
+              )}
+            </div>
+            {(superviseMutation.isError || leaveMutation.isError) && (
+              <p className="text-sm text-destructive">
+                {((superviseMutation.error ?? leaveMutation.error) as Error).message}
+              </p>
+            )}
+            <div className="flex justify-between gap-2">
+              <Button
+                variant="outline"
+                disabled={leaveMutation.isPending}
+                onClick={() => superviseCall && leaveMutation.mutate(superviseCall)}
+              >
+                Remove supervisor
+              </Button>
+              <Button
+                disabled={!supervisor.trim() || superviseMutation.isPending}
+                onClick={() => superviseCall && superviseMutation.mutate({ callId: superviseCall })}
+              >
+                {superviseMutation.isPending ? 'Ringing…' : 'Join'}
               </Button>
             </div>
           </div>

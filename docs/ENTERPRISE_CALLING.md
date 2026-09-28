@@ -884,6 +884,71 @@ active shared appearance from a phone with `barge_in` allowed on the line.
 Events `call.party_joined`, `call.party_left`. Last, because every other
 feature stands without it (§5 Q10).
 
+#### 3.11.1 As built (phase 11, v0.25.286)
+
+Two things the design assumed proved false: the queue's calls do not run
+on forge-engine at all (they are raw RTP bridges of their own), and the
+admin API holds no calls (they are on the call managers). Settled on
+2026-09-28: one mixing core for both media paths, and the admin API
+forwarding to the node holding the call.
+
+**The core** is forge-mixer's `SupervisionMix` (forge-media v2026.09.28):
+A, B and the supervisor written in as they arrive, one tick per 20 ms
+frame saying what each listener hears — the supervisor both parties
+summed; the coached party of a whisper, or both parties of a barge, the
+other party with the supervisor summed in; a party that does not hear the
+supervisor keeps its relay untouched. Sums saturate, a short source is
+silence, a runaway one is trimmed.
+
+**forge-engine** gives a session a third party on a port of its own
+(`add_party`, `connect_party`, `set_party_mode`, `remove_party`): both
+legs' audio, already decoded for every packet the session relays, feeds
+the mix; the supervisor's packets are read on their port (latched to
+where they send from); each tick the supervisor is sent both legs, and a
+leg that hears the supervisor has its relay suppressed and its mix
+scheduled through its own playout — its codec, its generated stream, its
+SRTP. The mix is 8 kHz, so a leg hearing the supervisor hears narrowband
+while they do; the supervisor's own leg is G.711. Stopping the session
+removes the party. `fcp-media` wraps it (`MediaManager::add_party` and the
+rest, `Supervision`).
+
+**The queue's bridge** (`queue_handler::spawn_supervisor_bridge`) decodes
+the caller, agent and supervisor into the same core and sends each
+destination its mix on an RTP stream of its own in its own codec; the
+packet interleaving and `remix_rtp_packet` are gone. Its codecs are the
+queue's (PCMU, PCMA, G.722).
+
+**Calls.** `fcp_sip::supervision::Supervisions` puts a supervisor on an
+anchored, established call: their phone (a user's extension or name, its
+first registered contact, or a SIP URI) is dialed with the party's SDP and
+joined when it answers; the same supervisor asking again changes the mode;
+a second supervisor is refused. Their BYE, a request to leave, or the call
+ending takes them off. `call.party_joined` and `call.party_left`.
+
+**Barge-in on an appearance.** A shared line's `barge_in` (migration 087,
+the line binding dialog) lets a phone on the line join an active
+appearance: its INVITE naming the appearance is answered with the party's
+SDP, heard by both parties, and its BYE takes it off. Off, the appearance
+is 403 as before. A barge-in on an appearance held on another node goes
+there with the handoff (§3.9.1).
+
+**The API.** The call manager's `POST /calls/:id/{monitor,whisper,barge}`
+(`supervisor_extension`, `heard_by` `a`/`b` for a whisper, the callee by
+default, `tenant_id`), `GET /calls/:id/supervisor` and `POST
+/calls/:id/supervisor/leave` take every anchored call (a queue call still
+through the queue), answering 404, 409 (not anchored, already supervised)
+or 480 (unreachable, refused) instead of the old 200-with-an-error. The
+admin API's `POST /v1/calls/:id/{monitor,whisper,barge}`, `GET` and
+`DELETE /v1/calls/:id/supervisor` need `call_supervise` (tenant and
+telecom admins) and are forwarded (`fcp_api_core::CallSupervisor`,
+`fcp-admin`'s `NodeCallSupervisor`) to `[call_manager] url`, else to each
+healthy call manager until one holds the call; the node's answer comes
+back as it gave it. The Active Calls page's Supervise action.
+
+Deviations: a supervisor's leg is plain RTP in G.711 (no SRTP); the mix
+is narrowband; the queue path keeps the queue's own supervisor bookkeeping
+(its `/internal/supervisor` still only changes the mode).
+
 ## 4. Phases
 
 One PR each, in order; each proved by end-to-end tests against the running
@@ -902,7 +967,7 @@ feature crosses nodes, in the two-node cluster harness.
 | 8 | ✅ v0.25.283 — **Hoteling** (§3.8). Device credentials and the registrar's check, hosts, sessions, login and logout by DTMF, `check-sync`, the effective user in every path, expiry, the API and pages. Tests: a guest logs in on a host phone, is rung there and calls out as themself, expires. As built (§3.8.1): device credentials sealed at rest and one "may act as" rule for REGISTER and INVITE, `hoteling_sessions` (migration 085) with one guest per host, `*88` through an inline flow's `HotelingLogin` node and `*89`, `check-sync` and MWI to the host, the sweep, the effective user for the caller, the class of service, the calling codes and `*98`, the ring plan and presence, `/v1/hoteling/sessions`, `/v1/me/hoteling` and the Hoteling page. Tests: `calling.rs` (a login after a wrong PIN, the guest rung at the host and calling there under their class and codes, `*89`, a session run out, credentials registering only what is theirs) and `api_postgres.rs`. |
 | 9 | ✅ v0.25.284 — **Shared call appearance** (§3.9). Shared lines, second-account templates, the appearance table, `call-info` and `line-seize`, retrieve from another phone, the testkit phone's packages. Tests: two phones on one line, lamps through seize, alert, active and held, retrieve on the other phone; lamps right across two nodes. As built (§3.9.1): `shared`/`max_appearances` on the line binding (migration 086), the second account in provisioning and the four templates, the appearance table in memory or Redis (`fcp:sca:…`, one Lua claim), `call-info` NOTIFYs inside the subscription and `line-seize`, the call manager's appearance hook and `line.appearance_changed`, a retrieve by `Call-Info` taking the line's leg, handed to the owning node with `X-FCP-Node-Handoff` (siphon-rs `IntegratedUAC::send_request`, sip-uac 0.7.6). Tests: `calling.rs` (two phones, lamps, hold and retrieve, seize, a full line), `trunks.rs` (lamps and a retrieve across two nodes), `line_appearances.rs`, `api_postgres.rs`. |
 | 10 | ✅ v0.25.285 — **Executive-assistant** (§3.10). The relation, the filter and the plan, push, call on behalf, opt-in codes, the pages. Tests: an external call to the executive rings the assistant, pushed to the executive, a call placed on behalf. As built (§3.10.1): the relation on the executive's calling settings (no table), screening in the plan with a distinct ring and "for <executive>", `*63` push as a node-run transfer, `*64` on behalf under the executive's line and the assistant's class with the record naming both, `*65`–`*68`, `/v1/me/executives` and the pages. Tests: `calling.rs` (screen, push, the four switches, the filter), `trunks.rs` (a call on behalf at the carrier), `api_postgres.rs`. |
-| 11 | **Monitor, whisper and barge** (§3.11). The third party in forge-engine (a forge-media release), the API, the queue's supervisor path moved, barge-in on an appearance. Tests: a supervisor hears both parties, a whisper heard by one, the queue supervisor tests still passing. |
+| 11 | ✅ v0.25.286 — **Monitor, whisper and barge** (§3.11). The third party in forge-engine (a forge-media release), the API, the queue's supervisor path moved, barge-in on an appearance. Tests: a supervisor hears both parties, a whisper heard by one, the queue supervisor tests still passing. As built (§3.11.1): forge-mixer's `SupervisionMix` shared by forge-engine's third party and the queue's bridge (forge-media v2026.09.28), `fcp_sip::supervision`, barge-in on an appearance (`barge_in`, migration 087), the node's routes for every anchored call and the admin API forwarding to the node holding the call under `call_supervise`, `call.party_joined`/`party_left`, the Active Calls page. Tests: forge-engine and forge-mixer unit tests, the queue bridge's, `calling.rs` (monitor, whisper, barge, leave; a barge-in on an appearance), `api_postgres.rs`. |
 
 ## 5. Questions
 

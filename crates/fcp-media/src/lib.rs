@@ -62,6 +62,7 @@ pub mod tts;
 // Re-exports
 pub use backend::{
     AudioTarget, EmbeddedBackend, LegDigit, MediaBackend, MediaLeg, RtpLegInfo, RtpSessionInfo,
+    Supervision,
 };
 pub use config::{BackendType, MediaConfig};
 pub use decision::{should_anchor_media, MediaAnchoringDecision, MediaDecisionContext};

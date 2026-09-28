@@ -395,6 +395,8 @@ export interface LineBinding {
   /** A shared line: its devices share its appearances (BroadSoft SCA). */
   shared: boolean
   max_appearances: number
+  /** A phone on the shared line may barge into an active appearance (§3.11). */
+  barge_in: boolean
   created_at: string
   updated_at: string
 }
@@ -420,6 +422,7 @@ export interface UpdateLineBindingRequest {
   holiday_target?: string
   shared?: boolean
   max_appearances?: number
+  barge_in?: boolean
   tenant_id?: string
 }
 

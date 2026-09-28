@@ -1177,11 +1177,13 @@ async fn a_shared_line_is_set_through_the_api_and_provisioned_as_a_second_accoun
                 }],
                 "shared": true,
                 "max_appearances": 3,
+                "barge_in": true,
             })),
         )
         .await;
     assert_eq!(binding.status, StatusCode::CREATED, "{}", binding.text);
     assert_eq!(binding.json["shared"], true);
+    assert_eq!(binding.json["barge_in"], true);
     assert_eq!(binding.json["max_appearances"], 3);
     let binding_id = binding.json["id"].as_str().expect("binding id").to_string();
 
@@ -3149,6 +3151,56 @@ async fn queue_runtime_agents_and_stats() {
 }
 
 // ─── Self-service (/me) ──────────────────────────────────────────────────
+
+/// A supervisor on a call (`docs/ENTERPRISE_CALLING.md` §3.11): the
+/// routes are an admin's (`call_supervise`), and with no call manager to
+/// ask they say so rather than pretend.
+#[tokio::test]
+async fn supervising_a_call_is_an_admins_and_needs_a_call_manager() {
+    let app = require_app!();
+    app.create_user_with_role("agent", "end_user").await;
+    let call = "call-00000000-0000-0000-0000-000000000001";
+    let body = json!({ "supervisor": "1001" });
+    let asked = app
+        .admin(
+            Method::POST,
+            &format!("/api/v1/calls/{call}/monitor"),
+            Some(body.clone()),
+        )
+        .await;
+    assert_eq!(
+        asked.status,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "{}",
+        asked.text
+    );
+    let empty = app
+        .admin(
+            Method::POST,
+            &format!("/api/v1/calls/{call}/barge"),
+            Some(json!({ "supervisor": " " })),
+        )
+        .await;
+    assert_eq!(empty.status, StatusCode::BAD_REQUEST, "{}", empty.text);
+    let agent = app.login("agent", PASSWORD).await.json["token"]
+        .as_str()
+        .expect("jwt")
+        .to_string();
+    for (method, path) in [
+        (Method::POST, format!("/api/v1/calls/{call}/whisper")),
+        (Method::GET, format!("/api/v1/calls/{call}/supervisor")),
+        (Method::DELETE, format!("/api/v1/calls/{call}/supervisor")),
+    ] {
+        let refused = app.send_as(&agent, method, &path, Some(body.clone())).await;
+        assert_eq!(
+            refused.status,
+            StatusCode::FORBIDDEN,
+            "{path}: {}",
+            refused.text
+        );
+    }
+    app.finish().await;
+}
 
 /// Executive-assistant (`docs/ENTERPRISE_CALLING.md` §3.10): an admin
 /// names an executive's assistants, the executive sets their own handling

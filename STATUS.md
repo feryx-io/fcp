@@ -1368,6 +1368,18 @@ line with the assistant's class and both users on the record, `*65`/`*66`
 and `*67`/`*68` switch the executive's handling and the assistant's
 opt-in. `/v1/me/executives`, the Calling dialog and page. Proved by
 `calling.rs`, `trunks.rs` and `api_postgres.rs`.
+Phase 11 done (v0.25.286): monitor, whisper and barge — forge-mixer's
+`SupervisionMix` decides who hears whom, shared by forge-engine's new third
+party on a session (forge-media v2026.09.28) and the queue's supervisor
+bridge, which now mixes instead of interleaving packets. A supervisor is
+dialed onto any anchored call through the call manager's
+`/calls/:id/{monitor,whisper,barge}` (or the admin API's `/v1/calls/:id/…`
+under `call_supervise`, forwarded to the node holding the call), hangs up
+or is removed, and leaves with the call; `call.party_joined` and
+`call.party_left`. A shared line's `barge_in` lets its phones join an
+active appearance. The Active Calls page supervises. Proved by the engine,
+mixer and queue-bridge unit tests, `calling.rs` and `api_postgres.rs`. The
+enterprise calling project is complete: all eleven phases.
 
 ## Historical documents
 

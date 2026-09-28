@@ -46,6 +46,8 @@ pub struct AppState {
     pub cluster_parking: Option<Arc<dyn fcp_core::ClusterParkingStore>>,
     /// What call recordings start through, with the tenant's consent step.
     pub call_recorder: Arc<fcp_sip::recording::CallRecorder>,
+    /// Calls with a supervisor (`docs/ENTERPRISE_CALLING.md` §3.11).
+    pub supervisions: Option<Arc<fcp_sip::supervision::Supervisions>>,
     /// This node's `[[trunks]]`, which outbound and emergency routing use.
     pub trunks: Vec<fcp_sbc_core::TrunkConfig>,
     pub trunk_health: Option<Arc<fcp_sbc_core::TrunkHealthMonitor>>,
@@ -251,6 +253,7 @@ pub async fn run_http_server(bind_addr: SocketAddr, state: Arc<AppState>) -> any
         .route("/calls/:id/monitor", post(monitor_call_handler))
         .route("/calls/:id/whisper", post(whisper_call_handler))
         .route("/calls/:id/barge", post(barge_call_handler))
+        .route("/calls/:id/supervisor", get(supervisor_get_handler))
         .route(
             "/calls/:id/supervisor/leave",
             post(supervisor_leave_handler),
@@ -1693,7 +1696,17 @@ async fn transfer_call_handler(
 
 #[derive(Deserialize)]
 struct SupervisorBody {
+    /// The supervisor: a user's extension or name, or a SIP URI.
+    #[serde(alias = "supervisor")]
     supervisor_extension: String,
+    /// For a whisper, who hears it: `a` (the caller) or `b` (the callee,
+    /// the default — a queue call's agent).
+    #[serde(default)]
+    heard_by: Option<String>,
+    /// The call's tenant, when the caller of this API scopes it (the
+    /// admin API does); the node's default tenant otherwise.
+    #[serde(default)]
+    tenant_id: Option<TenantId>,
 }
 
 /// Start monitoring a call (listen only).
@@ -1701,75 +1714,147 @@ async fn monitor_call_handler(
     State(state): State<Arc<AppState>>,
     Path(call_id): Path<String>,
     Json(body): Json<SupervisorBody>,
-) -> Json<serde_json::Value> {
-    let Some(ref qh) = state.queue_handler else {
-        return Json(serde_json::json!({"error": "Queue system not enabled"}));
-    };
-    match qh
-        .start_supervisor(
-            &call_id,
-            &body.supervisor_extension,
-            SupervisorMode::Monitor,
-        )
-        .await
-    {
-        Ok(()) => Json(serde_json::json!({
-            "status": "monitoring",
-            "call_id": call_id,
-            "supervisor_extension": body.supervisor_extension,
-            "mode": "monitor",
-        })),
-        Err(e) => Json(serde_json::json!({"error": e.to_string()})),
-    }
+) -> Response {
+    supervise_call(state, call_id, body, "monitor").await
 }
 
-/// Start whispering to the agent on a call (agent hears supervisor, caller does not).
+/// Whisper on a call: one party hears the supervisor, the other does not.
 async fn whisper_call_handler(
     State(state): State<Arc<AppState>>,
     Path(call_id): Path<String>,
     Json(body): Json<SupervisorBody>,
-) -> Json<serde_json::Value> {
-    let Some(ref qh) = state.queue_handler else {
-        return Json(serde_json::json!({"error": "Queue system not enabled"}));
-    };
-    match qh
-        .start_supervisor(
-            &call_id,
-            &body.supervisor_extension,
-            SupervisorMode::Whisper,
-        )
-        .await
-    {
-        Ok(()) => Json(serde_json::json!({
-            "status": "whispering",
-            "call_id": call_id,
-            "supervisor_extension": body.supervisor_extension,
-            "mode": "whisper",
-        })),
-        Err(e) => Json(serde_json::json!({"error": e.to_string()})),
-    }
+) -> Response {
+    supervise_call(state, call_id, body, "whisper").await
 }
 
-/// Barge into a call (full three-way conference).
+/// Barge into a call: both parties hear the supervisor.
 async fn barge_call_handler(
     State(state): State<Arc<AppState>>,
     Path(call_id): Path<String>,
     Json(body): Json<SupervisorBody>,
-) -> Json<serde_json::Value> {
-    let Some(ref qh) = state.queue_handler else {
-        return Json(serde_json::json!({"error": "Queue system not enabled"}));
+) -> Response {
+    supervise_call(state, call_id, body, "barge").await
+}
+
+/// A supervisor onto a call (`docs/ENTERPRISE_CALLING.md` §3.11): a queue
+/// call through the queue's own media, every other anchored call through
+/// its media session's third party.
+async fn supervise_call(
+    state: Arc<AppState>,
+    call_id: String,
+    body: SupervisorBody,
+    kind: &'static str,
+) -> Response {
+    if let Some(qh) = state
+        .queue_handler
+        .as_ref()
+        .filter(|qh| qh.has_session(&call_id))
+    {
+        let mode = match kind {
+            "monitor" => SupervisorMode::Monitor,
+            "whisper" => SupervisorMode::Whisper,
+            _ => SupervisorMode::Barge,
+        };
+        return match qh
+            .start_supervisor(&call_id, &body.supervisor_extension, mode)
+            .await
+        {
+            Ok(()) => Json(serde_json::json!({
+                "status": "joined",
+                "call_id": call_id,
+                "supervisor": body.supervisor_extension,
+                "mode": kind,
+            }))
+            .into_response(),
+            Err(e) => (
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response(),
+        };
+    }
+    let Some(supervisions) = state.supervisions.as_ref() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "supervision is not available on this node"})),
+        )
+            .into_response();
     };
-    match qh
-        .start_supervisor(&call_id, &body.supervisor_extension, SupervisorMode::Barge)
+    let Some(id) = scoped_call(&state, &call_id, body.tenant_id) else {
+        return call_not_found(&call_id);
+    };
+    let heard_by =
+        match body
+            .heard_by
+            .as_deref()
+            .map(str::to_ascii_lowercase)
+            .as_deref()
+        {
+            None | Some("b") => fcp_media::MediaLeg::B,
+            Some("a") => fcp_media::MediaLeg::A,
+            Some(other) => return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": format!("heard_by: `a` or `b`, not `{other}`")})),
+            )
+                .into_response(),
+        };
+    let mode = match kind {
+        "monitor" => fcp_media::Supervision::Monitor,
+        "whisper" => fcp_media::Supervision::Whisper(heard_by),
+        _ => fcp_media::Supervision::Barge,
+    };
+    match supervisions
+        .supervise(&id, &body.supervisor_extension, mode)
         .await
     {
         Ok(()) => Json(serde_json::json!({
-            "status": "barging",
+            "status": "joined",
             "call_id": call_id,
-            "supervisor_extension": body.supervisor_extension,
-            "mode": "barge",
-        })),
-        Err(e) => Json(serde_json::json!({"error": e.to_string()})),
+            "supervisor": body.supervisor_extension,
+            "mode": kind,
+        }))
+        .into_response(),
+        Err(e) => (
+            StatusCode::from_u16(e.status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Deserialize, Default)]
+struct SupervisorQuery {
+    #[serde(default)]
+    tenant_id: Option<TenantId>,
+}
+
+/// The call `id` of `tenant` (the node's default tenant when unnamed).
+fn scoped_call(
+    state: &AppState,
+    id: &str,
+    tenant: Option<TenantId>,
+) -> Option<fcp_b2bua_core::CallId> {
+    let call_id = id.parse::<fcp_b2bua_core::CallId>().ok()?;
+    let call = state.call_manager.get_call(&call_id)?;
+    (call.tenant_id == tenant.unwrap_or(state.default_tenant_id)).then_some(call_id)
+}
+
+/// The call's supervisor, if it has one.
+async fn supervisor_get_handler(
+    State(state): State<Arc<AppState>>,
+    Path(call_id): Path<String>,
+    Query(query): Query<SupervisorQuery>,
+) -> Response {
+    let Some(id) = scoped_call(&state, &call_id, query.tenant_id) else {
+        return call_not_found(&call_id);
+    };
+    match state.supervisions.as_ref().and_then(|s| s.of(&id)) {
+        Some(view) => Json(view).into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "the call has no supervisor"})),
+        )
+            .into_response(),
     }
 }
 
@@ -1777,16 +1862,36 @@ async fn barge_call_handler(
 async fn supervisor_leave_handler(
     State(state): State<Arc<AppState>>,
     Path(call_id): Path<String>,
-) -> Json<serde_json::Value> {
-    let Some(ref qh) = state.queue_handler else {
-        return Json(serde_json::json!({"error": "Queue system not enabled"}));
+    Query(query): Query<SupervisorQuery>,
+) -> Response {
+    if let Some(qh) = state
+        .queue_handler
+        .as_ref()
+        .filter(|qh| qh.has_session(&call_id))
+    {
+        return match qh.stop_supervisor(&call_id).await {
+            Ok(()) => {
+                Json(serde_json::json!({"status": "left", "call_id": call_id})).into_response()
+            }
+            Err(e) => (
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response(),
+        };
+    }
+    let Some(id) = scoped_call(&state, &call_id, query.tenant_id) else {
+        return call_not_found(&call_id);
     };
-    match qh.stop_supervisor(&call_id).await {
-        Ok(()) => Json(serde_json::json!({
-            "status": "supervisor_removed",
-            "call_id": call_id,
-        })),
-        Err(e) => Json(serde_json::json!({"error": e.to_string()})),
+    match state.supervisions.as_ref() {
+        Some(s) if s.leave(&id).await => {
+            Json(serde_json::json!({"status": "left", "call_id": call_id})).into_response()
+        }
+        _ => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "the call has no supervisor"})),
+        )
+            .into_response(),
     }
 }
 

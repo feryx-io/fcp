@@ -150,6 +150,9 @@ pub struct ApiState {
     /// 6d). Absent when no call manager can be reached: the preview then
     /// answers 503.
     pub route_previewer: Option<Arc<dyn crate::RoutePreviewer>>,
+    /// Where a call's supervision is asked (§3.11). Absent, the supervision
+    /// routes answer 503.
+    pub call_supervisor: Option<Arc<dyn crate::CallSupervisor>>,
 
     /// Deployment mode for permission evaluation (Enterprise, ServiceProvider, Carrier).
     pub deployment_mode: fcp_core::permissions::DeploymentMode,
@@ -221,6 +224,7 @@ impl ApiState {
             trunk_health: None,
             trunk_reports: None,
             route_previewer: None,
+            call_supervisor: None,
             deployment_mode: fcp_core::permissions::DeploymentMode::default(),
             e911_validator: Arc::new(fcp_core::e911::BasicAddressValidator),
             call_recordings_dir: None,
@@ -371,6 +375,12 @@ impl ApiState {
     /// Where to read what each node sees of its trunks.
     pub fn with_trunk_reports(mut self, reports: Arc<dyn crate::TrunkNodeReports>) -> Self {
         self.trunk_reports = Some(reports);
+        self
+    }
+
+    /// Where a call's supervision is asked.
+    pub fn with_call_supervisor(mut self, supervisor: Arc<dyn crate::CallSupervisor>) -> Self {
+        self.call_supervisor = Some(supervisor);
         self
     }
 

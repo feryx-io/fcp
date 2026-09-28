@@ -226,6 +226,8 @@ impl CallStateStore {
             | CallEvent::Unparked { .. }
             | CallEvent::Held { .. }
             | CallEvent::Resumed { .. }
+            | CallEvent::PartyJoined { .. }
+            | CallEvent::PartyLeft { .. }
             | CallEvent::Emergency { .. }
             | CallEvent::EmergencyCompleted { .. }
             | CallEvent::EmergencyNotificationFailed { .. } => {}

@@ -236,6 +236,19 @@ export const calls = {
     apiClient.post<void>(`/calls/${encodeURIComponent(callId)}/transfer`, { target }),
   mute: (callId: string) => apiClient.post<void>(`/calls/${encodeURIComponent(callId)}/mute`),
   unmute: (callId: string) => apiClient.post<void>(`/calls/${encodeURIComponent(callId)}/unmute`),
+  /** Put a supervisor on the call: they are dialed and join when they answer (§3.11). */
+  supervise: (
+    callId: string,
+    mode: 'monitor' | 'whisper' | 'barge',
+    supervisor: string,
+    heardBy?: 'a' | 'b',
+  ) =>
+    apiClient.post<void>(`/calls/${encodeURIComponent(callId)}/${mode}`, {
+      supervisor,
+      heard_by: heardBy,
+    }),
+  leaveSupervisor: (callId: string) =>
+    apiClient.delete<void>(`/calls/${encodeURIComponent(callId)}/supervisor`),
 }
 
 // CDRs (Phase 2 - call detail records)

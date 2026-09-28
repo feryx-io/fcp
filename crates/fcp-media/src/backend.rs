@@ -190,6 +190,36 @@ pub trait MediaBackend: Send + Sync {
         target: AudioTarget,
     ) -> Result<String>;
 
+    /// Add a supervisor to the call's media: a port of their own, returned
+    /// as the SDP to offer their phone (`docs/ENTERPRISE_CALLING.md` §3.11).
+    async fn add_party(&self, _call_id: &CallId, _mode: Supervision) -> Result<String> {
+        Err(Error::Backend(
+            "this media backend does not take a supervisor".to_string(),
+        ))
+    }
+
+    /// The supervisor's SDP (their answer, or their offer): where they are
+    /// and which of PCMU and PCMA they send. Returns the answer to it.
+    async fn connect_party(&self, _call_id: &CallId, _remote_sdp: String) -> Result<String> {
+        Err(Error::Backend(
+            "this media backend does not take a supervisor".to_string(),
+        ))
+    }
+
+    /// Change how the supervisor takes part.
+    async fn set_party_mode(&self, _call_id: &CallId, _mode: Supervision) -> Result<()> {
+        Err(Error::Backend(
+            "this media backend does not take a supervisor".to_string(),
+        ))
+    }
+
+    /// Remove the supervisor; the legs are relayed as before.
+    async fn remove_party(&self, _call_id: &CallId) -> Result<()> {
+        Err(Error::Backend(
+            "this media backend does not take a supervisor".to_string(),
+        ))
+    }
+
     /// As [`MediaBackend::play_file`], starting the file again at its end
     /// until stopped (hold music, `docs/ENTERPRISE_CALLING.md` §3.3).
     async fn play_file_looped(
@@ -315,6 +345,29 @@ pub trait MediaBackend: Send + Sync {
     async fn list_sessions(&self) -> Vec<RtpSessionInfo>;
 }
 
+/// How a supervisor takes part in a call's media
+/// (`docs/ENTERPRISE_CALLING.md` §3.11).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Supervision {
+    /// Hears both legs, heard by nobody.
+    Monitor,
+    /// Hears both legs, heard by this one alone.
+    Whisper(MediaLeg),
+    /// Hears and is heard by both legs.
+    Barge,
+}
+
+impl Supervision {
+    /// `monitor`, `whisper` (to the callee) or `barge`.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Monitor => "monitor",
+            Self::Whisper(_) => "whisper",
+            Self::Barge => "barge",
+        }
+    }
+}
+
 /// One leg of a two-party media session: A the caller, B the callee.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MediaLeg {
@@ -427,6 +480,42 @@ pub mod embedded {
                 Leg::B => 1,
             }]
         }
+    }
+
+    /// The engine's form of a supervision mode.
+    fn forge_supervision(mode: Supervision) -> forge_engine::SupervisionMode {
+        match mode {
+            Supervision::Monitor => forge_engine::SupervisionMode::Monitor,
+            Supervision::Whisper(MediaLeg::A) => {
+                forge_engine::SupervisionMode::Whisper(forge_engine::CallParty::A)
+            }
+            Supervision::Whisper(MediaLeg::B) => {
+                forge_engine::SupervisionMode::Whisper(forge_engine::CallParty::B)
+            }
+            Supervision::Barge => forge_engine::SupervisionMode::Barge,
+        }
+    }
+
+    /// The SDP a supervisor's phone is offered, or answered: this node's
+    /// port for them and the G.711 codecs given.
+    fn party_sdp(advertise_ip: &str, port: u16, codecs: &[(u8, &str)]) -> String {
+        let session = rand::random::<u32>();
+        let family = if advertise_ip.contains(':') {
+            "IP6"
+        } else {
+            "IP4"
+        };
+        let pts: Vec<String> = codecs.iter().map(|(pt, _)| pt.to_string()).collect();
+        let mut sdp = format!(
+            "v=0\r\no=fcp {session} {session} IN {family} {advertise_ip}\r\ns=supervision\r\n\
+             c=IN {family} {advertise_ip}\r\nt=0 0\r\nm=audio {port} RTP/AVP {}\r\n",
+            pts.join(" ")
+        );
+        for (pt, name) in codecs {
+            sdp.push_str(&format!("a=rtpmap:{pt} {name}/8000\r\n"));
+        }
+        sdp.push_str("a=ptime:20\r\na=sendrecv\r\n");
+        sdp
     }
 
     /// Parse the remote audio RTP endpoint from SDP: the first active audio
@@ -1304,6 +1393,89 @@ pub mod embedded {
         ) -> Result<String> {
             self.start_file_playback(call_id, file_path, target, true)
                 .await
+        }
+
+        async fn add_party(&self, call_id: &fcp_core::CallId, mode: Supervision) -> Result<String> {
+            let session_info = self
+                .sessions
+                .get(call_id)
+                .ok_or_else(|| Error::SessionNotFound(call_id.to_string()))?;
+            let forge_session = Arc::clone(&session_info.forge_session);
+            drop(session_info);
+            let ports = forge_session
+                .add_party(forge_supervision(mode))
+                .await
+                .map_err(|e| Error::Backend(format!("add a supervisor: {e}")))?;
+            info!(
+                ?call_id,
+                port = ports.rtp_port,
+                mode = mode.as_str(),
+                "Supervisor media added"
+            );
+            Ok(party_sdp(
+                &self.advertise_ip,
+                ports.rtp_port,
+                &[(0, "PCMU"), (8, "PCMA")],
+            ))
+        }
+
+        async fn connect_party(
+            &self,
+            call_id: &fcp_core::CallId,
+            remote_sdp: String,
+        ) -> Result<String> {
+            let session_info = self
+                .sessions
+                .get(call_id)
+                .ok_or_else(|| Error::SessionNotFound(call_id.to_string()))?;
+            let forge_session = Arc::clone(&session_info.forge_session);
+            drop(session_info);
+            let remote = parse_remote_endpoint_from_sdp(&remote_sdp).map_err(Error::Backend)?;
+            let (codec, payload_type, name) = crate::sdp::parse_sdp_codecs(&remote_sdp)
+                .into_iter()
+                .find_map(|c| match c.encoding_name.to_ascii_uppercase().as_str() {
+                    "PCMU" => Some((forge_core::AudioCodec::PCMU, c.payload_type, "PCMU")),
+                    "PCMA" => Some((forge_core::AudioCodec::PCMA, c.payload_type, "PCMA")),
+                    _ => None,
+                })
+                .ok_or_else(|| {
+                    Error::Backend("the supervisor's phone offers neither PCMU nor PCMA".into())
+                })?;
+            forge_session
+                .connect_party(remote, codec, payload_type)
+                .map_err(|e| Error::Backend(format!("connect the supervisor: {e}")))?;
+            let port = forge_session
+                .party_ports()
+                .map(|p| p.rtp_port)
+                .ok_or_else(|| Error::Backend("the supervisor was removed".into()))?;
+            Ok(party_sdp(&self.advertise_ip, port, &[(payload_type, name)]))
+        }
+
+        async fn set_party_mode(
+            &self,
+            call_id: &fcp_core::CallId,
+            mode: Supervision,
+        ) -> Result<()> {
+            let session_info = self
+                .sessions
+                .get(call_id)
+                .ok_or_else(|| Error::SessionNotFound(call_id.to_string()))?;
+            session_info
+                .forge_session
+                .set_party_mode(forge_supervision(mode))
+                .map_err(|e| Error::Backend(format!("supervisor mode: {e}")))
+        }
+
+        async fn remove_party(&self, call_id: &fcp_core::CallId) -> Result<()> {
+            let Some(session_info) = self.sessions.get(call_id) else {
+                return Ok(());
+            };
+            let forge_session = Arc::clone(&session_info.forge_session);
+            drop(session_info);
+            forge_session
+                .remove_party()
+                .await
+                .map_err(|e| Error::Backend(format!("remove the supervisor: {e}")))
         }
 
         async fn play_tone(

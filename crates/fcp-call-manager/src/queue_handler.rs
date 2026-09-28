@@ -319,6 +319,11 @@ impl QueueCallHandler {
         handler
     }
 
+    /// Whether `call_id` is a call this queue system holds the media of.
+    pub fn has_session(&self, call_id: &str) -> bool {
+        self.sessions.contains_key(call_id)
+    }
+
     /// Expose the QueueManager for agent login/logout via REST API.
     // Kept as part of the module's intended API; not currently called from this binary.
     #[allow(dead_code)]
@@ -1631,9 +1636,17 @@ impl QueueCallHandler {
                     .context("No agent RTP socket")?;
                 let b_socket = Arc::clone(b_socket);
                 let c_socket = Arc::clone(&sup_rtp_socket);
-                let codec = session.codec_name.clone();
+                // The supervisor was offered the caller's codec.
+                let codecs = [
+                    session.codec_name.clone(),
+                    session
+                        .agent_codec_name
+                        .clone()
+                        .unwrap_or_else(|| session.codec_name.clone()),
+                    session.codec_name.clone(),
+                ];
 
-                let tasks = spawn_supervisor_bridge(a_socket, b_socket, c_socket, mode, codec);
+                let tasks = spawn_supervisor_bridge(a_socket, b_socket, c_socket, mode, codecs);
 
                 session.supervisor_port_pair = Some(sup_port_pair);
                 session.supervisor_rtp_socket = Some(sup_rtp_socket);
@@ -1763,9 +1776,16 @@ impl QueueCallHandler {
             .as_ref()
             .context("No supervisor RTP socket")?;
         let c_socket = Arc::clone(c_socket);
-        let codec = session.codec_name.clone();
+        let codecs = [
+            session.codec_name.clone(),
+            session
+                .agent_codec_name
+                .clone()
+                .unwrap_or_else(|| session.codec_name.clone()),
+            session.codec_name.clone(),
+        ];
 
-        let tasks = spawn_supervisor_bridge(a_socket, b_socket, c_socket, new_mode, codec);
+        let tasks = spawn_supervisor_bridge(a_socket, b_socket, c_socket, new_mode, codecs);
         session.supervisor_tasks = tasks;
         session.supervisor_mode = Some(new_mode);
 
@@ -2865,272 +2885,215 @@ async fn connect_legs(
     })
 }
 
-/// Spawn RTP bridge tasks for supervisor modes (Monitor, Whisper, Barge).
-///
-/// Returns a Vec of JoinHandle tasks that must be aborted when the supervisor
-/// leaves or the call ends.
-///
-/// - **Monitor**: A↔B forwarded normally. Supervisor C gets mix of A+B (listen only).
-/// - **Whisper**: A→B forwarded normally. B gets mix of A+C (agent hears supervisor).
-///   Supervisor C gets mix of A+B. Caller A only hears B.
-/// - **Barge**: Full 3-way conference. A gets mix(B,C), B gets mix(A,C), C gets mix(A,B).
+/// The queue call's media with a supervisor on it
+/// (`docs/ENTERPRISE_CALLING.md` §3.11): the caller (A), the agent (B) and
+/// the supervisor (C), each on a socket of its own. Every packet is decoded
+/// into forge-mixer's [`SupervisionMix`], the core forge-engine's third
+/// party uses too; a leg that does not hear the supervisor keeps the other
+/// leg's packets relayed as they came, and every 20 ms the supervisor is
+/// sent both legs and a leg that hears the supervisor (the agent on a
+/// whisper, both on a barge) is sent the other leg with the supervisor
+/// summed in, each on an RTP stream of its own in its own codec.
 fn spawn_supervisor_bridge(
     a_socket: Arc<RtpSocketPair>,
     b_socket: Arc<RtpSocketPair>,
     c_socket: Arc<RtpSocketPair>,
     mode: SupervisorMode,
-    codec: String,
+    codecs: [String; 3],
 ) -> Vec<JoinHandle<()>> {
-    // Use broadcast channels so multiple consumers can receive from each socket
-    let (a_tx, _) = tokio::sync::broadcast::channel::<bytes::Bytes>(128);
-    let (b_tx, _) = tokio::sync::broadcast::channel::<bytes::Bytes>(128);
-    let (c_tx, _) = tokio::sync::broadcast::channel::<bytes::Bytes>(128);
-
-    // Spawn reader tasks for each socket (fan-out via broadcast)
-    let a_reader = {
-        let a_sock = Arc::clone(&a_socket);
-        let tx = a_tx.clone();
-        tokio::spawn(async move {
-            loop {
-                match a_sock.recv_rtp_raw().await {
-                    Ok((data, _)) if !data.is_empty() => {
-                        let _ = tx.send(data);
-                    }
-                    _ => break,
-                }
-            }
-        })
+    use forge_mixer::{CallParty, SupervisionMix, SupervisionMode, Voice};
+    let mode = match mode {
+        SupervisorMode::Monitor => SupervisionMode::Monitor,
+        // The agent is coached; the caller never hears it.
+        SupervisorMode::Whisper => SupervisionMode::Whisper(CallParty::B),
+        SupervisorMode::Barge => SupervisionMode::Barge,
     };
-
-    let b_reader = {
-        let b_sock = Arc::clone(&b_socket);
-        let tx = b_tx.clone();
-        tokio::spawn(async move {
+    let codecs = codecs.map(|name| codec_name_to_type(&name.to_ascii_uppercase()));
+    let mix = Arc::new(std::sync::Mutex::new(SupervisionMix::new(
+        mode,
+        SUPERVISION_FRAME,
+    )));
+    let mut tasks = Vec::new();
+    let sources = [
+        (
+            Voice::A,
+            Arc::clone(&a_socket),
+            codecs[0],
+            (!mode.heard_by(CallParty::B)).then(|| Arc::clone(&b_socket)),
+        ),
+        (
+            Voice::B,
+            Arc::clone(&b_socket),
+            codecs[1],
+            (!mode.heard_by(CallParty::A)).then(|| Arc::clone(&a_socket)),
+        ),
+        (Voice::Supervisor, Arc::clone(&c_socket), codecs[2], None),
+    ];
+    for (voice, socket, codec, relay_to) in sources {
+        let mix = Arc::clone(&mix);
+        tasks.push(tokio::spawn(async move {
+            let mut decoder = supervision_codec(codec);
             loop {
-                match b_sock.recv_rtp_raw().await {
-                    Ok((data, _)) if !data.is_empty() => {
-                        let _ = tx.send(data);
-                    }
+                let data = match socket.recv_rtp_raw().await {
+                    Ok((data, _)) if !data.is_empty() => data,
                     _ => break,
+                };
+                if let Some(dest) = &relay_to {
+                    if dest.send_rtp_raw(&data).await.is_err() {
+                        break;
+                    }
                 }
-            }
-        })
-    };
-
-    let c_reader = {
-        let c_sock = Arc::clone(&c_socket);
-        let tx = c_tx.clone();
-        tokio::spawn(async move {
-            loop {
-                match c_sock.recv_rtp_raw().await {
-                    Ok((data, _)) if !data.is_empty() => {
-                        let _ = tx.send(data);
-                    }
-                    _ => break,
+                if data.len() <= 12 || data[1] & 0x7f == 101 {
+                    continue;
                 }
+                let Some(pcm) = decoder.as_mut().and_then(|d| d.decode(&data[12..]).ok()) else {
+                    continue;
+                };
+                let pcm = resample_linear(&pcm, codec_sample_rate_for_type(codec), 8000);
+                mix.lock().expect("mix").write(voice, &pcm);
             }
-        })
-    };
-
-    let mut tasks = vec![a_reader, b_reader, c_reader];
-
-    match mode {
-        SupervisorMode::Monitor => {
-            // A→B: forward raw
-            let a_to_b = {
-                let mut rx = a_tx.subscribe();
-                let b_sock = Arc::clone(&b_socket);
-                tokio::spawn(async move {
-                    while let Ok(data) = rx.recv().await {
-                        if b_sock.send_rtp_raw(&data).await.is_err() {
-                            break;
-                        }
-                    }
-                })
-            };
-            // B→A: forward raw
-            let b_to_a = {
-                let mut rx = b_tx.subscribe();
-                let a_sock = Arc::clone(&a_socket);
-                tokio::spawn(async move {
-                    while let Ok(data) = rx.recv().await {
-                        if a_sock.send_rtp_raw(&data).await.is_err() {
-                            break;
-                        }
-                    }
-                })
-            };
-            // C gets: mix(A, B)
-            let mix_to_c = {
-                let mut a_rx = a_tx.subscribe();
-                let mut b_rx = b_tx.subscribe();
-                let c_sock = Arc::clone(&c_socket);
-                let codec = codec.clone();
-                tokio::spawn(async move {
-                    // Simple approach: alternate sending A and B packets to supervisor
-                    // For proper mixing, we'd need timing synchronization
-                    loop {
-                        tokio::select! {
-                            Ok(data) = a_rx.recv() => {
-                                if c_sock.send_rtp_raw(&data).await.is_err() { break; }
-                            }
-                            Ok(data) = b_rx.recv() => {
-                                let mixed = remix_rtp_packet(&data, &codec);
-                                if c_sock.send_rtp_raw(&mixed).await.is_err() { break; }
-                            }
-                            else => break,
-                        }
-                    }
-                })
-            };
-            tasks.extend([a_to_b, b_to_a, mix_to_c]);
-        }
-        SupervisorMode::Whisper => {
-            // A→B: forward raw (caller hears normally)
-            let a_to_b_fwd = {
-                let mut rx = a_tx.subscribe();
-                let b_sock = Arc::clone(&b_socket);
-                tokio::spawn(async move {
-                    while let Ok(data) = rx.recv().await {
-                        if b_sock.send_rtp_raw(&data).await.is_err() {
-                            break;
-                        }
-                    }
-                })
-            };
-            // B→A: forward raw (caller hears agent)
-            let b_to_a = {
-                let mut rx = b_tx.subscribe();
-                let a_sock = Arc::clone(&a_socket);
-                tokio::spawn(async move {
-                    while let Ok(data) = rx.recv().await {
-                        if a_sock.send_rtp_raw(&data).await.is_err() {
-                            break;
-                        }
-                    }
-                })
-            };
-            // C→B: mix supervisor audio into agent's stream
-            // Agent hears: caller + supervisor (we send supervisor audio to agent)
-            let c_to_b = {
-                let mut rx = c_tx.subscribe();
-                let b_sock = Arc::clone(&b_socket);
-                tokio::spawn(async move {
-                    while let Ok(data) = rx.recv().await {
-                        // Send supervisor audio directly to agent
-                        // Note: this means agent gets both A and C packets
-                        if b_sock.send_rtp_raw(&data).await.is_err() {
-                            break;
-                        }
-                    }
-                })
-            };
-            // C gets: mix(A, B) — supervisor hears everything
-            let mix_to_c = {
-                let mut a_rx = a_tx.subscribe();
-                let mut b_rx = b_tx.subscribe();
-                let c_sock = Arc::clone(&c_socket);
-                let codec = codec.clone();
-                tokio::spawn(async move {
-                    loop {
-                        tokio::select! {
-                            Ok(data) = a_rx.recv() => {
-                                if c_sock.send_rtp_raw(&data).await.is_err() { break; }
-                            }
-                            Ok(data) = b_rx.recv() => {
-                                let mixed = remix_rtp_packet(&data, &codec);
-                                if c_sock.send_rtp_raw(&mixed).await.is_err() { break; }
-                            }
-                            else => break,
-                        }
-                    }
-                })
-            };
-            tasks.extend([a_to_b_fwd, b_to_a, c_to_b, mix_to_c]);
-        }
-        SupervisorMode::Barge => {
-            // Full 3-way: each participant hears mix of other two
-            // A gets: mix(B, C)
-            let to_a = {
-                let mut b_rx = b_tx.subscribe();
-                let mut c_rx = c_tx.subscribe();
-                let a_sock = Arc::clone(&a_socket);
-                let codec = codec.clone();
-                tokio::spawn(async move {
-                    loop {
-                        tokio::select! {
-                            Ok(data) = b_rx.recv() => {
-                                if a_sock.send_rtp_raw(&data).await.is_err() { break; }
-                            }
-                            Ok(data) = c_rx.recv() => {
-                                let mixed = remix_rtp_packet(&data, &codec);
-                                if a_sock.send_rtp_raw(&mixed).await.is_err() { break; }
-                            }
-                            else => break,
-                        }
-                    }
-                })
-            };
-            // B gets: mix(A, C)
-            let to_b = {
-                let mut a_rx = a_tx.subscribe();
-                let mut c_rx = c_tx.subscribe();
-                let b_sock = Arc::clone(&b_socket);
-                let codec = codec.clone();
-                tokio::spawn(async move {
-                    loop {
-                        tokio::select! {
-                            Ok(data) = a_rx.recv() => {
-                                if b_sock.send_rtp_raw(&data).await.is_err() { break; }
-                            }
-                            Ok(data) = c_rx.recv() => {
-                                let mixed = remix_rtp_packet(&data, &codec);
-                                if b_sock.send_rtp_raw(&mixed).await.is_err() { break; }
-                            }
-                            else => break,
-                        }
-                    }
-                })
-            };
-            // C gets: mix(A, B)
-            let to_c = {
-                let mut a_rx = a_tx.subscribe();
-                let mut b_rx = b_tx.subscribe();
-                let c_sock = Arc::clone(&c_socket);
-                let codec = codec.clone();
-                tokio::spawn(async move {
-                    loop {
-                        tokio::select! {
-                            Ok(data) = a_rx.recv() => {
-                                if c_sock.send_rtp_raw(&data).await.is_err() { break; }
-                            }
-                            Ok(data) = b_rx.recv() => {
-                                let mixed = remix_rtp_packet(&data, &codec);
-                                if c_sock.send_rtp_raw(&mixed).await.is_err() { break; }
-                            }
-                            else => break,
-                        }
-                    }
-                })
-            };
-            tasks.extend([to_a, to_b, to_c]);
-        }
+        }));
     }
-
+    let destinations = [
+        (Some(CallParty::A), a_socket, codecs[0]),
+        (Some(CallParty::B), b_socket, codecs[1]),
+        (None, c_socket, codecs[2]),
+    ];
+    tasks.push(tokio::spawn(async move {
+        let mut streams: Vec<Destination> = destinations
+            .into_iter()
+            .map(|(party, socket, codec)| Destination {
+                party,
+                socket,
+                codec,
+                encoder: supervision_codec(codec),
+                stream: SupervisionStream::new(),
+            })
+            .collect();
+        let mut interval = tokio::time::interval(std::time::Duration::from_millis(20));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            interval.tick().await;
+            let frame = mix.lock().expect("mix").tick();
+            for Destination {
+                party,
+                socket,
+                codec,
+                encoder,
+                stream,
+            } in streams.iter_mut()
+            {
+                let samples = match party {
+                    None => Some(frame.supervisor.clone()),
+                    Some(CallParty::A) => frame.a.clone(),
+                    Some(CallParty::B) => frame.b.clone(),
+                };
+                let (Some(samples), Some(encoder)) = (samples, encoder.as_mut()) else {
+                    continue;
+                };
+                let rate = codec_sample_rate_for_type(*codec);
+                let samples = resample_linear(&samples, 8000, rate);
+                let Ok(payload) = encoder.encode(&samples) else {
+                    continue;
+                };
+                // G.722's RTP clock is 8 kHz whatever its sample rate.
+                let packet =
+                    stream.packet(payload_type_for(*codec), SUPERVISION_FRAME as u32, &payload);
+                if socket.send_rtp_raw(&packet).await.is_err() {
+                    return;
+                }
+            }
+        }
+    }));
     tasks
 }
 
-/// Re-encode an RTP packet, preserving the header but allowing the payload
-/// to pass through unchanged. Used as a placeholder where true PCM mixing
-/// would be needed for simultaneous audio streams.
-fn remix_rtp_packet(data: &[u8], _codec: &str) -> Vec<u8> {
-    // For now, pass through unchanged. True mixing would require:
-    // 1. Decode both packets to PCM
-    // 2. Sum and clamp samples
-    // 3. Re-encode to the codec
-    // The current approach works well enough: the endpoint device will
-    // receive interleaved packets from both sources and play them back.
-    data.to_vec()
+/// One leg the supervision bridge sends to: which listener it is (`None`
+/// the supervisor), its socket and codec, and its own RTP stream.
+struct Destination {
+    party: Option<forge_mixer::CallParty>,
+    socket: Arc<RtpSocketPair>,
+    codec: forge_codecs::AudioCodecType,
+    encoder: Option<Box<dyn forge_codecs::AudioCodec>>,
+    stream: SupervisionStream,
+}
+
+/// Samples per 20 ms frame of the supervision mix (8 kHz).
+const SUPERVISION_FRAME: usize = 160;
+
+/// A codec for one stream of a supervised call; `None` for one this bridge
+/// cannot decode.
+fn supervision_codec(
+    codec: forge_codecs::AudioCodecType,
+) -> Option<Box<dyn forge_codecs::AudioCodec>> {
+    forge_codecs::create_codec(&forge_codecs::AudioFormat::new(
+        codec_sample_rate_for_type(codec),
+        1,
+        codec,
+    ))
+    .ok()
+}
+
+/// The static payload type of a codec the queue offers.
+fn payload_type_for(codec: forge_codecs::AudioCodecType) -> u8 {
+    match codec {
+        forge_codecs::AudioCodecType::PCMA => 8,
+        forge_codecs::AudioCodecType::G722 => 9,
+        _ => 0,
+    }
+}
+
+/// Linear resampling, enough for speech between 8 and 16 kHz.
+fn resample_linear(samples: &[i16], from: u32, to: u32) -> Vec<i16> {
+    if from == to || samples.is_empty() {
+        return samples.to_vec();
+    }
+    let out_len = (samples.len() as u64 * u64::from(to) / u64::from(from)) as usize;
+    (0..out_len)
+        .map(|i| {
+            let pos = i as f64 * f64::from(from) / f64::from(to);
+            let lo = pos.floor() as usize;
+            let hi = (lo + 1).min(samples.len() - 1);
+            let frac = pos - lo as f64;
+            let lo = samples[lo.min(samples.len() - 1)] as f64;
+            (lo + (samples[hi] as f64 - lo) * frac) as i16
+        })
+        .collect()
+}
+
+/// An RTP stream this bridge generates toward one leg.
+struct SupervisionStream {
+    ssrc: u32,
+    sequence: u16,
+    timestamp: u32,
+    started: bool,
+}
+
+impl SupervisionStream {
+    fn new() -> Self {
+        let random = uuid::Uuid::new_v4().as_u128();
+        Self {
+            ssrc: random as u32,
+            sequence: (random >> 32) as u16,
+            timestamp: (random >> 48) as u32,
+            started: false,
+        }
+    }
+
+    fn packet(&mut self, payload_type: u8, clock_step: u32, payload: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(12 + payload.len());
+        out.push(0x80);
+        let marker = if self.started { 0 } else { 0x80 };
+        self.started = true;
+        out.push(marker | (payload_type & 0x7f));
+        out.extend_from_slice(&self.sequence.to_be_bytes());
+        out.extend_from_slice(&self.timestamp.to_be_bytes());
+        out.extend_from_slice(&self.ssrc.to_be_bytes());
+        out.extend_from_slice(payload);
+        self.sequence = self.sequence.wrapping_add(1);
+        self.timestamp = self.timestamp.wrapping_add(clock_step);
+        out
+    }
 }
 
 /// Build a single-codec SDP offer (used for supervisor, overflow, and callback legs).
@@ -4542,5 +4505,141 @@ async fn campaign_dial_task(
             )
             .await;
         }
+    }
+}
+
+#[cfg(test)]
+mod supervision_tests {
+    use super::*;
+    use std::net::SocketAddr;
+    use std::time::Duration;
+    use tokio::net::UdpSocket;
+
+    /// A bridge socket whose far end is `remote`.
+    async fn bridge_socket(pool: &PortPool, remote: SocketAddr) -> Arc<RtpSocketPair> {
+        let ports = pool.allocate().await.unwrap();
+        let config = RtpSocketConfig {
+            bind_addr: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+            ..Default::default()
+        };
+        let socket = RtpSocketPair::new(ports, config).await.unwrap();
+        socket
+            .set_remote_endpoint(RemoteEndpoint {
+                rtp_addr: remote,
+                rtcp_addr: None,
+            })
+            .await;
+        Arc::new(socket)
+    }
+
+    fn loud_pcmu(seq: u16) -> Vec<u8> {
+        let mut packet = vec![0x80, 0];
+        packet.extend(seq.to_be_bytes());
+        packet.extend((u32::from(seq) * 160).to_be_bytes());
+        packet.extend(0x1234u32.to_be_bytes());
+        packet.extend(std::iter::repeat_n(
+            forge_codecs::g711::encode_ulaw(8000),
+            160,
+        ));
+        packet
+    }
+
+    /// Whether `sink` is sent a loud PCMU packet within `within`.
+    async fn hears_loud(sink: &UdpSocket, within: Duration) -> bool {
+        let deadline = tokio::time::Instant::now() + within;
+        let mut buf = [0u8; 512];
+        while tokio::time::Instant::now() < deadline {
+            let Ok(Ok((len, _))) =
+                tokio::time::timeout(Duration::from_millis(50), sink.recv_from(&mut buf)).await
+            else {
+                continue;
+            };
+            if len <= 12 {
+                continue;
+            }
+            let payload = &buf[12..len];
+            let loud = payload
+                .iter()
+                .map(|&b| (forge_codecs::g711::decode_ulaw(b) as i32).abs())
+                .sum::<i32>()
+                / payload.len() as i32;
+            if loud > 2000 {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Keep sending loud audio from `from` to `to` until aborted.
+    fn speak(from: Arc<UdpSocket>, to: SocketAddr) -> JoinHandle<()> {
+        tokio::spawn(async move {
+            for seq in 0..500u16 {
+                let _ = from.send_to(&loud_pcmu(seq), to).await;
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+    }
+
+    /// The queue's supervisor bridge mixes (`docs/ENTERPRISE_CALLING.md`
+    /// §3.11): a monitor hears the caller, a whisper is heard by the agent
+    /// and never the caller, a barge by both.
+    #[tokio::test]
+    async fn the_queue_supervisor_is_mixed_not_interleaved() {
+        let pool = PortPool::new(forge_rtp::PortPoolConfig::new(43100, 43200).unwrap());
+        let caller = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let agent = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let supervisor = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let a = bridge_socket(&pool, caller.local_addr().unwrap()).await;
+        let b = bridge_socket(&pool, agent.local_addr().unwrap()).await;
+        let c = bridge_socket(&pool, supervisor.local_addr().unwrap()).await;
+        let codecs = || ["PCMU".to_string(), "PCMU".to_string(), "PCMU".to_string()];
+
+        // Monitor: the caller speaks; the supervisor hears, the agent too.
+        let tasks = spawn_supervisor_bridge(
+            Arc::clone(&a),
+            Arc::clone(&b),
+            Arc::clone(&c),
+            SupervisorMode::Monitor,
+            codecs(),
+        );
+        let talking = speak(Arc::clone(&caller), a.local_rtp_addr().unwrap());
+        assert!(
+            hears_loud(&supervisor, Duration::from_secs(2)).await,
+            "the supervisor hears the caller"
+        );
+        assert!(
+            hears_loud(&agent, Duration::from_secs(2)).await,
+            "the agent hears the caller"
+        );
+        talking.abort();
+        tasks.iter().for_each(JoinHandle::abort);
+
+        // Whisper: the supervisor speaks; the agent hears, the caller not.
+        let tasks = spawn_supervisor_bridge(
+            Arc::clone(&a),
+            Arc::clone(&b),
+            Arc::clone(&c),
+            SupervisorMode::Whisper,
+            codecs(),
+        );
+        let talking = speak(Arc::clone(&supervisor), c.local_rtp_addr().unwrap());
+        assert!(
+            hears_loud(&agent, Duration::from_secs(2)).await,
+            "the agent hears the whisper"
+        );
+        assert!(
+            !hears_loud(&caller, Duration::from_millis(600)).await,
+            "the caller never hears a whisper"
+        );
+        tasks.iter().for_each(JoinHandle::abort);
+
+        // Barge: both hear the supervisor.
+        let tasks = spawn_supervisor_bridge(a, Arc::clone(&b), c, SupervisorMode::Barge, codecs());
+        assert!(
+            hears_loud(&caller, Duration::from_secs(2)).await,
+            "the caller hears a barge"
+        );
+        talking.abort();
+        tasks.iter().for_each(JoinHandle::abort);
     }
 }

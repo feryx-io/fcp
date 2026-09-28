@@ -47,6 +47,9 @@ pub struct LineBindingResponse {
     /// A shared line and its appearances (`docs/ENTERPRISE_CALLING.md` §3.9).
     pub shared: bool,
     pub max_appearances: u8,
+    /// A phone on the shared line may barge into an active appearance
+    /// (§3.11).
+    pub barge_in: bool,
     pub created_at: SystemTime,
     pub updated_at: SystemTime,
 }
@@ -103,6 +106,7 @@ impl From<LineBinding> for LineBindingResponse {
             holiday_target: binding.holiday_target.map(|t| t.to_string()),
             shared: binding.shared,
             max_appearances: binding.max_appearances,
+            barge_in: binding.barge_in,
             created_at: binding.created_at,
             updated_at: binding.updated_at,
         }
@@ -130,6 +134,8 @@ pub struct CreateLineBindingRequest {
     pub shared: Option<bool>,
     /// How many calls a shared line carries at once (1 to 24).
     pub max_appearances: Option<u8>,
+    /// A phone on the shared line may barge into an active appearance.
+    pub barge_in: Option<bool>,
 }
 
 fn default_tenant_id() -> TenantId {
@@ -166,6 +172,8 @@ pub struct UpdateLineBindingRequest {
     pub shared: Option<bool>,
     /// How many calls a shared line carries at once (1 to 24).
     pub max_appearances: Option<u8>,
+    /// A phone on the shared line may barge into an active appearance.
+    pub barge_in: Option<bool>,
 }
 
 /// List line bindings.
@@ -293,6 +301,9 @@ pub async fn create_line_binding(
     )
     .await?;
     apply_shared_fields(&mut binding, req.shared, req.max_appearances)?;
+    if let Some(barge_in) = req.barge_in {
+        binding.barge_in = barge_in;
+    }
 
     // Store the line binding
     storage
@@ -377,6 +388,9 @@ pub async fn update_line_binding(
     )
     .await?;
     apply_shared_fields(&mut binding, req.shared, req.max_appearances)?;
+    if let Some(barge_in) = req.barge_in {
+        binding.barge_in = barge_in;
+    }
 
     // Update timestamp
     binding.updated_at = std::time::SystemTime::now();
