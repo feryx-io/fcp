@@ -582,6 +582,18 @@ impl FlowEngine {
                 Ok(FlowExecutionResult::Continue(open.clone()))
             }
 
+            NodeType::HotelingLogin {
+                device_id,
+                max_attempts,
+                next,
+                on_failure,
+            } => Ok(FlowExecutionResult::WaitingForHotelingLogin {
+                device_id: device_id.clone(),
+                max_attempts: *max_attempts,
+                next: next.clone(),
+                on_failure: on_failure.clone(),
+            }),
+
             NodeType::VoicemailAccess {
                 mailbox,
                 max_pin_attempts,
@@ -734,6 +746,13 @@ impl FlowEngine {
                     call_id = %context.call_id,
                     mailbox = %mailbox,
                     "Flow execution paused, waiting for voicemail access IVR"
+                );
+            }
+            Ok(FlowExecutionResult::WaitingForHotelingLogin { device_id, .. }) => {
+                debug!(
+                    call_id = %context.call_id,
+                    device_id = %device_id,
+                    "Flow execution paused, waiting for a hoteling login"
                 );
             }
             Ok(FlowExecutionResult::WaitingForFork { destinations, .. }) => {
@@ -1044,6 +1063,14 @@ pub enum FlowExecutionResult {
         max_pin_attempts: u32,
         next: String,
         on_auth_failure: Option<String>,
+    },
+
+    /// Waiting for a hoteling login (extension and PIN by DTMF).
+    WaitingForHotelingLogin {
+        device_id: String,
+        max_attempts: u32,
+        next: String,
+        on_failure: Option<String>,
     },
 }
 

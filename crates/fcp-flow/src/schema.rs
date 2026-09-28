@@ -365,6 +365,25 @@ pub enum NodeType {
         holiday: Option<String>,
     },
 
+    /// Log a user in on a hoteling host (`docs/ENTERPRISE_CALLING.md`
+    /// §3.8): their extension then their PIN, by DTMF. Run by the call
+    /// manager for `*88`; `hoteling_login_status` is `ok` or `failed`.
+    HotelingLogin {
+        /// The host device.
+        device_id: String,
+
+        /// Attempts before giving up.
+        #[serde(default = "default_pin_attempts")]
+        max_attempts: u32,
+
+        /// Node after a login.
+        next: String,
+
+        /// Node when every attempt failed; `next` when unset.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        on_failure: Option<String>,
+    },
+
     /// Access voicemail IVR (PIN entry, message playback, DTMF menu)
     VoicemailAccess {
         /// Target mailbox (variable-interpolated). Empty = derive from caller.

@@ -724,6 +724,37 @@ pub enum UserEvent {
         #[serde(with = "system_time_serde")]
         timestamp: SystemTime,
     },
+
+    /// A user logged in on a host phone (`hoteling.login`,
+    /// `docs/ENTERPRISE_CALLING.md` §3.8).
+    HotelingLogin {
+        session_id: String,
+        user_id: String,
+        username: String,
+        device_id: String,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        expires_at: SystemTime,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// A hoteling session ended (`hoteling.logout`): `reason` is
+    /// `logout`, `admin`, `expired` or `replaced`.
+    HotelingLogout {
+        session_id: String,
+        user_id: String,
+        device_id: String,
+        tenant_id: TenantId,
+        reason: String,
+        /// Whether whoever ended it has told the phone to re-read its
+        /// configuration: a call manager has; the API cannot, so the call
+        /// managers do it when they hear this.
+        #[serde(default)]
+        resynced: bool,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
 }
 
 /// Registration events.
@@ -1579,6 +1610,8 @@ impl PlatformEvent {
                 UserEvent::Enabled { .. } => "user.enabled",
                 UserEvent::Disabled { .. } => "user.disabled",
                 UserEvent::CallingChanged { .. } => "user.calling_changed",
+                UserEvent::HotelingLogin { .. } => "hoteling.login",
+                UserEvent::HotelingLogout { .. } => "hoteling.logout",
             },
             PlatformEvent::Registration(e) => match e {
                 RegistrationEvent::Registered { .. } => "registration.registered",
@@ -1702,7 +1735,9 @@ impl PlatformEvent {
                 | UserEvent::Deleted { tenant_id, .. }
                 | UserEvent::Enabled { tenant_id, .. }
                 | UserEvent::Disabled { tenant_id, .. }
-                | UserEvent::CallingChanged { tenant_id, .. } => Some(tenant_id),
+                | UserEvent::CallingChanged { tenant_id, .. }
+                | UserEvent::HotelingLogin { tenant_id, .. }
+                | UserEvent::HotelingLogout { tenant_id, .. } => Some(tenant_id),
             },
             PlatformEvent::Registration(e) => match e {
                 RegistrationEvent::Registered { tenant_id, .. }
@@ -1865,7 +1900,9 @@ impl UserEvent {
             | UserEvent::Deleted { timestamp, .. }
             | UserEvent::Enabled { timestamp, .. }
             | UserEvent::Disabled { timestamp, .. }
-            | UserEvent::CallingChanged { timestamp, .. } => *timestamp,
+            | UserEvent::CallingChanged { timestamp, .. }
+            | UserEvent::HotelingLogin { timestamp, .. }
+            | UserEvent::HotelingLogout { timestamp, .. } => *timestamp,
         }
     }
 }

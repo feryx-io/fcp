@@ -20,6 +20,7 @@ pub mod error;
 pub mod extension;
 pub mod flow_trace;
 pub mod geographic;
+pub mod hoteling;
 pub mod identifiers;
 pub mod join_token;
 pub mod lcr_route;
@@ -113,6 +114,7 @@ pub const CLIENT_ADDRESS_HEADER: &str = "X-FCP-Client-Address";
 pub use crate::class_of_service::{
     CallerIdPolicy, ClassOfService, ClassOfServiceStore, DestinationClass, DestinationOverride,
 };
+pub use crate::hoteling::{HotelingSession, HotelingStore, SessionEnd};
 pub use crate::lcr_route::{LcrRoute, LcrRouteId};
 pub use crate::line_binding::{BindingType, DeviceBinding, LineBinding, RingStrategy};
 pub use crate::meeting::Meeting;

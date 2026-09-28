@@ -1224,6 +1224,24 @@ async fn main() -> Result<()> {
     // Wire storage for extension → phone number → device → registrar resolution chain
     flow_handler = flow_handler.with_storage(Arc::clone(&dyn_storage));
 
+    // Hoteling (docs/ENTERPRISE_CALLING.md §3.8): `*88` runs its login in
+    // a flow, `*89` and the sweep end sessions here, and a phone is told
+    // to re-read its configuration whoever ended its session.
+    let hoteling = {
+        let mut hoteling = fcp_sip::hoteling::Hoteling::new(Arc::clone(&dyn_storage))
+            .with_events(Arc::clone(&event_publisher));
+        if let Some(ref reg) = registrar {
+            hoteling = hoteling.with_phones(Arc::clone(reg), Arc::clone(&uac));
+        }
+        Arc::new(hoteling)
+    };
+    flow_handler = flow_handler.with_hoteling(Arc::clone(&hoteling));
+    spawn_hoteling(
+        Arc::clone(&hoteling),
+        Arc::clone(&event_bus),
+        Duration::from_secs(config.pbx.hoteling_sweep_secs.max(1)),
+    );
+
     // Wire shared TTS service to FlowEngine for Gather Say prompts and Say node pre-synthesis
     if let Some(tts) = media_manager.tts_service() {
         info!("Shared TTS service wired to FlowEngine for Gather/Say nodes");
@@ -1405,6 +1423,7 @@ async fn main() -> Result<()> {
     )?
     .with_default_tenant_id(default_tenant_id)
     .with_user_calls(Arc::clone(&user_calls))
+    .with_hoteling(Arc::clone(&hoteling))
     .with_trusted_edges(fcp_sip::emergency::TrustedEdges::parse(
         &config.e911.trusted_edges,
     )?)
@@ -2181,6 +2200,9 @@ fn create_registrar(
     )
     .with_tenant_store(Arc::clone(storage) as _)
     .with_default_tenant_id(config.service.default_tenant_id)
+    // Devices' own credentials, and who a credential may register as
+    // (docs/ENTERPRISE_CALLING.md §3.8).
+    .with_identity(Arc::clone(storage))
     .with_auth_invites(config.registrar.auth_invites);
 
     // Add domain aliases if configured
@@ -2951,6 +2973,10 @@ async fn resolve_extension_to_device_aors(
                 Ok(devices) => {
                     tracing::info!(ext = %ext_number, user_id = %user_id, device_count = devices.len(), "User target: resolving devices");
                     for device in &devices {
+                        // A host lent to a guest shows the guest's calls (§3.8).
+                        if fcp_sip::hoteling::lent_to_another(storage, device, user_id).await {
+                            continue;
+                        }
                         if let Some(sip_uri) = &device.sip_uri {
                             if let Some(dev_aor) = fcp_sip::presence::extract_aor(sip_uri) {
                                 tracing::info!(ext = %ext_number, device_id = %device.id, dev_aor = %dev_aor, "Resolved User device to AOR");
@@ -2963,6 +2989,18 @@ async fn resolve_extension_to_device_aors(
                 }
                 Err(e) => {
                     tracing::warn!(ext = %ext_number, user_id = %user_id, error = %e, "Failed to list user devices")
+                }
+            }
+            // The host the user is logged in on shows their calls.
+            if let Some(host) = fcp_sip::hoteling::hosting(storage, user_id).await {
+                if let Some(dev_aor) = host
+                    .sip_uri
+                    .as_deref()
+                    .and_then(fcp_sip::presence::extract_aor)
+                {
+                    if !device_aors.contains(&dev_aor) {
+                        device_aors.push(dev_aor);
+                    }
                 }
             }
         }
@@ -3148,6 +3186,49 @@ async fn resolve_device_aor_to_extension_aors(
 }
 
 /// Subscribe to call and registration events, update presence accordingly.
+/// The hoteling sweep, and the phones of sessions the API ended told to
+/// re-read their configuration (`docs/ENTERPRISE_CALLING.md` §3.8).
+fn spawn_hoteling(
+    hoteling: Arc<fcp_sip::hoteling::Hoteling>,
+    event_bus: Arc<InMemoryEventBus>,
+    every: Duration,
+) {
+    let sweeper = Arc::clone(&hoteling);
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(every);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tick.tick().await;
+            let ended = sweeper.sweep().await;
+            if ended > 0 {
+                info!(ended, "Hoteling sessions expired");
+            }
+        }
+    });
+    tokio::spawn(async move {
+        let filter = EventFilter::new().types(vec![EventType::User]);
+        let mut stream = match event_bus.subscribe(filter).await {
+            Ok(stream) => stream,
+            Err(e) => {
+                warn!(error = %e, "Hoteling: no event subscription; sessions the API ends are not resynced");
+                return;
+            }
+        };
+        while let Some(event) = stream.next().await {
+            if let fcp_events::PlatformEvent::User(fcp_events::UserEvent::HotelingLogout {
+                device_id,
+                resynced: false,
+                ..
+            }) = &event
+            {
+                if let Ok(device_id) = device_id.parse() {
+                    hoteling.check_sync(&device_id).await;
+                }
+            }
+        }
+    });
+}
+
 async fn run_presence_listener(
     event_bus: Arc<InMemoryEventBus>,
     presence: fcp_presence::PresenceManager,

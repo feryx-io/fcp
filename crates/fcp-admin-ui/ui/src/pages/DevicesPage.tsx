@@ -17,7 +17,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Switch } from '@/components/ui/switch'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
-import { devices, emergency, locations, tenants } from '@/api/endpoints'
+import { devices, emergency, locations, tenants, users } from '@/api/endpoints'
 import type { AddressValidation, Device, CreateDeviceRequest, UpdateDeviceRequest } from '@/types'
 import { TenantField, useEffectiveTenantId, useTenantListFilter, useShowTenantColumn } from '@/components/TenantSelector'
 
@@ -52,6 +52,12 @@ const editSchema = z.object({
   e911_country: z.string().optional(),
   // 'inherit' leaves it to the tenant's trusted device types.
   e911_trust_location: z.enum(['inherit', 'yes', 'no']).optional(),
+  // Calling (docs/ENTERPRISE_CALLING.md §3.8): '' is no owner.
+  owner_user_id: z.string().optional(),
+  hoteling_host: z.boolean().optional(),
+  sip_username: z.string().optional(),
+  sip_password: z.string().optional(),
+  remove_credentials: z.boolean().optional(),
 })
 
 type CreateForm = z.infer<typeof createSchema>
@@ -80,6 +86,21 @@ interface RevealedToken {
   context: 'created' | 'rotated'
 }
 
+/** The credentials part of a device edit: removed, set, re-passworded, or left alone. */
+function credentialChange(
+  device: Device,
+  data: EditForm,
+): Pick<UpdateDeviceRequest, 'sip_username' | 'sip_password'> {
+  if (data.remove_credentials) return { sip_username: null }
+  const username = data.sip_username?.trim() ?? ''
+  const password = data.sip_password ?? ''
+  if (!username) return {}
+  if (username !== (device.sip_username ?? '') || password) {
+    return { sip_username: username, sip_password: password || undefined }
+  }
+  return {}
+}
+
 export function DevicesPage() {
   const [createOpen, setCreateOpen] = useState(false)
   const [importOpen, setImportOpen] = useState(false)
@@ -97,6 +118,11 @@ export function DevicesPage() {
   const { data: locationList = [] } = useQuery({
     queryKey: ['locations'],
     queryFn: locations.list,
+  })
+
+  const { data: userList = [] } = useQuery({
+    queryKey: ['users'],
+    queryFn: users.list,
   })
 
   const locationName = (id: string | null) => {
@@ -184,6 +210,12 @@ export function DevicesPage() {
         <Button variant="ghost" onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}>
           Name <ArrowUpDown className="ml-2 h-4 w-4" />
         </Button>
+      ),
+      cell: ({ row }) => (
+        <span className="flex items-center gap-2">
+          {row.original.name}
+          {row.original.hoteling_host && <Badge variant="outline">Host</Badge>}
+        </span>
       ),
     },
     {
@@ -372,6 +404,11 @@ export function DevicesPage() {
           : editItem.e911_trust_location
             ? 'yes'
             : 'no',
+      owner_user_id: editItem.owner_user_id ?? '',
+      hoteling_host: editItem.hoteling_host,
+      sip_username: editItem.sip_username ?? '',
+      sip_password: '',
+      remove_credentials: false,
     })
   }
 
@@ -418,6 +455,9 @@ export function DevicesPage() {
           data.e911_trust_location === 'inherit'
             ? null
             : data.e911_trust_location === 'yes',
+        owner_user_id: data.owner_user_id || null,
+        hoteling_host: data.hoteling_host ?? false,
+        ...credentialChange(editItem, data),
       },
     })
   }
@@ -578,6 +618,75 @@ export function DevicesPage() {
                 </SelectContent>
               </Select>
             </div>
+            {/* Calling (docs/ENTERPRISE_CALLING.md §3.8): whose phone it is,
+                whether users may log in on it, and its own credentials. */}
+            <p className="pt-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+              Calling
+            </p>
+            <div className="space-y-2">
+              <Label>Owner</Label>
+              <Select
+                value={editForm.watch('owner_user_id') || '__none__'}
+                onValueChange={(v) => editForm.setValue('owner_user_id', v === '__none__' ? '' : v)}
+              >
+                <SelectTrigger><SelectValue placeholder="No owner" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">No owner</SelectItem>
+                  {userList
+                    .filter((u) => !editItem || u.tenant_id === editItem.tenant_id)
+                    .map((u) => (
+                      <SelectItem key={u.id} value={u.id}>{u.username}</SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex items-center justify-between rounded-md border p-3">
+              <div className="space-y-0.5 pr-4">
+                <Label htmlFor="e-hoteling_host">Hoteling host</Label>
+                <p className="text-xs text-muted-foreground">
+                  A shared phone: a user dials *88 on it and logs in with their extension and PIN,
+                  and it rings for them until they dial *89 or the login runs out.
+                </p>
+              </div>
+              <Switch
+                id="e-hoteling_host"
+                checked={editForm.watch('hoteling_host') ?? false}
+                onCheckedChange={(v) => editForm.setValue('hoteling_host', v)}
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="e-sip_username">Device username</Label>
+                <Input
+                  id="e-sip_username"
+                  placeholder="lobby-phone"
+                  disabled={editForm.watch('remove_credentials')}
+                  {...editForm.register('sip_username')}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="e-sip_password">Device password</Label>
+                <Input
+                  id="e-sip_password"
+                  type="password"
+                  autoComplete="new-password"
+                  placeholder={editItem?.has_sip_credentials ? 'unchanged' : ''}
+                  disabled={editForm.watch('remove_credentials')}
+                  {...editForm.register('sip_password')}
+                />
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Credentials of its own let a shared phone register as itself rather than as its owner;
+              without them it uses its owner&rsquo;s. A new username needs a password.
+            </p>
+            {editItem?.has_sip_credentials && (
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" {...editForm.register('remove_credentials')} />
+                Remove the device&rsquo;s own credentials
+              </label>
+            )}
+
             {/* Emergency (docs/E911.md): where this phone is dispatched to
                 when it is not where its site is. */}
             <p className="pt-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">

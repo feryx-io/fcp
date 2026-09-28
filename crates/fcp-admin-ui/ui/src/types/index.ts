@@ -109,6 +109,8 @@ export interface TenantCalling {
   /** IANA; the default for new schedules */
   timezone?: string | null
   destination_overrides?: DestinationOverride[]
+  /** How long a hoteling login lasts; unset is 12 */
+  hoteling_session_hours?: number | null
 }
 
 export interface ClassOfService {
@@ -199,6 +201,11 @@ export interface Device {
   firmware_version: string | null
   tenant_id: string
   owner_user_id: string | null
+  /** The username of the device's own credentials (docs/ENTERPRISE_CALLING.md §3.8) */
+  sip_username: string | null
+  has_sip_credentials: boolean
+  /** A shared phone users may log in on */
+  hoteling_host: boolean
   sip_uri: string | null
   registration_state: string
   last_registration: string | null
@@ -243,17 +250,40 @@ export interface CreateDeviceRequest {
   /// An address for this phone alone; it arrives unvalidated whatever it says.
   e911_override?: E911AddressInput
   e911_trust_location?: boolean
+  /** Credentials of the device's own: both, or neither */
+  sip_username?: string
+  sip_password?: string
+  hoteling_host?: boolean
 }
 
 /**
- * A change to a device. Absent fields are left alone; `e911_override` and
- * `e911_trust_location` set to `null` are cleared.
+ * A change to a device. Absent fields are left alone; `e911_override`,
+ * `e911_trust_location`, `owner_user_id` and `sip_username` set to `null`
+ * are cleared. A new `sip_username` needs `sip_password` too.
  */
-export interface UpdateDeviceRequest extends Partial<Omit<CreateDeviceRequest, 'e911_override' | 'e911_trust_location'>> {
+export interface UpdateDeviceRequest
+  extends Partial<Omit<CreateDeviceRequest, 'e911_override' | 'e911_trust_location' | 'owner_user_id' | 'sip_username'>> {
   enabled?: boolean
   firmware_version?: string
   e911_override?: E911AddressInput | null
   e911_trust_location?: boolean | null
+  owner_user_id?: string | null
+  sip_username?: string | null
+}
+
+/** A hoteling guest on a host phone (docs/ENTERPRISE_CALLING.md §3.8) */
+export interface HotelingSession {
+  id: string
+  device_id: string
+  device_name: string | null
+  user_id: string
+  username: string | null
+  started_at: string
+  expires_at: string
+  ended_at: string | null
+  /** logout, admin, expired or replaced */
+  ended_by: string | null
+  active: boolean
 }
 
 /** An address on the way in: the lines and, optionally, civic elements. */

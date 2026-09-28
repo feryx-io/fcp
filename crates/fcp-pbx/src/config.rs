@@ -34,10 +34,19 @@ pub struct PbxConfig {
     /// Forced Authorization Code configuration.
     #[serde(default)]
     pub fac: FacConfig,
+
+    /// How often a node ends the hoteling sessions that have run out
+    /// (`docs/ENTERPRISE_CALLING.md` §3.8), in seconds.
+    #[serde(default = "default_hoteling_sweep_secs")]
+    pub hoteling_sweep_secs: u64,
 }
 
 fn default_pbx_enabled() -> bool {
     true
+}
+
+fn default_hoteling_sweep_secs() -> u64 {
+    60
 }
 
 impl Default for PbxConfig {
@@ -50,6 +59,7 @@ impl Default for PbxConfig {
             pickup_groups: HashMap::new(),
             cmc: CmcConfig::default(),
             fac: FacConfig::default(),
+            hoteling_sweep_secs: default_hoteling_sweep_secs(),
         }
     }
 }
@@ -136,6 +146,13 @@ pub struct FeatureCodeConfig {
     pub find_me_on: String,
     #[serde(default = "default_find_me_off")]
     pub find_me_off: String,
+
+    /// Hoteling login ("*88") and logout ("*89") on a host phone
+    /// (`docs/ENTERPRISE_CALLING.md` §3.8).
+    #[serde(default = "default_hoteling_login")]
+    pub hoteling_login: String,
+    #[serde(default = "default_hoteling_logout")]
+    pub hoteling_logout: String,
 }
 
 fn default_group_pickup() -> String {
@@ -201,6 +218,12 @@ fn default_find_me_on() -> String {
 fn default_find_me_off() -> String {
     "*61".to_string()
 }
+fn default_hoteling_login() -> String {
+    "*88".to_string()
+}
+fn default_hoteling_logout() -> String {
+    "*89".to_string()
+}
 
 impl Default for FeatureCodeConfig {
     fn default() -> Self {
@@ -226,6 +249,8 @@ impl Default for FeatureCodeConfig {
             call_waiting_off: default_call_waiting_off(),
             find_me_on: default_find_me_on(),
             find_me_off: default_find_me_off(),
+            hoteling_login: default_hoteling_login(),
+            hoteling_logout: default_hoteling_logout(),
         }
     }
 }

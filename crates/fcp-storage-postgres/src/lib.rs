@@ -715,6 +715,12 @@ impl PostgresStorage {
         Ok(user)
     }
 
+    async fn open_device(&self, mut device: Device) -> Result<Device> {
+        device.sip_ha1_hash = self.open_opt(device.sip_ha1_hash).await?;
+        device.sip_provisioning_password = self.open_opt(device.sip_provisioning_password).await?;
+        Ok(device)
+    }
+
     async fn open_users(&self, users: Vec<User>) -> Result<Vec<User>> {
         let mut out = Vec::with_capacity(users.len());
         for user in users {
@@ -3679,82 +3685,90 @@ impl ExtensionStore for PostgresStorage {
 // DeviceStore Implementation
 // ============================================================================
 
+/// The columns [`row_to_device`] reads.
+macro_rules! device_columns {
+    () => {
+        "id, name, device_type, mac_address, model, firmware_version, tenant_id, owner_user_id,
+         sip_username, sip_ha1_hash, sip_provisioning_password, hoteling_host,
+         sip_uri, registration_state, last_registration, last_ip_address, user_agent,
+         max_lines, supports_video, supports_blf, codec_support,
+         location, location_id, e911_override_json, e911_trust_location, provisioning_url,
+         config_template_id, provisioning_token_hash, enabled, created_at, updated_at"
+    };
+}
+
 #[async_trait]
 impl DeviceStore for PostgresStorage {
     async fn get_device(&self, id: &DeviceId) -> Result<Option<Device>> {
-        let row = sqlx::query(
-            "SELECT id, name, device_type, mac_address, model, firmware_version, tenant_id, owner_user_id,
-                    sip_uri, registration_state, last_registration, last_ip_address, user_agent,
-                    max_lines, supports_video, supports_blf, codec_support,
-                    location, location_id, e911_override_json, e911_trust_location, provisioning_url, config_template_id, provisioning_token_hash, enabled,
-                    created_at, updated_at
-             FROM devices
-             WHERE id = $1",
-        )
+        let row = sqlx::query(concat!(
+            "SELECT ",
+            device_columns!(),
+            " FROM devices
+             WHERE id = $1"
+        ))
         .bind(id.to_string())
         .fetch_optional(self.reads())
         .await?;
 
         match row {
-            Some(row) => Ok(Some(row_to_device(row)?)),
+            Some(row) => Ok(Some(self.open_device(row_to_device(row)?).await?)),
             None => Ok(None),
         }
     }
 
     async fn get_device_by_sip_uri(&self, sip_uri: &str) -> Result<Option<Device>> {
-        let row = sqlx::query(
-            "SELECT id, name, device_type, mac_address, model, firmware_version, tenant_id, owner_user_id,
-                    sip_uri, registration_state, last_registration, last_ip_address, user_agent,
-                    max_lines, supports_video, supports_blf, codec_support,
-                    location, location_id, e911_override_json, e911_trust_location, provisioning_url, config_template_id, provisioning_token_hash, enabled,
-                    created_at, updated_at
-             FROM devices
-             WHERE sip_uri = $1",
-        )
+        let row = sqlx::query(concat!(
+            "SELECT ",
+            device_columns!(),
+            " FROM devices
+             WHERE sip_uri = $1"
+        ))
         .bind(sip_uri)
         .fetch_optional(self.reads())
         .await?;
 
         match row {
-            Some(row) => Ok(Some(row_to_device(row)?)),
+            Some(row) => Ok(Some(self.open_device(row_to_device(row)?).await?)),
             None => Ok(None),
         }
     }
 
     async fn list_devices(&self, tenant_id: &TenantId) -> Result<Vec<Device>> {
-        let rows = sqlx::query(
-            "SELECT id, name, device_type, mac_address, model, firmware_version, tenant_id, owner_user_id,
-                    sip_uri, registration_state, last_registration, last_ip_address, user_agent,
-                    max_lines, supports_video, supports_blf, codec_support,
-                    location, location_id, e911_override_json, e911_trust_location, provisioning_url, config_template_id, provisioning_token_hash, enabled,
-                    created_at, updated_at
-             FROM devices
+        let rows = sqlx::query(concat!(
+            "SELECT ",
+            device_columns!(),
+            " FROM devices
              WHERE tenant_id = $1
-             ORDER BY name",
-        )
+             ORDER BY name"
+        ))
         .bind(tenant_id.to_string())
         .fetch_all(self.reads())
         .await?;
 
-        rows.into_iter().map(row_to_device).collect()
+        let mut devices = Vec::with_capacity(rows.len());
+        for row in rows {
+            devices.push(self.open_device(row_to_device(row)?).await?);
+        }
+        Ok(devices)
     }
 
     async fn list_devices_by_user(&self, user_id: &UserId) -> Result<Vec<Device>> {
-        let rows = sqlx::query(
-            "SELECT id, name, device_type, mac_address, model, firmware_version, tenant_id, owner_user_id,
-                    sip_uri, registration_state, last_registration, last_ip_address, user_agent,
-                    max_lines, supports_video, supports_blf, codec_support,
-                    location, location_id, e911_override_json, e911_trust_location, provisioning_url, config_template_id, provisioning_token_hash, enabled,
-                    created_at, updated_at
-             FROM devices
+        let rows = sqlx::query(concat!(
+            "SELECT ",
+            device_columns!(),
+            " FROM devices
              WHERE owner_user_id = $1
-             ORDER BY name",
-        )
+             ORDER BY name"
+        ))
         .bind(user_id.to_string())
         .fetch_all(self.reads())
         .await?;
 
-        rows.into_iter().map(row_to_device).collect()
+        let mut devices = Vec::with_capacity(rows.len());
+        for row in rows {
+            devices.push(self.open_device(row_to_device(row)?).await?);
+        }
+        Ok(devices)
     }
 
     async fn put_device(&self, device: Device) -> Result<()> {
@@ -3778,22 +3792,30 @@ impl DeviceStore for PostgresStorage {
         let created_at = system_time_to_datetime(device.created_at);
         let updated_at = system_time_to_datetime(device.updated_at);
         let location_id = device.location_id.map(|id| id.to_string());
+        let sip_ha1_hash = self.seal_opt(device.sip_ha1_hash.as_deref())?;
+        let sip_provisioning_password =
+            self.seal_opt(device.sip_provisioning_password.as_deref())?;
 
         sqlx::query(
             "INSERT INTO devices (
                 id, name, device_type, mac_address, model, firmware_version, tenant_id, owner_user_id,
+                sip_username, sip_ha1_hash, sip_provisioning_password, hoteling_host,
                 sip_uri, registration_state, last_registration, last_ip_address, user_agent,
                 max_lines, supports_video, supports_blf, codec_support,
                 location, location_id, e911_override_json, e911_trust_location, provisioning_url, config_template_id, provisioning_token_hash, enabled,
                 created_at, updated_at
              )
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31)
              ON CONFLICT(id) DO UPDATE SET
                  name = EXCLUDED.name,
                  mac_address = EXCLUDED.mac_address,
                  model = EXCLUDED.model,
                  firmware_version = EXCLUDED.firmware_version,
                  owner_user_id = EXCLUDED.owner_user_id,
+                 sip_username = EXCLUDED.sip_username,
+                 sip_ha1_hash = EXCLUDED.sip_ha1_hash,
+                 sip_provisioning_password = EXCLUDED.sip_provisioning_password,
+                 hoteling_host = EXCLUDED.hoteling_host,
                  sip_uri = EXCLUDED.sip_uri,
                  registration_state = EXCLUDED.registration_state,
                  last_registration = EXCLUDED.last_registration,
@@ -3821,6 +3843,10 @@ impl DeviceStore for PostgresStorage {
         .bind(&device.firmware_version)
         .bind(&tenant_id)
         .bind(&owner_user_id)
+        .bind(&device.sip_username)
+        .bind(&sip_ha1_hash)
+        .bind(&sip_provisioning_password)
+        .bind(device.hoteling_host)
         .bind(&device.sip_uri)
         .bind(&registration_state)
         .bind(last_registration)
@@ -3849,21 +3875,43 @@ impl DeviceStore for PostgresStorage {
     }
 
     async fn get_device_by_mac_address(&self, mac_address: &str) -> Result<Option<Device>> {
-        let row = sqlx::query(
-            "SELECT id, name, device_type, mac_address, model, firmware_version, tenant_id, owner_user_id,
-                    sip_uri, registration_state, last_registration, last_ip_address, user_agent,
-                    max_lines, supports_video, supports_blf, codec_support,
-                    location, location_id, e911_override_json, e911_trust_location, provisioning_url, config_template_id, provisioning_token_hash, enabled,
-                    created_at, updated_at
-             FROM devices
-             WHERE LOWER(REPLACE(REPLACE(REPLACE(mac_address, ':', ''), '-', ''), '.', '')) = $1",
-        )
+        let row = sqlx::query(concat!(
+            "SELECT ",
+            device_columns!(),
+            " FROM devices
+             WHERE LOWER(REPLACE(REPLACE(REPLACE(mac_address, ':', ''), '-', ''), '.', '')) = $1"
+        ))
         .bind(mac_address)
         .fetch_optional(self.reads())
         .await?;
 
         match row {
-            Some(row) => Ok(Some(row_to_device(row)?)),
+            Some(row) => Ok(Some(self.open_device(row_to_device(row)?).await?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn get_device_by_sip_name(
+        &self,
+        tenant_id: &TenantId,
+        name: &str,
+    ) -> Result<Option<Device>> {
+        let row = sqlx::query(concat!(
+            "SELECT ",
+            device_columns!(),
+            " FROM devices
+             WHERE tenant_id = $1
+               AND (LOWER(sip_username) = LOWER($2)
+                    OR LOWER(split_part(regexp_replace(sip_uri, '^sips?:', ''), '@', 1)) = LOWER($2))
+             ORDER BY (LOWER(sip_username) = LOWER($2)) IS TRUE DESC, id
+             LIMIT 1"
+        ))
+        .bind(tenant_id.to_string())
+        .bind(name)
+        .fetch_optional(self.reads())
+        .await?;
+        match row {
+            Some(row) => Ok(Some(self.open_device(row_to_device(row)?).await?)),
             None => Ok(None),
         }
     }
@@ -4485,7 +4533,7 @@ fn map_device_write_error(err: sqlx::Error) -> anyhow::Error {
     anyhow::Error::from(err)
 }
 
-/// Convert SQLite row to Device
+/// Convert a row to a Device, its secrets still sealed.
 fn row_to_device(row: sqlx::postgres::PgRow) -> Result<Device> {
     let id = DeviceId::from_str(&row.get::<String, _>("id"))?;
     let tenant_id = TenantId::from_str(&row.get::<String, _>("tenant_id"))?;
@@ -4549,6 +4597,10 @@ fn row_to_device(row: sqlx::postgres::PgRow) -> Result<Device> {
         firmware_version: row.get("firmware_version"),
         tenant_id,
         owner_user_id,
+        sip_username: row.get("sip_username"),
+        sip_ha1_hash: row.get("sip_ha1_hash"),
+        sip_provisioning_password: row.get("sip_provisioning_password"),
+        hoteling_host: row.get("hoteling_host"),
         sip_uri: row.get("sip_uri"),
         registration_state,
         last_registration,
@@ -7670,6 +7722,166 @@ impl fcp_core::class_of_service::ClassOfServiceStore for PostgresStorage {
             .execute(self.writes())
             .await?;
         Ok(())
+    }
+}
+
+/// The columns [`row_to_hoteling_session`] reads.
+const HOTELING_COLUMNS: &str =
+    "id, tenant_id, device_id, user_id, started_at, expires_at, ended_at, ended_by";
+
+fn row_to_hoteling_session(row: sqlx::postgres::PgRow) -> Result<fcp_core::HotelingSession> {
+    Ok(fcp_core::HotelingSession {
+        id: row.get::<String, _>("id").parse()?,
+        tenant_id: TenantId::from_str(&row.get::<String, _>("tenant_id"))?,
+        device_id: DeviceId::from_str(&row.get::<String, _>("device_id"))?,
+        user_id: UserId::from_str(&row.get::<String, _>("user_id"))?,
+        started_at: datetime_to_system_time(row.get("started_at")),
+        expires_at: datetime_to_system_time(row.get("expires_at")),
+        ended_at: row
+            .get::<Option<DateTime<Utc>>, _>("ended_at")
+            .map(datetime_to_system_time),
+        ended_by: row
+            .get::<Option<String>, _>("ended_by")
+            .as_deref()
+            .and_then(fcp_core::SessionEnd::parse),
+    })
+}
+
+// Sessions are read from the primary: a guest who has just logged in is
+// rung a moment later, sooner than a replica may have caught up.
+#[async_trait]
+impl fcp_core::hoteling::HotelingStore for PostgresStorage {
+    async fn start_hoteling_session(
+        &self,
+        session: fcp_core::HotelingSession,
+    ) -> Result<Vec<fcp_core::HotelingSession>> {
+        let mut tx = self.writes().begin().await?;
+        let ended = sqlx::query(&format!(
+            "UPDATE hoteling_sessions SET ended_at = $3, ended_by = 'replaced'
+             WHERE ended_at IS NULL AND (device_id = $1 OR user_id = $2)
+             RETURNING {HOTELING_COLUMNS}"
+        ))
+        .bind(session.device_id.to_string())
+        .bind(session.user_id.to_string())
+        .bind(system_time_to_datetime(session.started_at))
+        .fetch_all(&mut *tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO hoteling_sessions (id, tenant_id, device_id, user_id, started_at, expires_at)
+             VALUES ($1, $2, $3, $4, $5, $6)",
+        )
+        .bind(session.id.to_string())
+        .bind(session.tenant_id.to_string())
+        .bind(session.device_id.to_string())
+        .bind(session.user_id.to_string())
+        .bind(system_time_to_datetime(session.started_at))
+        .bind(system_time_to_datetime(session.expires_at))
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        ended.into_iter().map(row_to_hoteling_session).collect()
+    }
+
+    async fn get_hoteling_session(
+        &self,
+        id: &fcp_core::HotelingSessionId,
+    ) -> Result<Option<fcp_core::HotelingSession>> {
+        sqlx::query(&format!(
+            "SELECT {HOTELING_COLUMNS} FROM hoteling_sessions WHERE id = $1"
+        ))
+        .bind(id.to_string())
+        .fetch_optional(self.writes())
+        .await?
+        .map(row_to_hoteling_session)
+        .transpose()
+    }
+
+    async fn hoteling_session_for_device(
+        &self,
+        device_id: &DeviceId,
+    ) -> Result<Option<fcp_core::HotelingSession>> {
+        sqlx::query(&format!(
+            "SELECT {HOTELING_COLUMNS} FROM hoteling_sessions
+             WHERE device_id = $1 AND ended_at IS NULL AND expires_at > NOW()"
+        ))
+        .bind(device_id.to_string())
+        .fetch_optional(self.writes())
+        .await?
+        .map(row_to_hoteling_session)
+        .transpose()
+    }
+
+    async fn hoteling_session_for_user(
+        &self,
+        user_id: &UserId,
+    ) -> Result<Option<fcp_core::HotelingSession>> {
+        sqlx::query(&format!(
+            "SELECT {HOTELING_COLUMNS} FROM hoteling_sessions
+             WHERE user_id = $1 AND ended_at IS NULL AND expires_at > NOW()"
+        ))
+        .bind(user_id.to_string())
+        .fetch_optional(self.writes())
+        .await?
+        .map(row_to_hoteling_session)
+        .transpose()
+    }
+
+    async fn list_hoteling_sessions(
+        &self,
+        tenant_id: &TenantId,
+        include_ended: bool,
+    ) -> Result<Vec<fcp_core::HotelingSession>> {
+        let filter = if include_ended {
+            ""
+        } else {
+            "AND ended_at IS NULL AND expires_at > NOW()"
+        };
+        sqlx::query(&format!(
+            "SELECT {HOTELING_COLUMNS} FROM hoteling_sessions
+             WHERE tenant_id = $1 {filter}
+             ORDER BY started_at DESC LIMIT 500"
+        ))
+        .bind(tenant_id.to_string())
+        .fetch_all(self.reads())
+        .await?
+        .into_iter()
+        .map(row_to_hoteling_session)
+        .collect()
+    }
+
+    async fn end_hoteling_session(
+        &self,
+        id: &fcp_core::HotelingSessionId,
+        by: fcp_core::SessionEnd,
+    ) -> Result<Option<fcp_core::HotelingSession>> {
+        sqlx::query(&format!(
+            "UPDATE hoteling_sessions SET ended_at = NOW(), ended_by = $2
+             WHERE id = $1 AND ended_at IS NULL
+             RETURNING {HOTELING_COLUMNS}"
+        ))
+        .bind(id.to_string())
+        .bind(by.as_str())
+        .fetch_optional(self.writes())
+        .await?
+        .map(row_to_hoteling_session)
+        .transpose()
+    }
+
+    async fn expire_hoteling_sessions(
+        &self,
+        now: SystemTime,
+    ) -> Result<Vec<fcp_core::HotelingSession>> {
+        sqlx::query(&format!(
+            "UPDATE hoteling_sessions SET ended_at = expires_at, ended_by = 'expired'
+             WHERE ended_at IS NULL AND expires_at <= $1
+             RETURNING {HOTELING_COLUMNS}"
+        ))
+        .bind(system_time_to_datetime(now))
+        .fetch_all(self.writes())
+        .await?
+        .into_iter()
+        .map(row_to_hoteling_session)
+        .collect()
     }
 }
 

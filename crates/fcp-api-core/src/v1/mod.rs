@@ -21,6 +21,7 @@ pub mod events;
 pub mod extensions;
 pub mod flow_traces;
 pub mod flows;
+pub mod hoteling;
 pub mod join_tokens;
 pub mod lcr_routes;
 pub mod line_bindings;
@@ -166,6 +167,10 @@ pub fn router() -> Router<ApiState> {
         .route(
             "/me/calling",
             get(self_service::get_my_calling).put(self_service::update_my_calling),
+        )
+        .route(
+            "/me/hoteling",
+            get(self_service::get_my_hoteling).delete(self_service::logout_my_hoteling),
         )
         .route("/me/conferences", get(self_service::list_my_conferences))
         .route(
@@ -469,6 +474,12 @@ pub fn router() -> Router<ApiState> {
             get(devices::get_device)
                 .patch(devices::update_device)
                 .delete(devices::delete_device),
+        )
+        // Hoteling sessions (docs/ENTERPRISE_CALLING.md §3.8)
+        .route("/hoteling/sessions", get(hoteling::list_sessions))
+        .route(
+            "/hoteling/sessions/:id",
+            axum::routing::delete(hoteling::end_session_by_id),
         )
         // Config Templates (device provisioning)
         .route(

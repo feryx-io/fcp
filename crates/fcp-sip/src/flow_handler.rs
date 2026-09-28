@@ -89,6 +89,9 @@ pub struct FlowCallHandler {
     /// Voicemail service for recording voicemail messages
     voicemail_service: Option<Arc<VoicemailService>>,
 
+    /// Hoteling sessions, for the login node (`docs/ENTERPRISE_CALLING.md` §3.8)
+    hoteling: Option<Arc<crate::hoteling::Hoteling>>,
+
     /// Prompt service for resolving system prompts to audio files
     prompt_service: Option<Arc<fcp_core::PromptService>>,
 
@@ -165,6 +168,7 @@ impl FlowCallHandler {
             local_addr: None,
             rtp_port: 8000,
             voicemail_service: None,
+            hoteling: None,
             prompt_service: None,
             flow_trace_store: None,
             registrar: None,
@@ -225,6 +229,12 @@ impl FlowCallHandler {
     /// Set the voicemail service (for Voicemail flow nodes).
     pub fn with_voicemail_service(mut self, voicemail_service: Arc<VoicemailService>) -> Self {
         self.voicemail_service = Some(voicemail_service);
+        self
+    }
+
+    /// Start hoteling sessions from the login node.
+    pub fn with_hoteling(mut self, hoteling: Arc<crate::hoteling::Hoteling>) -> Self {
+        self.hoteling = Some(hoteling);
         self
     }
 
@@ -2119,6 +2129,188 @@ impl FlowCallHandler {
         Box::pin(self.execute_next_node(call_id)).await
     }
 
+    /// The HotelingLogin node (`docs/ENTERPRISE_CALLING.md` §3.8): the
+    /// caller's extension, then their PIN, until a login or the attempts
+    /// run out; `hoteling_login_status` says which.
+    async fn handle_hoteling_login(
+        &self,
+        call_id: CallId,
+        device_id: String,
+        max_attempts: u32,
+        next: String,
+        on_failure: Option<String>,
+    ) -> Result<()> {
+        let context = {
+            let entry = self
+                .contexts
+                .get(&call_id)
+                .ok_or_else(|| anyhow::anyhow!("Flow context not found for call {}", call_id))?;
+            Arc::clone(entry.value())
+        };
+        let media_call_id = {
+            let guard = context.read().await;
+            let core_call_id = fcp_core::CallId::from_uuid(*call_id.as_uuid());
+            guard.media_session_id.unwrap_or(core_call_id)
+        };
+        let logged_in = self
+            .hoteling_login_ivr(call_id, &device_id, max_attempts, media_call_id)
+            .await;
+        let mut guard = context.write().await;
+        guard.set_variable(
+            "hoteling_login_status".to_string(),
+            if logged_in { "ok" } else { "failed" }.to_string(),
+        );
+        guard.current_node = if logged_in {
+            next
+        } else {
+            on_failure.unwrap_or(next)
+        };
+        drop(guard);
+        Box::pin(self.execute_next_node(call_id)).await
+    }
+
+    async fn hoteling_login_ivr(
+        &self,
+        call_id: CallId,
+        device_id: &str,
+        max_attempts: u32,
+        media_call_id: fcp_core::CallId,
+    ) -> bool {
+        let (Some(hoteling), Some(mm)) = (&self.hoteling, &self.media_manager) else {
+            warn!(call_id = %call_id, "Hoteling login without hoteling or media configured");
+            return false;
+        };
+        let storage = hoteling.storage();
+        let device = match device_id.parse::<fcp_core::DeviceId>() {
+            Ok(id) => match storage.get_device(&id).await {
+                Ok(Some(device)) if device.hoteling_host && device.enabled => device,
+                _ => {
+                    warn!(call_id = %call_id, device_id, "Hoteling login from a device that is not a host");
+                    return false;
+                }
+            },
+            Err(_) => return false,
+        };
+        for attempt in 1..=max_attempts.max(1) {
+            let extension = self
+                .prompt_digits(
+                    mm,
+                    &media_call_id,
+                    "hoteling_enter_extension",
+                    "Enter your extension, then pound.",
+                )
+                .await;
+            let pin = self
+                .prompt_digits(
+                    mm,
+                    &media_call_id,
+                    "hoteling_enter_pin",
+                    "Enter your PIN, then pound.",
+                )
+                .await;
+            let user = if extension.is_empty() || pin.is_empty() {
+                None
+            } else {
+                hoteling_guest(storage, &device.tenant_id, &extension, &pin).await
+            };
+            match user {
+                Some(user) => match hoteling.login(&device, &user).await {
+                    Ok(_) => {
+                        self.say(
+                            mm,
+                            &media_call_id,
+                            "hoteling_logged_in",
+                            "You are logged in.",
+                        )
+                        .await;
+                        return true;
+                    }
+                    Err(e) => {
+                        warn!(call_id = %call_id, error = %e, "Hoteling login failed");
+                        return false;
+                    }
+                },
+                None => {
+                    info!(call_id = %call_id, attempt, extension = %extension, "Hoteling login refused");
+                    self.say(
+                        mm,
+                        &media_call_id,
+                        "hoteling_login_incorrect",
+                        "Login incorrect.",
+                    )
+                    .await;
+                }
+            }
+        }
+        false
+    }
+
+    /// Play a system prompt (its file, else speech) and collect digits up
+    /// to `#`, the prompt cut short by the first digit.
+    async fn prompt_digits(
+        &self,
+        mm: &Arc<fcp_media::MediaManager>,
+        cid: &fcp_core::CallId,
+        prompt: &str,
+        text: &str,
+    ) -> String {
+        use fcp_media::CollectionResult;
+        let collector = mm.create_dtmf_collector(cid, 0, Some('#'));
+        let playback = self.start_prompt(mm, cid, prompt, text).await;
+        let result = collector.collect(std::time::Duration::from_secs(10)).await;
+        if let Some(playback) = playback {
+            let _ = mm.stop_playback(cid, playback).await;
+        }
+        match result {
+            CollectionResult::Complete(d) | CollectionResult::Timeout(d) => {
+                d.trim_end_matches('#').to_string()
+            }
+            CollectionResult::Cancelled => String::new(),
+        }
+    }
+
+    /// Play a system prompt to the end.
+    async fn say(
+        &self,
+        mm: &Arc<fcp_media::MediaManager>,
+        cid: &fcp_core::CallId,
+        prompt: &str,
+        text: &str,
+    ) {
+        if let Some(playback) = self.start_prompt(mm, cid, prompt, text).await {
+            let _ = mm.wait_playback_completion(playback).await;
+        }
+    }
+
+    async fn start_prompt(
+        &self,
+        mm: &Arc<fcp_media::MediaManager>,
+        cid: &fcp_core::CallId,
+        prompt: &str,
+        text: &str,
+    ) -> Option<String> {
+        use fcp_media::AudioTarget;
+        if let Some(ps) = &self.prompt_service {
+            if let Ok(Some(path)) = ps.resolve(prompt, None).await {
+                if let Ok(id) = mm
+                    .play_file(cid, path.to_string_lossy().to_string(), AudioTarget::Both)
+                    .await
+                {
+                    return Some(id);
+                }
+            }
+        }
+        mm.play_tts(
+            cid,
+            text.to_string(),
+            "en-US".to_string(),
+            None,
+            AudioTarget::Both,
+        )
+        .await
+        .ok()
+    }
+
     /// Handle the VoicemailAccess flow node — full IVR state machine.
     ///
     /// Steps:
@@ -3827,6 +4019,17 @@ impl FlowCallHandler {
                 .await?;
             }
 
+            FlowExecutionResult::WaitingForHotelingLogin {
+                device_id,
+                max_attempts,
+                next,
+                on_failure,
+            } => {
+                drop(context_guard);
+                self.handle_hoteling_login(call_id, device_id, max_attempts, next, on_failure)
+                    .await?;
+            }
+
             FlowExecutionResult::WaitingForVoicemailAccess {
                 mailbox,
                 max_pin_attempts,
@@ -4420,4 +4623,26 @@ mod transport_of_tests {
             TransportKind::Tls
         );
     }
+}
+
+/// The user an extension and PIN log in: the extension's user (or the
+/// username), enabled, with a PIN that matches.
+async fn hoteling_guest(
+    storage: &fcp_core::DynStorage,
+    tenant_id: &fcp_core::TenantId,
+    extension: &str,
+    pin: &str,
+) -> Option<fcp_core::User> {
+    use fcp_core::storage::CredentialStore;
+    let user_id = crate::ring_plan::user_of(storage, tenant_id, extension).await?;
+    let user = storage.get_user_by_id(&user_id).await.ok().flatten()?;
+    let hash = user.pin.clone().filter(|_| user.enabled)?;
+    // bcrypt: off the async workers.
+    let pin = pin.to_string();
+    let matches = tokio::task::spawn_blocking(move || {
+        fcp_core::storage::password::verify_pin(&pin, &hash).unwrap_or(false)
+    })
+    .await
+    .unwrap_or(false);
+    matches.then_some(user)
 }

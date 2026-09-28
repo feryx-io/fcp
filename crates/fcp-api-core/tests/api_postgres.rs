@@ -7452,3 +7452,199 @@ async fn classes_of_service_are_assigned_by_an_admin_and_numbers_read_by_the_ten
 
     app.finish().await;
 }
+
+#[tokio::test]
+async fn hoteling_hosts_credentials_and_sessions() {
+    use fcp_core::HotelingStore;
+    let app = require_app!();
+    let owner_id = app.create_user_with_role("deskowner", "end_user").await;
+    let guest_id = app.create_user_with_role("guest", "end_user").await;
+
+    // A host with credentials of its own (docs/ENTERPRISE_CALLING.md §3.8):
+    // a username no user has, and a password long enough.
+    let taken = app
+        .admin(
+            Method::POST,
+            "/api/v1/devices",
+            Some(json!({ "name": "Lobby", "device_type": "desk_phone",
+                         "sip_username": "guest", "sip_password": "long-enough-pw" })),
+        )
+        .await;
+    assert_eq!(taken.status, StatusCode::CONFLICT, "{}", taken.text);
+    let short = app
+        .admin(
+            Method::POST,
+            "/api/v1/devices",
+            Some(json!({ "name": "Lobby", "device_type": "desk_phone",
+                         "sip_username": "lobby-1", "sip_password": "short" })),
+        )
+        .await;
+    assert_eq!(short.status, StatusCode::BAD_REQUEST, "{}", short.text);
+    let host = app
+        .admin(
+            Method::POST,
+            "/api/v1/devices",
+            Some(json!({ "name": "Lobby", "device_type": "desk_phone",
+                         "sip_uri": "sip:lobby-1@example.com",
+                         "sip_username": "lobby-1", "sip_password": "long-enough-pw",
+                         "hoteling_host": true })),
+        )
+        .await;
+    assert_eq!(host.status, StatusCode::CREATED, "{}", host.text);
+    assert_eq!(host.json["sip_username"], "lobby-1");
+    assert_eq!(host.json["has_sip_credentials"], true);
+    assert_eq!(host.json["hoteling_host"], true);
+    for secret in ["sip_ha1_hash", "sip_provisioning_password", "sip_password"] {
+        assert!(
+            host.json.get(secret).is_none(),
+            "{secret} returned: {}",
+            host.text
+        );
+    }
+    let host_id = host.json["id"].as_str().unwrap().to_string();
+    let path = format!("/api/v1/devices/{host_id}");
+
+    // A new username needs a new password; the owner can be set and cleared.
+    let renamed = app
+        .admin(
+            Method::PATCH,
+            &path,
+            Some(json!({ "sip_username": "lobby-2" })),
+        )
+        .await;
+    assert_eq!(renamed.status, StatusCode::BAD_REQUEST, "{}", renamed.text);
+    let owned = app
+        .admin(
+            Method::PATCH,
+            &path,
+            Some(json!({ "owner_user_id": owner_id })),
+        )
+        .await;
+    assert_eq!(owned.status, StatusCode::OK, "{}", owned.text);
+    assert_eq!(owned.json["owner_user_id"], owner_id.as_str());
+    let unowned = app
+        .admin(Method::PATCH, &path, Some(json!({ "owner_user_id": null })))
+        .await;
+    assert_eq!(unowned.status, StatusCode::OK, "{}", unowned.text);
+    assert!(unowned.json["owner_user_id"].is_null(), "{}", unowned.text);
+
+    // The tenant's session length.
+    let bad_hours = app
+        .admin(
+            Method::PUT,
+            &format!("/api/v1/tenants/{}", app.tenant_a),
+            Some(json!({ "calling": { "hoteling_session_hours": 0 } })),
+        )
+        .await;
+    assert_eq!(
+        bad_hours.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        bad_hours.text
+    );
+
+    // A guest logged in (a login happens at the phone; here, in the store).
+    let host_device: fcp_core::DeviceId = host_id.parse().unwrap();
+    let guest: fcp_core::UserId = guest_id.parse().unwrap();
+    let start = || {
+        fcp_core::HotelingSession::start(
+            app.tenant_a,
+            host_device,
+            guest,
+            Duration::from_secs(3600),
+        )
+    };
+    app.storage
+        .start_hoteling_session(start())
+        .await
+        .expect("session");
+    let list = app
+        .admin(Method::GET, "/api/v1/hoteling/sessions", None)
+        .await;
+    assert_eq!(list.status, StatusCode::OK, "{}", list.text);
+    assert_eq!(list.json.as_array().unwrap().len(), 1, "{}", list.text);
+    assert_eq!(list.json[0]["username"], "guest");
+    assert_eq!(list.json[0]["device_name"], "Lobby");
+    assert_eq!(list.json[0]["active"], true);
+
+    // The guest sees it and logs out.
+    let jwt = app.login("guest", PASSWORD).await.json["token"]
+        .as_str()
+        .expect("jwt")
+        .to_string();
+    let mine = app
+        .send_as(&jwt, Method::GET, "/api/v1/me/hoteling", None)
+        .await;
+    assert_eq!(mine.status, StatusCode::OK, "{}", mine.text);
+    assert_eq!(mine.json["device_id"], host_id.as_str());
+    let out = app
+        .send_as(&jwt, Method::DELETE, "/api/v1/me/hoteling", None)
+        .await;
+    assert_eq!(out.status, StatusCode::NO_CONTENT, "{}", out.text);
+    let mine = app
+        .send_as(&jwt, Method::GET, "/api/v1/me/hoteling", None)
+        .await;
+    assert!(mine.json.is_null(), "{}", mine.text);
+    let again = app
+        .send_as(&jwt, Method::DELETE, "/api/v1/me/hoteling", None)
+        .await;
+    assert_eq!(again.status, StatusCode::NOT_FOUND, "{}", again.text);
+
+    // An admin ends one; a host that stops being a host ends another.
+    let second = start();
+    app.storage
+        .start_hoteling_session(second.clone())
+        .await
+        .expect("session");
+    let ended = app
+        .admin(
+            Method::DELETE,
+            &format!("/api/v1/hoteling/sessions/{}", second.id),
+            None,
+        )
+        .await;
+    assert_eq!(ended.status, StatusCode::NO_CONTENT, "{}", ended.text);
+    let third = start();
+    app.storage
+        .start_hoteling_session(third.clone())
+        .await
+        .expect("session");
+    let no_host = app
+        .admin(
+            Method::PATCH,
+            &path,
+            Some(json!({ "hoteling_host": false })),
+        )
+        .await;
+    assert_eq!(no_host.status, StatusCode::OK, "{}", no_host.text);
+    let active = app
+        .admin(Method::GET, "/api/v1/hoteling/sessions", None)
+        .await;
+    assert_eq!(active.json.as_array().unwrap().len(), 0, "{}", active.text);
+    let all = app
+        .admin(Method::GET, "/api/v1/hoteling/sessions?all=true", None)
+        .await;
+    let ends: Vec<&str> = all
+        .json
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["ended_by"].as_str().unwrap())
+        .collect();
+    assert_eq!(ends, ["admin", "admin", "logout"], "{}", all.text);
+
+    // A starting session replaces the guest's other one.
+    app.storage
+        .start_hoteling_session(start())
+        .await
+        .expect("session");
+    let replaced = app
+        .storage
+        .start_hoteling_session(start())
+        .await
+        .expect("session");
+    assert_eq!(replaced.len(), 1);
+    assert_eq!(replaced[0].ended_by, Some(fcp_core::SessionEnd::Replaced));
+
+    app.finish().await;
+}

@@ -587,6 +587,9 @@ pub struct CredentialStoreAdapter {
     realm: String,
     tenant_store: Option<Arc<dyn TenantStore>>,
     default_tenant_id: Option<TenantId>,
+    /// Devices with credentials of their own (`docs/ENTERPRISE_CALLING.md`
+    /// §3.8); without it only users authenticate.
+    identity: Option<Arc<fcp_core::DynStorage>>,
 }
 
 impl CredentialStoreAdapter {
@@ -596,7 +599,13 @@ impl CredentialStoreAdapter {
             realm,
             tenant_store: None,
             default_tenant_id: None,
+            identity: None,
         }
+    }
+
+    pub fn with_identity(mut self, identity: Option<Arc<fcp_core::DynStorage>>) -> Self {
+        self.identity = identity;
+        self
     }
 
     pub fn with_tenant_context(
@@ -660,8 +669,21 @@ impl Ha1CredentialStore for CredentialStoreAdapter {
                     ));
                 }
             }
+            return None;
         }
-        None
+        // A device's own credentials.
+        let identity = self.identity.as_ref()?;
+        match crate::hoteling::credential(identity, &tenant_id, username).await {
+            Some(crate::hoteling::Credential::Device(device)) => {
+                let ha1_hash = device.sip_ha1_hash?;
+                Some(sip_auth::Credentials::new(
+                    username,
+                    ha1_hash.as_str(),
+                    self.realm.clone(),
+                ))
+            }
+            _ => None,
+        }
     }
 }
 
@@ -686,6 +708,12 @@ pub struct FcpRegistrar {
 
     /// Credential store for looking up user preferences
     credential_store: Option<Arc<dyn CredentialStore>>,
+
+    /// Devices, extensions and lines: who a credential may register as,
+    /// and devices' own credentials (`docs/ENTERPRISE_CALLING.md` §3.8).
+    /// Without it any authenticated credential registers any address, as
+    /// before.
+    identity: Option<Arc<fcp_core::DynStorage>>,
 
     /// Default registration expiry in seconds
     default_expires: u32,
@@ -736,6 +764,7 @@ impl FcpRegistrar {
             auth_enabled: AtomicBool::new(auth_enabled),
             auth_invites: AtomicBool::new(false),
             credential_store,
+            identity: None,
             default_expires: 3600,
             min_expires: 60,
             max_expires: 86400,
@@ -799,6 +828,34 @@ impl FcpRegistrar {
         self
     }
 
+    /// Check who a credential registers and calls as, and accept devices'
+    /// own credentials (`docs/ENTERPRISE_CALLING.md` §3.8).
+    pub fn with_identity(mut self, identity: Arc<fcp_core::DynStorage>) -> Self {
+        self.identity = Some(identity);
+        self.refresh_authenticator();
+        self
+    }
+
+    /// Whether the credentials `username` may be `aor_user` in the tenant:
+    /// always, without identity storage.
+    async fn may_act_as(
+        &self,
+        tenant_id: Option<&TenantId>,
+        username: &str,
+        aor_user: &str,
+    ) -> bool {
+        if username.eq_ignore_ascii_case(aor_user) {
+            return true;
+        }
+        let Some(identity) = &self.identity else {
+            return true;
+        };
+        let Some(tenant_id) = tenant_id else {
+            return false;
+        };
+        crate::hoteling::may_act_as(identity, tenant_id, username, aor_user).await
+    }
+
     /// Set the explicit default tenant used when SIP addressing carries no tenant domain.
     pub fn with_default_tenant_id(mut self, tenant_id: TenantId) -> Self {
         self.default_tenant_id = Some(tenant_id);
@@ -830,7 +887,8 @@ impl FcpRegistrar {
         self.authenticator = self.credential_store.as_ref().map(|cred_store| {
             let cred_adapter =
                 CredentialStoreAdapter::new(Arc::clone(cred_store), self.realm.clone())
-                    .with_tenant_context(self.tenant_store.clone(), self.default_tenant_id);
+                    .with_tenant_context(self.tenant_store.clone(), self.default_tenant_id)
+                    .with_identity(self.identity.clone());
             Ha1Authenticator::new(self.realm.clone(), cred_adapter)
         });
     }
@@ -910,6 +968,15 @@ impl FcpRegistrar {
                     Some(claimed) if claimed.eq_ignore_ascii_case(&username) => {
                         InviteAuth::Admitted { username }
                     }
+                    // A device's address, its owner's, a line it is on.
+                    Some(claimed)
+                        if self.identity.is_some() && {
+                            let tenant = self.invite_tenant(request, &claimed).await;
+                            self.may_act_as(tenant.as_ref(), &username, &claimed).await
+                        } =>
+                    {
+                        InviteAuth::Admitted { username }
+                    }
                     Some(claimed) => InviteAuth::WrongUser {
                         authenticated: username,
                         claimed,
@@ -917,6 +984,20 @@ impl FcpRegistrar {
                 }
             }
         }
+    }
+
+    /// The tenant of the party an INVITE's `From` names.
+    async fn invite_tenant(&self, request: &Request, claimed: &str) -> Option<TenantId> {
+        let aor = from_aor(request);
+        resolve_tenant_for_inputs(
+            self.tenant_store.as_ref(),
+            self.credential_store.as_ref(),
+            self.default_tenant_id,
+            aor.as_deref(),
+            Some(claimed),
+        )
+        .await
+        .ok()
     }
 
     /// Publish a registration event (fire-and-forget).
@@ -1021,9 +1102,30 @@ impl FcpRegistrar {
 
                 // Verify authentication
                 match authenticator.authenticate(request).await {
-                    crate::auth::AuthOutcome::Authenticated { .. } => {
+                    crate::auth::AuthOutcome::Authenticated { username } => {
                         debug!("Authentication successful");
-                        // Continue to registration handling
+                        // The credentials may register only what is theirs
+                        // (`docs/ENTERPRISE_CALLING.md` §3.8): no retry fixes
+                        // that, so it is refused rather than challenged.
+                        if let Some(aor_user) = username_hint.as_deref() {
+                            if !self
+                                .may_act_as(tenant_id.as_ref(), &username, aor_user)
+                                .await
+                            {
+                                warn!(
+                                    aor = %aor,
+                                    username = %username,
+                                    "REGISTER refused: the credentials may not register this address"
+                                );
+                                self.publish_event(RegistrationEvent::Failed {
+                                    aor: aor.clone(),
+                                    tenant_id: tenant_id.unwrap_or_else(TenantId::nil),
+                                    reason: "not_permitted".to_string(),
+                                    timestamp: SystemTime::now(),
+                                });
+                                return self.create_error_response(request, 403, "Forbidden");
+                            }
+                        }
                     }
                     // The credentials are right and only the nonce was not
                     // usable, so the phone retries without prompting anyone.

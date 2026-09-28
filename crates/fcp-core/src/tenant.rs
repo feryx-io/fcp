@@ -155,6 +155,11 @@ pub struct TenantCalling {
     /// built-in table.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub destination_overrides: Vec<crate::class_of_service::DestinationOverride>,
+    /// How long a hoteling guest stays logged in on a host phone
+    /// (`docs/ENTERPRISE_CALLING.md` §3.8); unset is
+    /// [`crate::hoteling::DEFAULT_SESSION_HOURS`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hoteling_session_hours: Option<u32>,
 }
 
 impl TenantCalling {
@@ -178,7 +183,23 @@ impl TenantCalling {
         for o in &self.destination_overrides {
             o.validate()?;
         }
+        if let Some(hours) = self.hoteling_session_hours {
+            if !(1..=crate::hoteling::MAX_SESSION_HOURS).contains(&hours) {
+                return Err(format!(
+                    "hoteling_session_hours must be 1 to {}",
+                    crate::hoteling::MAX_SESSION_HOURS
+                ));
+            }
+        }
         Ok(())
+    }
+
+    /// How long a hoteling session lasts for this tenant.
+    pub fn hoteling_session(&self) -> std::time::Duration {
+        let hours = self
+            .hoteling_session_hours
+            .unwrap_or(crate::hoteling::DEFAULT_SESSION_HOURS);
+        std::time::Duration::from_secs(u64::from(hours) * 3600)
     }
 }
 

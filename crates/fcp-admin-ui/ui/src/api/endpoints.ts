@@ -10,6 +10,7 @@ import type {
   UpdateExtensionRequest,
   Device,
   CreateDeviceRequest,
+  HotelingSession,
   UpdateDeviceRequest,
   Location,
   CreateLocationRequest,
@@ -182,6 +183,13 @@ export const devices = {
   update: (id: string, data: UpdateDeviceRequest) =>
     apiClient.patch<Device>(`/devices/${encodeURIComponent(id)}`, data),
   delete: (id: string) => apiClient.delete<void>(`/devices/${encodeURIComponent(id)}`),
+}
+
+// Hoteling sessions (docs/ENTERPRISE_CALLING.md §3.8)
+export const hoteling = {
+  /** Active sessions; with `all`, the last ones whatever their state */
+  list: (all = false) => apiClient.get<HotelingSession[]>(`/hoteling/sessions${all ? '?all=true' : ''}`),
+  end: (id: string) => apiClient.delete<void>(`/hoteling/sessions/${encodeURIComponent(id)}`),
 }
 
 // Locations

@@ -538,6 +538,8 @@ pub struct SipMessageHandler {
     default_tenant_id: Option<fcp_core::TenantId>,
     /// Each user's calls, for call waiting (`docs/ENTERPRISE_CALLING.md` §3.4).
     user_calls: Option<Arc<crate::user_calls::UserCalls>>,
+    /// Hoteling sessions, for `*88` and `*89` (§3.8).
+    hoteling: Option<Arc<crate::hoteling::Hoteling>>,
     /// Edges whose caller headers are believed (`[e911] trusted_edges`).
     trusted_edges: crate::emergency::TrustedEdges,
     /// What reaches this node's SIP port, and what a flood of it costs
@@ -982,6 +984,7 @@ impl SipMessageHandler {
             storage,
             default_tenant_id: None,
             user_calls: None,
+            hoteling: None,
             trusted_edges: Default::default(),
             edge_guard: None,
             vouch_client_address: false,
@@ -1187,6 +1190,12 @@ impl SipMessageHandler {
     /// §6.2). The next hop believes it only from its trusted edges.
     pub fn with_client_address_vouching(mut self, vouch: bool) -> Self {
         self.vouch_client_address = vouch;
+        self
+    }
+
+    /// Log users in and out of host phones (`*88`, `*89`).
+    pub fn with_hoteling(mut self, hoteling: Arc<crate::hoteling::Hoteling>) -> Self {
+        self.hoteling = Some(hoteling);
         self
     }
 
@@ -5451,7 +5460,35 @@ impl SipMessageHandler {
                                                             reg_count = registrations.len(),
                                                             "Found registrations for device"
                                                         );
-                                                        extension_contacts.extend(registrations);
+                                                        // Rung with its effective user's
+                                                        // treatment: its hoteling guest,
+                                                        // else its owner (§3.8).
+                                                        let session = crate::hoteling::session_of(
+                                                            storage, &device,
+                                                        )
+                                                        .await;
+                                                        let user =
+                                                            fcp_core::hoteling::effective_user(
+                                                                &device,
+                                                                session.as_ref(),
+                                                            );
+                                                        match self
+                                                            .ring_by_plan(
+                                                                request,
+                                                                &a_leg_handle_arc,
+                                                                call_id,
+                                                                &tenant_id,
+                                                                user,
+                                                                registrations,
+                                                                destination_aor,
+                                                            )
+                                                            .await?
+                                                        {
+                                                            Some(contacts) => {
+                                                                extension_contacts.extend(contacts)
+                                                            }
+                                                            None => return Ok(()),
+                                                        }
                                                     }
                                                     Ok(_) => {
                                                         // No registration found — use
@@ -11848,7 +11885,130 @@ impl SipMessageHandler {
                 self.handle_calling_code(request, handle, call_id, code)
                     .await
             }
+            fcp_pbx::FeatureCodeAction::HotelingLogin => {
+                self.handle_hoteling_code(request, handle, call_id, true)
+                    .await
+            }
+            fcp_pbx::FeatureCodeAction::HotelingLogout => {
+                self.handle_hoteling_code(request, handle, call_id, false)
+                    .await
+            }
         }
+    }
+
+    /// `*88` and `*89` from a host phone (`docs/ENTERPRISE_CALLING.md`
+    /// §3.8): a login answers the call and asks for an extension and a
+    /// PIN; a logout ends the host's session and answers at once.
+    async fn handle_hoteling_code(
+        &self,
+        request: &sip_core::Request,
+        handle: &ServerTransactionHandle,
+        call_id: &fcp_b2bua_core::CallId,
+        login: bool,
+    ) -> Result<()> {
+        let finish = |status: u16, reason: &'static str| async move {
+            let response = self.create_simple_response(request, status, reason);
+            handle.send_final(response).await;
+            let _ = self
+                .call_manager
+                .terminate_call(call_id, Some("Hoteling feature code".to_string()));
+            Ok(())
+        };
+        let (Some(storage), Some(hoteling)) = (self.storage.as_ref(), self.hoteling.as_ref())
+        else {
+            return finish(501, "Hoteling Not Available").await;
+        };
+        let caller = extract_from_uri(request)
+            .ok()
+            .and_then(|u| u.user().map(str::to_string))
+            .unwrap_or_default();
+        let tenant_id = match self.resolve_runtime_tenant(request, call_id).await {
+            Ok(tenant_id) => tenant_id,
+            Err(e) => {
+                warn!(call_id = %call_id, caller = %caller, error = %e, "Hoteling code: tenant resolution failed");
+                return finish(403, "Tenant Context Required").await;
+            }
+        };
+        let device = match storage.get_device_by_sip_name(&tenant_id, &caller).await {
+            Ok(Some(device)) if device.enabled && device.hoteling_host => device,
+            _ => {
+                info!(call_id = %call_id, caller = %caller, "Hoteling code from a phone that is not a host");
+                return finish(403, "Not A Hoteling Host").await;
+            }
+        };
+        if !login {
+            return match hoteling
+                .logout_device(&device, fcp_core::SessionEnd::Logout)
+                .await
+            {
+                Some(session) => {
+                    info!(call_id = %call_id, device_id = %device.id, user_id = %session.user_id, "Hoteling logout by feature code");
+                    finish(200, "OK").await
+                }
+                None => finish(404, "No One Logged In").await,
+            };
+        }
+        let Some(flow_handler) = self.flow_handler.as_ref().map(Arc::clone) else {
+            return finish(501, "Hoteling Login Not Available").await;
+        };
+        let flow_def = {
+            use fcp_flow::{FlowDefinition, FlowNode, NodeType};
+            let node = |id: &str, node_type: NodeType| {
+                (
+                    id.to_string(),
+                    FlowNode {
+                        id: id.to_string(),
+                        name: None,
+                        node_type,
+                    },
+                )
+            };
+            let nodes = std::collections::HashMap::from([
+                node(
+                    "answer",
+                    NodeType::Answer {
+                        next: "login".to_string(),
+                        on_error: None,
+                    },
+                ),
+                node(
+                    "login",
+                    NodeType::HotelingLogin {
+                        device_id: device.id.to_string(),
+                        max_attempts: 3,
+                        next: "hangup".to_string(),
+                        on_failure: None,
+                    },
+                ),
+                node("hangup", NodeType::Hangup { reason: None }),
+            ]);
+            FlowDefinition {
+                id: format!("hoteling-login-{call_id}"),
+                name: "Hoteling login".to_string(),
+                description: Some(
+                    "Inline hoteling login flow from the *88 feature code".to_string(),
+                ),
+                version: 1,
+                initial_node: "answer".to_string(),
+                nodes,
+                variables: std::collections::HashMap::new(),
+                tenant_id: None,
+                enabled: true,
+                webhook_url: None,
+                created_at: None,
+                updated_at: None,
+            }
+        };
+        self.start_inline_flow(
+            request,
+            handle,
+            call_id,
+            &flow_handler,
+            flow_def,
+            HashMap::new(),
+            "hoteling login",
+        )
+        .await
     }
 
     /// Handle group pickup (*8): find a ringing call in the caller's pickup group.
@@ -13229,9 +13389,20 @@ impl SipMessageHandler {
         let caller_ext = if let Some(storage) = &self.storage {
             match self.resolve_runtime_tenant(request, call_id).await {
                 Ok(tenant_id) => {
-                    match storage.get_user_in_tenant(&sip_username, &tenant_id).await {
-                        Ok(Some(user)) => user.extension.unwrap_or_else(|| sip_username.clone()),
-                        _ => sip_username.clone(),
+                    // A host phone's guest hears their own mailbox (§3.8).
+                    let user = match crate::hoteling::caller_user(
+                        storage,
+                        &tenant_id,
+                        &sip_username,
+                    )
+                    .await
+                    {
+                        Some(user_id) => storage.get_user_by_id(&user_id).await.ok().flatten(),
+                        None => None,
+                    };
+                    match user {
+                        Some(user) => user.extension.unwrap_or(user.username),
+                        None => sip_username.clone(),
                     }
                 }
                 Err(_) => sip_username.clone(),
@@ -13298,22 +13469,47 @@ impl SipMessageHandler {
             }
         };
 
-        // Insert flow into the store
-        if let Err(e) = flow_handler.flow_store().insert_flow(flow_def).await {
-            warn!(call_id = %call_id, error = %e, "Failed to insert voicemail access flow");
-            let response = self.create_simple_response(request, 500, "Internal Error");
-            handle.send_final(response).await;
-            let _ = self.call_manager.terminate_call(
-                call_id,
-                Some("Failed to create voicemail access flow".to_string()),
-            );
-            return Ok(());
-        }
-
         // Build initial variables
         let mut initial_variables = HashMap::new();
         initial_variables.insert("caller".to_string(), caller_ext.clone());
         initial_variables.insert("caller_extension".to_string(), caller_ext);
+
+        self.start_inline_flow(
+            request,
+            handle,
+            call_id,
+            &flow_handler,
+            flow_def,
+            initial_variables,
+            "voicemail access",
+        )
+        .await
+    }
+
+    /// Answer the call into `flow_def`, inserted for the call alone:
+    /// what a feature code that talks to the caller runs (`*98`, `*88`).
+    #[allow(clippy::too_many_arguments)]
+    async fn start_inline_flow(
+        &self,
+        request: &sip_core::Request,
+        handle: &ServerTransactionHandle,
+        call_id: &fcp_b2bua_core::CallId,
+        flow_handler: &Arc<crate::flow_handler::FlowCallHandler>,
+        flow_def: fcp_flow::FlowDefinition,
+        initial_variables: HashMap<String, String>,
+        what: &str,
+    ) -> Result<()> {
+        // Insert flow into the store
+        let flow_id = flow_def.id.clone();
+        if let Err(e) = flow_handler.flow_store().insert_flow(flow_def).await {
+            warn!(call_id = %call_id, error = %e, what, "Failed to insert an inline flow");
+            let response = self.create_simple_response(request, 500, "Internal Error");
+            handle.send_final(response).await;
+            let _ = self
+                .call_manager
+                .terminate_call(call_id, Some(format!("Failed to create the {what} flow")));
+            return Ok(());
+        }
 
         // Build answer callback
         let answer_call_id = *call_id;
@@ -13325,12 +13521,14 @@ impl SipMessageHandler {
         let answer_local_addr = self.local_addr.clone();
         let answer_rtp_port = self.rtp_port;
         let answer_media_profile = self.media_profile.clone();
+        let answer_local_uri = self.uas.local_uri.clone();
 
         let answer_callback: fcp_flow::AnswerCallback = Arc::new(move || {
             let request = answer_request.clone();
             let handle = answer_handle.clone();
             let call_manager = Arc::clone(&answer_call_manager);
-            let _dialog_manager = Arc::clone(&answer_dialog_manager);
+            let dialog_manager = Arc::clone(&answer_dialog_manager);
+            let local_uri = answer_local_uri.clone();
             let media_manager = answer_media_manager.clone();
             let local_addr = answer_local_addr.clone();
             let rtp_port = answer_rtp_port;
@@ -13397,6 +13595,28 @@ impl SipMessageHandler {
                 } else {
                     sip_uas::UserAgentServer::create_response(&request, 200, "OK")
                 };
+                // The dialog before the 200 OK, as the IVR's answer does: the
+                // flow's hangup needs it to send its BYE, and a caller's BYE
+                // needs it to find the call.
+                match sip_dialog::Dialog::new_uas(
+                    &request,
+                    &response,
+                    local_uri,
+                    extract_from_uri(&request).unwrap_or_else(|_| {
+                        sip_core::SipUri::parse("sip:unknown@unknown").unwrap()
+                    }),
+                ) {
+                    Some(dialog) => {
+                        let _ = dialog_manager.insert(dialog.clone());
+                        let _ = call_manager.update_call(&call_id, |call| {
+                            call.a_leg.dialog = Some(dialog.clone());
+                            call.establish();
+                        });
+                    }
+                    None => {
+                        warn!(call_id = %call_id, "Inline flow: no A-leg dialog from the 200 OK")
+                    }
+                }
                 handle.send_final(response).await;
 
                 Ok(())
@@ -13450,7 +13670,7 @@ impl SipMessageHandler {
                 .await
             {
                 Ok(()) => {
-                    info!(call_id = %call_id, "Voicemail access flow started");
+                    info!(call_id = %call_id, what, "Inline flow started");
                     // Send 183 while the flow spins up
                     let mut progress =
                         sip_uas::UserAgentServer::create_response(request, 183, "Session Progress");
@@ -13458,13 +13678,12 @@ impl SipMessageHandler {
                     handle.send_provisional(progress).await;
                 }
                 Err(e) => {
-                    warn!(call_id = %call_id, error = %e, "Failed to start voicemail access flow");
+                    warn!(call_id = %call_id, error = %e, what, "Failed to start an inline flow");
                     let response = self.create_simple_response(request, 500, "Flow Start Failed");
                     handle.send_final(response).await;
-                    let _ = self.call_manager.terminate_call(
-                        call_id,
-                        Some(format!("Voicemail access flow failed: {}", e)),
-                    );
+                    let _ = self
+                        .call_manager
+                        .terminate_call(call_id, Some(format!("The {what} flow failed: {e}")));
                 }
             }
         } else {
@@ -14338,7 +14557,7 @@ impl SipMessageHandler {
         caller: Option<&str>,
     ) -> Option<crate::class_of_service::Refusal> {
         let storage = self.storage.as_ref()?;
-        let user = crate::ring_plan::user_of(storage, tenant_id, caller?).await?;
+        let user = crate::hoteling::caller_user(storage, tenant_id, caller?).await?;
         let dialed = request.uri().to_string();
         let dialed = crate::class_of_service::uri_user(&dialed);
         let class = match crate::class_of_service::check_dial(
@@ -14398,7 +14617,8 @@ impl SipMessageHandler {
     }
 
     /// Mark the call with the user its caller is, when the From names a
-    /// user of the call's tenant (an extension or a username).
+    /// user of the call's tenant (an extension or a username) or a device
+    /// — its hoteling guest, else its owner (§3.8).
     async fn note_caller_user(
         &self,
         request: &sip_core::Request,
@@ -14416,7 +14636,7 @@ impl SipMessageHandler {
         else {
             return;
         };
-        if let Some(user_id) = crate::ring_plan::user_of(storage, &tenant, &from).await {
+        if let Some(user_id) = crate::hoteling::caller_user(storage, &tenant, &from).await {
             let _ = self
                 .call_manager
                 .update_call(call_id, |c| c.caller_user_id = Some(user_id));
@@ -14759,7 +14979,14 @@ impl SipMessageHandler {
                 return finish(403, "Tenant Context Required").await;
             }
         };
-        let user = match storage.get_user_in_tenant(&caller, &tenant_id).await {
+        // The phone's effective user: a host's guest, a device's owner
+        // (§3.8), else the user the caller is.
+        let caller_user = crate::hoteling::caller_user(storage, &tenant_id, &caller).await;
+        let found = match caller_user {
+            Some(user_id) => storage.get_user_by_id(&user_id).await,
+            None => Ok(None),
+        };
+        let user = match found {
             Ok(Some(user)) => user,
             Ok(None) => {
                 warn!(call_id = %call_id, caller = %caller, "Calling code from an unknown user");

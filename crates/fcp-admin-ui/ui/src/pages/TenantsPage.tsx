@@ -45,6 +45,7 @@ const editSchema = z.object({
   calling_country: z.string().optional(),
   calling_timezone: z.string().optional(),
   calling_overrides: z.string().optional(),
+  hoteling_session_hours: z.coerce.number().int().min(0).max(168).optional(),
 })
 
 type CreateForm = z.infer<typeof createSchema>
@@ -216,6 +217,7 @@ export function TenantsPage() {
       calling_overrides: (editItem.calling?.destination_overrides ?? [])
         .map((o) => `${o.prefix} ${o.class}`)
         .join('\n'),
+      hoteling_session_hours: editItem.calling?.hoteling_session_hours ?? undefined,
     })
   }
 
@@ -237,6 +239,7 @@ export function TenantsPage() {
       calling_country,
       calling_timezone,
       calling_overrides,
+      hoteling_session_hours,
       ...rest
     } = data
     updateMutation.mutate({
@@ -247,6 +250,7 @@ export function TenantsPage() {
           country: calling_country || null,
           timezone: calling_timezone || null,
           destination_overrides: parseOverrides(calling_overrides),
+          hoteling_session_hours: hoteling_session_hours || null,
         },
         description: data.description || undefined,
         contact_email: data.contact_email || undefined,
@@ -455,6 +459,20 @@ export function TenantsPage() {
                 The country decides how dialled numbers are read for classes of service. One range per line: a
                 prefix (E.164 with +, or digits as dialled) and internal, toll_free, national, international,
                 premium or unknown. The timezone is the default for new schedules.
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="e-hoteling_session_hours">Hoteling login lasts (hours)</Label>
+              <Input
+                id="e-hoteling_session_hours"
+                type="number"
+                min={1}
+                max={168}
+                placeholder="12"
+                {...editForm.register('hoteling_session_hours')}
+              />
+              <p className="text-xs text-muted-foreground">
+                A user who logs in on a host phone with *88 is logged out after this long.
               </p>
             </div>
             <div className="flex items-center justify-between rounded-md border p-3">

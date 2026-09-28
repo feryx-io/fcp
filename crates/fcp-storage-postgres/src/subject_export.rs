@@ -53,7 +53,8 @@ fn class_query(class: ExportClass) -> String {
         }
         ExportClass::Devices => {
             "SELECT id, 'owned' AS link,
-                    to_jsonb(d) - 'provisioning_token_hash' AS data,
+                    to_jsonb(d) - 'provisioning_token_hash' - 'sip_ha1_hash'
+                        - 'sip_provisioning_password' AS data,
                     created_at AS at, NULL::text AS call_id, NULL::text AS file,
                     NULL::text[] AS ids, false AS others
              FROM devices d WHERE tenant_id = $1 AND owner_user_id = ANY($5)"

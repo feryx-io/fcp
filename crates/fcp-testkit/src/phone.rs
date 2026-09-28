@@ -48,7 +48,12 @@ pub enum PhoneEvent {
     /// An INFO with this body, answered 200.
     Info { call_id: String, body: String },
     /// A NOTIFY with this body, answered 200.
-    Notify { call_id: String, body: String },
+    Notify {
+        call_id: String,
+        /// The `Event` header: `refer`, `check-sync`, `message-summary`.
+        event: String,
+        body: String,
+    },
 }
 
 impl PhoneEvent {
@@ -545,7 +550,29 @@ impl Phone {
         realm: &str,
         server: SocketAddr,
     ) -> Result<Self> {
-        Self::build(bind, username, password, realm, server, None).await
+        Self::build(bind, username, username, password, realm, server, None).await
+    }
+
+    /// A phone whose address is `username` but whose digest credentials
+    /// are `auth_username`'s: a device registering with its owner's
+    /// credentials, or credentials trying an address that is not theirs.
+    pub async fn with_credentials(
+        username: &str,
+        auth_username: &str,
+        password: &str,
+        realm: &str,
+        server: SocketAddr,
+    ) -> Result<Self> {
+        Self::build(
+            "127.0.0.1:0",
+            username,
+            auth_username,
+            password,
+            realm,
+            server,
+            None,
+        )
+        .await
     }
 
     /// A phone that talks to the server over SIPS (`server` is its TLS
@@ -564,6 +591,7 @@ impl Phone {
         Self::build(
             "127.0.0.1:0",
             username,
+            username,
             password,
             realm,
             server,
@@ -572,9 +600,11 @@ impl Phone {
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn build(
         bind: &str,
         username: &str,
+        auth_username: &str,
         password: &str,
         realm: &str,
         server: SocketAddr,
@@ -646,7 +676,7 @@ impl Phone {
                 .resolver(resolver)
                 .dispatcher(dispatcher)
                 .dialog_manager(dm)
-                .credentials(username, password)
+                .credentials(auth_username, password)
                 .build()?,
         );
         let _ = inner.uas.set(Arc::clone(&uas));
@@ -1451,8 +1481,12 @@ impl UasRequestHandler for Handler {
         let call_id = sip_parse::header(request.headers(), "Call-ID")
             .map(|v| v.to_string())
             .unwrap_or_default();
+        let event = sip_parse::header(request.headers(), "Event")
+            .map(|v| v.to_string())
+            .unwrap_or_default();
         self.0.emit(PhoneEvent::Notify {
             call_id,
+            event,
             body: String::from_utf8_lossy(request.body()).to_string(),
         });
         Ok(())

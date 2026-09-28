@@ -1323,6 +1323,23 @@ a timezone takes the tenant's. Proved by `calling.rs` (the call limit, a
 refused forward, screening), `trunks.rs` (the line's caller ID, withheld,
 a refused national call never reaching the carrier) and
 `api_postgres.rs`.
+Phase 8 done (v0.25.283): hoteling — a device may have credentials of
+its own (sealed at rest, never returned, rendered by provisioning), and
+one rule decides what a credential may register and whose `From` it may
+carry: its own name, a user's devices, extension and lines, a device's
+address, owner and lines — anything else is refused. A device marked
+`hoteling_host` takes a login by `*88` (extension, then PIN, by DTMF, in
+an inline flow) and a logout by `*89`; `hoteling_sessions` (migration
+085) keep one guest per host, expire after the tenant's
+`hoteling_session_hours` (default 12) by a sweep, and each start or end
+sends the phone `check-sync` (and MWI at login); `hoteling.login` and
+`hoteling.logout`. While a session lives the host rings for its guest and
+not its owner, and its calls are the guest's for caller ID, class of
+service, calling codes and `*98`; presence mirrors the guest's calls to
+it. `/v1/hoteling/sessions`, `/v1/me/hoteling`, the Hoteling page, the
+device dialog's owner, host and credentials. Proved by `calling.rs` and
+`api_postgres.rs`. The CDR carries the host's `From` (it has no user);
+MWI reaches the host at login only.
 
 ## Historical documents
 

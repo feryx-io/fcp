@@ -275,6 +275,7 @@ mod tests {
             pickup_groups,
             cmc: CmcConfig::default(),
             fac: FacConfig::default(),
+            ..Default::default()
         }
     }
 
