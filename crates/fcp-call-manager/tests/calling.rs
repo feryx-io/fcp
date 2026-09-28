@@ -1426,9 +1426,10 @@ async fn a_flow_branches_on_a_schedule() {
     call.hangup().await.unwrap();
     let _ = answered.ended(SOON).await;
 
-    // Closed: the flow hangs up without dialing.
+    // Closed: the flow hangs up without dialing. It answers and hangs up at
+    // once, so the phone may see the hangup before the answer settles.
     let call = alice.call("+15125550822").await.unwrap();
-    call.answered(SOON).await.expect("the flow answers");
+    let _ = call.answered(SOON).await;
     assert!(call.ended(SOON).await, "the closed branch did not hang up");
     assert!(
         bob_phone
@@ -2475,5 +2476,238 @@ async fn the_executive_and_the_assistant_each_turn_the_handling_off() {
     // A user who assists nobody cannot opt in.
     let code = alice.call("*67").await.unwrap();
     assert_eq!(code.failed(SOON).await, Some(404));
+    stack.finish().await;
+}
+
+// ---------------------------------------------------------------------------
+// Monitor, whisper and barge (docs/ENTERPRISE_CALLING.md §3.11)
+// ---------------------------------------------------------------------------
+
+/// Ask the node to put `supervisor` on `call_id` in `mode`, answering at
+/// `phone` when it rings: the node's status and the supervisor's call.
+async fn supervise(
+    stack: &Stack,
+    call_id: &str,
+    mode: &str,
+    supervisor: &str,
+    phone: &Phone,
+) -> (u16, Option<fcp_testkit::Call>) {
+    let url = loopback(stack.http, &format!("/calls/{call_id}/{mode}"));
+    let body = format!(r#"{{"supervisor_extension":"{supervisor}"}}"#);
+    let asked = tokio::spawn(async move { fcp_testkit::smoke::http_post(&url, &body).await });
+    let answered = match phone.incoming(SOON).await {
+        Some(ringing) => Some(ringing.answer().await.expect("the supervisor answers")),
+        None => None,
+    };
+    let (status, text) = asked.await.unwrap().expect("POST");
+    assert!(status == 200 || answered.is_none(), "{status}: {text}");
+    (status, answered)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_supervisor_monitors_whispers_to_and_barges_into_a_call() {
+    let Some(stack) = Stack::start_with("[b2bua.media_anchoring]\nmode = \"Always\"\n").await
+    else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let [(_, alice), (bob, bob_phone), (carol, carol_phone)] = three_phones(&stack).await;
+
+    let call = alice.call(&bob.extension).await.unwrap();
+    let Some(ringing) = bob_phone.incoming(SOON).await else {
+        stack.fail("Bob's phone did not ring", &alice).await;
+    };
+    let bob_call = ringing.answer().await.unwrap();
+    call.answered(SOON).await.expect("answered");
+    let calls = stack.calls().await;
+    let call_id = calls[0]["call_id"].as_str().expect("call id").to_string();
+    // One voice at a time: the testkit hears a tone that dominates, and
+    // two summed are neither.
+    call.media().play_tone(440.0, 20_000);
+
+    // Monitor: Carol hears both, neither hears her.
+    let (status, supervisor) =
+        supervise(&stack, &call_id, "monitor", &carol.extension, &carol_phone).await;
+    assert_eq!(status, 200);
+    let Some(carol_call) = supervisor else {
+        stack
+            .fail("the supervisor's phone did not ring", &carol_phone)
+            .await;
+    };
+    if !carol_call.media().heard(440, SOON).await {
+        stack
+            .fail("the supervisor does not hear the caller", &carol_phone)
+            .await;
+    }
+    call.media().stop_tone();
+    bob_call.media().play_tone(880.0, 20_000);
+    assert!(
+        carol_call.media().heard(880, SOON).await,
+        "the supervisor hears the callee"
+    );
+    bob_call.media().stop_tone();
+    carol_call.media().play_tone(1400.0, 20_000);
+    assert!(
+        !bob_call.media().heard(1400, QUIET).await,
+        "nobody hears a monitor"
+    );
+    let (code, body) = fcp_testkit::smoke::http_get(&loopback(
+        stack.http,
+        &format!("/calls/{call_id}/supervisor"),
+    ))
+    .await
+    .unwrap();
+    assert_eq!(code, 200, "{body}");
+    assert!(body.contains("\"monitor\""), "{body}");
+
+    // Whisper (to the callee): Bob hears Carol, Alice does not.
+    let (code, body) = fcp_testkit::smoke::http_post(
+        &loopback(stack.http, &format!("/calls/{call_id}/whisper")),
+        &format!(r#"{{"supervisor_extension":"{}"}}"#, carol.extension),
+    )
+    .await
+    .unwrap();
+    assert_eq!(code, 200, "{body}");
+    assert!(
+        bob_call.media().heard(1400, SOON).await,
+        "the callee hears the whisper"
+    );
+    assert!(
+        !call.media().heard(1400, QUIET).await,
+        "the caller never hears a whisper"
+    );
+
+    // Barge: Alice hears Carol too.
+    let (code, body) = fcp_testkit::smoke::http_post(
+        &loopback(stack.http, &format!("/calls/{call_id}/barge")),
+        &format!(r#"{{"supervisor_extension":"{}"}}"#, carol.extension),
+    )
+    .await
+    .unwrap();
+    assert_eq!(code, 200, "{body}");
+    assert!(
+        call.media().heard(1400, SOON).await,
+        "the caller hears a barge"
+    );
+
+    // A second supervisor is refused; the first leaves.
+    let (code, _) = fcp_testkit::smoke::http_post(
+        &loopback(stack.http, &format!("/calls/{call_id}/monitor")),
+        r#"{"supervisor_extension":"1001"}"#,
+    )
+    .await
+    .unwrap();
+    assert_eq!(code, 409, "one supervisor at a time");
+    let (code, body) = fcp_testkit::smoke::http_post(
+        &loopback(stack.http, &format!("/calls/{call_id}/supervisor/leave")),
+        "{}",
+    )
+    .await
+    .unwrap();
+    assert_eq!(code, 200, "{body}");
+    assert!(carol_call.ended(SOON).await, "the supervisor is let go");
+    assert!(!call.ended(QUIET).await, "the call goes on");
+    let (code, _) = fcp_testkit::smoke::http_get(&loopback(
+        stack.http,
+        &format!("/calls/{call_id}/supervisor"),
+    ))
+    .await
+    .unwrap();
+    assert_eq!(code, 404);
+
+    // Nobody can supervise a call that is not there.
+    let (code, _) = fcp_testkit::smoke::http_post(
+        &loopback(
+            stack.http,
+            "/calls/call-00000000-0000-0000-0000-000000000000/monitor",
+        ),
+        &format!(r#"{{"supervisor_extension":"{}"}}"#, carol.extension),
+    )
+    .await
+    .unwrap();
+    assert_eq!(code, 404);
+    bob_call.hangup().await.unwrap();
+    stack.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_phone_on_a_shared_line_barges_into_its_active_appearance() {
+    let Some(stack) = Stack::start_with("[b2bua.media_anchoring]\nmode = \"Always\"\n").await
+    else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let carol = stack.seed.user("carol", "carol-pw", "1003").await;
+    shared_line(&stack, &alice, &["desk-a", "desk-b"], 2).await;
+    let a = line_phone(&stack, "desk-a").await;
+    let b = line_phone(&stack, "desk-b").await;
+    let carol_phone = stack.phone(&carol).await;
+
+    let call = carol_phone.call(LINE).await.unwrap();
+    let Some(at_a) = a.incoming(SOON).await else {
+        stack.fail("the line did not ring", &carol_phone).await;
+    };
+    let a_call = at_a.answer().await.unwrap();
+    call.answered(SOON).await.expect("answered");
+
+    // Barge-in off: the active appearance is refused.
+    let refused = b
+        .call_with_headers(LINE, &[("Call-Info", &appearance(1))])
+        .await
+        .unwrap();
+    assert_eq!(refused.failed(SOON).await, Some(403));
+
+    // On: the second phone joins, heard by both.
+    {
+        use fcp_core::storage::{LineBindingStore, PhoneNumberStore};
+        let storage = stack.seed.storage();
+        let number = storage
+            .get_phone_number_by_e164(LINE)
+            .await
+            .unwrap()
+            .unwrap();
+        let mut binding = storage
+            .get_line_binding_by_phone_number(&number.id)
+            .await
+            .unwrap()
+            .unwrap();
+        binding.barge_in = true;
+        storage.put_line_binding(binding).await.unwrap();
+    }
+    call.media().play_tone(440.0, 20_000);
+    let barge = b
+        .call_with_headers(LINE, &[("Call-Info", &appearance(1))])
+        .await
+        .unwrap();
+    if let Err(e) = barge.answered(SOON).await {
+        stack
+            .fail(&format!("the barge-in was not answered: {e}"), &b)
+            .await;
+    }
+    assert!(
+        barge.media().heard(440, SOON).await,
+        "the barging phone hears the caller"
+    );
+    call.media().stop_tone();
+    barge.media().play_tone(1400.0, 20_000);
+    assert!(
+        call.media().heard(1400, SOON).await,
+        "the caller hears the barging phone"
+    );
+    if !a_call.media().heard(1400, SOON).await {
+        stack
+            .fail("the line's phone does not hear the barge", &a)
+            .await;
+    }
+
+    // The barging phone hangs up; the call goes on.
+    barge.hangup().await.unwrap();
+    assert!(
+        !call.ended(QUIET).await,
+        "the call goes on without the barging phone"
+    );
+    a_call.hangup().await.unwrap();
+    assert!(call.ended(SOON).await);
     stack.finish().await;
 }

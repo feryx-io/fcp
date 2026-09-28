@@ -163,6 +163,9 @@ pub enum Permission {
     CallView,
     CallControl,
     CallRecordingAccess,
+    /// Monitor, whisper to or barge into a call
+    /// (`docs/ENTERPRISE_CALLING.md` §3.11).
+    CallSupervise,
 
     // Registrations
     RegistrationView,
@@ -230,6 +233,7 @@ impl FromStr for Permission {
             "call_view" => Ok(Self::CallView),
             "call_control" => Ok(Self::CallControl),
             "call_recording_access" => Ok(Self::CallRecordingAccess),
+            "call_supervise" => Ok(Self::CallSupervise),
             "registration_view" => Ok(Self::RegistrationView),
             "registration_manage" => Ok(Self::RegistrationManage),
             "trunk_create" => Ok(Self::TrunkCreate),
@@ -277,6 +281,7 @@ impl Permission {
             Self::CallView => "call_view",
             Self::CallControl => "call_control",
             Self::CallRecordingAccess => "call_recording_access",
+            Self::CallSupervise => "call_supervise",
             Self::RegistrationView => "registration_view",
             Self::RegistrationManage => "registration_manage",
             Self::TrunkCreate => "trunk_create",
@@ -321,6 +326,7 @@ impl Permission {
             Self::CallView => "View Calls",
             Self::CallControl => "Control Calls",
             Self::CallRecordingAccess => "Access Recordings",
+            Self::CallSupervise => "Supervise Calls",
             Self::RegistrationView => "View Registrations",
             Self::RegistrationManage => "Manage Registrations",
             Self::TrunkCreate => "Create Trunks",
@@ -399,7 +405,7 @@ impl UserRole {
             ) => true,
             (TenantAdmin, PhoneNumberViewCarrierData, DeploymentMode::Enterprise) => false,
             (TenantAdmin, DeviceCreate | DeviceRead | DeviceUpdate | DeviceDelete, _) => true,
-            (TenantAdmin, CallView | CallControl | CallRecordingAccess, _) => true,
+            (TenantAdmin, CallView | CallControl | CallRecordingAccess | CallSupervise, _) => true,
             (TenantAdmin, RegistrationView | RegistrationManage, _) => true,
             (
                 TenantAdmin,
@@ -434,7 +440,7 @@ impl UserRole {
             (TelecomAdmin, PhoneNumberViewCarrierData, DeploymentMode::Enterprise) => false,
             (TelecomAdmin, DeviceCreate | DeviceRead | DeviceUpdate | DeviceDelete, _) => true,
             (TelecomAdmin, CallView | CallControl, _) => true,
-            (TelecomAdmin, CallRecordingAccess, _) => true,
+            (TelecomAdmin, CallRecordingAccess | CallSupervise, _) => true,
             (TelecomAdmin, RegistrationView | RegistrationManage, _) => true,
             (
                 TelecomAdmin,
@@ -470,7 +476,7 @@ impl UserRole {
             (UserAdmin, DeviceRead, _) => true, // View only
             (UserAdmin, DeviceCreate | DeviceUpdate | DeviceDelete, _) => false,
             (UserAdmin, CallView, _) => true,
-            (UserAdmin, CallControl | CallRecordingAccess, _) => false,
+            (UserAdmin, CallControl | CallRecordingAccess | CallSupervise, _) => false,
             (UserAdmin, RegistrationView, _) => true,
             (UserAdmin, RegistrationManage, _) => false,
             (UserAdmin, TrunkCreate | TrunkRead | TrunkUpdate | TrunkDelete, _) => false,
@@ -492,7 +498,7 @@ impl UserRole {
             ) => false,
             (DepartmentAdmin, DeviceCreate | DeviceUpdate | DeviceDelete, _) => false,
             (DepartmentAdmin, CallView, _) => true, // Within department only
-            (DepartmentAdmin, CallControl | CallRecordingAccess, _) => false,
+            (DepartmentAdmin, CallControl | CallRecordingAccess | CallSupervise, _) => false,
             (DepartmentAdmin, RegistrationView, _) => true,
             (DepartmentAdmin, RegistrationManage, _) => false,
             (DepartmentAdmin, TrunkCreate | TrunkRead | TrunkUpdate | TrunkDelete, _) => false,
@@ -513,7 +519,7 @@ impl UserRole {
             (ReadOnly, PhoneNumberViewCarrierData, DeploymentMode::Enterprise) => false,
             (ReadOnly, DeviceCreate | DeviceUpdate | DeviceDelete, _) => false,
             (ReadOnly, CallView, _) => true,
-            (ReadOnly, CallControl | CallRecordingAccess, _) => false,
+            (ReadOnly, CallControl | CallRecordingAccess | CallSupervise, _) => false,
             (ReadOnly, RegistrationView, _) => true,
             (ReadOnly, RegistrationManage, _) => false,
             (ReadOnly, TrunkRead, DeploymentMode::Carrier | DeploymentMode::ServiceProvider) => {
@@ -541,7 +547,7 @@ impl UserRole {
             ) => false,
             (EndUser, DeviceCreate | DeviceUpdate | DeviceDelete, _) => false,
             (EndUser, CallView, _) => true, // Only their own calls
-            (EndUser, CallControl | CallRecordingAccess, _) => false,
+            (EndUser, CallControl | CallRecordingAccess | CallSupervise, _) => false,
             (EndUser, RegistrationView | RegistrationManage, _) => false,
             (EndUser, TrunkCreate | TrunkRead | TrunkUpdate | TrunkDelete, _) => false,
             (EndUser, TenantCreate | TenantRead | TenantUpdate | TenantDelete, _) => false,
@@ -573,6 +579,7 @@ impl UserRole {
             CallView,
             CallControl,
             CallRecordingAccess,
+            CallSupervise,
             RegistrationView,
             RegistrationManage,
             TrunkCreate,

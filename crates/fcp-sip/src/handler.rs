@@ -542,6 +542,8 @@ pub struct SipMessageHandler {
     hoteling: Option<Arc<crate::hoteling::Hoteling>>,
     /// Shared lines' appearances (§3.9).
     sca: Option<Arc<crate::sca::Sca>>,
+    /// Calls with a supervisor (§3.11).
+    supervisions: Option<Arc<crate::supervision::Supervisions>>,
     /// Retrieves sent to the node holding the call: the call here → that
     /// node's SIP URI, the one destination its B-leg is sent to, and the
     /// handoff token the INVITE carries.
@@ -992,6 +994,7 @@ impl SipMessageHandler {
             user_calls: None,
             hoteling: None,
             sca: None,
+            supervisions: None,
             sca_handoff_targets: Arc::new(dashmap::DashMap::new()),
             trusted_edges: Default::default(),
             edge_guard: None,
@@ -1198,6 +1201,15 @@ impl SipMessageHandler {
     /// §6.2). The next hop believes it only from its trusted edges.
     pub fn with_client_address_vouching(mut self, vouch: bool) -> Self {
         self.vouch_client_address = vouch;
+        self
+    }
+
+    /// Take supervisors onto calls, and hear them hang up (§3.11).
+    pub fn with_supervisions(
+        mut self,
+        supervisions: Arc<crate::supervision::Supervisions>,
+    ) -> Self {
+        self.supervisions = Some(supervisions);
         self
     }
 
@@ -2264,6 +2276,19 @@ impl SipMessageHandler {
                 // No response needed for ACK
             }
             Method::Bye => {
+                // A supervisor hanging up leaves the call they supervise
+                // (`docs/ENTERPRISE_CALLING.md` §3.11).
+                if let Some(supervisions) = &self.supervisions {
+                    let sip_call_id = sip_parse::header(request.headers(), "Call-ID")
+                        .map(|c| c.trim().to_string())
+                        .unwrap_or_default();
+                    if supervisions.is_supervisor(&sip_call_id) {
+                        supervisions.hung_up(&sip_call_id).await;
+                        let response = self.create_simple_response(request, 200, "OK");
+                        handle.send_final(response).await;
+                        return Ok(());
+                    }
+                }
                 let response = self.handle_bye(request)?;
                 handle.send_final(response).await;
             }
@@ -12854,6 +12879,83 @@ impl SipMessageHandler {
         .await
     }
 
+    /// A phone on a shared line barging into an active appearance: its
+    /// INVITE answered with the call's supervisor party, heard by both
+    /// parties (§3.11), when the line allows barge-in and the call has no
+    /// supervisor. `own` is the INVITE's own call, ended once joined.
+    async fn barge_into_appearance(
+        &self,
+        request: &sip_core::Request,
+        handle: &ServerTransactionHandle,
+        own: &fcp_b2bua_core::CallId,
+        call: &fcp_b2bua_core::Call,
+    ) -> Result<()> {
+        let refuse = |code: u16, reason: &'static str| async move {
+            let response = self.create_simple_response(request, code, reason);
+            handle.send_final(response).await;
+            let _ = self
+                .call_manager
+                .terminate_call(own, Some(format!("barge-in: {reason}")));
+            Ok(())
+        };
+        let allowed = match (&self.storage, &call.appearance) {
+            (Some(storage), Some(appearance)) => storage
+                .get_line_binding(&appearance.line_binding_id)
+                .await
+                .ok()
+                .flatten()
+                .is_some_and(|b| b.shared && b.barge_in),
+            _ => false,
+        };
+        let Some(supervisions) = self.supervisions.clone().filter(|_| allowed) else {
+            return refuse(403, "Appearance In Use").await;
+        };
+        let Some(offer) = crate::body::request_sdp(request) else {
+            return refuse(488, "Not Acceptable Here").await;
+        };
+        let party = sip_parse::header(request.headers(), "From")
+            .map(|f| f.to_string())
+            .unwrap_or_default();
+        let answer = match supervisions.barge_in(&call.id, &party, offer).await {
+            Ok(answer) => answer,
+            Err(crate::supervision::SuperviseError::AlreadySupervised) => {
+                return refuse(486, "Busy Here").await;
+            }
+            Err(e) => {
+                warn!(call_id = %call.id, error = %e, "Barge-in failed");
+                return refuse(503, "Service Unavailable").await;
+            }
+        };
+        let response = self.build_final_ok_response(request, None, Some(&answer))?;
+        let dialog = self.build_inbound_dialog(request, &response)?;
+        supervisions.attach_dialog(&call.id, dialog.clone());
+        let _ = self.dialog_manager.insert(dialog);
+        handle.send_final(response).await;
+        // The INVITE's own media session, if it made one, is not needed.
+        if let Some(mine) = self.call_manager.get_call(own) {
+            if let (true, Some(session_id), Some(media_manager)) = (
+                mine.media_anchored,
+                mine.media_session_id,
+                self.media_manager.as_ref(),
+            ) {
+                if Some(session_id) != call.media_session_id {
+                    let _ = media_manager.terminate_session(&session_id).await;
+                }
+            }
+        }
+        let _ = self.call_manager.update_call(own, |c| {
+            c.correlation_id = Some(fcp_core::CallId::from_uuid(*call.id.as_uuid()));
+        });
+        let _ = self.call_manager.terminate_call_with(
+            own,
+            fcp_cdr::TerminationReason::Completed {
+                detail: "Barged into an appearance".to_string(),
+            },
+        );
+        info!(call_id = %call.id, "A phone barged into an appearance");
+        Ok(())
+    }
+
     /// A call about to ring a shared line's phones takes an appearance of
     /// the line (`docs/ENTERPRISE_CALLING.md` §3.9). `false` when every
     /// appearance is in use: the caller has been told busy.
@@ -12908,7 +13010,14 @@ impl SipMessageHandler {
         own: &fcp_b2bua_core::CallId,
         call: &fcp_b2bua_core::Call,
     ) -> Result<()> {
-        let held = call.appearance_state() == Some(fcp_core::sca::AppearanceState::Held);
+        let state = call.appearance_state();
+        // An active appearance of a line that allows it is barged into
+        // (`docs/ENTERPRISE_CALLING.md` §3.11): the phone joins the call,
+        // heard by both parties, rather than taking it.
+        if state == Some(fcp_core::sca::AppearanceState::Active) {
+            return Box::pin(self.barge_into_appearance(request, handle, own, call)).await;
+        }
+        let held = state == Some(fcp_core::sca::AppearanceState::Held);
         let Some(appearance) = call.appearance.clone().filter(|_| held) else {
             info!(call_id = %call.id, "A retrieve of an appearance that is not held");
             let response = self.create_simple_response(request, 403, "Appearance Not Held");

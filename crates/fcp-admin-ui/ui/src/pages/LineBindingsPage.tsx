@@ -65,6 +65,7 @@ const editSchema = z.object({
   closed_target: z.string().optional(),
   holiday_target: z.string().optional(),
   shared: z.boolean().optional(),
+  barge_in: z.boolean().optional(),
   max_appearances: z.coerce.number().int().min(1, 'At least 1').max(24, 'At most 24').optional(),
   tenant_id: z.string().optional(),
 })
@@ -279,6 +280,7 @@ export function LineBindingsPage() {
       closed_target: editItem.closed_target || '',
       holiday_target: editItem.holiday_target || '',
       shared: editItem.shared ?? false,
+      barge_in: editItem.barge_in ?? false,
       max_appearances: editItem.max_appearances ?? 4,
       tenant_id: editItem.tenant_id ?? '',
     })
@@ -313,6 +315,7 @@ export function LineBindingsPage() {
         flow_id: editItem.binding_type === 'ivr' ? (editFlowId || undefined) : undefined,
         shared: editItem.binding_type === 'user' ? (data.shared ?? false) : undefined,
         max_appearances: editItem.binding_type === 'user' ? data.max_appearances : undefined,
+        barge_in: editItem.binding_type === 'user' ? (data.barge_in ?? false) : undefined,
         tenant_id: data.tenant_id || undefined,
       },
     })
@@ -585,10 +588,16 @@ export function LineBindingsPage() {
                   from any. Each device needs credentials of its own unless it is the owner&apos;s.
                 </p>
                 <div className="grid grid-cols-2 gap-4 items-end">
-                  <label className="flex items-center gap-2 text-sm">
-                    <input type="checkbox" {...editForm.register('shared')} />
-                    Shared call appearance
-                  </label>
+                  <div className="space-y-2">
+                    <label className="flex items-center gap-2 text-sm">
+                      <input type="checkbox" {...editForm.register('shared')} />
+                      Shared call appearance
+                    </label>
+                    <label className="flex items-center gap-2 text-sm">
+                      <input type="checkbox" disabled={!editForm.watch('shared')} {...editForm.register('barge_in')} />
+                      Phones may barge in
+                    </label>
+                  </div>
                   <div className="space-y-2">
                     <Label htmlFor="e-max-appearances">Appearances</Label>
                     <Input

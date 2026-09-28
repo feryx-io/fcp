@@ -285,6 +285,35 @@ impl MediaManager {
     /// Play an audio file into a call again and again until stopped: hold
     /// music (`docs/ENTERPRISE_CALLING.md` §3.3). The other leg's audio is
     /// not relayed to the target meanwhile.
+    /// Add a supervisor to the call's media; the SDP to offer their phone
+    /// (`docs/ENTERPRISE_CALLING.md` §3.11).
+    pub async fn add_party(
+        &self,
+        call_id: &CallId,
+        mode: crate::backend::Supervision,
+    ) -> Result<String> {
+        self.backend.add_party(call_id, mode).await
+    }
+
+    /// The supervisor's SDP; the answer to it.
+    pub async fn connect_party(&self, call_id: &CallId, remote_sdp: String) -> Result<String> {
+        self.backend.connect_party(call_id, remote_sdp).await
+    }
+
+    /// Change how the supervisor takes part.
+    pub async fn set_party_mode(
+        &self,
+        call_id: &CallId,
+        mode: crate::backend::Supervision,
+    ) -> Result<()> {
+        self.backend.set_party_mode(call_id, mode).await
+    }
+
+    /// Remove the supervisor.
+    pub async fn remove_party(&self, call_id: &CallId) -> Result<()> {
+        self.backend.remove_party(call_id).await
+    }
+
     pub async fn play_file_looped(
         &self,
         call_id: &CallId,

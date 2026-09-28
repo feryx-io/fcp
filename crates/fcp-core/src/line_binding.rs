@@ -78,6 +78,12 @@ pub struct LineBinding {
     #[serde(default = "default_max_appearances")]
     pub max_appearances: u8,
 
+    /// A phone on the shared line may barge into an active appearance: its
+    /// INVITE naming the appearance joins the call, heard by both parties
+    /// (`docs/ENTERPRISE_CALLING.md` §3.11).
+    #[serde(default)]
+    pub barge_in: bool,
+
     // ===== Audit =====
     /// When this binding was created
     pub created_at: SystemTime,
@@ -112,6 +118,7 @@ impl LineBinding {
             holiday_target: None,
             shared: false,
             max_appearances: DEFAULT_MAX_APPEARANCES,
+            barge_in: false,
             created_at: now,
             updated_at: now,
         }

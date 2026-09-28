@@ -43,6 +43,7 @@ pub mod self_service;
 pub mod signup;
 pub mod sip_trace;
 pub mod sites;
+pub mod supervision;
 pub mod system;
 pub mod tenants;
 pub mod trunks;
@@ -342,6 +343,14 @@ pub fn router() -> Router<ApiState> {
         .route(
             "/calls/:call_id/recording/stop",
             post(media::stop_recording),
+        )
+        // A supervisor on a call (`docs/ENTERPRISE_CALLING.md` §3.11)
+        .route("/calls/:call_id/monitor", post(supervision::monitor))
+        .route("/calls/:call_id/whisper", post(supervision::whisper))
+        .route("/calls/:call_id/barge", post(supervision::barge))
+        .route(
+            "/calls/:call_id/supervisor",
+            get(supervision::get).delete(supervision::leave),
         )
         // SIP trace
         .route(

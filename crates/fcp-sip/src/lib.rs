@@ -42,6 +42,7 @@ pub mod ring_plan;
 pub mod sca;
 pub mod service;
 pub mod settings;
+pub mod supervision;
 pub mod transfer;
 pub mod transport;
 pub mod trunk_egress;

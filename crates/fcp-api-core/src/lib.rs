@@ -41,6 +41,37 @@ pub trait RoutePreviewer: Send + Sync {
     ) -> std::result::Result<serde_json::Value, String>;
 }
 
+/// A request about a call's supervisor (`docs/ENTERPRISE_CALLING.md`
+/// §3.11), carried to the call manager holding the call.
+#[derive(Debug, Clone)]
+pub enum SupervisionRequest {
+    /// Put `supervisor` on the call: `mode` is `monitor`, `whisper` or
+    /// `barge`; a whisper is heard by `heard_by` (`a` or `b`).
+    Join {
+        mode: &'static str,
+        supervisor: String,
+        heard_by: Option<String>,
+    },
+    /// The call's supervisor.
+    Get,
+    /// Take the supervisor off.
+    Leave,
+}
+
+/// Where a call's supervision is asked: the node holding the call answers.
+/// The API holds no calls itself; whatever wires it up knows how to reach
+/// the nodes.
+#[async_trait::async_trait]
+pub trait CallSupervisor: Send + Sync {
+    /// The node's status and body as it answered, or why no node could.
+    async fn supervise(
+        &self,
+        tenant: fcp_core::TenantId,
+        call_id: &str,
+        request: SupervisionRequest,
+    ) -> std::result::Result<(u16, serde_json::Value), String>;
+}
+
 /// What a route preview asks about.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct RoutePreviewQuery {

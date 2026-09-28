@@ -41,6 +41,7 @@ impl TransportDispatcher for NoopDispatcher {
     }
 }
 
+mod call_supervision;
 mod cli;
 mod cluster_api;
 mod config;
@@ -695,6 +696,16 @@ async fn main() -> Result<()> {
             info!("No call manager to ask for route previews ([call_manager] url or [cluster])");
             api_state
         }
+    };
+
+    // A call's supervisor is asked of the call manager holding the call
+    // (`docs/ENTERPRISE_CALLING.md` §3.11).
+    let api_state = match call_supervision::NodeCallSupervisor::new(
+        config.call_manager.clone(),
+        cluster_reader.clone(),
+    ) {
+        Some(supervisor) => api_state.with_call_supervisor(std::sync::Arc::new(supervisor)),
+        None => api_state,
     };
 
     let cluster_state = cluster_api::ClusterApiState {
