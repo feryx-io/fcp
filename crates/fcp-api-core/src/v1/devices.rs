@@ -12,7 +12,7 @@ use axum::{
 };
 use fcp_core::permissions::Permission;
 use fcp_core::storage::{CredentialStore, DeviceStore, RegistrationStore, SiteLocationStore};
-use fcp_core::{ConfigTemplateId, Device, DeviceId, DeviceType, TenantId, UserId};
+use fcp_core::{ConfigTemplateId, Device, DeviceId, DeviceType, HotelingStore, TenantId, UserId};
 use fcp_events::{PlatformEvent, SystemEvent};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -41,6 +41,12 @@ pub struct DeviceResponse {
     pub firmware_version: Option<String>,
     pub tenant_id: String,
     pub owner_user_id: Option<String>,
+    /// The username of the device's own credentials; the password and its
+    /// hash are never returned (`docs/ENTERPRISE_CALLING.md` §3.8).
+    pub sip_username: Option<String>,
+    pub has_sip_credentials: bool,
+    /// A shared phone users may log in on.
+    pub hoteling_host: bool,
     pub sip_uri: Option<String>,
     pub registration_state: String,
     pub last_registration: Option<SystemTime>,
@@ -68,6 +74,7 @@ pub struct DeviceResponse {
 
 impl From<Device> for DeviceResponse {
     fn from(device: Device) -> Self {
+        let has_sip_credentials = device.has_own_credentials();
         let has_provisioning_token = device
             .provisioning_token_hash
             .as_deref()
@@ -81,6 +88,9 @@ impl From<Device> for DeviceResponse {
             firmware_version: device.firmware_version,
             tenant_id: device.tenant_id.to_string(),
             owner_user_id: device.owner_user_id.map(|id| id.to_string()),
+            has_sip_credentials,
+            sip_username: device.sip_username,
+            hoteling_host: device.hoteling_host,
             sip_uri: device.sip_uri,
             registration_state: device.registration_state.to_string(),
             last_registration: device.last_registration,
@@ -117,6 +127,11 @@ pub struct CreateDeviceRequest {
     #[serde(default = "default_tenant_id")]
     pub tenant_id: TenantId,
     pub owner_user_id: Option<String>,
+    /// Credentials of the device's own (§3.8): both, or neither.
+    pub sip_username: Option<String>,
+    pub sip_password: Option<String>,
+    /// A shared phone users may log in on.
+    pub hoteling_host: Option<bool>,
     pub mac_address: Option<String>,
     pub model: Option<String>,
     pub sip_uri: Option<String>,
@@ -263,11 +278,120 @@ async fn validate_config_template_for_tenant(
     Ok(template_id.to_string())
 }
 
+/// The owner a request names, checked to be the tenant's.
+async fn owner_in_tenant(
+    storage: &fcp_core::DynStorage,
+    tenant_id: &TenantId,
+    owner_id: &str,
+) -> Result<UserId, ApiError> {
+    let owner_user_id = UserId::from_str(owner_id)
+        .map_err(|e| ApiError::BadRequest(format!("Invalid user ID: {}", e)))?;
+    let owner = storage
+        .get_user_by_id(&owner_user_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to get owner user: {}", e)))?
+        .ok_or_else(|| ApiError::BadRequest(format!("User {} not found", owner_user_id)))?;
+    if owner.tenant_id != *tenant_id {
+        return Err(ApiError::BadRequest(format!(
+            "User {} is not in the authenticated tenant",
+            owner_user_id
+        )));
+    }
+    Ok(owner_user_id)
+}
+
+/// Set, change or remove a device's own credentials
+/// (`docs/ENTERPRISE_CALLING.md` §3.8). A username is the tenant's alone:
+/// no user and no other device may be called by it over SIP.
+async fn apply_sip_credentials(
+    storage: &fcp_core::DynStorage,
+    realm: &str,
+    device: &mut Device,
+    username: Option<Option<String>>,
+    password: Option<String>,
+) -> Result<(), ApiError> {
+    match username.map(|u| u.and_then(normalize_optional_string)) {
+        Some(None) => {
+            if password.is_some() {
+                return Err(ApiError::BadRequest(
+                    "sip_password needs a sip_username".to_string(),
+                ));
+            }
+            device.sip_username = None;
+            device.sip_ha1_hash = None;
+            device.sip_provisioning_password = None;
+            return Ok(());
+        }
+        Some(Some(username)) => {
+            validation::validate_username(&username)?;
+            let changed = !device
+                .sip_username
+                .as_deref()
+                .is_some_and(|u| u.eq_ignore_ascii_case(&username));
+            if changed {
+                if password.is_none() {
+                    return Err(ApiError::BadRequest(
+                        "a new sip_username needs a sip_password".to_string(),
+                    ));
+                }
+                if storage
+                    .get_user_in_tenant(&username, &device.tenant_id)
+                    .await
+                    .map_err(|e| ApiError::Internal(format!("Failed to check users: {}", e)))?
+                    .is_some()
+                {
+                    return Err(ApiError::Conflict(format!(
+                        "sip_username `{username}` is a user's username"
+                    )));
+                }
+                if storage
+                    .get_device_by_sip_name(&device.tenant_id, &username)
+                    .await
+                    .map_err(|e| ApiError::Internal(format!("Failed to check devices: {}", e)))?
+                    .is_some_and(|other| other.id != device.id)
+                {
+                    return Err(ApiError::Conflict(format!(
+                        "sip_username `{username}` is another device's name"
+                    )));
+                }
+            }
+            device.sip_username = Some(username);
+        }
+        None => {}
+    }
+    if let Some(password) = password {
+        validation::reject_crlf("sip_password", &password)?;
+        if password.len() < 8 {
+            return Err(ApiError::BadRequest(
+                "sip_password must be at least 8 characters".to_string(),
+            ));
+        }
+        let username = device
+            .sip_username
+            .clone()
+            .ok_or_else(|| ApiError::BadRequest("sip_password needs a sip_username".to_string()))?;
+        device.sip_ha1_hash = Some(fcp_core::storage::password::compute_ha1(
+            &username, realm, &password,
+        ));
+        device.sip_provisioning_password = Some(password);
+    }
+    Ok(())
+}
+
 /// Update device request.
 #[derive(Debug, Deserialize)]
 pub struct UpdateDeviceRequest {
     pub name: Option<String>,
-    pub owner_user_id: Option<String>,
+    /// `null` (or an empty string) leaves the device without an owner.
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub owner_user_id: Option<Option<String>>,
+    /// The username of the device's own credentials; `null` removes them.
+    /// A new username needs `sip_password` too, since the digest hash is
+    /// made from both.
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub sip_username: Option<Option<String>>,
+    pub sip_password: Option<String>,
+    pub hoteling_host: Option<bool>,
     pub mac_address: Option<String>,
     pub model: Option<String>,
     pub firmware_version: Option<String>,
@@ -494,26 +618,24 @@ pub async fn create_device(
     let mut device = Device::new(req.name, device_type, tenant.0);
 
     // Set optional fields
-    if let Some(owner_id_str) = req.owner_user_id {
-        let owner_user_id = UserId::from_str(&owner_id_str)
-            .map_err(|e| ApiError::BadRequest(format!("Invalid user ID: {}", e)))?;
-        let owner = storage
-            .get_user_by_id(&owner_user_id)
-            .await
-            .map_err(|e| ApiError::Internal(format!("Failed to get owner user: {}", e)))?
-            .ok_or_else(|| ApiError::BadRequest(format!("User {} not found", owner_user_id)))?;
-        if owner.tenant_id != tenant.0 {
-            return Err(ApiError::BadRequest(format!(
-                "User {} is not in the authenticated tenant",
-                owner_user_id
-            )));
-        }
-        device.owner_user_id = Some(owner_user_id);
+    if let Some(owner_id_str) = req.owner_user_id.and_then(normalize_optional_string) {
+        device.owner_user_id = Some(owner_in_tenant(storage, &tenant.0, &owner_id_str).await?);
     }
 
     device.mac_address = req.mac_address.and_then(normalize_optional_string);
     device.model = req.model;
     device.sip_uri = req.sip_uri;
+    if req.sip_username.is_some() || req.sip_password.is_some() {
+        apply_sip_credentials(
+            storage,
+            &state.realm,
+            &mut device,
+            Some(req.sip_username),
+            req.sip_password,
+        )
+        .await?;
+    }
+    device.hoteling_host = req.hoteling_host.unwrap_or(false);
 
     if let Some(ref mac_address) = device.mac_address {
         let normalized_mac = normalize_mac_address(mac_address);
@@ -622,21 +744,28 @@ pub async fn update_device(
         device.name = name;
     }
 
-    if let Some(owner_id_str) = req.owner_user_id {
-        let owner_user_id = UserId::from_str(&owner_id_str)
-            .map_err(|e| ApiError::BadRequest(format!("Invalid user ID: {}", e)))?;
-        let owner = storage
-            .get_user_by_id(&owner_user_id)
-            .await
-            .map_err(|e| ApiError::Internal(format!("Failed to get owner user: {}", e)))?
-            .ok_or_else(|| ApiError::BadRequest(format!("User {} not found", owner_user_id)))?;
-        if owner.tenant_id != tenant.0 {
-            return Err(ApiError::BadRequest(format!(
-                "User {} is not in the authenticated tenant",
-                owner_user_id
-            )));
-        }
-        device.owner_user_id = Some(owner_user_id);
+    if let Some(owner) = req.owner_user_id {
+        device.owner_user_id = match owner.and_then(normalize_optional_string) {
+            Some(owner_id_str) => Some(owner_in_tenant(storage, &tenant.0, &owner_id_str).await?),
+            None => None,
+        };
+    }
+
+    if req.sip_username.is_some() || req.sip_password.is_some() {
+        apply_sip_credentials(
+            storage,
+            &state.realm,
+            &mut device,
+            req.sip_username,
+            req.sip_password,
+        )
+        .await?;
+    }
+
+    // A phone that stops being a host sends its guest home.
+    let hosting_ended = req.hoteling_host == Some(false) && device.hoteling_host;
+    if let Some(host) = req.hoteling_host {
+        device.hoteling_host = host;
     }
 
     if let Some(mac_address) = req.mac_address {
@@ -760,6 +889,22 @@ pub async fn update_device(
             timestamp: SystemTime::now(),
         }))
         .await;
+
+    if hosting_ended {
+        if let Some(session) = storage
+            .hoteling_session_for_device(&device.id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("Failed to read the host's session: {}", e)))?
+        {
+            crate::v1::hoteling::end_session(
+                &state,
+                storage,
+                &session,
+                fcp_core::SessionEnd::Admin,
+            )
+            .await?;
+        }
+    }
 
     info!("Updated device {} ({})", device.id, device.name);
 

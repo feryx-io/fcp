@@ -38,6 +38,12 @@ pub enum FeatureCodeAction {
     /// A change to the caller's own calling settings
     /// (`docs/ENTERPRISE_CALLING.md` §3.1).
     Calling(CallingCode),
+
+    /// Log in on the host phone dialing (hoteling, §3.8).
+    HotelingLogin,
+
+    /// Log out of the host phone dialing.
+    HotelingLogout,
 }
 
 /// The calling settings a phone can change by dialing.
@@ -221,6 +227,12 @@ pub fn parse(dialed: &str, config: &FeatureCodeConfig) -> Option<FeatureCodeActi
     if is_enabled(&config.agent_logout) && user == config.agent_logout {
         return Some(FeatureCodeAction::AgentLogout);
     }
+    if is_enabled(&config.hoteling_login) && user == config.hoteling_login {
+        return Some(FeatureCodeAction::HotelingLogin);
+    }
+    if is_enabled(&config.hoteling_logout) && user == config.hoteling_logout {
+        return Some(FeatureCodeAction::HotelingLogout);
+    }
 
     None
 }
@@ -231,6 +243,17 @@ mod tests {
 
     fn default_config() -> FeatureCodeConfig {
         FeatureCodeConfig::default()
+    }
+
+    #[test]
+    fn hoteling_codes() {
+        let cfg = default_config();
+        assert_eq!(parse("*88", &cfg), Some(FeatureCodeAction::HotelingLogin));
+        assert_eq!(
+            parse("sip:*89@pbx", &cfg),
+            Some(FeatureCodeAction::HotelingLogout)
+        );
+        assert_eq!(parse("*881", &cfg), None);
     }
 
     #[test]

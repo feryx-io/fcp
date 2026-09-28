@@ -1116,6 +1116,51 @@ pub async fn update_my_calling(
     )))
 }
 
+/// GET /me/hoteling — the host phone the user is logged in on, or `null`
+/// (`docs/ENTERPRISE_CALLING.md` §3.8).
+pub async fn get_my_hoteling(
+    State(state): State<ApiState>,
+    req: axum::extract::Request,
+) -> Result<impl IntoResponse, ApiError> {
+    use fcp_core::HotelingStore;
+    let claims = extract_claims(&req, &state)?;
+    let storage = require_storage!(state);
+    let user = load_claims_user(storage, &claims, &state).await?;
+    let session = storage
+        .hoteling_session_for_user(&user.id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let response = match session {
+        Some(session) => Some(crate::v1::hoteling::session_response(storage, session).await),
+        None => None,
+    };
+    Ok(Json(response))
+}
+
+/// DELETE /me/hoteling — log out of the host phone.
+pub async fn logout_my_hoteling(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, ApiError> {
+    use fcp_core::HotelingStore;
+    let claims = extract_claims_from_headers(&headers, &state)?;
+    let storage = require_storage!(state);
+    let user = load_claims_user(storage, &claims, &state).await?;
+    let session = storage
+        .hoteling_session_for_user(&user.id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or_else(|| ApiError::NotFound("Not logged in on a host phone".to_string()))?;
+    if !crate::v1::hoteling::end_session(&state, storage, &session, fcp_core::SessionEnd::Logout)
+        .await?
+    {
+        return Err(ApiError::NotFound(
+            "Not logged in on a host phone".to_string(),
+        ));
+    }
+    Ok(axum::http::StatusCode::NO_CONTENT)
+}
+
 // ---- Helper Functions ----
 
 /// Get the authenticated user's mailbox, verifying ownership.

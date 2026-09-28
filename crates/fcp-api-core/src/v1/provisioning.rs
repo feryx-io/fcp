@@ -6,7 +6,7 @@ use axum::{
     http::{header, HeaderMap, StatusCode},
     response::IntoResponse,
 };
-use fcp_core::{storage::DeviceStore, CredentialStore, Device};
+use fcp_core::{storage::DeviceStore, CredentialStore, Device, HotelingStore};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
@@ -184,15 +184,41 @@ pub async fn auto_provision(
     vars.insert("mac_address".to_string(), normalized_mac);
     vars.insert("device_name".to_string(), device.name.clone());
 
-    // Get owner's SIP credentials if device has an owner
-    if let Some(ref owner_id) = device.owner_user_id {
-        let owner = storage
-            .get_user_by_id(owner_id)
-            .await
-            .map_err(|e| ApiError::Internal(e.to_string()))?
-            .filter(|owner| owner.tenant_id == device.tenant_id && owner.enabled)
-            .ok_or_else(provisioning_not_found)?;
+    // The owner, when the device has one: its credentials unless the
+    // device has its own (`docs/ENTERPRISE_CALLING.md` §3.8).
+    let owner = match device.owner_user_id {
+        Some(ref owner_id) => Some(
+            storage
+                .get_user_by_id(owner_id)
+                .await
+                .map_err(|e| ApiError::Internal(e.to_string()))?
+                .filter(|owner| owner.tenant_id == device.tenant_id && owner.enabled)
+                .ok_or_else(provisioning_not_found)?,
+        ),
+        None => None,
+    };
 
+    if let (Some(auth_username), Some(ha1)) = (&device.sip_username, &device.sip_ha1_hash) {
+        let account = device
+            .aor_user()
+            .map(str::to_string)
+            .unwrap_or_else(|| auth_username.clone());
+        let sip_uri = device
+            .sip_uri
+            .clone()
+            .unwrap_or_else(|| format!("sip:{}@{}", account, state.realm));
+        vars.insert("sip_uri".to_string(), sip_uri);
+        vars.insert("sip_username".to_string(), account);
+        vars.insert("sip_auth_username".to_string(), auth_username.clone());
+        vars.insert("sip_auth_ha1_hash".to_string(), ha1.clone());
+        if let Some(ref sip_password) = device.sip_provisioning_password {
+            vars.insert("sip_password".to_string(), sip_password.clone());
+            vars.insert(
+                "sip_provisioning_password".to_string(),
+                sip_password.clone(),
+            );
+        }
+    } else if let Some(ref owner) = owner {
         let sip_ha1_hash = owner
             .sip_ha1_hash
             .clone()
@@ -213,6 +239,8 @@ pub async fn auto_provision(
                 sip_password.clone(),
             );
         }
+    }
+    if let Some(ref owner) = owner {
         vars.insert("owner_username".to_string(), owner.username.clone());
         if let Some(ref display_name) = owner.display_name {
             vars.insert("owner_display_name".to_string(), display_name.clone());
@@ -220,8 +248,41 @@ pub async fn auto_provision(
         if let Some(ref email) = owner.email {
             vars.insert("owner_email".to_string(), email.clone());
         }
-        vars.insert("owner_user_id".to_string(), owner_id.to_string());
+        vars.insert("owner_user_id".to_string(), owner.id.to_string());
     }
+
+    // Who the phone is for now: its hoteling guest, else its owner, so a
+    // host that re-provisions shows the guest's name (§3.8).
+    let session = if device.hoteling_host {
+        storage
+            .hoteling_session_for_device(&device.id)
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+    } else {
+        None
+    };
+    let effective = match (&session, &owner) {
+        (Some(session), _) => storage
+            .get_user_by_id(&session.user_id)
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?,
+        (None, Some(owner)) => Some(owner.clone()),
+        (None, None) => None,
+    };
+    if let Some(user) = effective {
+        vars.insert("effective_user_username".to_string(), user.username.clone());
+        vars.insert(
+            "effective_user_display_name".to_string(),
+            user.display_name
+                .clone()
+                .unwrap_or_else(|| user.username.clone()),
+        );
+        if let Some(extension) = user.extension {
+            vars.insert("effective_user_extension".to_string(), extension);
+        }
+        vars.insert("effective_user_id".to_string(), user.id.to_string());
+    }
+    vars.insert("hoteling_guest".to_string(), session.is_some().to_string());
 
     // Add SIP server info
     vars.insert("sip_server".to_string(), state.realm.clone());

@@ -48,6 +48,16 @@ pub(crate) const SEALED_COLUMNS: &[SealedColumn] = &[
         json_field: None,
     },
     SealedColumn {
+        table: "devices",
+        column: "sip_ha1_hash",
+        json_field: None,
+    },
+    SealedColumn {
+        table: "devices",
+        column: "sip_provisioning_password",
+        json_field: None,
+    },
+    SealedColumn {
         table: "trunks",
         column: "auth_password",
         json_field: None,

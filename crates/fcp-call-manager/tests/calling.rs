@@ -1720,3 +1720,281 @@ async fn a_number_screens_anonymous_and_unlisted_callers() {
     assert!(bob_phone.incoming(QUIET).await.is_none());
     stack.finish().await;
 }
+
+// ─── Hoteling (docs/ENTERPRISE_CALLING.md §3.8) ──────────────────────────
+
+const HOST_PASSWORD: &str = "lobby-phone-pw";
+const BOB_PIN: &str = "4321";
+
+/// A shared phone with credentials of its own and no owner, users may log
+/// in on.
+async fn host_device(stack: &Stack, name: &str) -> fcp_core::Device {
+    use fcp_core::storage::DeviceStore;
+    let mut device = fcp_core::Device::new(
+        format!("{name} phone"),
+        fcp_core::DeviceType::DeskPhone,
+        stack.seed.tenant_id,
+    );
+    device.sip_uri = Some(format!("sip:{name}@{REALM}"));
+    device.sip_username = Some(name.to_string());
+    device.sip_ha1_hash = Some(fcp_core::storage::password::compute_ha1(
+        name,
+        REALM,
+        HOST_PASSWORD,
+    ));
+    device.hoteling_host = true;
+    stack
+        .seed
+        .storage()
+        .put_device(device.clone())
+        .await
+        .expect("store host");
+    device
+}
+
+/// Give a user a PIN, returning their id.
+async fn set_pin(stack: &Stack, user: &SeededUser, pin: &str) -> fcp_core::UserId {
+    use fcp_core::storage::CredentialStore;
+    let storage = stack.seed.storage();
+    let mut row = storage
+        .get_user_in_tenant(&user.username, &stack.seed.tenant_id)
+        .await
+        .expect("read user")
+        .expect("seeded user");
+    row.pin = Some(fcp_core::storage::password::hash_pin(pin).expect("pin hashes"));
+    let id = row.id;
+    storage.put_user(row).await.expect("store user");
+    id
+}
+
+/// Key `digits` into the call once the node is listening for them.
+async fn key(call: &fcp_testkit::Call, digits: &str) {
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    for digit in digits.chars() {
+        call.media().send_dtmf(digit);
+    }
+}
+
+/// Dial `*88` on the host and log in with `extension` and `pin`, as many
+/// times as `attempts` says; the call as the node answered it.
+async fn log_in(stack: &Stack, host: &Phone, attempts: &[(&str, &str)]) -> fcp_testkit::Call {
+    let call = host.call("*88").await.unwrap();
+    if let Err(e) = call.answered(SOON).await {
+        stack
+            .fail(&format!("*88 was not answered: {e}"), host)
+            .await;
+    }
+    for (i, (extension, pin)) in attempts.iter().enumerate() {
+        if i > 0 {
+            // A refused attempt is checked and told before the node asks
+            // again, as the caller would hear.
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+        key(&call, &format!("{extension}#")).await;
+        key(&call, &format!("{pin}#")).await;
+    }
+    call
+}
+
+/// Wait for a `check-sync` NOTIFY on `phone`.
+async fn told_to_resync(phone: &Phone) -> bool {
+    phone
+        .expect(
+            RING_OUT,
+            |e| matches!(e, PhoneEvent::Notify { event, .. } if event.starts_with("check-sync")),
+        )
+        .await
+        .is_some()
+}
+
+async fn session_of(stack: &Stack, user: &fcp_core::UserId) -> Option<fcp_core::HotelingSession> {
+    use fcp_core::HotelingStore;
+    stack
+        .seed
+        .storage()
+        .hoteling_session_for_user(user)
+        .await
+        .expect("read session")
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_guest_logs_in_on_a_host_and_the_host_is_theirs() {
+    let stack = stack_or_skip!();
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let bob = stack.seed.user("bob", "bob-pw", "1002").await;
+    let bob_id = set_pin(&stack, &bob, BOB_PIN).await;
+    let mut internal = fcp_core::ClassOfService::new(stack.seed.tenant_id, "Internal");
+    internal.allowed = vec![fcp_core::DestinationClass::Internal];
+    give_class(&stack, &bob, &internal).await;
+    host_device(&stack, "lobby").await;
+    let alice_phone = stack.phone(&alice).await;
+    let bob_phone = stack.phone(&bob).await;
+    // The host registers with its own credentials.
+    let host = Phone::new("lobby", HOST_PASSWORD, REALM, stack.sip)
+        .await
+        .expect("host binds");
+    assert_eq!(host.register().await.unwrap(), 200);
+
+    // Nobody is logged in: a call to Bob rings his own phone only.
+    let call = alice_phone.call(&bob.extension).await.unwrap();
+    bob_phone.incoming(SOON).await.expect("Bob's phone rings");
+    assert!(
+        host.incoming(QUIET).await.is_none(),
+        "the host rang for Bob before he logged in"
+    );
+    call.hangup().await.ok();
+    let _ = call.ended(SOON).await;
+
+    // A wrong PIN, then the right one.
+    let login = log_in(&stack, &host, &[("1002", "9999"), ("1002", BOB_PIN)]).await;
+    if !told_to_resync(&host).await {
+        stack
+            .fail("the host was not told to re-provision", &host)
+            .await;
+    }
+    if !login.ended(SOON).await {
+        stack.fail("the login call was not ended", &host).await;
+    }
+    let session = session_of(&stack, &bob_id).await.expect("Bob is logged in");
+    assert!(session.expires_at > std::time::SystemTime::now() + Duration::from_secs(11 * 3600));
+
+    // Bob's calls ring the host, as well as his own phone.
+    let call = alice_phone.call(&bob.extension).await.unwrap();
+    let _at_bob = bob_phone.incoming(SOON).await.expect("Bob's phone rings");
+    let Some(at_host) = host.incoming(SOON).await else {
+        stack
+            .fail("the host did not ring for its guest", &alice_phone)
+            .await;
+    };
+    let answered = at_host.answer().await.unwrap();
+    call.answered(SOON)
+        .await
+        .expect("Alice reaches Bob at the host");
+    answered.hangup().await.unwrap();
+    let _ = call.ended(SOON).await;
+
+    // Calls from the host are Bob's: his class refuses a national number,
+    // and his feature codes change his settings.
+    let placed = host.call("2025550100").await.unwrap();
+    assert_eq!(
+        placed.failed(SOON).await,
+        Some(403),
+        "Bob's class did not apply at the host"
+    );
+    let dnd = host.call("*78").await.unwrap();
+    let _ = dnd.ended(SOON).await;
+    let settings = fcp_core::CallingStore::get_calling_settings(
+        stack.seed.storage(),
+        &stack.seed.tenant_id,
+        &bob_id,
+    )
+    .await
+    .expect("read settings")
+    .expect("Bob's settings");
+    assert!(
+        settings.dnd,
+        "*78 at the host did not set Bob's do not disturb"
+    );
+    stack.calling(&bob, |s| s.dnd = false).await;
+    give_class(&stack, &bob, &internal).await;
+
+    // *89: the host is nobody's guest again.
+    let logout = host.call("*89").await.unwrap();
+    let _ = logout.ended(SOON).await;
+    if !told_to_resync(&host).await {
+        stack
+            .fail("the host was not told to re-provision on logout", &host)
+            .await;
+    }
+    assert!(
+        session_of(&stack, &bob_id).await.is_none(),
+        "*89 left Bob logged in"
+    );
+    let call = alice_phone.call(&bob.extension).await.unwrap();
+    bob_phone.incoming(SOON).await.expect("Bob's phone rings");
+    assert!(
+        host.incoming(QUIET).await.is_none(),
+        "the host rang for Bob after he logged out"
+    );
+    call.hangup().await.ok();
+    stack.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_hoteling_session_runs_out() {
+    let Some(stack) = Stack::start_with("[pbx]\nhoteling_sweep_secs = 1\n").await else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let bob = stack.seed.user("bob", "bob-pw", "1002").await;
+    let bob_id = set_pin(&stack, &bob, BOB_PIN).await;
+    host_device(&stack, "lobby").await;
+    let host = Phone::new("lobby", HOST_PASSWORD, REALM, stack.sip)
+        .await
+        .expect("host binds");
+    assert_eq!(host.register().await.unwrap(), 200);
+    let login = log_in(&stack, &host, &[("1002", BOB_PIN)]).await;
+    assert!(told_to_resync(&host).await, "no check-sync at login");
+    let _ = login.ended(SOON).await;
+    let session = session_of(&stack, &bob_id).await.expect("Bob is logged in");
+
+    stack
+        .seed
+        .execute(&format!(
+            "UPDATE hoteling_sessions SET expires_at = NOW() - INTERVAL '1 second' WHERE id = '{}'",
+            session.id
+        ))
+        .await;
+    if !told_to_resync(&host).await {
+        stack
+            .fail("the host was not told when the session ran out", &host)
+            .await;
+    }
+    let ended = fcp_core::HotelingStore::get_hoteling_session(stack.seed.storage(), &session.id)
+        .await
+        .expect("read session")
+        .expect("the session is kept");
+    assert_eq!(ended.ended_by, Some(fcp_core::SessionEnd::Expired));
+    stack.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn credentials_register_only_what_is_theirs() {
+    use fcp_core::storage::DeviceStore;
+    let stack = stack_or_skip!();
+    stack.seed.user("alice", "alice-pw", "1001").await;
+    let bob = stack.seed.user("bob", "bob-pw", "1002").await;
+    host_device(&stack, "lobby").await;
+    let bob_id = set_pin(&stack, &bob, BOB_PIN).await;
+    let mut desk = fcp_core::Device::new(
+        "Bob's desk".to_string(),
+        fcp_core::DeviceType::DeskPhone,
+        stack.seed.tenant_id,
+    );
+    desk.owner_user_id = Some(bob_id);
+    desk.sip_uri = Some(format!("sip:bob-desk@{REALM}"));
+    stack.seed.storage().put_device(desk).await.expect("desk");
+
+    let register = |aor: &'static str, auth: &'static str, pw: &'static str| {
+        let sip = stack.sip;
+        async move {
+            let phone = Phone::with_credentials(aor, auth, pw, REALM, sip)
+                .await
+                .expect("phone binds");
+            phone.register().await.unwrap()
+        }
+    };
+    // A user's own address, their extension, a device they own.
+    assert_eq!(register("bob", "bob", "bob-pw").await, 200);
+    assert_eq!(register("1002", "bob", "bob-pw").await, 200);
+    assert_eq!(register("bob-desk", "bob", "bob-pw").await, 200);
+    // Somebody else's address, a host that is not theirs.
+    assert_eq!(register("alice", "bob", "bob-pw").await, 403);
+    assert_eq!(register("lobby", "bob", "bob-pw").await, 403);
+    // The host's own credentials register the host, and nobody else.
+    assert_eq!(register("lobby", "lobby", HOST_PASSWORD).await, 200);
+    assert_eq!(register("alice", "lobby", HOST_PASSWORD).await, 403);
+    // A wrong password is still challenged, not refused.
+    assert_eq!(register("lobby", "lobby", "wrong-password").await, 401);
+    stack.finish().await;
+}

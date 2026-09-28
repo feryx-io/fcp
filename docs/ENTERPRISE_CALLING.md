@@ -617,6 +617,88 @@ host's location. API: `GET /v1/hoteling/sessions`, `DELETE
 /v1/hoteling/sessions/:id`, `GET /v1/me/hoteling`, `DELETE /v1/me/hoteling`;
 events `hoteling.login`, `hoteling.logout`.
 
+#### 3.8.1 As built (phase 8, v0.25.283)
+
+A device may have credentials of its own: `sip_username`, and
+`sip_ha1_hash` and `sip_provisioning_password` sealed at rest like a
+user's (migration 085; both are in the re-encrypt pass, neither is ever
+returned by the API, subject export leaves them out). The username is the
+tenant's alone: the API refuses one a user or another device already is,
+and a new username without a new password, since the hash is made of
+both. Provisioning renders the device's own credentials when it has them
+(`${sip_username}` is then the device's address, `${sip_auth_username}`
+its credentials), else its owner's as before, and adds
+`${effective_user_username}`, `${effective_user_display_name}`,
+`${effective_user_extension}`, `${effective_user_id}` and
+`${hoteling_guest}`. A device's owner can be cleared (`null`), and the
+admin UI's device dialog sets the owner, the host flag and the
+credentials.
+
+**Who a credential may be.** With the registrar given the storage
+(`FcpRegistrar::with_identity`, on the call manager and the standalone
+registrar), the digest lookup falls back from a user to a device's own
+credentials, and one rule (`fcp_sip::hoteling::may_act_as`) decides both
+what a REGISTER may register and whose `From` an INVITE may carry under
+`auth_invites`: a credential is always its own name; a user is also a
+device they own, an extension that is theirs, a number whose line is
+theirs; a device is also its own address, its owner's name or extension,
+a number whose line it is on. Anything else is 403 (a REGISTER) or the
+wrong-user refusal (an INVITE), never a challenge. The SBC's registrar is
+not given the storage and is unchanged.
+
+**Sessions.** `hoteling_sessions` (migration 085, not journaled: a site's
+logins are its own) hold one active session per host and per guest,
+enforced by partial unique indexes; `HotelingStore` starts one in a
+transaction that ends the guest's other session and the host's other
+guest (`replaced`), ends one (`logout`, `admin`), and expires those run
+out (`expired`) returning each to one sweeper only. A session lasts the
+tenant's `calling.hoteling_session_hours` (1 to 168, default 12, on the
+Tenants page). `fcp_sip::hoteling::Hoteling` starts and ends them, and
+after each sends the phone `NOTIFY Event: check-sync` from a task of its
+own; at a login it also sends the guest's message-waiting state. Every
+node sweeps each `[pbx] hoteling_sweep_secs` (60). `hoteling.login` and
+`hoteling.logout` (with `reason`) are `UserEvent`s; a logout the API
+made says `resynced: false`, and the call managers that hear it send the
+`check-sync` the API cannot (each call manager that hears it, so a
+cluster with shared events sends one per node).
+
+**Login and logout.** `*88` from an enabled host (the device the `From`
+names, by credentials or address) answers the call into an inline flow
+whose `HotelingLogin` node asks for an extension then a PIN, each ended
+by `#`, three times at most, checks the PIN (off the async workers), and
+logs the user in; the call then hangs up. The inline flow is the one
+`*98` runs, now shared (`start_inline_flow`), and its answer now puts the
+A-leg dialog on the call before the 200 OK, so the flow's hangup reaches
+the phone and a caller's BYE finds the call. `*89` from the host ends its
+session and answers 200 at once, as the calling codes do; from a phone
+that is not a host both codes are 403. `[pbx.feature_codes]
+hoteling_login` / `hoteling_logout`.
+
+**The effective user.** `fcp_sip::hoteling::caller_user` is the user a
+SIP name places calls as: the device it names — its guest while a session
+lives, else its owner — else the user or extension it names. It is what
+marks the call's caller (so the line's caller ID and the class of service
+at trunk egress are the guest's), what the class of service checks, and
+whose settings the calling codes and `*98` change and open. The ring plan
+leaves a host lent to someone else out of its owner's devices and out of
+a line's, and adds the host a user is logged in on to the user's own
+(`contacts_for_user`, `contacts_for_binding`); an extension that names a
+device rings it with its effective user's plan. Presence shows the
+guest's calls on the host's address and leaves a lent host out of its
+owner's. E911 is the device's: a guest calls with the host's location.
+
+API: `GET /v1/hoteling/sessions` (`?all=true` for ended ones too) and
+`DELETE /v1/hoteling/sessions/:id` under the device permissions,
+`GET`/`DELETE /v1/me/hoteling`; a device that stops being a host ends
+its session. The admin UI's Hoteling page lists sessions and ends them.
+
+Deviations: the CDR has no user of its own, so it carries the host's
+`From` as before; billing rates the tenant, as it always has. The MWI
+NOTIFY is sent at login only: a message left for the guest afterwards
+lights the guest's own phones, not the host (the MWI notifier works by
+line binding). Hoteling sessions, like calling settings, are not in
+subject export or erasure.
+
 ### 3.9 Shared call appearance
 
 The BroadSoft flavour (§5 Q5): the `call-info` event package with
@@ -691,7 +773,7 @@ feature crosses nodes, in the two-node cluster harness.
 | 5 | ✅ v0.25.280 — **Schedules** (§3.5). The entity, the tenant timezone, the number's closed and holiday targets, the user's after-hours forward, DB queue hours, the flow node, the pages. Tests: a number answered by a flow after hours, a queue closed on a holiday. As built (§3.5.1): `schedules` (migration 083, JSON rows, synced to sites), the number's `schedule_id`/`closed_target`/`holiday_target`, the user's after-hours forward in the plan, a database queue's hours decided before the queue, the flow `Schedule` node, `flow:` and `queue:` targets placed, `/v1/schedules` and a Schedules page. The tenant's timezone waits for phase 7 with its country. Test: `calling.rs`, `api_postgres.rs`. |
 | 6 | ✅ v0.25.281 — **Find-me / follow-me** (§3.6). Steps, external legs with confirmation, `Diversion`, the page. Tests: a sequential ring reaching a trunk stub that must press 1. As built (§3.6.1): steps after the user's phones (or instead of them when none is up), each forked with its own ring time; confirmation by a prompt to the answering leg alone and one digit; `*60`/`*61`; the Calling page's editor. The `Diversion` header is not sent. Test: `calling.rs`. |
 | 7 | ✅ v0.25.282 — **Class of service** (§3.7). The entity, classification, enforcement for the effective user, find-me legs and call-on-behalf, the number's screening lists, the line's caller ID applied, the pages. Tests: a premium number refused for one user and placed for another, a withheld caller ID, a blocked caller. As built (§3.7.1): classification by the tenant's country (US, CA, GB, DE, FR, AU, NZ) and overrides, `classes_of_service` and the tenant's `calling` (migration 084), placed calls, forwards and find-me steps checked, `max_calls` both ways, the number's screening (433/603), the line's caller ID and `withheld` at trunk egress, `/v1/classes-of-service` and its page. Call-on-behalf waits for phase 10. Test: `calling.rs`, `trunks.rs`, `api_postgres.rs`. |
-| 8 | **Hoteling** (§3.8). Device credentials and the registrar's check, hosts, sessions, login and logout by DTMF, `check-sync`, the effective user in every path, expiry, the API and pages. Tests: a guest logs in on a host phone, is rung there and calls out as themself, expires. |
+| 8 | ✅ v0.25.283 — **Hoteling** (§3.8). Device credentials and the registrar's check, hosts, sessions, login and logout by DTMF, `check-sync`, the effective user in every path, expiry, the API and pages. Tests: a guest logs in on a host phone, is rung there and calls out as themself, expires. As built (§3.8.1): device credentials sealed at rest and one "may act as" rule for REGISTER and INVITE, `hoteling_sessions` (migration 085) with one guest per host, `*88` through an inline flow's `HotelingLogin` node and `*89`, `check-sync` and MWI to the host, the sweep, the effective user for the caller, the class of service, the calling codes and `*98`, the ring plan and presence, `/v1/hoteling/sessions`, `/v1/me/hoteling` and the Hoteling page. Tests: `calling.rs` (a login after a wrong PIN, the guest rung at the host and calling there under their class and codes, `*89`, a session run out, credentials registering only what is theirs) and `api_postgres.rs`. |
 | 9 | **Shared call appearance** (§3.9). Shared lines, second-account templates, the appearance table, `call-info` and `line-seize`, retrieve from another phone, the testkit phone's packages. Tests: two phones on one line, lamps through seize, alert, active and held, retrieve on the other phone; lamps right across two nodes. |
 | 10 | **Executive-assistant** (§3.10). The relation, the filter and the plan, push, call on behalf, opt-in codes, the pages. Tests: an external call to the executive rings the assistant, pushed to the executive, a call placed on behalf. |
 | 11 | **Monitor, whisper and barge** (§3.11). The third party in forge-engine (a forge-media release), the API, the queue's supervisor path moved, barge-in on an appearance. Tests: a supervisor hears both parties, a whisper heard by one, the queue supervisor tests still passing. |

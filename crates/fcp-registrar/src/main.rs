@@ -308,7 +308,10 @@ fn create_registrar(
             config.registrar.auth_enabled,
         )
         .with_tenant_store(Arc::clone(storage) as _)
-        .with_default_tenant_id(config.service.default_tenant_id),
+        .with_default_tenant_id(config.service.default_tenant_id)
+        // Devices' own credentials, and who a credential may register as
+        // (docs/ENTERPRISE_CALLING.md §3.8).
+        .with_identity(Arc::clone(storage)),
     )
 }
 

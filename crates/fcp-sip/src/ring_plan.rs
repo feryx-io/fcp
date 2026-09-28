@@ -171,6 +171,15 @@ pub async fn contacts_for_binding(
                 continue;
             }
         };
+        // A host lent to a hoteling guest rings for the guest (§3.8).
+        if device.hoteling_host
+            && crate::hoteling::session_of(storage, &device)
+                .await
+                .is_some()
+        {
+            debug!(device = %device.name, "Line's device is a host with a guest; not rung");
+            continue;
+        }
         let Some(sip_uri) = device.sip_uri.as_deref() else {
             debug!(device = %device.name, "Device has no SIP URI configured");
             continue;
@@ -196,12 +205,52 @@ pub async fn contacts_for_binding(
             }
         }
     }
+    // The owner's calls also ring the host they are logged in on.
+    if let Some(owner) = binding.owner_user_id {
+        let domain = invite_domain.unwrap_or("");
+        for hosted in hosted_contacts(storage, registrar, &binding.tenant_id, &owner, domain).await
+        {
+            if !contacts.iter().any(|c| c.contact() == hosted.contact()) {
+                contacts.push(hosted);
+            }
+        }
+    }
     contacts
 }
 
+/// The registrations of the host `user` is logged in on (§3.8).
+pub async fn hosted_contacts(
+    storage: &DynStorage,
+    registrar: &FcpRegistrar,
+    tenant_id: &TenantId,
+    user: &UserId,
+    invite_domain: &str,
+) -> Vec<Binding> {
+    let Some(host) = crate::hoteling::hosting(storage, user).await else {
+        return Vec::new();
+    };
+    let Some(sip_uri) = host.sip_uri.as_deref() else {
+        return Vec::new();
+    };
+    match registrar
+        .get_registrations_for_device(tenant_id, sip_uri, invite_domain)
+        .await
+    {
+        Ok(found) => {
+            debug!(device_id = %host.id, user_id = %user, contacts = found.len(), "Ringing the host the user is logged in on");
+            found
+        }
+        Err(e) => {
+            warn!(device_id = %host.id, error = %e, "Failed to get the host's registrations");
+            Vec::new()
+        }
+    }
+}
+
 /// The registered contacts of a user: every enabled device the user
-/// owns, else the registrations at the user's own address in each of
-/// the tenant's domains.
+/// owns but a host lent to a hoteling guest, and the host the user is
+/// logged in on; else the registrations at the user's own address in
+/// each of the tenant's domains.
 pub async fn contacts_for_user(
     storage: &DynStorage,
     registrar: &FcpRegistrar,
@@ -213,6 +262,10 @@ pub async fn contacts_for_user(
     match storage.list_devices_by_user(user_id).await {
         Ok(devices) => {
             for device in devices.iter().filter(|d| d.enabled) {
+                if crate::hoteling::lent_to_another(storage, device, user_id).await {
+                    debug!(device_id = %device.id, "The user's host has a guest; not rung");
+                    continue;
+                }
                 let Some(sip_uri) = device.sip_uri.as_deref() else {
                     continue;
                 };
@@ -235,9 +288,15 @@ pub async fn contacts_for_user(
         }
         Err(e) => warn!(user_id = %user_id, error = %e, "Failed to list user devices"),
     }
-    if contacts.is_empty() {
+    let hosted = hosted_contacts(storage, registrar, tenant_id, user_id, invite_domain).await;
+    if contacts.is_empty() && hosted.is_empty() {
         contacts =
             registrations_at_users_aor(storage, registrar, tenant_id, user_id, invite_domain).await;
+    }
+    for binding in hosted {
+        if !contacts.iter().any(|c| c.contact() == binding.contact()) {
+            contacts.push(binding);
+        }
     }
     contacts
 }

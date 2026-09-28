@@ -1753,6 +1753,29 @@ pub trait DeviceStore: Send + Sync {
         Ok(None)
     }
 
+    /// The tenant's device that is `name` over SIP: the one whose own
+    /// credentials are `name`, else one whose SIP URI's user is `name`
+    /// (`docs/ENTERPRISE_CALLING.md` §3.8). Names are case-insensitive.
+    async fn get_device_by_sip_name(
+        &self,
+        tenant_id: &crate::TenantId,
+        name: &str,
+    ) -> Result<Option<crate::Device>> {
+        let devices = self.list_devices(tenant_id).await?;
+        let by_credentials = devices.iter().find(|d| {
+            d.sip_username
+                .as_deref()
+                .is_some_and(|u| u.eq_ignore_ascii_case(name))
+        });
+        Ok(by_credentials
+            .or_else(|| {
+                devices
+                    .iter()
+                    .find(|d| d.aor_user().is_some_and(|u| u.eq_ignore_ascii_case(name)))
+            })
+            .cloned())
+    }
+
     /// Create or update a device
     async fn put_device(&self, device: crate::Device) -> Result<()>;
 
@@ -3078,6 +3101,7 @@ pub struct DynStorage {
     calling_store: Arc<dyn crate::calling::CallingStore>,
     schedule_store: Arc<dyn crate::schedule::ScheduleStore>,
     class_of_service_store: Arc<dyn crate::class_of_service::ClassOfServiceStore>,
+    hoteling_store: Arc<dyn crate::hoteling::HotelingStore>,
     tenant_store: Arc<dyn TenantStore>,
     conference_store: Arc<dyn ConferenceStore>,
     queue_store: Arc<dyn QueueStore>,
@@ -3126,6 +3150,7 @@ impl DynStorage {
         calling_store: Arc<dyn crate::calling::CallingStore>,
         schedule_store: Arc<dyn crate::schedule::ScheduleStore>,
         class_of_service_store: Arc<dyn crate::class_of_service::ClassOfServiceStore>,
+        hoteling_store: Arc<dyn crate::hoteling::HotelingStore>,
         tenant_store: Arc<dyn TenantStore>,
         conference_store: Arc<dyn ConferenceStore>,
         queue_store: Arc<dyn QueueStore>,
@@ -3154,6 +3179,7 @@ impl DynStorage {
             calling_store,
             schedule_store,
             class_of_service_store,
+            hoteling_store,
             tenant_store,
             conference_store,
             queue_store,
@@ -3202,6 +3228,7 @@ impl DynStorage {
             + crate::calling::CallingStore
             + crate::schedule::ScheduleStore
             + crate::class_of_service::ClassOfServiceStore
+            + crate::hoteling::HotelingStore
             + TenantStore
             + ConferenceStore
             + QueueStore
@@ -3232,6 +3259,7 @@ impl DynStorage {
             calling_store: storage.clone(),
             schedule_store: storage.clone(),
             class_of_service_store: storage.clone(),
+            hoteling_store: storage.clone(),
             tenant_store: storage.clone(),
             conference_store: storage.clone(),
             queue_store: storage.clone(),
@@ -4012,6 +4040,16 @@ impl DeviceStore for DynStorage {
             .await
     }
 
+    async fn get_device_by_sip_name(
+        &self,
+        tenant_id: &crate::TenantId,
+        name: &str,
+    ) -> Result<Option<crate::Device>> {
+        self.device_store
+            .get_device_by_sip_name(tenant_id, name)
+            .await
+    }
+
     async fn put_device(&self, device: crate::Device) -> Result<()> {
         self.device_store.put_device(device).await
     }
@@ -4352,6 +4390,64 @@ impl crate::class_of_service::ClassOfServiceStore for DynStorage {
         self.class_of_service_store
             .delete_class_of_service(id)
             .await
+    }
+}
+
+#[async_trait]
+impl crate::hoteling::HotelingStore for DynStorage {
+    async fn start_hoteling_session(
+        &self,
+        session: crate::hoteling::HotelingSession,
+    ) -> Result<Vec<crate::hoteling::HotelingSession>> {
+        self.hoteling_store.start_hoteling_session(session).await
+    }
+
+    async fn get_hoteling_session(
+        &self,
+        id: &crate::HotelingSessionId,
+    ) -> Result<Option<crate::hoteling::HotelingSession>> {
+        self.hoteling_store.get_hoteling_session(id).await
+    }
+
+    async fn hoteling_session_for_device(
+        &self,
+        device_id: &crate::DeviceId,
+    ) -> Result<Option<crate::hoteling::HotelingSession>> {
+        self.hoteling_store
+            .hoteling_session_for_device(device_id)
+            .await
+    }
+
+    async fn hoteling_session_for_user(
+        &self,
+        user_id: &crate::UserId,
+    ) -> Result<Option<crate::hoteling::HotelingSession>> {
+        self.hoteling_store.hoteling_session_for_user(user_id).await
+    }
+
+    async fn list_hoteling_sessions(
+        &self,
+        tenant_id: &crate::TenantId,
+        include_ended: bool,
+    ) -> Result<Vec<crate::hoteling::HotelingSession>> {
+        self.hoteling_store
+            .list_hoteling_sessions(tenant_id, include_ended)
+            .await
+    }
+
+    async fn end_hoteling_session(
+        &self,
+        id: &crate::HotelingSessionId,
+        by: crate::hoteling::SessionEnd,
+    ) -> Result<Option<crate::hoteling::HotelingSession>> {
+        self.hoteling_store.end_hoteling_session(id, by).await
+    }
+
+    async fn expire_hoteling_sessions(
+        &self,
+        now: SystemTime,
+    ) -> Result<Vec<crate::hoteling::HotelingSession>> {
+        self.hoteling_store.expire_hoteling_sessions(now).await
     }
 }
 

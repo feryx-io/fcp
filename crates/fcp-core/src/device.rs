@@ -41,6 +41,25 @@ pub struct Device {
     /// Owner of this device (optional)
     pub owner_user_id: Option<UserId>,
 
+    /// The digest username of the device's own credentials
+    /// (`docs/ENTERPRISE_CALLING.md` §3.8). Unset, the device registers
+    /// with its owner's.
+    #[serde(default)]
+    pub sip_username: Option<String>,
+
+    /// `MD5(sip_username:realm:password)` for the device's own credentials.
+    #[serde(default)]
+    pub sip_ha1_hash: Option<String>,
+
+    /// The plaintext password of the device's own credentials, kept only
+    /// for provisioning templates that need it, as a user's is.
+    #[serde(default)]
+    pub sip_provisioning_password: Option<String>,
+
+    /// A shared phone a user may log in on (hoteling, §3.8).
+    #[serde(default)]
+    pub hoteling_host: bool,
+
     // ===== SIP Registration =====
     /// SIP URI for this device (e.g., "sip:alice-desk@192.168.1.80")
     pub sip_uri: Option<String>,
@@ -126,6 +145,10 @@ impl Device {
             firmware_version: None,
             tenant_id,
             owner_user_id: None,
+            sip_username: None,
+            sip_ha1_hash: None,
+            sip_provisioning_password: None,
+            hoteling_host: false,
             sip_uri: None,
             registration_state: RegistrationState::Unregistered,
             last_registration: None,
@@ -170,6 +193,23 @@ impl Device {
         }
 
         self.updated_at = SystemTime::now();
+    }
+
+    /// The user part of the device's SIP URI: the name it registers and
+    /// calls as.
+    pub fn aor_user(&self) -> Option<&str> {
+        let uri = self.sip_uri.as_deref()?;
+        let rest = uri
+            .strip_prefix("sips:")
+            .or_else(|| uri.strip_prefix("sip:"))
+            .unwrap_or(uri);
+        let user = rest.split_once('@').map(|(u, _)| u)?;
+        (!user.is_empty()).then_some(user)
+    }
+
+    /// Whether the device has credentials of its own.
+    pub fn has_own_credentials(&self) -> bool {
+        self.sip_username.is_some() && self.sip_ha1_hash.is_some()
     }
 
     /// Check if device is currently registered.
