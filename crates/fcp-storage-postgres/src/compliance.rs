@@ -17,8 +17,14 @@ fn to_datetime(st: SystemTime) -> DateTime<Utc> {
     DateTime::from_timestamp(d.as_secs() as i64, d.subsec_nanos()).unwrap_or_default()
 }
 
+/// A stored time to the microsecond Postgres keeps: a keyset cursor built
+/// from a row read back must bound that row exactly, or a page skips the
+/// rows later in the same second.
 fn to_system_time(dt: DateTime<Utc>) -> SystemTime {
-    UNIX_EPOCH + Duration::from_secs(dt.timestamp().max(0) as u64)
+    if dt.timestamp() < 0 {
+        return UNIX_EPOCH;
+    }
+    UNIX_EPOCH + Duration::new(dt.timestamp() as u64, dt.timestamp_subsec_nanos())
 }
 
 /// Whether a live row names the file at `path` (an SQL expression): a call
@@ -197,34 +203,45 @@ impl ComplianceStore for PostgresComplianceStore {
                     source_ip, occurred_at
              FROM admin_audit_log WHERE 1 = 1",
         );
-        let mut binds: Vec<String> = Vec::new();
-        if let Some(t) = &query.tenant_id {
-            binds.push(t.to_string());
-            sql.push_str(&format!(" AND tenant_id = ${}", binds.len()));
+        let mut n = 0;
+        let mut next = || {
+            n += 1;
+            n
+        };
+        if query.tenant_id.is_some() {
+            sql.push_str(&format!(" AND tenant_id = ${}", next()));
         }
-        if let Some(a) = &query.actor {
-            binds.push(a.clone());
-            sql.push_str(&format!(" AND actor = ${}", binds.len()));
+        if query.actor.is_some() {
+            sql.push_str(&format!(" AND actor = ${}", next()));
         }
-        if let Some(p) = &query.action_prefix {
-            binds.push(format!("{p}%"));
-            sql.push_str(&format!(" AND action LIKE ${}", binds.len()));
+        if query.action_prefix.is_some() {
+            sql.push_str(&format!(" AND action LIKE ${}", next()));
         }
-        let since = query.since.map(to_datetime);
-        if since.is_some() {
-            binds.push(String::new()); // placeholder index; bound as timestamp below
-            sql.push_str(&format!(" AND occurred_at >= ${}", binds.len()));
+        if query.since.is_some() {
+            sql.push_str(&format!(" AND occurred_at >= ${}", next()));
+        }
+        if query.before.is_some() {
+            let (at, id) = (next(), next());
+            sql.push_str(&format!(" AND (occurred_at, id) < (${at}, ${id})"));
         }
         sql.push_str(" ORDER BY occurred_at DESC, id DESC LIMIT ");
         sql.push_str(&query.limit.clamp(1, 1000).to_string());
 
         let mut q = sqlx::query(&sql);
-        let last = binds.len().saturating_sub(1);
-        for (i, b) in binds.iter().enumerate() {
-            match since {
-                Some(ts) if i == last => q = q.bind(ts),
-                _ => q = q.bind(b.clone()),
-            }
+        if let Some(t) = &query.tenant_id {
+            q = q.bind(t.to_string());
+        }
+        if let Some(a) = &query.actor {
+            q = q.bind(a.clone());
+        }
+        if let Some(p) = &query.action_prefix {
+            q = q.bind(format!("{p}%"));
+        }
+        if let Some(since) = query.since {
+            q = q.bind(to_datetime(since));
+        }
+        if let Some((at, id)) = query.before {
+            q = q.bind(to_datetime(at)).bind(id);
         }
         let rows = q.fetch_all(&self.pool).await?;
         rows.into_iter().map(Self::row_to_audit).collect()
@@ -294,6 +311,10 @@ impl ComplianceStore for PostgresComplianceStore {
         if query.request_id.is_some() {
             sql.push_str(&format!(" AND request_id = ${}", next()));
         }
+        if query.before.is_some() {
+            let (at, id) = (next(), next());
+            sql.push_str(&format!(" AND (deleted_at, id) < (${at}, ${id})"));
+        }
         sql.push_str(&format!(
             " ORDER BY deleted_at DESC, id DESC LIMIT ${}",
             next()
@@ -310,6 +331,9 @@ impl ComplianceStore for PostgresComplianceStore {
         }
         if let Some(request) = &query.request_id {
             q = q.bind(request);
+        }
+        if let Some((at, id)) = query.before {
+            q = q.bind(to_datetime(at)).bind(id);
         }
         q = q.bind(query.limit.clamp(1, 1000) as i64);
         q.fetch_all(&self.pool)

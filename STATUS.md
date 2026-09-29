@@ -1478,7 +1478,23 @@ string in UTC.
   (`check_shape`: no numeric or serde-shaped times, no bare UUID where a
   prefix exists).
 
-2c (list envelopes) follows.
+2c done (v0.25.296): every list is `{data, next_cursor, total}` and takes
+`limit` (default 100, at most 1000) and `cursor`.
+- Keyset pages over a stable key: name, number, priority, or time newest
+  first.
+- The audit and deletion logs page in SQL by `(time, id)`; CDRs keep
+  their store cursor.
+- Flows, recordings, flow traces and billing use an offset cursor.
+- The admin UI follows cursors (`getAll`), and CDRs, recordings and flow
+  traces page with previous/next. The CLI's `list_all` follows them too,
+  which also fixes its registrations list, empty against the admin API
+  until now.
+- The compliance store kept only whole seconds of the times it read back,
+  so a cursor skipped rows; found by `every_list_pages_by_cursor` and
+  fixed.
+- `api_postgres.rs` refuses a bare array from any response.
+
+Phase 2 is complete.
 
 ## Historical documents
 

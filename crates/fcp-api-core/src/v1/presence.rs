@@ -75,6 +75,7 @@ pub struct UpdatePresenceRequest {
 pub async fn list_presences(
     State(state): State<ApiState>,
     tenant: TenantContext,
+    axum::extract::Query(page): axum::extract::Query<crate::page::PageQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let pm = require_presence_manager!(state);
     let tenant_id = &tenant.0;
@@ -196,7 +197,12 @@ pub async fn list_presences(
         })
         .collect();
 
-    Ok(Json(responses))
+    Ok(Json(crate::page::paginate(
+        responses,
+        &page,
+        crate::page::Order::Ascending,
+        |r| r.aor.clone(),
+    )?))
 }
 
 /// Resolve an extension's target to device AOR(s).
@@ -367,6 +373,7 @@ pub async fn list_watchers(
     State(state): State<ApiState>,
     tenant: TenantContext,
     Path(aor): Path<String>,
+    axum::extract::Query(page): axum::extract::Query<crate::page::PageQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let pm = require_presence_manager!(state);
 
@@ -390,7 +397,12 @@ pub async fn list_watchers(
         })
         .collect();
 
-    Ok(Json(watchers))
+    Ok(Json(crate::page::paginate(
+        watchers,
+        &page,
+        crate::page::Order::Ascending,
+        |r| format!("{}/{}", r.watcher_aor, r.subscription_id),
+    )?))
 }
 
 /// GET /presence/:aor/policy — Get authorization policy for a presentity.

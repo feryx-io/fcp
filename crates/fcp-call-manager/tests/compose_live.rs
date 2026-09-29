@@ -114,7 +114,7 @@ impl Admin {
         let tenants = listed
             .as_array()
             .cloned()
-            .or_else(|| listed["tenants"].as_array().cloned())
+            .or_else(|| listed["data"].as_array().cloned())
             .unwrap_or_default();
         tenants
             .iter()
@@ -168,7 +168,7 @@ impl Admin {
         loop {
             let (code, cdrs) = self.call("GET", "/api/v1/cdrs", Some(tenant), None).await;
             assert_eq!(code, 200, "{cdrs}");
-            let calls: Vec<serde_json::Value> = cdrs["cdrs"]
+            let calls: Vec<serde_json::Value> = cdrs["data"]
                 .as_array()
                 .map(|list| {
                     list.iter()

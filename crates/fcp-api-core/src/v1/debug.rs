@@ -3,6 +3,7 @@
 //! These endpoints are intended for development and debugging purposes.
 //! In production, these should be restricted via authentication/authorization.
 
+use crate::error::ApiError;
 use crate::{
     auth::{can_access_all_tenants, AuthIdentity, TenantContext},
     state::ApiState,
@@ -108,7 +109,8 @@ pub async fn list_dialogs(
     State(state): State<ApiState>,
     tenant: TenantContext,
     identity: Option<Extension<AuthIdentity>>,
-) -> Json<Vec<DialogInfo>> {
+    axum::extract::Query(page): axum::extract::Query<crate::page::PageQuery>,
+) -> Result<Json<crate::page::Page<DialogInfo>>, ApiError> {
     let dialog_ids = state.dialog_manager.all_ids();
     let visible_call_ids = visible_call_ids(&state, &tenant, identity.as_ref().map(|ext| &ext.0));
 
@@ -145,7 +147,12 @@ pub async fn list_dialogs(
         })
         .collect();
 
-    Json(dialog_infos)
+    Ok(Json(crate::page::paginate(
+        dialog_infos,
+        &page,
+        crate::page::Order::Ascending,
+        |r| r.call_id.clone(),
+    )?))
 }
 
 /// List active subscriptions.
@@ -155,7 +162,8 @@ pub async fn list_subscriptions(
     State(state): State<ApiState>,
     tenant: TenantContext,
     identity: Option<Extension<AuthIdentity>>,
-) -> Json<Vec<SubscriptionInfo>> {
+    axum::extract::Query(page): axum::extract::Query<crate::page::PageQuery>,
+) -> Result<Json<crate::page::Page<SubscriptionInfo>>, ApiError> {
     let subscriptions = state.subscription_manager.all();
     let visible_call_ids = visible_call_ids(&state, &tenant, identity.as_ref().map(|ext| &ext.0));
 
@@ -178,7 +186,12 @@ pub async fn list_subscriptions(
         })
         .collect();
 
-    Json(sub_infos)
+    Ok(Json(crate::page::paginate(
+        sub_infos,
+        &page,
+        crate::page::Order::Ascending,
+        |r| format!("{}/{}", r.call_id, r.event),
+    )?))
 }
 
 /// List rate limit state.
@@ -188,7 +201,8 @@ pub async fn list_rate_limits(
     State(state): State<ApiState>,
     tenant: TenantContext,
     identity: Option<Extension<AuthIdentity>>,
-) -> Json<Vec<RateLimitInfo>> {
+    axum::extract::Query(page): axum::extract::Query<crate::page::PageQuery>,
+) -> Result<Json<crate::page::Page<RateLimitInfo>>, ApiError> {
     let rate_limits = state.handler.rate_limits();
     let visible_call_ids = visible_call_ids(&state, &tenant, identity.as_ref().map(|ext| &ext.0));
 
@@ -220,7 +234,12 @@ pub async fn list_rate_limits(
         })
         .collect();
 
-    Json(rate_limit_infos)
+    Ok(Json(crate::page::paginate(
+        rate_limit_infos,
+        &page,
+        crate::page::Order::Ascending,
+        |r| r.dialog_id.clone(),
+    )?))
 }
 
 /// List active calls.
@@ -230,7 +249,8 @@ pub async fn list_calls(
     State(state): State<ApiState>,
     tenant: TenantContext,
     identity: Option<Extension<AuthIdentity>>,
-) -> Json<Vec<CallInfo>> {
+    axum::extract::Query(page): axum::extract::Query<crate::page::PageQuery>,
+) -> Result<Json<crate::page::Page<CallInfo>>, ApiError> {
     let allow_all_tenants = can_access_all_tenants(identity.as_ref().map(|ext| &ext.0));
     let calls: Vec<_> = state
         .call_manager
@@ -266,7 +286,12 @@ pub async fn list_calls(
         })
         .collect();
 
-    Json(call_infos)
+    Ok(Json(crate::page::paginate(
+        call_infos,
+        &page,
+        crate::page::Order::Ascending,
+        |r| r.call_id.clone(),
+    )?))
 }
 
 /// Get debug summary.

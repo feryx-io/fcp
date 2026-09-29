@@ -73,6 +73,36 @@ impl ApiClient {
     }
 
     /// Make an HTTP request with a JSON body
+    /// A whole list from the admin API: every page of its `{data,
+    /// next_cursor}` envelope (docs/DEVELOPER_SURFACE.md §3, phase 2c),
+    /// a thousand at a time.
+    async fn list_all<T>(&self, path: &str) -> Result<Vec<T>>
+    where
+        T: serde::de::DeserializeOwned,
+    {
+        #[derive(serde::Deserialize)]
+        struct Page<T> {
+            data: Vec<T>,
+            next_cursor: Option<String>,
+        }
+        let join = if path.contains('?') { '&' } else { '?' };
+        let mut items = Vec::new();
+        let mut url = format!("{path}{join}limit=1000");
+        loop {
+            let page: Page<T> = self.request(Method::GET, &url).await?;
+            items.extend(page.data);
+            match page.next_cursor {
+                Some(cursor) => {
+                    url = format!(
+                        "{path}{join}limit=1000&cursor={}",
+                        urlencoding::encode(&cursor)
+                    )
+                }
+                None => return Ok(items),
+            }
+        }
+    }
+
     async fn request_with_body<B, T>(&self, method: Method, path: &str, body: &B) -> Result<T>
     where
         B: serde::Serialize,
@@ -185,7 +215,7 @@ impl ApiClient {
 
     /// List all tenants
     pub async fn list_tenants(&self) -> Result<Vec<TenantResponse>> {
-        self.request(Method::GET, "/tenants").await
+        self.list_all("/tenants").await
     }
 
     /// Get a specific tenant
@@ -218,7 +248,7 @@ impl ApiClient {
 
     /// List all users
     pub async fn list_users(&self) -> Result<Vec<UserResponse>> {
-        self.request(Method::GET, "/users").await
+        self.list_all("/users").await
     }
 
     /// Get a specific user
@@ -284,27 +314,14 @@ impl ApiClient {
 
     /// List all registrations (from call-manager endpoint)
     pub async fn list_all_registrations(&self) -> Result<Vec<RegistrationResponse>> {
-        // Try the call-manager's simple endpoint first
-        let result: Result<crate::api::AllRegistrationsResponse> =
-            self.request(Method::GET, "/registrations").await;
-
-        match result {
-            Ok(response) => Ok(response
-                .registrations
-                .into_iter()
-                .map(|r| r.to_registration_response())
-                .collect()),
-            Err(_) => {
-                // Fall back to empty list if endpoint doesn't exist
-                Ok(Vec::new())
-            }
-        }
+        // Registrations are best-effort in the TUI: none when the list fails.
+        Ok(self.list_all("/registrations").await.unwrap_or_default())
     }
 
     /// List registrations for an AOR
     pub async fn list_registrations(&self, aor: &str) -> Result<Vec<RegistrationResponse>> {
         let encoded_aor = urlencoding::encode(aor);
-        self.request(Method::GET, &format!("/registrations/{}", encoded_aor))
+        self.list_all(&format!("/registrations/{}", encoded_aor))
             .await
     }
 
@@ -330,7 +347,7 @@ impl ApiClient {
 
     /// List all active calls
     pub async fn list_calls(&self) -> Result<Vec<CallResponse>> {
-        self.request(Method::GET, "/calls").await
+        self.list_all("/calls").await
     }
 
     /// Get a specific call
@@ -373,22 +390,22 @@ impl ApiClient {
 
     /// List active dialogs
     pub async fn list_dialogs(&self) -> Result<Vec<DialogResponse>> {
-        self.request(Method::GET, "/debug/dialogs").await
+        self.list_all("/debug/dialogs").await
     }
 
     /// List active subscriptions
     pub async fn list_subscriptions(&self) -> Result<Vec<SubscriptionResponse>> {
-        self.request(Method::GET, "/debug/subscriptions").await
+        self.list_all("/debug/subscriptions").await
     }
 
     /// List rate limits
     pub async fn list_rate_limits(&self) -> Result<Vec<RateLimitResponse>> {
-        self.request(Method::GET, "/debug/rate-limits").await
+        self.list_all("/debug/rate-limits").await
     }
 
     /// List active calls (debug view)
     pub async fn list_debug_calls(&self) -> Result<Vec<DebugCallResponse>> {
-        self.request(Method::GET, "/debug/calls").await
+        self.list_all("/debug/calls").await
     }
 
     // ==================== Phone Number Endpoints ====================
@@ -402,7 +419,7 @@ impl ApiClient {
             Some(id) => format!("/phone-numbers?tenant_id={}", id),
             None => "/phone-numbers".to_string(),
         };
-        self.request(Method::GET, &path).await
+        self.list_all(&path).await
     }
 
     /// Get a specific phone number
@@ -449,12 +466,12 @@ impl ApiClient {
             Some(id) => format!("/devices?tenant_id={}", id),
             None => "/devices".to_string(),
         };
-        self.request(Method::GET, &path).await
+        self.list_all(&path).await
     }
 
     /// List devices for a specific user
     pub async fn list_devices_by_user(&self, user_id: &str) -> Result<Vec<DeviceResponse>> {
-        self.request(Method::GET, &format!("/devices?user_id={}", user_id))
+        self.list_all(&format!("/devices?user_id={}", user_id))
             .await
     }
 
@@ -497,7 +514,7 @@ impl ApiClient {
             Some(id) => format!("/line-bindings?tenant_id={}", id),
             None => "/line-bindings".to_string(),
         };
-        self.request(Method::GET, &path).await
+        self.list_all(&path).await
     }
 
     /// Get a specific line binding

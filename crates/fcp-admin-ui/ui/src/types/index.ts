@@ -559,12 +559,8 @@ export interface CdrResponse {
   currency: string | null
 }
 
-export interface ListCdrsResponse {
-  cdrs: CdrResponse[]
-  total: number
-  limit: number
-  offset: number
-}
+/** A page of CDRs: the list envelope; the total may be an estimate. */
+export type ListCdrsResponse = Page<CdrResponse> & { total: number; total_exact: boolean }
 
 export interface CdrQueryParams {
   tenant_id?: string
@@ -575,7 +571,8 @@ export interface CdrQueryParams {
   start_time_from?: string
   start_time_to?: string
   limit?: number
-  offset?: number
+  /** The `next_cursor` of the page before. */
+  cursor?: string
 }
 
 // Queues (matches queues.rs)
@@ -1129,19 +1126,15 @@ export interface UpdateFlowRequest {
   webhook_url?: string
 }
 
-export interface ListFlowsResponse {
-  flows: FlowResponse[]
-  total: number
-  limit: number
-  offset: number
-}
+export type ListFlowsResponse = Page<FlowResponse>
 
 export interface ListFlowsQuery {
   tenant_id?: string
   enabled?: boolean
   name?: string
   limit?: number
-  offset?: number
+  /** The `next_cursor` of the page before. */
+  cursor?: string
 }
 
 // Cluster (matches cluster health endpoints)
@@ -1382,14 +1375,19 @@ export interface RecordingQueryParams {
   until?: number
   running?: boolean
   limit?: number
-  offset?: number
+  /** The `next_cursor` of the page before. */
+  cursor?: string
 }
 
-export interface ListRecordingsResponse {
-  recordings: ConferenceRecording[]
-  total: number
-  limit: number
-  offset: number
+export type ListRecordingsResponse = Page<ConferenceRecording>
+
+/** One page of a list (docs/DEVELOPER_SURFACE.md §3, phase 2c). */
+export interface Page<T> {
+  data: T[]
+  /** Pass as `cursor` for the next page; null on the last. */
+  next_cursor: string | null
+  /** The whole list's size, where the server knows it. */
+  total?: number
 }
 
 // API Tokens (docs/DEVELOPER_SURFACE.md §3, phase 1)

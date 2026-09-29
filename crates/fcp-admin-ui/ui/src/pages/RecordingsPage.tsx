@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 import { ArrowUpDown, Download, Play, Trash2, Video, Volume2 } from 'lucide-react'
 import { DataTable } from '@/components/DataTable'
+import { useCursorPages } from '@/lib/useCursorPages'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
@@ -49,7 +50,10 @@ const dayEnd = (value: string) =>
   value ? Math.floor(new Date(`${value}T23:59:59`).getTime() / 1000) : undefined
 
 export function RecordingsPage() {
-  const [filters, setFilters] = useState<RecordingQueryParams>({ limit: 100, offset: 0 })
+  const [filters, setFilters] = useState<RecordingQueryParams>({ limit: 100 })
+  const pages = useCursorPages()
+  // A filter changed: back to the first page.
+  useEffect(() => pages.reset(), [filters, pages.reset])
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
   const [playing, setPlaying] = useState<ConferenceRecording | null>(null)
@@ -60,13 +64,13 @@ export function RecordingsPage() {
   const queryClient = useQueryClient()
 
   const { data, isLoading } = useQuery({
-    queryKey: ['recordings', filters],
-    queryFn: () => recordings.list(filters),
+    queryKey: ['recordings', filters, pages.cursor],
+    queryFn: () => recordings.list({ ...filters, cursor: pages.cursor }),
     // A running recording grows; keep the list roughly current.
     refetchInterval: 30_000,
   })
 
-  const rows = data?.recordings ?? []
+  const rows = data?.data ?? []
   const total = data?.total ?? 0
 
   // The player holds an object URL; release it when it changes or goes.
@@ -239,7 +243,7 @@ export function RecordingsPage() {
             placeholder="Room number"
             value={filters.room_number ?? ''}
             onChange={(e) => setFilters((f) => ({
-              ...f, room_number: e.target.value || undefined, offset: 0,
+              ...f, room_number: e.target.value || undefined,
             }))}
           />
         </div>
@@ -248,7 +252,7 @@ export function RecordingsPage() {
           <Select
             value={filters.running === undefined ? '__all__' : String(filters.running)}
             onValueChange={(v) => setFilters((f) => ({
-              ...f, running: v === '__all__' ? undefined : v === 'true', offset: 0,
+              ...f, running: v === '__all__' ? undefined : v === 'true',
             }))}
           >
             <SelectTrigger><SelectValue /></SelectTrigger>
@@ -266,7 +270,7 @@ export function RecordingsPage() {
             value={from}
             onChange={(e) => {
               setFrom(e.target.value)
-              setFilters((f) => ({ ...f, since: dayStart(e.target.value), offset: 0 }))
+              setFilters((f) => ({ ...f, since: dayStart(e.target.value) }))
             }}
           />
         </div>
@@ -277,7 +281,7 @@ export function RecordingsPage() {
             value={to}
             onChange={(e) => {
               setTo(e.target.value)
-              setFilters((f) => ({ ...f, until: dayEnd(e.target.value), offset: 0 }))
+              setFilters((f) => ({ ...f, until: dayEnd(e.target.value) }))
             }}
           />
         </div>
@@ -296,28 +300,25 @@ export function RecordingsPage() {
       )}
 
       {/* Pagination */}
-      {total >= (filters.limit ?? 100) && (
+      {(pages.pageIndex > 0 || data?.next_cursor) && (
         <div className="flex items-center justify-center gap-4">
           <Button
             variant="outline"
             size="sm"
-            disabled={(filters.offset ?? 0) === 0}
-            onClick={() => setFilters((f) => ({
-              ...f, offset: Math.max(0, (f.offset ?? 0) - (f.limit ?? 100)),
-            }))}
+            disabled={pages.pageIndex === 0}
+            onClick={pages.previous}
           >
             Previous
           </Button>
           <span className="text-sm text-muted-foreground">
-            {(filters.offset ?? 0) + 1}-{(filters.offset ?? 0) + rows.length}
+            {pages.pageIndex * (filters.limit ?? 100) + 1}-{pages.pageIndex * (filters.limit ?? 100) + rows.length}
+            
           </span>
           <Button
             variant="outline"
             size="sm"
-            disabled={rows.length < (filters.limit ?? 100)}
-            onClick={() => setFilters((f) => ({
-              ...f, offset: (f.offset ?? 0) + (f.limit ?? 100),
-            }))}
+            disabled={!data?.next_cursor}
+            onClick={() => data?.next_cursor && pages.next(data.next_cursor)}
           >
             Next
           </Button>

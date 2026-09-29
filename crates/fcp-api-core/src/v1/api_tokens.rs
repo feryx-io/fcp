@@ -372,13 +372,19 @@ async fn rotate(
 pub async fn list_api_tokens(
     State(state): State<ApiState>,
     tenant: TenantContext,
+    axum::extract::Query(page): axum::extract::Query<crate::page::PageQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let tokens = token_store(&state)?
         .list_api_tokens(&tenant.0)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to list API tokens: {e}")))?;
     let response: Vec<ApiTokenResponse> = tokens.into_iter().map(Into::into).collect();
-    Ok(Json(response))
+    Ok(Json(crate::page::paginate(
+        response,
+        &page,
+        crate::page::Order::Descending,
+        |r| crate::page::rfc3339_key(&r.created_at, &r.id),
+    )?))
 }
 
 /// The permissions the caller may put on a token, grouped by area.
@@ -387,6 +393,7 @@ pub async fn list_api_tokens(
 pub async fn grantable_permissions(
     State(state): State<ApiState>,
     identity: Option<Extension<AuthIdentity>>,
+    axum::extract::Query(page): axum::extract::Query<crate::page::PageQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let identity = identity_of(identity);
     let response: Vec<GrantablePermission> = grantable(&identity, state.deployment_mode)
@@ -397,7 +404,12 @@ pub async fn grantable_permissions(
             group: p.group(),
         })
         .collect();
-    Ok(Json(response))
+    Ok(Json(crate::page::paginate(
+        response,
+        &page,
+        crate::page::Order::Ascending,
+        |r| format!("{}/{}", r.group, r.name),
+    )?))
 }
 
 /// Create an admin token. Only a user (or the static token) makes one; a
@@ -535,6 +547,7 @@ pub async fn list_my_api_tokens(
     State(state): State<ApiState>,
     identity: Option<Extension<AuthIdentity>>,
     me: Me,
+    axum::extract::Query(page): axum::extract::Query<crate::page::PageQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     require_session(&identity_of(identity))?;
     let tenant: fcp_core::TenantId =
@@ -550,7 +563,12 @@ pub async fn list_my_api_tokens(
         .filter(|t| t.scope == ApiTokenScope::Personal && t.user_id == me.0.sub)
         .map(Into::into)
         .collect();
-    Ok(Json(response))
+    Ok(Json(crate::page::paginate(
+        response,
+        &page,
+        crate::page::Order::Descending,
+        |r| crate::page::rfc3339_key(&r.created_at, &r.id),
+    )?))
 }
 
 /// Make a personal token: the caller's own `/me` routes, nothing else.

@@ -382,30 +382,26 @@ pub async fn run_retention_now(
     Ok(Json(RetentionRunResponse::from(report)))
 }
 
-#[derive(Debug, Deserialize)]
-pub struct LimitQuery {
-    #[serde(default = "default_limit")]
-    pub limit: usize,
-}
-
-fn default_limit() -> usize {
-    50
-}
-
 pub async fn list_retention_runs(
     State(state): State<ApiState>,
     tenant: TenantContext,
     identity: Option<Extension<AuthIdentity>>,
-    Query(q): Query<LimitQuery>,
+    Query(page): Query<crate::page::PageQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     permit(&state, &identity, Permission::ComplianceManage)?;
     let store = require_store(&state)?;
+    // A run a day: the newest thousand are years of them.
     let runs = store
-        .list_retention_runs(&tenant.0, q.limit)
+        .list_retention_runs(&tenant.0, crate::page::MAX_LIMIT)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     let out: Vec<RetentionRunResponse> = runs.into_iter().map(Into::into).collect();
-    Ok(Json(out))
+    Ok(Json(crate::page::paginate(
+        out,
+        &page,
+        crate::page::Order::Descending,
+        |r| crate::page::time_key(r.ran_at, ""),
+    )?))
 }
 
 // ─── Audit log ───────────────────────────────────────────────────────────
@@ -417,12 +413,25 @@ pub struct AuditLogQuery {
     pub action: Option<String>,
     /// Unix seconds.
     pub since: Option<u64>,
-    #[serde(default = "default_audit_limit")]
-    pub limit: usize,
 }
 
-fn default_audit_limit() -> usize {
-    100
+/// The keyset cursor of a time-ordered log: `(nanoseconds, id)`.
+fn log_key(at: SystemTime, id: i64) -> String {
+    let nanos = at.duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+    format!("{nanos:032}/{id:020}")
+}
+
+fn parse_log_key(key: &str) -> Result<(SystemTime, i64), ApiError> {
+    let bad = || ApiError::BadRequest("Invalid cursor".into());
+    let (nanos, id) = key.split_once('/').ok_or_else(bad)?;
+    let nanos: u128 = nanos.parse().map_err(|_| bad())?;
+    let id: i64 = id.parse().map_err(|_| bad())?;
+    let at = UNIX_EPOCH
+        + std::time::Duration::new(
+            (nanos / 1_000_000_000) as u64,
+            (nanos % 1_000_000_000) as u32,
+        );
+    Ok((at, id))
 }
 
 #[derive(Debug, Serialize)]
@@ -467,6 +476,7 @@ pub async fn list_audit_log(
     identity: Option<Extension<AuthIdentity>>,
     headers: HeaderMap,
     Query(q): Query<AuditLogQuery>,
+    Query(page): Query<crate::page::PageQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     permit(&state, &identity, Permission::AuditView)?;
     let store = require_store(&state)?;
@@ -481,12 +491,19 @@ pub async fn list_audit_log(
             since: q
                 .since
                 .map(|s| UNIX_EPOCH + std::time::Duration::from_secs(s)),
-            limit: q.limit,
+            // One more than the page, to know whether there is another.
+            limit: page.limit()? + 1,
+            before: page.after()?.as_deref().map(parse_log_key).transpose()?,
         })
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
-    let out: Vec<AuditEventResponse> = events.into_iter().map(Into::into).collect();
-    Ok(Json(out))
+    let limit = page.limit()?;
+    let next_key = (events.len() > limit).then(|| {
+        let last = &events[limit - 1];
+        log_key(last.occurred_at, last.id)
+    });
+    let out: Vec<AuditEventResponse> = events.into_iter().take(limit).map(Into::into).collect();
+    Ok(Json(crate::page::Page::new(out, next_key, None)))
 }
 
 // ─── Deletion log ────────────────────────────────────────────────────────
@@ -500,8 +517,6 @@ pub struct DeletionLogQuery {
     pub since: Option<u64>,
     /// What one subject request deleted.
     pub request_id: Option<String>,
-    #[serde(default = "default_audit_limit")]
-    pub limit: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -528,6 +543,7 @@ pub async fn list_deletions(
     identity: Option<Extension<AuthIdentity>>,
     headers: HeaderMap,
     Query(q): Query<DeletionLogQuery>,
+    Query(page): Query<crate::page::PageQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     permit(&state, &identity, Permission::AuditView)?;
     let store = require_store(&state)?;
@@ -541,12 +557,19 @@ pub async fn list_deletions(
                 .since
                 .map(|s| UNIX_EPOCH + std::time::Duration::from_secs(s)),
             request_id: q.request_id,
-            limit: q.limit,
+            limit: page.limit()? + 1,
+            before: page.after()?.as_deref().map(parse_log_key).transpose()?,
         })
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let limit = page.limit()?;
+    let next_key = (records.len() > limit).then(|| {
+        let last = &records[limit - 1];
+        log_key(last.deleted_at, last.id)
+    });
     let out: Vec<DeletionResponse> = records
         .into_iter()
+        .take(limit)
         .map(|r| DeletionResponse {
             id: r.id,
             tenant_id: r.tenant_id.map(|t| t.to_string()),
@@ -559,7 +582,7 @@ pub async fn list_deletions(
             deleted_at: unix_secs(r.deleted_at),
         })
         .collect();
-    Ok(Json(out))
+    Ok(Json(crate::page::Page::new(out, next_key, None)))
 }
 
 // ─── Legal holds (docs/COMPLIANCE_FOLLOWUPS.md §5) ───────────────────────
@@ -730,6 +753,7 @@ pub async fn list_holds(
     tenant: TenantContext,
     identity: Option<Extension<AuthIdentity>>,
     Query(q): Query<ListHoldsQuery>,
+    Query(page): Query<crate::page::PageQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     permit(&state, &identity, Permission::LegalHoldManage)?;
     let store = require_store(&state)?;
@@ -737,12 +761,12 @@ pub async fn list_holds(
         .list_holds(&tenant.0, q.all)
         .await
         .map_err(ApiError::storage)?;
-    Ok(Json(
-        holds
-            .into_iter()
-            .map(HoldResponse::from)
-            .collect::<Vec<_>>(),
-    ))
+    Ok(Json(crate::page::paginate(
+        holds.into_iter().map(HoldResponse::from).collect(),
+        &page,
+        crate::page::Order::Descending,
+        |r| crate::page::time_key(r.created_at, &r.id),
+    )?))
 }
 
 /// `GET /compliance/holds/:id`: a hold, with what it holds now.
@@ -847,8 +871,6 @@ pub struct FileSubjectRequest {
 pub struct ListSubjectRequestsQuery {
     #[serde(default)]
     pub status: Option<String>,
-    #[serde(default)]
-    pub limit: Option<usize>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1005,6 +1027,7 @@ pub async fn list_subject_requests(
     tenant: TenantContext,
     identity: Option<Extension<AuthIdentity>>,
     Query(q): Query<ListSubjectRequestsQuery>,
+    Query(page): Query<crate::page::PageQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     permit(&state, &identity, Permission::SubjectRequestManage)?;
     let store = require_store(&state)?;
@@ -1016,13 +1039,16 @@ pub async fn list_subject_requests(
         ),
     };
     let requests = store
-        .list_subject_requests(&tenant.0, status, q.limit.unwrap_or(100).clamp(1, 1000))
+        .list_subject_requests(&tenant.0, status, crate::page::MAX_LIMIT)
         .await
         .map_err(ApiError::storage)?;
     let requests: Vec<SubjectRequestResponse> = requests.into_iter().map(Into::into).collect();
-    Ok(Json(
-        serde_json::json!({ "count": requests.len(), "requests": requests }),
-    ))
+    Ok(Json(crate::page::paginate(
+        requests,
+        &page,
+        crate::page::Order::Descending,
+        |r| crate::page::time_key(r.received_at, &r.id),
+    )?))
 }
 
 async fn scoped_subject_request(

@@ -105,7 +105,7 @@ export function LineBindingsPage() {
     queryKey: ['flows'],
     queryFn: () => flows.list(),
   })
-  const flowList = flowsData?.flows ?? []
+  const flowList = flowsData ?? []
 
   const showTenantColumn = useShowTenantColumn()
   const { data: tenantList = [] } = useQuery({

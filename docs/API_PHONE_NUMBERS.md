@@ -53,41 +53,45 @@ Lists all phone numbers in the inventory.
 
 **Response:**
 ```json
-[
-  {
-    "id": "num-abc123...",
-    "e164": "+15183217034",
-    "country_code": "1",
-    "npa": "518",
-    "nxx": "321",
-    "line": "7034",
-    "state": "active",
-    "tenant_id": "tenant-xyz...",
-    "e911_address": {
-      "address1": "123 Main St",
-      "address2": null,
-      "city": "Albany",
-      "state": "NY",
-      "postal_code": "12201",
-      "country": "US",
-      "validated": true,
-      "validated_at": 1640000000
-    },
-    "e911_callback": "+15183217034",
-    "cnam": "John Smith",
-    "spam_score": null,
-    "carrier": "Verizon",
-    "lrn": null,
-    "rate_center": "Albany",
-    "acquired_at": 1640000000,
-    "activated_at": 1640001000,
-    "recording_enabled": false,
-    "block_anonymous": false,
-    "tags": ["sales", "ny-office"],
-    "created_at": 1640000000,
-    "updated_at": 1640000000
-  }
-]
+{
+  "data": [
+    {
+      "id": "num-abc123...",
+      "e164": "+15183217034",
+      "country_code": "1",
+      "npa": "518",
+      "nxx": "321",
+      "line": "7034",
+      "state": "active",
+      "tenant_id": "tenant-xyz...",
+      "e911_address": {
+        "address1": "123 Main St",
+        "address2": null,
+        "city": "Albany",
+        "state": "NY",
+        "postal_code": "12201",
+        "country": "US",
+        "validated": true,
+        "validated_at": 1640000000
+      },
+      "e911_callback": "+15183217034",
+      "cnam": "John Smith",
+      "spam_score": null,
+      "carrier": "Verizon",
+      "lrn": null,
+      "rate_center": "Albany",
+      "acquired_at": 1640000000,
+      "activated_at": 1640001000,
+      "recording_enabled": false,
+      "block_anonymous": false,
+      "tags": ["sales", "ny-office"],
+      "created_at": 1640000000,
+      "updated_at": 1640000000
+    }
+  ],
+  "next_cursor": null,
+  "total": 1
+}
 ```
 
 ### Get Phone Number
@@ -200,29 +204,33 @@ Lists all line bindings.
 
 **Response:**
 ```json
-[
-  {
-    "id": "bind-xyz123...",
-    "phone_number_id": "num-abc123...",
-    "owner_user_id": "user-def456...",
-    "binding_type": "user",
-    "devices": [
-      {
-        "device_id": "dev-ghi789...",
-        "priority": 1,
-        "line_appearance": 1,
-        "shared_line": false,
-        "enabled": true
-      }
-    ],
-    "ring_strategy": "simultaneous",
-    "tenant_id": "tenant-xyz...",
-    "outbound_caller_id": null,
-    "outbound_cnam": null,
-    "created_at": 1640000000,
-    "updated_at": 1640000000
-  }
-]
+{
+  "data": [
+    {
+      "id": "bind-xyz123...",
+      "phone_number_id": "num-abc123...",
+      "owner_user_id": "user-def456...",
+      "binding_type": "user",
+      "devices": [
+        {
+          "device_id": "dev-ghi789...",
+          "priority": 1,
+          "line_appearance": 1,
+          "shared_line": false,
+          "enabled": true
+        }
+      ],
+      "ring_strategy": "simultaneous",
+      "tenant_id": "tenant-xyz...",
+      "outbound_caller_id": null,
+      "outbound_cnam": null,
+      "created_at": 1640000000,
+      "updated_at": 1640000000
+    }
+  ],
+  "next_cursor": null,
+  "total": 1
+}
 ```
 
 ### Get Line Binding
@@ -327,21 +335,25 @@ Lists all extensions.
 
 **Response:**
 ```json
-[
-  {
-    "id": "ext-abc123...",
-    "number": "1234",
-    "target": {
-      "type": "user",
-      "id": "user-def456..."
-    },
-    "tenant_id": "tenant-xyz...",
-    "description": "Alice's extension",
-    "enabled": true,
-    "created_at": 1640000000,
-    "updated_at": 1640000000
-  }
-]
+{
+  "data": [
+    {
+      "id": "ext-abc123...",
+      "number": "1234",
+      "target": {
+        "type": "user",
+        "id": "user-def456..."
+      },
+      "tenant_id": "tenant-xyz...",
+      "description": "Alice's extension",
+      "enabled": true,
+      "created_at": 1640000000,
+      "updated_at": 1640000000
+    }
+  ],
+  "next_cursor": null,
+  "total": 1
+}
 ```
 
 ### Get Extension
@@ -423,34 +435,38 @@ Lists all devices.
 
 **Response:**
 ```json
-[
-  {
-    "id": "dev-abc123...",
-    "name": "Alice's Desk Phone",
-    "device_type": "desk_phone",
-    "mac_address": "00:11:22:33:44:55",
-    "model": "Cisco 8861",
-    "firmware_version": "12.5.1",
-    "tenant_id": "tenant-xyz...",
-    "owner_user_id": "user-def456...",
-    "sip_uri": "sip:alice-desk@192.168.1.100",
-    "registration_state": "registered",
-    "last_registration": 1640000000,
-    "last_ip_address": "192.168.1.100",
-    "user_agent": "Cisco/SPA8800",
-    "max_lines": 6,
-    "supports_video": true,
-    "supports_blf": true,
-    "codec_support": ["Pcmu", "Pcma", "G722"],
-    "location": "Building A, Floor 2, Room 205",
-    "e911_override": null,
-    "provisioning_url": "https://provision.example.com/device/123",
-    "config_template_id": "template-001",
-    "enabled": true,
-    "created_at": 1640000000,
-    "updated_at": 1640000000
-  }
-]
+{
+  "data": [
+    {
+      "id": "dev-abc123...",
+      "name": "Alice's Desk Phone",
+      "device_type": "desk_phone",
+      "mac_address": "00:11:22:33:44:55",
+      "model": "Cisco 8861",
+      "firmware_version": "12.5.1",
+      "tenant_id": "tenant-xyz...",
+      "owner_user_id": "user-def456...",
+      "sip_uri": "sip:alice-desk@192.168.1.100",
+      "registration_state": "registered",
+      "last_registration": 1640000000,
+      "last_ip_address": "192.168.1.100",
+      "user_agent": "Cisco/SPA8800",
+      "max_lines": 6,
+      "supports_video": true,
+      "supports_blf": true,
+      "codec_support": ["Pcmu", "Pcma", "G722"],
+      "location": "Building A, Floor 2, Room 205",
+      "e911_override": null,
+      "provisioning_url": "https://provision.example.com/device/123",
+      "config_template_id": "template-001",
+      "enabled": true,
+      "created_at": 1640000000,
+      "updated_at": 1640000000
+    }
+  ],
+  "next_cursor": null,
+  "total": 1
+}
 ```
 
 ### Get Device

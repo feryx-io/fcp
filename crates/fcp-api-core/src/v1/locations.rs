@@ -166,6 +166,7 @@ pub struct UpdateLocationRequest {
 pub async fn list_locations(
     State(state): State<ApiState>,
     tenant: crate::auth::TenantContext,
+    axum::extract::Query(page): axum::extract::Query<crate::page::PageQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = require_storage!(state);
 
@@ -179,7 +180,12 @@ pub async fn list_locations(
     let response: Vec<LocationResponse> = locations.into_iter().map(|l| l.into()).collect();
 
     info!("Listed {} locations", response.len());
-    Ok(Json(response))
+    Ok(Json(crate::page::paginate(
+        response,
+        &page,
+        crate::page::Order::Ascending,
+        |r| format!("{}/{}", r.name, r.id),
+    )?))
 }
 
 /// Get location by ID.

@@ -58,7 +58,6 @@ import type {
   FlowResponse,
   CreateFlowRequest,
   UpdateFlowRequest,
-  ListFlowsResponse,
   ListFlowsQuery,
   SystemStatus,
   AuditEntry,
@@ -81,6 +80,7 @@ import type {
   RecordingQueryParams,
   ListRecordingsResponse,
   ApiToken,
+  Page,
   CreateApiTokenRequest,
   CreateApiTokenResponse,
   CreatePersonalTokenRequest,
@@ -132,7 +132,7 @@ export const system = {
 
 // Users
 export const users = {
-  list: () => apiClient.get<User[]>('/users'),
+  list: () => apiClient.getAll<User>('/users'),
   get: (username: string) => apiClient.get<User>(`/users/${encodeURIComponent(username)}`),
   create: (data: CreateUserRequest) => apiClient.post<User>('/users', data),
   update: (username: string, data: UpdateUserRequest) =>
@@ -154,7 +154,7 @@ export const users = {
 
 // Tenants
 export const tenants = {
-  list: () => apiClient.get<Tenant[]>('/tenants'),
+  list: () => apiClient.getAll<Tenant>('/tenants'),
   get: (id: string) => apiClient.get<Tenant>(`/tenants/${encodeURIComponent(id)}`),
   create: (data: CreateTenantRequest) => apiClient.post<Tenant>('/tenants', data),
   update: (id: string, data: Partial<CreateTenantRequest>) =>
@@ -164,7 +164,7 @@ export const tenants = {
 
 // Extensions
 export const extensions = {
-  list: () => apiClient.get<Extension[]>('/extensions'),
+  list: () => apiClient.getAll<Extension>('/extensions'),
   get: (number: string) => apiClient.get<Extension>(`/extensions/${encodeURIComponent(number)}`),
   create: (data: CreateExtensionRequest) => apiClient.post<Extension>('/extensions', data),
   update: (number: string, data: UpdateExtensionRequest) =>
@@ -174,7 +174,7 @@ export const extensions = {
 
 // Devices
 export const devices = {
-  list: () => apiClient.get<Device[]>('/devices'),
+  list: () => apiClient.getAll<Device>('/devices'),
   get: (id: string) => apiClient.get<Device>(`/devices/${encodeURIComponent(id)}`),
   create: (data: CreateDeviceRequest) => apiClient.post<Device>('/devices', data),
   /**
@@ -190,13 +190,13 @@ export const devices = {
 // Hoteling sessions (docs/ENTERPRISE_CALLING.md §3.8)
 export const hoteling = {
   /** Active sessions; with `all`, the last ones whatever their state */
-  list: (all = false) => apiClient.get<HotelingSession[]>(`/hoteling/sessions${all ? '?all=true' : ''}`),
+  list: (all = false) => apiClient.getAll<HotelingSession>(`/hoteling/sessions${all ? '?all=true' : ''}`),
   end: (id: string) => apiClient.delete<void>(`/hoteling/sessions/${encodeURIComponent(id)}`),
 }
 
 // Locations
 export const locations = {
-  list: () => apiClient.get<Location[]>('/locations'),
+  list: () => apiClient.getAll<Location>('/locations'),
   get: (id: string) => apiClient.get<Location>(`/locations/${encodeURIComponent(id)}`),
   create: (data: CreateLocationRequest) => apiClient.post<Location>('/locations', data),
   update: (id: string, data: Partial<CreateLocationRequest>) =>
@@ -206,7 +206,7 @@ export const locations = {
 
 // Phone Numbers
 export const phoneNumbers = {
-  list: () => apiClient.get<PhoneNumber[]>('/phone-numbers'),
+  list: () => apiClient.getAll<PhoneNumber>('/phone-numbers'),
   get: (id: string) => apiClient.get<PhoneNumber>(`/phone-numbers/${encodeURIComponent(id)}`),
   create: (data: CreatePhoneNumberRequest) => apiClient.post<PhoneNumber>('/phone-numbers', data),
   update: (id: string, data: Partial<CreatePhoneNumberRequest>) =>
@@ -217,7 +217,7 @@ export const phoneNumbers = {
 
 // Line Bindings
 export const lineBindings = {
-  list: () => apiClient.get<LineBinding[]>('/line-bindings'),
+  list: () => apiClient.getAll<LineBinding>('/line-bindings'),
   get: (id: string) => apiClient.get<LineBinding>(`/line-bindings/${encodeURIComponent(id)}`),
   create: (data: CreateLineBindingRequest) => apiClient.post<LineBinding>('/line-bindings', data),
   update: (id: string, data: UpdateLineBindingRequest) =>
@@ -227,7 +227,7 @@ export const lineBindings = {
 
 // Calls (Phase 2 - live operations)
 export const calls = {
-  list: () => apiClient.get<CallInfo[]>('/calls'),
+  list: () => apiClient.getAll<CallInfo>('/calls'),
   get: (callId: string) => apiClient.get<CallInfo>(`/calls/${encodeURIComponent(callId)}`),
   originate: (data: OriginateCallRequest) => apiClient.post<CallInfo>('/calls', data),
   hangup: (callId: string) => apiClient.delete<void>(`/calls/${encodeURIComponent(callId)}`),
@@ -307,12 +307,7 @@ export interface FlowTraceEntry {
   elapsed_ms: number | null
 }
 
-export interface ListFlowTracesResponse {
-  traces: FlowTraceEntry[]
-  total: number
-  limit: number
-  offset: number
-}
+export type ListFlowTracesResponse = Page<FlowTraceEntry>
 
 export interface FlowTraceQueryParams {
   call_id?: string
@@ -321,7 +316,8 @@ export interface FlowTraceQueryParams {
   time_from?: string
   time_to?: string
   limit?: number
-  offset?: number
+  /** The `next_cursor` of the page before. */
+  cursor?: string
 }
 
 export const flowTraces = {
@@ -338,12 +334,12 @@ export const flowTraces = {
     return apiClient.get<ListFlowTracesResponse>(`/flow-traces${query ? `?${query}` : ''}`)
   },
   getByCall: (callId: string) =>
-    apiClient.get<FlowTraceEntry[]>(`/flow-traces/${encodeURIComponent(callId)}`),
+    apiClient.getAll<FlowTraceEntry>(`/flow-traces/${encodeURIComponent(callId)}`),
 }
 
 // Queue Configuration (database-backed CRUD)
 export const queueConfigs = {
-  list: () => apiClient.get<QueueConfigResponse[]>('/queue-configs'),
+  list: () => apiClient.getAll<QueueConfigResponse>('/queue-configs'),
   get: (id: string) => apiClient.get<QueueConfigResponse>(`/queue-configs/${encodeURIComponent(id)}`),
   create: (data: CreateQueueConfigRequest) => apiClient.post<QueueConfigResponse>('/queue-configs', data),
   update: (id: string, data: Partial<CreateQueueConfigRequest>) =>
@@ -353,10 +349,10 @@ export const queueConfigs = {
 
 // Queues (Phase 2 - ACD runtime status)
 export const queues = {
-  list: () => apiClient.get<QueueResponse[]>('/queues'),
+  list: () => apiClient.getAll<QueueResponse>('/queues'),
   get: (name: string) => apiClient.get<QueueResponse>(`/queues/${encodeURIComponent(name)}`),
   stats: (name: string) => apiClient.get<QueueStatsResponse>(`/queues/${encodeURIComponent(name)}/stats`),
-  agents: (name: string) => apiClient.get<AgentResponse[]>(`/queues/${encodeURIComponent(name)}/agents`),
+  agents: (name: string) => apiClient.getAll<AgentResponse>(`/queues/${encodeURIComponent(name)}/agents`),
   loginAgent: (name: string, data: AgentLoginRequest) =>
     apiClient.post<void>(`/queues/${encodeURIComponent(name)}/agents`, data),
   logoutAgent: (name: string, agentId: string) =>
@@ -369,11 +365,11 @@ export const queues = {
 
 // Voicemail (Phase 2)
 export const voicemail = {
-  listMailboxes: () => apiClient.get<MailboxResponse[]>('/voicemail/mailboxes'),
+  listMailboxes: () => apiClient.getAll<MailboxResponse>('/voicemail/mailboxes'),
   getMailbox: (id: string) => apiClient.get<MailboxResponse>(`/voicemail/mailboxes/${encodeURIComponent(id)}`),
   getMailboxStats: (id: string) => apiClient.get<MailboxStats>(`/voicemail/mailboxes/${encodeURIComponent(id)}/stats`),
   listMessages: (mailboxId: string) =>
-    apiClient.get<VoicemailMessage[]>(`/voicemail/mailboxes/${encodeURIComponent(mailboxId)}/messages`),
+    apiClient.getAll<VoicemailMessage>(`/voicemail/mailboxes/${encodeURIComponent(mailboxId)}/messages`),
   getMessage: (messageId: string) =>
     apiClient.get<VoicemailMessage>(`/voicemail/messages/${encodeURIComponent(messageId)}`),
   deleteMessage: (messageId: string) =>
@@ -387,7 +383,7 @@ export const voicemail = {
   deleteMailbox: (id: string) =>
     apiClient.delete<void>(`/voicemail/mailboxes/${encodeURIComponent(id)}`),
   listGreetings: (mailboxId: string) =>
-    apiClient.get<import('@/types').GreetingResponse[]>(`/voicemail/mailboxes/${encodeURIComponent(mailboxId)}/greetings`),
+    apiClient.getAll<import('@/types').GreetingResponse>(`/voicemail/mailboxes/${encodeURIComponent(mailboxId)}/greetings`),
   uploadGreeting: async (mailboxId: string, greetingType: string, audioFile: File, expiresInHours?: number) => {
     const formData = new FormData()
     formData.append('greeting_type', greetingType)
@@ -450,7 +446,7 @@ export const prompts = {
     if (params?.category) query.set('category', params.category)
     if (params?.language) query.set('language', params.language)
     const qs = query.toString()
-    return apiClient.get<PromptResponse[]>(`/prompts${qs ? `?${qs}` : ''}`)
+    return apiClient.getAll<PromptResponse>(`/prompts${qs ? `?${qs}` : ''}`)
   },
   get: (id: string) => apiClient.get<PromptResponse>(`/prompts/${encodeURIComponent(id)}`),
   create: (data: CreatePromptRequest) => apiClient.post<PromptResponse>('/prompts', data),
@@ -467,14 +463,14 @@ export const prompts = {
 
 // Presence (Phase 2)
 export const presence = {
-  list: () => apiClient.get<PresenceResponse[]>('/presence'),
+  list: () => apiClient.getAll<PresenceResponse>('/presence'),
   get: (aor: string) => apiClient.get<PresenceResponse>(`/presence/${encodeURIComponent(aor)}`),
   stats: () => apiClient.get<PresenceStats>('/presence/stats'),
 }
 
 // Registrations
 export const registrations = {
-  list: () => apiClient.get<Registration[]>('/registrations'),
+  list: () => apiClient.getAll<Registration>('/registrations'),
   get: (aor: string) => apiClient.get<Registration>(`/registrations/${encodeURIComponent(aor)}`),
   delete: (aor: string) => apiClient.delete<void>(`/registrations/${encodeURIComponent(aor)}`),
 }
@@ -483,7 +479,7 @@ export const registrations = {
 
 // SIP Trunks (database-backed CRUD)
 export const trunks = {
-  list: () => apiClient.get<SipTrunk[]>('/trunks'),
+  list: () => apiClient.getAll<SipTrunk>('/trunks'),
   get: (id: string) => apiClient.get<SipTrunk>(`/trunks/${encodeURIComponent(id)}`),
   create: (data: CreateTrunkRequest) => apiClient.post<SipTrunk>('/trunks', data),
   update: (id: string, data: Partial<CreateTrunkRequest>) =>
@@ -514,7 +510,7 @@ export const routing = {
     if (from) params.set('from', from)
     return apiClient.get<RoutePreview>(`/routing/preview?${params.toString()}`)
   },
-  list: () => apiClient.get<RoutingRule[]>('/routing/rules'),
+  list: () => apiClient.getAll<RoutingRule>('/routing/rules'),
   get: (id: string) => apiClient.get<RoutingRule>(`/routing/rules/${encodeURIComponent(id)}`),
   create: (data: CreateRoutingRuleRequest) => apiClient.post<RoutingRule>('/routing/rules', data),
   update: (id: string, data: Partial<CreateRoutingRuleRequest>) =>
@@ -524,7 +520,7 @@ export const routing = {
 
 // Least-cost routes (`docs/TENANT_TRUNKS.md` §12, phase 6c)
 export const lcrRoutes = {
-  list: () => apiClient.get<LcrRoute[]>('/lcr-routes'),
+  list: () => apiClient.getAll<LcrRoute>('/lcr-routes'),
   create: (data: CreateLcrRouteRequest) => apiClient.post<LcrRoute>('/lcr-routes', data),
   update: (id: string, data: Partial<CreateLcrRouteRequest>) =>
     apiClient.patch<LcrRoute>(`/lcr-routes/${encodeURIComponent(id)}`, data),
@@ -543,14 +539,14 @@ export const flows = {
       })
     }
     const query = searchParams.toString()
-    return apiClient.get<ListFlowsResponse>(`/flows${query ? `?${query}` : ''}`)
+    return apiClient.getAll<FlowResponse>(`/flows${query ? `?${query}` : ''}`)
   },
   get: (id: string) => apiClient.get<FlowResponse>(`/flows/${encodeURIComponent(id)}`),
   create: (data: CreateFlowRequest) => apiClient.post<FlowResponse>('/flows', data),
   update: (id: string, data: UpdateFlowRequest) =>
     apiClient.put<FlowResponse>(`/flows/${encodeURIComponent(id)}`, data),
   delete: (id: string) => apiClient.delete<void>(`/flows/${encodeURIComponent(id)}`),
-  versions: (id: string) => apiClient.get<FlowResponse[]>(`/flows/${encodeURIComponent(id)}/versions`),
+  versions: (id: string) => apiClient.getAll<FlowResponse>(`/flows/${encodeURIComponent(id)}/versions`),
 }
 
 // Sites: a tenant's own stack on its network, enrolled to this cloud
@@ -560,7 +556,7 @@ export const flows = {
 const tenantHeader = (tenantId?: string): Record<string, string> | undefined =>
   tenantId ? { 'x-fcp-tenant-id': tenantId } : undefined
 export const schedules = {
-  list: () => apiClient.get<Schedule[]>('/schedules'),
+  list: () => apiClient.getAll<Schedule>('/schedules'),
   create: (data: ScheduleRequest) => apiClient.post<Schedule>('/schedules', data),
   update: (id: string, data: ScheduleRequest) =>
     apiClient.put<Schedule>(`/schedules/${encodeURIComponent(id)}`, data),
@@ -568,7 +564,7 @@ export const schedules = {
 }
 
 export const classesOfService = {
-  list: () => apiClient.get<ClassOfService[]>('/classes-of-service'),
+  list: () => apiClient.getAll<ClassOfService>('/classes-of-service'),
   create: (data: ClassOfServiceRequest) => apiClient.post<ClassOfService>('/classes-of-service', data),
   update: (id: string, data: ClassOfServiceRequest) =>
     apiClient.put<ClassOfService>(`/classes-of-service/${encodeURIComponent(id)}`, data),
@@ -578,7 +574,7 @@ export const classesOfService = {
 }
 
 export const sites = {
-  list: (tenantId?: string) => apiClient.get<SiteInfo[]>('/sites', tenantHeader(tenantId)),
+  list: (tenantId?: string) => apiClient.getAll<SiteInfo>('/sites', tenantHeader(tenantId)),
   get: (id: string, tenantId?: string) =>
     apiClient.get<SiteInfo>(`/sites/${encodeURIComponent(id)}`, tenantHeader(tenantId)),
   create: (data: { name: string }, tenantId?: string) =>
@@ -639,9 +635,13 @@ function query(params?: object): string {
 }
 
 export const auditLog = {
-  list: (params?: AuditQueryParams) => apiClient.get<AuditEntry[]>(`/audit-log${query(params)}`),
+  // The newest `limit` entries (the log grows without bound: one page).
+  list: (params?: AuditQueryParams) =>
+    apiClient.getPage<AuditEntry>(`/audit-log${query(params)}`).then((p) => p.data),
   deletions: (params?: DeletionQueryParams) =>
-    apiClient.get<DeletionEntry[]>(`/compliance/deletions${query(params)}`),
+    apiClient
+      .getPage<DeletionEntry>(`/compliance/deletions${query(params)}`)
+      .then((p) => p.data),
 }
 
 // Emergency calling (E911), docs/E911.md
@@ -650,16 +650,17 @@ export const emergency = {
   updateConfig: (data: UpdateEmergencyConfigRequest) =>
     apiClient.put<EmergencyConfig>('/emergency/config', data),
   readiness: () => apiClient.get<EmergencyReadiness>('/emergency/readiness'),
-  networks: () => apiClient.get<EmergencyNetwork[]>('/emergency/networks'),
+  networks: () => apiClient.getAll<EmergencyNetwork>('/emergency/networks'),
   createNetwork: (data: CreateEmergencyNetworkRequest) =>
     apiClient.post<EmergencyNetwork>('/emergency/networks', data),
   updateNetwork: (id: string, data: Partial<CreateEmergencyNetworkRequest>) =>
     apiClient.patch<EmergencyNetwork>(`/emergency/networks/${encodeURIComponent(id)}`, data),
   deleteNetwork: (id: string) =>
     apiClient.delete<void>(`/emergency/networks/${encodeURIComponent(id)}`),
-  calls: (limit = 100) => apiClient.get<EmergencyCall[]>(`/emergency/calls?limit=${limit}`),
+  calls: (limit = 100) =>
+    apiClient.getPage<EmergencyCall>(`/emergency/calls?limit=${limit}`).then((p) => p.data),
   notifications: (callId: string) =>
-    apiClient.get<EmergencyNotification[]>(
+    apiClient.getAll<EmergencyNotification>(
       `/emergency/calls/${encodeURIComponent(callId)}/notifications`,
     ),
   // Validation (docs/E911.md, "Address validation"): the configured
@@ -680,8 +681,8 @@ export const emergency = {
 
 // API Tokens
 export const apiTokens = {
-  list: () => apiClient.get<ApiToken[]>('/api-tokens'),
-  permissions: () => apiClient.get<GrantablePermission[]>('/api-tokens/permissions'),
+  list: () => apiClient.getAll<ApiToken>('/api-tokens'),
+  permissions: () => apiClient.getAll<GrantablePermission>('/api-tokens/permissions'),
   create: (data: CreateApiTokenRequest) => apiClient.post<CreateApiTokenResponse>('/api-tokens', data),
   rotate: (id: string, data: RotateApiTokenRequest = {}) =>
     apiClient.post<CreateApiTokenResponse>(`/api-tokens/${encodeURIComponent(id)}/rotate`, data),
@@ -730,10 +731,10 @@ export const config = {
     if (service) params.set('service', service)
     if (tenant_id) params.set('tenant_id', tenant_id)
     const q = params.toString()
-    return apiClient.get<ConfigEntry[]>(`/config${q ? `?${q}` : ''}`)
+    return apiClient.getAll<ConfigEntry>(`/config${q ? `?${q}` : ''}`)
   },
   listService: (service: string, tenant_id = '_system') =>
-    apiClient.get<ConfigEntry[]>(`/config/${encodeURIComponent(service)}?tenant_id=${encodeURIComponent(tenant_id)}`),
+    apiClient.getAll<ConfigEntry>(`/config/${encodeURIComponent(service)}?tenant_id=${encodeURIComponent(tenant_id)}`),
   get: (service: string, section: string, tenant_id = '_system') =>
     apiClient.get<ConfigEntry>(`/config/${encodeURIComponent(service)}/${encodeURIComponent(section)}?tenant_id=${encodeURIComponent(tenant_id)}`),
   update: (service: string, section: string, value: Record<string, unknown>, tenant_id = '_system', updated_by?: string) =>
@@ -754,14 +755,16 @@ export const config = {
     if (service) params.set('service', service)
     if (section) params.set('section', section)
     params.set('limit', String(limit))
-    return apiClient.get<ConfigAuditEntry[]>(`/config/audit?${params.toString()}`)
+    return apiClient
+      .getPage<ConfigAuditEntry>(`/config/audit?${params.toString()}`)
+      .then((p) => p.data)
   },
 }
 
 // Self-service (end-user portal)
 export const me = {
   // Profile
-  listApiTokens: () => apiClient.get<ApiToken[]>('/me/api-tokens'),
+  listApiTokens: () => apiClient.getAll<ApiToken>('/me/api-tokens'),
   createApiToken: (data: CreatePersonalTokenRequest) =>
     apiClient.post<CreateApiTokenResponse>('/me/api-tokens', data),
   rotateApiToken: (id: string, data: RotateApiTokenRequest = {}) =>
@@ -776,7 +779,7 @@ export const me = {
   updateMailbox: (data: { pin?: string; email_notification?: boolean; email_address?: string; attach_audio?: boolean }) =>
     apiClient.put<MeMailbox>('/me/voicemail', data),
   getMailboxStats: () => apiClient.get<MeMailboxStats>('/me/voicemail/stats'),
-  listMessages: () => apiClient.get<VoicemailMessage[]>('/me/voicemail/messages'),
+  listMessages: () => apiClient.getAll<VoicemailMessage>('/me/voicemail/messages'),
   updateMessage: (id: string, data: { status?: string }) =>
     apiClient.put<VoicemailMessage>(`/me/voicemail/messages/${encodeURIComponent(id)}`, data),
   deleteMessage: (id: string) => apiClient.delete<void>(`/me/voicemail/messages/${encodeURIComponent(id)}`),
@@ -785,7 +788,7 @@ export const me = {
 
   // Greetings
   listGreetings: () =>
-    apiClient.get<import('@/types').GreetingResponse[]>('/me/voicemail/greetings'),
+    apiClient.getAll<import('@/types').GreetingResponse>('/me/voicemail/greetings'),
   uploadGreeting: async (greetingType: string, audioFile: File, expiresInHours?: number) => {
     const formData = new FormData()
     formData.append('greeting_type', greetingType)
@@ -824,12 +827,12 @@ export const me = {
   getCalling: () => apiClient.get<CallingSettings>('/me/calling'),
   updateCalling: (data: UpdateCallingRequest) => apiClient.put<CallingSettings>('/me/calling', data),
   /** The executives the user assists, and whether they take their calls (§3.10). */
-  getExecutives: () => apiClient.get<MyExecutive[]>('/me/executives'),
+  getExecutives: () => apiClient.getAll<MyExecutive>('/me/executives'),
   setExecutive: (userId: string, optedIn: boolean) =>
     apiClient.put<void>(`/me/executives/${encodeURIComponent(userId)}`, { opted_in: optedIn }),
 
   // Conferences
-  listConferences: () => apiClient.get<MeetingResponse[]>('/me/conferences'),
+  listConferences: () => apiClient.getAll<MeetingResponse>('/me/conferences'),
   /** `POST /me/conferences/{id}/join-tokens` — a browser join link for a conference the user owns. */
   mintJoinToken: (id: string, body: MintJoinTokenRequest) =>
     apiClient.post<JoinTokenResponse>(`/me/conferences/${encodeURIComponent(id)}/join-tokens`, body),
@@ -843,7 +846,7 @@ export const me = {
 
 // Conference / Meetings
 export const conferences = {
-  listMeetings: () => apiClient.get<MeetingResponse[]>('/conferences/meetings'),
+  listMeetings: () => apiClient.getAll<MeetingResponse>('/conferences/meetings'),
   getMeeting: (id: string) => apiClient.get<MeetingResponse>(`/conferences/meetings/${encodeURIComponent(id)}`),
   createMeeting: (data: CreateMeetingRequest) => apiClient.post<MeetingResponse>('/conferences/meetings', data),
   updateMeeting: (id: string, data: UpdateMeetingRequest) =>

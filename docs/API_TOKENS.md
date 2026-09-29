@@ -2,7 +2,7 @@
 
 How programs authenticate to the admin API (`/api/v1`), what a token can
 reach, how often it may call, what an error and a time look like, and
-what changed in v0.25.293–295 (`docs/DEVELOPER_SURFACE.md` §3, phases 1
+what changed in v0.25.293–296 (`docs/DEVELOPER_SURFACE.md` §3, phases 1
 and 2).
 
 ## 1. Three kinds of credential
@@ -185,7 +185,7 @@ per_tenant_per_minute = 3000  # the default
 - The API gateway's per-address limit still stands in front, for anonymous
   traffic.
 
-## 6. Errors, request ids, times and ids
+## 6. Errors, request ids, times, ids and lists
 
 Every error under `/api/v1` has one shape, whether a handler, the
 authentication layer, the permission check, or a malformed body, path or
@@ -240,3 +240,37 @@ Four resources have ids with no prefixed type, and these are plain UUIDs:
 
 `api_postgres.rs` checks every response its tests receive against these
 two rules (`check_shape`).
+
+### Lists
+
+Since v0.25.296, every list answers in one envelope:
+
+```json
+{ "data": [ … ], "next_cursor": "b3Bh…", "total": 42 }
+```
+
+- `?limit=` sets the page size: 100 by default, at most 1000. A limit of
+  0 or over 1000 is a 400.
+- `?cursor=` takes the `next_cursor` of the page before. The cursor is
+  opaque, and one the API cannot read is a 400.
+- `next_cursor` is null on the last page.
+- `total` is present where the server knows it. For CDRs it may be an
+  estimate, and `total_exact` says which.
+
+Pages are keyset pages, so a row added or removed between two pages
+neither repeats nor skips. Each list keeps a fixed order:
+- **Named resources** (users, devices, trunks, …) by their name, number
+  or address.
+- **Routing rules** by priority.
+- **Logs** (the audit log, the deletion log, emergency calls, hoteling
+  sessions, API tokens, CDRs), newest first.
+
+Flows, recordings, flow traces and billing transactions page by position,
+for now, behind the same opaque cursor.
+
+Some things are not lists and keep their own shapes:
+- single objects;
+- statistics;
+- the cluster view (`{available, nodes}`);
+- the live SIP trace (`{messages}`);
+- downloads.

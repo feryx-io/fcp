@@ -1,8 +1,9 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 import { ArrowUpDown, Download, Search, FileText } from 'lucide-react'
 import { DataTable } from '@/components/DataTable'
+import { useCursorPages } from '@/lib/useCursorPages'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
@@ -30,15 +31,18 @@ const dispositionBadge = (d: string) => {
 
 export function CDRsPage() {
   const navigate = useNavigate()
-  const [filters, setFilters] = useState<CdrQueryParams>({ limit: 100, offset: 0 })
+  const [filters, setFilters] = useState<CdrQueryParams>({ limit: 100 })
+  const pages = useCursorPages()
+  // A filter changed: back to the first page.
+  useEffect(() => pages.reset(), [filters, pages.reset])
   const [selectedCdr, setSelectedCdr] = useState<CdrResponse | null>(null)
 
   const { data, isLoading } = useQuery({
-    queryKey: ['cdrs', filters],
-    queryFn: () => cdrs.list(filters),
+    queryKey: ['cdrs', filters, pages.cursor],
+    queryFn: () => cdrs.list({ ...filters, cursor: pages.cursor }),
   })
 
-  const cdrList = data?.cdrs ?? []
+  const cdrList = data?.data ?? []
   const total = data?.total ?? 0
 
   const exportCsv = () => {
@@ -183,7 +187,7 @@ export function CDRsPage() {
           <Input
             placeholder="sip:user@..."
             value={filters.from_uri ?? ''}
-            onChange={(e) => setFilters((f) => ({ ...f, from_uri: e.target.value || undefined, offset: 0 }))}
+            onChange={(e) => setFilters((f) => ({ ...f, from_uri: e.target.value || undefined }))}
           />
         </div>
         <div className="space-y-1">
@@ -191,14 +195,14 @@ export function CDRsPage() {
           <Input
             placeholder="sip:user@..."
             value={filters.to_uri ?? ''}
-            onChange={(e) => setFilters((f) => ({ ...f, to_uri: e.target.value || undefined, offset: 0 }))}
+            onChange={(e) => setFilters((f) => ({ ...f, to_uri: e.target.value || undefined }))}
           />
         </div>
         <div className="space-y-1">
           <Label className="text-xs">Disposition</Label>
           <Select
             value={filters.disposition ?? '__all__'}
-            onValueChange={(v) => setFilters((f) => ({ ...f, disposition: v === '__all__' ? undefined : v, offset: 0 }))}
+            onValueChange={(v) => setFilters((f) => ({ ...f, disposition: v === '__all__' ? undefined : v }))}
           >
             <SelectTrigger><SelectValue /></SelectTrigger>
             <SelectContent>
@@ -216,7 +220,7 @@ export function CDRsPage() {
           <Input
             type="date"
             value={filters.start_time_from ?? ''}
-            onChange={(e) => setFilters((f) => ({ ...f, start_time_from: e.target.value || undefined, offset: 0 }))}
+            onChange={(e) => setFilters((f) => ({ ...f, start_time_from: e.target.value || undefined }))}
           />
         </div>
         <div className="space-y-1">
@@ -224,7 +228,7 @@ export function CDRsPage() {
           <Input
             type="date"
             value={filters.start_time_to ?? ''}
-            onChange={(e) => setFilters((f) => ({ ...f, start_time_to: e.target.value || undefined, offset: 0 }))}
+            onChange={(e) => setFilters((f) => ({ ...f, start_time_to: e.target.value || undefined }))}
           />
         </div>
         <div className="space-y-1">
@@ -232,13 +236,13 @@ export function CDRsPage() {
           <Input
             placeholder="Search by call ID..."
             value={filters.call_id ?? ''}
-            onChange={(e) => setFilters((f) => ({ ...f, call_id: e.target.value || undefined, offset: 0 }))}
+            onChange={(e) => setFilters((f) => ({ ...f, call_id: e.target.value || undefined }))}
           />
         </div>
         <div className="flex items-end col-span-2 md:col-span-2 gap-2">
           <Button
             className="flex-1"
-            onClick={() => setFilters({ limit: 100, offset: 0 })}
+            onClick={() => setFilters({ limit: 100 })}
             variant="outline"
           >
             Clear Filters
@@ -257,35 +261,30 @@ export function CDRsPage() {
           <DataTable columns={columns} data={cdrList} />
 
           {/* Server-side pagination */}
-          {total > (filters.limit ?? 100) && (
-            <div className="flex items-center justify-center gap-4">
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={(filters.offset ?? 0) === 0}
-                onClick={() => setFilters((f) => ({
-                  ...f,
-                  offset: Math.max(0, (f.offset ?? 0) - (f.limit ?? 100)),
-                }))}
-              >
-                Previous
-              </Button>
-              <span className="text-sm text-muted-foreground">
-                {(filters.offset ?? 0) + 1}-{Math.min((filters.offset ?? 0) + (filters.limit ?? 100), total)} of {total}
-              </span>
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={(filters.offset ?? 0) + (filters.limit ?? 100) >= total}
-                onClick={() => setFilters((f) => ({
-                  ...f,
-                  offset: (f.offset ?? 0) + (f.limit ?? 100),
-                }))}
-              >
-                Next
-              </Button>
-            </div>
-          )}
+          {(pages.pageIndex > 0 || data?.next_cursor) && (
+        <div className="flex items-center justify-center gap-4">
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={pages.pageIndex === 0}
+            onClick={pages.previous}
+          >
+            Previous
+          </Button>
+          <span className="text-sm text-muted-foreground">
+            {pages.pageIndex * (filters.limit ?? 100) + 1}-{pages.pageIndex * (filters.limit ?? 100) + cdrList.length}
+            {total ? ` of ${total}${data?.total_exact ? '' : ' (about)'}` : ''}
+          </span>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={!data?.next_cursor}
+            onClick={() => data?.next_cursor && pages.next(data.next_cursor)}
+          >
+            Next
+          </Button>
+        </div>
+      )}
         </>
       )}
 

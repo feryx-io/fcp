@@ -183,18 +183,22 @@ fn map_storage_error(e: anyhow::Error) -> ApiError {
 pub async fn list_rate_plans(
     State(state): State<ApiState>,
     tenant: TenantContext,
+    axum::extract::Query(page): axum::extract::Query<crate::page::PageQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = require_storage!(state);
     let plans = storage
         .list_rate_plans(&tenant.0)
         .await
         .map_err(map_storage_error)?;
-    Ok(Json(
+    Ok(Json(crate::page::paginate(
         plans
             .into_iter()
             .map(RatePlanResponse::from)
             .collect::<Vec<_>>(),
-    ))
+        &page,
+        crate::page::Order::Ascending,
+        |r| format!("{}/{}", r.name, r.id),
+    )?))
 }
 
 /// POST /api/v1/rate-plans — Create a rate plan.
@@ -330,6 +334,7 @@ pub async fn list_rates(
     State(state): State<ApiState>,
     tenant: TenantContext,
     Path(id): Path<String>,
+    axum::extract::Query(page): axum::extract::Query<crate::page::PageQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = require_storage!(state);
     let plan_id = parse_plan_id(&id)?;
@@ -343,12 +348,15 @@ pub async fn list_rates(
         .list_rates(&tenant.0, plan_id)
         .await
         .map_err(map_storage_error)?;
-    Ok(Json(
+    Ok(Json(crate::page::paginate(
         rates
             .into_iter()
             .map(RateResponse::from)
             .collect::<Vec<_>>(),
-    ))
+        &page,
+        crate::page::Order::Ascending,
+        |r| format!("{}/{}", r.prefix, r.id),
+    )?))
 }
 
 /// POST /api/v1/rate-plans/:id/rates — Add or replace a rate (upsert on prefix).

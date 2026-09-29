@@ -178,6 +178,7 @@ pub async fn list_classes(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
     tenant: crate::auth::TenantContext,
+    axum::extract::Query(page): axum::extract::Query<crate::page::PageQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     crate::auth::check_permission(
         &identity,
@@ -189,12 +190,15 @@ pub async fn list_classes(
         .list_classes_of_service(&tenant.0)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
-    Ok(Json(
+    Ok(Json(crate::page::paginate(
         classes
             .into_iter()
             .map(ClassOfServiceResponse::from)
             .collect::<Vec<_>>(),
-    ))
+        &page,
+        crate::page::Order::Ascending,
+        |r| format!("{}/{}", r.name, r.id),
+    )?))
 }
 
 /// GET /api/v1/classes-of-service/:id

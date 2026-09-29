@@ -155,6 +155,7 @@ pub struct UpdateAgentStateRequest {
 pub async fn list_queues(
     State(state): State<ApiState>,
     tenant: TenantContext,
+    axum::extract::Query(page): axum::extract::Query<crate::page::PageQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     // If queue runtime is available, return live state
     if let Some(ref qm) = state.queue_manager {
@@ -171,7 +172,12 @@ pub async fn list_queues(
             }
         }
 
-        return Ok(Json(responses));
+        return Ok(Json(crate::page::paginate(
+            responses,
+            &page,
+            crate::page::Order::Ascending,
+            |r: &QueueResponse| r.name.clone(),
+        )?));
     }
 
     // Fallback: return queue configs from storage (admin server without runtime)
@@ -201,7 +207,12 @@ pub async fn list_queues(
         })
         .collect();
 
-    Ok(Json(responses))
+    Ok(Json(crate::page::paginate(
+        responses,
+        &page,
+        crate::page::Order::Ascending,
+        |r: &QueueResponse| r.name.clone(),
+    )?))
 }
 
 /// GET /queues/:name — Get a single queue's info.
@@ -253,6 +264,7 @@ pub async fn get_queue_stats(
 pub async fn get_all_queue_stats(
     State(state): State<ApiState>,
     tenant: TenantContext,
+    axum::extract::Query(page): axum::extract::Query<crate::page::PageQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let qm = require_queue_manager!(state);
 
@@ -273,7 +285,12 @@ pub async fn get_all_queue_stats(
         })
         .collect();
 
-    Ok(Json(responses))
+    Ok(Json(crate::page::paginate(
+        responses,
+        &page,
+        crate::page::Order::Ascending,
+        |r| r.queue_name.clone(),
+    )?))
 }
 
 /// GET /queues/:name/agents — List agents in a queue.
@@ -281,6 +298,7 @@ pub async fn list_queue_agents(
     State(state): State<ApiState>,
     tenant: TenantContext,
     Path(name): Path<String>,
+    axum::extract::Query(page): axum::extract::Query<crate::page::PageQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let qm = require_queue_manager!(state);
 
@@ -289,7 +307,12 @@ pub async fn list_queue_agents(
     let agents = qm.list_agents_for_queue_and_tenant(&name, &tenant.0);
     let responses: Vec<AgentResponse> = agents.into_iter().map(agent_response).collect();
 
-    Ok(Json(responses))
+    Ok(Json(crate::page::paginate(
+        responses,
+        &page,
+        crate::page::Order::Ascending,
+        |r| r.id.clone(),
+    )?))
 }
 
 /// POST /queues/:name/agents — Log an agent into a queue.

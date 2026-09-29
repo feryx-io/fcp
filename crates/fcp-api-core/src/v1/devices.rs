@@ -435,6 +435,7 @@ pub async fn list_devices(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
     tenant: crate::auth::TenantContext,
+    axum::extract::Query(page): axum::extract::Query<crate::page::PageQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     crate::auth::check_permission(&identity, Permission::DeviceRead, state.deployment_mode)?;
     let storage = require_storage!(state);
@@ -565,7 +566,12 @@ pub async fn list_devices(
     }).collect();
 
     info!("Listed {} devices", response.len());
-    Ok(Json(response))
+    Ok(Json(crate::page::paginate(
+        response,
+        &page,
+        crate::page::Order::Ascending,
+        |r| format!("{}/{}", r.name, r.id),
+    )?))
 }
 
 /// Extract IP:port from a SIP contact URI like "<sip:alice@192.168.1.80:5060;transport=tcp>"

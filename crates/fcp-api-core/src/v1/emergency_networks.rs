@@ -158,13 +158,19 @@ async fn require_network(
 pub async fn list_networks(
     State(state): State<ApiState>,
     tenant: TenantContext,
+    axum::extract::Query(page): axum::extract::Query<crate::page::PageQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let networks = require_store(&state)?
         .list_emergency_networks(&tenant.0)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     let out: Vec<NetworkResponse> = networks.into_iter().map(Into::into).collect();
-    Ok(Json(out))
+    Ok(Json(crate::page::paginate(
+        out,
+        &page,
+        crate::page::Order::Ascending,
+        |r| format!("{}/{}", r.name.as_deref().unwrap_or(""), r.id),
+    )?))
 }
 
 pub async fn get_network(

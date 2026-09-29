@@ -251,6 +251,7 @@ pub async fn list_phone_numbers(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
     tenant: crate::auth::TenantContext,
+    axum::extract::Query(page): axum::extract::Query<crate::page::PageQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     crate::auth::check_permission(
         &identity,
@@ -269,7 +270,12 @@ pub async fn list_phone_numbers(
     let response: Vec<PhoneNumberResponse> = numbers.into_iter().map(|n| n.into()).collect();
 
     info!("Listed {} phone numbers", response.len());
-    Ok(Json(response))
+    Ok(Json(crate::page::paginate(
+        response,
+        &page,
+        crate::page::Order::Ascending,
+        |r| format!("{}/{}", r.e164, r.id),
+    )?))
 }
 
 /// Get phone number by ID.
@@ -592,8 +598,10 @@ pub async fn search_available_numbers(
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
+    // A search, not a collection: the numbers the store offers, up to the
+    // limit asked, and no next page.
     let response: Vec<PhoneNumberResponse> = numbers.into_iter().map(Into::into).collect();
-    Ok(Json(response))
+    Ok(Json(crate::page::Page::new(response, None, None)))
 }
 
 /// Purchase (assign) a pool phone number to the caller's tenant.

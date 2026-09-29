@@ -120,7 +120,7 @@ async fn the_shipped_site_is_enrolled_and_in_step() {
     let tenant = listed
         .as_array()
         .cloned()
-        .or_else(|| listed["tenants"].as_array().cloned())
+        .or_else(|| listed["data"].as_array().cloned())
         .unwrap_or_default()
         .iter()
         .find(|t| t["name"] == TENANT)
@@ -230,7 +230,7 @@ async fn the_shipped_site_is_enrolled_and_in_step() {
     let has_carol = users
         .as_array()
         .cloned()
-        .or_else(|| users["users"].as_array().cloned())
+        .or_else(|| users["data"].as_array().cloned())
         .unwrap_or_default()
         .iter()
         .any(|u| u["username"] == "carol");

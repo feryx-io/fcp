@@ -182,6 +182,7 @@ pub struct UpdateLineBindingRequest {
 pub async fn list_line_bindings(
     State(state): State<ApiState>,
     tenant: crate::auth::TenantContext,
+    axum::extract::Query(page): axum::extract::Query<crate::page::PageQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = require_storage!(state);
 
@@ -195,7 +196,12 @@ pub async fn list_line_bindings(
     let response: Vec<LineBindingResponse> = bindings.into_iter().map(|b| b.into()).collect();
 
     info!("Listed {} line bindings", response.len());
-    Ok(Json(response))
+    Ok(Json(crate::page::paginate(
+        response,
+        &page,
+        crate::page::Order::Ascending,
+        |r| r.id.clone(),
+    )?))
 }
 
 /// Get line binding by ID.

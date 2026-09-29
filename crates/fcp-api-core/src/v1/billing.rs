@@ -134,12 +134,6 @@ pub struct CreateTransactionRequest {
 }
 
 /// Ledger listing query.
-#[derive(Debug, Deserialize)]
-pub struct ListTransactionsQuery {
-    pub limit: Option<usize>,
-    pub offset: Option<usize>,
-}
-
 fn to_epoch(t: SystemTime) -> u64 {
     t.duration_since(SystemTime::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -322,19 +316,21 @@ pub async fn create_transaction(
 pub async fn list_transactions(
     State(state): State<ApiState>,
     tenant: TenantContext,
-    Query(query): Query<ListTransactionsQuery>,
+    Query(page): Query<crate::page::PageQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = require_storage!(state);
-    let limit = query.limit.unwrap_or(100).clamp(1, 1000);
-    let offset = query.offset.unwrap_or(0);
+    let limit = page.limit()?;
+    let offset = page.offset()?;
+    // One more than the page, to know whether there is another.
     let entries = storage
-        .list_balance_transactions(&tenant.0, limit, offset)
+        .list_balance_transactions(&tenant.0, limit + 1, offset)
         .await
         .map_err(map_storage_error)?;
-    Ok(Json(
-        entries
-            .into_iter()
-            .map(BalanceTransactionResponse::from)
-            .collect::<Vec<_>>(),
-    ))
+    let more = entries.len() > limit;
+    let data: Vec<BalanceTransactionResponse> = entries
+        .into_iter()
+        .take(limit)
+        .map(BalanceTransactionResponse::from)
+        .collect();
+    Ok(Json(crate::page::offset_page(data, offset, more, None)))
 }

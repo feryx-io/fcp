@@ -231,6 +231,7 @@ pub async fn get_usage_by_number(
     State(state): State<ApiState>,
     tenant: TenantContext,
     Query(params): Query<UsageQuery>,
+    axum::extract::Query(page): axum::extract::Query<crate::page::PageQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = require_storage!(state);
     let (from, to) = resolve_time_range(&params)?;
@@ -259,7 +260,12 @@ pub async fn get_usage_by_number(
         })
         .collect();
 
-    Ok(Json(response))
+    Ok(Json(crate::page::paginate(
+        response,
+        &page,
+        crate::page::Order::Ascending,
+        |r| r.number.clone(),
+    )?))
 }
 
 /// GET /api/v1/billing/summary — Combined usage + resource counts.

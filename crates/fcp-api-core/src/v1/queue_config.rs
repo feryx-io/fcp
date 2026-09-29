@@ -207,6 +207,7 @@ pub struct UpdateQueueConfigRequest {
 pub async fn list_queue_configs(
     State(state): State<ApiState>,
     tenant: crate::auth::TenantContext,
+    axum::extract::Query(page): axum::extract::Query<crate::page::PageQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = require_storage!(state);
     let tenant_id = tenant.0;
@@ -218,7 +219,12 @@ pub async fn list_queue_configs(
 
     let response: Vec<QueueConfigResponse> =
         configs.into_iter().map(QueueConfigResponse::from).collect();
-    Ok(Json(response))
+    Ok(Json(crate::page::paginate(
+        response,
+        &page,
+        crate::page::Order::Ascending,
+        |r| format!("{}/{}", r.name, r.id),
+    )?))
 }
 
 /// Get a single queue config.

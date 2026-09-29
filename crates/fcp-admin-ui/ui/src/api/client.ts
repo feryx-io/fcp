@@ -1,4 +1,4 @@
-import type { ApiError } from '@/types'
+import type { ApiError, Page } from '@/types'
 
 const API_BASE = '/api/v1'
 
@@ -55,6 +55,28 @@ export class ApiClient {
 
   get<T>(path: string, headers?: Record<string, string>): Promise<T> {
     return this.request<T>(path, { method: 'GET', headers })
+  }
+
+  /** One page of a list (docs/DEVELOPER_SURFACE.md §3, phase 2c). */
+  getPage<T>(path: string, headers?: Record<string, string>): Promise<Page<T>> {
+    return this.request<Page<T>>(path, { method: 'GET', headers })
+  }
+
+  /**
+   * A whole list: every page, following `next_cursor`, a thousand at a
+   * time. The admin UI shows tenant-sized lists whole; the logs that grow
+   * without bound (CDRs, audit, recordings) page instead.
+   */
+  async getAll<T>(path: string, headers?: Record<string, string>): Promise<T[]> {
+    const items: T[] = []
+    const join = path.includes('?') ? '&' : '?'
+    let url = `${path}${join}limit=1000`
+    for (;;) {
+      const page = await this.getPage<T>(url, headers)
+      items.push(...page.data)
+      if (!page.next_cursor) return items
+      url = `${path}${join}limit=1000&cursor=${encodeURIComponent(page.next_cursor)}`
+    }
   }
 
   post<T>(path: string, body?: unknown, headers?: Record<string, string>): Promise<T> {

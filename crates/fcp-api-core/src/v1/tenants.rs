@@ -267,7 +267,8 @@ async fn ensure_sip_domains_unique<S: fcp_core::TenantStore + ?Sized>(
 pub async fn list_tenants(
     State(state): State<ApiState>,
     identity: Option<Extension<AuthIdentity>>,
-) -> Result<Json<Vec<TenantResponse>>, ApiError> {
+    axum::extract::Query(page): axum::extract::Query<crate::page::PageQuery>,
+) -> Result<Json<crate::page::Page<TenantResponse>>, ApiError> {
     let storage = require_storage!(state);
     let identity_ref = identity.as_ref().map(|ext| &ext.0);
 
@@ -285,7 +286,12 @@ pub async fn list_tenants(
     };
 
     let response: Vec<TenantResponse> = tenants.into_iter().map(|t| t.into()).collect();
-    Ok(Json(response))
+    Ok(Json(crate::page::paginate(
+        response,
+        &page,
+        crate::page::Order::Ascending,
+        |r| format!("{}/{}", r.name, r.id),
+    )?))
 }
 
 /// Get a specific tenant by ID

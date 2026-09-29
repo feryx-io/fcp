@@ -11,7 +11,7 @@ use axum::{
 use fcp_flow::{FlowDefinition, FlowQuery, FlowStore};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 /// Helper to get flow store from state or return error.
 fn get_flow_store(state: &ApiState) -> Result<Arc<dyn FlowStore>, ApiError> {
@@ -124,27 +124,6 @@ pub struct ListFlowsQuery {
 
     /// Search by description (partial match)
     pub description: Option<String>,
-
-    /// Maximum number of results (default: 100, max: 1000)
-    #[serde(default = "default_limit")]
-    pub limit: usize,
-
-    /// Offset for pagination (default: 0)
-    #[serde(default)]
-    pub offset: usize,
-}
-
-fn default_limit() -> usize {
-    100
-}
-
-/// Paginated list of flows.
-#[derive(Debug, Serialize)]
-pub struct ListFlowsResponse {
-    pub flows: Vec<FlowResponse>,
-    pub total: usize,
-    pub limit: usize,
-    pub offset: usize,
 }
 
 /// List flows with filters and pagination.
@@ -154,23 +133,13 @@ pub async fn list_flows(
     State(state): State<ApiState>,
     tenant: crate::auth::TenantContext,
     Query(params): Query<ListFlowsQuery>,
+    Query(page): Query<crate::page::PageQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     debug!("Listing flows with filters: {:?}", params);
 
     let store = get_flow_store(&state)?;
-
-    // Validate and cap limit
-    let limit = if params.limit > 1000 {
-        warn!(
-            requested_limit = params.limit,
-            "Requested limit exceeds maximum, capping at 1000"
-        );
-        1000
-    } else if params.limit == 0 {
-        default_limit()
-    } else {
-        params.limit
-    };
+    let limit = page.limit()?;
+    let offset = page.offset()?;
 
     // Build FlowQuery from request parameters
     let query = FlowQuery {
@@ -181,7 +150,7 @@ pub async fn list_flows(
         updated_after: None,
         updated_before: None,
         limit,
-        offset: params.offset,
+        offset,
         sort_by: Some(fcp_flow::storage::SortField::UpdatedAt),
         sort_order: fcp_flow::storage::SortOrder::Desc,
     };
@@ -195,12 +164,13 @@ pub async fn list_flows(
     // Convert to response
     let flows: Vec<FlowResponse> = result.flows.into_iter().map(FlowResponse::from).collect();
 
-    Ok(Json(ListFlowsResponse {
+    let more = offset + flows.len() < result.total;
+    Ok(Json(crate::page::offset_page(
         flows,
-        total: result.total,
-        limit: result.limit,
-        offset: result.offset,
-    }))
+        offset,
+        more,
+        Some(result.total as u64),
+    )))
 }
 
 /// Get a flow by ID.
@@ -370,6 +340,7 @@ pub async fn list_flow_versions(
     State(state): State<ApiState>,
     tenant: crate::auth::TenantContext,
     Path(id): Path<String>,
+    Query(page): Query<crate::page::PageQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     debug!(flow_id = %id, "Listing flow versions");
 
@@ -390,8 +361,10 @@ pub async fn list_flow_versions(
         return Err(ApiError::NotFound(format!("Flow not found: {}", id)));
     }
 
-    Ok(Json(serde_json::json!({
-        "id": id,
-        "versions": responses
-    })))
+    Ok(Json(crate::page::paginate(
+        responses,
+        &page,
+        crate::page::Order::Descending,
+        |r| format!("{:010}", r.version),
+    )?))
 }

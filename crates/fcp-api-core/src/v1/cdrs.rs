@@ -208,18 +208,17 @@ fn default_limit() -> usize {
     100
 }
 
-/// Paginated list of CDRs.
+/// A page of CDRs: the list envelope (`crate::page`), whose cursor is the
+/// CDR store's own keyset cursor, and whose total may be an estimate.
 #[derive(Debug, Serialize)]
 pub struct ListCdrsResponse {
-    pub cdrs: Vec<CdrResponse>,
+    pub data: Vec<CdrResponse>,
+    /// Pass as `cursor` for the page after this one; null on the last.
+    pub next_cursor: Option<String>,
     /// Records matching the filters: exact when counting was quick, the
     /// database's estimate otherwise (`total_exact` says which).
     pub total: usize,
     pub total_exact: bool,
-    pub limit: usize,
-    pub offset: usize,
-    /// Pass as `cursor` for the page after this one; absent on the last.
-    pub next_cursor: Option<String>,
 }
 
 /// The deepest `offset` a listing accepts; past it, page with `cursor`.
@@ -302,12 +301,10 @@ pub async fn list_cdrs(
     let cdr_responses: Vec<CdrResponse> = cdrs.into_iter().map(CdrResponse::from).collect();
 
     Ok(Json(ListCdrsResponse {
-        cdrs: cdr_responses,
+        data: cdr_responses,
+        next_cursor,
         total: count.count as usize,
         total_exact: count.exact,
-        limit,
-        offset: params.offset,
-        next_cursor,
     }))
 }
 

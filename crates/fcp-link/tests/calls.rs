@@ -309,7 +309,7 @@ async fn calls_cross_a_sites_link_both_ways() {
         .admin_call("GET", "/api/v1/phone-numbers", true, None)
         .await;
     assert_eq!(code, 200, "{listed}");
-    let numbers = listed["phone_numbers"]
+    let numbers = listed["data"]
         .as_array()
         .or_else(|| listed.as_array())
         .cloned()

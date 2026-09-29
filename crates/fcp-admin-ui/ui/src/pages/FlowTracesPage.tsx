@@ -1,10 +1,11 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { flowTraces, type FlowTraceQueryParams, type FlowTraceEntry } from '@/api/endpoints'
 import { DataTable } from '@/components/DataTable'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { useCursorPages } from '@/lib/useCursorPages'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { type ColumnDef } from '@tanstack/react-table'
@@ -105,18 +106,18 @@ const columns: ColumnDef<FlowTraceEntry>[] = [
 ]
 
 export function FlowTracesPage() {
-  const [filters, setFilters] = useState<FlowTraceQueryParams>({
-    limit: 100,
-    offset: 0,
-  })
+  const [filters, setFilters] = useState<FlowTraceQueryParams>({ limit: 100 })
+  const pages = useCursorPages()
+  // A filter changed: back to the first page.
+  useEffect(() => pages.reset(), [filters, pages.reset])
 
   const { data, refetch } = useQuery({
-    queryKey: ['flow-traces', filters],
-    queryFn: () => flowTraces.list(filters),
+    queryKey: ['flow-traces', filters, pages.cursor],
+    queryFn: () => flowTraces.list({ ...filters, cursor: pages.cursor }),
     refetchInterval: 10000,
   })
 
-  const traces = data?.traces ?? []
+  const traces = data?.data ?? []
   const total = data?.total ?? 0
 
   const handleExportCSV = () => {
@@ -176,7 +177,7 @@ export function FlowTracesPage() {
             className="w-48 h-8 text-sm"
             value={filters.call_id || ''}
             onChange={(e) =>
-              setFilters((f) => ({ ...f, call_id: e.target.value || undefined, offset: 0 }))
+              setFilters((f) => ({ ...f, call_id: e.target.value || undefined }))
             }
           />
         </div>
@@ -187,7 +188,7 @@ export function FlowTracesPage() {
             className="w-48 h-8 text-sm"
             value={filters.flow_id || ''}
             onChange={(e) =>
-              setFilters((f) => ({ ...f, flow_id: e.target.value || undefined, offset: 0 }))
+              setFilters((f) => ({ ...f, flow_id: e.target.value || undefined }))
             }
           />
         </div>
@@ -196,7 +197,7 @@ export function FlowTracesPage() {
           <Select
             value={filters.event_type || '__all'}
             onValueChange={(v) =>
-              setFilters((f) => ({ ...f, event_type: v === '__all' ? undefined : v, offset: 0 }))
+              setFilters((f) => ({ ...f, event_type: v === '__all' ? undefined : v }))
             }
           >
             <SelectTrigger className="w-44 h-8 text-sm">
@@ -215,7 +216,7 @@ export function FlowTracesPage() {
         <Button
           variant="ghost"
           size="sm"
-          onClick={() => setFilters({ limit: 100, offset: 0 })}
+          onClick={() => setFilters({ limit: 100 })}
         >
           Clear
         </Button>
@@ -225,39 +226,28 @@ export function FlowTracesPage() {
       <DataTable columns={columns} data={traces} />
 
       {/* Pagination */}
-      {total > (filters.limit || 100) && (
-        <div className="flex items-center justify-between text-sm text-muted-foreground">
-          <span>
-            Showing {(filters.offset || 0) + 1}–{Math.min((filters.offset || 0) + (filters.limit || 100), total)} of {total}
+      {(pages.pageIndex > 0 || data?.next_cursor) && (
+        <div className="flex items-center justify-center gap-4">
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={pages.pageIndex === 0}
+            onClick={pages.previous}
+          >
+            Previous
+          </Button>
+          <span className="text-sm text-muted-foreground">
+            {pages.pageIndex * (filters.limit ?? 100) + 1}-{pages.pageIndex * (filters.limit ?? 100) + traces.length}
+            {total ? ` of ${total}` : ''}
           </span>
-          <div className="flex gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={(filters.offset || 0) === 0}
-              onClick={() =>
-                setFilters((f) => ({
-                  ...f,
-                  offset: Math.max((f.offset || 0) - (f.limit || 100), 0),
-                }))
-              }
-            >
-              Previous
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={(filters.offset || 0) + (filters.limit || 100) >= total}
-              onClick={() =>
-                setFilters((f) => ({
-                  ...f,
-                  offset: (f.offset || 0) + (f.limit || 100),
-                }))
-              }
-            >
-              Next
-            </Button>
-          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={!data?.next_cursor}
+            onClick={() => data?.next_cursor && pages.next(data.next_cursor)}
+          >
+            Next
+          </Button>
         </div>
       )}
     </div>

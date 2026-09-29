@@ -90,6 +90,7 @@ pub async fn list_config_templates(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
     tenant: crate::auth::TenantContext,
+    axum::extract::Query(page): axum::extract::Query<crate::page::PageQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     crate::auth::check_permission(&identity, Permission::DeviceRead, state.deployment_mode)?;
     let storage = require_storage!(state);
@@ -103,7 +104,12 @@ pub async fn list_config_templates(
     let response: Vec<ConfigTemplateResponse> = templates.into_iter().map(Into::into).collect();
 
     info!("Listed {} config templates", response.len());
-    Ok(Json(response))
+    Ok(Json(crate::page::paginate(
+        response,
+        &page,
+        crate::page::Order::Ascending,
+        |r| format!("{}/{}", r.name, r.id),
+    )?))
 }
 
 /// Get a config template by ID.
@@ -290,7 +296,9 @@ pub struct LibraryTemplateResponse {
 
 /// GET /api/v1/config-templates/library — List the built-in vendor starter
 /// templates shipped with FCP.
-pub async fn list_template_library() -> impl IntoResponse {
+pub async fn list_template_library(
+    axum::extract::Query(page): axum::extract::Query<crate::page::PageQuery>,
+) -> Result<impl IntoResponse, ApiError> {
     let entries: Vec<LibraryTemplateResponse> = fcp_core::config_template::builtin_templates()
         .iter()
         .map(|t| LibraryTemplateResponse {
@@ -301,7 +309,12 @@ pub async fn list_template_library() -> impl IntoResponse {
             template_body: t.body.to_string(),
         })
         .collect();
-    Json(entries)
+    Ok(Json(crate::page::paginate(
+        entries,
+        &page,
+        crate::page::Order::Ascending,
+        |r| format!("{}/{}", r.vendor, r.name),
+    )?))
 }
 
 /// POST /api/v1/config-templates/library/:vendor — Instantiate a built-in
