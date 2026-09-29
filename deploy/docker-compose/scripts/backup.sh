@@ -33,6 +33,8 @@ set -euo pipefail
 # COMPOSE_DIR names another compose project to back up: the site stack's
 # directory (docs/SITE_SETUP.md), whose volumes are a subset of the list.
 COMPOSE_DIR="${COMPOSE_DIR:-$( cd "$( dirname "${BASH_SOURCE[0]}" )/.." && pwd )}"
+# The checkout, found from this script before anything changes directory.
+REPO_ROOT="$( cd "$( dirname "${BASH_SOURCE[0]}" )/../../.." && pwd )"
 HELPER_IMAGE="${FCP_BACKUP_HELPER_IMAGE:-alpine:3.20}"
 # The volumes a restore needs, and the ones it does not: postgres-data is
 # the dump, tts-cache and redis-data are re-derivable, prometheus-data and
@@ -76,9 +78,8 @@ PROJECT="$(docker compose config 2>/dev/null | sed -n 's/^name: //p' | head -n 1
 # says. A stack never built has no image, and then the checkout's version
 # is what a restore will build, and is taken instead.
 # The running admin first (the stack is up for a backup), else a fresh
-# container of its image; the checkout is found from this script, not from
-# COMPOSE_DIR, which may be the site's project a level deeper.
-REPO_ROOT="$( cd "$( dirname "${BASH_SOURCE[0]}" )/../../.." && pwd )"
+# container of its image; the checkout is REPO_ROOT, not COMPOSE_DIR's
+# parent, since COMPOSE_DIR may be the site's project a level deeper.
 if VERSION_LINE="$(docker compose exec -T fcp-admin /app/fcp-admin --version 2>/dev/null)" \
     || VERSION_LINE="$(docker compose run --rm --no-deps --no-build -T --entrypoint /app/fcp-admin fcp-admin --version 2>/dev/null)"; then
     STACK_VERSION="${VERSION_LINE##* }"
