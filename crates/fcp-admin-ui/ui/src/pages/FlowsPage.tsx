@@ -38,7 +38,7 @@ export function FlowsPage() {
     queryFn: () => flows.list(),
   })
 
-  const flowList = data?.flows ?? []
+  const flowList = data ?? []
 
   const createMutation = useMutation({
     mutationFn: flows.create,

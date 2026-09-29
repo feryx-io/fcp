@@ -206,6 +206,7 @@ async fn get_message_for_tenant(
 pub async fn list_mailboxes(
     State(state): State<ApiState>,
     tenant: crate::auth::TenantContext,
+    axum::extract::Query(page): axum::extract::Query<crate::page::PageQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = require_storage!(state);
 
@@ -219,7 +220,12 @@ pub async fn list_mailboxes(
     let responses: Vec<MailboxResponse> =
         mailboxes.into_iter().map(MailboxResponse::from).collect();
 
-    Ok(Json(responses))
+    Ok(Json(crate::page::paginate(
+        responses,
+        &page,
+        crate::page::Order::Ascending,
+        |r| format!("{:>20}/{}", r.extension, r.id),
+    )?))
 }
 
 /// Get a specific mailbox by ID.
@@ -513,6 +519,7 @@ pub async fn list_messages(
     State(state): State<ApiState>,
     tenant: crate::auth::TenantContext,
     Path(mailbox_id): Path<String>,
+    axum::extract::Query(page): axum::extract::Query<crate::page::PageQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = require_storage!(state);
 
@@ -525,7 +532,12 @@ pub async fn list_messages(
 
     let responses: Vec<MessageResponse> = messages.into_iter().map(MessageResponse::from).collect();
 
-    Ok(Json(responses))
+    Ok(Json(crate::page::paginate(
+        responses,
+        &page,
+        crate::page::Order::Descending,
+        |r| format!("{:024.6}/{}", r.created_at, r.id),
+    )?))
 }
 
 /// Get a specific message.
@@ -741,6 +753,7 @@ pub async fn list_greetings(
     State(state): State<ApiState>,
     tenant: crate::auth::TenantContext,
     Path(id): Path<String>,
+    axum::extract::Query(page): axum::extract::Query<crate::page::PageQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let mailbox = get_mailbox_for_tenant(&state, &id, &tenant.0).await?;
 
@@ -750,7 +763,12 @@ pub async fn list_greetings(
         .map(GreetingResponse::from)
         .collect();
 
-    Ok(Json(responses))
+    Ok(Json(crate::page::paginate(
+        responses,
+        &page,
+        crate::page::Order::Ascending,
+        |r| r.greeting_type.clone(),
+    )?))
 }
 
 /// Upload a greeting (multipart: greeting_type + audio file).

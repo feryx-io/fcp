@@ -234,7 +234,8 @@ pub async fn list_users(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
     tenant: crate::auth::TenantContext,
-) -> Result<Json<Vec<UserResponse>>, ApiError> {
+    axum::extract::Query(page): axum::extract::Query<crate::page::PageQuery>,
+) -> Result<Json<crate::page::Page<UserResponse>>, ApiError> {
     crate::auth::check_permission(&identity, Permission::UserRead, state.deployment_mode)?;
     let storage = require_storage!(state);
     let users = storage
@@ -244,7 +245,12 @@ pub async fn list_users(
         .filter(|user| user.tenant_id == tenant.0)
         .collect::<Vec<_>>();
     let responses: Vec<UserResponse> = users.into_iter().map(UserResponse::from).collect();
-    Ok(Json(responses))
+    Ok(Json(crate::page::paginate(
+        responses,
+        &page,
+        crate::page::Order::Ascending,
+        |r| format!("{}/{}", r.username, r.id),
+    )?))
 }
 
 /// Get a specific user.

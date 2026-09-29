@@ -373,6 +373,7 @@ pub struct MessageResponse {
 pub async fn list_voicemail_messages(
     State(state): State<ApiState>,
     Me(claims): Me,
+    axum::extract::Query(page): axum::extract::Query<crate::page::PageQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = require_storage!(state);
     let (mailbox, _user_id) = get_user_mailbox(
@@ -388,7 +389,12 @@ pub async fn list_voicemail_messages(
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
     let responses: Vec<MessageResponse> = messages.into_iter().map(message_to_response).collect();
-    Ok(Json(responses))
+    Ok(Json(crate::page::paginate(
+        responses,
+        &page,
+        crate::page::Order::Descending,
+        |r| format!("{:024.6}/{}", r.created_at, r.id),
+    )?))
 }
 
 #[derive(Debug, Deserialize)]
@@ -564,6 +570,7 @@ pub struct GreetingResponse {
 pub async fn list_voicemail_greetings(
     State(state): State<ApiState>,
     Me(claims): Me,
+    axum::extract::Query(page): axum::extract::Query<crate::page::PageQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = require_storage!(state);
     let (mailbox, _user_id) = get_user_mailbox(
@@ -584,7 +591,12 @@ pub async fn list_voicemail_greetings(
         })
         .collect();
 
-    Ok(Json(responses))
+    Ok(Json(crate::page::paginate(
+        responses,
+        &page,
+        crate::page::Order::Ascending,
+        |r| r.greeting_type.clone(),
+    )?))
 }
 
 /// POST /me/voicemail/greetings
@@ -1119,6 +1131,7 @@ pub struct MyExecutive {
 pub async fn get_my_executives(
     State(state): State<ApiState>,
     Me(claims): Me,
+    axum::extract::Query(page): axum::extract::Query<crate::page::PageQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     use fcp_core::CallingStore;
     let storage = require_storage!(state);
@@ -1145,8 +1158,12 @@ pub async fn get_my_executives(
             filter: executive.filter,
         });
     }
-    executives.sort_by(|a, b| a.username.cmp(&b.username));
-    Ok(Json(executives))
+    Ok(Json(crate::page::paginate(
+        executives,
+        &page,
+        crate::page::Order::Ascending,
+        |r| r.username.clone(),
+    )?))
 }
 
 /// What an assistant changes of their own part in an executive's handling.
@@ -1451,6 +1468,7 @@ pub async fn delete_avatar(
 pub async fn list_my_conferences(
     State(state): State<ApiState>,
     Me(claims): Me,
+    axum::extract::Query(page): axum::extract::Query<crate::page::PageQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = require_storage!(state);
     let tenant_id = resolve_tenant_from_claims(&claims, &state);
@@ -1465,7 +1483,12 @@ pub async fn list_my_conferences(
         .map(super::conferences::MeetingResponse::from)
         .collect();
 
-    Ok(Json(responses))
+    Ok(Json(crate::page::paginate(
+        responses,
+        &page,
+        crate::page::Order::Ascending,
+        |r| format!("{:>20}/{}", r.room_number, r.id),
+    )?))
 }
 
 /// GET /me/conferences/:id -- Get a specific conference owned by the current user

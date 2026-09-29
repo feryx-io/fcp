@@ -94,6 +94,7 @@ pub async fn list_schedules(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
     tenant: crate::auth::TenantContext,
+    axum::extract::Query(page): axum::extract::Query<crate::page::PageQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     crate::auth::check_permission(
         &identity,
@@ -105,12 +106,15 @@ pub async fn list_schedules(
         .list_schedules(&tenant.0)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
-    Ok(Json(
+    Ok(Json(crate::page::paginate(
         schedules
             .into_iter()
             .map(ScheduleResponse::from)
             .collect::<Vec<_>>(),
-    ))
+        &page,
+        crate::page::Order::Ascending,
+        |r| format!("{}/{}", r.name, r.id),
+    )?))
 }
 
 async fn owned(

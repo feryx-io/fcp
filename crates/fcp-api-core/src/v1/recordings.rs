@@ -97,14 +97,6 @@ impl From<Recording> for RecordingResponse {
     }
 }
 
-#[derive(Debug, Serialize)]
-pub struct RecordingListResponse {
-    pub recordings: Vec<RecordingResponse>,
-    pub total: usize,
-    pub limit: usize,
-    pub offset: usize,
-}
-
 // ─── List ────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
@@ -117,11 +109,9 @@ pub struct ListQuery {
     pub until: Option<u64>,
     /// Only those still being written, or only those finished.
     pub running: Option<bool>,
-    pub limit: Option<usize>,
-    pub offset: Option<usize>,
 }
 
-fn to_filter(q: &ListQuery) -> Result<RecordingFilter, ApiError> {
+fn to_filter(q: &ListQuery, page: &crate::page::PageQuery) -> Result<RecordingFilter, ApiError> {
     Ok(RecordingFilter {
         room_number: q.room_number.clone(),
         meeting_id: q
@@ -133,8 +123,9 @@ fn to_filter(q: &ListQuery) -> Result<RecordingFilter, ApiError> {
         since: q.since.map(|s| UNIX_EPOCH + Duration::from_secs(s)),
         until: q.until.map(|s| UNIX_EPOCH + Duration::from_secs(s)),
         running: q.running,
-        limit: q.limit.unwrap_or(100).clamp(1, 1000),
-        offset: q.offset.unwrap_or(0),
+        // One more than the page, to know whether there is another.
+        limit: page.limit()? + 1,
+        offset: page.offset()?,
     })
 }
 
@@ -143,20 +134,23 @@ pub async fn list_recordings(
     State(state): State<ApiState>,
     tenant: TenantContext,
     Query(query): Query<ListQuery>,
-) -> Result<Json<RecordingListResponse>, ApiError> {
+    Query(page): Query<crate::page::PageQuery>,
+) -> Result<Json<crate::page::Page<RecordingResponse>>, ApiError> {
     let store = require_store(&state)?;
-    let filter = to_filter(&query)?;
+    let filter = to_filter(&query, &page)?;
     let recordings = store
         .list_recordings(&tenant.0, &filter)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
-    let total = recordings.len();
-    Ok(Json(RecordingListResponse {
-        recordings: recordings.into_iter().map(Into::into).collect(),
-        total,
-        limit: filter.limit,
-        offset: filter.offset,
-    }))
+    let limit = page.limit()?;
+    let more = recordings.len() > limit;
+    let data = recordings.into_iter().take(limit).map(Into::into).collect();
+    Ok(Json(crate::page::offset_page(
+        data,
+        filter.offset,
+        more,
+        None,
+    )))
 }
 
 /// GET /v1/recordings/:id

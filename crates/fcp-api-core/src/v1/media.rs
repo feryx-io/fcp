@@ -214,6 +214,7 @@ pub async fn list_calls(
     State(state): State<ApiState>,
     tenant: TenantContext,
     identity: Option<Extension<AuthIdentity>>,
+    axum::extract::Query(page): axum::extract::Query<crate::page::PageQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let allow_all_tenants = can_access_all_tenants(identity.as_ref().map(|ext| &ext.0));
     let tenant_id = tenant.0.to_string();
@@ -287,7 +288,12 @@ pub async fn list_calls(
                             })
                         })
                         .collect();
-                    return Ok(Json(call_infos));
+                    return Ok(Json(crate::page::paginate(
+                        call_infos,
+                        &page,
+                        crate::page::Order::Ascending,
+                        |r: &CallInfo| r.id.clone(),
+                    )?));
                 }
             }
             Ok(resp) => {
@@ -307,7 +313,12 @@ pub async fn list_calls(
         .filter(|call| allow_all_tenants || call.tenant_id == tenant.0)
         .collect();
     let call_infos: Vec<CallInfo> = calls.iter().map(CallInfo::from_call).collect();
-    Ok(Json(call_infos))
+    Ok(Json(crate::page::paginate(
+        call_infos,
+        &page,
+        crate::page::Order::Ascending,
+        |r: &CallInfo| r.id.clone(),
+    )?))
 }
 
 /// GET /v1/calls/:call_id

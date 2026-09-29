@@ -248,17 +248,21 @@ pub async fn list_sites(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
     tenant: TenantContext,
-) -> Result<Json<Vec<SiteResponse>>, ApiError> {
+    axum::extract::Query(page): axum::extract::Query<crate::page::PageQuery>,
+) -> Result<Json<crate::page::Page<SiteResponse>>, ApiError> {
     check_permission(&identity, Permission::SiteRead, state.deployment_mode)?;
     let storage = storage!(state);
     let sites = storage.list_sites(&tenant.0).await?;
     let head = storage.journal_head().await?;
-    Ok(Json(
+    Ok(Json(crate::page::paginate(
         sites
             .into_iter()
             .map(|s| SiteResponse::from(s).behind(head))
             .collect(),
-    ))
+        &page,
+        crate::page::Order::Ascending,
+        |r| format!("{}/{}", r.name, r.id),
+    )?))
 }
 
 /// POST /api/v1/sites — a site, and the token that enrolls it.

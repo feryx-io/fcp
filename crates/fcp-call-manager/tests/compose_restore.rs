@@ -418,7 +418,7 @@ async fn a_backup_restores_into_a_fresh_stack_and_refuses_without_the_key() {
     let (code, cdrs) = request("GET", &loopback(8080, "/api/v1/cdrs"), &admin_token, None).await;
     assert_eq!(code, 200, "{cdrs}");
     assert!(
-        cdrs["cdrs"]
+        cdrs["data"]
             .as_array()
             .is_some_and(|list| list.iter().any(|r| r["cdr_id"] == cdr_id.as_str())),
         "the dump carried the call's record {cdr_id}: {cdrs}"
@@ -453,7 +453,7 @@ async fn stored_call_record(admin_token: &str, n: usize) -> String {
     loop {
         let (code, cdrs) = request("GET", &loopback(8080, "/api/v1/cdrs"), admin_token, None).await;
         assert_eq!(code, 200, "{cdrs}");
-        let calls: Vec<&serde_json::Value> = cdrs["cdrs"]
+        let calls: Vec<&serde_json::Value> = cdrs["data"]
             .as_array()
             .map(|list| list.iter().filter(|r| r["kind"] == "call").collect())
             .unwrap_or_default();

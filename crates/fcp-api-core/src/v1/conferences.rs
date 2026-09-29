@@ -263,6 +263,7 @@ pub struct UpdateMeetingRequest {
 pub async fn list_meetings(
     State(state): State<ApiState>,
     tenant: TenantContext,
+    axum::extract::Query(page): axum::extract::Query<crate::page::PageQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = require_storage!(state);
     let tenant_id = &tenant.0;
@@ -273,7 +274,12 @@ pub async fn list_meetings(
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
     let responses: Vec<MeetingResponse> = meetings.into_iter().map(MeetingResponse::from).collect();
-    Ok(Json(responses))
+    Ok(Json(crate::page::paginate(
+        responses,
+        &page,
+        crate::page::Order::Ascending,
+        |r| format!("{:>20}/{}", r.room_number, r.id),
+    )?))
 }
 
 /// POST /conferences/meetings — Create a new meeting.

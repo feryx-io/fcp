@@ -305,11 +305,25 @@ impl App {
             .await
             .expect("read body");
         let text = String::from_utf8_lossy(&bytes).into_owned();
-        let json = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
         if status.is_success() && path.starts_with("/api/v1/") {
-            check_shape(path, "", &json);
+            check_shape(path, "", &body);
+            // docs/DEVELOPER_SURFACE.md §3, phase 2c: no list is a bare array.
+            assert!(
+                !body.is_array(),
+                "{path} answered a bare array; every list is {{data, next_cursor}}"
+            );
         }
+        // A list's items, for the tests that read them; `body` keeps the
+        // envelope for those that page.
+        let json = match &body {
+            Value::Object(map) if map.contains_key("data") && map.contains_key("next_cursor") => {
+                body["data"].clone()
+            }
+            _ => body.clone(),
+        };
         Response {
+            body,
             status,
             headers,
             json,
@@ -351,10 +365,12 @@ impl App {
         let bytes = to_bytes(response.into_body(), usize::MAX)
             .await
             .expect("read body");
+        let json: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
         Response {
+            body: json.clone(),
             status,
             headers,
-            json: serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+            json,
             text: String::from_utf8_lossy(&bytes).into_owned(),
             bytes: bytes.to_vec(),
         }
@@ -907,6 +923,9 @@ const PASSWORD: &str = "Str0ng-Passw0rd!";
 const BEARER: &str = "Bearer test-admin-token";
 
 struct Response {
+    /// The whole body; `json` is a list's `data` when the body is the list
+    /// envelope.
+    body: Value,
     status: StatusCode,
     headers: HeaderMap,
     json: Value,
@@ -2243,6 +2262,98 @@ async fn every_error_is_json_and_every_response_has_an_id() {
     app.finish().await;
 }
 
+/// docs/DEVELOPER_SURFACE.md §3, phase 2c: every list is `{data,
+/// next_cursor, total}` and pages by cursor, each row once.
+#[tokio::test]
+async fn every_list_pages_by_cursor() {
+    let app = require_app!();
+    for name in ["pa", "pb", "pc", "pd", "pe"] {
+        app.create_user_with_role(name, "end_user").await;
+    }
+
+    // A list held whole: walked two at a time, in its order, each row once.
+    let mut seen = Vec::new();
+    let mut path = "/api/v1/users?limit=2".to_string();
+    let mut pages = 0;
+    loop {
+        let page = app.admin(Method::GET, &path, None).await;
+        assert_eq!(page.status, StatusCode::OK, "{}", page.text);
+        assert!(page.body["data"].is_array(), "{}", page.text);
+        assert!(page.json.as_array().unwrap().len() <= 2);
+        let total = page.body["total"].as_u64().expect("a total");
+        for u in page.json.as_array().unwrap() {
+            seen.push(u["username"].as_str().unwrap().to_string());
+        }
+        pages += 1;
+        match page.body["next_cursor"].as_str() {
+            Some(c) => path = format!("/api/v1/users?limit=2&cursor={c}"),
+            None => {
+                assert_eq!(seen.len() as u64, total);
+                break;
+            }
+        }
+        assert!(pages < 20, "the walk ends");
+    }
+    let mut sorted = seen.clone();
+    sorted.sort();
+    assert_eq!(seen, sorted, "users come by username");
+    sorted.dedup();
+    assert_eq!(sorted.len(), seen.len(), "no row twice: {seen:?}");
+    for name in ["pa", "pb", "pc", "pd", "pe"] {
+        assert!(seen.iter().any(|s| s == name), "{name} missing: {seen:?}");
+    }
+
+    // A log paged by the store: the audit log, newest first, by keyset.
+    // Audit rows are written after the response; wait for all five.
+    for _ in 0..50 {
+        let all = app
+            .admin(Method::GET, "/api/v1/audit-log?limit=1000", None)
+            .await;
+        if all.json.as_array().unwrap().len() >= 5 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let mut ids = Vec::new();
+    let mut times = Vec::new();
+    let mut path = "/api/v1/audit-log?limit=2".to_string();
+    loop {
+        let page = app.admin(Method::GET, &path, None).await;
+        assert_eq!(page.status, StatusCode::OK, "{}", page.text);
+        for e in page.json.as_array().unwrap() {
+            ids.push(e["id"].as_i64().unwrap());
+            times.push(rfc3339_secs(&e["occurred_at"]));
+        }
+        match page.body["next_cursor"].as_str() {
+            Some(c) => path = format!("/api/v1/audit-log?limit=2&cursor={c}"),
+            None => break,
+        }
+        assert!(ids.len() < 200, "the walk ends");
+    }
+    assert!(ids.len() >= 5, "five user creations audited: {ids:?}");
+    assert!(
+        times.windows(2).all(|w| w[0] >= w[1]),
+        "newest first: {times:?}"
+    );
+    let mut unique = ids.clone();
+    unique.sort();
+    unique.dedup();
+    assert_eq!(unique.len(), ids.len(), "each row once: {ids:?}");
+
+    // A limit or a cursor the API cannot use is a 400.
+    for bad in [
+        "/api/v1/users?limit=0",
+        "/api/v1/users?limit=1001",
+        "/api/v1/users?cursor=%25%25",
+        "/api/v1/audit-log?cursor=bm90LWEta2V5",
+    ] {
+        let res = app.admin(Method::GET, bad, None).await;
+        assert_eq!(res.status, StatusCode::BAD_REQUEST, "{bad}: {}", res.text);
+    }
+
+    app.finish().await;
+}
+
 // ─── CDRs, usage, billing ────────────────────────────────────────────────
 
 #[tokio::test]
@@ -2275,7 +2386,7 @@ async fn cdrs_usage_and_billing_summary() {
     // tenant selected it sees every tenant's records...
     let all = app.admin(Method::GET, "/api/v1/cdrs", None).await;
     assert_eq!(all.status, StatusCode::OK, "{}", all.text);
-    assert_eq!(all.json["total"], 4, "{}", all.text);
+    assert_eq!(all.body["total"], 4, "{}", all.text);
     let by_param = app
         .admin(
             Method::GET,
@@ -2283,15 +2394,15 @@ async fn cdrs_usage_and_billing_summary() {
             None,
         )
         .await;
-    assert_eq!(by_param.json["total"], 1, "{}", by_param.text);
+    assert_eq!(by_param.body["total"], 1, "{}", by_param.text);
 
     // ...and the override header scopes it like every other endpoint.
     let list = app
         .admin_in(app.tenant_a, Method::GET, "/api/v1/cdrs", None)
         .await;
     assert_eq!(list.status, StatusCode::OK, "{}", list.text);
-    assert_eq!(list.json["total"], 3, "{}", list.text);
-    assert_eq!(list.json["cdrs"].as_array().unwrap().len(), 3);
+    assert_eq!(list.body["total"], 3, "{}", list.text);
+    assert_eq!(list.json.as_array().unwrap().len(), 3);
 
     let answered = app
         .admin_in(
@@ -2302,13 +2413,9 @@ async fn cdrs_usage_and_billing_summary() {
         )
         .await;
     assert_eq!(answered.status, StatusCode::OK, "{}", answered.text);
-    assert_eq!(answered.json["total"], 2, "{}", answered.text);
-    assert_eq!(
-        answered.json["cdrs"].as_array().unwrap().len(),
-        1,
-        "limit applies"
-    );
-    assert_eq!(answered.json["cdrs"][0]["disposition"], "answered");
+    assert_eq!(answered.body["total"], 2, "{}", answered.text);
+    assert_eq!(answered.json.as_array().unwrap().len(), 1, "limit applies");
+    assert_eq!(answered.json[0]["disposition"], "answered");
 
     let one = app
         .admin(Method::GET, &format!("/api/v1/cdrs/{a1}"), None)
@@ -2337,7 +2444,7 @@ async fn cdrs_usage_and_billing_summary() {
         .admin_in(app.tenant_b, Method::GET, "/api/v1/cdrs", None)
         .await;
     assert_eq!(b_list.status, StatusCode::OK, "{}", b_list.text);
-    assert_eq!(b_list.json["total"], 1, "{}", b_list.text);
+    assert_eq!(b_list.body["total"], 1, "{}", b_list.text);
 
     // Usage aggregates the same rows.
     let usage = app
@@ -3251,8 +3358,8 @@ async fn flows_crud_versions_and_tenant_scoping() {
 
     let list = app.admin(Method::GET, "/api/v1/flows", None).await;
     assert_eq!(list.status, StatusCode::OK, "{}", list.text);
-    assert_eq!(list.json["total"], 1, "{}", list.text);
-    assert_eq!(list.json["flows"][0]["id"], "main-ivr");
+    assert_eq!(list.body["total"], 1, "{}", list.text);
+    assert_eq!(list.json[0]["id"], "main-ivr");
 
     let updated = app
         .admin(
@@ -3269,12 +3376,7 @@ async fn flows_crud_versions_and_tenant_scoping() {
         .admin(Method::GET, "/api/v1/flows/main-ivr/versions", None)
         .await;
     assert_eq!(versions.status, StatusCode::OK, "{}", versions.text);
-    let version_count = versions
-        .json
-        .as_array()
-        .map(|v| v.len())
-        .or_else(|| versions.json["versions"].as_array().map(|v| v.len()))
-        .unwrap_or(0);
+    let version_count = versions.json.as_array().map(|v| v.len()).unwrap_or(0);
     assert!(version_count >= 1, "{}", versions.text);
 
     // Tenant B cannot see, edit, or delete it.
@@ -3294,7 +3396,7 @@ async fn flows_crud_versions_and_tenant_scoping() {
     let b_list = app
         .admin_in(app.tenant_b, Method::GET, "/api/v1/flows", None)
         .await;
-    assert_eq!(b_list.json["total"], 0, "{}", b_list.text);
+    assert_eq!(b_list.body["total"], 0, "{}", b_list.text);
 
     let del = app
         .admin(Method::DELETE, "/api/v1/flows/main-ivr", None)
@@ -3332,8 +3434,9 @@ async fn flow_traces_follow_call_visibility() {
         .admin_in(app.tenant_a, Method::GET, "/api/v1/flow-traces", None)
         .await;
     assert_eq!(list.status, StatusCode::OK, "{}", list.text);
-    assert_eq!(list.json["total"], 2, "{}", list.text);
-    assert!(list.json["traces"]
+    assert_eq!(list.json.as_array().unwrap().len(), 2, "{}", list.text);
+    assert!(list
+        .json
         .as_array()
         .unwrap()
         .iter()
@@ -3347,7 +3450,12 @@ async fn flow_traces_follow_call_visibility() {
             None,
         )
         .await;
-    assert_eq!(filtered.json["total"], 1, "{}", filtered.text);
+    assert_eq!(
+        filtered.json.as_array().unwrap().len(),
+        1,
+        "{}",
+        filtered.text
+    );
     let bad = app
         .admin_in(
             app.tenant_a,
@@ -3380,7 +3488,7 @@ async fn flow_traces_follow_call_visibility() {
 
     // Unscoped platform access sees everything.
     let all = app.admin(Method::GET, "/api/v1/flow-traces", None).await;
-    assert_eq!(all.json["total"], 3, "{}", all.text);
+    assert_eq!(all.json.as_array().unwrap().len(), 3, "{}", all.text);
 
     app.finish().await;
 }
@@ -6478,11 +6586,11 @@ async fn compliance_policy_audit_log_export_and_retention() {
     loop {
         let page = app.admin_in(app.tenant_a, Method::GET, &path, None).await;
         assert_eq!(page.status, StatusCode::OK, "{}", page.text);
-        assert_eq!(page.json["total_exact"], true, "{}", page.text);
-        for r in page.json["cdrs"].as_array().unwrap() {
+        assert_eq!(page.body["total_exact"], true, "{}", page.text);
+        for r in page.json.as_array().unwrap() {
             walked.push(r["cdr_id"].as_str().unwrap().to_string());
         }
-        match page.json["next_cursor"].as_str() {
+        match page.body["next_cursor"].as_str() {
             Some(cursor) => path = format!("/api/v1/cdrs?limit=1&cursor={cursor}"),
             None => break,
         }
@@ -6491,7 +6599,7 @@ async fn compliance_policy_audit_log_export_and_retention() {
     let total = app
         .admin_in(app.tenant_a, Method::GET, "/api/v1/cdrs?limit=1000", None)
         .await;
-    let listed = total.json["cdrs"].as_array().unwrap().len();
+    let listed = total.json.as_array().unwrap().len();
     // The last page is full when the count divides evenly: one empty page more.
     assert_eq!(walked.len(), listed, "{walked:?}");
     let mut unique = walked.clone();
@@ -6806,7 +6914,7 @@ async fn recordings_are_listed_scoped_and_deleted_through_their_node() {
     // The tenant's own, newest first, with the row's detail.
     let list = app.admin(Method::GET, "/api/v1/recordings", None).await;
     assert_eq!(list.status, StatusCode::OK, "{}", list.text);
-    let rows = list.json["recordings"].as_array().unwrap();
+    let rows = list.json.as_array().unwrap();
     assert_eq!(rows.len(), 2, "{}", list.text);
     let ids: Vec<&str> = rows.iter().map(|r| r["id"].as_str().unwrap()).collect();
     assert!(ids.contains(&done.id.to_string().as_str()));
@@ -6834,13 +6942,13 @@ async fn recordings_are_listed_scoped_and_deleted_through_their_node() {
     let only_running = app
         .admin(Method::GET, "/api/v1/recordings?running=true", None)
         .await;
-    let rows = only_running.json["recordings"].as_array().unwrap();
+    let rows = only_running.json.as_array().unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["id"], running.id.to_string());
     let by_room = app
         .admin(Method::GET, "/api/v1/recordings?room_number=8001", None)
         .await;
-    assert_eq!(by_room.json["recordings"].as_array().unwrap().len(), 1);
+    assert_eq!(by_room.json.as_array().unwrap().len(), 1);
 
     // One recording, and another tenant's is simply not found.
     let got = app
@@ -6960,7 +7068,8 @@ async fn the_retention_sweep_takes_only_conference_recordings_a_node_abandoned()
     assert_eq!(run.json["conference_recordings_deleted"], 1, "{}", run.text);
 
     let left = app.admin(Method::GET, "/api/v1/recordings", None).await;
-    let rooms: Vec<&str> = left.json["recordings"]
+    let rooms: Vec<&str> = left
+        .json
         .as_array()
         .unwrap()
         .iter()
@@ -7280,7 +7389,7 @@ async fn a_subject_export_is_filed_run_downloaded_and_audited() {
             None,
         )
         .await;
-    assert_eq!(list.json["count"], 1, "{}", list.text);
+    assert_eq!(list.body["total"], 1, "{}", list.text);
     let other = app
         .admin_in(
             app.tenant_b,
@@ -8490,13 +8599,16 @@ async fn hoteling_hosts_credentials_and_sessions() {
     let all = app
         .admin(Method::GET, "/api/v1/hoteling/sessions?all=true", None)
         .await;
-    let ends: Vec<&str> = all
+    // Started within one second, the three tie on their start: what each
+    // ended by, not their order.
+    let mut ends: Vec<&str> = all
         .json
         .as_array()
         .unwrap()
         .iter()
         .map(|s| s["ended_by"].as_str().unwrap())
         .collect();
+    ends.sort();
     assert_eq!(ends, ["admin", "admin", "logout"], "{}", all.text);
 
     // A starting session replaces the guest's other one.

@@ -130,6 +130,7 @@ pub async fn list_prompts(
     State(state): State<ApiState>,
     tenant: TenantContext,
     Query(query): Query<ListPromptsQuery>,
+    axum::extract::Query(page): axum::extract::Query<crate::page::PageQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let prompt_store = require_prompt_store(&state)?;
 
@@ -147,7 +148,12 @@ pub async fn list_prompts(
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
     let responses: Vec<PromptResponse> = prompts.into_iter().map(PromptResponse::from).collect();
-    Ok(Json(responses))
+    Ok(Json(crate::page::paginate(
+        responses,
+        &page,
+        crate::page::Order::Ascending,
+        |r| format!("{}/{}", r.name, r.id),
+    )?))
 }
 
 /// GET /api/v1/prompts/:id

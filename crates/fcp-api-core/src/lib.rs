@@ -15,6 +15,7 @@ pub mod auth;
 pub mod e911_validator;
 pub mod error;
 pub mod managed;
+pub mod page;
 pub mod rate_limit;
 pub mod route_permissions;
 pub mod shape;

@@ -103,6 +103,7 @@ pub async fn list_lcr_routes(
     Extension(identity): Extension<AuthIdentity>,
     tenant: crate::auth::TenantContext,
     Query(query): Query<ListLcrRoutesQuery>,
+    axum::extract::Query(page): axum::extract::Query<crate::page::PageQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     crate::auth::check_permission(&identity, Permission::TrunkRead, state.deployment_mode)?;
     let storage = require_storage!(state);
@@ -120,7 +121,12 @@ pub async fn list_lcr_routes(
         })
         .map(LcrRouteResponse::from)
         .collect();
-    Ok(Json(response))
+    Ok(Json(crate::page::paginate(
+        response,
+        &page,
+        crate::page::Order::Ascending,
+        |r| format!("{}/{}", r.prefix, r.id),
+    )?))
 }
 
 pub async fn get_lcr_route(

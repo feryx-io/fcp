@@ -205,6 +205,7 @@ async fn deletions_are_logged_attributed_and_their_files_reaped_within_their_ten
     let logged = db
         .compliance
         .list_deletions(&DeletionQuery {
+            before: None,
             tenant_id: Some(a),
             class: Some("call_recording".into()),
             limit: 10,
@@ -259,6 +260,7 @@ async fn deletions_are_logged_attributed_and_their_files_reaped_within_their_ten
     let voicemail = db
         .compliance
         .list_deletions(&DeletionQuery {
+            before: None,
             tenant_id: Some(a),
             class: Some("voicemail".into()),
             limit: 10,
@@ -360,6 +362,7 @@ async fn deletions_are_logged_attributed_and_their_files_reaped_within_their_ten
     let platform = db
         .compliance
         .list_deletions(&DeletionQuery {
+            before: None,
             class: Some("orphan_file".into()),
             limit: 10,
             ..Default::default()
@@ -1903,6 +1906,7 @@ async fn an_erasure_previews_then_deletes_pseudonymises_and_keeps_what_it_must()
     let logged = db
         .compliance
         .list_deletions(&DeletionQuery {
+            before: None,
             request_id: Some(request.id.to_string()),
             limit: 200,
             ..Default::default()

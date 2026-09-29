@@ -127,7 +127,8 @@ pub async fn list_registrations(
     tenant: TenantContext,
     identity: Option<Extension<AuthIdentity>>,
     headers: HeaderMap,
-) -> Result<Json<Vec<RegistrationResponse>>, ApiError> {
+    axum::extract::Query(page): axum::extract::Query<crate::page::PageQuery>,
+) -> Result<Json<crate::page::Page<RegistrationResponse>>, ApiError> {
     let storage = state
         .storage
         .as_ref()
@@ -149,7 +150,12 @@ pub async fn list_registrations(
         .map(RegistrationResponse::from)
         .collect();
 
-    Ok(Json(active))
+    Ok(Json(crate::page::paginate(
+        active,
+        &page,
+        crate::page::Order::Ascending,
+        |r| format!("{}/{}", r.aor, r.contact),
+    )?))
 }
 
 /// List registrations for a specific AOR.
@@ -161,7 +167,8 @@ pub async fn get_registrations(
     identity: Option<Extension<AuthIdentity>>,
     headers: HeaderMap,
     Path(aor): Path<String>,
-) -> Result<Json<Vec<RegistrationResponse>>, ApiError> {
+    axum::extract::Query(page): axum::extract::Query<crate::page::PageQuery>,
+) -> Result<Json<crate::page::Page<RegistrationResponse>>, ApiError> {
     validation::validate_aor(&aor)?;
 
     if !platform_wide(identity.as_ref().map(|ext| &ext.0), &headers)
@@ -192,7 +199,12 @@ pub async fn get_registrations(
         .map(RegistrationResponse::from)
         .collect();
 
-    Ok(Json(active))
+    Ok(Json(crate::page::paginate(
+        active,
+        &page,
+        crate::page::Order::Ascending,
+        |r| r.contact.clone(),
+    )?))
 }
 
 /// Delete all registrations for a specific AOR.

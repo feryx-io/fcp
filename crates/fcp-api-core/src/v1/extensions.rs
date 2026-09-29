@@ -145,6 +145,7 @@ pub struct UpdateExtensionRequest {
 pub async fn list_extensions(
     State(state): State<ApiState>,
     tenant: crate::auth::TenantContext,
+    axum::extract::Query(page): axum::extract::Query<crate::page::PageQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = require_storage!(state);
 
@@ -158,7 +159,12 @@ pub async fn list_extensions(
     let response: Vec<ExtensionResponse> = extensions.into_iter().map(|e| e.into()).collect();
 
     info!("Listed {} extensions", response.len());
-    Ok(Json(response))
+    Ok(Json(crate::page::paginate(
+        response,
+        &page,
+        crate::page::Order::Ascending,
+        |r| format!("{:>20}/{}", r.number, r.id),
+    )?))
 }
 
 /// Get extension by number.

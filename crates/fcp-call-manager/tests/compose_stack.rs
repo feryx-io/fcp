@@ -285,7 +285,7 @@ async fn the_compose_stack_comes_up_and_carries_a_call() {
     let n = via_gateway
         .as_array()
         .map(|a| a.len())
-        .or_else(|| via_gateway["calls"].as_array().map(|a| a.len()))
+        .or_else(|| via_gateway["data"].as_array().map(|a| a.len()))
         .unwrap_or(0);
     assert!(n >= 1, "the gateway reads the call back: {via_gateway}");
 

@@ -100,25 +100,6 @@ pub struct ListFlowTracesQuery {
     pub time_from: Option<String>,
     /// Filter by timestamp end (Unix timestamp in seconds)
     pub time_to: Option<String>,
-    /// Maximum number of results (default: 100, max: 1000)
-    #[serde(default = "default_limit")]
-    pub limit: usize,
-    /// Offset for pagination (default: 0)
-    #[serde(default)]
-    pub offset: usize,
-}
-
-fn default_limit() -> usize {
-    100
-}
-
-/// Paginated list of flow traces.
-#[derive(Debug, Serialize)]
-pub struct ListFlowTracesResponse {
-    pub traces: Vec<FlowTraceResponse>,
-    pub total: usize,
-    pub limit: usize,
-    pub offset: usize,
 }
 
 /// List flow execution traces with filters and pagination.
@@ -130,6 +111,7 @@ pub async fn list_flow_traces(
     identity: Option<Extension<AuthIdentity>>,
     headers: HeaderMap,
     Query(params): Query<ListFlowTracesQuery>,
+    Query(page): Query<crate::page::PageQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = state
         .storage
@@ -140,7 +122,8 @@ pub async fn list_flow_traces(
         .flow_trace_store()
         .ok_or_else(|| ApiError::NotFound("Flow trace store not configured".to_string()))?;
 
-    let limit = params.limit.clamp(1, 1000);
+    let limit = page.limit()?;
+    let offset = page.offset()?;
 
     let mut query = FlowTraceQuery {
         call_id: params.call_id,
@@ -149,7 +132,7 @@ pub async fn list_flow_traces(
         time_from: None,
         time_to: None,
         limit: Some(limit),
-        offset: Some(params.offset),
+        offset: Some(offset),
     };
 
     // Parse event_type
@@ -188,7 +171,7 @@ pub async fn list_flow_traces(
         flow_id = ?query.flow_id,
         event_type = ?query.event_type,
         limit = limit,
-        offset = params.offset,
+        offset,
         "Querying flow traces"
     );
 
@@ -212,18 +195,15 @@ pub async fn list_flow_traces(
         .into_iter()
         .map(FlowTraceResponse::from)
         .collect();
-    let scoped_total = traces.len();
-
-    Ok(Json(ListFlowTracesResponse {
+    // The store pages before the tenant filter, so the next page is
+    // wherever the store's page ended, whatever this one kept.
+    let more = offset + limit < total;
+    let page = crate::page::Page::new(
         traces,
-        total: if allow_all_tenants {
-            total
-        } else {
-            scoped_total
-        },
-        limit,
-        offset: params.offset,
-    }))
+        more.then(|| format!("o:{}", offset + limit)),
+        allow_all_tenants.then_some(total as u64),
+    );
+    Ok(Json(page))
 }
 
 /// Get all flow traces for a specific call, ordered by timestamp.
@@ -235,6 +215,7 @@ pub async fn get_call_flow_traces(
     identity: Option<Extension<AuthIdentity>>,
     headers: HeaderMap,
     Path(call_id): Path<String>,
+    axum::extract::Query(page): axum::extract::Query<crate::page::PageQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let allow_all_tenants = can_access_all_tenants(identity.as_ref().map(|ext| &ext.0))
         && !headers.contains_key(PLATFORM_TENANT_HEADER);
@@ -263,5 +244,10 @@ pub async fn get_call_flow_traces(
 
     let traces: Vec<FlowTraceResponse> = entries.into_iter().map(FlowTraceResponse::from).collect();
 
-    Ok(Json(traces))
+    Ok(Json(crate::page::paginate(
+        traces,
+        &page,
+        crate::page::Order::Ascending,
+        |r| format!("{:>24}/{:020}", r.timestamp, r.id),
+    )?))
 }

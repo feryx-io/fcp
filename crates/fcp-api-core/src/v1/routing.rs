@@ -145,6 +145,7 @@ pub async fn list_routing_rules(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
     tenant: crate::auth::TenantContext,
+    axum::extract::Query(page): axum::extract::Query<crate::page::PageQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     crate::auth::check_permission(
         &identity,
@@ -158,7 +159,12 @@ pub async fn list_routing_rules(
         .map_err(|e| ApiError::Internal(format!("Failed to list routing rules: {}", e)))?;
     let response: Vec<RoutingRuleResponse> =
         rules.into_iter().map(RoutingRuleResponse::from).collect();
-    Ok(Json(response))
+    Ok(Json(crate::page::paginate(
+        response,
+        &page,
+        crate::page::Order::Ascending,
+        |r| format!("{:010}/{}", r.priority, r.id),
+    )?))
 }
 
 pub async fn get_routing_rule(

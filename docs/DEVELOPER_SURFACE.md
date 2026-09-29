@@ -294,6 +294,19 @@ SDKs and the guide are checked in CI.
          the old ones.
        - The test suite checks every response it sees.
      - **2c** puts every list in the `{data, next_cursor}` envelope.
+       **Done (v0.25.296).**
+       - `fcp_api_core::page` provides `PageQuery`, `Page`, and `paginate`
+         (keyset over a stable key) for the lists read whole.
+       - The audit and deletion logs page in SQL by `(time, id)`.
+       - CDRs keep their store cursor inside the envelope.
+       - Flows, recordings, flow traces and billing use an offset cursor.
+       - The UI's `getAll` follows cursors. CDRs, recordings and flow
+         traces page with a cursor stack.
+       - The CLI's `list_all` follows cursors too. Its registrations list
+         had quietly read nothing against the admin API.
+       - The paging test found the compliance store dropping sub-seconds
+         from times it read back, so a cursor skipped rows later in the
+         same second.
 3. **The contract.**
    - `utoipa` on every admin route, and typed responses in place of
      `impl IntoResponse` where the body is JSON.

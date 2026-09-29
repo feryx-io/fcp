@@ -477,6 +477,9 @@ pub struct DeletionQuery {
     /// Only what this subject request deleted.
     pub request_id: Option<String>,
     pub limit: usize,
+    /// Only rows older than this `(deleted_at, id)`: the keyset cursor of
+    /// the API's pages (docs/DEVELOPER_SURFACE.md §3, phase 2c).
+    pub before: Option<(SystemTime, i64)>,
 }
 
 /// A file whose row is gone, waiting for the reaper.
@@ -564,6 +567,9 @@ pub struct AuditQuery {
     pub action_prefix: Option<String>,
     pub since: Option<SystemTime>,
     pub limit: usize,
+    /// Only events older than this `(occurred_at, id)`: the keyset cursor
+    /// of the API's pages (docs/DEVELOPER_SURFACE.md §3, phase 2c).
+    pub before: Option<(SystemTime, i64)>,
 }
 
 /// What one retention run deleted.

@@ -316,6 +316,7 @@ pub async fn list_trunks(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
     tenant: crate::auth::TenantContext,
+    axum::extract::Query(page): axum::extract::Query<crate::page::PageQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     crate::auth::check_permission(&identity, Permission::TrunkRead, state.deployment_mode)?;
     let storage = require_storage!(state);
@@ -336,7 +337,12 @@ pub async fn list_trunks(
                 .with_nodes(&reports)
         })
         .collect();
-    Ok(Json(response))
+    Ok(Json(crate::page::paginate(
+        response,
+        &page,
+        crate::page::Order::Ascending,
+        |r| format!("{}/{}", r.name, r.id),
+    )?))
 }
 
 /// Get a single trunk.

@@ -117,6 +117,7 @@ pub async fn list_sessions(
     Extension(identity): Extension<AuthIdentity>,
     tenant: crate::auth::TenantContext,
     Query(query): Query<ListQuery>,
+    axum::extract::Query(page): axum::extract::Query<crate::page::PageQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     crate::auth::check_permission(&identity, Permission::DeviceRead, state.deployment_mode)?;
     let storage = require_storage!(state);
@@ -128,7 +129,12 @@ pub async fn list_sessions(
     for session in sessions {
         out.push(session_response(storage, session).await);
     }
-    Ok(Json(out))
+    Ok(Json(crate::page::paginate(
+        out,
+        &page,
+        crate::page::Order::Descending,
+        |r| crate::page::system_time_key(r.started_at, &r.id),
+    )?))
 }
 
 /// DELETE /v1/hoteling/sessions/:id

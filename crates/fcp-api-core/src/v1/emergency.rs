@@ -583,16 +583,6 @@ async fn notification_readiness(
 
 // ─── Audit trail ─────────────────────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
-pub struct ListCallsQuery {
-    #[serde(default = "default_limit")]
-    pub limit: usize,
-}
-
-fn default_limit() -> usize {
-    100
-}
-
 #[derive(Debug, Serialize)]
 pub struct EmergencyCallResponse {
     pub id: i64,
@@ -664,15 +654,22 @@ impl From<EmergencyCallRecord> for EmergencyCallResponse {
 pub async fn list_calls(
     State(state): State<ApiState>,
     tenant: TenantContext,
-    Query(params): Query<ListCallsQuery>,
+    Query(page): Query<crate::page::PageQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let store = require_store(&state)?;
+    // Emergency calls are rare: the newest thousand are the whole log for
+    // a long time.
     let calls = store
-        .list_emergency_calls(&tenant.0, params.limit)
+        .list_emergency_calls(&tenant.0, crate::page::MAX_LIMIT)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     let out: Vec<EmergencyCallResponse> = calls.into_iter().map(Into::into).collect();
-    Ok(Json(out))
+    Ok(Json(crate::page::paginate(
+        out,
+        &page,
+        crate::page::Order::Descending,
+        |r| crate::page::time_key(r.placed_at, &r.call_id),
+    )?))
 }
 
 /// One attempt to tell one contact about one emergency call (§8.3).
@@ -725,6 +722,7 @@ pub async fn list_call_notifications(
     State(state): State<ApiState>,
     tenant: TenantContext,
     Path(call_id): Path<String>,
+    axum::extract::Query(page): axum::extract::Query<crate::page::PageQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let store = require_store(&state)?;
     // Records keep the bare uuid; a client may hold either form.
@@ -740,7 +738,12 @@ pub async fn list_call_notifications(
             .map_err(|e| ApiError::Internal(e.to_string()))?;
     }
     let out: Vec<NotificationResponse> = rows.into_iter().map(Into::into).collect();
-    Ok(Json(out))
+    Ok(Json(crate::page::paginate(
+        out,
+        &page,
+        crate::page::Order::Ascending,
+        |r| format!("{:020}", r.id),
+    )?))
 }
 
 // ─── The call channel ────────────────────────────────────────────────────

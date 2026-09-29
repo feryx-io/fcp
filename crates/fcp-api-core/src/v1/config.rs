@@ -57,12 +57,6 @@ pub struct ListConfigsQuery {
 pub struct AuditLogQuery {
     pub service: Option<String>,
     pub section: Option<String>,
-    #[serde(default = "default_audit_limit")]
-    pub limit: i64,
-}
-
-fn default_audit_limit() -> i64 {
-    50
 }
 
 #[derive(Debug, Serialize)]
@@ -166,7 +160,8 @@ pub async fn list_configs(
     tenant: TenantContext,
     identity: Option<Extension<AuthIdentity>>,
     Query(params): Query<ListConfigsQuery>,
-) -> Result<Json<Vec<ConfigEntryResponse>>, ApiError> {
+    axum::extract::Query(page): axum::extract::Query<crate::page::PageQuery>,
+) -> Result<Json<crate::page::Page<ConfigEntryResponse>>, ApiError> {
     let store = get_store(&state)?;
     let tid = scoped_config_tenant_id(
         &tenant,
@@ -178,7 +173,12 @@ pub async fn list_configs(
         .await
         .map_err(|e| ApiError::Internal(format!("failed to list configs: {e}")))?;
 
-    Ok(Json(entries.into_iter().map(Into::into).collect()))
+    Ok(Json(crate::page::paginate(
+        entries.into_iter().map(Into::into).collect(),
+        &page,
+        crate::page::Order::Ascending,
+        |r: &ConfigEntryResponse| format!("{}/{}", r.service, r.section),
+    )?))
 }
 
 /// GET /api/v1/config/:service -- list sections for a service
@@ -188,7 +188,8 @@ pub async fn list_service_config(
     identity: Option<Extension<AuthIdentity>>,
     Path(service): Path<String>,
     Query(params): Query<SectionQuery>,
-) -> Result<Json<Vec<ConfigEntryResponse>>, ApiError> {
+    axum::extract::Query(page): axum::extract::Query<crate::page::PageQuery>,
+) -> Result<Json<crate::page::Page<ConfigEntryResponse>>, ApiError> {
     let store = get_store(&state)?;
     let scoped_tenant_id = scoped_config_tenant_id(
         &tenant,
@@ -200,7 +201,12 @@ pub async fn list_service_config(
         .await
         .map_err(|e| ApiError::Internal(format!("failed to get service config: {e}")))?;
 
-    Ok(Json(entries.into_iter().map(Into::into).collect()))
+    Ok(Json(crate::page::paginate(
+        entries.into_iter().map(Into::into).collect(),
+        &page,
+        crate::page::Order::Ascending,
+        |r: &ConfigEntryResponse| format!("{}/{}", r.service, r.section),
+    )?))
 }
 
 /// GET /api/v1/config/:service/:section -- get specific section
@@ -300,20 +306,26 @@ pub async fn get_audit_log(
     tenant: TenantContext,
     identity: Option<Extension<AuthIdentity>>,
     Query(params): Query<AuditLogQuery>,
-) -> Result<Json<Vec<AuditEntryResponse>>, ApiError> {
+    Query(page): Query<crate::page::PageQuery>,
+) -> Result<Json<crate::page::Page<AuditEntryResponse>>, ApiError> {
     let store = get_store(&state)?;
 
     let service = params.service.as_deref().unwrap_or("_global");
     let tenant_id = scoped_config_tenant_id(&tenant, identity.as_ref().map(|ext| &ext.0), None);
 
-    let limit = params.limit.clamp(1, 500);
-
+    // A section's history: the newest 500 changes are the whole of it for
+    // a long time.
     let entries = store
-        .get_audit_log(service, &tenant_id, params.section.as_deref(), limit)
+        .get_audit_log(service, &tenant_id, params.section.as_deref(), 500)
         .await
         .map_err(|e| ApiError::Internal(format!("failed to get audit log: {e}")))?;
 
-    Ok(Json(entries.into_iter().map(Into::into).collect()))
+    Ok(Json(crate::page::paginate(
+        entries.into_iter().map(Into::into).collect(),
+        &page,
+        crate::page::Order::Descending,
+        |r: &AuditEntryResponse| format!("{:020}", r.id),
+    )?))
 }
 
 /// POST /api/v1/config/:service/:section/validate -- validate without saving
