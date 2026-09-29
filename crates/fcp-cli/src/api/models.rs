@@ -508,7 +508,8 @@ pub struct SubscriptionResponse {
     pub event: String,
     pub state: String,
     pub contact: String,
-    pub expires_at: String,
+    /// The subscription's lifetime, as its `Expires` gave it.
+    pub expires_in_secs: u64,
 }
 
 /// Rate limit state response

@@ -120,7 +120,7 @@ pub async fn handle(
                             subscription.to_tag.clone(),
                             subscription.event.clone(),
                             subscription.state.clone(),
-                            subscription.expires_at.clone(),
+                            format!("{}s", subscription.expires_in_secs),
                         ]);
                     }
 

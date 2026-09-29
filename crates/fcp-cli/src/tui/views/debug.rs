@@ -406,7 +406,7 @@ fn render_subscriptions(
                 Cell::from(sub.event.clone()),
                 Cell::from(sub.state.clone()),
                 Cell::from(contact),
-                Cell::from(sub.expires_at.clone()),
+                Cell::from(format!("{}s", sub.expires_in_secs)),
             ])
         })
         .collect();
