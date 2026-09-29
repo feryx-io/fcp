@@ -251,10 +251,10 @@ export function ExtensionsPage() {
 
   const onEditSubmit = (data: EditForm) => {
     if (!editItem) return
+    // An extension's tenant is fixed at creation; the update takes none.
     const updateData: UpdateExtensionRequest = {
       description: data.description || undefined,
       location_id: data.location_id || undefined,
-      tenant_id: data.tenant_id || undefined,
     }
     if (data.target_type && data.target_id) {
       updateData.target = { type: data.target_type as UpdateExtensionRequest['target'] extends undefined ? never : NonNullable<UpdateExtensionRequest['target']>['type'], id: data.target_id }
@@ -262,7 +262,7 @@ export function ExtensionsPage() {
     updateMutation.mutate({ number: editItem.number, data: updateData })
   }
 
-  const locationName = (id: string | null) => {
+  const locationName = (id?: string | null) => {
     if (!id) return '-'
     const loc = locationList.find((l: Location) => l.id === id)
     return loc ? loc.name : id
@@ -457,7 +457,7 @@ function TargetSelector({
   onChange: (value: string) => void
   userList: User[]
   deviceList: { id: string; name: string }[]
-  phoneNumberList: { id: string; e164: string; cnam: string | null }[]
+  phoneNumberList: { id: string; e164: string; cnam?: string | null }[]
 }) {
   if (targetType === 'user') {
     return (

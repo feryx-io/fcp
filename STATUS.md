@@ -1516,6 +1516,21 @@ types generated from it).
   all are fixed.
 - `docs/API_CURL.md` and `docs/API_EXAMPLES.md` are deleted.
 
+3b done (v0.25.298):
+- The admin UI's API types are generated from the contract
+  (`openapi-typescript`, `npm run gen:api`, `src/api/schema.d.ts`), and
+  127 hand-written types are now aliases of them. Typechecking against
+  them found update bodies sending a `tenant_id` the server ignores,
+  codecs typed as free strings, and the audit log typed after the config
+  audit.
+- A new **Admin UI** CI job regenerates the types, fails on a diff, and
+  runs `tsc`.
+- `fcp-cli/tests/contract.rs` parses minimal and full instances of each
+  schema into the CLI's 13 models. It found the debug subscription field
+  2b renamed.
+
+Phase 3 is complete.
+
 ## Historical documents
 
 Superseded status docs live in [`docs/archive/`](docs/archive/README.md) — they describe

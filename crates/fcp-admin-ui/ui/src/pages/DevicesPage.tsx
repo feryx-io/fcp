@@ -125,7 +125,7 @@ export function DevicesPage() {
     queryFn: users.list,
   })
 
-  const locationName = (id: string | null) => {
+  const locationName = (id?: string | null) => {
     if (!id) return '-'
     const loc = locationList.find((l) => l.id === id)
     return loc ? loc.name : id

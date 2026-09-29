@@ -65,6 +65,8 @@ pub struct ConfigEntryResponse {
     pub service: String,
     pub section: String,
     pub tenant_id: String,
+    /// A configuration section: a JSON object.
+    #[schema(value_type = std::collections::HashMap<String, serde_json::Value>)]
     pub value: serde_json::Value,
     pub version: i64,
     pub updated_at: String,
@@ -91,7 +93,9 @@ pub struct AuditEntryResponse {
     pub service: String,
     pub section: String,
     pub tenant_id: String,
+    #[schema(value_type = Option<std::collections::HashMap<String, serde_json::Value>>)]
     pub old_value: Option<serde_json::Value>,
+    #[schema(value_type = std::collections::HashMap<String, serde_json::Value>)]
     pub new_value: serde_json::Value,
     pub changed_by: Option<String>,
     pub changed_at: String,
@@ -116,6 +120,8 @@ impl From<fcp_core::config_store::AuditEntry> for AuditEntryResponse {
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpdateConfigRequest {
+    /// A configuration section: a JSON object.
+    #[schema(value_type = std::collections::HashMap<String, serde_json::Value>)]
     pub value: serde_json::Value,
     #[serde(default = "default_tenant_id")]
     pub tenant_id: String,

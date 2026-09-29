@@ -339,6 +339,19 @@ SDKs and the guide are checked in CI.
        - proxied conference and supervision errors outside the error
          shape;
        - a 422 without a code.
+   - **3b done (v0.25.298).**
+     - The admin UI generates `src/api/schema.d.ts` from `docs/openapi.json`
+       with `openapi-typescript` (`npm run gen:api`). 127 of its types are
+       now aliases of the generated schemas, so `tsc` catches drift. It
+       found:
+       - `tenant_id` sent in two update bodies the server never read;
+       - codecs typed as free strings;
+       - the audit log typed after the config audit.
+     - A new CI job, **Admin UI**, regenerates the file, fails on a diff,
+       and typechecks. CI had never built the UI.
+     - The CLI keeps its models. `fcp-cli/tests/contract.rs` feeds each of
+       the 13 a minimal and a full instance of its schema, and so found the
+       debug subscription field that 2b renamed.
 4. **SDKs.**
    - TypeScript and Python clients in `sdk/`, generated from the spec,
      under a thin hand-written layer: auth, the tenant header, a pager over

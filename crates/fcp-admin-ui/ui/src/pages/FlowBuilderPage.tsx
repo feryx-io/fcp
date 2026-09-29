@@ -343,7 +343,8 @@ export function FlowBuilderPage() {
   // Initialize from flow data
   useEffect(() => {
     if (flow) {
-      const nodesData = flow.nodes || {}
+      // The API holds a flow's nodes as free JSON; the builder knows their shape.
+      const nodesData = (flow.nodes || {}) as Record<string, FlowNode>
       const savedPositions = (flow.variables as Record<string, unknown>)?._ui_positions as PositionMap | undefined
       const { nodes: rfNodes, edges: rfEdges } = flowNodesToReactFlow(
         nodesData,

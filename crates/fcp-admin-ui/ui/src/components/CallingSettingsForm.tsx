@@ -8,7 +8,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
-import type { CallingSettings, ExecutiveAlert, ExecutiveFilter, FindMe, UpdateCallingRequest } from '@/types'
+import type { CallingSettings, ExecutiveAlert, ExecutiveFilter, FindMeStep, UpdateCallingRequest } from '@/types'
 
 const VM = 'voicemail'
 
@@ -29,7 +29,8 @@ interface FormState {
   hold_music: string
   after_hours_schedule_id: string
   after_hours_forward: string
-  find_me: FindMe
+  /** The steps are always a list in the form, empty for none. */
+  find_me: { enabled: boolean; steps: FindMeStep[] }
   forwards: Record<ForwardKey, ForwardState>
   /** '' is the tenant's default class */
   class_of_service_id: string
@@ -58,7 +59,7 @@ function fieldOf(target: string): string {
   return target
 }
 
-function forwardState(target: string | null): ForwardState {
+function forwardState(target?: string | null): ForwardState {
   if (!target) return { enabled: false, voicemail: false, target: '' }
   const voicemail = target.toLowerCase() === VM
   return { enabled: true, voicemail, target: voicemail ? '' : fieldOf(target) }
@@ -72,7 +73,7 @@ function stateOf(s: CallingSettings): FormState {
     hold_music: s.hold_music ?? 'tenant',
     after_hours_schedule_id: s.after_hours_schedule_id ?? '',
     after_hours_forward: s.after_hours_forward ? fieldOf(s.after_hours_forward) : '',
-    find_me: s.find_me ?? { enabled: false, steps: [] },
+    find_me: { enabled: s.find_me?.enabled ?? false, steps: s.find_me?.steps ?? [] },
     class_of_service_id: s.class_of_service_id ?? '',
     executive: {
       enabled: s.executive?.enabled ?? false,

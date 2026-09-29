@@ -73,7 +73,7 @@ export function ClassesOfServicePage() {
   const update = (patch: Partial<ClassOfServiceRequest>) =>
     setEditing((prev) => (prev ? { ...prev, req: { ...prev.req, ...patch } } : prev))
   const toggle = (c: DestinationClass, on: boolean) =>
-    update({ allowed: on ? [...req!.allowed.filter((x) => x !== c), c] : req!.allowed.filter((x) => x !== c) })
+    update({ allowed: on ? [...(req!.allowed ?? []).filter((x) => x !== c), c] : (req!.allowed ?? []).filter((x) => x !== c) })
 
   return (
     <div className="space-y-6">
@@ -202,7 +202,7 @@ export function ClassesOfServicePage() {
                     <label key={c} className="flex items-center gap-2 text-sm">
                       <input
                         type="checkbox"
-                        checked={req.allowed.includes(c)}
+                        checked={(req.allowed ?? []).includes(c)}
                         onChange={(e) => toggle(c, e.target.checked)}
                       />
                       {DESTINATION_LABELS[c]}

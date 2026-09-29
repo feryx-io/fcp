@@ -56,14 +56,14 @@ export function TokenSecretDialog({
 }
 
 /** A token's state, for a badge: revoked, expired, or active. */
-export function tokenStatus(t: { revoked_at: string | null; expires_at: string | null }) {
+export function tokenStatus(t: { revoked_at?: string | null; expires_at?: string | null }) {
   if (t.revoked_at) return 'revoked' as const
   if (t.expires_at && new Date(t.expires_at) < new Date()) return 'expired' as const
   return 'active' as const
 }
 
 /** The note a rotation's secret carries. */
-export function rotationNote(until: string | null) {
+export function rotationNote(until?: string | null) {
   return until
     ? `The previous secret keeps working until ${new Date(until).toLocaleString()}.`
     : 'The previous secret no longer works.'

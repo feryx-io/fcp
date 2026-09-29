@@ -20,6 +20,9 @@ import {
 } from '@/components/ui/select'
 import { conferences, conferenceLive, joinTokens, prompts, users, type PromptResponse } from '@/api/endpoints'
 import type { MeetingResponse, CreateMeetingRequest, UpdateMeetingRequest, User } from '@/types'
+
+/** A codec the conference server encodes: what the API accepts. */
+type VideoCodecName = NonNullable<CreateMeetingRequest['video_codecs']>[number]
 import { useTenantListFilter } from '@/components/TenantSelector'
 import { LiveVideoDialog } from '@/components/LiveVideoDialog'
 import { JoinLinkDialog } from '@/components/JoinLinkDialog'
@@ -499,7 +502,7 @@ function CreateDialog({ open, onOpenChange, onSubmit, isPending, promptList, use
       video_passthrough: data.video_passthrough,
       video_content_share: data.video_content_share,
       video_content_layout: data.video_content_layout,
-      video_codecs: data.video_codecs,
+      video_codecs: data.video_codecs as VideoCodecName[] | undefined,
     })
     reset()
   }
@@ -801,7 +804,7 @@ function EditDialog({ item, onOpenChange, onSubmit, isPending, promptList, userL
     if (data.video_passthrough !== undefined) update.video_passthrough = data.video_passthrough
     if (data.video_content_share !== undefined) update.video_content_share = data.video_content_share
     if (data.video_content_layout !== undefined) update.video_content_layout = data.video_content_layout
-    if (data.video_codecs !== undefined) update.video_codecs = data.video_codecs
+    if (data.video_codecs !== undefined) update.video_codecs = data.video_codecs as VideoCodecName[]
     onSubmit(update)
   }
 

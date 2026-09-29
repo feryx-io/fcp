@@ -66,9 +66,9 @@ export function SchedulesPage() {
   const update = (patch: Partial<ScheduleRequest>) =>
     setEditing((prev) => (prev ? { ...prev, req: { ...prev.req, ...patch } } : prev))
   const setWindow = (i: number, patch: Partial<WeeklyWindow>) =>
-    update({ weekly: req!.weekly.map((w, j) => (j === i ? { ...w, ...patch } : w)) })
+    update({ weekly: (req!.weekly ?? []).map((w, j) => (j === i ? { ...w, ...patch } : w)) })
   const setHoliday = (i: number, patch: Partial<Holiday>) =>
-    update({ holidays: req!.holidays.map((h, j) => (j === i ? { ...h, ...patch } : h)) })
+    update({ holidays: (req!.holidays ?? []).map((h, j) => (j === i ? { ...h, ...patch } : h)) })
 
   return (
     <div className="space-y-6">
@@ -162,7 +162,7 @@ export function SchedulesPage() {
                 <div className="space-y-1">
                   <Label>Timezone</Label>
                   <Input
-                    value={req.timezone}
+                    value={req.timezone ?? ''}
                     placeholder="America/New_York"
                     onChange={(e) => update({ timezone: e.target.value })}
                   />
@@ -176,7 +176,7 @@ export function SchedulesPage() {
                     type="button"
                     variant="outline"
                     size="sm"
-                    onClick={() => update({ weekly: [...req.weekly, { days: ['Mon'], start: '09:00', end: '17:00' }] })}
+                    onClick={() => update({ weekly: [...(req.weekly ?? []), { days: ['Mon'], start: '09:00', end: '17:00' }] })}
                   >
                     <Plus className="mr-1 h-3 w-3" /> Add hours
                   </Button>
@@ -184,7 +184,7 @@ export function SchedulesPage() {
                 <p className="text-xs text-muted-foreground">
                   A start equal to its end is the whole day; an end before its start runs past midnight.
                 </p>
-                {req.weekly.map((w, i) => (
+                {(req.weekly ?? []).map((w, i) => (
                   <div key={i} className="flex flex-wrap items-center gap-2 rounded-md border p-2">
                     {DAYS.map((d) => (
                       <label key={d} className="flex items-center gap-1 text-xs">
@@ -207,7 +207,7 @@ export function SchedulesPage() {
                       type="button"
                       variant="ghost"
                       size="sm"
-                      onClick={() => update({ weekly: req.weekly.filter((_, j) => j !== i) })}
+                      onClick={() => update({ weekly: (req.weekly ?? []).filter((_, j) => j !== i) })}
                     >
                       <X className="h-4 w-4" />
                     </Button>
@@ -223,13 +223,13 @@ export function SchedulesPage() {
                     variant="outline"
                     size="sm"
                     onClick={() =>
-                      update({ holidays: [...req.holidays, { name: '', from: new Date().toISOString().slice(0, 10), to: null }] })
+                      update({ holidays: [...(req.holidays ?? []), { name: '', from: new Date().toISOString().slice(0, 10), to: null }] })
                     }
                   >
                     <Plus className="mr-1 h-3 w-3" /> Add holiday
                   </Button>
                 </div>
-                {req.holidays.map((h, i) => (
+                {(req.holidays ?? []).map((h, i) => (
                   <div key={i} className="flex flex-wrap items-center gap-2 rounded-md border p-2">
                     <Input className="w-48" placeholder="Name" value={h.name} onChange={(e) => setHoliday(i, { name: e.target.value })} />
                     <Input type="date" className="w-40" value={h.from} onChange={(e) => setHoliday(i, { from: e.target.value })} />
@@ -244,7 +244,7 @@ export function SchedulesPage() {
                       type="button"
                       variant="ghost"
                       size="sm"
-                      onClick={() => update({ holidays: req.holidays.filter((_, j) => j !== i) })}
+                      onClick={() => update({ holidays: (req.holidays ?? []).filter((_, j) => j !== i) })}
                     >
                       <X className="h-4 w-4" />
                     </Button>
