@@ -15,6 +15,9 @@ use utoipa::{Modify, OpenApi};
 #[openapi(
     info(
         title = "FCP admin API",
+        // The API's version, not the release's: the release changes with
+        // every commit, the contract only when it changes.
+        version = "v1",
         description = "The Ferrous Communications Platform admin API. Every request carries `Authorization: Bearer <token>`: the static token, a session from `/auth/login`, or an API token (`docs/API_TOKENS.md`). Errors are `{error, code, details}`, times are RFC 3339, and lists are `{data, next_cursor, total}` paged by `limit` and `cursor`.",
         license(name = "Proprietary")
     ),
