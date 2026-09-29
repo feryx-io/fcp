@@ -303,6 +303,9 @@ enrollment_token = "{token}"
 state_dir = "{dir}/link-state"
 cloud_ca = "{ca}"
 heartbeat_interval_secs = 1
+# Shorter than the feed's wait (5 s): an idle long poll must still not
+# time out (docs/NIGHTLY_STACK.md §6).
+request_timeout_secs = 3
 
 {site_section}
 [health]
