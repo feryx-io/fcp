@@ -155,6 +155,8 @@ the first data key on an empty ring (an advisory lock, and
 
 | 2026-09-29 (the site fix's own run) | the stack job, *The site, enrolled and in step*, "the site caught up with the cloud" | a product bug: the link's sync client had the link's 10 s request timeout while asking the cloud to hold the change feed 25 s, so every quiet stretch ended as a timeout and a standing `sync_error` (the tests' feed wait was 5 s, under the timeout, so none ever saw it) | v0.25.290: the sync client's timeout is the request timeout plus the feed wait; the test harness's link gets a 3 s timeout and `apply.rs` sits out a whole idle poll |
 
+| 2026-09-29 (the sync fix's own run) | the stack job, *Back up the site* | `backup.sh` found the checkout's `Cargo.toml` relative to `COMPOSE_DIR`, a level too shallow for the site project, after its fresh-container version query failed | v0.25.290: the running admin is asked first (the stack is up), and the checkout is found from the script's own place |
+
 siphon-rs's nightly fuzzing has been green every night since phase 1.
 
 **Open, for the owner:** the GHCR packages are private — an anonymous

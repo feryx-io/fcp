@@ -75,11 +75,16 @@ PROJECT="$(docker compose config 2>/dev/null | sed -n 's/^name: //p' | head -n 1
 # asked directly, so the manifest names what runs, not what the checkout
 # says. A stack never built has no image, and then the checkout's version
 # is what a restore will build, and is taken instead.
-if VERSION_LINE="$(docker compose run --rm --no-deps --no-build -T --entrypoint /app/fcp-admin fcp-admin --version 2>/dev/null)"; then
+# The running admin first (the stack is up for a backup), else a fresh
+# container of its image; the checkout is found from this script, not from
+# COMPOSE_DIR, which may be the site's project a level deeper.
+REPO_ROOT="$( cd "$( dirname "${BASH_SOURCE[0]}" )/../../.." && pwd )"
+if VERSION_LINE="$(docker compose exec -T fcp-admin /app/fcp-admin --version 2>/dev/null)" \
+    || VERSION_LINE="$(docker compose run --rm --no-deps --no-build -T --entrypoint /app/fcp-admin fcp-admin --version 2>/dev/null)"; then
     STACK_VERSION="${VERSION_LINE##* }"
     VERSION_FROM="image"
 else
-    STACK_VERSION="$(sed -n 's/^version = "\(.*\)"$/\1/p' "$COMPOSE_DIR/../../Cargo.toml" | head -n 1)"
+    STACK_VERSION="$(sed -n 's/^version = "\(.*\)"$/\1/p' "$REPO_ROOT/Cargo.toml" | head -n 1)"
     VERSION_FROM="checkout"
 fi
 [ -n "$STACK_VERSION" ] || fail "could not find the stack's version"
