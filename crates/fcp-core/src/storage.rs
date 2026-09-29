@@ -2589,6 +2589,146 @@ pub struct ApiToken {
     /// When this token was last used
     #[serde(with = "optional_system_time_serde")]
     pub last_used_at: Option<SystemTime>,
+    /// What the token reaches: the admin API under its permissions, or
+    /// only its maker's own `/me` routes.
+    #[serde(default)]
+    pub scope: ApiTokenScope,
+    /// When the token was revoked; a revoked token is kept, and refused.
+    #[serde(default, with = "optional_system_time_serde")]
+    pub revoked_at: Option<SystemTime>,
+    /// Who revoked it: a username, a token id, or `static_token`.
+    #[serde(default)]
+    pub revoked_by: Option<String>,
+    /// The hash of the secret a rotation replaced, honoured until
+    /// `previous_expires_at` so a client can move to the new one.
+    #[serde(default)]
+    pub previous_token_hash: Option<String>,
+    /// Until when the replaced secret still opens the token.
+    #[serde(default, with = "optional_system_time_serde")]
+    pub previous_expires_at: Option<SystemTime>,
+    /// When the secret was last rotated.
+    #[serde(default, with = "optional_system_time_serde")]
+    pub rotated_at: Option<SystemTime>,
+}
+
+/// What an API token reaches (docs/DEVELOPER_SURFACE.md §3, phase 1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApiTokenScope {
+    /// The admin API, limited to the token's permissions.
+    #[default]
+    Admin,
+    /// Its maker's own `/me` routes, and nothing else.
+    Personal,
+}
+
+impl ApiTokenScope {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Admin => "admin",
+            Self::Personal => "personal",
+        }
+    }
+}
+
+impl std::str::FromStr for ApiTokenScope {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "admin" => Ok(Self::Admin),
+            "personal" => Ok(Self::Personal),
+            other => Err(format!("unknown token scope: {other}")),
+        }
+    }
+}
+
+impl ApiToken {
+    /// The stored form of a presented secret: hex SHA-256. The secret is
+    /// 256 random bits, so a salt would add nothing.
+    pub fn hash_secret(secret: &str) -> String {
+        use sha2::{Digest, Sha256};
+        format!("{:x}", Sha256::digest(secret.as_bytes()))
+    }
+
+    /// Whether a secret hashing to `presented_hash` opens this token at
+    /// `now`: not revoked, not expired, and either the current secret or the
+    /// one a rotation replaced, inside its grace period.
+    pub fn accepts(&self, presented_hash: &str, now: SystemTime) -> bool {
+        if self.revoked_at.is_some() {
+            return false;
+        }
+        if self.expires_at.is_some_and(|expires| now > expires) {
+            return false;
+        }
+        if crate::secret::constant_time_eq(presented_hash, &self.token_hash) {
+            return true;
+        }
+        match (&self.previous_token_hash, self.previous_expires_at) {
+            (Some(previous), Some(until)) => {
+                now <= until && crate::secret::constant_time_eq(presented_hash, previous)
+            }
+            _ => false,
+        }
+    }
+}
+
+/// A presented `fcp_…` secret that opened a token.
+#[derive(Debug, Clone)]
+pub struct AuthenticatedApiToken {
+    pub token: ApiToken,
+    /// The maker's role now, when the token names a maker and a user store
+    /// was given; a token never does more than its maker could today.
+    pub maker_role: Option<crate::UserRole>,
+}
+
+/// Authenticate a presented API token secret: find it by hash, check it is
+/// open (`ApiToken::accepts`), and check its maker is still an active user
+/// of its tenant — a disabled, suspended or deleted maker's tokens are
+/// refused. A lookup failure refuses (fails closed). A token without a maker
+/// (made with the static token, or before makers were recorded) is judged
+/// on itself alone.
+pub async fn authenticate_api_token(
+    tokens: &dyn ApiTokenStore,
+    users: Option<&dyn CredentialStore>,
+    secret: &str,
+) -> Option<AuthenticatedApiToken> {
+    let hash = ApiToken::hash_secret(secret);
+    let token = match tokens.get_api_token_by_hash(&hash).await {
+        Ok(Some(token)) => token,
+        Ok(None) => return None,
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to look up API token");
+            return None;
+        }
+    };
+    if !token.accepts(&hash, SystemTime::now()) {
+        return None;
+    }
+    let mut maker_role = None;
+    if let (false, Some(users)) = (token.user_id.is_empty(), users) {
+        match users
+            .get_user_in_tenant(&token.user_id, &token.tenant_id)
+            .await
+        {
+            Ok(Some(user)) => {
+                if !user.enabled || user.account_status == AccountStatus::Suspended {
+                    tracing::debug!(token_id = %token.id, maker = %token.user_id, "API token refused: its maker is inactive");
+                    return None;
+                }
+                maker_role = Some(user.role);
+            }
+            Ok(None) => {
+                tracing::debug!(token_id = %token.id, maker = %token.user_id, "API token refused: its maker is gone");
+                return None;
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "API token maker check failed");
+                return None;
+            }
+        }
+    }
+    Some(AuthenticatedApiToken { token, maker_role })
 }
 
 /// Storage backend for API tokens.
@@ -2603,11 +2743,25 @@ pub trait ApiTokenStore: Send + Sync {
     /// Look up an API token by ID.
     async fn get_api_token(&self, id: &crate::ApiTokenId) -> Result<Option<ApiToken>>;
 
-    /// Look up an API token by its hash (for authentication).
+    /// Look up an API token by its hash (for authentication): the current
+    /// secret's, or the previous one's while its grace period lasts.
     async fn get_api_token_by_hash(&self, token_hash: &str) -> Result<Option<ApiToken>>;
 
-    /// Delete an API token by ID.
+    /// Delete an API token by ID (subject erasure; revoking keeps the row).
     async fn delete_api_token(&self, id: &crate::ApiTokenId) -> Result<()>;
+
+    /// Revoke a token: it is kept, marked, and refused from now on.
+    async fn revoke_api_token(&self, id: &crate::ApiTokenId, revoked_by: &str) -> Result<()>;
+
+    /// Give a token a new secret, the old one still opening it until
+    /// `previous_valid_until`.
+    async fn rotate_api_token(
+        &self,
+        id: &crate::ApiTokenId,
+        new_hash: &str,
+        new_prefix: &str,
+        previous_valid_until: SystemTime,
+    ) -> Result<()>;
 
     /// Update the last_used_at timestamp.
     async fn update_last_used(&self, id: &crate::ApiTokenId) -> Result<()>;

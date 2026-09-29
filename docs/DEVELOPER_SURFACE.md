@@ -253,6 +253,17 @@ SDKs and the guide are checked in CI.
    - Proved by a test per role that a token cannot exceed its creator,
      and a test that every admin route either checks a permission or is
      listed as admin-only.
+   - **Done (v0.25.293).** What was built is described in
+     `docs/API_TOKENS.md`. It differs from the plan above in these ways:
+     - The route table is `route_permissions::ROUTES`. It covers every
+       authenticated route, and is enforced by one middleware for sessions
+       and tokens alike rather than by a check in each handler.
+     - An API token cannot make another token.
+     - A maker locked out by failed passwords keeps their tokens.
+     - Tokens carrying `admin` or `*` from before this release still work,
+       flagged `legacy_full_access`.
+     - Writing the services' configuration takes `system_config`.
+     - The events WebSocket takes `call_view`.
 2. **One shape.**
    - JSON errors from the auth layer, the tenant extractor and axum's
      rejections (a `code` added to `ApiError`).

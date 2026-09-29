@@ -1422,6 +1422,30 @@ The model:
 Eight phases, from keys made safe to live call control and the guide;
 eleven questions (§5), agreed 2026-09-29 on their recommendations.
 
+Phase 1 done (v0.25.293): keys made safe.
+- Making a token takes `api_token_manage` (tenant admins and above). A
+  token carries only permissions its maker holds and a tenant admin holds
+  (`UserRole::token_permissions`); `admin` means that whole list, and an
+  API token cannot make another.
+- A token names its maker and is judged against the maker's role at each
+  use: a demoted maker's tokens lose what the maker lost, and a disabled
+  or deleted maker's are refused (`fcp_core::authenticate_api_token`,
+  shared with the events server).
+- Revoking keeps the row. Rotation honours the old secret for a grace
+  period (migration 088).
+- Personal tokens (`/me/api-tokens`) reach only their maker's `/me`
+  routes.
+- Every authenticated route names a permission in
+  `route_permissions::ROUTES`, enforced by one middleware. A test fails
+  the build on a route without an entry. 22 permissions were added for
+  the areas that had none, which also closes read-only sessions writing
+  flows, voicemail, prompts, the services' configuration and the rest.
+- The UI has a grouped permission picker, rotation and a personal tokens
+  page. `docs/API_TOKENS.md` covers the rules and the upgrade.
+- Tokens from before this release carrying `admin` or `*` keep working
+  and are flagged `legacy_full_access`, to be reviewed.
+- Proved by `api_tokens_never_exceed_their_maker` (`api_postgres.rs`).
+
 ## Historical documents
 
 Superseded status docs live in [`docs/archive/`](docs/archive/README.md) — they describe

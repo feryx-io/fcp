@@ -1530,7 +1530,7 @@ async fn database_api_tokens_authenticate_and_are_scoped() {
 
     let create = |name: &str, perms: Value, expires: Option<&str>| json!({ "name": name, "permissions": perms, "expires_at": expires });
 
-    // Scoped token: authenticates, but admin routes need "admin"/"*".
+    // Scoped token: reaches what it names and nothing else.
     let scoped = app
         .admin(
             Method::POST,
@@ -1544,14 +1544,27 @@ async fn database_api_tokens_authenticate_and_are_scoped() {
     let scoped_id = scoped.json["token"]["id"].as_str().unwrap().to_string();
     assert_eq!(scoped.json["token"]["tenant_id"], app.tenant_a.to_string());
 
-    // 403 (not 401) proves the token authenticated but lacks admin rights.
-    // (/auth/me is a JWT-session endpoint, so it is not usable as a probe.)
-    let denied = app
+    let reached = app
         .send_as(&secret, Method::GET, "/api/v1/devices", None)
         .await;
-    assert_eq!(denied.status, StatusCode::FORBIDDEN, "{}", denied.text);
+    assert_eq!(reached.status, StatusCode::OK, "{}", reached.text);
+    // 403 (not 401) proves the token authenticated but lacks the permission.
+    for (method, path) in [
+        (Method::GET, "/api/v1/users"),
+        (Method::POST, "/api/v1/devices"),
+        (Method::GET, "/api/v1/api-tokens"),
+    ] {
+        let denied = app.send_as(&secret, method.clone(), path, None).await;
+        assert_eq!(
+            denied.status,
+            StatusCode::FORBIDDEN,
+            "{method} {path}: {}",
+            denied.text
+        );
+    }
 
-    // Admin token: full access, scoped to its tenant.
+    // `admin` from the static token: everything a tenant admin holds,
+    // scoped to its tenant.
     let admin = app
         .admin(
             Method::POST,
@@ -1672,6 +1685,311 @@ async fn database_api_tokens_authenticate_and_are_scoped() {
         .send_as(&secret, Method::GET, "/api/v1/auth/me", None)
         .await;
     assert_eq!(revoked.status, StatusCode::UNAUTHORIZED, "{}", revoked.text);
+
+    app.finish().await;
+}
+
+/// Log a user in; returns the session JWT.
+async fn session(app: &App, username: &str) -> String {
+    let res = app.login(username, PASSWORD).await;
+    assert_eq!(res.status, StatusCode::OK, "login {username}: {}", res.text);
+    res.json["token"].as_str().expect("jwt").to_string()
+}
+
+/// Make an admin token as `jwt`; returns (id, secret).
+async fn make_token(app: &App, jwt: &str, permissions: Value) -> (String, String) {
+    let res = app
+        .send_as(
+            jwt,
+            Method::POST,
+            "/api/v1/api-tokens",
+            Some(json!({ "name": "t", "permissions": permissions })),
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::CREATED, "{}", res.text);
+    (
+        res.json["token"]["id"].as_str().unwrap().to_string(),
+        res.json["secret"].as_str().unwrap().to_string(),
+    )
+}
+
+/// docs/DEVELOPER_SURFACE.md §3, phase 1: a token never does more than its
+/// maker, a scoped token reaches what it names, revoking keeps the row,
+/// rotating honours the old secret for its grace, and a personal token
+/// reaches only its maker's `/me` routes.
+#[tokio::test]
+async fn api_tokens_never_exceed_their_maker() {
+    let app = require_app!();
+
+    // The escalation: a read-only user could mint a token with full tenant
+    // administration. Now making tokens takes `api_token_manage`.
+    app.create_user_with_role("viewer", "read_only").await;
+    let viewer = session(&app, "viewer").await;
+    let refused = app
+        .send_as(
+            &viewer,
+            Method::POST,
+            "/api/v1/api-tokens",
+            Some(json!({ "name": "mine", "permissions": ["admin"] })),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.text);
+    // And a read-only session no longer writes what nothing checked.
+    for (method, path, body) in [
+        (
+            Method::POST,
+            "/api/v1/flows",
+            Some(json!({ "name": "f", "initial_node": "a", "nodes": {} })),
+        ),
+        (
+            Method::POST,
+            "/api/v1/voicemail/mailboxes",
+            Some(json!({ "mailbox_id": "100" })),
+        ),
+        (
+            Method::PUT,
+            "/api/v1/config/call-manager/media",
+            Some(json!({ "value": {} })),
+        ),
+    ] {
+        let res = app.send_as(&viewer, method.clone(), path, body).await;
+        assert_eq!(
+            res.status,
+            StatusCode::FORBIDDEN,
+            "{method} {path}: {}",
+            res.text
+        );
+    }
+    let reads = app
+        .send_as(&viewer, Method::GET, "/api/v1/flows", None)
+        .await;
+    assert_eq!(reads.status, StatusCode::OK, "{}", reads.text);
+
+    // A tenant admin grants within the tenant, by name; `admin` is all of it.
+    app.create_user_with_role("boss", "tenant_admin").await;
+    let boss = session(&app, "boss").await;
+    let grantable = app
+        .send_as(&boss, Method::GET, "/api/v1/api-tokens/permissions", None)
+        .await;
+    assert_eq!(grantable.status, StatusCode::OK, "{}", grantable.text);
+    let names: Vec<&str> = grantable
+        .json
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["name"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"user_create") && names.contains(&"cdr_read"));
+    assert!(!names.contains(&"system_config") && !names.contains(&"tenant_create"));
+    for (perms, status) in [
+        (json!(["system_config"]), StatusCode::FORBIDDEN),
+        (json!(["read"]), StatusCode::BAD_REQUEST),
+        (json!([]), StatusCode::BAD_REQUEST),
+    ] {
+        let res = app
+            .send_as(
+                &boss,
+                Method::POST,
+                "/api/v1/api-tokens",
+                Some(json!({ "name": "x", "permissions": perms })),
+            )
+            .await;
+        assert_eq!(res.status, status, "{perms}: {}", res.text);
+    }
+
+    // A scoped token reaches its routes and no others, and cannot make
+    // tokens or rotate one that carries more than it does.
+    let (_, cdrs) = make_token(&app, &boss, json!(["cdr_read", "api_token_manage"])).await;
+    let ok = app.send_as(&cdrs, Method::GET, "/api/v1/cdrs", None).await;
+    assert_eq!(ok.status, StatusCode::OK, "{}", ok.text);
+    let flows = app.send_as(&cdrs, Method::GET, "/api/v1/flows", None).await;
+    assert_eq!(flows.status, StatusCode::FORBIDDEN, "{}", flows.text);
+    let spawn = app
+        .send_as(
+            &cdrs,
+            Method::POST,
+            "/api/v1/api-tokens",
+            Some(json!({ "name": "child", "permissions": ["cdr_read"] })),
+        )
+        .await;
+    assert_eq!(spawn.status, StatusCode::FORBIDDEN, "{}", spawn.text);
+    let (users_id, users) = make_token(&app, &boss, json!(["user_read", "user_create"])).await;
+    let steal = app
+        .send_as(
+            &cdrs,
+            Method::POST,
+            &format!("/api/v1/api-tokens/{users_id}/rotate"),
+            None,
+        )
+        .await;
+    assert_eq!(steal.status, StatusCode::FORBIDDEN, "{}", steal.text);
+
+    // The maker answers for the token: demoted, the token loses what the
+    // maker lost; disabled, the token is refused.
+    let listed = app
+        .send_as(&users, Method::GET, "/api/v1/users", None)
+        .await;
+    assert_eq!(listed.status, StatusCode::OK, "{}", listed.text);
+    let demote = app
+        .admin(
+            Method::PUT,
+            "/api/v1/users/boss",
+            Some(json!({ "role": "read_only" })),
+        )
+        .await;
+    assert_eq!(demote.status, StatusCode::OK, "{}", demote.text);
+    let create = app
+        .send_as(
+            &users,
+            Method::POST,
+            "/api/v1/users",
+            Some(json!({ "username": "ghost", "password": PASSWORD, "role": "end_user" })),
+        )
+        .await;
+    assert_eq!(create.status, StatusCode::FORBIDDEN, "{}", create.text);
+    let still_reads = app
+        .send_as(&users, Method::GET, "/api/v1/users", None)
+        .await;
+    assert_eq!(still_reads.status, StatusCode::OK, "{}", still_reads.text);
+    let disable = app
+        .admin(
+            Method::PUT,
+            "/api/v1/users/boss",
+            Some(json!({ "enabled": false })),
+        )
+        .await;
+    assert_eq!(disable.status, StatusCode::OK, "{}", disable.text);
+    let gone = app
+        .send_as(&users, Method::GET, "/api/v1/users", None)
+        .await;
+    assert_eq!(gone.status, StatusCode::UNAUTHORIZED, "{}", gone.text);
+
+    // Rotation: the old secret works through its grace; with none, not at
+    // all. Revoking keeps the row, marked.
+    let (id, old) = {
+        let res = app
+            .admin(
+                Method::POST,
+                "/api/v1/api-tokens",
+                Some(json!({ "name": "rotor", "permissions": ["device_read"] })),
+            )
+            .await;
+        assert_eq!(res.status, StatusCode::CREATED, "{}", res.text);
+        (
+            res.json["token"]["id"].as_str().unwrap().to_string(),
+            res.json["secret"].as_str().unwrap().to_string(),
+        )
+    };
+    let rotated = app
+        .admin(
+            Method::POST,
+            &format!("/api/v1/api-tokens/{id}/rotate"),
+            Some(json!({ "grace_seconds": 600 })),
+        )
+        .await;
+    assert_eq!(rotated.status, StatusCode::OK, "{}", rotated.text);
+    let new = rotated.json["secret"].as_str().unwrap().to_string();
+    assert_ne!(new, old);
+    assert!(!rotated.json["token"]["previous_secret_valid_until"].is_null());
+    for secret in [&old, &new] {
+        let res = app
+            .send_as(secret, Method::GET, "/api/v1/devices", None)
+            .await;
+        assert_eq!(res.status, StatusCode::OK, "{}", res.text);
+    }
+    let again = app
+        .admin(
+            Method::POST,
+            &format!("/api/v1/api-tokens/{id}/rotate"),
+            Some(json!({ "grace_seconds": 0 })),
+        )
+        .await;
+    assert_eq!(again.status, StatusCode::OK, "{}", again.text);
+    let newest = again.json["secret"].as_str().unwrap().to_string();
+    let stale = app
+        .send_as(&new, Method::GET, "/api/v1/devices", None)
+        .await;
+    assert_eq!(stale.status, StatusCode::UNAUTHORIZED, "{}", stale.text);
+    let fresh = app
+        .send_as(&newest, Method::GET, "/api/v1/devices", None)
+        .await;
+    assert_eq!(fresh.status, StatusCode::OK, "{}", fresh.text);
+    let revoke = app
+        .admin(Method::DELETE, &format!("/api/v1/api-tokens/{id}"), None)
+        .await;
+    assert_eq!(revoke.status, StatusCode::NO_CONTENT, "{}", revoke.text);
+    let dead = app
+        .send_as(&newest, Method::GET, "/api/v1/devices", None)
+        .await;
+    assert_eq!(dead.status, StatusCode::UNAUTHORIZED, "{}", dead.text);
+    let list = app.admin(Method::GET, "/api/v1/api-tokens", None).await;
+    let row = list
+        .json
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["id"] == id)
+        .expect("a revoked token is kept")
+        .clone();
+    assert!(!row["revoked_at"].is_null(), "{row}");
+    assert_eq!(row["revoked_by"], "static_token");
+
+    // A personal token: its maker's /me routes, nothing else.
+    app.create_user_with_role("pat", "end_user").await;
+    let pat = session(&app, "pat").await;
+    let made = app
+        .send_as(
+            &pat,
+            Method::POST,
+            "/api/v1/me/api-tokens",
+            Some(json!({ "name": "crm" })),
+        )
+        .await;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.text);
+    assert_eq!(made.json["token"]["scope"], "personal");
+    let personal = made.json["secret"].as_str().unwrap().to_string();
+    let personal_id = made.json["token"]["id"].as_str().unwrap().to_string();
+    let profile = app
+        .send_as(&personal, Method::GET, "/api/v1/me/profile", None)
+        .await;
+    assert_eq!(profile.status, StatusCode::OK, "{}", profile.text);
+    assert_eq!(profile.json["username"], "pat");
+    for (method, path, status) in [
+        (Method::GET, "/api/v1/devices", StatusCode::FORBIDDEN),
+        (Method::GET, "/api/v1/me/api-tokens", StatusCode::FORBIDDEN),
+        // Not a session: it cannot be refreshed into one.
+        (Method::POST, "/api/v1/auth/refresh", StatusCode::FORBIDDEN),
+    ] {
+        let res = app.send_as(&personal, method.clone(), path, None).await;
+        assert_eq!(res.status, status, "{method} {path}: {}", res.text);
+    }
+    // Nobody else's session sees it, and an admin cannot rotate it.
+    let mine = app
+        .send_as(&viewer, Method::GET, "/api/v1/me/api-tokens", None)
+        .await;
+    assert!(mine.json.as_array().unwrap().is_empty(), "{}", mine.text);
+    let hijack = app
+        .admin(
+            Method::POST,
+            &format!("/api/v1/api-tokens/{personal_id}/rotate"),
+            None,
+        )
+        .await;
+    assert_eq!(hijack.status, StatusCode::FORBIDDEN, "{}", hijack.text);
+    // It can revoke itself.
+    let bye = app
+        .send_as(
+            &personal,
+            Method::DELETE,
+            &format!("/api/v1/me/api-tokens/{personal_id}"),
+            None,
+        )
+        .await;
+    assert_eq!(bye.status, StatusCode::NO_CONTENT, "{}", bye.text);
+    let after = app
+        .send_as(&personal, Method::GET, "/api/v1/me/profile", None)
+        .await;
+    assert_eq!(after.status, StatusCode::UNAUTHORIZED, "{}", after.text);
 
     app.finish().await;
 }

@@ -136,6 +136,7 @@ pub async fn audit_requests(State(state): State<ApiState>, req: Request, next: N
     let actor_kind = match &identity {
         Some(AuthIdentity::StaticToken) => "static_token",
         Some(AuthIdentity::ApiToken { .. }) => "api_token",
+        Some(AuthIdentity::Personal { .. }) => "personal_token",
         Some(AuthIdentity::Session { .. }) => "session",
         None => "anonymous",
     };

@@ -190,6 +190,19 @@ pub fn router() -> Router<ApiState> {
         .route(
             "/me/conferences/:id/join-tokens",
             post(self_service::mint_my_join_token),
+        )
+        // Personal API tokens (docs/DEVELOPER_SURFACE.md §3, phase 1).
+        .route(
+            "/me/api-tokens",
+            get(api_tokens::list_my_api_tokens).post(api_tokens::create_my_api_token),
+        )
+        .route(
+            "/me/api-tokens/:id",
+            delete(api_tokens::revoke_my_api_token),
+        )
+        .route(
+            "/me/api-tokens/:id/rotate",
+            post(api_tokens::rotate_my_api_token),
         );
 
     // Admin-only routes — EndUser JWTs are rejected with 403 by require_admin.
@@ -655,7 +668,12 @@ pub fn router() -> Router<ApiState> {
             "/api-tokens",
             get(api_tokens::list_api_tokens).post(api_tokens::create_api_token),
         )
+        .route(
+            "/api-tokens/permissions",
+            get(api_tokens::grantable_permissions),
+        )
         .route("/api-tokens/:id", delete(api_tokens::delete_api_token))
+        .route("/api-tokens/:id/rotate", post(api_tokens::rotate_api_token))
         // Least-cost routes (`docs/TENANT_TRUNKS.md` §12, phase 6c)
         .route(
             "/lcr-routes",

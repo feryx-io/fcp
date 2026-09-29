@@ -49,6 +49,7 @@ const SipLadderPage = lazy(() => import('@/pages/SipLadderPage').then((m) => ({ 
 const UserDashboardPage = lazy(() => import('@/pages/user/UserDashboardPage').then((m) => ({ default: m.UserDashboardPage })))
 const UserVoicemailPage = lazy(() => import('@/pages/user/UserVoicemailPage').then((m) => ({ default: m.UserVoicemailPage })))
 const UserCallingPage = lazy(() => import('@/pages/user/UserCallingPage').then((m) => ({ default: m.UserCallingPage })))
+const UserApiTokensPage = lazy(() => import('@/pages/user/UserApiTokensPage').then((m) => ({ default: m.UserApiTokensPage })))
 const UserSettingsPage = lazy(() => import('@/pages/user/UserSettingsPage').then((m) => ({ default: m.UserSettingsPage })))
 const UserConferencesPage = lazy(() => import('@/pages/user/UserConferencesPage').then((m) => ({ default: m.UserConferencesPage })))
 
@@ -161,6 +162,7 @@ export function App() {
               <Route index element={<Suspense fallback={<PageLoader />}><UserDashboardPage /></Suspense>} />
               <Route path="voicemail" element={<Suspense fallback={<PageLoader />}><UserVoicemailPage /></Suspense>} />
               <Route path="calling" element={<Suspense fallback={<PageLoader />}><UserCallingPage /></Suspense>} />
+              <Route path="api-tokens" element={<Suspense fallback={<PageLoader />}><UserApiTokensPage /></Suspense>} />
               <Route path="conferences" element={<Suspense fallback={<PageLoader />}><UserConferencesPage /></Suspense>} />
               <Route path="settings" element={<Suspense fallback={<PageLoader />}><UserSettingsPage /></Suspense>} />
             </Route>
