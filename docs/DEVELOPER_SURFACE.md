@@ -391,6 +391,35 @@ SDKs and the guide are checked in CI.
    - A Webhooks page in the admin UI.
    - Proved by a delivery verified with the SDK's helper, a replay
      refused as stale, and a private URL refused.
+   - **Done (v0.25.300).**
+     - `fcp_api_core::v1::webhooks`: ten routes under `webhook_manage`
+       (tenant and telecom admins), a `whsec_` secret made by the server
+       and shown once, rotation with an overlap during which both secrets
+       sign (`previous_secret`, sealed at rest), tests and replays through
+       a dispatcher in `ApiState`, the catalogue from
+       `PlatformEvent::EVENT_TYPES` (a test keeps it equal to
+       `event_type_name`).
+     - `X-FCP-Signature: t=<unix>,v1=<hex>` replaces `sha256=`; each
+       attempt, retry and replay is signed when it is sent.
+     - `fcp_webhooks::target`: the URL checked when written (HTTPS, no
+       credentials, no non-public address, the name resolved) and the
+       dispatcher's resolver dropping non-public addresses at delivery,
+       with redirects off; `[webhooks] allow_private_targets` on the
+       admin and `[webhook] allow_private_targets` on the events server.
+     - The events server's `/v1/webhooks` routes are deleted. It refuses
+       to start with webhooks on and no store; in compose it opens
+       Postgres under the master key with webhooks on, and it is one of
+       the restore test's database services.
+     - The spec's `webhooks` section describes a delivery
+       (`WebhookEvent`, its `event_type` an enum of every type).
+     - The admin UI's **Webhooks** page; `docs/WEBHOOKS.md`.
+     - Proved by `webhooks_are_the_tenants_and_their_secret_is_shown_once`
+       and `a_webhook_delivery_is_signed_logged_and_replayed`
+       (`api_postgres.rs`: private and non-HTTPS URLs refused, another
+       tenant blind, a delivery verified and refused ten minutes later,
+       a replay signed anew, both secrets during a rotation), and by each
+       SDK's live test receiving a delivery and checking it with
+       `verifyWebhook` / `verify_webhook`.
 6. **Speech recognition.**
    - `fcp_media::stt` with the four providers.
    - `MediaManager::listen` over forge-engine's media bridge. If the

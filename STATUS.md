@@ -1545,6 +1545,26 @@ Phase 4 done (v0.25.299): the SDKs.
 - Upload forms are described in the contract.
 - Publishing to npm and PyPI is the owner's step.
 
+Phase 5 done (v0.25.300): tenant webhooks (`docs/WEBHOOKS.md`).
+- `/api/v1/webhooks` on the admin API under the new `webhook_manage`:
+  CRUD, `rotate-secret`, `test`, deliveries, replay and `event-types`,
+  scoped to the caller's tenant. The events server's management routes,
+  which trusted a tenant id from the body and whose id routes axum 0.7
+  never matched, are deleted.
+- The server makes the secret and shows it once. Rotation keeps the old
+  secret signing beside the new one for an overlap (a day by default).
+- Deliveries are signed `X-FCP-Signature: t=<unix>,v1=<hex>` over
+  `"<t>.<body>"`, re-signed on every attempt, so a receiver refuses a
+  stale one. The SDKs verify it.
+- A URL must be HTTPS and public: checked when written, and again by the
+  dispatcher's resolver at delivery (no DNS rebinding, no redirects).
+  `allow_private_targets` exists for a lab.
+- The compose stack delivers webhooks: the events server opens Postgres
+  under the master key, and refuses to start with webhooks on and no
+  store.
+- The spec has a `webhooks` section; the admin UI has a Webhooks page.
+- Proved in `api_postgres.rs` and by both SDKs' live tests.
+
 ## Historical documents
 
 Superseded status docs live in [`docs/archive/`](docs/archive/README.md) — they describe

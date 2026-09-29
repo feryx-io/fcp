@@ -22,7 +22,7 @@ use utoipa::{Modify, OpenApi};
         license(name = "Proprietary")
     ),
     servers((url = "/", description = "This server")),
-    modifiers(&BearerAuth),
+    modifiers(&BearerAuth, &EventWebhooks),
     security(("bearer" = [])),
     paths(
         crate::v1::auth_session::login,
@@ -278,6 +278,16 @@ use utoipa::{Modify, OpenApi};
         crate::v1::api_tokens::grantable_permissions,
         crate::v1::api_tokens::delete_api_token,
         crate::v1::api_tokens::rotate_api_token,
+        crate::v1::webhooks::list_webhooks,
+        crate::v1::webhooks::create_webhook,
+        crate::v1::webhooks::list_event_types,
+        crate::v1::webhooks::get_webhook,
+        crate::v1::webhooks::update_webhook,
+        crate::v1::webhooks::delete_webhook,
+        crate::v1::webhooks::rotate_webhook_secret,
+        crate::v1::webhooks::test_webhook,
+        crate::v1::webhooks::list_deliveries,
+        crate::v1::webhooks::replay_delivery,
         crate::v1::lcr_routes::list_lcr_routes,
         crate::v1::lcr_routes::create_lcr_route,
         crate::v1::lcr_routes::get_lcr_route,
@@ -351,6 +361,83 @@ impl Modify for BearerAuth {
                     ))
                     .build(),
             ),
+        );
+    }
+}
+
+/// The spec's `webhooks` section: what a tenant's webhook receives
+/// (docs/DEVELOPER_SURFACE.md §3, phase 5) — one POST whose body is a
+/// `WebhookEvent`, its `event_type` one of the platform's event types.
+struct EventWebhooks;
+
+impl Modify for EventWebhooks {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        use utoipa::openapi::path::{HttpMethod, OperationBuilder, PathItem};
+        use utoipa::openapi::request_body::RequestBodyBuilder;
+        use utoipa::openapi::schema::{ObjectBuilder, Schema, Type};
+        use utoipa::openapi::{ContentBuilder, PathsBuilder, RefOr, ResponseBuilder};
+        use utoipa::PartialSchema;
+
+        let mut names: Vec<&str> = fcp_events::PlatformEvent::EVENT_TYPES.to_vec();
+        names.push(crate::v1::webhooks::TEST_EVENT_TYPE);
+        let mut event = crate::v1::webhooks::WebhookEvent::schema();
+        if let RefOr::T(Schema::Object(object)) = &mut event {
+            object.properties.insert(
+                "event_type".to_string(),
+                ObjectBuilder::new()
+                    .schema_type(Type::String)
+                    .enum_values(Some(names))
+                    .description(Some(
+                        "A name from `/api/v1/webhooks/event-types`, or `webhook.test`",
+                    ))
+                    .into(),
+            );
+        }
+        let components = openapi.components.get_or_insert_with(Default::default);
+        components.schemas.insert("WebhookEvent".to_string(), event);
+
+        let operation = OperationBuilder::new()
+            .operation_id(Some("webhook_event"))
+            .summary(Some("A platform event, delivered to a tenant's webhook"))
+            .description(Some(
+                "Verify `X-FCP-Signature` (`t=<unix>,v1=<hex HMAC-SHA256 of \"<t>.<body>\">`) with the webhook's secret before trusting the body, and refuse a stale `t`. During a rotation two `v1` values are sent. Answer 2xx; anything else is retried with backoff.",
+            ))
+            .parameter(
+                utoipa::openapi::path::ParameterBuilder::new()
+                    .name("X-FCP-Signature")
+                    .parameter_in(utoipa::openapi::path::ParameterIn::Header)
+                    .required(utoipa::openapi::Required::True)
+                    .schema(Some(ObjectBuilder::new().schema_type(Type::String))),
+            )
+            .parameter(
+                utoipa::openapi::path::ParameterBuilder::new()
+                    .name("X-FCP-Event")
+                    .parameter_in(utoipa::openapi::path::ParameterIn::Header)
+                    .required(utoipa::openapi::Required::True)
+                    .schema(Some(ObjectBuilder::new().schema_type(Type::String))),
+            )
+            .request_body(Some(
+                RequestBodyBuilder::new()
+                    .content(
+                        "application/json",
+                        ContentBuilder::new()
+                            .schema(Some(utoipa::openapi::Ref::from_schema_name(
+                                "WebhookEvent",
+                            )))
+                            .build(),
+                    )
+                    .required(Some(utoipa::openapi::Required::True))
+                    .build(),
+            ))
+            .response(
+                "2XX",
+                ResponseBuilder::new().description("Received").build(),
+            )
+            .build();
+        openapi.webhooks = Some(
+            PathsBuilder::new()
+                .path("platform_event", PathItem::new(HttpMethod::Post, operation))
+                .build(),
         );
     }
 }

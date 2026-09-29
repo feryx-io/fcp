@@ -49,8 +49,9 @@ const STACK: [&str; 5] = [
 
 /// Every compose service that opens Postgres under the master key
 /// (`FCP_MASTER_KEY_FILE` in its compose environment).
-const DATABASE_SERVICES: [&str; 9] = [
+const DATABASE_SERVICES: [&str; 10] = [
     "fcp-admin",
+    "fcp-events-server",
     "fcp-call-manager",
     "fcp-conference",
     "fcp-ivr",

@@ -65,6 +65,7 @@ from .create_tenant_request import CreateTenantRequest
 from .create_transaction_request import CreateTransactionRequest
 from .create_trunk_request import CreateTrunkRequest
 from .create_user_request import CreateUserRequest
+from .create_webhook_request import CreateWebhookRequest
 from .dashboard_summary import DashboardSummary
 from .data_class import DataClass
 from .dead_letter_report import DeadLetterReport
@@ -274,6 +275,13 @@ from .page_user_response import PageUserResponse
 from .page_user_response_data_item import PageUserResponseDataItem
 from .page_watcher_response import PageWatcherResponse
 from .page_watcher_response_data_item import PageWatcherResponseDataItem
+from .page_webhook_delivery_response import PageWebhookDeliveryResponse
+from .page_webhook_delivery_response_data_item import PageWebhookDeliveryResponseDataItem
+from .page_webhook_delivery_response_data_item_payload import PageWebhookDeliveryResponseDataItemPayload
+from .page_webhook_event_type import PageWebhookEventType
+from .page_webhook_event_type_data_item import PageWebhookEventTypeDataItem
+from .page_webhook_response import PageWebhookResponse
+from .page_webhook_response_data_item import PageWebhookResponseDataItem
 from .phone_number_response import PhoneNumberResponse
 from .place_hold_request import PlaceHoldRequest
 from .policy_response import PolicyResponse
@@ -302,6 +310,7 @@ from .release_hold_request import ReleaseHoldRequest
 from .resource_counts import ResourceCounts
 from .retention_run_response import RetentionRunResponse
 from .rotate_api_token_request import RotateApiTokenRequest
+from .rotate_webhook_secret_request import RotateWebhookSecretRequest
 from .routing_rule_response import RoutingRuleResponse
 from .schedule_request import ScheduleRequest
 from .schedule_response import ScheduleResponse
@@ -337,6 +346,7 @@ from .supervise_request import SuperviseRequest
 from .synthesize_greeting_request import SynthesizeGreetingRequest
 from .tenant_calling import TenantCalling
 from .tenant_response import TenantResponse
+from .test_webhook_request import TestWebhookRequest
 from .time_window import TimeWindow
 from .trunk_node_view import TrunkNodeView
 from .trunk_response import TrunkResponse
@@ -375,6 +385,7 @@ from .update_tenant_request import UpdateTenantRequest
 from .update_trunk_request import UpdateTrunkRequest
 from .update_user_request import UpdateUserRequest
 from .update_voicemail_request import UpdateVoicemailRequest
+from .update_webhook_request import UpdateWebhookRequest
 from .upsert_rate_request import UpsertRateRequest
 from .usage_response import UsageResponse
 from .user_readiness import UserReadiness
@@ -387,6 +398,15 @@ from .video_device_budget import VideoDeviceBudget
 from .video_engines import VideoEngines
 from .view_state import ViewState
 from .watcher_response import WatcherResponse
+from .webhook_delivery_outcome import WebhookDeliveryOutcome
+from .webhook_delivery_response import WebhookDeliveryResponse
+from .webhook_delivery_response_payload import WebhookDeliveryResponsePayload
+from .webhook_event import WebhookEvent
+from .webhook_event_data import WebhookEventData
+from .webhook_event_event_type import WebhookEventEventType
+from .webhook_event_type import WebhookEventType
+from .webhook_response import WebhookResponse
+from .webhook_with_secret import WebhookWithSecret
 from .weekly_window import WeeklyWindow
 
 __all__ = (
@@ -455,6 +475,7 @@ __all__ = (
     "CreateTransactionRequest",
     "CreateTrunkRequest",
     "CreateUserRequest",
+    "CreateWebhookRequest",
     "DashboardSummary",
     "DataClass",
     "DeadLetterReport",
@@ -664,6 +685,13 @@ __all__ = (
     "PageUserResponseDataItem",
     "PageWatcherResponse",
     "PageWatcherResponseDataItem",
+    "PageWebhookDeliveryResponse",
+    "PageWebhookDeliveryResponseDataItem",
+    "PageWebhookDeliveryResponseDataItemPayload",
+    "PageWebhookEventType",
+    "PageWebhookEventTypeDataItem",
+    "PageWebhookResponse",
+    "PageWebhookResponseDataItem",
     "PhoneNumberResponse",
     "PlaceHoldRequest",
     "PolicyResponse",
@@ -692,6 +720,7 @@ __all__ = (
     "ResourceCounts",
     "RetentionRunResponse",
     "RotateApiTokenRequest",
+    "RotateWebhookSecretRequest",
     "RoutingRuleResponse",
     "ScheduleRequest",
     "ScheduleResponse",
@@ -727,6 +756,7 @@ __all__ = (
     "SynthesizeGreetingRequest",
     "TenantCalling",
     "TenantResponse",
+    "TestWebhookRequest",
     "TimeWindow",
     "TrunkNodeView",
     "TrunkResponse",
@@ -765,6 +795,7 @@ __all__ = (
     "UpdateTrunkRequest",
     "UpdateUserRequest",
     "UpdateVoicemailRequest",
+    "UpdateWebhookRequest",
     "UpsertRateRequest",
     "UsageResponse",
     "UserReadiness",
@@ -777,5 +808,14 @@ __all__ = (
     "VideoEngines",
     "ViewState",
     "WatcherResponse",
+    "WebhookDeliveryOutcome",
+    "WebhookDeliveryResponse",
+    "WebhookDeliveryResponsePayload",
+    "WebhookEvent",
+    "WebhookEventData",
+    "WebhookEventEventType",
+    "WebhookEventType",
+    "WebhookResponse",
+    "WebhookWithSecret",
     "WeeklyWindow",
 )

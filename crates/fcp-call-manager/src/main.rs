@@ -2769,13 +2769,18 @@ async fn run_webhook_dispatcher(
 
                     let mut request = client.post(&url).header("Content-Type", "application/json");
 
-                    // Add HMAC signature header if secret is configured
+                    // Signed like a tenant's webhook (docs/WEBHOOKS.md):
+                    // `t=<unix>,v1=<hex>` over "<t>.<body>".
                     if let Some(ref secret) = secret {
                         let payload = String::from_utf8_lossy(&json_body);
-                        let sig = fcp_webhooks::compute_signature(secret, &payload);
-                        request = request
-                            .header("X-FCP-Signature", &sig)
-                            .header("X-Webhook-Signature", sig);
+                        let t = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs();
+                        request = request.header(
+                            fcp_webhooks::SIGNATURE_HEADER,
+                            fcp_webhooks::signature_header(&[secret.as_str()], t, &payload),
+                        );
                     }
 
                     match request.body(json_body).send().await {

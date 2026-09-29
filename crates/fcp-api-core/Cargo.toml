@@ -18,6 +18,7 @@ fcp-billing = { path = "../fcp-billing" }
 fcp-flow = { path = "../fcp-flow" }
 fcp-queue = { path = "../fcp-queue" }
 fcp-presence = { path = "../fcp-presence", features = ["openapi"] }
+fcp-webhooks = { path = "../fcp-webhooks" }
 
 # REST API framework
 axum = { version = "0.7", features = ["ws", "multipart"] }

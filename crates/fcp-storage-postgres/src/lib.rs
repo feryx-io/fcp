@@ -766,6 +766,7 @@ impl PostgresStorage {
 
     fn seal_webhook(&self, mut endpoint: WebhookEndpoint) -> Result<WebhookEndpoint> {
         endpoint.secret = self.seal_opt(Some(&endpoint.secret))?.unwrap_or_default();
+        endpoint.previous_secret = self.seal_opt(endpoint.previous_secret.as_deref())?;
         Ok(endpoint)
     }
 
@@ -774,6 +775,7 @@ impl PostgresStorage {
             .open_opt(Some(endpoint.secret))
             .await?
             .unwrap_or_default();
+        endpoint.previous_secret = self.open_opt(endpoint.previous_secret).await?;
         Ok(endpoint)
     }
 

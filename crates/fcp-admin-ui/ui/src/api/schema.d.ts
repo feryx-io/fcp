@@ -3327,6 +3327,128 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/webhooks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/v1/webhooks */
+        get: operations["webhooks_list_webhooks"];
+        put?: never;
+        /** POST /api/v1/webhooks */
+        post: operations["webhooks_create_webhook"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/webhooks/event-types": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/v1/webhooks/event-types */
+        get: operations["webhooks_list_event_types"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/webhooks/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/v1/webhooks/:id */
+        get: operations["webhooks_get_webhook"];
+        put?: never;
+        post?: never;
+        /** DELETE /api/v1/webhooks/:id */
+        delete: operations["webhooks_delete_webhook"];
+        options?: never;
+        head?: never;
+        /** PATCH /api/v1/webhooks/:id */
+        patch: operations["webhooks_update_webhook"];
+        trace?: never;
+    };
+    "/api/v1/webhooks/{id}/rotate-secret": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/v1/webhooks/:id/rotate-secret */
+        post: operations["webhooks_rotate_webhook_secret"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/webhooks/{id}/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/v1/webhooks/:id/test */
+        post: operations["webhooks_test_webhook"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/webhooks/{id}/deliveries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/v1/webhooks/:id/deliveries */
+        get: operations["webhooks_list_deliveries"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/webhooks/{id}/deliveries/{delivery_id}/replay": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/v1/webhooks/:id/deliveries/:delivery_id/replay */
+        post: operations["webhooks_replay_delivery"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/lcr-routes": {
         parameters: {
             query?: never;
@@ -3949,7 +4071,28 @@ export interface paths {
         trace?: never;
     };
 }
-export type webhooks = Record<string, never>;
+export interface webhooks {
+    platform_event: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * A platform event, delivered to a tenant's webhook
+         * @description Verify `X-FCP-Signature` (`t=<unix>,v1=<hex HMAC-SHA256 of "<t>.<body>">`) with the webhook's secret before trusting the body, and refuse a stale `t`. During a rotation two `v1` values are sent. Answer 2xx; anything else is retried with backoff.
+         */
+        post: operations["webhook_event"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+}
 export interface components {
     schemas: {
         /** @description Agent login request body. */
@@ -4927,6 +5070,13 @@ export interface components {
             account_status?: string | null;
             emergency_contact_name?: string | null;
             emergency_contact_phone?: string | null;
+        };
+        /** @description What a webhook is made with. */
+        CreateWebhookRequest: {
+            url: string;
+            events?: string[];
+            enabled?: boolean;
+            description?: string | null;
         };
         DashboardSummary: {
             active_calls: number;
@@ -7582,6 +7732,88 @@ export interface components {
             total?: number | null;
         };
         /** @description A page of a list. */
+        Page_WebhookDeliveryResponse: {
+            data: {
+                id: string;
+                webhook_id: string;
+                event_type: string;
+                /** @description The body delivered. */
+                payload: Record<string, never>;
+                delivered: boolean;
+                /** Format: int32 */
+                status_code?: number | null;
+                /** Format: int32 */
+                attempts: number;
+                error?: string | null;
+                response_body?: string | null;
+                /** Format: date-time */
+                last_attempt_at?: string | null;
+                /**
+                 * Format: date-time
+                 * @description When the dispatcher tries again; none once delivered or given up.
+                 */
+                next_retry_at?: string | null;
+                /** Format: date-time */
+                created_at: string;
+            }[];
+            /** @description The cursor for the next page; null on the last. */
+            next_cursor?: string | null;
+            /**
+             * Format: int64
+             * @description How many items the whole list holds, where that is known.
+             */
+            total?: number | null;
+        };
+        /** @description A page of a list. */
+        Page_WebhookEventType: {
+            data: {
+                /** @description `call.answered`. */
+                name: string;
+                /** @description `call`: subscribe to all of them with `call.*`. */
+                category: string;
+            }[];
+            /** @description The cursor for the next page; null on the last. */
+            next_cursor?: string | null;
+            /**
+             * Format: int64
+             * @description How many items the whole list holds, where that is known.
+             */
+            total?: number | null;
+        };
+        /** @description A page of a list. */
+        Page_WebhookResponse: {
+            data: {
+                id: string;
+                tenant_id: string;
+                url: string;
+                /**
+                 * @description Event types delivered: names from `/webhooks/event-types`, a
+                 *     category's `call.*`, or `*`. Empty is every event.
+                 */
+                events: string[];
+                enabled: boolean;
+                description?: string | null;
+                /** @description The first characters of the secret, to tell secrets apart. */
+                secret_prefix: string;
+                /**
+                 * Format: date-time
+                 * @description Until when the secret a rotation replaced also signs deliveries.
+                 */
+                previous_secret_valid_until?: string | null;
+                /** Format: date-time */
+                created_at: string;
+                /** Format: date-time */
+                updated_at: string;
+            }[];
+            /** @description The cursor for the next page; null on the last. */
+            next_cursor?: string | null;
+            /**
+             * Format: int64
+             * @description How many items the whole list holds, where that is known.
+             */
+            total?: number | null;
+        };
+        /** @description A page of a list. */
         "Page_debug.CallInfo": {
             data: {
                 call_id: string;
@@ -8082,6 +8314,15 @@ export interface components {
              */
             grace_seconds?: number | null;
         };
+        /** @description A rotation. */
+        RotateWebhookSecretRequest: {
+            /**
+             * Format: int64
+             * @description How long the old secret keeps signing beside the new one, in
+             *     seconds (default a day, at most a week; 0 retires it at once).
+             */
+            overlap_seconds?: number | null;
+        };
         RoutingRuleResponse: {
             id: string;
             tenant_id: string;
@@ -8448,6 +8689,11 @@ export interface components {
              *     (`docs/ENTERPRISE_CALLING.md` §3.7).
              */
             calling: components["schemas"]["TenantCalling"];
+        };
+        /** @description A test delivery. */
+        TestWebhookRequest: {
+            /** @description The event type the test carries; `webhook.test` unless given. */
+            event_type?: string | null;
         };
         /** @description A time window during which subscriptions are allowed. */
         TimeWindow: {
@@ -9148,6 +9394,14 @@ export interface components {
             email_address?: string | null;
             attach_audio?: boolean | null;
         };
+        /** @description A change to a webhook; what is left out stays. */
+        UpdateWebhookRequest: {
+            url?: string | null;
+            events?: string[] | null;
+            enabled?: boolean | null;
+            /** @description Empty clears it. */
+            description?: string | null;
+        };
         /** @description Create or replace a rate on a plan. */
         UpsertRateRequest: {
             prefix: string;
@@ -9298,6 +9552,98 @@ export interface components {
             event_package: string;
             /** Format: int64 */
             expires_in_secs: number;
+        };
+        /** @description What one delivery attempt came to. */
+        WebhookDeliveryOutcome: {
+            /** @description The receiver answered 2xx. */
+            delivered: boolean;
+            /** Format: int32 */
+            status_code?: number | null;
+            error?: string | null;
+            /** @description The start of what the receiver answered. */
+            response_body?: string | null;
+        };
+        /** @description A logged delivery. */
+        WebhookDeliveryResponse: {
+            id: string;
+            webhook_id: string;
+            event_type: string;
+            /** @description The body delivered. */
+            payload: Record<string, never>;
+            delivered: boolean;
+            /** Format: int32 */
+            status_code?: number | null;
+            /** Format: int32 */
+            attempts: number;
+            error?: string | null;
+            response_body?: string | null;
+            /** Format: date-time */
+            last_attempt_at?: string | null;
+            /**
+             * Format: date-time
+             * @description When the dispatcher tries again; none once delivered or given up.
+             */
+            next_retry_at?: string | null;
+            /** Format: date-time */
+            created_at: string;
+        };
+        /** @description The body of every delivery (the spec's `webhooks` section). */
+        WebhookEvent: {
+            /** @description Unique per delivery: a receiver may drop one it has seen. */
+            event_id: string;
+            /**
+             * @description A name from `/api/v1/webhooks/event-types`, or `webhook.test`
+             * @enum {string}
+             */
+            event_type: "call.initiated" | "call.ringing" | "call.progress" | "call.answered" | "call.ended" | "call.failed" | "call.emergency" | "call.emergency_completed" | "emergency.notification_failed" | "call.parked" | "call.unparked" | "call.held" | "call.resumed" | "call.party_joined" | "call.party_left" | "media.session_started" | "media.session_ended" | "media.dtmf_received" | "media.quality_warning" | "ivr.prompt_started" | "ivr.prompt_completed" | "ivr.input_gathered" | "ivr.gather_timeout" | "recording.started" | "recording.completed" | "recording.failed" | "flow.started" | "flow.node_executed" | "flow.waiting_for_input" | "flow.completed" | "flow.failed" | "system.started" | "system.stopping" | "system.health_check" | "system.config_changed" | "system.node_draining" | "system.node_drained" | "system.node_joined" | "system.node_left" | "system.cluster_view_changed" | "system.version_skew" | "system.site_link_changed" | "user.created" | "user.updated" | "user.deleted" | "user.enabled" | "user.disabled" | "user.calling_changed" | "hoteling.login" | "hoteling.logout" | "registration.registered" | "registration.refreshed" | "registration.unregistered" | "registration.expired" | "registration.failed" | "voicemail.message_recorded" | "voicemail.message_deleted" | "voicemail.message_played" | "voicemail.mwi_updated" | "voicemail.mailbox_created" | "voicemail.mailbox_updated" | "voicemail.mailbox_deleted" | "conference.participant_joined" | "conference.participant_left" | "conference.room_locked" | "conference.room_unlocked" | "conference.recording_started" | "conference.recording_stopped" | "conference.pin_failed" | "conference.room_destroyed" | "conference.meeting_created" | "conference.meeting_updated" | "conference.meeting_deleted" | "conference.meeting_started" | "conference.meeting_ended" | "conference.dial_out_invited" | "conference.dial_out_failed" | "conference.video_state_changed" | "conference.content_started" | "conference.content_stopped" | "conference.video_overload" | "conference.video_layout_changed" | "conference.active_speaker_changed" | "queue.caller_enqueued" | "queue.caller_dequeued" | "queue.caller_abandoned" | "queue.caller_overflowed" | "queue.agent_logged_in" | "queue.agent_logged_out" | "queue.agent_state_changed" | "queue.agent_kicked" | "queue.callback_initiated" | "queue.stats_snapshot" | "queue.caller_transferred" | "queue.supervisor_joined" | "queue.supervisor_left" | "queue.callback_attempted" | "queue.callback_completed" | "queue.callback_failed" | "queue.service_level_warning" | "queue.queue_draining" | "queue.queue_drained" | "queue.campaign_call_placed" | "queue.campaign_call_connected" | "queue.campaign_call_failed" | "presence.status_changed" | "presence.watcher_added" | "presence.watcher_removed" | "presence.publish_received" | "presence.dialog_changed" | "presence.publish_expiry_warning" | "presence.publish_expired" | "line.appearance_changed" | "sip.message_captured" | "billing.call_rated" | "billing.balance_changed" | "billing.balance_low" | "billing.balance_depleted" | "billing.call_rejected" | "billing.call_cut_off" | "cdr.written" | "cdr.archived" | "trunk.registered" | "trunk.registration_failed" | "trunk.health_changed" | "compliance.hold_placed" | "compliance.hold_released" | "compliance.subject_request_completed" | "webhook.test";
+            /**
+             * Format: date-time
+             * @description When the event happened, RFC 3339.
+             */
+            timestamp: string;
+            tenant_id?: string | null;
+            /** @description The event itself. */
+            data: Record<string, never>;
+        };
+        /** @description An event type a webhook may subscribe to. */
+        WebhookEventType: {
+            /** @description `call.answered`. */
+            name: string;
+            /** @description `call`: subscribe to all of them with `call.*`. */
+            category: string;
+        };
+        /** @description A webhook, without its secret. */
+        WebhookResponse: {
+            id: string;
+            tenant_id: string;
+            url: string;
+            /**
+             * @description Event types delivered: names from `/webhooks/event-types`, a
+             *     category's `call.*`, or `*`. Empty is every event.
+             */
+            events: string[];
+            enabled: boolean;
+            description?: string | null;
+            /** @description The first characters of the secret, to tell secrets apart. */
+            secret_prefix: string;
+            /**
+             * Format: date-time
+             * @description Until when the secret a rotation replaced also signs deliveries.
+             */
+            previous_secret_valid_until?: string | null;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        /**
+         * @description A webhook just made or rotated, with its secret: the only time the
+         *     secret is shown.
+         */
+        WebhookWithSecret: {
+            webhook: components["schemas"]["WebhookResponse"];
+            /** @description `whsec_…`: verify each delivery's `X-FCP-Signature` with it. */
+            secret: string;
         };
         /**
          * @description A span of hours on some days: `start` to `end` local time; an `end`
@@ -17621,6 +17967,334 @@ export interface operations {
             };
         };
     };
+    webhooks_list_webhooks: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_WebhookResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    webhooks_create_webhook: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateWebhookRequest"];
+            };
+        };
+        responses: {
+            /** @description Made; the secret is shown this once */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebhookWithSecret"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    webhooks_list_event_types: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_WebhookEventType"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    webhooks_get_webhook: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebhookResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    webhooks_delete_webhook: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted, with its deliveries */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    webhooks_update_webhook: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateWebhookRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebhookResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    webhooks_rotate_webhook_secret: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RotateWebhookSecretRequest"];
+            };
+        };
+        responses: {
+            /** @description The new secret, shown this once */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebhookWithSecret"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    webhooks_test_webhook: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TestWebhookRequest"];
+            };
+        };
+        responses: {
+            /** @description What the receiver answered, delivered or not */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebhookDeliveryOutcome"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    webhooks_list_deliveries: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The latest deliveries, newest first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_WebhookDeliveryResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    webhooks_replay_delivery: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                delivery_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Sent again now, signed now */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebhookDeliveryOutcome"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     lcr_routes_list_lcr_routes: {
         parameters: {
             query?: {
@@ -19410,6 +20084,31 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
+            };
+        };
+    };
+    webhook_event: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-FCP-Signature": string;
+                "X-FCP-Event": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WebhookEvent"];
+            };
+        };
+        responses: {
+            /** @description Received */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

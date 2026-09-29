@@ -19,45 +19,68 @@ pub struct WebhookPayload {
     pub data: Value,
 }
 
-/// Compute HMAC-SHA256 signature for a payload body.
-///
-/// Returns a string in the format `sha256=<hex-encoded-digest>`.
-pub fn compute_signature(secret: &str, body: &str) -> String {
+/// The header a delivery's signature travels in.
+pub const SIGNATURE_HEADER: &str = "X-FCP-Signature";
+
+/// One secret's signature of a delivery: hex HMAC-SHA256 of
+/// `"<timestamp>.<body>"`.
+pub fn sign(secret: &str, timestamp: u64, body: &str) -> String {
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
 
     let mut mac =
         Hmac::<Sha256>::new_from_slice(secret.as_bytes()).expect("HMAC accepts any key size");
+    mac.update(timestamp.to_string().as_bytes());
+    mac.update(b".");
     mac.update(body.as_bytes());
-    let result = mac.finalize();
-    let bytes = result.into_bytes();
-    format!("sha256={}", hex::encode(bytes))
+    hex::encode(mac.finalize().into_bytes())
+}
+
+/// `X-FCP-Signature` (docs/DEVELOPER_SURFACE.md §3, phase 5):
+/// `t=<unix seconds>,v1=<signature>`, with a `v1` for each secret — the
+/// current one, and the one a rotation replaced while it overlaps. A
+/// receiver checks any `v1` against its secret and refuses a `t` too far
+/// from now, so a captured delivery cannot be replayed.
+pub fn signature_header(secrets: &[&str], timestamp: u64, body: &str) -> String {
+    let mut header = format!("t={timestamp}");
+    for secret in secrets {
+        header.push_str(",v1=");
+        header.push_str(&sign(secret, timestamp, body));
+    }
+    header
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// The vector every FCP webhook implementation checks against: the
+    /// SDKs' `verifyWebhook` / `verify_webhook` tests hold the same one
+    /// (sdk/typescript/test/webhook.test.js, sdk/python/tests/test_webhook.py).
     #[test]
-    fn test_compute_signature() {
-        let sig = compute_signature("my-secret", r#"{"test": true}"#);
-        assert!(sig.starts_with("sha256="));
-        // sha256= prefix (7 chars) + 64 hex chars = 71 total
-        assert_eq!(sig.len(), 71);
+    fn the_signature_matches_the_shared_vector() {
+        let secret = "whsec_test_vector";
+        let body = r#"{"event":"call.started"}"#;
+        let expected = "008976dcc4d8a2d92dbfe2c643bdb8f498825fa20a43baa8d0e7a0358ffa159e";
+        assert_eq!(sign(secret, 1790000000, body), expected);
+        assert_eq!(
+            signature_header(&[secret], 1790000000, body),
+            format!("t=1790000000,v1={expected}")
+        );
     }
 
     #[test]
-    fn test_signature_deterministic() {
-        let sig1 = compute_signature("secret", "body");
-        let sig2 = compute_signature("secret", "body");
-        assert_eq!(sig1, sig2);
-    }
-
-    #[test]
-    fn test_different_secrets_produce_different_signatures() {
-        let sig1 = compute_signature("secret1", "body");
-        let sig2 = compute_signature("secret2", "body");
-        assert_ne!(sig1, sig2);
+    fn a_rotating_secret_signs_twice() {
+        let header = signature_header(&["new", "old"], 5, "b");
+        let parts: Vec<&str> = header.split(',').collect();
+        assert_eq!(parts[0], "t=5");
+        assert_eq!(parts[1], format!("v1={}", sign("new", 5, "b")));
+        assert_eq!(parts[2], format!("v1={}", sign("old", 5, "b")));
+        assert_ne!(
+            sign("new", 5, "b"),
+            sign("new", 6, "b"),
+            "the time is signed"
+        );
     }
 
     #[test]

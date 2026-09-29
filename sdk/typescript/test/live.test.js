@@ -52,3 +52,37 @@ live('a scoped token made through the SDK reaches what it names', async () => {
   assert.ok(Array.isArray(users.data))
   await assert.rejects(ok(scoped.GET('/api/v1/devices')), (e) => e.code === 'forbidden')
 })
+
+live('a webhook delivery verifies with verifyWebhook and a replay later is stale', async () => {
+  const { createServer } = await import('node:http')
+  const { verifyWebhook } = await import('../dist/index.js')
+  const seen = []
+  const server = createServer((req, res) => {
+    let body = ''
+    req.on('data', (chunk) => { body += chunk })
+    req.on('end', () => {
+      seen.push({ signature: req.headers['x-fcp-signature'], body })
+      res.end('ok')
+    })
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  try {
+    const fcp = createFcpClient({ baseUrl: url, token })
+    const made = await ok(fcp.POST('/api/v1/webhooks', {
+      body: { url: `http://127.0.0.1:${server.address().port}/hook`, events: ['call.*'] },
+    }))
+    assert.ok(made.secret.startsWith('whsec_'))
+    const id = made.webhook.id
+    const outcome = await ok(fcp.POST('/api/v1/webhooks/{id}/test', { params: { path: { id } }, body: {} }))
+    assert.equal(outcome.delivered, true, JSON.stringify(outcome))
+    const { signature, body } = seen.at(-1)
+    assert.ok(verifyWebhook(made.secret, signature, body), signature)
+    assert.equal(JSON.parse(body).event_type, 'webhook.test')
+    const t = Number(/t=(\d+)/.exec(signature)[1])
+    assert.equal(verifyWebhook(made.secret, signature, body, { now: t + 600 }), false, 'stale')
+    assert.equal(verifyWebhook('whsec_wrong', signature, body), false)
+    await ok(fcp.DELETE('/api/v1/webhooks/{id}', { params: { path: { id } } }))
+  } finally {
+    server.close()
+  }
+})

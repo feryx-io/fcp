@@ -527,6 +527,21 @@ export type CreateApiTokenResponse = S['CreateApiTokenResponse']
 
 export type GrantablePermission = S['GrantablePermission']
 
+// Webhooks (docs/DEVELOPER_SURFACE.md §3, phase 5)
+export type Webhook = S['WebhookResponse']
+
+export type WebhookWithSecret = S['WebhookWithSecret']
+
+export type CreateWebhookRequest = S['CreateWebhookRequest']
+
+export type UpdateWebhookRequest = S['UpdateWebhookRequest']
+
+export type WebhookDelivery = S['WebhookDeliveryResponse']
+
+export type WebhookDeliveryOutcome = S['WebhookDeliveryOutcome']
+
+export type WebhookEventType = S['WebhookEventType']
+
 // --- Self-service (end-user portal) types ---
 
 export type MeProfile = S['ProfileResponse']

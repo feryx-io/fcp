@@ -68,6 +68,13 @@ format = "json"
 # Required when binding to a non-loopback address.
 # token = "replace-with-long-random-secret"
 
+# [webhook]
+# Deliver tenants' webhooks, managed on the admin API (docs/WEBHOOKS.md).
+# enabled = true
+# database_url = "postgresql://fcp:password@localhost:5432/fcp"  # or FCP_EVENTS_WEBHOOK_DATABASE_URL
+# Reach loopback and private addresses too: a lab only.
+# allow_private_targets = false
+
 # ============================================================
 # Example Configurations for Different Deployment Scenarios
 # ============================================================

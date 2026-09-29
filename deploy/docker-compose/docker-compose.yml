@@ -171,10 +171,20 @@ services:
       - "8081:8081"
     volumes:
       - ./configs/fcp-events-server.toml:/app/fcp-events-server.toml:ro
+      - fcp-certs:/var/lib/fcp/certs:ro
     environment:
       RUST_LOG: info
       FCP_EVENTS_LOG_FORMAT: pretty
       FCP_EVENTS_AUTH_TOKEN: ${FCP_EVENTS_AUTH_TOKEN}
+      # Tenants' webhooks are read from Postgres, their secrets sealed at rest.
+      FCP_EVENTS_WEBHOOK_DATABASE_URL: postgresql://fcp:${POSTGRES_PASSWORD}@postgres:5432/fcp
+      FCP_ENCRYPTION_PROVIDER: local
+      FCP_MASTER_KEY_FILE: /var/lib/fcp/certs/master.key
+    depends_on:
+      certs:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
       interval: 10s

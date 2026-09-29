@@ -108,6 +108,13 @@ import type {
   ClusterSitesResponse,
   SiteInfo,
   SiteWithToken,
+  Webhook,
+  WebhookWithSecret,
+  CreateWebhookRequest,
+  UpdateWebhookRequest,
+  WebhookDelivery,
+  WebhookDeliveryOutcome,
+  WebhookEventType,
 } from '@/types'
 
 // Auth
@@ -630,6 +637,26 @@ export const apiTokens = {
     apiClient.post<CreateApiTokenResponse>(`/api-tokens/${encodeURIComponent(id)}/rotate`, data),
   /** Revokes: the token is kept, marked, and refused. */
   delete: (id: string) => apiClient.delete<void>(`/api-tokens/${encodeURIComponent(id)}`),
+}
+
+export const webhooks = {
+  list: () => apiClient.getAll<Webhook>('/webhooks'),
+  eventTypes: () => apiClient.getAll<WebhookEventType>('/webhooks/event-types'),
+  create: (data: CreateWebhookRequest) => apiClient.post<WebhookWithSecret>('/webhooks', data),
+  update: (id: string, data: UpdateWebhookRequest) =>
+    apiClient.patch<Webhook>(`/webhooks/${encodeURIComponent(id)}`, data),
+  delete: (id: string) => apiClient.delete<void>(`/webhooks/${encodeURIComponent(id)}`),
+  /** A new secret; the old one also signs for `overlap_seconds` (default a day). */
+  rotate: (id: string, overlap_seconds?: number) =>
+    apiClient.post<WebhookWithSecret>(`/webhooks/${encodeURIComponent(id)}/rotate-secret`, { overlap_seconds }),
+  test: (id: string) =>
+    apiClient.post<WebhookDeliveryOutcome>(`/webhooks/${encodeURIComponent(id)}/test`, {}),
+  deliveries: (id: string) =>
+    apiClient.getPage<WebhookDelivery>(`/webhooks/${encodeURIComponent(id)}/deliveries?limit=50`),
+  replay: (id: string, deliveryId: string) =>
+    apiClient.post<WebhookDeliveryOutcome>(
+      `/webhooks/${encodeURIComponent(id)}/deliveries/${encodeURIComponent(deliveryId)}/replay`,
+    ),
 }
 
 // Configuration Management

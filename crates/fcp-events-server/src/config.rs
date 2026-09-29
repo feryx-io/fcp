@@ -305,6 +305,12 @@ pub struct WebhookConfig {
     /// PostgreSQL connection URL for webhook storage
     #[serde(default = "default_webhook_database_url")]
     pub database_url: String,
+
+    /// Deliver to loopback, private and link-local addresses too: for a
+    /// lab, never a deployment tenants use. Set it as the admin's
+    /// `[webhooks] allow_private_targets` is.
+    #[serde(default)]
+    pub allow_private_targets: bool,
 }
 
 fn default_webhook_request_timeout() -> u64 {
@@ -340,6 +346,7 @@ impl Default for WebhookConfig {
             max_concurrent: default_webhook_max_concurrent(),
             retry_interval_secs: default_webhook_retry_interval(),
             database_url: default_webhook_database_url(),
+            allow_private_targets: false,
         }
     }
 }

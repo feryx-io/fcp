@@ -21,6 +21,14 @@ buffer_size = 1000
 max_connections = 1000
 max_connections_per_tenant = 50
 
+[webhook]
+# Deliver tenants' webhooks (docs/WEBHOOKS.md), read from the admin's database.
+enabled = true
+database_url = "postgresql://fcp:fcp_password@localhost:5432/fcp"
+# Only public HTTPS targets. Set true (here and in the admin's [webhooks])
+# to try a receiver on this machine.
+allow_private_targets = false
+
 [logging]
 level = "info"
 format = "pretty"

@@ -21,8 +21,8 @@ KEK  (local master key, or an AWS KMS key)      never stored in the database
   associated data (a ciphertext cannot be re-labelled to another key).
 - **Sealed columns**: `users.digest_password`, `users.sip_ha1_hash`,
   `users.sip_provisioning_password`, `trunks.auth_password`,
-  `conference_meetings.guest_pin` / `host_pin`, the `secret` inside
-  `webhook_endpoints.endpoint_json`, and each tenant's pseudonym key in
+  `conference_meetings.guest_pin` / `host_pin`, the `secret` and a rotation's
+  `previous_secret` inside `webhook_endpoints.endpoint_json`, and each tenant's pseudonym key in
   `subject_pseudonym_keys.secret` (`docs/COMPLIANCE.md`: subject erasure). The list is `SEALED_COLUMNS` in
   `crates/fcp-storage-postgres/src/encryption.rs` and is reported by the
   status endpoint.

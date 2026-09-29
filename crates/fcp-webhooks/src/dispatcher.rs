@@ -1,6 +1,7 @@
 //! Core webhook dispatch and retry logic.
 
-use crate::payload::{compute_signature, WebhookPayload};
+use crate::payload::{signature_header, WebhookPayload, SIGNATURE_HEADER};
+use crate::target::{literal_target_allowed, GuardedResolver};
 use fcp_core::storage::{WebhookDeliveryLog, WebhookEndpoint, WebhookStore};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -22,6 +23,9 @@ pub struct WebhookDispatcherConfig {
     pub max_concurrent: usize,
     /// How often to poll for pending retries
     pub retry_interval: Duration,
+    /// Deliver to loopback, private and link-local addresses too: for a lab
+    /// or a test, never a deployment tenants use (`crate::target`).
+    pub allow_private_targets: bool,
 }
 
 impl Default for WebhookDispatcherConfig {
@@ -33,6 +37,32 @@ impl Default for WebhookDispatcherConfig {
             max_retry_delay: Duration::from_secs(3600),
             max_concurrent: 50,
             retry_interval: Duration::from_secs(60),
+            allow_private_targets: false,
+        }
+    }
+}
+
+/// What one delivery attempt came to.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DeliveryOutcome {
+    /// The receiver answered 2xx.
+    pub delivered: bool,
+    pub status_code: Option<u16>,
+    pub error: Option<String>,
+    /// The start of what the receiver answered.
+    pub response_body: Option<String>,
+    /// Its headers, as JSON.
+    pub response_headers: Option<String>,
+}
+
+impl DeliveryOutcome {
+    fn failed(status_code: Option<u16>, error: String) -> Self {
+        Self {
+            delivered: false,
+            status_code,
+            error: Some(error),
+            response_body: None,
+            response_headers: None,
         }
     }
 }
@@ -50,6 +80,13 @@ impl WebhookDispatcher {
     pub fn new(store: Arc<dyn WebhookStore>, config: WebhookDispatcherConfig) -> Self {
         let client = reqwest::Client::builder()
             .timeout(config.request_timeout)
+            // A delivery connects only to a public address, whatever the
+            // name resolves to when it is sent.
+            .dns_resolver(Arc::new(GuardedResolver {
+                allow_private: config.allow_private_targets,
+            }))
+            // A redirect could lead anywhere; a receiver answers where it is.
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .unwrap_or_default();
         let semaphore = Arc::new(Semaphore::new(config.max_concurrent));
@@ -137,7 +174,8 @@ impl WebhookDispatcher {
     /// Deliver one payload to one endpoint now, signed like any other
     /// webhook, and say whether it landed. The emergency notifier uses
     /// this: it keeps its own record of attempts and its own retries, so
-    /// nothing is scheduled here (`docs/E911_BLOCK_2.md` §8.1).
+    /// nothing is scheduled here (`docs/E911_BLOCK_2.md` §8.1). The admin
+    /// API's test button does too.
     pub async fn deliver_once(
         &self,
         endpoint_id: &fcp_core::WebhookId,
@@ -145,6 +183,23 @@ impl WebhookDispatcher {
         event_type: &str,
         payload: &serde_json::Value,
     ) -> anyhow::Result<()> {
+        let outcome = self
+            .deliver_now(endpoint_id, tenant_id, event_type, payload)
+            .await?;
+        match outcome.error {
+            None => Ok(()),
+            Some(error) => Err(anyhow::anyhow!(error)),
+        }
+    }
+
+    /// `deliver_once`, with what the receiver answered.
+    pub async fn deliver_now(
+        &self,
+        endpoint_id: &fcp_core::WebhookId,
+        tenant_id: &fcp_core::TenantId,
+        event_type: &str,
+        payload: &serde_json::Value,
+    ) -> anyhow::Result<DeliveryOutcome> {
         let endpoint = self
             .store
             .get_endpoint(endpoint_id)
@@ -162,48 +217,117 @@ impl WebhookDispatcher {
             data: payload.clone(),
         };
         let payload_json = serde_json::to_string(&body)?;
-        let signature = compute_signature(&endpoint.secret, &payload_json);
         let _permit = self.semaphore.acquire().await.ok();
-        let result = self
-            .client
-            .post(&endpoint.url)
-            .header("Content-Type", "application/json")
-            .header("X-FCP-Event", event_type)
-            .header("X-FCP-Signature", &signature)
-            .body(payload_json.clone())
-            .send()
-            .await;
+        let outcome = self.send(&endpoint, event_type, &payload_json).await;
         let now = SystemTime::now();
-        let (delivered, status_code, error) = match &result {
-            Ok(resp) if resp.status().is_success() => (true, Some(resp.status().as_u16()), None),
-            Ok(resp) => (
-                false,
-                Some(resp.status().as_u16()),
-                Some(format!("HTTP {}", resp.status())),
-            ),
-            Err(e) => (false, None, Some(e.to_string())),
-        };
         let log = WebhookDeliveryLog {
             id: uuid::Uuid::new_v4().to_string(),
             endpoint_id: endpoint.id,
             event_type: event_type.to_string(),
             payload: payload_json,
-            status_code,
+            status_code: outcome.status_code,
             attempts: 1,
             last_attempt_at: Some(now),
             next_retry_at: None,
-            delivered,
-            error: error.clone(),
-            response_body: None,
-            response_headers: None,
+            delivered: outcome.delivered,
+            error: outcome.error.clone(),
+            response_body: outcome.response_body.clone(),
+            response_headers: outcome.response_headers.clone(),
             created_at: now,
         };
         if let Err(e) = self.store.log_delivery(log).await {
             warn!(error = %e, "Failed to log webhook delivery");
         }
-        match error {
-            None => Ok(()),
-            Some(error) => Err(anyhow::anyhow!(error)),
+        Ok(outcome)
+    }
+
+    /// Send a logged delivery again now, re-signed, and record the attempt
+    /// on its log: a replay from the admin API.
+    pub async fn replay(
+        &self,
+        delivery_id: &str,
+        tenant_id: &fcp_core::TenantId,
+    ) -> anyhow::Result<DeliveryOutcome> {
+        let mut log = self
+            .store
+            .get_delivery_log(delivery_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("delivery {delivery_id} not found"))?;
+        let endpoint = self
+            .store
+            .get_endpoint(&log.endpoint_id)
+            .await?
+            .filter(|e| &e.tenant_id == tenant_id)
+            .ok_or_else(|| anyhow::anyhow!("delivery {delivery_id} not found"))?;
+        let _permit = self.semaphore.acquire().await.ok();
+        let outcome = self.send(&endpoint, &log.event_type, &log.payload).await;
+        log.attempts += 1;
+        log.last_attempt_at = Some(SystemTime::now());
+        log.status_code = outcome.status_code;
+        log.error = outcome.error.clone();
+        log.response_body = outcome.response_body.clone();
+        log.response_headers = outcome.response_headers.clone();
+        if outcome.delivered {
+            log.delivered = true;
+            log.next_retry_at = None;
+        }
+        if let Err(e) = self.store.update_delivery_log(log).await {
+            warn!(error = %e, "Failed to update a replayed delivery's log");
+        }
+        Ok(outcome)
+    }
+
+    /// POST a payload to an endpoint, signed now with every secret it signs
+    /// with (`WebhookEndpoint::signing_secrets`).
+    async fn send(
+        &self,
+        endpoint: &WebhookEndpoint,
+        event_type: &str,
+        payload_json: &str,
+    ) -> DeliveryOutcome {
+        if !literal_target_allowed(&endpoint.url, self.config.allow_private_targets) {
+            return DeliveryOutcome::failed(None, "the target is not a public address".into());
+        }
+        let now = SystemTime::now();
+        let t = now.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+        let signature = signature_header(&endpoint.signing_secrets(now), t, payload_json);
+        let result = self
+            .client
+            .post(&endpoint.url)
+            .header("Content-Type", "application/json")
+            .header("X-FCP-Event", event_type)
+            .header(SIGNATURE_HEADER, signature)
+            .body(payload_json.to_string())
+            .send()
+            .await;
+        match result {
+            Ok(resp) => {
+                let status = resp.status();
+                let headers = resp
+                    .headers()
+                    .iter()
+                    .map(|(k, v)| (k.as_str().to_string(), v.to_str().unwrap_or("").to_string()))
+                    .collect::<std::collections::HashMap<_, _>>();
+                let body = resp.text().await.ok().map(|b| {
+                    if b.len() > 65536 {
+                        let mut end = 65536;
+                        while !b.is_char_boundary(end) {
+                            end -= 1;
+                        }
+                        b[..end].to_string()
+                    } else {
+                        b
+                    }
+                });
+                DeliveryOutcome {
+                    delivered: status.is_success(),
+                    status_code: Some(status.as_u16()),
+                    error: (!status.is_success()).then(|| format!("HTTP {}", status.as_u16())),
+                    response_body: body,
+                    response_headers: serde_json::to_string(&headers).ok(),
+                }
+            }
+            Err(e) => DeliveryOutcome::failed(None, e.to_string()),
         }
     }
 
@@ -218,130 +342,35 @@ impl WebhookDispatcher {
             Ok(p) => p,
             Err(_) => return, // Semaphore closed
         };
-
-        let signature = compute_signature(&endpoint.secret, payload_json);
-
-        let result = self
-            .client
-            .post(&endpoint.url)
-            .header("Content-Type", "application/json")
-            .header("X-FCP-Event", event_type)
-            .header("X-FCP-Signature", &signature)
-            .body(payload_json.to_string())
-            .send()
-            .await;
-
+        let outcome = self.send(endpoint, event_type, payload_json).await;
         let now = SystemTime::now();
-
-        match result {
-            Ok(resp) if resp.status().is_success() => {
-                let status_code = resp.status().as_u16();
-                let resp_headers = resp
-                    .headers()
-                    .iter()
-                    .map(|(k, v)| (k.as_str().to_string(), v.to_str().unwrap_or("").to_string()))
-                    .collect::<std::collections::HashMap<_, _>>();
-                let resp_headers_json = serde_json::to_string(&resp_headers).ok();
-                let resp_body = resp.text().await.ok().map(|b| {
-                    if b.len() > 65536 {
-                        b[..65536].to_string()
-                    } else {
-                        b
-                    }
-                });
-                debug!(
-                    endpoint_id = %endpoint.id,
-                    event = %event_type,
-                    status = status_code,
-                    "Webhook delivered successfully"
-                );
-                let log = WebhookDeliveryLog {
-                    id: uuid::Uuid::new_v4().to_string(),
-                    endpoint_id: endpoint.id,
-                    event_type: event_type.to_string(),
-                    payload: payload_json.to_string(),
-                    status_code: Some(status_code),
-                    attempts: 1,
-                    last_attempt_at: Some(now),
-                    next_retry_at: None,
-                    delivered: true,
-                    error: None,
-                    response_body: resp_body,
-                    response_headers: resp_headers_json,
-                    created_at: now,
-                };
-                if let Err(e) = self.store.log_delivery(log).await {
-                    warn!(error = %e, "Failed to log webhook delivery");
-                }
-            }
-            Ok(resp) => {
-                let status = resp.status().as_u16();
-                let resp_headers = resp
-                    .headers()
-                    .iter()
-                    .map(|(k, v)| (k.as_str().to_string(), v.to_str().unwrap_or("").to_string()))
-                    .collect::<std::collections::HashMap<_, _>>();
-                let resp_headers_json = serde_json::to_string(&resp_headers).ok();
-                let resp_body = resp.text().await.ok().map(|b| {
-                    if b.len() > 65536 {
-                        b[..65536].to_string()
-                    } else {
-                        b
-                    }
-                });
-                warn!(
-                    endpoint_id = %endpoint.id,
-                    status = status,
-                    event = %event_type,
-                    "Webhook delivery failed, scheduling retry"
-                );
-                let next_retry = now + self.config.base_retry_delay;
-                let log = WebhookDeliveryLog {
-                    id: uuid::Uuid::new_v4().to_string(),
-                    endpoint_id: endpoint.id,
-                    event_type: event_type.to_string(),
-                    payload: payload_json.to_string(),
-                    status_code: Some(status),
-                    attempts: 1,
-                    last_attempt_at: Some(now),
-                    next_retry_at: Some(next_retry),
-                    delivered: false,
-                    error: Some(format!("HTTP {}", status)),
-                    response_body: resp_body,
-                    response_headers: resp_headers_json,
-                    created_at: now,
-                };
-                if let Err(e) = self.store.log_delivery(log).await {
-                    warn!(error = %e, "Failed to log webhook delivery failure");
-                }
-            }
-            Err(e) => {
-                warn!(
-                    endpoint_id = %endpoint.id,
-                    error = %e,
-                    event = %event_type,
-                    "Webhook delivery error, scheduling retry"
-                );
-                let next_retry = now + self.config.base_retry_delay;
-                let log = WebhookDeliveryLog {
-                    id: uuid::Uuid::new_v4().to_string(),
-                    endpoint_id: endpoint.id,
-                    event_type: event_type.to_string(),
-                    payload: payload_json.to_string(),
-                    status_code: None,
-                    attempts: 1,
-                    last_attempt_at: Some(now),
-                    next_retry_at: Some(next_retry),
-                    delivered: false,
-                    error: Some(e.to_string()),
-                    response_body: None,
-                    response_headers: None,
-                    created_at: now,
-                };
-                if let Err(e) = self.store.log_delivery(log).await {
-                    warn!(error = %e, "Failed to log webhook delivery error");
-                }
-            }
+        if outcome.delivered {
+            debug!(endpoint_id = %endpoint.id, event = %event_type, "Webhook delivered");
+        } else {
+            warn!(
+                endpoint_id = %endpoint.id,
+                event = %event_type,
+                error = ?outcome.error,
+                "Webhook delivery failed, scheduling retry"
+            );
+        }
+        let log = WebhookDeliveryLog {
+            id: uuid::Uuid::new_v4().to_string(),
+            endpoint_id: endpoint.id,
+            event_type: event_type.to_string(),
+            payload: payload_json.to_string(),
+            status_code: outcome.status_code,
+            attempts: 1,
+            last_attempt_at: Some(now),
+            next_retry_at: (!outcome.delivered).then(|| now + self.config.base_retry_delay),
+            delivered: outcome.delivered,
+            error: outcome.error,
+            response_body: outcome.response_body,
+            response_headers: outcome.response_headers,
+            created_at: now,
+        };
+        if let Err(e) = self.store.log_delivery(log).await {
+            warn!(error = %e, "Failed to log webhook delivery");
         }
     }
 
@@ -406,46 +435,21 @@ impl WebhookDispatcher {
                 Err(_) => return,
             };
 
-            let signature = compute_signature(&endpoint.secret, &log.payload);
+            let outcome = self.send(&endpoint, &log.event_type, &log.payload).await;
             let now = SystemTime::now();
-
-            let result = self
-                .client
-                .post(&endpoint.url)
-                .header("Content-Type", "application/json")
-                .header("X-FCP-Event", &log.event_type)
-                .header("X-FCP-Signature", &signature)
-                .body(log.payload.clone())
-                .send()
-                .await;
-
             log.attempts += 1;
             log.last_attempt_at = Some(now);
-
-            match result {
-                Ok(resp) if resp.status().is_success() => {
-                    debug!(
-                        delivery_id = %log.id,
-                        attempts = log.attempts,
-                        "Webhook retry succeeded"
-                    );
-                    log.status_code = Some(resp.status().as_u16());
-                    log.delivered = true;
-                    log.next_retry_at = None;
-                    log.error = None;
-                }
-                Ok(resp) => {
-                    let status = resp.status().as_u16();
-                    log.status_code = Some(status);
-                    log.error = Some(format!("HTTP {}", status));
-                    let backoff = self.compute_backoff(log.attempts);
-                    log.next_retry_at = Some(now + backoff);
-                }
-                Err(e) => {
-                    log.error = Some(e.to_string());
-                    let backoff = self.compute_backoff(log.attempts);
-                    log.next_retry_at = Some(now + backoff);
-                }
+            log.status_code = outcome.status_code;
+            log.response_body = outcome.response_body;
+            log.response_headers = outcome.response_headers;
+            if outcome.delivered {
+                debug!(delivery_id = %log.id, attempts = log.attempts, "Webhook retry succeeded");
+                log.delivered = true;
+                log.next_retry_at = None;
+                log.error = None;
+            } else {
+                log.error = outcome.error;
+                log.next_retry_at = Some(now + self.compute_backoff(log.attempts));
             }
 
             if let Err(e) = self.store.update_delivery_log(log).await {
@@ -545,6 +549,8 @@ mod tests {
             description: None,
             created_at: SystemTime::now(),
             updated_at: SystemTime::now(),
+            previous_secret: None,
+            previous_secret_expires_at: None,
         }
     }
 

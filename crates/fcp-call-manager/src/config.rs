@@ -838,8 +838,9 @@ pub struct WebhookConfig {
     #[serde(default)]
     pub event_types: Vec<String>,
 
-    /// Optional secret for HMAC-SHA256 signatures in X-FCP-Signature.
-    /// X-Webhook-Signature is also emitted for backward compatibility.
+    /// Optional secret: deliveries then carry `X-FCP-Signature:
+    /// t=<unix>,v1=<hex HMAC-SHA256 of "<t>.<body>">`, as a tenant's
+    /// webhooks do (docs/WEBHOOKS.md).
     pub secret: Option<String>,
 }
 

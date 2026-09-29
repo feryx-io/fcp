@@ -200,7 +200,8 @@ Every local file already says this; here is the map.
 ## 7. Start
 
 Postgres and Redis first, then the events server (everything posts to
-it), then the rest in any order. From the repository root:
+it, and it reads tenants' webhooks from Postgres: `docs/WEBHOOKS.md`),
+then the rest in any order. From the repository root:
 
 ```bash
 target/release/fcp-events-server --config fcp-events-server-local.toml &

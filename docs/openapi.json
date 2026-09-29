@@ -11479,6 +11479,476 @@
         }
       }
     },
+    "/api/v1/webhooks": {
+      "get": {
+        "tags": [
+          "webhooks"
+        ],
+        "summary": "GET /api/v1/webhooks",
+        "operationId": "webhooks_list_webhooks",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_WebhookResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "webhooks"
+        ],
+        "summary": "POST /api/v1/webhooks",
+        "operationId": "webhooks_create_webhook",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateWebhookRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Made; the secret is shown this once",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookWithSecret"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/webhooks/event-types": {
+      "get": {
+        "tags": [
+          "webhooks"
+        ],
+        "summary": "GET /api/v1/webhooks/event-types",
+        "operationId": "webhooks_list_event_types",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_WebhookEventType"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/webhooks/{id}": {
+      "get": {
+        "tags": [
+          "webhooks"
+        ],
+        "summary": "GET /api/v1/webhooks/:id",
+        "operationId": "webhooks_get_webhook",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "webhooks"
+        ],
+        "summary": "DELETE /api/v1/webhooks/:id",
+        "operationId": "webhooks_delete_webhook",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted, with its deliveries"
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "webhooks"
+        ],
+        "summary": "PATCH /api/v1/webhooks/:id",
+        "operationId": "webhooks_update_webhook",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateWebhookRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/webhooks/{id}/rotate-secret": {
+      "post": {
+        "tags": [
+          "webhooks"
+        ],
+        "summary": "POST /api/v1/webhooks/:id/rotate-secret",
+        "operationId": "webhooks_rotate_webhook_secret",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RotateWebhookSecretRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The new secret, shown this once",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookWithSecret"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/webhooks/{id}/test": {
+      "post": {
+        "tags": [
+          "webhooks"
+        ],
+        "summary": "POST /api/v1/webhooks/:id/test",
+        "operationId": "webhooks_test_webhook",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TestWebhookRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "What the receiver answered, delivered or not",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookDeliveryOutcome"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/webhooks/{id}/deliveries": {
+      "get": {
+        "tags": [
+          "webhooks"
+        ],
+        "summary": "GET /api/v1/webhooks/:id/deliveries",
+        "operationId": "webhooks_list_deliveries",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The latest deliveries, newest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_WebhookDeliveryResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/webhooks/{id}/deliveries/{delivery_id}/replay": {
+      "post": {
+        "tags": [
+          "webhooks"
+        ],
+        "summary": "POST /api/v1/webhooks/:id/deliveries/:delivery_id/replay",
+        "operationId": "webhooks_replay_delivery",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "delivery_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Sent again now, signed now",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookDeliveryOutcome"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/lcr-routes": {
       "get": {
         "tags": [
@@ -13852,6 +14322,48 @@
                 }
               }
             }
+          }
+        }
+      }
+    }
+  },
+  "webhooks": {
+    "platform_event": {
+      "post": {
+        "summary": "A platform event, delivered to a tenant's webhook",
+        "description": "Verify `X-FCP-Signature` (`t=<unix>,v1=<hex HMAC-SHA256 of \"<t>.<body>\">`) with the webhook's secret before trusting the body, and refuse a stale `t`. During a rotation two `v1` values are sent. Answer 2xx; anything else is retried with backoff.",
+        "operationId": "webhook_event",
+        "parameters": [
+          {
+            "name": "X-FCP-Signature",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-FCP-Event",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WebhookEvent"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Received"
           }
         }
       }
@@ -17265,6 +17777,33 @@
             ]
           },
           "emergency_contact_phone": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "CreateWebhookRequest": {
+        "type": "object",
+        "description": "What a webhook is made with.",
+        "required": [
+          "url"
+        ],
+        "properties": {
+          "url": {
+            "type": "string"
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "description": {
             "type": [
               "string",
               "null"
@@ -25883,6 +26422,244 @@
           }
         }
       },
+      "Page_WebhookDeliveryResponse": {
+        "type": "object",
+        "description": "A page of a list.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "A logged delivery.",
+              "required": [
+                "id",
+                "webhook_id",
+                "event_type",
+                "payload",
+                "delivered",
+                "attempts",
+                "created_at"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "webhook_id": {
+                  "type": "string"
+                },
+                "event_type": {
+                  "type": "string"
+                },
+                "payload": {
+                  "type": "object",
+                  "description": "The body delivered."
+                },
+                "delivered": {
+                  "type": "boolean"
+                },
+                "status_code": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int32",
+                  "minimum": 0
+                },
+                "attempts": {
+                  "type": "integer",
+                  "format": "int32",
+                  "minimum": 0
+                },
+                "error": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "response_body": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "last_attempt_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "next_retry_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time",
+                  "description": "When the dispatcher tries again; none once delivered or given up."
+                },
+                "created_at": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The cursor for the next page; null on the last."
+          },
+          "total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How many items the whole list holds, where that is known.",
+            "minimum": 0
+          }
+        }
+      },
+      "Page_WebhookEventType": {
+        "type": "object",
+        "description": "A page of a list.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "An event type a webhook may subscribe to.",
+              "required": [
+                "name",
+                "category"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "description": "`call.answered`."
+                },
+                "category": {
+                  "type": "string",
+                  "description": "`call`: subscribe to all of them with `call.*`."
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The cursor for the next page; null on the last."
+          },
+          "total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How many items the whole list holds, where that is known.",
+            "minimum": 0
+          }
+        }
+      },
+      "Page_WebhookResponse": {
+        "type": "object",
+        "description": "A page of a list.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "A webhook, without its secret.",
+              "required": [
+                "id",
+                "tenant_id",
+                "url",
+                "events",
+                "enabled",
+                "secret_prefix",
+                "created_at",
+                "updated_at"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "tenant_id": {
+                  "type": "string"
+                },
+                "url": {
+                  "type": "string"
+                },
+                "events": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Event types delivered: names from `/webhooks/event-types`, a\ncategory's `call.*`, or `*`. Empty is every event."
+                },
+                "enabled": {
+                  "type": "boolean"
+                },
+                "description": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "secret_prefix": {
+                  "type": "string",
+                  "description": "The first characters of the secret, to tell secrets apart."
+                },
+                "previous_secret_valid_until": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time",
+                  "description": "Until when the secret a rotation replaced also signs deliveries."
+                },
+                "created_at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "updated_at": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The cursor for the next page; null on the last."
+          },
+          "total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How many items the whole list holds, where that is known.",
+            "minimum": 0
+          }
+        }
+      },
       "Page_debug.CallInfo": {
         "type": "object",
         "description": "A page of a list.",
@@ -27454,6 +28231,21 @@
           }
         }
       },
+      "RotateWebhookSecretRequest": {
+        "type": "object",
+        "description": "A rotation.",
+        "properties": {
+          "overlap_seconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How long the old secret keeps signing beside the new one, in\nseconds (default a day, at most a week; 0 retires it at once).",
+            "minimum": 0
+          }
+        }
+      },
       "RoutingRuleResponse": {
         "type": "object",
         "required": [
@@ -28643,6 +29435,19 @@
           "calling": {
             "$ref": "#/components/schemas/TenantCalling",
             "description": "Country, timezone and number-range overrides\n(`docs/ENTERPRISE_CALLING.md` §3.7)."
+          }
+        }
+      },
+      "TestWebhookRequest": {
+        "type": "object",
+        "description": "A test delivery.",
+        "properties": {
+          "event_type": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The event type the test carries; `webhook.test` unless given."
           }
         }
       },
@@ -31295,6 +32100,40 @@
           }
         }
       },
+      "UpdateWebhookRequest": {
+        "type": "object",
+        "description": "A change to a webhook; what is left out stays.",
+        "properties": {
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "events": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "enabled": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Empty clears it."
+          }
+        }
+      },
       "UpsertRateRequest": {
         "type": "object",
         "description": "Create or replace a rate on a plan.",
@@ -31753,6 +32592,377 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          }
+        }
+      },
+      "WebhookDeliveryOutcome": {
+        "type": "object",
+        "description": "What one delivery attempt came to.",
+        "required": [
+          "delivered"
+        ],
+        "properties": {
+          "delivered": {
+            "type": "boolean",
+            "description": "The receiver answered 2xx."
+          },
+          "status_code": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "response_body": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The start of what the receiver answered."
+          }
+        }
+      },
+      "WebhookDeliveryResponse": {
+        "type": "object",
+        "description": "A logged delivery.",
+        "required": [
+          "id",
+          "webhook_id",
+          "event_type",
+          "payload",
+          "delivered",
+          "attempts",
+          "created_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "webhook_id": {
+            "type": "string"
+          },
+          "event_type": {
+            "type": "string"
+          },
+          "payload": {
+            "type": "object",
+            "description": "The body delivered."
+          },
+          "delivered": {
+            "type": "boolean"
+          },
+          "status_code": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "attempts": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "response_body": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_attempt_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "next_retry_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the dispatcher tries again; none once delivered or given up."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "WebhookEvent": {
+        "type": "object",
+        "description": "The body of every delivery (the spec's `webhooks` section).",
+        "required": [
+          "event_id",
+          "event_type",
+          "timestamp",
+          "data"
+        ],
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "description": "Unique per delivery: a receiver may drop one it has seen."
+          },
+          "event_type": {
+            "type": "string",
+            "description": "A name from `/api/v1/webhooks/event-types`, or `webhook.test`",
+            "enum": [
+              "call.initiated",
+              "call.ringing",
+              "call.progress",
+              "call.answered",
+              "call.ended",
+              "call.failed",
+              "call.emergency",
+              "call.emergency_completed",
+              "emergency.notification_failed",
+              "call.parked",
+              "call.unparked",
+              "call.held",
+              "call.resumed",
+              "call.party_joined",
+              "call.party_left",
+              "media.session_started",
+              "media.session_ended",
+              "media.dtmf_received",
+              "media.quality_warning",
+              "ivr.prompt_started",
+              "ivr.prompt_completed",
+              "ivr.input_gathered",
+              "ivr.gather_timeout",
+              "recording.started",
+              "recording.completed",
+              "recording.failed",
+              "flow.started",
+              "flow.node_executed",
+              "flow.waiting_for_input",
+              "flow.completed",
+              "flow.failed",
+              "system.started",
+              "system.stopping",
+              "system.health_check",
+              "system.config_changed",
+              "system.node_draining",
+              "system.node_drained",
+              "system.node_joined",
+              "system.node_left",
+              "system.cluster_view_changed",
+              "system.version_skew",
+              "system.site_link_changed",
+              "user.created",
+              "user.updated",
+              "user.deleted",
+              "user.enabled",
+              "user.disabled",
+              "user.calling_changed",
+              "hoteling.login",
+              "hoteling.logout",
+              "registration.registered",
+              "registration.refreshed",
+              "registration.unregistered",
+              "registration.expired",
+              "registration.failed",
+              "voicemail.message_recorded",
+              "voicemail.message_deleted",
+              "voicemail.message_played",
+              "voicemail.mwi_updated",
+              "voicemail.mailbox_created",
+              "voicemail.mailbox_updated",
+              "voicemail.mailbox_deleted",
+              "conference.participant_joined",
+              "conference.participant_left",
+              "conference.room_locked",
+              "conference.room_unlocked",
+              "conference.recording_started",
+              "conference.recording_stopped",
+              "conference.pin_failed",
+              "conference.room_destroyed",
+              "conference.meeting_created",
+              "conference.meeting_updated",
+              "conference.meeting_deleted",
+              "conference.meeting_started",
+              "conference.meeting_ended",
+              "conference.dial_out_invited",
+              "conference.dial_out_failed",
+              "conference.video_state_changed",
+              "conference.content_started",
+              "conference.content_stopped",
+              "conference.video_overload",
+              "conference.video_layout_changed",
+              "conference.active_speaker_changed",
+              "queue.caller_enqueued",
+              "queue.caller_dequeued",
+              "queue.caller_abandoned",
+              "queue.caller_overflowed",
+              "queue.agent_logged_in",
+              "queue.agent_logged_out",
+              "queue.agent_state_changed",
+              "queue.agent_kicked",
+              "queue.callback_initiated",
+              "queue.stats_snapshot",
+              "queue.caller_transferred",
+              "queue.supervisor_joined",
+              "queue.supervisor_left",
+              "queue.callback_attempted",
+              "queue.callback_completed",
+              "queue.callback_failed",
+              "queue.service_level_warning",
+              "queue.queue_draining",
+              "queue.queue_drained",
+              "queue.campaign_call_placed",
+              "queue.campaign_call_connected",
+              "queue.campaign_call_failed",
+              "presence.status_changed",
+              "presence.watcher_added",
+              "presence.watcher_removed",
+              "presence.publish_received",
+              "presence.dialog_changed",
+              "presence.publish_expiry_warning",
+              "presence.publish_expired",
+              "line.appearance_changed",
+              "sip.message_captured",
+              "billing.call_rated",
+              "billing.balance_changed",
+              "billing.balance_low",
+              "billing.balance_depleted",
+              "billing.call_rejected",
+              "billing.call_cut_off",
+              "cdr.written",
+              "cdr.archived",
+              "trunk.registered",
+              "trunk.registration_failed",
+              "trunk.health_changed",
+              "compliance.hold_placed",
+              "compliance.hold_released",
+              "compliance.subject_request_completed",
+              "webhook.test"
+            ]
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the event happened, RFC 3339."
+          },
+          "tenant_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "data": {
+            "type": "object",
+            "description": "The event itself."
+          }
+        }
+      },
+      "WebhookEventType": {
+        "type": "object",
+        "description": "An event type a webhook may subscribe to.",
+        "required": [
+          "name",
+          "category"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "`call.answered`."
+          },
+          "category": {
+            "type": "string",
+            "description": "`call`: subscribe to all of them with `call.*`."
+          }
+        }
+      },
+      "WebhookResponse": {
+        "type": "object",
+        "description": "A webhook, without its secret.",
+        "required": [
+          "id",
+          "tenant_id",
+          "url",
+          "events",
+          "enabled",
+          "secret_prefix",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "tenant_id": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Event types delivered: names from `/webhooks/event-types`, a\ncategory's `call.*`, or `*`. Empty is every event."
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "secret_prefix": {
+            "type": "string",
+            "description": "The first characters of the secret, to tell secrets apart."
+          },
+          "previous_secret_valid_until": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Until when the secret a rotation replaced also signs deliveries."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "WebhookWithSecret": {
+        "type": "object",
+        "description": "A webhook just made or rotated, with its secret: the only time the\nsecret is shown.",
+        "required": [
+          "webhook",
+          "secret"
+        ],
+        "properties": {
+          "webhook": {
+            "$ref": "#/components/schemas/WebhookResponse"
+          },
+          "secret": {
+            "type": "string",
+            "description": "`whsec_…`: verify each delivery's `X-FCP-Signature` with it."
           }
         }
       },

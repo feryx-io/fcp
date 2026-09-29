@@ -7,7 +7,8 @@
 pub mod consumer;
 pub mod dispatcher;
 pub mod payload;
+pub mod target;
 
 pub use consumer::spawn_webhook_consumer;
-pub use dispatcher::{WebhookDispatcher, WebhookDispatcherConfig};
-pub use payload::{compute_signature, WebhookPayload};
+pub use dispatcher::{DeliveryOutcome, WebhookDispatcher, WebhookDispatcherConfig};
+pub use payload::{sign, signature_header, WebhookPayload, SIGNATURE_HEADER};

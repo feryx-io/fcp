@@ -26,6 +26,7 @@ fcp-sip = { path = "../fcp-sip" }
 fcp-media = { path = "../fcp-media" }
 fcp-b2bua-core = { path = "../fcp-b2bua-core" }
 fcp-events = { path = "../fcp-events" }
+fcp-webhooks = { path = "../fcp-webhooks" }
 fcp-flow = { path = "../fcp-flow" }
 
 # For NoopDispatcher

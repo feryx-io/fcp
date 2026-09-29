@@ -21,6 +21,12 @@ buffer_size = 1000
 max_connections = 1000
 max_connections_per_tenant = 50
 
+[webhook]
+# Deliver every tenant's events to the webhooks it manages on the admin API
+# (/api/v1/webhooks). The database URL comes from
+# FCP_EVENTS_WEBHOOK_DATABASE_URL; only public HTTPS targets are reached.
+enabled = true
+
 [logging]
 level = "info"
 format = "pretty"

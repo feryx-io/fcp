@@ -23,7 +23,7 @@ use fcp_core::flow_trace::{FlowTraceEntry, FlowTraceEventType, FlowTraceStore};
 use fcp_core::permissions::DeploymentMode;
 use fcp_core::sip_trace::{SipTraceMessage, SipTraceStore};
 use fcp_core::storage::{CallDetailRecord, CallDisposition, CdrStore, DeviceStore, HangupCause};
-use fcp_core::storage::{Registration, RegistrationStore};
+use fcp_core::storage::{Registration, RegistrationStore, WebhookStore};
 use fcp_core::{ApiConfig, CallId, DynStorage, Tenant, TenantId, TenantStore, UserId};
 use fcp_events::InMemoryEventBus;
 use fcp_events::{EventPublisher, PlatformEvent, SystemEvent};
@@ -116,6 +116,20 @@ impl App {
     }
 
     async fn build(mode: DeploymentMode, conference_url: Option<String>) -> Option<Self> {
+        Self::build_with(mode, conference_url, false).await
+    }
+
+    /// An app whose webhooks may name loopback and private addresses, so a
+    /// test's own receiver can be one (`[webhooks] allow_private_targets`).
+    async fn with_private_webhooks() -> Option<Self> {
+        Self::build_with(DeploymentMode::default(), None, true).await
+    }
+
+    async fn build_with(
+        mode: DeploymentMode,
+        conference_url: Option<String>,
+        private_webhooks: bool,
+    ) -> Option<Self> {
         let admin_url = std::env::var("FCP_TEST_DATABASE_URL").ok()?;
         let db_name = format!("fcp_test_{}", Uuid::new_v4().simple());
 
@@ -243,7 +257,15 @@ impl App {
         .with_conference_server_auth_token(Some(CONFERENCE_TOKEN.to_string()))
         .with_profile_pictures_dir(dir.path().join("avatars"))
         .with_voicemail_greetings_dir(dir.path().join("greetings"))
-        .with_prompts_dir(dir.path().join("prompts"));
+        .with_prompts_dir(dir.path().join("prompts"))
+        .with_webhook_dispatcher(Some(Arc::new(fcp_webhooks::WebhookDispatcher::new(
+            Arc::clone(dyn_storage.webhook_store()),
+            fcp_webhooks::WebhookDispatcherConfig {
+                request_timeout: Duration::from_secs(5),
+                allow_private_targets: private_webhooks,
+                ..Default::default()
+            },
+        ))));
 
         let api_config = ApiConfig {
             auth_enabled: true,
@@ -998,19 +1020,20 @@ fn is_time_key(key: &str) -> bool {
 }
 
 /// Resources whose ids no `fcp_core::identifiers` type prefixes: an audit
-/// entry, a billing transaction, a rate plan, a voicemail mailbox. Their
-/// ids are plain UUIDs (`docs/API_TOKENS.md` §6).
+/// entry, a billing transaction, a rate plan, a voicemail mailbox, a
+/// webhook delivery. Their ids are plain UUIDs (`docs/API_TOKENS.md` §6).
 fn unprefixed_resource(path: &str, key: &str) -> bool {
-    (key == "id"
-        && [
-            "/api/v1/audit-log",
-            "/api/v1/billing/balance/transactions",
-            "/api/v1/rate-plans",
-            "/api/v1/voicemail/mailboxes",
-            "/api/v1/me/voicemail",
-        ]
-        .iter()
-        .any(|p| path.starts_with(p)))
+    (key == "id" && path.starts_with("/api/v1/webhooks/") && path.contains("/deliveries"))
+        || (key == "id"
+            && [
+                "/api/v1/audit-log",
+                "/api/v1/billing/balance/transactions",
+                "/api/v1/rate-plans",
+                "/api/v1/voicemail/mailboxes",
+                "/api/v1/me/voicemail",
+            ]
+            .iter()
+            .any(|p| path.starts_with(p)))
         || key == "mailbox_id"
 }
 
@@ -8750,6 +8773,450 @@ async fn hoteling_hosts_credentials_and_sessions() {
         .expect("session");
     assert_eq!(replaced.len(), 1);
     assert_eq!(replaced[0].ended_by, Some(fcp_core::SessionEnd::Replaced));
+
+    app.finish().await;
+}
+
+// ─── Webhooks (docs/DEVELOPER_SURFACE.md §3, phase 5) ───────────────────
+
+/// What a test's webhook receiver saw: each request's signature header,
+/// event header and body.
+#[derive(Clone, Default)]
+struct Receiver {
+    seen: Arc<std::sync::Mutex<Vec<(String, String, String)>>>,
+    answer: Arc<std::sync::atomic::AtomicU16>,
+}
+
+impl Receiver {
+    /// Listen on loopback; returns the receiver and its URL.
+    async fn start() -> (Self, String) {
+        let receiver = Receiver::default();
+        receiver
+            .answer
+            .store(200, std::sync::atomic::Ordering::SeqCst);
+        let r = receiver.clone();
+        let app = Router::new().route(
+            "/hook",
+            axum::routing::post(move |headers: HeaderMap, body: String| {
+                let r = r.clone();
+                async move {
+                    let h = |n: &str| {
+                        headers
+                            .get(n)
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or_default()
+                            .to_string()
+                    };
+                    r.seen
+                        .lock()
+                        .unwrap()
+                        .push((h("x-fcp-signature"), h("x-fcp-event"), body));
+                    StatusCode::from_u16(r.answer.load(std::sync::atomic::Ordering::SeqCst))
+                        .unwrap()
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/hook", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await });
+        (receiver, url)
+    }
+
+    fn last(&self) -> (String, String, String) {
+        self.seen
+            .lock()
+            .unwrap()
+            .last()
+            .cloned()
+            .expect("a delivery")
+    }
+
+    fn count(&self) -> usize {
+        self.seen.lock().unwrap().len()
+    }
+}
+
+/// `t` and the `v1` values of an `X-FCP-Signature`.
+fn signature_parts(header: &str) -> (u64, Vec<String>) {
+    let mut t = 0;
+    let mut v1 = Vec::new();
+    for piece in header.split(',') {
+        match piece.split_once('=') {
+            Some(("t", value)) => t = value.parse().unwrap(),
+            Some(("v1", value)) => v1.push(value.to_string()),
+            _ => {}
+        }
+    }
+    (t, v1)
+}
+
+/// A receiver's check: some `v1` is the HMAC of `"<t>.<body>"` under
+/// `secret`, and `t` is within five minutes of `now`.
+fn verifies(secret: &str, header: &str, body: &str, now: u64) -> bool {
+    let (t, v1) = signature_parts(header);
+    now.abs_diff(t) <= 300 && v1.contains(&fcp_webhooks::sign(secret, t, body))
+}
+
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
+/// A webhook is the tenant's: made with a server secret shown once,
+/// refused a private or non-HTTPS target or an unknown event, invisible to
+/// another tenant, rotated with an overlap, and closed to a role without
+/// `webhook_manage`.
+#[tokio::test]
+async fn webhooks_are_the_tenants_and_their_secret_is_shown_once() {
+    let app = require_app!();
+
+    for (url, why) in [
+        ("https://127.0.0.1/hook", "loopback"),
+        ("https://169.254.169.254/latest/meta-data", "metadata"),
+        ("https://10.0.0.8/hook", "private"),
+        ("https://[::1]/hook", "loopback v6"),
+        ("https://localhost/hook", "localhost"),
+        ("http://93.184.216.34/hook", "plain HTTP"),
+        ("https://user:pw@93.184.216.34/hook", "credentials"),
+    ] {
+        let refused = app
+            .admin(
+                Method::POST,
+                "/api/v1/webhooks",
+                Some(json!({ "url": url })),
+            )
+            .await;
+        assert_eq!(
+            refused.status,
+            StatusCode::BAD_REQUEST,
+            "{why}: {}",
+            refused.text
+        );
+        assert_eq!(refused.json["code"], "bad_request", "{}", refused.text);
+    }
+    let unknown = app
+        .admin(
+            Method::POST,
+            "/api/v1/webhooks",
+            Some(json!({ "url": "https://93.184.216.34/hook", "events": ["call.nonsense"] })),
+        )
+        .await;
+    assert_eq!(unknown.status, StatusCode::BAD_REQUEST, "{}", unknown.text);
+
+    let made = app
+        .admin(
+            Method::POST,
+            "/api/v1/webhooks",
+            Some(json!({
+                "url": "https://93.184.216.34/hook",
+                "events": ["call.answered", "voicemail.*"],
+                "description": "CRM",
+            })),
+        )
+        .await;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.text);
+    let secret = made.json["secret"].as_str().unwrap().to_string();
+    assert!(
+        secret.starts_with("whsec_") && secret.len() > 40,
+        "{secret}"
+    );
+    let id = made.json["webhook"]["id"].as_str().unwrap().to_string();
+    assert!(id.starts_with("whk-"), "{id}");
+    assert_eq!(made.json["webhook"]["tenant_id"], app.tenant_a.to_string());
+
+    let read = app
+        .admin(Method::GET, &format!("/api/v1/webhooks/{id}"), None)
+        .await;
+    assert_eq!(read.status, StatusCode::OK, "{}", read.text);
+    assert!(
+        read.json.get("secret").is_none(),
+        "the secret is shown once: {}",
+        read.text
+    );
+    assert!(!read.text.contains(&secret), "{}", read.text);
+    assert!(secret.starts_with(read.json["secret_prefix"].as_str().unwrap()));
+    assert_eq!(read.json["events"], json!(["call.answered", "voicemail.*"]));
+
+    // Another tenant neither lists nor reads it.
+    let listed = app.admin(Method::GET, "/api/v1/webhooks", None).await;
+    assert_eq!(listed.json.as_array().unwrap().len(), 1, "{}", listed.text);
+    let other = app
+        .admin_in(app.tenant_b, Method::GET, "/api/v1/webhooks", None)
+        .await;
+    assert_eq!(other.json, json!([]), "{}", other.text);
+    let other = app
+        .admin_in(
+            app.tenant_b,
+            Method::GET,
+            &format!("/api/v1/webhooks/{id}"),
+            None,
+        )
+        .await;
+    assert_eq!(other.status, StatusCode::NOT_FOUND, "{}", other.text);
+
+    // A change is checked like a creation.
+    let patched = app
+        .admin(
+            Method::PATCH,
+            &format!("/api/v1/webhooks/{id}"),
+            Some(json!({ "events": ["call.*"], "description": "" })),
+        )
+        .await;
+    assert_eq!(patched.status, StatusCode::OK, "{}", patched.text);
+    assert_eq!(patched.json["events"], json!(["call.*"]));
+    assert!(patched.json["description"].is_null(), "{}", patched.text);
+    let refused = app
+        .admin(
+            Method::PATCH,
+            &format!("/api/v1/webhooks/{id}"),
+            Some(json!({ "url": "https://192.168.1.1/hook" })),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.text);
+
+    // Rotating: a new secret, the old one signing beside it for the overlap.
+    let rotated = app
+        .admin(
+            Method::POST,
+            &format!("/api/v1/webhooks/{id}/rotate-secret"),
+            Some(json!({ "overlap_seconds": 3600 })),
+        )
+        .await;
+    assert_eq!(rotated.status, StatusCode::OK, "{}", rotated.text);
+    let new_secret = rotated.json["secret"].as_str().unwrap();
+    assert_ne!(new_secret, secret);
+    let until = rfc3339_secs(&rotated.json["webhook"]["previous_secret_valid_until"]);
+    assert!(
+        (until - unix_now() as i64 - 3600).abs() < 60,
+        "{}",
+        rotated.text
+    );
+    let stored = app
+        .storage
+        .get_endpoint(&id.parse().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        stored.signing_secrets(SystemTime::now()),
+        vec![new_secret, secret.as_str()]
+    );
+    let too_long = app
+        .admin(
+            Method::POST,
+            &format!("/api/v1/webhooks/{id}/rotate-secret"),
+            Some(json!({ "overlap_seconds": 8 * 24 * 3600 })),
+        )
+        .await;
+    assert_eq!(
+        too_long.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        too_long.text
+    );
+    let at_once = app
+        .admin(
+            Method::POST,
+            &format!("/api/v1/webhooks/{id}/rotate-secret"),
+            Some(json!({ "overlap_seconds": 0 })),
+        )
+        .await;
+    assert!(at_once.json["webhook"]["previous_secret_valid_until"].is_null());
+
+    // The catalogue.
+    let types = app
+        .admin(Method::GET, "/api/v1/webhooks/event-types?limit=1000", None)
+        .await;
+    assert_eq!(types.status, StatusCode::OK, "{}", types.text);
+    let names: Vec<&str> = types
+        .json
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names.len(), PlatformEvent::EVENT_TYPES.len());
+    assert!(names.contains(&"call.answered"));
+    assert!(types
+        .json
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|t| t["name"] == "call.answered" && t["category"] == "call"));
+
+    // Without `webhook_manage`: a read-only session, and a token that names
+    // something else.
+    app.create_user_with_role("viewer", "read_only").await;
+    let viewer = session(&app, "viewer").await;
+    let refused = app
+        .send_as(&viewer, Method::GET, "/api/v1/webhooks", None)
+        .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.text);
+    app.create_user_with_role("boss", "tenant_admin").await;
+    let boss = session(&app, "boss").await;
+    let (_, narrow) = make_token(&app, &boss, json!(["user_read"])).await;
+    let refused = app
+        .send_as(&narrow, Method::GET, "/api/v1/webhooks", None)
+        .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.text);
+    let (_, hooks) = make_token(&app, &boss, json!(["webhook_manage"])).await;
+    let allowed = app
+        .send_as(&hooks, Method::GET, "/api/v1/webhooks", None)
+        .await;
+    assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.text);
+
+    let gone = app
+        .admin(Method::DELETE, &format!("/api/v1/webhooks/{id}"), None)
+        .await;
+    assert_eq!(gone.status, StatusCode::NO_CONTENT, "{}", gone.text);
+    let gone = app
+        .admin(Method::GET, &format!("/api/v1/webhooks/{id}"), None)
+        .await;
+    assert_eq!(gone.status, StatusCode::NOT_FOUND, "{}", gone.text);
+
+    app.finish().await;
+}
+
+/// A delivery is signed over its time and body, verifies under the secret,
+/// fails as stale later, is logged, replays signed anew, is signed twice
+/// while a rotation overlaps, and a failure says what the receiver said.
+#[tokio::test]
+async fn a_webhook_delivery_is_signed_logged_and_replayed() {
+    let Some(app) = App::with_private_webhooks().await else {
+        eprintln!("FCP_TEST_DATABASE_URL not set; skipping PostgreSQL API handler test");
+        return;
+    };
+    let (receiver, url) = Receiver::start().await;
+    let made = app
+        .admin(
+            Method::POST,
+            "/api/v1/webhooks",
+            Some(json!({ "url": url })),
+        )
+        .await;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.text);
+    let secret = made.json["secret"].as_str().unwrap().to_string();
+    let id = made.json["webhook"]["id"].as_str().unwrap().to_string();
+
+    let tested = app
+        .admin(Method::POST, &format!("/api/v1/webhooks/{id}/test"), None)
+        .await;
+    assert_eq!(tested.status, StatusCode::OK, "{}", tested.text);
+    assert_eq!(tested.json["delivered"], true, "{}", tested.text);
+    assert_eq!(tested.json["status_code"], 200);
+    let (signature, event, body) = receiver.last();
+    assert_eq!(event, "webhook.test");
+    assert!(
+        verifies(&secret, &signature, &body, unix_now()),
+        "{signature}"
+    );
+    assert!(!verifies("whsec_wrong", &signature, &body, unix_now()));
+    assert!(
+        !verifies(&secret, &signature, &body, unix_now() + 600),
+        "a delivery replayed ten minutes later is refused as stale"
+    );
+    assert!(!verifies(
+        &secret,
+        &signature,
+        &body.replace("test", "tset"),
+        unix_now()
+    ));
+    let payload: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(payload["event_type"], "webhook.test");
+    assert_eq!(payload["tenant_id"], app.tenant_a.to_string());
+    assert_eq!(payload["data"]["webhook_id"], id);
+
+    // Logged, and replayed signed now.
+    let deliveries = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/webhooks/{id}/deliveries"),
+            None,
+        )
+        .await;
+    assert_eq!(deliveries.status, StatusCode::OK, "{}", deliveries.text);
+    let first = &deliveries.json[0];
+    assert_eq!(first["event_type"], "webhook.test");
+    assert_eq!(first["delivered"], true);
+    assert_eq!(first["payload"]["event_id"], payload["event_id"]);
+    let delivery = first["id"].as_str().unwrap().to_string();
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    let replayed = app
+        .admin(
+            Method::POST,
+            &format!("/api/v1/webhooks/{id}/deliveries/{delivery}/replay"),
+            None,
+        )
+        .await;
+    assert_eq!(replayed.status, StatusCode::OK, "{}", replayed.text);
+    assert_eq!(replayed.json["delivered"], true);
+    assert_eq!(receiver.count(), 2);
+    let (again, _, again_body) = receiver.last();
+    assert_eq!(again_body, body, "the same delivery");
+    assert!(
+        signature_parts(&again).0 > signature_parts(&signature).0,
+        "signed anew"
+    );
+    assert!(verifies(&secret, &again, &again_body, unix_now()));
+    let deliveries = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/webhooks/{id}/deliveries"),
+            None,
+        )
+        .await;
+    assert_eq!(deliveries.json[0]["attempts"], 2, "{}", deliveries.text);
+    // Another tenant cannot replay it.
+    let other = app
+        .admin_in(
+            app.tenant_b,
+            Method::POST,
+            &format!("/api/v1/webhooks/{id}/deliveries/{delivery}/replay"),
+            None,
+        )
+        .await;
+    assert_eq!(other.status, StatusCode::NOT_FOUND, "{}", other.text);
+
+    // While a rotation overlaps, both secrets sign.
+    let rotated = app
+        .admin(
+            Method::POST,
+            &format!("/api/v1/webhooks/{id}/rotate-secret"),
+            None,
+        )
+        .await;
+    let new_secret = rotated.json["secret"].as_str().unwrap().to_string();
+    app.admin(Method::POST, &format!("/api/v1/webhooks/{id}/test"), None)
+        .await;
+    let (signature, _, body) = receiver.last();
+    assert_eq!(signature_parts(&signature).1.len(), 2, "{signature}");
+    assert!(verifies(&new_secret, &signature, &body, unix_now()));
+    assert!(verifies(&secret, &signature, &body, unix_now()));
+
+    // A failure says what the receiver answered.
+    receiver
+        .answer
+        .store(500, std::sync::atomic::Ordering::SeqCst);
+    let failed = app
+        .admin(Method::POST, &format!("/api/v1/webhooks/{id}/test"), None)
+        .await;
+    assert_eq!(failed.status, StatusCode::OK, "{}", failed.text);
+    assert_eq!(failed.json["delivered"], false);
+    assert_eq!(failed.json["status_code"], 500);
+
+    // A disabled webhook is not tested.
+    app.admin(
+        Method::PATCH,
+        &format!("/api/v1/webhooks/{id}"),
+        Some(json!({ "enabled": false })),
+    )
+    .await;
+    let disabled = app
+        .admin(Method::POST, &format!("/api/v1/webhooks/{id}/test"), None)
+        .await;
+    assert_eq!(disabled.status, StatusCode::CONFLICT, "{}", disabled.text);
 
     app.finish().await;
 }

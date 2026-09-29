@@ -234,6 +234,9 @@ pub enum Permission {
     LocationManage,
     ExtensionRead,
     ExtensionManage,
+    /// The tenant's webhooks: endpoints, their secrets, deliveries and
+    /// replays (docs/DEVELOPER_SURFACE.md §3, phase 5).
+    WebhookManage,
 }
 
 impl FromStr for Permission {
@@ -302,6 +305,7 @@ impl FromStr for Permission {
             "location_manage" => Ok(Self::LocationManage),
             "extension_read" => Ok(Self::ExtensionRead),
             "extension_manage" => Ok(Self::ExtensionManage),
+            "webhook_manage" => Ok(Self::WebhookManage),
             other => Err(format!("unknown permission: {}", other)),
         }
     }
@@ -371,6 +375,7 @@ impl Permission {
         Self::LocationManage,
         Self::ExtensionRead,
         Self::ExtensionManage,
+        Self::WebhookManage,
     ];
 
     /// The area a permission belongs to, for grouping it in a picker.
@@ -418,6 +423,7 @@ impl Permission {
             Self::PresenceRead | Self::PresenceManage => "Presence",
             Self::LocationRead | Self::LocationManage => "Locations",
             Self::ExtensionRead | Self::ExtensionManage => "Extensions",
+            Self::WebhookManage => "Webhooks",
         }
     }
 
@@ -485,6 +491,7 @@ impl Permission {
             Self::LocationManage => "location_manage",
             Self::ExtensionRead => "extension_read",
             Self::ExtensionManage => "extension_manage",
+            Self::WebhookManage => "webhook_manage",
         }
     }
 
@@ -552,6 +559,7 @@ impl Permission {
             Self::LocationManage => "Manage Locations",
             Self::ExtensionRead => "View Extensions",
             Self::ExtensionManage => "Manage Extensions",
+            Self::WebhookManage => "Manage Webhooks",
         }
     }
 }
@@ -575,7 +583,7 @@ impl UserRole {
                 | CdrRead | FlowRead | FlowManage | PromptRead | PromptManage | VoicemailRead
                 | VoicemailManage | ConferenceRead | ConferenceManage | QueueRead | QueueManage
                 | PresenceRead | PresenceManage | LocationRead | LocationManage | ExtensionRead
-                | ExtensionManage,
+                | ExtensionManage | WebhookManage,
                 _,
             ) => true,
             (_, ApiTokenManage, _) => false,
@@ -584,7 +592,7 @@ impl UserRole {
                 EmergencyRead | EmergencyManage | BillingRead | CdrRead | FlowRead | FlowManage
                 | PromptRead | PromptManage | VoicemailRead | VoicemailManage | ConferenceRead
                 | ConferenceManage | QueueRead | QueueManage | PresenceRead | PresenceManage
-                | LocationRead | LocationManage | ExtensionRead | ExtensionManage,
+                | LocationRead | LocationManage | ExtensionRead | ExtensionManage | WebhookManage,
                 _,
             ) => true,
             (
@@ -610,7 +618,8 @@ impl UserRole {
                 EmergencyRead | EmergencyManage | BillingRead | BillingManage | CdrRead | FlowRead
                 | FlowManage | PromptRead | PromptManage | VoicemailRead | VoicemailManage
                 | ConferenceRead | ConferenceManage | QueueRead | QueueManage | PresenceRead
-                | PresenceManage | LocationRead | LocationManage | ExtensionRead | ExtensionManage,
+                | PresenceManage | LocationRead | LocationManage | ExtensionRead | ExtensionManage
+                | WebhookManage,
                 _,
             ) => false,
 

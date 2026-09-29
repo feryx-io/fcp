@@ -418,6 +418,21 @@ pub const ROUTES: &[(&str, &str, Gate)] = &[
     (GET, "/api-tokens/permissions", Needs(ApiTokenManage)),
     (DELETE, "/api-tokens/:id", Needs(ApiTokenManage)),
     (POST, "/api-tokens/:id/rotate", Needs(ApiTokenManage)),
+    // Webhooks.
+    (GET, "/webhooks", Needs(WebhookManage)),
+    (POST, "/webhooks", Needs(WebhookManage)),
+    (GET, "/webhooks/event-types", Needs(WebhookManage)),
+    (GET, "/webhooks/:id", Needs(WebhookManage)),
+    (PATCH, "/webhooks/:id", Needs(WebhookManage)),
+    (DELETE, "/webhooks/:id", Needs(WebhookManage)),
+    (POST, "/webhooks/:id/rotate-secret", Needs(WebhookManage)),
+    (POST, "/webhooks/:id/test", Needs(WebhookManage)),
+    (GET, "/webhooks/:id/deliveries", Needs(WebhookManage)),
+    (
+        POST,
+        "/webhooks/:id/deliveries/:delivery_id/replay",
+        Needs(WebhookManage),
+    ),
     // Routing: least-cost routes price trunks, so they take the trunk
     // permissions; classes of service and schedules are call policy.
     (GET, "/lcr-routes", Needs(TrunkRead)),
