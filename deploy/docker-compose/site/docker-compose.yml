@@ -169,6 +169,10 @@ services:
       context: ../../..
       dockerfile: deploy/docker-compose/Dockerfile.link
     container_name: site-link
+    # Its health on the site's loopback, for the operator (and the
+    # nightly's check); nothing else listens here.
+    ports:
+      - "127.0.0.1:18096:8096"
     volumes:
       - ./configs/fcp-link.toml:/app/fcp-link.toml:ro
       - ./cloud-ca.crt:/var/lib/fcp/cloud/ca.crt:ro
