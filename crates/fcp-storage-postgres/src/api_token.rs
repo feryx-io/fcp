@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use fcp_core::storage::{ApiToken, ApiTokenStore};
+use fcp_core::storage::{ApiToken, ApiTokenScope, ApiTokenStore};
 use fcp_core::{ApiTokenId, TenantId};
 use sqlx::{Pool, Postgres, Row};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -17,6 +17,12 @@ fn datetime_to_system_time(dt: DateTime<Utc>) -> SystemTime {
         + Duration::from_secs(dt.timestamp() as u64)
         + Duration::from_nanos(dt.timestamp_subsec_nanos() as u64)
 }
+
+/// Every column a token is read with.
+const TOKEN_COLUMNS: &str =
+    "id, name, token_hash, prefix, user_id, tenant_id, permissions, expires_at, \
+     created_at, last_used_at, scope, revoked_at, revoked_by, previous_token_hash, \
+     previous_expires_at, rotated_at";
 
 /// PostgreSQL-backed API token store.
 #[derive(Clone)]
@@ -37,8 +43,8 @@ impl ApiTokenStore for PostgresApiTokenStore {
         let expires_at = token.expires_at.map(system_time_to_datetime);
 
         sqlx::query(
-            "INSERT INTO api_tokens (id, name, token_hash, prefix, user_id, tenant_id, permissions, expires_at, created_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+            "INSERT INTO api_tokens (id, name, token_hash, prefix, user_id, tenant_id, permissions, expires_at, created_at, scope)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
         )
         .bind(token.id.to_string())
         .bind(&token.name)
@@ -49,18 +55,19 @@ impl ApiTokenStore for PostgresApiTokenStore {
         .bind(permissions_json)
         .bind(expires_at)
         .bind(system_time_to_datetime(token.created_at))
+        .bind(token.scope.as_str())
         .execute(&self.pool)
         .await?;
         Ok(())
     }
 
     async fn list_api_tokens(&self, tenant_id: &TenantId) -> anyhow::Result<Vec<ApiToken>> {
-        let rows = sqlx::query(
-            "SELECT id, name, token_hash, prefix, user_id, tenant_id, permissions, expires_at, created_at, last_used_at
+        let rows = sqlx::query(&format!(
+            "SELECT {TOKEN_COLUMNS}
              FROM api_tokens
              WHERE tenant_id = $1
-             ORDER BY created_at DESC",
-        )
+             ORDER BY created_at DESC"
+        ))
         .bind(tenant_id.to_string())
         .fetch_all(&self.pool)
         .await?;
@@ -69,11 +76,11 @@ impl ApiTokenStore for PostgresApiTokenStore {
     }
 
     async fn get_api_token(&self, id: &ApiTokenId) -> anyhow::Result<Option<ApiToken>> {
-        let row = sqlx::query(
-            "SELECT id, name, token_hash, prefix, user_id, tenant_id, permissions, expires_at, created_at, last_used_at
+        let row = sqlx::query(&format!(
+            "SELECT {TOKEN_COLUMNS}
              FROM api_tokens
-             WHERE id = $1",
-        )
+             WHERE id = $1"
+        ))
         .bind(id.to_string())
         .fetch_optional(&self.pool)
         .await?;
@@ -82,11 +89,12 @@ impl ApiTokenStore for PostgresApiTokenStore {
     }
 
     async fn get_api_token_by_hash(&self, token_hash: &str) -> anyhow::Result<Option<ApiToken>> {
-        let row = sqlx::query(
-            "SELECT id, name, token_hash, prefix, user_id, tenant_id, permissions, expires_at, created_at, last_used_at
+        let row = sqlx::query(&format!(
+            "SELECT {TOKEN_COLUMNS}
              FROM api_tokens
-             WHERE token_hash = $1",
-        )
+             WHERE token_hash = $1
+                OR (previous_token_hash = $1 AND previous_expires_at > NOW())"
+        ))
         .bind(token_hash)
         .fetch_optional(&self.pool)
         .await?;
@@ -99,6 +107,41 @@ impl ApiTokenStore for PostgresApiTokenStore {
             .bind(id.to_string())
             .execute(&self.pool)
             .await?;
+        Ok(())
+    }
+
+    async fn revoke_api_token(&self, id: &ApiTokenId, revoked_by: &str) -> anyhow::Result<()> {
+        sqlx::query(
+            "UPDATE api_tokens SET revoked_at = COALESCE(revoked_at, NOW()),
+                    revoked_by = COALESCE(revoked_by, $2)
+             WHERE id = $1",
+        )
+        .bind(id.to_string())
+        .bind(revoked_by)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn rotate_api_token(
+        &self,
+        id: &ApiTokenId,
+        new_hash: &str,
+        new_prefix: &str,
+        previous_valid_until: SystemTime,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "UPDATE api_tokens SET previous_token_hash = token_hash,
+                    previous_expires_at = $4,
+                    token_hash = $2, prefix = $3, rotated_at = NOW()
+             WHERE id = $1 AND revoked_at IS NULL",
+        )
+        .bind(id.to_string())
+        .bind(new_hash)
+        .bind(new_prefix)
+        .bind(system_time_to_datetime(previous_valid_until))
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -132,5 +175,20 @@ fn row_to_api_token(row: &sqlx::postgres::PgRow) -> ApiToken {
         expires_at: expires_at.map(datetime_to_system_time),
         created_at: datetime_to_system_time(created_at),
         last_used_at: last_used_at.map(datetime_to_system_time),
+        scope: row
+            .get::<String, _>("scope")
+            .parse()
+            .unwrap_or(ApiTokenScope::Admin),
+        revoked_at: row
+            .get::<Option<DateTime<Utc>>, _>("revoked_at")
+            .map(datetime_to_system_time),
+        revoked_by: row.get("revoked_by"),
+        previous_token_hash: row.get("previous_token_hash"),
+        previous_expires_at: row
+            .get::<Option<DateTime<Utc>>, _>("previous_expires_at")
+            .map(datetime_to_system_time),
+        rotated_at: row
+            .get::<Option<DateTime<Utc>>, _>("rotated_at")
+            .map(datetime_to_system_time),
     }
 }

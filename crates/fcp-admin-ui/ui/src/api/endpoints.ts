@@ -85,6 +85,9 @@ import type {
   ApiToken,
   CreateApiTokenRequest,
   CreateApiTokenResponse,
+  CreatePersonalTokenRequest,
+  GrantablePermission,
+  RotateApiTokenRequest,
   ClusterNodesResponse,
   ClusterStatsResponse,
   MeProfile,
@@ -694,7 +697,11 @@ export const emergency = {
 // API Tokens
 export const apiTokens = {
   list: () => apiClient.get<ApiToken[]>('/api-tokens'),
+  permissions: () => apiClient.get<GrantablePermission[]>('/api-tokens/permissions'),
   create: (data: CreateApiTokenRequest) => apiClient.post<CreateApiTokenResponse>('/api-tokens', data),
+  rotate: (id: string, data: RotateApiTokenRequest = {}) =>
+    apiClient.post<CreateApiTokenResponse>(`/api-tokens/${encodeURIComponent(id)}/rotate`, data),
+  /** Revokes: the token is kept, marked, and refused. */
   delete: (id: string) => apiClient.delete<void>(`/api-tokens/${encodeURIComponent(id)}`),
 }
 
@@ -770,6 +777,12 @@ export const config = {
 // Self-service (end-user portal)
 export const me = {
   // Profile
+  listApiTokens: () => apiClient.get<ApiToken[]>('/me/api-tokens'),
+  createApiToken: (data: CreatePersonalTokenRequest) =>
+    apiClient.post<CreateApiTokenResponse>('/me/api-tokens', data),
+  rotateApiToken: (id: string, data: RotateApiTokenRequest = {}) =>
+    apiClient.post<CreateApiTokenResponse>(`/me/api-tokens/${encodeURIComponent(id)}/rotate`, data),
+  revokeApiToken: (id: string) => apiClient.delete<void>(`/me/api-tokens/${encodeURIComponent(id)}`),
   getProfile: () => apiClient.get<MeProfile>('/me/profile'),
   updateProfile: (data: UpdateProfileRequest) => apiClient.put<MeProfile>('/me/profile', data),
   changePassword: (data: ChangePasswordRequest) => apiClient.put<void>('/me/password', data),

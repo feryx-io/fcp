@@ -657,6 +657,39 @@ pub fn extract_claims(req: &axum::extract::Request, state: &ApiState) -> Result<
     extract_claims_from_headers(req.headers(), state)
 }
 
+/// The caller of a `/me` route, as the claims a session carries: the
+/// session's own, or — for a personal API token (docs/DEVELOPER_SURFACE.md
+/// §3, phase 1) — its maker, as an end user. A personal token has no expiry
+/// in these claims; the bearer layer has already judged it.
+pub struct Me(pub Claims);
+
+#[axum::async_trait]
+impl axum::extract::FromRequestParts<ApiState> for Me {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        state: &ApiState,
+    ) -> Result<Self, Self::Rejection> {
+        if let Some(crate::auth::AuthIdentity::Personal {
+            username,
+            tenant_id,
+            ..
+        }) = parts.extensions.get::<crate::auth::AuthIdentity>()
+        {
+            return Ok(Me(Claims {
+                sub: username.clone(),
+                role: "end_user".to_string(),
+                tenant_id: tenant_id.to_string(),
+                display_name: None,
+                exp: 0,
+                iat: 0,
+            }));
+        }
+        extract_claims_from_headers(&parts.headers, state).map(Me)
+    }
+}
+
 /// Extract JWT claims from a `HeaderMap` (useful when Request is not available).
 pub fn extract_claims_from_headers(
     headers: &axum::http::HeaderMap,

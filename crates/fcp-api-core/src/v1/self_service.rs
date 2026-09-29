@@ -5,7 +5,7 @@
 
 use crate::error::ApiError;
 use crate::state::ApiState;
-use crate::v1::auth_session::{extract_claims, extract_claims_from_headers, Claims};
+use crate::v1::auth_session::{extract_claims_from_headers, Claims, Me};
 use axum::{
     extract::{Multipart, Path, State},
     http::{HeaderMap, StatusCode},
@@ -67,9 +67,8 @@ pub struct ProfileResponse {
 /// GET /me/profile
 pub async fn get_profile(
     State(state): State<ApiState>,
-    req: axum::extract::Request,
+    Me(claims): Me,
 ) -> Result<impl IntoResponse, ApiError> {
-    let claims = extract_claims(&req, &state)?;
     let storage = require_storage!(state);
 
     let user = load_claims_user(storage, &claims, &state).await?;
@@ -103,10 +102,9 @@ pub struct UpdateProfileRequest {
 /// PUT /me/profile
 pub async fn update_profile(
     State(state): State<ApiState>,
-    headers: HeaderMap,
+    Me(claims): Me,
     Json(body): Json<UpdateProfileRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let claims = extract_claims_from_headers(&headers, &state)?;
     let storage = require_storage!(state);
 
     let mut user = load_claims_user(storage, &claims, &state).await?;
@@ -223,9 +221,8 @@ pub struct MailboxResponse {
 /// GET /me/voicemail
 pub async fn get_voicemail(
     State(state): State<ApiState>,
-    req: axum::extract::Request,
+    Me(claims): Me,
 ) -> Result<impl IntoResponse, ApiError> {
-    let claims = extract_claims(&req, &state)?;
     let storage = require_storage!(state);
     let (mailbox, _user_id) = get_user_mailbox(
         &claims.sub,
@@ -258,10 +255,9 @@ pub struct UpdateVoicemailRequest {
 /// PUT /me/voicemail
 pub async fn update_voicemail(
     State(state): State<ApiState>,
-    headers: HeaderMap,
+    Me(claims): Me,
     Json(body): Json<UpdateVoicemailRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let claims = extract_claims_from_headers(&headers, &state)?;
     let storage = require_storage!(state);
     let (mut mailbox, _user_id) = get_user_mailbox(
         &claims.sub,
@@ -317,9 +313,8 @@ pub struct MailboxStatsResponse {
 /// GET /me/voicemail/stats
 pub async fn get_voicemail_stats(
     State(state): State<ApiState>,
-    req: axum::extract::Request,
+    Me(claims): Me,
 ) -> Result<impl IntoResponse, ApiError> {
-    let claims = extract_claims(&req, &state)?;
     let storage = require_storage!(state);
     let (mailbox, _user_id) = get_user_mailbox(
         &claims.sub,
@@ -375,9 +370,8 @@ pub struct MessageResponse {
 /// GET /me/voicemail/messages
 pub async fn list_voicemail_messages(
     State(state): State<ApiState>,
-    req: axum::extract::Request,
+    Me(claims): Me,
 ) -> Result<impl IntoResponse, ApiError> {
-    let claims = extract_claims(&req, &state)?;
     let storage = require_storage!(state);
     let (mailbox, _user_id) = get_user_mailbox(
         &claims.sub,
@@ -403,11 +397,10 @@ pub struct UpdateMessageRequest {
 /// PUT /me/voicemail/messages/:id
 pub async fn update_voicemail_message(
     State(state): State<ApiState>,
+    Me(claims): Me,
     Path(message_id): Path<String>,
-    headers: HeaderMap,
     Json(body): Json<UpdateMessageRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let claims = extract_claims_from_headers(&headers, &state)?;
     let storage = require_storage!(state);
     let (mailbox, _user_id) = get_user_mailbox(
         &claims.sub,
@@ -455,10 +448,9 @@ pub async fn update_voicemail_message(
 /// DELETE /me/voicemail/messages/:id
 pub async fn delete_voicemail_message(
     State(state): State<ApiState>,
+    Me(claims): Me,
     Path(message_id): Path<String>,
-    req: axum::extract::Request,
 ) -> Result<impl IntoResponse, ApiError> {
-    let claims = extract_claims(&req, &state)?;
     let storage = require_storage!(state);
     let (mailbox, _user_id) = get_user_mailbox(
         &claims.sub,
@@ -493,10 +485,9 @@ pub async fn delete_voicemail_message(
 /// GET /me/voicemail/messages/:id/audio
 pub async fn get_message_audio(
     State(state): State<ApiState>,
+    Me(claims): Me,
     Path(message_id): Path<String>,
-    req: axum::extract::Request,
 ) -> Result<impl IntoResponse, ApiError> {
-    let claims = extract_claims(&req, &state)?;
     let storage = require_storage!(state);
     let (mailbox, _user_id) = get_user_mailbox(
         &claims.sub,
@@ -568,9 +559,8 @@ pub struct GreetingResponse {
 /// GET /me/voicemail/greetings
 pub async fn list_voicemail_greetings(
     State(state): State<ApiState>,
-    req: axum::extract::Request,
+    Me(claims): Me,
 ) -> Result<impl IntoResponse, ApiError> {
-    let claims = extract_claims(&req, &state)?;
     let storage = require_storage!(state);
     let (mailbox, _user_id) = get_user_mailbox(
         &claims.sub,
@@ -596,10 +586,9 @@ pub async fn list_voicemail_greetings(
 /// POST /me/voicemail/greetings
 pub async fn upload_voicemail_greeting(
     State(state): State<ApiState>,
-    headers: HeaderMap,
+    Me(claims): Me,
     mut multipart: Multipart,
 ) -> Result<impl IntoResponse, ApiError> {
-    let claims = extract_claims_from_headers(&headers, &state)?;
     let storage = require_storage!(state);
     let greetings_dir = require_greetings_dir(&state)?;
     let (mut mailbox, _user_id) = get_user_mailbox(
@@ -699,10 +688,9 @@ pub async fn upload_voicemail_greeting(
 /// Synthesize a greeting from text using TTS.
 pub async fn synthesize_voicemail_greeting(
     State(state): State<ApiState>,
-    headers: HeaderMap,
+    Me(claims): Me,
     Json(body): Json<SynthesizeGreetingRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let claims = extract_claims_from_headers(&headers, &state)?;
     let storage = require_storage!(state);
     let greetings_dir = require_greetings_dir(&state)?;
     let (mut mailbox, _user_id) = get_user_mailbox(
@@ -788,10 +776,9 @@ pub struct SynthesizeGreetingRequest {
 /// DELETE /me/voicemail/greetings/:type
 pub async fn delete_voicemail_greeting(
     State(state): State<ApiState>,
+    Me(claims): Me,
     Path(greeting_type_str): Path<String>,
-    req: axum::extract::Request,
 ) -> Result<impl IntoResponse, ApiError> {
-    let claims = extract_claims(&req, &state)?;
     let storage = require_storage!(state);
     let (mut mailbox, _user_id) = get_user_mailbox(
         &claims.sub,
@@ -845,11 +832,10 @@ pub struct SetGreetingActiveRequest {
 /// PUT /me/voicemail/greetings/:type/active
 pub async fn set_voicemail_greeting_active(
     State(state): State<ApiState>,
+    Me(claims): Me,
     Path(greeting_type_str): Path<String>,
-    headers: HeaderMap,
     Json(body): Json<SetGreetingActiveRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let claims = extract_claims_from_headers(&headers, &state)?;
     let storage = require_storage!(state);
     let (mut mailbox, _user_id) = get_user_mailbox(
         &claims.sub,
@@ -887,10 +873,9 @@ pub async fn set_voicemail_greeting_active(
 /// GET /me/voicemail/greetings/:type/audio
 pub async fn download_voicemail_greeting_audio(
     State(state): State<ApiState>,
+    Me(claims): Me,
     Path(greeting_type_str): Path<String>,
-    req: axum::extract::Request,
 ) -> Result<impl IntoResponse, ApiError> {
-    let claims = extract_claims(&req, &state)?;
     let storage = require_storage!(state);
     let (mailbox, _user_id) = get_user_mailbox(
         &claims.sub,
@@ -966,9 +951,8 @@ fn emergency_store(
 /// `GET /v1/me/location` — where I last said I was.
 pub async fn get_my_location(
     State(state): State<ApiState>,
-    req: axum::extract::Request,
+    Me(claims): Me,
 ) -> Result<impl IntoResponse, ApiError> {
-    let claims = extract_claims(&req, &state)?;
     let storage = require_storage!(state);
     let user = load_claims_user(storage, &claims, &state).await?;
     let declared = emergency_store(&state)?
@@ -993,10 +977,9 @@ pub async fn get_my_location(
 /// `declared_location_ttl_secs` (a day by default).
 pub async fn declare_my_location(
     State(state): State<ApiState>,
-    headers: HeaderMap,
+    Me(claims): Me,
     Json(body): Json<DeclareLocationRequest>,
 ) -> Result<axum::response::Response, ApiError> {
-    let claims = extract_claims_from_headers(&headers, &state)?;
     let storage = require_storage!(state);
     let user = load_claims_user(storage, &claims, &state).await?;
 
@@ -1074,9 +1057,8 @@ pub async fn declare_my_location(
 /// `DELETE /v1/me/location` — I am no longer there.
 pub async fn clear_my_location(
     State(state): State<ApiState>,
-    req: axum::extract::Request,
+    Me(claims): Me,
 ) -> Result<impl IntoResponse, ApiError> {
-    let claims = extract_claims(&req, &state)?;
     let storage = require_storage!(state);
     let user = load_claims_user(storage, &claims, &state).await?;
     emergency_store(&state)?
@@ -1090,9 +1072,8 @@ pub async fn clear_my_location(
 /// (`docs/ENTERPRISE_CALLING.md` §3.1).
 pub async fn get_my_calling(
     State(state): State<ApiState>,
-    req: axum::extract::Request,
+    Me(claims): Me,
 ) -> Result<impl IntoResponse, ApiError> {
-    let claims = extract_claims(&req, &state)?;
     let storage = require_storage!(state);
     let user = load_claims_user(storage, &claims, &state).await?;
     let settings = crate::v1::calling::settings_of(&state, &user).await?;
@@ -1104,10 +1085,9 @@ pub async fn get_my_calling(
 /// PUT /me/calling
 pub async fn update_my_calling(
     State(state): State<ApiState>,
-    headers: HeaderMap,
+    Me(claims): Me,
     Json(body): Json<crate::v1::calling::UpdateCallingRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let claims = extract_claims_from_headers(&headers, &state)?;
     let storage = require_storage!(state);
     let user = load_claims_user(storage, &claims, &state).await?;
     let settings = crate::v1::calling::apply(&state, &user, body, "self").await?;
@@ -1132,10 +1112,9 @@ pub struct MyExecutive {
 /// GET /me/executives — the executives the user assists.
 pub async fn get_my_executives(
     State(state): State<ApiState>,
-    req: axum::extract::Request,
+    Me(claims): Me,
 ) -> Result<impl IntoResponse, ApiError> {
     use fcp_core::CallingStore;
-    let claims = extract_claims(&req, &state)?;
     let storage = require_storage!(state);
     let user = load_claims_user(storage, &claims, &state).await?;
     let mut executives = Vec::new();
@@ -1173,12 +1152,11 @@ pub struct UpdateMyExecutive {
 /// PUT /me/executives/:user_id — take an executive's calls, or not.
 pub async fn update_my_executive(
     State(state): State<ApiState>,
-    headers: HeaderMap,
+    Me(claims): Me,
     Path(executive_id): Path<String>,
     Json(body): Json<UpdateMyExecutive>,
 ) -> Result<impl IntoResponse, ApiError> {
     use fcp_core::CallingStore;
-    let claims = extract_claims_from_headers(&headers, &state)?;
     let storage = require_storage!(state);
     let user = load_claims_user(storage, &claims, &state).await?;
     let executive_id = executive_id
@@ -1220,10 +1198,9 @@ pub async fn update_my_executive(
 /// (`docs/ENTERPRISE_CALLING.md` §3.8).
 pub async fn get_my_hoteling(
     State(state): State<ApiState>,
-    req: axum::extract::Request,
+    Me(claims): Me,
 ) -> Result<impl IntoResponse, ApiError> {
     use fcp_core::HotelingStore;
-    let claims = extract_claims(&req, &state)?;
     let storage = require_storage!(state);
     let user = load_claims_user(storage, &claims, &state).await?;
     let session = storage
@@ -1240,10 +1217,9 @@ pub async fn get_my_hoteling(
 /// DELETE /me/hoteling — log out of the host phone.
 pub async fn logout_my_hoteling(
     State(state): State<ApiState>,
-    headers: HeaderMap,
+    Me(claims): Me,
 ) -> Result<impl IntoResponse, ApiError> {
     use fcp_core::HotelingStore;
-    let claims = extract_claims_from_headers(&headers, &state)?;
     let storage = require_storage!(state);
     let user = load_claims_user(storage, &claims, &state).await?;
     let session = storage
@@ -1314,10 +1290,9 @@ const MAX_AVATAR_SIZE: usize = 2 * 1024 * 1024; // 2 MB
 /// POST /me/profile/avatar
 pub async fn upload_avatar(
     State(state): State<ApiState>,
-    headers: HeaderMap,
+    Me(claims): Me,
     mut multipart: Multipart,
 ) -> Result<impl IntoResponse, ApiError> {
-    let claims = extract_claims_from_headers(&headers, &state)?;
     let storage = require_storage!(state);
     let pictures_dir = require_profile_pictures_dir(&state)?;
 
@@ -1402,9 +1377,8 @@ pub async fn upload_avatar(
 /// GET /me/profile/avatar
 pub async fn get_avatar(
     State(state): State<ApiState>,
-    req: axum::extract::Request,
+    Me(claims): Me,
 ) -> Result<impl IntoResponse, ApiError> {
-    let claims = extract_claims(&req, &state)?;
     let storage = require_storage!(state);
     let pictures_dir = require_profile_pictures_dir(&state)?;
 
@@ -1440,9 +1414,8 @@ pub async fn get_avatar(
 /// DELETE /me/profile/avatar
 pub async fn delete_avatar(
     State(state): State<ApiState>,
-    req: axum::extract::Request,
+    Me(claims): Me,
 ) -> Result<impl IntoResponse, ApiError> {
-    let claims = extract_claims(&req, &state)?;
     let storage = require_storage!(state);
     let pictures_dir = require_profile_pictures_dir(&state)?;
 
@@ -1471,9 +1444,8 @@ pub async fn delete_avatar(
 /// GET /me/conferences -- List conferences owned by the current user
 pub async fn list_my_conferences(
     State(state): State<ApiState>,
-    req: axum::extract::Request,
+    Me(claims): Me,
 ) -> Result<impl IntoResponse, ApiError> {
-    let claims = extract_claims(&req, &state)?;
     let storage = require_storage!(state);
     let tenant_id = resolve_tenant_from_claims(&claims, &state);
 
@@ -1493,10 +1465,9 @@ pub async fn list_my_conferences(
 /// GET /me/conferences/:id -- Get a specific conference owned by the current user
 pub async fn get_my_conference(
     State(state): State<ApiState>,
+    Me(claims): Me,
     Path(id): Path<String>,
-    req: axum::extract::Request,
 ) -> Result<impl IntoResponse, ApiError> {
-    let claims = extract_claims(&req, &state)?;
     let storage = require_storage!(state);
     let tenant_id = resolve_tenant_from_claims(&claims, &state);
 
@@ -1521,10 +1492,10 @@ pub async fn get_my_conference(
 /// owned by the current user, through the conference server.
 pub async fn dial_out_my_conference(
     State(state): State<ApiState>,
+    Me(claims): Me,
     Path(id): Path<String>,
     req: axum::extract::Request,
 ) -> Result<impl IntoResponse, ApiError> {
-    let claims = extract_claims(&req, &state)?;
     let storage = require_storage!(state);
     let tenant_id = resolve_tenant_from_claims(&claims, &state);
 
@@ -1555,10 +1526,10 @@ pub async fn dial_out_my_conference(
 /// conference owned by the current user.
 pub async fn mint_my_join_token(
     State(state): State<ApiState>,
+    Me(claims): Me,
     Path(id): Path<String>,
     req: axum::extract::Request,
 ) -> Result<impl IntoResponse, ApiError> {
-    let claims = extract_claims(&req, &state)?;
     let storage = require_storage!(state);
     let tenant_id = resolve_tenant_from_claims(&claims, &state);
 
@@ -1592,11 +1563,10 @@ pub async fn mint_my_join_token(
 /// PATCH /me/conferences/:id -- Update a conference owned by the current user
 pub async fn update_my_conference(
     State(state): State<ApiState>,
+    Me(claims): Me,
     Path(id): Path<String>,
-    headers: HeaderMap,
     Json(req): Json<UpdateMyConferenceRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let claims = extract_claims_from_headers(&headers, &state)?;
     let storage = require_storage!(state);
     let tenant_id = resolve_tenant_from_claims(&claims, &state);
 

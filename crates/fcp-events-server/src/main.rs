@@ -33,7 +33,7 @@ use fcp_events::{
 use fcp_webhooks::{WebhookDispatcher, WebhookDispatcherConfig};
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+use sha2::Sha256;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -857,26 +857,18 @@ async fn authenticate_presented_token(
 
     if token.starts_with("fcp_") {
         if let Some(store) = auth.api_token_store.as_ref() {
-            let mut hasher = Sha256::new();
-            hasher.update(token.as_bytes());
-            let token_hash = format!("{:x}", hasher.finalize());
-            let api_token = match store.get_api_token_by_hash(&token_hash).await {
-                Ok(Some(token)) => token,
-                Ok(None) => return None,
-                Err(error) => {
-                    warn!(error = %error, "Failed to validate API token");
-                    return None;
-                }
-            };
-
-            if let Some(expires_at) = api_token.expires_at {
-                if std::time::SystemTime::now() > expires_at {
-                    return None;
-                }
+            // Open, not revoked, and its maker still active
+            // (docs/DEVELOPER_SURFACE.md §3, phase 1); a personal token
+            // reaches only its maker's `/me` routes on the admin API.
+            let users = auth.credential_store.as_deref();
+            let fcp_core::AuthenticatedApiToken { token, .. } =
+                fcp_core::authenticate_api_token(store.as_ref(), users, token).await?;
+            if token.scope != fcp_core::ApiTokenScope::Admin {
+                return None;
             }
 
             let store = Arc::clone(store);
-            let token_id = api_token.id;
+            let token_id = token.id;
             tokio::spawn(async move {
                 if let Err(error) = store.update_last_used(&token_id).await {
                     debug!(error = %error, "Failed to update API token last_used_at");
@@ -884,8 +876,8 @@ async fn authenticate_presented_token(
             });
 
             return Some(AuthPrincipal::ApiToken {
-                tenant_id: api_token.tenant_id,
-                permissions: api_token.permissions,
+                tenant_id: token.tenant_id,
+                permissions: token.permissions,
             });
         }
     }

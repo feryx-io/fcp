@@ -31,6 +31,13 @@ pub enum AuthIdentity {
         tenant_id: TenantId,
         permissions: Vec<String>,
     },
+    /// A personal API token: its maker's own `/me` routes and nothing
+    /// else (docs/DEVELOPER_SURFACE.md §3, phase 1).
+    Personal {
+        token_id: String,
+        username: String,
+        tenant_id: TenantId,
+    },
     /// JWT session token with role from claims.
     Session {
         username: String,
@@ -45,7 +52,7 @@ impl AuthIdentity {
     pub fn actor(&self) -> String {
         match self {
             Self::StaticToken => "static_token".to_string(),
-            Self::ApiToken { token_id, .. } => token_id.clone(),
+            Self::ApiToken { token_id, .. } | Self::Personal { token_id, .. } => token_id.clone(),
             Self::Session { username, .. } => username.clone(),
         }
     }
@@ -53,15 +60,14 @@ impl AuthIdentity {
     /// Returns true if the caller has admin-level access (not an end user).
     ///
     /// - **StaticToken**: always admin (it's the master config token).
-    /// - **ApiToken**: admin only when permissions include `"admin"` or `"*"`.
-    ///   Tokens created with empty or scoped permissions are non-admin.
+    /// - **ApiToken**: always — an admin token reaches the admin API, and
+    ///   each route's permission (`route_permissions`) decides the rest.
+    /// - **Personal**: never; it reaches only its maker's `/me` routes.
     /// - **Session**: admin when the DB role is anything other than `"end_user"`.
     pub fn is_admin(&self) -> bool {
         match self {
-            Self::StaticToken => true,
-            Self::ApiToken { permissions, .. } => {
-                permissions.iter().any(|p| p == "admin" || p == "*")
-            }
+            Self::StaticToken | Self::ApiToken { .. } => true,
+            Self::Personal { .. } => false,
             Self::Session { role, .. } => role != "end_user",
         }
     }
@@ -81,7 +87,7 @@ impl AuthIdentity {
     pub fn is_platform_admin(&self) -> bool {
         match self {
             Self::StaticToken => true,
-            Self::ApiToken { .. } => false,
+            Self::ApiToken { .. } | Self::Personal { .. } => false,
             Self::Session { role, .. } => role == "super_admin",
         }
     }
@@ -97,6 +103,7 @@ impl AuthIdentity {
             Self::ApiToken { permissions, .. } => permissions
                 .iter()
                 .any(|p| p == permission || p == "admin" || p == "*"),
+            Self::Personal { .. } => false,
         }
     }
 
@@ -104,7 +111,7 @@ impl AuthIdentity {
     pub fn tenant_id(&self) -> Option<&TenantId> {
         match self {
             Self::StaticToken => None,
-            Self::ApiToken { tenant_id, .. } => Some(tenant_id),
+            Self::ApiToken { tenant_id, .. } | Self::Personal { tenant_id, .. } => Some(tenant_id),
             Self::Session { tenant_id, .. } => tenant_id.as_ref(),
         }
     }
@@ -114,7 +121,9 @@ impl AuthIdentity {
 ///
 /// - **StaticToken**: always allowed (unrestricted admin).
 /// - **ApiToken**: checks if the `permissions` array contains the permission's
-///   snake_case name, `"admin"`, or `"*"`.
+///   snake_case name, `"admin"`, or `"*"` (only a token made before makers
+///   were recorded still carries those two).
+/// - **Personal**: never.
 /// - **Session**: parses the role string and checks `role.has_permission(perm, mode)`.
 ///
 /// Returns `Ok(())` on success, or `Err(ApiError::Forbidden)` if denied.
@@ -138,6 +147,9 @@ pub fn check_permission(
                 ))
             }
         }
+        AuthIdentity::Personal { .. } => Err(crate::error::ApiError::Forbidden(
+            "A personal token reaches only /me routes".into(),
+        )),
         AuthIdentity::Session { role, .. } => {
             let user_role: UserRole = role.parse().unwrap_or(UserRole::EndUser);
             if user_role.has_permission(perm, mode) {
@@ -178,6 +190,9 @@ pub struct AuthConfig {
     /// When set, JWT tokens for disabled/locked users are rejected at the
     /// middleware level without waiting for token expiry.
     pub credential_store: Option<Arc<dyn CredentialStore>>,
+    /// The deployment mode, which decides what a token's maker may do and
+    /// so what the token may.
+    pub mode: DeploymentMode,
 }
 
 impl AuthConfig {
@@ -187,7 +202,14 @@ impl AuthConfig {
             api_token_store: None,
             jwt_secret: None,
             credential_store: None,
+            mode: DeploymentMode::default(),
         }
+    }
+
+    /// Set the deployment mode tokens are judged under.
+    pub fn with_deployment_mode(mut self, mode: DeploymentMode) -> Self {
+        self.mode = mode;
+        self
     }
 
     /// Attach an API token store for `fcp_...` bearer token validation.
@@ -222,7 +244,7 @@ pub async fn validate_token(token: &str, config: &AuthConfig) -> Option<AuthIden
     // Check API tokens (fcp_... prefix) if a store is configured
     if token.starts_with("fcp_") {
         if let Some(ref store) = config.api_token_store {
-            return validate_api_token(token, store).await;
+            return validate_api_token(token, store, config).await;
         }
     }
 
@@ -375,51 +397,72 @@ pub async fn require_platform_admin(
 
 /// Validate an `fcp_...` API token against the database.
 ///
-/// Returns the caller's identity if the token is valid (exists, not expired).
-/// On success, spawns a background task to update `last_used_at`.
-async fn validate_api_token(token: &str, store: &Arc<dyn ApiTokenStore>) -> Option<AuthIdentity> {
-    use sha2::{Digest, Sha256};
+/// Returns the caller's identity if the token opens (exists, not revoked,
+/// not expired, the current secret or a rotated one inside its grace) and
+/// its maker is still an active user (`fcp_core::authenticate_api_token`).
+/// An admin token acts with its permissions less anything its maker can no
+/// longer do; a personal token as its maker on `/me`. On success, spawns a
+/// background task to update `last_used_at`.
+async fn validate_api_token(
+    token: &str,
+    store: &Arc<dyn ApiTokenStore>,
+    config: &AuthConfig,
+) -> Option<AuthIdentity> {
+    let users = config.credential_store.as_deref();
+    let fcp_core::AuthenticatedApiToken { token, maker_role } =
+        fcp_core::authenticate_api_token(store.as_ref(), users, token).await?;
 
-    // Hash the presented token
-    let mut hasher = Sha256::new();
-    hasher.update(token.as_bytes());
-    let token_hash = format!("{:x}", hasher.finalize());
-
-    // Look up in DB
-    let api_token = match store.get_api_token_by_hash(&token_hash).await {
-        Ok(Some(t)) => t,
-        Ok(None) => return None,
-        Err(e) => {
-            tracing::warn!(error = %e, "Failed to look up API token");
-            return None;
-        }
-    };
-
-    // Check expiry
-    if let Some(expires_at) = api_token.expires_at {
-        if std::time::SystemTime::now() > expires_at {
-            return None;
-        }
-    }
-
-    let permissions = api_token.permissions.clone();
-    let tenant_id = api_token.tenant_id;
-
-    // Update last_used_at in the background (non-blocking)
     let store = Arc::clone(store);
-    let token_id = api_token.id;
-    let identity_token_id = token_id.to_string();
+    let token_id = token.id;
     tokio::spawn(async move {
         if let Err(e) = store.update_last_used(&token_id).await {
             tracing::debug!(error = %e, "Failed to update API token last_used_at");
         }
     });
 
-    Some(AuthIdentity::ApiToken {
-        token_id: identity_token_id,
-        tenant_id,
-        permissions,
-    })
+    match token.scope {
+        fcp_core::ApiTokenScope::Personal => {
+            if token.user_id.is_empty() {
+                return None;
+            }
+            Some(AuthIdentity::Personal {
+                token_id: token.id.to_string(),
+                username: token.user_id,
+                tenant_id: token.tenant_id,
+            })
+        }
+        fcp_core::ApiTokenScope::Admin => Some(AuthIdentity::ApiToken {
+            token_id: token.id.to_string(),
+            tenant_id: token.tenant_id,
+            permissions: effective_permissions(&token.permissions, maker_role, config.mode),
+        }),
+    }
+}
+
+/// What an admin token may do now: its permissions, less anything its maker
+/// can no longer grant (a maker demoted since takes the token down with
+/// them). A token without a maker keeps what it was given.
+pub fn effective_permissions(
+    stored: &[String],
+    maker_role: Option<UserRole>,
+    mode: DeploymentMode,
+) -> Vec<String> {
+    let Some(role) = maker_role else {
+        return stored.to_vec();
+    };
+    let allowed: Vec<&str> = role
+        .token_permissions(mode)
+        .iter()
+        .map(|p| p.as_str())
+        .collect();
+    if stored.iter().any(|p| p == "admin" || p == "*") {
+        return allowed.into_iter().map(String::from).collect();
+    }
+    stored
+        .iter()
+        .filter(|p| allowed.contains(&p.as_str()))
+        .cloned()
+        .collect()
 }
 
 /// Tenant context extracted from the authenticated session.
@@ -575,6 +618,18 @@ mod tests {
         async fn delete_api_token(&self, _id: &ApiTokenId) -> anyhow::Result<()> {
             Ok(())
         }
+        async fn revoke_api_token(&self, _id: &ApiTokenId, _by: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn rotate_api_token(
+            &self,
+            _id: &ApiTokenId,
+            _new_hash: &str,
+            _new_prefix: &str,
+            _previous_valid_until: SystemTime,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
         async fn update_last_used(&self, id: &ApiTokenId) -> anyhow::Result<()> {
             self.last_used_calls.lock().unwrap().push(*id);
             Ok(())
@@ -613,6 +668,12 @@ mod tests {
             expires_at,
             created_at: SystemTime::now(),
             last_used_at: None,
+            scope: Default::default(),
+            revoked_at: None,
+            revoked_by: None,
+            previous_token_hash: None,
+            previous_expires_at: None,
+            rotated_at: None,
         }
     }
 
@@ -788,5 +849,71 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    async fn identity_for(secret: &str, tokens: Vec<ApiToken>) -> Option<AuthIdentity> {
+        let store: Arc<dyn ApiTokenStore> = Arc::new(MockApiTokenStore::new(tokens));
+        let auth = AuthConfig::new("static-secret".into()).with_api_token_store(store);
+        validate_token(secret, &auth).await
+    }
+
+    #[tokio::test]
+    async fn a_revoked_token_is_refused() {
+        let secret = "fcp_revoked";
+        let mut token = make_token(secret, None);
+        token.revoked_at = Some(SystemTime::now());
+        assert!(identity_for(secret, vec![token]).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_rotated_out_secret_works_through_its_grace_and_not_after() {
+        let old = "fcp_old_secret";
+        let new = "fcp_new_secret";
+        let mut token = make_token(new, None);
+        token.previous_token_hash = Some(hash_secret(old));
+        token.previous_expires_at = Some(SystemTime::now() + Duration::from_secs(60));
+        assert!(identity_for(new, vec![token.clone()]).await.is_some());
+        // The store finds the row by either hash; the token decides.
+        assert!(token.accepts(&hash_secret(old), SystemTime::now()));
+        token.previous_expires_at = Some(SystemTime::now() - Duration::from_secs(1));
+        assert!(!token.accepts(&hash_secret(old), SystemTime::now()));
+        assert!(token.accepts(&hash_secret(new), SystemTime::now()));
+    }
+
+    #[tokio::test]
+    async fn a_personal_token_is_its_maker_and_not_an_admin() {
+        let secret = "fcp_personal";
+        let mut token = make_token(secret, None);
+        token.scope = fcp_core::ApiTokenScope::Personal;
+        token.user_id = "alice".into();
+        let identity = identity_for(secret, vec![token]).await.expect("opens");
+        assert!(matches!(
+            &identity,
+            AuthIdentity::Personal { username, .. } if username == "alice"
+        ));
+        assert!(!identity.is_admin());
+        assert!(
+            check_permission(&identity, Permission::UserRead, DeploymentMode::Enterprise).is_err()
+        );
+    }
+
+    #[test]
+    fn a_demoted_maker_takes_the_token_down_with_them() {
+        let mode = DeploymentMode::ServiceProvider;
+        let stored = vec!["user_read".to_string(), "user_create".to_string()];
+        assert_eq!(effective_permissions(&stored, None, mode), stored);
+        assert_eq!(
+            effective_permissions(&stored, Some(UserRole::TenantAdmin), mode),
+            stored
+        );
+        assert_eq!(
+            effective_permissions(&stored, Some(UserRole::ReadOnly), mode),
+            vec!["user_read".to_string()]
+        );
+        // A legacy full-access token with a maker is the maker's reach.
+        let legacy = vec!["admin".to_string()];
+        let reach = effective_permissions(&legacy, Some(UserRole::ReadOnly), mode);
+        assert!(reach.contains(&"user_read".to_string()));
+        assert!(!reach.contains(&"user_create".to_string()));
     }
 }

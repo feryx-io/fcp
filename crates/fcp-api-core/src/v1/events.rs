@@ -110,8 +110,18 @@ async fn handle_websocket(socket: WebSocket, params: EventStreamQuery, state: Ap
         };
 
         // Events WebSocket is admin-only — end users must not subscribe
-        // to platform-wide event streams.
-        let is_admin = identity.as_ref().is_some_and(|id| id.is_admin());
+        // to platform-wide event streams — and carries the tenant's calls,
+        // so it takes `call_view` (a scoped API token reaches it only when
+        // it names that).
+        let is_admin = identity.as_ref().is_some_and(|id| {
+            id.is_admin()
+                && crate::auth::check_permission(
+                    id,
+                    fcp_core::permissions::Permission::CallView,
+                    state.deployment_mode,
+                )
+                .is_ok()
+        });
         if !is_admin {
             let msg = if identity.is_none() {
                 "Invalid or missing authentication token"

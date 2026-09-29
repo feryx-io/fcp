@@ -150,14 +150,14 @@ pub use crate::site::{
 };
 pub use crate::site_location::SiteLocation;
 pub use crate::storage::{
-    room_number_exists_globally, AccountStatus, ApiToken, ApiTokenStore, AvailableNumberQuery,
-    CallDetailRecord, CallDisposition, CdrQuery, CdrStore, ClusterParkedCall, ClusterParkingStore,
-    ConferenceStore, ConfigTemplateStore, CredentialStore, DynStorage, EmergencyContact,
-    FileBackedStorage, HangupCause, HangupParty, MediaPreferences, NumberUsage, PresenceStore,
-    QueueConfigStore, QueueStore, Registration, RegistrationStore, RoutingRuleStore,
-    SiteLocationStore, StoredAgent, StoredAuthPolicy, StoredPresentity, StoredSubscription,
-    TenantStore, TrunkStore, UsageAggregation, User, UserFileEntry, WebhookDeliveryLog,
-    WebhookEndpoint, WebhookStore,
+    authenticate_api_token, room_number_exists_globally, AccountStatus, ApiToken, ApiTokenScope,
+    ApiTokenStore, AuthenticatedApiToken, AvailableNumberQuery, CallDetailRecord, CallDisposition,
+    CdrQuery, CdrStore, ClusterParkedCall, ClusterParkingStore, ConferenceStore,
+    ConfigTemplateStore, CredentialStore, DynStorage, EmergencyContact, FileBackedStorage,
+    HangupCause, HangupParty, MediaPreferences, NumberUsage, PresenceStore, QueueConfigStore,
+    QueueStore, Registration, RegistrationStore, RoutingRuleStore, SiteLocationStore, StoredAgent,
+    StoredAuthPolicy, StoredPresentity, StoredSubscription, TenantStore, TrunkStore,
+    UsageAggregation, User, UserFileEntry, WebhookDeliveryLog, WebhookEndpoint, WebhookStore,
 };
 pub use crate::sync::{JournalEntry, SyncOp, SyncStore, SYNC_TABLES};
 pub use crate::tenant::{is_host_literal, Tenant, TenantCalling, TenantStatus};

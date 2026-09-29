@@ -15,6 +15,7 @@ pub mod auth;
 pub mod e911_validator;
 pub mod error;
 pub mod managed;
+pub mod route_permissions;
 pub mod site_files;
 pub mod state;
 pub mod trunk_health;
@@ -145,6 +146,11 @@ pub fn create_router_with(
             "/api/v1",
             v1::router()
                 .merge(extra_v1)
+                // Inside the audit layer, so a refusal is audited too.
+                .layer(middleware::from_fn_with_state(
+                    state.clone(),
+                    route_permissions::enforce,
+                ))
                 .layer(audit_layer.clone())
                 .layer(middleware::from_fn_with_state(
                     state.clone(),
@@ -171,7 +177,8 @@ pub fn create_router_with(
         });
 
         tracing::info!("API authentication enabled");
-        let mut auth_config = auth::AuthConfig::new(auth_token.clone());
+        let mut auth_config =
+            auth::AuthConfig::new(auth_token.clone()).with_deployment_mode(state.deployment_mode);
         // Database-backed `fcp_…` tokens (created via /api/v1/api-tokens)
         if let Some(store) = state
             .storage

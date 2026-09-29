@@ -207,6 +207,33 @@ pub enum Permission {
     SubjectRequestManage,
     /// The admin audit log and the deletion log.
     AuditView,
+
+    // The rest of the admin API (docs/DEVELOPER_SURFACE.md §3, phase 1):
+    // every admin route names a permission, so a scoped token reaches
+    // what it names and no more.
+    /// Creating, rotating and revoking the tenant's API tokens.
+    ApiTokenManage,
+    EmergencyRead,
+    EmergencyManage,
+    BillingRead,
+    BillingManage,
+    CdrRead,
+    FlowRead,
+    FlowManage,
+    PromptRead,
+    PromptManage,
+    VoicemailRead,
+    VoicemailManage,
+    ConferenceRead,
+    ConferenceManage,
+    QueueRead,
+    QueueManage,
+    PresenceRead,
+    PresenceManage,
+    LocationRead,
+    LocationManage,
+    ExtensionRead,
+    ExtensionManage,
 }
 
 impl FromStr for Permission {
@@ -253,12 +280,147 @@ impl FromStr for Permission {
             "legal_hold_manage" => Ok(Self::LegalHoldManage),
             "subject_request_manage" => Ok(Self::SubjectRequestManage),
             "audit_view" => Ok(Self::AuditView),
+            "api_token_manage" => Ok(Self::ApiTokenManage),
+            "emergency_read" => Ok(Self::EmergencyRead),
+            "emergency_manage" => Ok(Self::EmergencyManage),
+            "billing_read" => Ok(Self::BillingRead),
+            "billing_manage" => Ok(Self::BillingManage),
+            "cdr_read" => Ok(Self::CdrRead),
+            "flow_read" => Ok(Self::FlowRead),
+            "flow_manage" => Ok(Self::FlowManage),
+            "prompt_read" => Ok(Self::PromptRead),
+            "prompt_manage" => Ok(Self::PromptManage),
+            "voicemail_read" => Ok(Self::VoicemailRead),
+            "voicemail_manage" => Ok(Self::VoicemailManage),
+            "conference_read" => Ok(Self::ConferenceRead),
+            "conference_manage" => Ok(Self::ConferenceManage),
+            "queue_read" => Ok(Self::QueueRead),
+            "queue_manage" => Ok(Self::QueueManage),
+            "presence_read" => Ok(Self::PresenceRead),
+            "presence_manage" => Ok(Self::PresenceManage),
+            "location_read" => Ok(Self::LocationRead),
+            "location_manage" => Ok(Self::LocationManage),
+            "extension_read" => Ok(Self::ExtensionRead),
+            "extension_manage" => Ok(Self::ExtensionManage),
             other => Err(format!("unknown permission: {}", other)),
         }
     }
 }
 
 impl Permission {
+    /// Every permission, in declaration order.
+    pub const ALL: &'static [Permission] = &[
+        Self::SystemConfig,
+        Self::SystemViewLogs,
+        Self::UserCreate,
+        Self::UserRead,
+        Self::UserUpdate,
+        Self::UserDelete,
+        Self::UserSetPassword,
+        Self::PhoneNumberCreate,
+        Self::PhoneNumberRead,
+        Self::PhoneNumberUpdate,
+        Self::PhoneNumberDelete,
+        Self::PhoneNumberViewCarrierData,
+        Self::DeviceCreate,
+        Self::DeviceRead,
+        Self::DeviceUpdate,
+        Self::DeviceDelete,
+        Self::CallView,
+        Self::CallControl,
+        Self::CallRecordingAccess,
+        Self::CallSupervise,
+        Self::RegistrationView,
+        Self::RegistrationManage,
+        Self::TrunkCreate,
+        Self::TrunkRead,
+        Self::TrunkUpdate,
+        Self::TrunkDelete,
+        Self::SiteRead,
+        Self::SiteManage,
+        Self::RoutingRuleRead,
+        Self::RoutingRuleManage,
+        Self::TenantCreate,
+        Self::TenantRead,
+        Self::TenantUpdate,
+        Self::TenantDelete,
+        Self::DebugView,
+        Self::ComplianceManage,
+        Self::LegalHoldManage,
+        Self::SubjectRequestManage,
+        Self::AuditView,
+        Self::ApiTokenManage,
+        Self::EmergencyRead,
+        Self::EmergencyManage,
+        Self::BillingRead,
+        Self::BillingManage,
+        Self::CdrRead,
+        Self::FlowRead,
+        Self::FlowManage,
+        Self::PromptRead,
+        Self::PromptManage,
+        Self::VoicemailRead,
+        Self::VoicemailManage,
+        Self::ConferenceRead,
+        Self::ConferenceManage,
+        Self::QueueRead,
+        Self::QueueManage,
+        Self::PresenceRead,
+        Self::PresenceManage,
+        Self::LocationRead,
+        Self::LocationManage,
+        Self::ExtensionRead,
+        Self::ExtensionManage,
+    ];
+
+    /// The area a permission belongs to, for grouping it in a picker.
+    pub fn group(&self) -> &'static str {
+        match self {
+            Self::SystemConfig | Self::SystemViewLogs => "System",
+            Self::UserCreate
+            | Self::UserRead
+            | Self::UserUpdate
+            | Self::UserDelete
+            | Self::UserSetPassword => "Users",
+            Self::PhoneNumberCreate
+            | Self::PhoneNumberRead
+            | Self::PhoneNumberUpdate
+            | Self::PhoneNumberDelete
+            | Self::PhoneNumberViewCarrierData => "Phone numbers",
+            Self::DeviceCreate | Self::DeviceRead | Self::DeviceUpdate | Self::DeviceDelete => {
+                "Devices"
+            }
+            Self::CallView
+            | Self::CallControl
+            | Self::CallRecordingAccess
+            | Self::CallSupervise => "Calls",
+            Self::RegistrationView | Self::RegistrationManage => "Registrations",
+            Self::TrunkCreate | Self::TrunkRead | Self::TrunkUpdate | Self::TrunkDelete => "Trunks",
+            Self::SiteRead | Self::SiteManage => "Sites",
+            Self::RoutingRuleRead | Self::RoutingRuleManage => "Routing",
+            Self::TenantCreate | Self::TenantRead | Self::TenantUpdate | Self::TenantDelete => {
+                "Tenants"
+            }
+            Self::DebugView => "Debug",
+            Self::ComplianceManage
+            | Self::LegalHoldManage
+            | Self::SubjectRequestManage
+            | Self::AuditView => "Compliance",
+            Self::ApiTokenManage => "API tokens",
+            Self::EmergencyRead | Self::EmergencyManage => "Emergency",
+            Self::BillingRead | Self::BillingManage => "Billing",
+            Self::CdrRead => "Call records",
+            Self::FlowRead | Self::FlowManage => "Flows",
+            Self::PromptRead | Self::PromptManage => "Prompts",
+            Self::VoicemailRead | Self::VoicemailManage => "Voicemail",
+            Self::ConferenceRead | Self::ConferenceManage => "Conferences",
+            Self::QueueRead | Self::QueueManage => "Queues",
+            Self::PresenceRead | Self::PresenceManage => "Presence",
+            Self::LocationRead | Self::LocationManage => "Locations",
+            Self::ExtensionRead | Self::ExtensionManage => "Extensions",
+        }
+    }
+
     /// Get the snake_case string representation used in API token permission arrays.
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -301,6 +463,28 @@ impl Permission {
             Self::LegalHoldManage => "legal_hold_manage",
             Self::SubjectRequestManage => "subject_request_manage",
             Self::AuditView => "audit_view",
+            Self::ApiTokenManage => "api_token_manage",
+            Self::EmergencyRead => "emergency_read",
+            Self::EmergencyManage => "emergency_manage",
+            Self::BillingRead => "billing_read",
+            Self::BillingManage => "billing_manage",
+            Self::CdrRead => "cdr_read",
+            Self::FlowRead => "flow_read",
+            Self::FlowManage => "flow_manage",
+            Self::PromptRead => "prompt_read",
+            Self::PromptManage => "prompt_manage",
+            Self::VoicemailRead => "voicemail_read",
+            Self::VoicemailManage => "voicemail_manage",
+            Self::ConferenceRead => "conference_read",
+            Self::ConferenceManage => "conference_manage",
+            Self::QueueRead => "queue_read",
+            Self::QueueManage => "queue_manage",
+            Self::PresenceRead => "presence_read",
+            Self::PresenceManage => "presence_manage",
+            Self::LocationRead => "location_read",
+            Self::LocationManage => "location_manage",
+            Self::ExtensionRead => "extension_read",
+            Self::ExtensionManage => "extension_manage",
         }
     }
 
@@ -346,6 +530,28 @@ impl Permission {
             Self::LegalHoldManage => "Manage Legal Holds",
             Self::SubjectRequestManage => "Manage Subject Requests",
             Self::AuditView => "View Audit Logs",
+            Self::ApiTokenManage => "Manage API Tokens",
+            Self::EmergencyRead => "View Emergency Calling",
+            Self::EmergencyManage => "Manage Emergency Calling",
+            Self::BillingRead => "View Usage and Billing",
+            Self::BillingManage => "Manage Billing and Rate Plans",
+            Self::CdrRead => "View Call Records",
+            Self::FlowRead => "View Call Flows",
+            Self::FlowManage => "Manage Call Flows",
+            Self::PromptRead => "View Prompts",
+            Self::PromptManage => "Manage Prompts",
+            Self::VoicemailRead => "View Voicemail",
+            Self::VoicemailManage => "Manage Voicemail",
+            Self::ConferenceRead => "View Conferences",
+            Self::ConferenceManage => "Manage Conferences",
+            Self::QueueRead => "View Queues",
+            Self::QueueManage => "Manage Queues and Agents",
+            Self::PresenceRead => "View Presence",
+            Self::PresenceManage => "Manage Presence",
+            Self::LocationRead => "View Locations",
+            Self::LocationManage => "Manage Locations",
+            Self::ExtensionRead => "View Extensions",
+            Self::ExtensionManage => "Manage Extensions",
         }
     }
 }
@@ -359,6 +565,54 @@ impl UserRole {
         match (self, permission, mode) {
             // SuperAdmin has all permissions in all modes
             (SuperAdmin, _, _) => true,
+
+            // The areas the developer surface named (docs/DEVELOPER_SURFACE.md
+            // §3, phase 1). A tenant admin holds them all; only a tenant admin
+            // hands out API tokens.
+            (
+                TenantAdmin,
+                ApiTokenManage | EmergencyRead | EmergencyManage | BillingRead | BillingManage
+                | CdrRead | FlowRead | FlowManage | PromptRead | PromptManage | VoicemailRead
+                | VoicemailManage | ConferenceRead | ConferenceManage | QueueRead | QueueManage
+                | PresenceRead | PresenceManage | LocationRead | LocationManage | ExtensionRead
+                | ExtensionManage,
+                _,
+            ) => true,
+            (_, ApiTokenManage, _) => false,
+            (
+                TelecomAdmin,
+                EmergencyRead | EmergencyManage | BillingRead | CdrRead | FlowRead | FlowManage
+                | PromptRead | PromptManage | VoicemailRead | VoicemailManage | ConferenceRead
+                | ConferenceManage | QueueRead | QueueManage | PresenceRead | PresenceManage
+                | LocationRead | LocationManage | ExtensionRead | ExtensionManage,
+                _,
+            ) => true,
+            (
+                UserAdmin,
+                VoicemailRead | VoicemailManage | ExtensionRead | ExtensionManage | PresenceRead
+                | LocationRead | ConferenceRead,
+                _,
+            ) => true,
+            (
+                DepartmentAdmin,
+                ExtensionRead | VoicemailRead | PresenceRead | LocationRead | QueueRead
+                | QueueManage,
+                _,
+            ) => true,
+            (
+                ReadOnly,
+                EmergencyRead | BillingRead | CdrRead | FlowRead | PromptRead | VoicemailRead
+                | ConferenceRead | QueueRead | PresenceRead | LocationRead | ExtensionRead,
+                _,
+            ) => true,
+            (
+                _,
+                EmergencyRead | EmergencyManage | BillingRead | BillingManage | CdrRead | FlowRead
+                | FlowManage | PromptRead | PromptManage | VoicemailRead | VoicemailManage
+                | ConferenceRead | ConferenceManage | QueueRead | QueueManage | PresenceRead
+                | PresenceManage | LocationRead | LocationManage | ExtensionRead | ExtensionManage,
+                _,
+            ) => false,
 
             // Compliance belongs to whoever administers the tenant: the
             // policy decides what is deleted, holds stop deletion, and
@@ -555,50 +809,24 @@ impl UserRole {
         }
     }
 
+    /// What an API token made by this role may carry
+    /// (docs/DEVELOPER_SURFACE.md §3, phase 1): the role's own permissions,
+    /// less anything a tenant admin lacks. A token is scoped to one tenant,
+    /// so a platform permission on it would mean nothing where the handler
+    /// checks for a platform admin, and too much where it checks only the
+    /// permission.
+    pub fn token_permissions(&self, mode: DeploymentMode) -> Vec<Permission> {
+        self.permissions(mode)
+            .into_iter()
+            .filter(|p| UserRole::TenantAdmin.has_permission(*p, mode))
+            .collect()
+    }
+
     /// Get all permissions this role has in the given mode
     pub fn permissions(&self, mode: DeploymentMode) -> Vec<Permission> {
-        use Permission::*;
-
-        let all_permissions = vec![
-            SystemConfig,
-            SystemViewLogs,
-            UserCreate,
-            UserRead,
-            UserUpdate,
-            UserDelete,
-            UserSetPassword,
-            PhoneNumberCreate,
-            PhoneNumberRead,
-            PhoneNumberUpdate,
-            PhoneNumberDelete,
-            PhoneNumberViewCarrierData,
-            DeviceCreate,
-            DeviceRead,
-            DeviceUpdate,
-            DeviceDelete,
-            CallView,
-            CallControl,
-            CallRecordingAccess,
-            CallSupervise,
-            RegistrationView,
-            RegistrationManage,
-            TrunkCreate,
-            TrunkRead,
-            TrunkUpdate,
-            TrunkDelete,
-            TenantCreate,
-            TenantRead,
-            TenantUpdate,
-            TenantDelete,
-            DebugView,
-            ComplianceManage,
-            LegalHoldManage,
-            SubjectRequestManage,
-            AuditView,
-        ];
+        let all_permissions = Permission::ALL.iter().copied();
 
         all_permissions
-            .into_iter()
             .filter(|p| self.has_permission(*p, mode))
             .collect()
     }
@@ -783,5 +1011,85 @@ mod tests {
             "routing_rule_manage".parse::<Permission>(),
             Ok(Permission::RoutingRuleManage)
         );
+    }
+
+    #[test]
+    fn every_permission_round_trips_and_is_listed_once() {
+        let mut seen = std::collections::HashSet::new();
+        for p in Permission::ALL {
+            assert!(seen.insert(*p), "{:?} listed twice", p);
+            assert_eq!(p.as_str().parse::<Permission>(), Ok(*p));
+            assert!(!p.group().is_empty());
+        }
+    }
+
+    #[test]
+    fn only_a_tenant_admin_hands_out_tokens() {
+        for mode in [
+            DeploymentMode::Enterprise,
+            DeploymentMode::Carrier,
+            DeploymentMode::ServiceProvider,
+        ] {
+            assert!(UserRole::SuperAdmin.has_permission(Permission::ApiTokenManage, mode));
+            assert!(UserRole::TenantAdmin.has_permission(Permission::ApiTokenManage, mode));
+            for role in [
+                UserRole::TelecomAdmin,
+                UserRole::UserAdmin,
+                UserRole::DepartmentAdmin,
+                UserRole::ReadOnly,
+                UserRole::EndUser,
+            ] {
+                assert!(!role.has_permission(Permission::ApiTokenManage, mode));
+            }
+        }
+    }
+
+    #[test]
+    fn read_only_reads_the_new_areas_and_changes_none() {
+        let mode = DeploymentMode::ServiceProvider;
+        for p in Permission::ALL {
+            if p.as_str().ends_with("_manage") {
+                assert!(
+                    !UserRole::ReadOnly.has_permission(*p, mode),
+                    "read_only holds {:?}",
+                    p
+                );
+            }
+        }
+        assert!(UserRole::ReadOnly.has_permission(Permission::CdrRead, mode));
+        assert!(UserRole::ReadOnly.has_permission(Permission::FlowRead, mode));
+        assert!(!UserRole::ReadOnly.has_permission(Permission::FlowManage, mode));
+    }
+
+    #[test]
+    fn a_token_never_carries_more_than_its_maker_or_a_tenant_admin() {
+        for mode in [
+            DeploymentMode::Enterprise,
+            DeploymentMode::Carrier,
+            DeploymentMode::ServiceProvider,
+        ] {
+            let ceiling = UserRole::TenantAdmin.permissions(mode);
+            for role in [
+                UserRole::SuperAdmin,
+                UserRole::TenantAdmin,
+                UserRole::TelecomAdmin,
+                UserRole::UserAdmin,
+                UserRole::DepartmentAdmin,
+                UserRole::ReadOnly,
+                UserRole::EndUser,
+            ] {
+                for p in role.token_permissions(mode) {
+                    assert!(role.has_permission(p, mode));
+                    assert!(ceiling.contains(&p));
+                }
+            }
+            // A super admin's token is a tenant admin's, not a platform's.
+            assert!(!UserRole::SuperAdmin
+                .token_permissions(mode)
+                .contains(&Permission::SystemConfig));
+            assert!(!UserRole::SuperAdmin
+                .token_permissions(mode)
+                .contains(&Permission::TenantCreate));
+        }
     }
 }

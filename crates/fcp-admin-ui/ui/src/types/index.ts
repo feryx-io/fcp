@@ -1445,28 +1445,55 @@ export interface ListRecordingsResponse {
   offset: number
 }
 
-// API Tokens
+// API Tokens (docs/DEVELOPER_SURFACE.md §3, phase 1)
 export interface ApiToken {
   id: string
   name: string
   prefix: string
-  user_id: string
+  /** `admin`: the admin API under its permissions; `personal`: its maker's own /me routes. */
+  scope: 'admin' | 'personal'
+  /** The maker's username; empty for the static token or tokens made before makers were recorded. */
+  created_by: string
   tenant_id: string
   permissions: string[]
+  /** Made before permissions were checked, carrying `admin` or `*`: reaches everything in the tenant. */
+  legacy_full_access: boolean
   expires_at: string | null
   created_at: string
   last_used_at: string | null
+  revoked_at: string | null
+  revoked_by: string | null
+  rotated_at: string | null
+  /** Until when the secret a rotation replaced still works. */
+  previous_secret_valid_until: string | null
 }
 
 export interface CreateApiTokenRequest {
   name: string
-  permissions?: string[]
+  /** Permission names, or `admin` for everything the maker may grant. */
+  permissions: string[]
   expires_at?: string
+}
+
+export interface CreatePersonalTokenRequest {
+  name: string
+  expires_at?: string
+}
+
+export interface RotateApiTokenRequest {
+  /** How long the old secret keeps working (default a day, at most a week). */
+  grace_seconds?: number
 }
 
 export interface CreateApiTokenResponse {
   token: ApiToken
   secret: string // Only returned once
+}
+
+export interface GrantablePermission {
+  name: string
+  label: string
+  group: string
 }
 
 // --- Self-service (end-user portal) types ---
