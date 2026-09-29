@@ -49,7 +49,7 @@ async fn call_is_visible_to_tenant(
 }
 
 /// Flow trace response model.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct FlowTraceResponse {
     pub id: i64,
     pub call_id: String,
@@ -58,6 +58,7 @@ pub struct FlowTraceResponse {
     pub node_id: Option<String>,
     pub event_type: String,
     #[serde(with = "crate::time::epoch_millis")]
+    #[schema(value_type = String, format = DateTime)]
     pub timestamp: u64, // Unix timestamp in milliseconds
     pub detail: Option<String>,
     pub flow_version: Option<u32>,
@@ -88,7 +89,7 @@ impl From<fcp_core::flow_trace::FlowTraceEntry> for FlowTraceResponse {
 }
 
 /// Query parameters for listing flow traces.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
 pub struct ListFlowTracesQuery {
     /// Filter by call ID
     pub call_id: Option<String>,
@@ -105,6 +106,17 @@ pub struct ListFlowTracesQuery {
 /// List flow execution traces with filters and pagination.
 ///
 /// GET /api/v1/flow-traces
+#[utoipa::path(
+    get,
+    path = "/api/v1/flow-traces",
+    tag = "flow_traces",
+    operation_id = "flow_traces_list_flow_traces",
+    params(ListFlowTracesQuery, crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<FlowTraceResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn list_flow_traces(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -209,6 +221,17 @@ pub async fn list_flow_traces(
 /// Get all flow traces for a specific call, ordered by timestamp.
 ///
 /// GET /api/v1/flow-traces/:call_id
+#[utoipa::path(
+    get,
+    path = "/api/v1/flow-traces/{call_id}",
+    tag = "flow_traces",
+    operation_id = "flow_traces_get_call_flow_traces",
+    params(("call_id" = String, Path), crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<FlowTraceResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn get_call_flow_traces(
     State(state): State<ApiState>,
     tenant: TenantContext,

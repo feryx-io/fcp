@@ -47,19 +47,20 @@ fn scoped_config_tenant_id(
 
 // ── Request/Response Types ───────────────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
 pub struct ListConfigsQuery {
     pub service: Option<String>,
     pub tenant_id: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
+#[schema(as = config::AuditLogQuery)]
 pub struct AuditLogQuery {
     pub service: Option<String>,
     pub section: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ConfigEntryResponse {
     pub service: String,
     pub section: String,
@@ -84,7 +85,7 @@ impl From<fcp_core::config_store::ConfigEntry> for ConfigEntryResponse {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct AuditEntryResponse {
     pub id: i64,
     pub service: String,
@@ -113,7 +114,7 @@ impl From<fcp_core::config_store::AuditEntry> for AuditEntryResponse {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpdateConfigRequest {
     pub value: serde_json::Value,
     #[serde(default = "default_tenant_id")]
@@ -125,7 +126,7 @@ fn default_tenant_id() -> String {
     "_system".to_string()
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct UpdateConfigResponse {
     pub version: i64,
     pub service: String,
@@ -133,12 +134,12 @@ pub struct UpdateConfigResponse {
     pub tenant_id: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct DeleteConfigResponse {
     pub deleted: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ValidateConfigResponse {
     pub valid: bool,
     pub errors: Vec<String>,
@@ -146,7 +147,7 @@ pub struct ValidateConfigResponse {
 
 // ── Query params for section-level endpoints ─────────────────────────────────
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
 pub struct SectionQuery {
     #[serde(default = "default_tenant_id")]
     pub tenant_id: String,
@@ -155,6 +156,17 @@ pub struct SectionQuery {
 // ── Handlers ─────────────────────────────────────────────────────────────────
 
 /// GET /api/v1/config -- list all config entries
+#[utoipa::path(
+    get,
+    path = "/api/v1/config",
+    tag = "config",
+    operation_id = "config_list_configs",
+    params(ListConfigsQuery, crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<ConfigEntryResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn list_configs(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -182,6 +194,17 @@ pub async fn list_configs(
 }
 
 /// GET /api/v1/config/:service -- list sections for a service
+#[utoipa::path(
+    get,
+    path = "/api/v1/config/{service}",
+    tag = "config",
+    operation_id = "config_list_service_config",
+    params(("service" = String, Path), SectionQuery, crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<ConfigEntryResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn list_service_config(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -210,6 +233,17 @@ pub async fn list_service_config(
 }
 
 /// GET /api/v1/config/:service/:section -- get specific section
+#[utoipa::path(
+    get,
+    path = "/api/v1/config/{service}/{section}",
+    tag = "config",
+    operation_id = "config_get_config",
+    params(("service" = String, Path), ("section" = String, Path), SectionQuery),
+    responses(
+        (status = 200, description = "OK", body = ConfigEntryResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn get_config(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -238,6 +272,18 @@ pub async fn get_config(
 }
 
 /// PUT /api/v1/config/:service/:section -- update/create section
+#[utoipa::path(
+    put,
+    path = "/api/v1/config/{service}/{section}",
+    tag = "config",
+    operation_id = "config_update_config",
+    params(("service" = String, Path), ("section" = String, Path)),
+    request_body = UpdateConfigRequest,
+    responses(
+        (status = 200, description = "OK", body = UpdateConfigResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn update_config(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -279,6 +325,17 @@ pub async fn update_config(
 }
 
 /// DELETE /api/v1/config/:service/:section -- delete config entry
+#[utoipa::path(
+    delete,
+    path = "/api/v1/config/{service}/{section}",
+    tag = "config",
+    operation_id = "config_delete_config",
+    params(("service" = String, Path), ("section" = String, Path), SectionQuery),
+    responses(
+        (status = 200, description = "OK", body = DeleteConfigResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn delete_config(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -301,6 +358,17 @@ pub async fn delete_config(
 }
 
 /// GET /api/v1/config/audit -- audit log
+#[utoipa::path(
+    get,
+    path = "/api/v1/config/audit",
+    tag = "config",
+    operation_id = "config_get_audit_log",
+    params(AuditLogQuery, crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<AuditEntryResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn get_audit_log(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -329,6 +397,18 @@ pub async fn get_audit_log(
 }
 
 /// POST /api/v1/config/:service/:section/validate -- validate without saving
+#[utoipa::path(
+    post,
+    path = "/api/v1/config/{service}/{section}/validate",
+    tag = "config",
+    operation_id = "config_validate_config",
+    params(("service" = String, Path), ("section" = String, Path)),
+    request_body = UpdateConfigRequest,
+    responses(
+        (status = 200, description = "OK", body = ValidateConfigResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn validate_config(
     Path((_service, _section)): Path<(String, String)>,
     Json(req): Json<UpdateConfigRequest>,

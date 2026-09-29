@@ -32,19 +32,22 @@ macro_rules! require_storage {
     };
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct LcrRouteResponse {
     pub id: String,
     pub tenant_id: String,
     pub prefix: String,
     pub trunk_id: String,
+    #[schema(value_type = f64)]
     pub cost_per_minute: Decimal,
     pub priority: u32,
     pub enabled: bool,
     pub description: Option<String>,
     #[serde(with = "crate::time::epoch_secs")]
+    #[schema(value_type = String, format = DateTime)]
     pub created_at: u64,
     #[serde(with = "crate::time::epoch_secs")]
+    #[schema(value_type = String, format = DateTime)]
     pub updated_at: u64,
 }
 
@@ -71,26 +74,28 @@ impl From<LcrRoute> for LcrRouteResponse {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
 pub struct ListLcrRoutesQuery {
     /// Only the routes on this trunk.
     pub trunk_id: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct CreateLcrRouteRequest {
     pub prefix: String,
     pub trunk_id: String,
+    #[schema(value_type = f64)]
     pub cost_per_minute: Decimal,
     pub priority: Option<u32>,
     pub enabled: Option<bool>,
     pub description: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpdateLcrRouteRequest {
     pub prefix: Option<String>,
     pub trunk_id: Option<String>,
+    #[schema(value_type = Option<f64>)]
     pub cost_per_minute: Option<Decimal>,
     pub priority: Option<u32>,
     pub enabled: Option<bool>,
@@ -98,6 +103,17 @@ pub struct UpdateLcrRouteRequest {
     pub description: Option<String>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/lcr-routes",
+    tag = "lcr_routes",
+    operation_id = "lcr_routes_list_lcr_routes",
+    params(ListLcrRoutesQuery, crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<LcrRouteResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn list_lcr_routes(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -129,6 +145,17 @@ pub async fn list_lcr_routes(
     )?))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/lcr-routes/{id}",
+    tag = "lcr_routes",
+    operation_id = "lcr_routes_get_lcr_route",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = LcrRouteResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn get_lcr_route(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -141,6 +168,17 @@ pub async fn get_lcr_route(
     Ok(Json(LcrRouteResponse::from(route)))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/lcr-routes",
+    tag = "lcr_routes",
+    operation_id = "lcr_routes_create_lcr_route",
+    request_body = CreateLcrRouteRequest,
+    responses(
+        (status = 201, description = "OK", body = LcrRouteResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn create_lcr_route(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -175,6 +213,18 @@ pub async fn create_lcr_route(
     Ok((StatusCode::CREATED, Json(LcrRouteResponse::from(route))))
 }
 
+#[utoipa::path(
+    patch,
+    path = "/api/v1/lcr-routes/{id}",
+    tag = "lcr_routes",
+    operation_id = "lcr_routes_update_lcr_route",
+    params(("id" = String, Path)),
+    request_body = UpdateLcrRouteRequest,
+    responses(
+        (status = 200, description = "OK", body = LcrRouteResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn update_lcr_route(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -217,6 +267,17 @@ pub async fn update_lcr_route(
     Ok(Json(LcrRouteResponse::from(route)))
 }
 
+#[utoipa::path(
+    delete,
+    path = "/api/v1/lcr-routes/{id}",
+    tag = "lcr_routes",
+    operation_id = "lcr_routes_delete_lcr_route",
+    params(("id" = String, Path)),
+    responses(
+        (status = 204, description = "Done"),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn delete_lcr_route(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,

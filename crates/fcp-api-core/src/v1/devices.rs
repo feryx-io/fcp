@@ -31,7 +31,7 @@ macro_rules! require_storage {
 }
 
 /// Device response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct DeviceResponse {
     pub id: String,
     pub name: String,
@@ -50,6 +50,7 @@ pub struct DeviceResponse {
     pub sip_uri: Option<String>,
     pub registration_state: String,
     #[serde(default, with = "crate::time::rfc3339_opt")]
+    #[schema(value_type = Option<String>, format = DateTime)]
     pub last_registration: Option<SystemTime>,
     pub last_ip_address: Option<String>,
     pub user_agent: Option<String>,
@@ -70,8 +71,10 @@ pub struct DeviceResponse {
     pub provisioning_token: Option<String>,
     pub enabled: bool,
     #[serde(with = "crate::time::rfc3339")]
+    #[schema(value_type = String, format = DateTime)]
     pub created_at: SystemTime,
     #[serde(with = "crate::time::rfc3339")]
+    #[schema(value_type = String, format = DateTime)]
     pub updated_at: SystemTime,
 }
 
@@ -123,7 +126,7 @@ impl From<Device> for DeviceResponse {
 }
 
 /// Create device request.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct CreateDeviceRequest {
     pub name: String,
     pub device_type: String,
@@ -382,7 +385,7 @@ async fn apply_sip_credentials(
 }
 
 /// Update device request.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpdateDeviceRequest {
     pub name: Option<String>,
     /// `null` (or an empty string) leaves the device without an owner.
@@ -431,6 +434,17 @@ where
 }
 
 /// List devices.
+#[utoipa::path(
+    get,
+    path = "/api/v1/devices",
+    tag = "devices",
+    operation_id = "devices_list_devices",
+    params(crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<DeviceResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn list_devices(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -590,6 +604,17 @@ fn extract_ip_from_contact(contact: &str) -> String {
 }
 
 /// Get device by ID.
+#[utoipa::path(
+    get,
+    path = "/api/v1/devices/{id}",
+    tag = "devices",
+    operation_id = "devices_get_device",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = DeviceResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn get_device(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -613,6 +638,17 @@ pub async fn get_device(
 }
 
 /// Create device.
+#[utoipa::path(
+    post,
+    path = "/api/v1/devices",
+    tag = "devices",
+    operation_id = "devices_create_device",
+    request_body = CreateDeviceRequest,
+    responses(
+        (status = 201, description = "OK", body = DeviceResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn create_device(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -727,6 +763,18 @@ pub async fn create_device(
 }
 
 /// Update device.
+#[utoipa::path(
+    patch,
+    path = "/api/v1/devices/{id}",
+    tag = "devices",
+    operation_id = "devices_update_device",
+    params(("id" = String, Path)),
+    request_body = UpdateDeviceRequest,
+    responses(
+        (status = 200, description = "OK", body = DeviceResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn update_device(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -921,6 +969,17 @@ pub async fn update_device(
 }
 
 /// Delete device.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/devices/{id}",
+    tag = "devices",
+    operation_id = "devices_delete_device",
+    params(("id" = String, Path)),
+    responses(
+        (status = 204, description = "Done"),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn delete_device(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,

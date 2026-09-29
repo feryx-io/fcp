@@ -7,6 +7,9 @@ license = "MIT OR Apache-2.0"
 repository = "https://example.com/fcp"
 
 [features]
+# ToSchema on the types the admin API returns (docs/DEVELOPER_SURFACE.md
+# §3, phase 3); only fcp-api-core turns it on.
+openapi = ["dep:utoipa"]
 default = []
 
 [dependencies]
@@ -33,6 +36,8 @@ uuid = { workspace = true }
 rust_decimal = { workspace = true }
 quick-xml = "0.41"
 ipnetwork = { version = "0.20", features = ["serde"] }
+
+utoipa = { version = "6", optional = true, features = ["preserve_order", "chrono"] }
 
 [dev-dependencies]
 tempfile = "3"

@@ -31,7 +31,7 @@ pub fn role_to_string(role: &UserRole) -> String {
         .unwrap_or_else(|| format!("{:?}", role).to_lowercase())
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct LoginRequest {
     pub username: String,
     pub password: String,
@@ -39,7 +39,7 @@ pub struct LoginRequest {
     pub tenant_id: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct LoginResponse {
     pub token: String,
     pub user: AuthUserResponse,
@@ -47,7 +47,7 @@ pub struct LoginResponse {
     pub password_expired: Option<bool>,
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, utoipa::ToSchema)]
 pub struct AuthUserResponse {
     pub username: String,
     pub role: String,
@@ -55,7 +55,7 @@ pub struct AuthUserResponse {
     pub display_name: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Claims {
     pub sub: String, // username
     pub role: String,
@@ -65,7 +65,7 @@ pub struct Claims {
     pub iat: usize, // issued at
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ChangeExpiredPasswordRequest {
     pub username: String,
     pub current_password: String,
@@ -119,6 +119,17 @@ fn claims_tenant_id(claims: &Claims) -> Result<fcp_core::TenantId, ApiError> {
 }
 
 /// POST /api/v1/auth/login
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/login",
+    tag = "auth_session",
+    operation_id = "auth_session_login",
+    request_body = LoginRequest,
+    responses(
+        (status = 200, description = "OK", body = LoginResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn login(
     State(state): State<ApiState>,
     Json(req): Json<LoginRequest>,
@@ -285,6 +296,16 @@ pub async fn login(
 }
 
 /// POST /api/v1/auth/logout
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/logout",
+    tag = "auth_session",
+    operation_id = "auth_session_logout",
+    responses(
+        (status = 204, description = "Logged out: the client discards its token"),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn logout() -> impl IntoResponse {
     // JWT is stateless — client discards the token.
     // In the future, we could maintain a token blacklist.
@@ -292,6 +313,16 @@ pub async fn logout() -> impl IntoResponse {
 }
 
 /// GET /api/v1/auth/me
+#[utoipa::path(
+    get,
+    path = "/api/v1/auth/me",
+    tag = "auth_session",
+    operation_id = "auth_session_me",
+    responses(
+        (status = 200, description = "OK", body = AuthUserResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn me(
     State(state): State<ApiState>,
     req: axum::extract::Request,
@@ -321,6 +352,16 @@ pub async fn me(
 }
 
 /// POST /api/v1/auth/refresh
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/refresh",
+    tag = "auth_session",
+    operation_id = "auth_session_refresh",
+    responses(
+        (status = 200, description = "OK", body = LoginResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn refresh(
     State(state): State<ApiState>,
     req: axum::extract::Request,
@@ -381,6 +422,17 @@ pub async fn refresh(
 ///
 /// Allows a user with an expired password to set a new password.
 /// Requires current credentials for verification.
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/change-expired-password",
+    tag = "auth_session",
+    operation_id = "auth_session_change_expired_password",
+    request_body = ChangeExpiredPasswordRequest,
+    responses(
+        (status = 200, description = "OK", body = LoginResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn change_expired_password(
     State(state): State<ApiState>,
     Json(req): Json<ChangeExpiredPasswordRequest>,

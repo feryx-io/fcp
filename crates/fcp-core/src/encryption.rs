@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 /// Snapshot of a backend's encryption state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct EncryptionStatus {
     /// Whether secret columns are sealed on write.
     pub enabled: bool,
@@ -39,6 +40,7 @@ impl EncryptionStatus {
 
 /// Outcome of a bulk re-seal pass.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ReencryptReport {
     /// Rows rewritten with the active DEK (were plaintext or an older DEK).
     pub rewritten: u64,

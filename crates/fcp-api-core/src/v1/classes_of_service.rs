@@ -30,7 +30,7 @@ macro_rules! require_storage {
     };
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ClassOfServiceResponse {
     pub id: String,
     pub tenant_id: String,
@@ -40,6 +40,7 @@ pub struct ClassOfServiceResponse {
     pub caller_id: CallerIdPolicy,
     pub is_default: bool,
     #[serde(with = "crate::time::epoch_secs")]
+    #[schema(value_type = String, format = DateTime)]
     pub updated_at: u64,
 }
 
@@ -64,7 +65,7 @@ impl From<ClassOfService> for ClassOfServiceResponse {
 
 /// What a class is written as. `allowed` unset allows everything;
 /// `max_calls` unset is two, `null` no limit.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ClassOfServiceRequest {
     pub name: String,
     #[serde(default)]
@@ -174,6 +175,17 @@ async fn store(state: &ApiState, class: &ClassOfService) -> Result<(), ApiError>
 }
 
 /// GET /api/v1/classes-of-service
+#[utoipa::path(
+    get,
+    path = "/api/v1/classes-of-service",
+    tag = "classes_of_service",
+    operation_id = "classes_of_service_list_classes",
+    params(crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<ClassOfServiceResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn list_classes(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -202,6 +214,17 @@ pub async fn list_classes(
 }
 
 /// GET /api/v1/classes-of-service/:id
+#[utoipa::path(
+    get,
+    path = "/api/v1/classes-of-service/{id}",
+    tag = "classes_of_service",
+    operation_id = "classes_of_service_get_class",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = ClassOfServiceResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn get_class(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -219,6 +242,17 @@ pub async fn get_class(
 }
 
 /// POST /api/v1/classes-of-service
+#[utoipa::path(
+    post,
+    path = "/api/v1/classes-of-service",
+    tag = "classes_of_service",
+    operation_id = "classes_of_service_create_class",
+    request_body = ClassOfServiceRequest,
+    responses(
+        (status = 201, description = "OK", body = ClassOfServiceResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn create_class(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -240,6 +274,18 @@ pub async fn create_class(
 }
 
 /// PUT /api/v1/classes-of-service/:id — the whole class, replaced.
+#[utoipa::path(
+    put,
+    path = "/api/v1/classes-of-service/{id}",
+    tag = "classes_of_service",
+    operation_id = "classes_of_service_update_class",
+    params(("id" = String, Path)),
+    request_body = ClassOfServiceRequest,
+    responses(
+        (status = 200, description = "OK", body = ClassOfServiceResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn update_class(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -260,6 +306,17 @@ pub async fn update_class(
 }
 
 /// DELETE /api/v1/classes-of-service/:id — refused while a user has it.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/classes-of-service/{id}",
+    tag = "classes_of_service",
+    operation_id = "classes_of_service_delete_class",
+    params(("id" = String, Path)),
+    responses(
+        (status = 204, description = "Done"),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn delete_class(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -294,12 +351,12 @@ pub async fn delete_class(
     Ok(StatusCode::NO_CONTENT)
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
 pub struct ClassifyQuery {
     pub dialed: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ClassifyResponse {
     pub dialed: String,
     pub class: DestinationClass,
@@ -309,6 +366,17 @@ pub struct ClassifyResponse {
 /// GET /api/v1/classes-of-service/classify?dialed=… — what a number is to
 /// the tenant, by its country and overrides. Extensions are read as the
 /// platform's default of six digits.
+#[utoipa::path(
+    get,
+    path = "/api/v1/classes-of-service/classify",
+    tag = "classes_of_service",
+    operation_id = "classes_of_service_classify",
+    params(ClassifyQuery),
+    responses(
+        (status = 200, description = "OK", body = ClassifyResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn classify(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,

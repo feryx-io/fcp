@@ -66,7 +66,10 @@ export function UserApiTokensPage() {
       <div>
         <h1 className="text-3xl font-bold tracking-tight">API Tokens</h1>
         <p className="text-muted-foreground">
-          Let a program act as you on your own settings, voicemail and conferences — nothing else.
+          Let a program act as you on your own settings, voicemail and conferences — nothing else.{' '}
+          <a href="/admin/api" target="_blank" rel="noreferrer" className="underline">
+            API reference
+          </a>
         </p>
       </div>
 

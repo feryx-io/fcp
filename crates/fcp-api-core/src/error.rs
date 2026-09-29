@@ -10,7 +10,7 @@ use serde::Serialize;
 /// API error response: the one shape every error under `/api/v1` has
 /// (docs/DEVELOPER_SURFACE.md §3, phase 2), whether a handler, the auth
 /// layer or an extractor refused the request.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ErrorResponse {
     /// The status's reason phrase, e.g. `Not Found`.
     pub error: String,
@@ -29,6 +29,20 @@ impl ErrorResponse {
             code: code_for(status).to_string(),
             details,
         }
+    }
+}
+
+impl ErrorResponse {
+    /// The API's error for a failure a service this API proxies to
+    /// answered: its status, and what it said as the detail.
+    pub fn from_upstream(status: StatusCode, body: &serde_json::Value) -> Self {
+        let detail = body["details"]
+            .as_str()
+            .or_else(|| body["error"].as_str())
+            .or_else(|| body["message"].as_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| body.to_string());
+        Self::for_status(status, Some(detail))
     }
 }
 

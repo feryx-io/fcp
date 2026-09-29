@@ -10,6 +10,7 @@ use std::time::SystemTime;
 
 /// What one node sees of one trunk.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct TrunkNodeView {
     /// The node this is the view of. Absent inside a node's own report,
     /// which names its node once; set where views of one trunk from many

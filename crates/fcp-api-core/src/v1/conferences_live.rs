@@ -39,7 +39,7 @@ macro_rules! require_storage {
 }
 
 /// Body of `PUT …/video/layout`, and of `PUT …/video/content-layout`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct SetLayoutRequest {
     pub layout: String,
 }
@@ -114,10 +114,30 @@ pub async fn forward(
     let text = resp.text().await.unwrap_or_default();
     let body = serde_json::from_str::<Value>(&text)
         .unwrap_or_else(|_| serde_json::json!({ "error": text }));
+    if !status.is_success() {
+        // The API's one error shape (`crate::error`), whatever the
+        // conference server said, with what it said as the detail.
+        let error = crate::error::ErrorResponse::from_upstream(status, &body);
+        return Ok((
+            status,
+            Json(serde_json::to_value(error).unwrap_or_default()),
+        ));
+    }
     Ok((status, Json(body)))
 }
 
 /// GET /conferences/live/:room/video
+#[utoipa::path(
+    get,
+    path = "/api/v1/conferences/live/{room}/video",
+    tag = "conferences_live",
+    operation_id = "conferences_live_video_status",
+    params(("room" = String, Path)),
+    responses(
+        (status = 200, description = "The conference server's answer, passed through", body = serde_json::Value),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn video_status(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -135,6 +155,18 @@ pub async fn video_status(
 }
 
 /// PUT /conferences/live/:room/video/layout
+#[utoipa::path(
+    put,
+    path = "/api/v1/conferences/live/{room}/video/layout",
+    tag = "conferences_live",
+    operation_id = "conferences_live_set_video_layout",
+    params(("room" = String, Path)),
+    request_body = SetLayoutRequest,
+    responses(
+        (status = 200, description = "The conference server's answer, passed through", body = serde_json::Value),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn set_video_layout(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -157,6 +189,17 @@ pub async fn set_video_layout(
 }
 
 /// POST /conferences/live/:room/video/pin/:pid
+#[utoipa::path(
+    post,
+    path = "/api/v1/conferences/live/{room}/video/pin/{pid}",
+    tag = "conferences_live",
+    operation_id = "conferences_live_pin",
+    params(("room" = String, Path), ("pid" = String, Path)),
+    responses(
+        (status = 200, description = "The conference server's answer, passed through", body = serde_json::Value),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn pin(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -175,6 +218,17 @@ pub async fn pin(
 }
 
 /// DELETE /conferences/live/:room/video/pin
+#[utoipa::path(
+    delete,
+    path = "/api/v1/conferences/live/{room}/video/pin",
+    tag = "conferences_live",
+    operation_id = "conferences_live_unpin",
+    params(("room" = String, Path)),
+    responses(
+        (status = 200, description = "The conference server's answer, passed through", body = serde_json::Value),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn unpin(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -192,6 +246,17 @@ pub async fn unpin(
 }
 
 /// POST /conferences/live/:room/video/spotlight/:pid
+#[utoipa::path(
+    post,
+    path = "/api/v1/conferences/live/{room}/video/spotlight/{pid}",
+    tag = "conferences_live",
+    operation_id = "conferences_live_spotlight",
+    params(("room" = String, Path), ("pid" = String, Path)),
+    responses(
+        (status = 200, description = "The conference server's answer, passed through", body = serde_json::Value),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn spotlight(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -210,6 +275,17 @@ pub async fn spotlight(
 }
 
 /// DELETE /conferences/live/:room/video/spotlight
+#[utoipa::path(
+    delete,
+    path = "/api/v1/conferences/live/{room}/video/spotlight",
+    tag = "conferences_live",
+    operation_id = "conferences_live_unspotlight",
+    params(("room" = String, Path)),
+    responses(
+        (status = 200, description = "The conference server's answer, passed through", body = serde_json::Value),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn unspotlight(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -227,6 +303,17 @@ pub async fn unspotlight(
 }
 
 /// POST /conferences/live/:room/participants/:pid/video/{on|off}
+#[utoipa::path(
+    post,
+    path = "/api/v1/conferences/live/{room}/participants/{pid}/video/{state}",
+    tag = "conferences_live",
+    operation_id = "conferences_live_participant_video",
+    params(("room" = String, Path), ("pid" = String, Path), ("state" = String, Path)),
+    responses(
+        (status = 200, description = "The conference server's answer, passed through", body = serde_json::Value),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn participant_video(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -251,6 +338,17 @@ pub async fn participant_video(
 
 /// POST /conferences/live/:room/video/content/stop — a host ends the
 /// share under way (§15.6).
+#[utoipa::path(
+    post,
+    path = "/api/v1/conferences/live/{room}/video/content/stop",
+    tag = "conferences_live",
+    operation_id = "conferences_live_stop_content",
+    params(("room" = String, Path)),
+    responses(
+        (status = 200, description = "The conference server's answer, passed through", body = serde_json::Value),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn stop_content(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -272,6 +370,18 @@ pub async fn stop_content(
 }
 
 /// PUT /conferences/live/:room/video/content-layout
+#[utoipa::path(
+    put,
+    path = "/api/v1/conferences/live/{room}/video/content-layout",
+    tag = "conferences_live",
+    operation_id = "conferences_live_set_content_layout",
+    params(("room" = String, Path)),
+    request_body = SetLayoutRequest,
+    responses(
+        (status = 200, description = "The conference server's answer, passed through", body = serde_json::Value),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn set_content_layout(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -295,6 +405,18 @@ pub async fn set_content_layout(
 
 /// POST /conferences/live/:room/dial-out — body passed through
 /// (`destination`, optional `greeting_tts` / `greeting_prompt`).
+#[utoipa::path(
+    post,
+    path = "/api/v1/conferences/live/{room}/dial-out",
+    tag = "conferences_live",
+    operation_id = "conferences_live_dial_out",
+    params(("room" = String, Path)),
+    request_body = Value,
+    responses(
+        (status = 200, description = "The conference server's answer, passed through", body = serde_json::Value),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn dial_out(
     State(state): State<ApiState>,
     tenant: TenantContext,

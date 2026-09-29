@@ -25,7 +25,7 @@ pub struct ClusterApiState {
 
 /// Response for GET /api/v1/cluster/sites: every tenant's sites, as the
 /// tenant API shows one.
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct ClusterSitesResponse {
     pub available: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -33,6 +33,16 @@ pub struct ClusterSitesResponse {
     pub sites: Vec<fcp_api_core::v1::sites::SiteResponse>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/cluster/sites",
+    tag = "cluster",
+    operation_id = "cluster_list_sites",
+    responses(
+        (status = 200, description = "Every tenant's sites", body = ClusterSitesResponse),
+        (status = "default", description = "An error", body = fcp_api_core::error::ErrorResponse),
+    ),
+)]
 async fn list_sites(Extension(state): Extension<ClusterApiState>) -> Json<ClusterSitesResponse> {
     let Some(storage) = &state.storage else {
         return Json(ClusterSitesResponse {
@@ -65,14 +75,15 @@ async fn list_sites(Extension(state): Extension<ClusterApiState>) -> Json<Cluste
 }
 
 /// Query for GET /api/v1/cluster/nodes.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ClusterNodesQuery {
     /// Only nodes advertising this region.
     pub region: Option<String>,
 }
 
 /// Response for GET /api/v1/cluster/nodes
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct ClusterNodesResponse {
     pub available: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -81,7 +92,7 @@ pub struct ClusterNodesResponse {
 }
 
 /// Response for GET /api/v1/cluster/stats
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct ClusterStatsResponse {
     pub available: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -107,6 +118,17 @@ where
         .layer(Extension(state))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/cluster/nodes",
+    tag = "cluster",
+    operation_id = "cluster_list_nodes",
+    params(ClusterNodesQuery),
+    responses(
+        (status = 200, description = "The cluster's nodes, from their heartbeats", body = ClusterNodesResponse),
+        (status = "default", description = "An error", body = fcp_api_core::error::ErrorResponse),
+    ),
+)]
 async fn list_nodes(
     Extension(state): Extension<ClusterApiState>,
     Query(query): Query<ClusterNodesQuery>,
@@ -142,6 +164,16 @@ async fn list_nodes(
     }
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/cluster/stats",
+    tag = "cluster",
+    operation_id = "cluster_get_stats",
+    responses(
+        (status = 200, description = "The cluster's totals", body = ClusterStatsResponse),
+        (status = "default", description = "An error", body = fcp_api_core::error::ErrorResponse),
+    ),
+)]
 async fn get_stats(Extension(state): Extension<ClusterApiState>) -> Json<ClusterStatsResponse> {
     let Some(reader) = &state.reader else {
         return Json(ClusterStatsResponse {
@@ -169,3 +201,8 @@ async fn get_stats(Extension(state): Extension<ClusterApiState>) -> Json<Cluster
         }
     }
 }
+
+/// The cluster routes' part of the contract (`crate::api_docs`).
+#[derive(utoipa::OpenApi)]
+#[openapi(paths(list_nodes, get_stats, list_sites))]
+pub struct ClusterDoc;

@@ -11,7 +11,7 @@ use fcp_core::{CdrQuery, CdrStore, CredentialStore, RegistrationStore};
 use serde::Serialize;
 use std::collections::HashSet;
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct DashboardSummary {
     pub active_calls: usize,
     pub registered_devices: usize,
@@ -23,6 +23,16 @@ pub struct DashboardSummary {
 }
 
 /// GET /api/v1/dashboard/summary
+#[utoipa::path(
+    get,
+    path = "/api/v1/dashboard/summary",
+    tag = "dashboard",
+    operation_id = "dashboard_summary",
+    responses(
+        (status = 200, description = "OK", body = DashboardSummary),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn summary(
     State(state): State<ApiState>,
     tenant: TenantContext,

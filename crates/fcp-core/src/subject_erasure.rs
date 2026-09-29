@@ -124,6 +124,7 @@ pub const ERASURE_ORDER: [ExportClass; 28] = [
 ];
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ErasureClassReport {
     /// `delete`, `pseudonymise`, `clear_owner` or `keep`.
     pub treatment: String,
@@ -143,6 +144,7 @@ pub struct ErasureClassReport {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct DeadLetterReport {
     /// Whether this host reached the dead letters.
     pub reached: bool,
@@ -153,6 +155,7 @@ pub struct DeadLetterReport {
 
 /// What an erasure found, did, kept and could not reach.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ErasureReport {
     /// A preview changes nothing.
     pub preview: bool,

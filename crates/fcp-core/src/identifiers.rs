@@ -55,6 +55,27 @@ macro_rules! define_id {
             }
         }
 
+        // An id in the OpenAPI contract (docs/DEVELOPER_SURFACE.md §3,
+        // phase 3): a string, read with or without its prefix.
+        #[cfg(feature = "openapi")]
+        impl utoipa::PartialSchema for $name {
+            fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+                utoipa::openapi::ObjectBuilder::new()
+                    .schema_type(utoipa::openapi::schema::Type::String)
+                    .description(Some(concat!(
+                        "A ",
+                        stringify!($name),
+                        ": `",
+                        $prefix,
+                        "-<uuid>`, or the bare UUID"
+                    )))
+                    .into()
+            }
+        }
+
+        #[cfg(feature = "openapi")]
+        impl utoipa::ToSchema for $name {}
+
         impl fmt::Display for $name {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 write!(f, "{}-{}", $prefix, self.0)

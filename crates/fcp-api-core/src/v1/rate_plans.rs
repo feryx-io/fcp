@@ -28,13 +28,15 @@ macro_rules! require_storage {
 }
 
 /// Rate plan response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct RatePlanResponse {
     pub id: String,
     pub tenant_id: String,
     pub name: String,
     pub currency: String,
+    #[schema(value_type = f64)]
     pub default_rate_per_minute: Decimal,
+    #[schema(value_type = f64)]
     pub connect_fee: Decimal,
     pub billing_increment_secs: u32,
     pub is_default: bool,
@@ -58,12 +60,14 @@ impl From<RatePlan> for RatePlanResponse {
 }
 
 /// Rate response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct RateResponse {
     pub id: String,
     pub rate_plan_id: String,
     pub prefix: String,
+    #[schema(value_type = f64)]
     pub rate_per_minute: Decimal,
+    #[schema(value_type = Option<f64>)]
     pub connect_fee: Option<Decimal>,
     pub description: Option<String>,
 }
@@ -82,14 +86,16 @@ impl From<Rate> for RateResponse {
 }
 
 /// Create rate plan request.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct CreateRatePlanRequest {
     pub name: String,
     #[serde(default = "default_currency")]
     pub currency: String,
     #[serde(default)]
+    #[schema(value_type = f64)]
     pub default_rate_per_minute: Decimal,
     #[serde(default)]
+    #[schema(value_type = f64)]
     pub connect_fee: Decimal,
     #[serde(default = "default_increment")]
     pub billing_increment_secs: u32,
@@ -110,11 +116,13 @@ fn default_true() -> bool {
 }
 
 /// Update rate plan request (partial).
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpdateRatePlanRequest {
     pub name: Option<String>,
     pub currency: Option<String>,
+    #[schema(value_type = Option<f64>)]
     pub default_rate_per_minute: Option<Decimal>,
+    #[schema(value_type = Option<f64>)]
     pub connect_fee: Option<Decimal>,
     pub billing_increment_secs: Option<u32>,
     pub is_default: Option<bool>,
@@ -122,10 +130,12 @@ pub struct UpdateRatePlanRequest {
 }
 
 /// Create or replace a rate on a plan.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpsertRateRequest {
     pub prefix: String,
+    #[schema(value_type = f64)]
     pub rate_per_minute: Decimal,
+    #[schema(value_type = Option<f64>)]
     pub connect_fee: Option<Decimal>,
     pub description: Option<String>,
 }
@@ -180,6 +190,17 @@ fn map_storage_error(e: anyhow::Error) -> ApiError {
 }
 
 /// GET /api/v1/rate-plans — List the tenant's rate plans.
+#[utoipa::path(
+    get,
+    path = "/api/v1/rate-plans",
+    tag = "rate_plans",
+    operation_id = "rate_plans_list_rate_plans",
+    params(crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<RatePlanResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn list_rate_plans(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -202,6 +223,17 @@ pub async fn list_rate_plans(
 }
 
 /// POST /api/v1/rate-plans — Create a rate plan.
+#[utoipa::path(
+    post,
+    path = "/api/v1/rate-plans",
+    tag = "rate_plans",
+    operation_id = "rate_plans_create_rate_plan",
+    request_body = CreateRatePlanRequest,
+    responses(
+        (status = 201, description = "OK", body = RatePlanResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn create_rate_plan(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -242,6 +274,17 @@ pub async fn create_rate_plan(
 }
 
 /// GET /api/v1/rate-plans/:id — Get one rate plan.
+#[utoipa::path(
+    get,
+    path = "/api/v1/rate-plans/{id}",
+    tag = "rate_plans",
+    operation_id = "rate_plans_get_rate_plan",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = RatePlanResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn get_rate_plan(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -258,6 +301,18 @@ pub async fn get_rate_plan(
 }
 
 /// PATCH /api/v1/rate-plans/:id — Update a rate plan.
+#[utoipa::path(
+    patch,
+    path = "/api/v1/rate-plans/{id}",
+    tag = "rate_plans",
+    operation_id = "rate_plans_update_rate_plan",
+    params(("id" = String, Path)),
+    request_body = UpdateRatePlanRequest,
+    responses(
+        (status = 200, description = "OK", body = RatePlanResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn update_rate_plan(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -314,6 +369,17 @@ pub async fn update_rate_plan(
 }
 
 /// DELETE /api/v1/rate-plans/:id — Delete a rate plan and its rates.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/rate-plans/{id}",
+    tag = "rate_plans",
+    operation_id = "rate_plans_delete_rate_plan",
+    params(("id" = String, Path)),
+    responses(
+        (status = 204, description = "Done"),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn delete_rate_plan(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -330,6 +396,17 @@ pub async fn delete_rate_plan(
 }
 
 /// GET /api/v1/rate-plans/:id/rates — List a plan's rates.
+#[utoipa::path(
+    get,
+    path = "/api/v1/rate-plans/{id}/rates",
+    tag = "rate_plans",
+    operation_id = "rate_plans_list_rates",
+    params(("id" = String, Path), crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<RateResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn list_rates(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -360,6 +437,18 @@ pub async fn list_rates(
 }
 
 /// POST /api/v1/rate-plans/:id/rates — Add or replace a rate (upsert on prefix).
+#[utoipa::path(
+    post,
+    path = "/api/v1/rate-plans/{id}/rates",
+    tag = "rate_plans",
+    operation_id = "rate_plans_upsert_rate",
+    params(("id" = String, Path)),
+    request_body = UpsertRateRequest,
+    responses(
+        (status = 201, description = "OK", body = RateResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn upsert_rate(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -391,6 +480,17 @@ pub async fn upsert_rate(
 }
 
 /// DELETE /api/v1/rate-plans/:id/rates/:rate_id — Delete one rate.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/rate-plans/{id}/rates/{rate_id}",
+    tag = "rate_plans",
+    operation_id = "rate_plans_delete_rate",
+    params(("id" = String, Path), ("rate_id" = String, Path)),
+    responses(
+        (status = 204, description = "Done"),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn delete_rate(
     State(state): State<ApiState>,
     tenant: TenantContext,

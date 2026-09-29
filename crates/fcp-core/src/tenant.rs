@@ -143,6 +143,7 @@ pub struct Tenant {
 
 /// A tenant's calling defaults.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct TenantCalling {
     /// ISO 3166-1 alpha-2 (`US`, `GB`, …), for classifying the numbers the
     /// tenant's users dial; unset reads numbers as North American.

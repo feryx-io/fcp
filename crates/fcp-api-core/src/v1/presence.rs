@@ -27,7 +27,7 @@ macro_rules! require_presence_manager {
 // ---- Response types ----
 
 /// Presence info response for a single presentity.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct PresenceResponse {
     pub aor: String,
     pub state: String,
@@ -42,7 +42,7 @@ pub struct PresenceResponse {
 }
 
 /// Watcher info response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct WatcherResponse {
     pub watcher_aor: String,
     pub subscription_id: String,
@@ -51,7 +51,7 @@ pub struct WatcherResponse {
 }
 
 /// Presence stats response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct PresenceStatsResponse {
     pub total_presentities: usize,
     pub total_watchers: usize,
@@ -60,7 +60,7 @@ pub struct PresenceStatsResponse {
 // ---- Request types ----
 
 /// Update presence request body.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpdatePresenceRequest {
     pub state: String,
     pub note: Option<String>,
@@ -72,6 +72,17 @@ pub struct UpdatePresenceRequest {
 ///
 /// Device AORs that belong to an extension are merged into the extension entry
 /// so each extension appears as a single card in the UI.
+#[utoipa::path(
+    get,
+    path = "/api/v1/presence",
+    tag = "presence",
+    operation_id = "presence_list_presences",
+    params(crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<PresenceResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn list_presences(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -253,6 +264,16 @@ async fn resolve_ext_to_device_aors(
 }
 
 /// GET /presence/stats — Presentity and watcher counts.
+#[utoipa::path(
+    get,
+    path = "/api/v1/presence/stats",
+    tag = "presence",
+    operation_id = "presence_get_stats",
+    responses(
+        (status = 200, description = "OK", body = PresenceStatsResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn get_stats(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -271,6 +292,27 @@ pub async fn get_stats(
 }
 
 /// GET /presence/:aor — Get a single presentity with its watchers.
+/// One presentity with its watchers.
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct PresenceDetailResponse {
+    aor: String,
+    state: String,
+    note: Option<String>,
+    watcher_count: usize,
+    watchers: Vec<WatcherResponse>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/presence/{aor}",
+    tag = "presence",
+    operation_id = "presence_get_presence",
+    params(("aor" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = PresenceDetailResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn get_presence(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -294,15 +336,6 @@ pub async fn get_presence(
         })
         .collect();
 
-    #[derive(Serialize)]
-    struct PresenceDetailResponse {
-        aor: String,
-        state: String,
-        note: Option<String>,
-        watcher_count: usize,
-        watchers: Vec<WatcherResponse>,
-    }
-
     Ok(Json(PresenceDetailResponse {
         aor: info.aor,
         state: info.state.to_string(),
@@ -313,6 +346,18 @@ pub async fn get_presence(
 }
 
 /// PUT /presence/:aor — Set presence state via API.
+#[utoipa::path(
+    put,
+    path = "/api/v1/presence/{aor}",
+    tag = "presence",
+    operation_id = "presence_update_presence",
+    params(("aor" = String, Path)),
+    request_body = UpdatePresenceRequest,
+    responses(
+        (status = 200, description = "OK", body = PresenceResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn update_presence(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -347,6 +392,17 @@ pub async fn update_presence(
 }
 
 /// DELETE /presence/:aor — Remove a presentity.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/presence/{aor}",
+    tag = "presence",
+    operation_id = "presence_delete_presence",
+    params(("aor" = String, Path)),
+    responses(
+        (status = 204, description = "Done"),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn delete_presence(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -369,6 +425,17 @@ pub async fn delete_presence(
 }
 
 /// GET /presence/:aor/watchers — List SIP watchers for an AOR.
+#[utoipa::path(
+    get,
+    path = "/api/v1/presence/{aor}/watchers",
+    tag = "presence",
+    operation_id = "presence_list_watchers",
+    params(("aor" = String, Path), crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<WatcherResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn list_watchers(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -406,6 +473,17 @@ pub async fn list_watchers(
 }
 
 /// GET /presence/:aor/policy — Get authorization policy for a presentity.
+#[utoipa::path(
+    get,
+    path = "/api/v1/presence/{aor}/policy",
+    tag = "presence",
+    operation_id = "presence_get_policy",
+    params(("aor" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = PresenceAuthPolicy),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn get_policy(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -426,6 +504,18 @@ pub async fn get_policy(
 }
 
 /// PUT /presence/:aor/policy — Set authorization policy for a presentity.
+#[utoipa::path(
+    put,
+    path = "/api/v1/presence/{aor}/policy",
+    tag = "presence",
+    operation_id = "presence_set_policy",
+    params(("aor" = String, Path)),
+    request_body = PresenceAuthPolicy,
+    responses(
+        (status = 200, description = "OK", body = PresenceAuthPolicy),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn set_policy(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -442,6 +532,17 @@ pub async fn set_policy(
 }
 
 /// DELETE /presence/:aor/policy — Remove authorization policy (revert to default-allow).
+#[utoipa::path(
+    delete,
+    path = "/api/v1/presence/{aor}/policy",
+    tag = "presence",
+    operation_id = "presence_delete_policy",
+    params(("aor" = String, Path)),
+    responses(
+        (status = 204, description = "Done"),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn delete_policy(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -457,6 +558,17 @@ pub async fn delete_policy(
 }
 
 /// GET /presence/:aor/pres-rules — Get authorization policy as XCAP pres-rules XML (RFC 5025).
+#[utoipa::path(
+    get,
+    path = "/api/v1/presence/{aor}/pres-rules",
+    tag = "presence",
+    operation_id = "presence_get_pres_rules",
+    params(("aor" = String, Path)),
+    responses(
+        (status = 200, description = "The RFC 5025 rules", content_type = "application/auth-policy+xml", body = String),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn get_pres_rules(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -481,6 +593,18 @@ pub async fn get_pres_rules(
 }
 
 /// PUT /presence/:aor/pres-rules — Set authorization policy from XCAP pres-rules XML (RFC 5025).
+#[utoipa::path(
+    put,
+    path = "/api/v1/presence/{aor}/pres-rules",
+    tag = "presence",
+    operation_id = "presence_set_pres_rules",
+    params(("aor" = String, Path)),
+    request_body(content = String, content_type = "application/auth-policy+xml"),
+    responses(
+        (status = 200, description = "The RFC 5025 rules stored", content_type = "application/auth-policy+xml", body = String),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn set_pres_rules(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -507,6 +631,17 @@ pub async fn set_pres_rules(
 ///
 /// Removes the watcher from the manager. The presence NOTIFY dispatcher will send
 /// `terminated;reason=forced` if the SipPresenceHandler is wired up.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/presence/{aor}/watchers/{subscription_id}",
+    tag = "presence",
+    operation_id = "presence_delete_subscription",
+    params(("aor" = String, Path), ("subscription_id" = String, Path)),
+    responses(
+        (status = 204, description = "Done"),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn delete_subscription(
     State(state): State<ApiState>,
     tenant: TenantContext,

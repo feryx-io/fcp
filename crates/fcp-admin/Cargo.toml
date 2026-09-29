@@ -41,7 +41,7 @@ fcp-storage-redis = { path = "../fcp-storage-redis", features = ["cdr"] }
 fcp-presence = { path = "../fcp-presence" }
 
 # Cluster monitoring
-fcp-cluster = { path = "../fcp-cluster" }
+fcp-cluster = { path = "../fcp-cluster", features = ["openapi"] }
 
 # Web framework (for merging admin UI router)
 axum = { version = "0.7", features = ["macros"] }
@@ -57,6 +57,8 @@ rand = "0.8"
 base64 = "0.22"
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 serde_json = { workspace = true }
+# The OpenAPI contract (docs/DEVELOPER_SURFACE.md §3, phase 3)
+utoipa = { version = "6", features = ["preserve_order", "preserve_path_order"] }
 
 # CLI and configuration
 clap = { version = "4", features = ["derive", "env"] }
@@ -87,3 +89,4 @@ dashmap = "6"
 
 [dev-dependencies]
 fcp-testkit = { path = "../fcp-testkit" }
+tower = { version = "0.5", features = ["util"] }

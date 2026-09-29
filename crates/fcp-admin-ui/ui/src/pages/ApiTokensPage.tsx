@@ -234,7 +234,10 @@ export function ApiTokensPage() {
         <div>
           <h1 className="text-3xl font-bold tracking-tight">API Tokens</h1>
           <p className="text-muted-foreground">
-            Tokens for programs. Each carries permissions you hold, and stops working if its maker is disabled.
+            Tokens for programs. Each carries permissions you hold, and stops working if its maker is disabled.{' '}
+            <a href="/admin/api" target="_blank" rel="noreferrer" className="underline">
+              API reference
+            </a>
           </p>
         </div>
         <Button onClick={openCreate} disabled={grantable.length === 0}>

@@ -26,7 +26,7 @@ macro_rules! require_storage {
 }
 
 /// Phone number response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct PhoneNumberResponse {
     pub id: String,
     pub e164: String,
@@ -57,8 +57,10 @@ pub struct PhoneNumberResponse {
 
     // Lifecycle
     #[serde(with = "crate::time::rfc3339")]
+    #[schema(value_type = String, format = DateTime)]
     pub acquired_at: SystemTime,
     #[serde(default, with = "crate::time::rfc3339_opt")]
+    #[schema(value_type = Option<String>, format = DateTime)]
     pub activated_at: Option<SystemTime>,
 
     // Features
@@ -68,12 +70,14 @@ pub struct PhoneNumberResponse {
 
     // Audit
     #[serde(with = "crate::time::rfc3339")]
+    #[schema(value_type = String, format = DateTime)]
     pub created_at: SystemTime,
     #[serde(with = "crate::time::rfc3339")]
+    #[schema(value_type = String, format = DateTime)]
     pub updated_at: SystemTime,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct E911AddressResponse {
     pub address1: String,
     pub address2: Option<String>,
@@ -87,6 +91,7 @@ pub struct E911AddressResponse {
     #[serde(default)]
     pub validated: bool,
     #[serde(default, with = "crate::time::rfc3339_opt")]
+    #[schema(value_type = Option<String>, format = DateTime)]
     pub validated_at: Option<SystemTime>,
     /// The validator that confirmed it, and the reference it gave.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -172,7 +177,7 @@ impl From<PhoneNumber> for PhoneNumberResponse {
 }
 
 /// Create phone number request.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct CreatePhoneNumberRequest {
     pub e164: String,
     #[serde(default = "default_tenant_id")]
@@ -204,7 +209,7 @@ fn ensure_phone_number_in_tenant(
 }
 
 /// Update phone number request.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpdatePhoneNumberRequest {
     pub state: Option<String>,
     pub e911_address: Option<E911AddressResponse>,
@@ -247,6 +252,17 @@ async fn site_for_number(
 }
 
 /// List phone numbers.
+#[utoipa::path(
+    get,
+    path = "/api/v1/phone-numbers",
+    tag = "phone_numbers",
+    operation_id = "phone_numbers_list_phone_numbers",
+    params(crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<PhoneNumberResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn list_phone_numbers(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -279,6 +295,17 @@ pub async fn list_phone_numbers(
 }
 
 /// Get phone number by ID.
+#[utoipa::path(
+    get,
+    path = "/api/v1/phone-numbers/{id}",
+    tag = "phone_numbers",
+    operation_id = "phone_numbers_get_phone_number",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = PhoneNumberResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn get_phone_number(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -306,6 +333,17 @@ pub async fn get_phone_number(
 }
 
 /// Create phone number.
+#[utoipa::path(
+    post,
+    path = "/api/v1/phone-numbers",
+    tag = "phone_numbers",
+    operation_id = "phone_numbers_create_phone_number",
+    request_body = CreatePhoneNumberRequest,
+    responses(
+        (status = 201, description = "OK", body = PhoneNumberResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn create_phone_number(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -375,6 +413,18 @@ pub async fn create_phone_number(
 }
 
 /// Update phone number.
+#[utoipa::path(
+    patch,
+    path = "/api/v1/phone-numbers/{id}",
+    tag = "phone_numbers",
+    operation_id = "phone_numbers_update_phone_number",
+    params(("id" = String, Path)),
+    request_body = UpdatePhoneNumberRequest,
+    responses(
+        (status = 200, description = "OK", body = PhoneNumberResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn update_phone_number(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -482,6 +532,17 @@ pub async fn update_phone_number(
 }
 
 /// Delete phone number.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/phone-numbers/{id}",
+    tag = "phone_numbers",
+    operation_id = "phone_numbers_delete_phone_number",
+    params(("id" = String, Path)),
+    responses(
+        (status = 204, description = "Done"),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn delete_phone_number(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -515,6 +576,17 @@ pub async fn delete_phone_number(
 }
 
 /// Activate phone number.
+#[utoipa::path(
+    post,
+    path = "/api/v1/phone-numbers/{id}/activate",
+    tag = "phone_numbers",
+    operation_id = "phone_numbers_activate_phone_number",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = PhoneNumberResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn activate_phone_number(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -563,7 +635,7 @@ pub async fn activate_phone_number(
 // ============================================================================
 
 /// Query parameters for searching available pool phone numbers.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
 pub struct SearchAvailableQuery {
     pub area_code: Option<String>,
     pub pattern: Option<String>,
@@ -573,6 +645,17 @@ pub struct SearchAvailableQuery {
 
 /// Search available pool phone numbers.
 /// GET /phone-numbers/available?area_code=518&pattern=*7034&limit=20
+#[utoipa::path(
+    get,
+    path = "/api/v1/phone-numbers/available",
+    tag = "phone_numbers",
+    operation_id = "phone_numbers_search_available_numbers",
+    params(SearchAvailableQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<PhoneNumberResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn search_available_numbers(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -606,6 +689,17 @@ pub async fn search_available_numbers(
 
 /// Purchase (assign) a pool phone number to the caller's tenant.
 /// POST /phone-numbers/:id/purchase
+#[utoipa::path(
+    post,
+    path = "/api/v1/phone-numbers/{id}/purchase",
+    tag = "phone_numbers",
+    operation_id = "phone_numbers_purchase_phone_number",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = PhoneNumberResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn purchase_phone_number(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -653,6 +747,17 @@ pub async fn purchase_phone_number(
 
 /// Release a phone number back to the pool.
 /// POST /phone-numbers/:id/release
+#[utoipa::path(
+    post,
+    path = "/api/v1/phone-numbers/{id}/release",
+    tag = "phone_numbers",
+    operation_id = "phone_numbers_release_phone_number",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, description = "Released"),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn release_phone_number(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,

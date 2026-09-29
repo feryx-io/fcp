@@ -43,7 +43,7 @@ fn rfc3339(ts: SystemTime) -> String {
 }
 
 /// Response model for an API token (never includes a hash).
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ApiTokenResponse {
     pub id: String,
     pub name: String,
@@ -97,7 +97,7 @@ impl From<ApiToken> for ApiTokenResponse {
 }
 
 /// Request body for creating a new admin API token.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct CreateApiTokenRequest {
     pub name: String,
     /// Permission names (`Permission::as_str`), or `admin` for everything
@@ -108,14 +108,14 @@ pub struct CreateApiTokenRequest {
 }
 
 /// Request body for creating a personal API token.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct CreatePersonalTokenRequest {
     pub name: String,
     pub expires_at: Option<String>,
 }
 
 /// Request body for rotating a token's secret.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, utoipa::ToSchema)]
 pub struct RotateApiTokenRequest {
     /// How long the old secret keeps working, in seconds (default a day,
     /// at most a week; 0 retires it at once).
@@ -123,14 +123,14 @@ pub struct RotateApiTokenRequest {
 }
 
 /// Response body after creating a token (includes the one-time secret).
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct CreateApiTokenResponse {
     pub token: ApiTokenResponse,
     pub secret: String,
 }
 
 /// A permission the caller may put on a token.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct GrantablePermission {
     pub name: &'static str,
     pub label: &'static str,
@@ -369,6 +369,17 @@ async fn rotate(
 /// List the tenant's tokens, admin and personal, revoked ones included.
 ///
 /// GET /api/v1/api-tokens
+#[utoipa::path(
+    get,
+    path = "/api/v1/api-tokens",
+    tag = "api_tokens",
+    operation_id = "api_tokens_list_api_tokens",
+    params(crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<ApiTokenResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn list_api_tokens(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -390,6 +401,17 @@ pub async fn list_api_tokens(
 /// The permissions the caller may put on a token, grouped by area.
 ///
 /// GET /api/v1/api-tokens/permissions
+#[utoipa::path(
+    get,
+    path = "/api/v1/api-tokens/permissions",
+    tag = "api_tokens",
+    operation_id = "api_tokens_grantable_permissions",
+    params(crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<GrantablePermission>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn grantable_permissions(
     State(state): State<ApiState>,
     identity: Option<Extension<AuthIdentity>>,
@@ -416,6 +438,17 @@ pub async fn grantable_permissions(
 /// token cannot make another.
 ///
 /// POST /api/v1/api-tokens
+#[utoipa::path(
+    post,
+    path = "/api/v1/api-tokens",
+    tag = "api_tokens",
+    operation_id = "api_tokens_create_api_token",
+    request_body = CreateApiTokenRequest,
+    responses(
+        (status = 201, description = "Made; the secret is shown once", body = CreateApiTokenResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn create_api_token(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -457,6 +490,18 @@ pub async fn create_api_token(
 /// personal token is rotated only by its maker, at `/me/api-tokens`.
 ///
 /// POST /api/v1/api-tokens/:id/rotate
+#[utoipa::path(
+    post,
+    path = "/api/v1/api-tokens/{id}/rotate",
+    tag = "api_tokens",
+    operation_id = "api_tokens_rotate_api_token",
+    params(("id" = String, Path)),
+    request_body = RotateApiTokenRequest,
+    responses(
+        (status = 200, description = "Rotated; the new secret is shown once", body = CreateApiTokenResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn rotate_api_token(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -497,6 +542,17 @@ pub async fn rotate_api_token(
 /// Revoke a token: kept, marked, and refused from now on.
 ///
 /// DELETE /api/v1/api-tokens/:id
+#[utoipa::path(
+    delete,
+    path = "/api/v1/api-tokens/{id}",
+    tag = "api_tokens",
+    operation_id = "api_tokens_delete_api_token",
+    params(("id" = String, Path)),
+    responses(
+        (status = 204, description = "Done"),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn delete_api_token(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -543,6 +599,17 @@ async fn my_token(store: &dyn ApiTokenStore, id: &str, me: &Me) -> Result<ApiTok
 /// The caller's own personal tokens.
 ///
 /// GET /api/v1/me/api-tokens
+#[utoipa::path(
+    get,
+    path = "/api/v1/me/api-tokens",
+    tag = "api_tokens",
+    operation_id = "api_tokens_list_my_api_tokens",
+    params(crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<ApiTokenResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn list_my_api_tokens(
     State(state): State<ApiState>,
     identity: Option<Extension<AuthIdentity>>,
@@ -574,6 +641,17 @@ pub async fn list_my_api_tokens(
 /// Make a personal token: the caller's own `/me` routes, nothing else.
 ///
 /// POST /api/v1/me/api-tokens
+#[utoipa::path(
+    post,
+    path = "/api/v1/me/api-tokens",
+    tag = "api_tokens",
+    operation_id = "api_tokens_create_my_api_token",
+    request_body = CreatePersonalTokenRequest,
+    responses(
+        (status = 201, description = "Made; the secret is shown once", body = CreateApiTokenResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn create_my_api_token(
     State(state): State<ApiState>,
     identity: Option<Extension<AuthIdentity>>,
@@ -604,6 +682,18 @@ pub async fn create_my_api_token(
 /// Rotate one of the caller's personal tokens.
 ///
 /// POST /api/v1/me/api-tokens/:id/rotate
+#[utoipa::path(
+    post,
+    path = "/api/v1/me/api-tokens/{id}/rotate",
+    tag = "api_tokens",
+    operation_id = "api_tokens_rotate_my_api_token",
+    params(("id" = String, Path)),
+    request_body = RotateApiTokenRequest,
+    responses(
+        (status = 200, description = "Rotated; the new secret is shown once", body = CreateApiTokenResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn rotate_my_api_token(
     State(state): State<ApiState>,
     identity: Option<Extension<AuthIdentity>>,
@@ -622,6 +712,17 @@ pub async fn rotate_my_api_token(
 /// itself or its siblings, so a leaked one can be killed with itself.
 ///
 /// DELETE /api/v1/me/api-tokens/:id
+#[utoipa::path(
+    delete,
+    path = "/api/v1/me/api-tokens/{id}",
+    tag = "api_tokens",
+    operation_id = "api_tokens_revoke_my_api_token",
+    params(("id" = String, Path)),
+    responses(
+        (status = 204, description = "Done"),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn revoke_my_api_token(
     State(state): State<ApiState>,
     identity: Option<Extension<AuthIdentity>>,

@@ -16,7 +16,7 @@ use std::time::Duration;
 pub const DEFAULT_TTL_SECS: u64 = 15 * 60;
 
 /// `POST …/join-tokens` body.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, utoipa::ToSchema)]
 pub struct MintJoinTokenRequest {
     /// The name the participant joins under (the meeting's name plus
     /// "guest"/"host" when absent).
@@ -31,7 +31,7 @@ pub struct MintJoinTokenRequest {
 }
 
 /// A minted token.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct JoinTokenResponse {
     pub token: String,
     pub room_number: String,
@@ -39,6 +39,7 @@ pub struct JoinTokenResponse {
     pub role: JoinRole,
     /// Seconds since the Unix epoch.
     #[serde(with = "crate::time::epoch_secs")]
+    #[schema(value_type = String, format = DateTime)]
     pub expires_at: u64,
     /// The gateway's join page with the token filled in, when
     /// `[conference] gateway_url` is configured.

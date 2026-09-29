@@ -29,7 +29,7 @@ macro_rules! require_storage {
 }
 
 /// Query parameters for usage endpoints.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
 pub struct UsageQuery {
     /// Predefined period: "current_month" or "last_month".
     pub period: Option<String>,
@@ -40,7 +40,7 @@ pub struct UsageQuery {
 }
 
 /// Usage aggregation response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct UsageResponse {
     pub period_start: u64,
     pub period_end: u64,
@@ -51,11 +51,12 @@ pub struct UsageResponse {
     pub outbound_calls: u64,
     /// Sum of rated call costs in the period, in the tenant's rate-plan
     /// currency (0 when billing is not configured).
+    #[schema(value_type = f64)]
     pub total_cost: Decimal,
 }
 
 /// Per-number usage response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct NumberUsageResponse {
     pub number: String,
     pub total_calls: u64,
@@ -66,7 +67,7 @@ pub struct NumberUsageResponse {
 }
 
 /// Billing summary response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct BillingSummaryResponse {
     pub period_start: u64,
     pub period_end: u64,
@@ -77,7 +78,7 @@ pub struct BillingSummaryResponse {
 }
 
 /// Counts of provisioned resources for the tenant.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ResourceCounts {
     pub phone_numbers: usize,
     pub users: usize,
@@ -194,6 +195,17 @@ fn to_epoch(st: SystemTime) -> u64 {
 }
 
 /// GET /api/v1/usage — Aggregate CDR totals for a tenant.
+#[utoipa::path(
+    get,
+    path = "/api/v1/usage",
+    tag = "usage",
+    operation_id = "usage_get_usage",
+    params(UsageQuery),
+    responses(
+        (status = 200, description = "OK", body = UsageResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn get_usage(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -227,6 +239,17 @@ pub async fn get_usage(
 }
 
 /// GET /api/v1/usage/by-number — Per-number CDR breakdown.
+#[utoipa::path(
+    get,
+    path = "/api/v1/usage/by-number",
+    tag = "usage",
+    operation_id = "usage_get_usage_by_number",
+    params(UsageQuery, crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<NumberUsageResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn get_usage_by_number(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -269,6 +292,17 @@ pub async fn get_usage_by_number(
 }
 
 /// GET /api/v1/billing/summary — Combined usage + resource counts.
+#[utoipa::path(
+    get,
+    path = "/api/v1/billing/summary",
+    tag = "usage",
+    operation_id = "usage_billing_summary",
+    params(UsageQuery),
+    responses(
+        (status = 200, description = "OK", body = BillingSummaryResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn billing_summary(
     State(state): State<ApiState>,
     tenant: TenantContext,

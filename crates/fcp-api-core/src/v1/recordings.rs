@@ -49,7 +49,7 @@ fn parse_id(id: &str) -> Result<RecordingId, ApiError> {
 
 // ─── Responses ───────────────────────────────────────────────────────────
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct RecordingResponse {
     pub id: String,
     pub tenant_id: String,
@@ -62,8 +62,10 @@ pub struct RecordingResponse {
     pub trigger: String,
     pub consent: String,
     #[serde(with = "crate::time::epoch_secs")]
+    #[schema(value_type = String, format = DateTime)]
     pub started_at: u64,
     #[serde(default, with = "crate::time::epoch_secs_opt")]
+    #[schema(value_type = Option<String>, format = DateTime)]
     pub ended_at: Option<u64>,
     pub duration_secs: Option<u64>,
     pub size_bytes: Option<u64>,
@@ -99,7 +101,8 @@ impl From<Recording> for RecordingResponse {
 
 // ─── List ────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
+#[schema(as = recordings::ListQuery)]
 pub struct ListQuery {
     pub room_number: Option<String>,
     pub meeting_id: Option<String>,
@@ -130,6 +133,17 @@ fn to_filter(q: &ListQuery, page: &crate::page::PageQuery) -> Result<RecordingFi
 }
 
 /// GET /v1/recordings
+#[utoipa::path(
+    get,
+    path = "/api/v1/recordings",
+    tag = "recordings",
+    operation_id = "recordings_list_recordings",
+    params(ListQuery, crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<RecordingResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn list_recordings(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -154,6 +168,17 @@ pub async fn list_recordings(
 }
 
 /// GET /v1/recordings/:id
+#[utoipa::path(
+    get,
+    path = "/api/v1/recordings/{id}",
+    tag = "recordings",
+    operation_id = "recordings_get_recording",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = RecordingResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn get_recording(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -187,6 +212,17 @@ async fn scoped_recording(
 /// The file goes first, through the node holding it: a row without a
 /// file is a broken listing, while a file without a row is caught by the
 /// node's own sweep.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/recordings/{id}",
+    tag = "recordings",
+    operation_id = "recordings_delete_recording",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = serde_json::Value),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn delete_recording(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -295,6 +331,17 @@ pub async fn delete_recording(
 
 /// GET /v1/recordings/:id/download — the bytes, streamed from whichever
 /// node holds them.
+#[utoipa::path(
+    get,
+    path = "/api/v1/recordings/{id}/download",
+    tag = "recordings",
+    operation_id = "recordings_download_recording",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, description = "The recording", content_type = "application/octet-stream", body = Vec<u8>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn download_recording(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -356,7 +403,8 @@ pub async fn download_recording(
     let status = StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
     if !status.is_success() {
         let body = resp.text().await.unwrap_or_default();
-        return Ok((status, Json(serde_json::json!({ "error": body }))).into_response());
+        let error = crate::error::ErrorResponse::for_status(status, Some(body));
+        return Ok((status, Json(error)).into_response());
     }
     Ok((
         StatusCode::OK,

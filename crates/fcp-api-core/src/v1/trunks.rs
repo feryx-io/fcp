@@ -29,7 +29,7 @@ macro_rules! require_storage {
 }
 
 /// Trunk response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct TrunkResponse {
     pub id: String,
     pub tenant_id: String,
@@ -92,8 +92,10 @@ pub struct TrunkResponse {
     #[serde(default)]
     pub routable_somewhere: bool,
     #[serde(with = "crate::time::rfc3339")]
+    #[schema(value_type = String, format = DateTime)]
     pub created_at: SystemTime,
     #[serde(with = "crate::time::rfc3339")]
+    #[schema(value_type = String, format = DateTime)]
     pub updated_at: SystemTime,
 }
 
@@ -205,7 +207,7 @@ impl TrunkResponse {
 }
 
 /// Create trunk request.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct CreateTrunkRequest {
     pub name: String,
     #[serde(default)]
@@ -270,7 +272,7 @@ pub struct CreateTrunkRequest {
 }
 
 /// Update trunk request.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpdateTrunkRequest {
     pub name: Option<String>,
     pub enabled: Option<bool>,
@@ -312,6 +314,17 @@ pub struct UpdateTrunkRequest {
 }
 
 /// List trunks.
+#[utoipa::path(
+    get,
+    path = "/api/v1/trunks",
+    tag = "trunks",
+    operation_id = "trunks_list_trunks",
+    params(crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<TrunkResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn list_trunks(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -346,6 +359,17 @@ pub async fn list_trunks(
 }
 
 /// Get a single trunk.
+#[utoipa::path(
+    get,
+    path = "/api/v1/trunks/{id}",
+    tag = "trunks",
+    operation_id = "trunks_get_trunk",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = TrunkResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn get_trunk(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -727,6 +751,17 @@ async fn site_is_the_tenants(
 }
 
 /// Create a new trunk.
+#[utoipa::path(
+    post,
+    path = "/api/v1/trunks",
+    tag = "trunks",
+    operation_id = "trunks_create_trunk",
+    request_body = CreateTrunkRequest,
+    responses(
+        (status = 201, description = "OK", body = TrunkResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn create_trunk(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -759,6 +794,18 @@ pub async fn create_trunk(
 }
 
 /// Update an existing trunk.
+#[utoipa::path(
+    patch,
+    path = "/api/v1/trunks/{id}",
+    tag = "trunks",
+    operation_id = "trunks_update_trunk",
+    params(("id" = String, Path)),
+    request_body = UpdateTrunkRequest,
+    responses(
+        (status = 200, description = "OK", body = TrunkResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn update_trunk(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -800,6 +847,17 @@ pub async fn update_trunk(
 }
 
 /// Delete a trunk.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/trunks/{id}",
+    tag = "trunks",
+    operation_id = "trunks_delete_trunk",
+    params(("id" = String, Path)),
+    responses(
+        (status = 204, description = "Done"),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn delete_trunk(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -833,6 +891,17 @@ pub async fn delete_trunk(
 }
 
 /// Test trunk connectivity by sending an OPTIONS probe.
+#[utoipa::path(
+    post,
+    path = "/api/v1/trunks/{id}/test",
+    tag = "trunks",
+    operation_id = "trunks_test_trunk",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = serde_json::Value),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn test_trunk(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -870,6 +939,17 @@ pub async fn test_trunk(
 }
 
 /// Clone a trunk (create a copy with a new name).
+#[utoipa::path(
+    post,
+    path = "/api/v1/trunks/{id}/clone",
+    tag = "trunks",
+    operation_id = "trunks_clone_trunk",
+    params(("id" = String, Path)),
+    responses(
+        (status = 201, description = "OK", body = TrunkResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn clone_trunk(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -911,6 +991,17 @@ pub async fn clone_trunk(
 }
 
 /// Get trunk stats (ASR, ACD, PDD, hourly volume) from CDRs.
+#[utoipa::path(
+    get,
+    path = "/api/v1/trunks/{id}/stats",
+    tag = "trunks",
+    operation_id = "trunks_get_trunk_stats",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = fcp_core::TrunkStats),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn get_trunk_stats(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,

@@ -24,39 +24,44 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::time::SystemTime;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct CreateSiteRequest {
     pub name: String,
 }
 
 /// A site as the API shows it.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct SiteResponse {
     pub id: String,
     pub tenant_id: String,
     pub name: String,
     pub status: SiteStatus,
     #[serde(with = "crate::time::epoch_secs")]
+    #[schema(value_type = String, format = DateTime)]
     pub created_at: u64,
     #[serde(with = "crate::time::epoch_secs")]
+    #[schema(value_type = String, format = DateTime)]
     pub updated_at: u64,
     #[serde(
         default,
         with = "crate::time::epoch_secs_opt",
         skip_serializing_if = "Option::is_none"
     )]
+    #[schema(value_type = Option<String>, format = DateTime)]
     pub enrolled_at: Option<u64>,
     #[serde(
         default,
         with = "crate::time::epoch_secs_opt",
         skip_serializing_if = "Option::is_none"
     )]
+    #[schema(value_type = Option<String>, format = DateTime)]
     pub certificate_expires_at: Option<u64>,
     #[serde(
         default,
         with = "crate::time::epoch_secs_opt",
         skip_serializing_if = "Option::is_none"
     )]
+    #[schema(value_type = Option<String>, format = DateTime)]
     pub last_seen_at: Option<u64>,
     pub link_up: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -75,6 +80,7 @@ pub struct SiteResponse {
         with = "crate::time::epoch_secs_opt",
         skip_serializing_if = "Option::is_none"
     )]
+    #[schema(value_type = Option<String>, format = DateTime)]
     pub sync_applied_at: Option<u64>,
     /// The site's last failure to fetch or apply, until its next success.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -108,14 +114,14 @@ fn secs(t: SystemTime) -> u64 {
 
 /// The site's registrations as its link last saw them, with times as
 /// RFC 3339 (the heartbeat carries epoch seconds).
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct SiteRegistrationsView {
     pub users: Vec<SiteRegistrationView>,
     pub total_users: u32,
     pub total_contacts: u32,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct SiteRegistrationView {
     pub aor: String,
     pub contacts: u32,
@@ -125,6 +131,7 @@ pub struct SiteRegistrationView {
         with = "crate::time::epoch_secs_opt",
         skip_serializing_if = "Option::is_none"
     )]
+    #[schema(value_type = Option<String>, format = DateTime)]
     pub since: Option<u64>,
 }
 
@@ -185,7 +192,7 @@ impl From<Site> for SiteResponse {
 }
 
 /// A site just made, or a new token for one: the token, shown this once.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct SiteWithTokenResponse {
     #[serde(flatten)]
     pub site: SiteResponse,
@@ -193,6 +200,7 @@ pub struct SiteWithTokenResponse {
     /// not shown again.
     pub enrollment_token: String,
     #[serde(with = "crate::time::epoch_secs")]
+    #[schema(value_type = String, format = DateTime)]
     pub enrollment_token_expires_at: u64,
 }
 
@@ -244,6 +252,17 @@ async fn site_in_tenant(
 }
 
 /// GET /api/v1/sites
+#[utoipa::path(
+    get,
+    path = "/api/v1/sites",
+    tag = "sites",
+    operation_id = "sites_list_sites",
+    params(crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<SiteResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn list_sites(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -266,6 +285,17 @@ pub async fn list_sites(
 }
 
 /// POST /api/v1/sites — a site, and the token that enrolls it.
+#[utoipa::path(
+    post,
+    path = "/api/v1/sites",
+    tag = "sites",
+    operation_id = "sites_create_site",
+    request_body = CreateSiteRequest,
+    responses(
+        (status = 201, description = "OK", body = SiteWithTokenResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn create_site(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -295,6 +325,17 @@ pub async fn create_site(
 }
 
 /// GET /api/v1/sites/:id
+#[utoipa::path(
+    get,
+    path = "/api/v1/sites/{id}",
+    tag = "sites",
+    operation_id = "sites_get_site",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = SiteResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn get_site(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -311,6 +352,17 @@ pub async fn get_site(
 /// POST /api/v1/sites/:id/enrollment-token — a new token for a site whose
 /// link must enroll again (a new machine, a lost state directory). A
 /// disabled site gets none.
+#[utoipa::path(
+    post,
+    path = "/api/v1/sites/{id}/enrollment-token",
+    tag = "sites",
+    operation_id = "sites_new_enrollment_token",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = SiteWithTokenResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn new_enrollment_token(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -371,6 +423,17 @@ async fn set_status(
 
 /// POST /api/v1/sites/:id/disable — its certificate and secret are
 /// refused from now on; the site's own stack keeps running.
+#[utoipa::path(
+    post,
+    path = "/api/v1/sites/{id}/disable",
+    tag = "sites",
+    operation_id = "sites_disable_site",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = SiteResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn disable_site(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -381,6 +444,17 @@ pub async fn disable_site(
 }
 
 /// POST /api/v1/sites/:id/enable
+#[utoipa::path(
+    post,
+    path = "/api/v1/sites/{id}/enable",
+    tag = "sites",
+    operation_id = "sites_enable_site",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = SiteResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn enable_site(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -391,6 +465,17 @@ pub async fn enable_site(
 }
 
 /// DELETE /api/v1/sites/:id
+#[utoipa::path(
+    delete,
+    path = "/api/v1/sites/{id}",
+    tag = "sites",
+    operation_id = "sites_delete_site",
+    params(("id" = String, Path)),
+    responses(
+        (status = 204, description = "Done"),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn delete_site(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,

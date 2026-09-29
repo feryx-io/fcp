@@ -48,7 +48,7 @@ fn unix_secs(t: SystemTime) -> u64 {
 
 // ─── Config ──────────────────────────────────────────────────────────────
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct EmergencyConfigResponse {
     pub tenant_id: String,
     pub emergency_numbers: Vec<String>,
@@ -69,6 +69,7 @@ pub struct EmergencyConfigResponse {
     /// False when the tenant has never saved a config (defaults shown).
     pub configured: bool,
     #[serde(with = "crate::time::epoch_secs")]
+    #[schema(value_type = String, format = DateTime)]
     pub updated_at: u64,
 }
 
@@ -97,7 +98,7 @@ impl EmergencyConfigResponse {
 }
 
 /// One notification contact as the API shows it.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct ContactResponse {
     /// `email`, `sms`, `call` or `webhook`.
     pub kind: String,
@@ -122,7 +123,7 @@ impl From<&NotifyContact> for ContactResponse {
 
 /// A contact on the way in: either the plain string the API took before
 /// block 2, read by its shape, or a typed object.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 #[serde(untagged)]
 pub enum ContactInput {
     Text(String),
@@ -173,7 +174,7 @@ impl ContactInput {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpdateEmergencyConfigRequest {
     pub emergency_numbers: Option<Vec<String>>,
     pub test_numbers: Option<Vec<String>>,
@@ -191,6 +192,16 @@ pub struct UpdateEmergencyConfigRequest {
     pub declared_location_ttl_secs: Option<u64>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/emergency/config",
+    tag = "emergency",
+    operation_id = "emergency_get_config",
+    responses(
+        (status = 200, description = "OK", body = EmergencyConfigResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn get_config(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -229,6 +240,17 @@ fn clean_numbers(field: &str, values: Vec<String>) -> Result<Vec<String>, ApiErr
     Ok(out)
 }
 
+#[utoipa::path(
+    put,
+    path = "/api/v1/emergency/config",
+    tag = "emergency",
+    operation_id = "emergency_update_config",
+    request_body = UpdateEmergencyConfigRequest,
+    responses(
+        (status = 200, description = "OK", body = EmergencyConfigResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn update_config(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -319,7 +341,8 @@ pub async fn update_config(
 
 // ─── Readiness ───────────────────────────────────────────────────────────
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[schema(as = emergency::LocationResponse)]
 pub struct LocationResponse {
     pub address: E911AddressResponse,
     pub callback_number: Option<String>,
@@ -348,7 +371,7 @@ impl From<DispatchableLocation> for LocationResponse {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct UserReadiness {
     pub user_id: String,
     pub username: String,
@@ -361,7 +384,7 @@ pub struct UserReadiness {
     pub issues: Vec<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ReadinessSummary {
     pub users: usize,
     pub ready: usize,
@@ -374,7 +397,7 @@ pub struct ReadinessSummary {
 
 /// One contact and how it has fared (§8.4): a tenant should be able to
 /// see that its notifications work before it needs them to.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ContactReadiness {
     pub kind: String,
     pub target: String,
@@ -384,14 +407,16 @@ pub struct ContactReadiness {
     pub issues: Vec<String>,
     /// When anything was last delivered to it.
     #[serde(default, with = "crate::time::epoch_secs_opt")]
+    #[schema(value_type = Option<String>, format = DateTime)]
     pub last_delivery_at: Option<u64>,
     /// When a `933` test call's notice last reached it.
     #[serde(default, with = "crate::time::epoch_secs_opt")]
+    #[schema(value_type = Option<String>, format = DateTime)]
     pub last_test_at: Option<u64>,
 }
 
 /// Whether anyone would be told about an emergency call today.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct NotificationReadiness {
     pub contacts: Vec<ContactReadiness>,
     /// How many of them can be delivered to.
@@ -400,7 +425,7 @@ pub struct NotificationReadiness {
     pub issues: Vec<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ReadinessResponse {
     pub summary: ReadinessSummary,
     /// On-site notification: Kari's Law asks for it, so the report says
@@ -409,6 +434,16 @@ pub struct ReadinessResponse {
     pub users: Vec<UserReadiness>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/emergency/readiness",
+    tag = "emergency",
+    operation_id = "emergency_readiness",
+    responses(
+        (status = 200, description = "OK", body = ReadinessResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn readiness(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -583,7 +618,7 @@ async fn notification_readiness(
 
 // ─── Audit trail ─────────────────────────────────────────────────────────
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct EmergencyCallResponse {
     pub id: i64,
     pub tenant_id: String,
@@ -600,13 +635,16 @@ pub struct EmergencyCallResponse {
     pub trunk_id: Option<String>,
     pub outcome: String,
     #[serde(with = "crate::time::epoch_secs")]
+    #[schema(value_type = String, format = DateTime)]
     pub placed_at: u64,
     pub notified: bool,
     /// The final SIP status, once the call has ended.
     pub sip_status: Option<u16>,
     #[serde(default, with = "crate::time::epoch_secs_opt")]
+    #[schema(value_type = Option<String>, format = DateTime)]
     pub answered_at: Option<u64>,
     #[serde(default, with = "crate::time::epoch_secs_opt")]
+    #[schema(value_type = Option<String>, format = DateTime)]
     pub ended_at: Option<u64>,
     /// Seconds from answer to end, for an answered call.
     pub duration_secs: Option<u64>,
@@ -651,6 +689,17 @@ impl From<EmergencyCallRecord> for EmergencyCallResponse {
     }
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/emergency/calls",
+    tag = "emergency",
+    operation_id = "emergency_list_calls",
+    params(crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<EmergencyCallResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn list_calls(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -673,7 +722,7 @@ pub async fn list_calls(
 }
 
 /// One attempt to tell one contact about one emergency call (§8.3).
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct NotificationResponse {
     pub id: i64,
     pub call_id: String,
@@ -687,12 +736,15 @@ pub struct NotificationResponse {
     pub status: String,
     pub error: Option<String>,
     #[serde(default, with = "crate::time::epoch_secs_opt")]
+    #[schema(value_type = Option<String>, format = DateTime)]
     pub delivered_at: Option<u64>,
     #[serde(default, with = "crate::time::epoch_secs_opt")]
+    #[schema(value_type = Option<String>, format = DateTime)]
     pub next_retry_at: Option<u64>,
     /// Whether this told someone about a test call.
     pub test: bool,
     #[serde(with = "crate::time::epoch_secs")]
+    #[schema(value_type = String, format = DateTime)]
     pub created_at: u64,
 }
 
@@ -718,6 +770,17 @@ impl From<EmergencyNotification> for NotificationResponse {
 
 /// `GET /emergency/calls/:call_id/notifications` — every attempt made to
 /// tell someone about one emergency call, oldest first.
+#[utoipa::path(
+    get,
+    path = "/api/v1/emergency/calls/{call_id}/notifications",
+    tag = "emergency",
+    operation_id = "emergency_list_call_notifications",
+    params(("call_id" = String, Path), crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<NotificationResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn list_call_notifications(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -748,7 +811,7 @@ pub async fn list_call_notifications(
 
 // ─── The call channel ────────────────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct NotifyCallRequest {
     /// The extension or SIP URI to ring.
     pub to: String,
@@ -776,7 +839,7 @@ fn default_notice_repeat() -> u32 {
     2
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct NotifyCallResponse {
     /// `answered`, `no_answer`, `busy` or `failed_<status>`; only an
     /// answered call told anybody anything.
@@ -787,6 +850,17 @@ pub struct NotifyCallResponse {
 /// `POST /emergency/notify-call` — ring someone and speak the notice to
 /// them: the call channel of on-site notification, which the events
 /// server asks this node for (`docs/E911_BLOCK_2.md` §8.1).
+#[utoipa::path(
+    post,
+    path = "/api/v1/emergency/notify-call",
+    tag = "emergency",
+    operation_id = "emergency_notify_call",
+    request_body = NotifyCallRequest,
+    responses(
+        (status = 200, description = "OK", body = NotifyCallResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn notify_call(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -824,12 +898,12 @@ pub async fn notify_call(
 
 // ─── Validation ──────────────────────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ValidateAddressRequest {
     pub address: E911AddressResponse,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ValidationResponse {
     pub valid: bool,
     pub normalized: E911AddressResponse,
@@ -855,6 +929,17 @@ impl From<AddressValidation> for ValidationResponse {
     }
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/emergency/validate-address",
+    tag = "emergency",
+    operation_id = "emergency_validate_address",
+    request_body = ValidateAddressRequest,
+    responses(
+        (status = 200, description = "OK", body = ValidationResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn validate_address(
     State(state): State<ApiState>,
     _tenant: TenantContext,
@@ -869,17 +954,31 @@ pub async fn validate_address(
     Ok(Json(ValidationResponse::from(result)))
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct NumberValidationResponse {
     pub validation: ValidationResponse,
     pub phone_number_id: String,
     pub e164: String,
     pub validated: bool,
     #[serde(default, with = "crate::time::epoch_secs_opt")]
+    #[schema(value_type = Option<String>, format = DateTime)]
     pub validated_at: Option<u64>,
 }
 
 /// Validate a phone number's E911 address and mark it validated on success.
+#[utoipa::path(
+    post,
+    path = "/api/v1/phone-numbers/{id}/e911/validate",
+    tag = "emergency",
+    operation_id = "emergency_validate_phone_number",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, description = "Valid", body = NumberValidationResponse),
+        (status = 422, description = "Not valid: what the validator found", body = NumberValidationResponse),
+        (status = 422, description = "Not valid: what the validator found", body = NumberValidationResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn validate_phone_number(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -932,13 +1031,14 @@ pub async fn validate_phone_number(
     ))
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct LocationValidationResponse {
     pub validation: ValidationResponse,
     pub location_id: String,
     pub name: String,
     pub validated: bool,
     #[serde(default, with = "crate::time::epoch_secs_opt")]
+    #[schema(value_type = Option<String>, format = DateTime)]
     pub validated_at: Option<u64>,
 }
 
@@ -946,6 +1046,19 @@ pub struct LocationValidationResponse {
 /// normalised street, city, state and civic elements are written back, so
 /// the emergency calls placed from this site carry them
 /// (`docs/E911_BLOCK_2.md` §7).
+#[utoipa::path(
+    post,
+    path = "/api/v1/locations/{id}/e911/validate",
+    tag = "emergency",
+    operation_id = "emergency_validate_location",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, description = "Valid", body = LocationValidationResponse),
+        (status = 422, description = "Not valid: what the validator found", body = LocationValidationResponse),
+        (status = 422, description = "Not valid: what the validator found", body = LocationValidationResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn validate_location(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -1028,18 +1141,32 @@ pub async fn validate_location(
     ))
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct DeviceValidationResponse {
     pub validation: ValidationResponse,
     pub device_id: String,
     pub name: String,
     pub validated: bool,
     #[serde(default, with = "crate::time::epoch_secs_opt")]
+    #[schema(value_type = Option<String>, format = DateTime)]
     pub validated_at: Option<u64>,
 }
 
 /// Validate a device's E911 override address and mark it validated on
 /// success (`docs/E911_BLOCK_2.md` §7).
+#[utoipa::path(
+    post,
+    path = "/api/v1/devices/{id}/e911/validate",
+    tag = "emergency",
+    operation_id = "emergency_validate_device",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, description = "Valid", body = DeviceValidationResponse),
+        (status = 422, description = "Not valid: what the validator found", body = DeviceValidationResponse),
+        (status = 422, description = "Not valid: what the validator found", body = DeviceValidationResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn validate_device(
     State(state): State<ApiState>,
     tenant: TenantContext,

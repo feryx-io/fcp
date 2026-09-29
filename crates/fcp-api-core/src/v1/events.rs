@@ -37,7 +37,7 @@ use std::time::Duration;
 use tracing::{debug, error, info, warn};
 
 /// Query parameters for event stream filtering.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
 pub struct EventStreamQuery {
     /// Filter by tenant ID (optional)
     pub tenant_id: Option<String>,
@@ -50,7 +50,7 @@ pub struct EventStreamQuery {
 }
 
 /// First-message auth payload sent by the client.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 struct WsAuthMessage {
     #[serde(rename = "type")]
     msg_type: String,
@@ -67,6 +67,17 @@ struct WsAuthMessage {
 /// - event_types: Comma-separated list of event types (call,media,ivr,recording,system)
 ///
 /// Example: ws://localhost:8080/api/v1/events?event_types=call&tenant_id=123e4567-e89b-12d3-a456-426614174000
+#[utoipa::path(
+    get,
+    path = "/api/v1/events",
+    tag = "events",
+    operation_id = "events_event_stream_websocket",
+    params(EventStreamQuery),
+    responses(
+        (status = 101, description = "Switching to the event WebSocket (docs/API_EVENTS.md); authenticate with the first message"),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn event_stream_websocket(
     ws: WebSocketUpgrade,
     Query(params): Query<EventStreamQuery>,

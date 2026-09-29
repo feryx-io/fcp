@@ -14,6 +14,7 @@ use std::time::{Duration, SystemTime};
 
 /// Where a site is in its life.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum SiteStatus {
     /// Made in the cloud; no link has enrolled yet.
@@ -36,6 +37,7 @@ impl SiteStatus {
 
 /// One node of the site, as its link last reported it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct SiteNode {
     pub node_id: String,
     pub node_type: String,

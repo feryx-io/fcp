@@ -48,7 +48,7 @@ fn visible_call_ids(
 }
 
 /// Dialog information response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct DialogInfo {
     pub call_id: String,
     pub local_tag: String,
@@ -63,7 +63,7 @@ pub struct DialogInfo {
 }
 
 /// Subscription information response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct SubscriptionInfo {
     pub call_id: String,
     pub from_tag: String,
@@ -76,7 +76,7 @@ pub struct SubscriptionInfo {
 }
 
 /// Rate limit state response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct RateLimitInfo {
     pub dialog_id: String,
     pub window_start: String,
@@ -84,7 +84,8 @@ pub struct RateLimitInfo {
 }
 
 /// Active calls information.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[schema(as = debug::CallInfo)]
 pub struct CallInfo {
     pub call_id: String,
     pub media_session_id: Option<String>,
@@ -94,7 +95,7 @@ pub struct CallInfo {
 }
 
 /// System debug summary.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct DebugSummary {
     pub active_dialogs: usize,
     pub active_subscriptions: usize,
@@ -105,6 +106,17 @@ pub struct DebugSummary {
 /// List active dialogs.
 ///
 /// GET /api/v1/debug/dialogs
+#[utoipa::path(
+    get,
+    path = "/api/v1/debug/dialogs",
+    tag = "debug",
+    operation_id = "debug_list_dialogs",
+    params(crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<DialogInfo>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn list_dialogs(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -158,6 +170,17 @@ pub async fn list_dialogs(
 /// List active subscriptions.
 ///
 /// GET /api/v1/debug/subscriptions
+#[utoipa::path(
+    get,
+    path = "/api/v1/debug/subscriptions",
+    tag = "debug",
+    operation_id = "debug_list_subscriptions",
+    params(crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<SubscriptionInfo>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn list_subscriptions(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -197,6 +220,17 @@ pub async fn list_subscriptions(
 /// List rate limit state.
 ///
 /// GET /api/v1/debug/rate-limits
+#[utoipa::path(
+    get,
+    path = "/api/v1/debug/rate-limits",
+    tag = "debug",
+    operation_id = "debug_list_rate_limits",
+    params(crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<RateLimitInfo>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn list_rate_limits(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -245,6 +279,17 @@ pub async fn list_rate_limits(
 /// List active calls.
 ///
 /// GET /api/v1/debug/calls
+#[utoipa::path(
+    get,
+    path = "/api/v1/debug/calls",
+    tag = "debug",
+    operation_id = "debug_list_calls",
+    params(crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<CallInfo>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn list_calls(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -297,6 +342,16 @@ pub async fn list_calls(
 /// Get debug summary.
 ///
 /// GET /api/v1/debug/summary
+#[utoipa::path(
+    get,
+    path = "/api/v1/debug/summary",
+    tag = "debug",
+    operation_id = "debug_debug_summary",
+    responses(
+        (status = 200, description = "OK", body = DebugSummary),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn debug_summary(
     State(state): State<ApiState>,
     tenant: TenantContext,

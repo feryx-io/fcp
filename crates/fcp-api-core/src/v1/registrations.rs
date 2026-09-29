@@ -82,17 +82,19 @@ async fn registration_visible_to_tenant(
 }
 
 /// Registration response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct RegistrationResponse {
     pub aor: String,
     pub contact: String,
     #[serde(with = "crate::time::rfc3339")]
+    #[schema(value_type = String, format = DateTime)]
     pub expires_at: std::time::SystemTime,
     pub call_id: String,
     pub cseq: u32,
     pub user_agent: Option<String>,
     pub q: Option<f32>,
     #[serde(with = "crate::time::rfc3339")]
+    #[schema(value_type = String, format = DateTime)]
     pub registered_at: std::time::SystemTime,
     pub expires_in_seconds: u64,
 }
@@ -122,6 +124,17 @@ impl From<Registration> for RegistrationResponse {
 /// List all active registrations.
 ///
 /// GET /api/v1/registrations
+#[utoipa::path(
+    get,
+    path = "/api/v1/registrations",
+    tag = "registrations",
+    operation_id = "registrations_list_registrations",
+    params(crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<RegistrationResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn list_registrations(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -161,6 +174,17 @@ pub async fn list_registrations(
 /// List registrations for a specific AOR.
 ///
 /// GET /api/v1/registrations/:aor
+#[utoipa::path(
+    get,
+    path = "/api/v1/registrations/{aor}",
+    tag = "registrations",
+    operation_id = "registrations_get_registrations",
+    params(("aor" = String, Path), crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<RegistrationResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn get_registrations(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -210,6 +234,17 @@ pub async fn get_registrations(
 /// Delete all registrations for a specific AOR.
 ///
 /// DELETE /api/v1/registrations/:aor
+#[utoipa::path(
+    delete,
+    path = "/api/v1/registrations/{aor}",
+    tag = "registrations",
+    operation_id = "registrations_delete_registrations",
+    params(("aor" = String, Path)),
+    responses(
+        (status = 204, description = "Done"),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn delete_registrations(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -269,6 +304,17 @@ async fn announce_removed(state: &ApiState, tenant_id: TenantId, aor: &str, cont
 /// Delete a specific registration.
 ///
 /// DELETE /api/v1/registrations/:aor/:contact
+#[utoipa::path(
+    delete,
+    path = "/api/v1/registrations/{aor}/{contact}",
+    tag = "registrations",
+    operation_id = "registrations_delete_registration",
+    params(("aor" = String, Path), ("contact" = String, Path)),
+    responses(
+        (status = 204, description = "Done"),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn delete_registration(
     State(state): State<ApiState>,
     tenant: TenantContext,

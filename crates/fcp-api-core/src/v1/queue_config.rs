@@ -79,7 +79,7 @@ fn ensure_queue_config_tenant(
 }
 
 /// Queue config response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct QueueConfigResponse {
     pub id: String,
     pub tenant_id: String,
@@ -104,8 +104,10 @@ pub struct QueueConfigResponse {
     pub closed_target: Option<String>,
     pub enabled: bool,
     #[serde(with = "crate::time::rfc3339")]
+    #[schema(value_type = String, format = DateTime)]
     pub created_at: SystemTime,
     #[serde(with = "crate::time::rfc3339")]
+    #[schema(value_type = String, format = DateTime)]
     pub updated_at: SystemTime,
 }
 
@@ -140,7 +142,7 @@ impl From<QueueConfigRecord> for QueueConfigResponse {
 }
 
 /// Create queue config request.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct CreateQueueConfigRequest {
     pub name: String,
     pub extension: String,
@@ -178,7 +180,7 @@ pub struct CreateQueueConfigRequest {
 }
 
 /// Update queue config request.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpdateQueueConfigRequest {
     pub name: Option<String>,
     pub extension: Option<String>,
@@ -204,6 +206,17 @@ pub struct UpdateQueueConfigRequest {
 }
 
 /// List queue configs.
+#[utoipa::path(
+    get,
+    path = "/api/v1/queue-configs",
+    tag = "queue_config",
+    operation_id = "queue_config_list_queue_configs",
+    params(crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<QueueConfigResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn list_queue_configs(
     State(state): State<ApiState>,
     tenant: crate::auth::TenantContext,
@@ -228,6 +241,17 @@ pub async fn list_queue_configs(
 }
 
 /// Get a single queue config.
+#[utoipa::path(
+    get,
+    path = "/api/v1/queue-configs/{id}",
+    tag = "queue_config",
+    operation_id = "queue_config_get_queue_config",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = QueueConfigResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn get_queue_config(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -249,6 +273,17 @@ pub async fn get_queue_config(
 }
 
 /// Create a new queue config.
+#[utoipa::path(
+    post,
+    path = "/api/v1/queue-configs",
+    tag = "queue_config",
+    operation_id = "queue_config_create_queue_config",
+    request_body = CreateQueueConfigRequest,
+    responses(
+        (status = 201, description = "OK", body = QueueConfigResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn create_queue_config(
     State(state): State<ApiState>,
     tenant: crate::auth::TenantContext,
@@ -329,6 +364,18 @@ pub async fn create_queue_config(
 }
 
 /// Update an existing queue config.
+#[utoipa::path(
+    patch,
+    path = "/api/v1/queue-configs/{id}",
+    tag = "queue_config",
+    operation_id = "queue_config_update_queue_config",
+    params(("id" = String, Path)),
+    request_body = UpdateQueueConfigRequest,
+    responses(
+        (status = 200, description = "OK", body = QueueConfigResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn update_queue_config(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -421,6 +468,17 @@ pub async fn update_queue_config(
 }
 
 /// Delete a queue config.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/queue-configs/{id}",
+    tag = "queue_config",
+    operation_id = "queue_config_delete_queue_config",
+    params(("id" = String, Path)),
+    responses(
+        (status = 204, description = "Done"),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn delete_queue_config(
     State(state): State<ApiState>,
     tenant: TenantContext,

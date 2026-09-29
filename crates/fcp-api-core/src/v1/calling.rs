@@ -25,7 +25,7 @@ macro_rules! require_storage {
 
 /// The settings as the API shows them: targets in their string form
 /// (`voicemail`, `number:+15551234567`, `ext:2001`, `user:<id>`, a SIP URI).
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct CallingResponse {
     pub user_id: String,
     pub username: String,
@@ -54,12 +54,13 @@ pub struct CallingResponse {
     /// `opted_in`) in order.
     pub executive: Option<ExecutiveView>,
     #[serde(with = "crate::time::epoch_secs")]
+    #[schema(value_type = String, format = DateTime)]
     pub updated_at: u64,
 }
 
 /// A user as an executive, as the API shows it: user ids in their
 /// prefixed form, as everywhere else.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ExecutiveView {
     pub enabled: bool,
     pub filter: fcp_core::ExecutiveFilter,
@@ -67,7 +68,7 @@ pub struct ExecutiveView {
     pub assistants: Vec<AssistantView>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct AssistantView {
     pub user_id: String,
     pub opted_in: bool,
@@ -121,7 +122,7 @@ impl CallingResponse {
 
 /// What may change. A forward given as an empty string is cleared; one
 /// left out is kept. A ring time of `0` clears it (the node's default).
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, utoipa::ToSchema)]
 pub struct UpdateCallingRequest {
     pub dnd: Option<bool>,
     pub call_waiting: Option<bool>,
@@ -147,7 +148,7 @@ pub struct UpdateCallingRequest {
 }
 
 /// What may change of a user as an executive.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, utoipa::ToSchema)]
 pub struct ExecutiveRequest {
     pub enabled: Option<bool>,
     pub filter: Option<fcp_core::ExecutiveFilter>,
@@ -354,6 +355,17 @@ async fn user_named(
 }
 
 /// GET /api/v1/users/:username/calling
+#[utoipa::path(
+    get,
+    path = "/api/v1/users/{username}/calling",
+    tag = "calling",
+    operation_id = "calling_get_user_calling",
+    params(("username" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = CallingResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn get_user_calling(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -367,6 +379,18 @@ pub async fn get_user_calling(
 }
 
 /// PUT /api/v1/users/:username/calling
+#[utoipa::path(
+    put,
+    path = "/api/v1/users/{username}/calling",
+    tag = "calling",
+    operation_id = "calling_update_user_calling",
+    params(("username" = String, Path)),
+    request_body = UpdateCallingRequest,
+    responses(
+        (status = 200, description = "OK", body = CallingResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn update_user_calling(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,

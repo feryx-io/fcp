@@ -21,7 +21,7 @@ pub const DEFAULT_LIMIT: usize = 100;
 pub const MAX_LIMIT: usize = 1000;
 
 /// `?limit=&cursor=`.
-#[derive(Debug, Default, Clone, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
 pub struct PageQuery {
     pub limit: Option<usize>,
     pub cursor: Option<String>,
@@ -72,7 +72,7 @@ pub fn offset_page<T>(data: Vec<T>, offset: usize, more: bool, total: Option<u64
 }
 
 /// A page of a list.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct Page<T> {
     pub data: Vec<T>,
     /// The cursor for the next page; null on the last.

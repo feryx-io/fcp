@@ -27,7 +27,7 @@ macro_rules! require_storage {
 }
 
 /// Extension response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ExtensionResponse {
     pub id: String,
     pub number: String,
@@ -37,12 +37,14 @@ pub struct ExtensionResponse {
     pub location_id: Option<String>,
     pub enabled: bool,
     #[serde(with = "crate::time::rfc3339")]
+    #[schema(value_type = String, format = DateTime)]
     pub created_at: SystemTime,
     #[serde(with = "crate::time::rfc3339")]
+    #[schema(value_type = String, format = DateTime)]
     pub updated_at: SystemTime,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(tag = "type", content = "id")]
 pub enum ExtensionTargetResponse {
     #[serde(rename = "user")]
@@ -112,7 +114,7 @@ impl From<Extension> for ExtensionResponse {
 }
 
 /// Create extension request.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct CreateExtensionRequest {
     pub number: String,
     pub target: ExtensionTargetResponse,
@@ -133,7 +135,7 @@ fn default_true() -> bool {
 }
 
 /// Update extension request.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpdateExtensionRequest {
     pub target: Option<ExtensionTargetResponse>,
     pub description: Option<String>,
@@ -142,6 +144,17 @@ pub struct UpdateExtensionRequest {
 }
 
 /// List extensions.
+#[utoipa::path(
+    get,
+    path = "/api/v1/extensions",
+    tag = "extensions",
+    operation_id = "extensions_list_extensions",
+    params(crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<ExtensionResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn list_extensions(
     State(state): State<ApiState>,
     tenant: crate::auth::TenantContext,
@@ -168,6 +181,17 @@ pub async fn list_extensions(
 }
 
 /// Get extension by number.
+#[utoipa::path(
+    get,
+    path = "/api/v1/extensions/{number}",
+    tag = "extensions",
+    operation_id = "extensions_get_extension",
+    params(("number" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = ExtensionResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn get_extension(
     State(state): State<ApiState>,
     Path(number): Path<String>,
@@ -187,6 +211,17 @@ pub async fn get_extension(
 }
 
 /// Create extension.
+#[utoipa::path(
+    post,
+    path = "/api/v1/extensions",
+    tag = "extensions",
+    operation_id = "extensions_create_extension",
+    request_body = CreateExtensionRequest,
+    responses(
+        (status = 201, description = "OK", body = ExtensionResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn create_extension(
     State(state): State<ApiState>,
     tenant: crate::auth::TenantContext,
@@ -242,6 +277,18 @@ pub async fn create_extension(
 }
 
 /// Update extension.
+#[utoipa::path(
+    patch,
+    path = "/api/v1/extensions/{number}",
+    tag = "extensions",
+    operation_id = "extensions_update_extension",
+    params(("number" = String, Path)),
+    request_body = UpdateExtensionRequest,
+    responses(
+        (status = 200, description = "OK", body = ExtensionResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn update_extension(
     State(state): State<ApiState>,
     Path(number): Path<String>,
@@ -314,6 +361,17 @@ pub async fn update_extension(
 }
 
 /// Delete extension.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/extensions/{number}",
+    tag = "extensions",
+    operation_id = "extensions_delete_extension",
+    params(("number" = String, Path)),
+    responses(
+        (status = 204, description = "Done"),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn delete_extension(
     State(state): State<ApiState>,
     Path(number): Path<String>,

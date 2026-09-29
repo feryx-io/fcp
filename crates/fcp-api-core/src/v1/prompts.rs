@@ -43,7 +43,7 @@ fn ensure_prompt_tenant(
 
 // ── Response types ────────────────────────────────────────────────────
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct PromptResponse {
     pub id: String,
     pub tenant_id: String,
@@ -61,8 +61,10 @@ pub struct PromptResponse {
     pub is_system: bool,
     pub has_audio: bool,
     #[serde(with = "crate::time::epoch_secs_f64")]
+    #[schema(value_type = String, format = DateTime)]
     pub created_at: f64,
     #[serde(with = "crate::time::epoch_secs_f64")]
+    #[schema(value_type = String, format = DateTime)]
     pub updated_at: f64,
 }
 
@@ -97,13 +99,13 @@ impl From<Prompt> for PromptResponse {
 
 // ── Request types ─────────────────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
 pub struct ListPromptsQuery {
     pub category: Option<String>,
     pub language: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct CreatePromptRequest {
     pub name: String,
     pub description: Option<String>,
@@ -114,7 +116,7 @@ pub struct CreatePromptRequest {
     pub tts_voice: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpdatePromptRequest {
     pub description: Option<String>,
     pub category: Option<String>,
@@ -126,6 +128,17 @@ pub struct UpdatePromptRequest {
 // ── Handlers ──────────────────────────────────────────────────────────
 
 /// GET /api/v1/prompts
+#[utoipa::path(
+    get,
+    path = "/api/v1/prompts",
+    tag = "prompts",
+    operation_id = "prompts_list_prompts",
+    params(ListPromptsQuery, crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<PromptResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn list_prompts(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -157,6 +170,17 @@ pub async fn list_prompts(
 }
 
 /// GET /api/v1/prompts/:id
+#[utoipa::path(
+    get,
+    path = "/api/v1/prompts/{id}",
+    tag = "prompts",
+    operation_id = "prompts_get_prompt",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = PromptResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn get_prompt(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -182,6 +206,17 @@ pub async fn get_prompt(
 }
 
 /// POST /api/v1/prompts
+#[utoipa::path(
+    post,
+    path = "/api/v1/prompts",
+    tag = "prompts",
+    operation_id = "prompts_create_prompt",
+    request_body = CreatePromptRequest,
+    responses(
+        (status = 201, description = "OK", body = PromptResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn create_prompt(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -270,6 +305,18 @@ pub async fn create_prompt(
 }
 
 /// PUT /api/v1/prompts/:id
+#[utoipa::path(
+    put,
+    path = "/api/v1/prompts/{id}",
+    tag = "prompts",
+    operation_id = "prompts_update_prompt",
+    params(("id" = String, Path)),
+    request_body = UpdatePromptRequest,
+    responses(
+        (status = 200, description = "OK", body = PromptResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn update_prompt(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -367,6 +414,18 @@ pub async fn update_prompt(
 }
 
 /// POST /api/v1/prompts/:id/audio — Upload/replace audio WAV file
+#[utoipa::path(
+    post,
+    path = "/api/v1/prompts/{id}/audio",
+    tag = "prompts",
+    operation_id = "prompts_upload_audio",
+    params(("id" = String, Path)),
+    request_body(content_type = "multipart/form-data", description = "A multipart upload"),
+    responses(
+        (status = 200, description = "OK", body = PromptResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn upload_audio(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -447,6 +506,17 @@ pub async fn upload_audio(
 }
 
 /// GET /api/v1/prompts/:id/audio — Download/stream audio file
+#[utoipa::path(
+    get,
+    path = "/api/v1/prompts/{id}/audio",
+    tag = "prompts",
+    operation_id = "prompts_download_audio",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, description = "The audio", content_type = "audio/wav", body = Vec<u8>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn download_audio(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -487,6 +557,17 @@ pub async fn download_audio(
 }
 
 /// POST /api/v1/prompts/:id/synthesize — Generate TTS audio for a prompt
+#[utoipa::path(
+    post,
+    path = "/api/v1/prompts/{id}/synthesize",
+    tag = "prompts",
+    operation_id = "prompts_synthesize_prompt",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = PromptResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn synthesize_prompt(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -566,6 +647,17 @@ pub async fn synthesize_prompt(
 }
 
 /// DELETE /api/v1/prompts/:id
+#[utoipa::path(
+    delete,
+    path = "/api/v1/prompts/{id}",
+    tag = "prompts",
+    operation_id = "prompts_delete_prompt",
+    params(("id" = String, Path)),
+    responses(
+        (status = 204, description = "Done"),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn delete_prompt(
     State(state): State<ApiState>,
     tenant: TenantContext,

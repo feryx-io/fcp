@@ -157,6 +157,7 @@ pub struct PresenceUpdate {
 /// 7. Time window check → deny if outside windows
 /// 8. Default
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct PresenceAuthPolicy {
     /// If `true`, watchers not in either list are allowed. If `false`, only
     /// watchers on the allow_list are permitted.
@@ -194,6 +195,7 @@ pub struct PresenceAuthPolicy {
 
 /// A time window during which subscriptions are allowed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct TimeWindow {
     /// Start hour (0-23, UTC).
     pub start_hour: u8,

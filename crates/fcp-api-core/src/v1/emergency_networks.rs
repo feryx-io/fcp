@@ -32,7 +32,7 @@ fn require_store(
         .ok_or_else(|| ApiError::NotFound("Emergency storage is not configured".to_string()))
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct NetworkResponse {
     pub id: String,
     pub tenant_id: String,
@@ -43,8 +43,10 @@ pub struct NetworkResponse {
     /// `nomadic` (the default) or `all`.
     pub applies_to: String,
     #[serde(with = "crate::time::epoch_secs")]
+    #[schema(value_type = String, format = DateTime)]
     pub created_at: u64,
     #[serde(with = "crate::time::epoch_secs")]
+    #[schema(value_type = String, format = DateTime)]
     pub updated_at: u64,
 }
 
@@ -70,7 +72,7 @@ impl From<EmergencyNetwork> for NetworkResponse {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct CreateNetworkRequest {
     /// A range (`10.1.2.0/24`) or a single address.
     pub cidr: String,
@@ -84,7 +86,7 @@ pub struct CreateNetworkRequest {
     pub applies_to: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpdateNetworkRequest {
     pub cidr: Option<String>,
     pub location_id: Option<String>,
@@ -155,6 +157,17 @@ async fn require_network(
     }
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/emergency/networks",
+    tag = "emergency_networks",
+    operation_id = "emergency_networks_list_networks",
+    params(crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<NetworkResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn list_networks(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -173,6 +186,17 @@ pub async fn list_networks(
     )?))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/emergency/networks/{id}",
+    tag = "emergency_networks",
+    operation_id = "emergency_networks_get_network",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = NetworkResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn get_network(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -182,6 +206,17 @@ pub async fn get_network(
     Ok(Json(network.into()))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/emergency/networks",
+    tag = "emergency_networks",
+    operation_id = "emergency_networks_create_network",
+    request_body = CreateNetworkRequest,
+    responses(
+        (status = 201, description = "OK", body = NetworkResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn create_network(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -214,6 +249,18 @@ pub async fn create_network(
     Ok((StatusCode::CREATED, Json(NetworkResponse::from(network))))
 }
 
+#[utoipa::path(
+    patch,
+    path = "/api/v1/emergency/networks/{id}",
+    tag = "emergency_networks",
+    operation_id = "emergency_networks_update_network",
+    params(("id" = String, Path)),
+    request_body = UpdateNetworkRequest,
+    responses(
+        (status = 200, description = "OK", body = NetworkResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn update_network(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -245,6 +292,17 @@ pub async fn update_network(
     Ok(Json(network.into()))
 }
 
+#[utoipa::path(
+    delete,
+    path = "/api/v1/emergency/networks/{id}",
+    tag = "emergency_networks",
+    operation_id = "emergency_networks_delete_network",
+    params(("id" = String, Path)),
+    responses(
+        (status = 204, description = "Done"),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn delete_network(
     State(state): State<ApiState>,
     tenant: TenantContext,

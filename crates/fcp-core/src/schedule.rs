@@ -15,8 +15,11 @@ use std::time::SystemTime;
 /// before its `start` runs past midnight into the next day, and an `end`
 /// equal to its `start` is the whole day.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct WeeklyWindow {
     /// `mon` … `sun`.
+    /// `Mon` … `Sun`.
+    #[cfg_attr(feature = "openapi", schema(value_type = Vec<String>))]
     pub days: Vec<Weekday>,
     /// `HH:MM`.
     #[serde(with = "hhmm")]
@@ -27,6 +30,7 @@ pub struct WeeklyWindow {
 
 /// A day (or days, `from` to `to` inclusive) the schedule is closed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct Holiday {
     pub name: String,
     pub from: NaiveDate,

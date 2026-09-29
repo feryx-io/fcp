@@ -281,6 +281,7 @@ impl App {
         headers: &[(&str, &str)],
         body: Option<Value>,
     ) -> Response {
+        let verb = method.clone();
         let mut builder = Request::builder().method(method).uri(path);
         for (name, value) in headers {
             builder = builder.header(*name, *value);
@@ -313,6 +314,9 @@ impl App {
                 !body.is_array(),
                 "{path} answered a bare array; every list is {{data, next_cursor}}"
             );
+        }
+        if path.starts_with("/api/v1/") {
+            check_contract(&verb, path, status, &headers, &body);
         }
         // A list's items, for the tests that read them; `body` keeps the
         // envelope for those that page.
@@ -860,6 +864,127 @@ fn rfc3339_secs(value: &Value) -> i64 {
     chrono::DateTime::parse_from_rfc3339(value.as_str().expect("an RFC 3339 string"))
         .expect("RFC 3339")
         .timestamp()
+}
+
+/// The OpenAPI contract as JSON, made once.
+fn spec() -> &'static Value {
+    static SPEC: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+    SPEC.get_or_init(|| {
+        use utoipa::OpenApi;
+        serde_json::to_value(fcp_api_core::openapi::ApiDoc::openapi()).expect("the spec")
+    })
+}
+
+/// The spec's path template that `path` falls under: the one matching
+/// segment by segment with the most literal segments.
+fn template_for(path: &str) -> Option<String> {
+    let path = path.split('?').next().unwrap();
+    let parts: Vec<&str> = path.split('/').collect();
+    let mut best: Option<(usize, String)> = None;
+    for template in spec()["paths"].as_object().unwrap().keys() {
+        let t: Vec<&str> = template.split('/').collect();
+        if t.len() != parts.len() {
+            continue;
+        }
+        let mut literal = 0;
+        let fits = t.iter().zip(&parts).all(|(t, p)| {
+            if t.starts_with('{') {
+                true
+            } else if t == p {
+                literal += 1;
+                true
+            } else {
+                false
+            }
+        });
+        if fits && best.as_ref().is_none_or(|(n, _)| literal > *n) {
+            best = Some((literal, template.clone()));
+        }
+    }
+    best.map(|(_, t)| t)
+}
+
+/// docs/DEVELOPER_SURFACE.md §3, phase 3: every response a test sees is
+/// what the contract says — the route is in the spec, the status is one it
+/// documents, and a JSON body validates against that status's schema.
+fn check_contract(
+    method: &Method,
+    path: &str,
+    status: StatusCode,
+    headers: &HeaderMap,
+    body: &Value,
+) {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex, OnceLock};
+    static VALIDATORS: OnceLock<Mutex<HashMap<String, Arc<jsonschema::Validator>>>> =
+        OnceLock::new();
+
+    // A CORS preflight is the CORS layer's, not an operation's.
+    if *method == Method::OPTIONS {
+        return;
+    }
+    // The router's own refusal of a path or a method nothing serves is not
+    // an operation's answer.
+    let refused_by_router = matches!(
+        status,
+        StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED
+    );
+    let Some(template) = template_for(path) else {
+        assert!(
+            refused_by_router,
+            "{method} {path}: no operation in the contract"
+        );
+        return;
+    };
+    let op = &spec()["paths"][&template][method.as_str().to_lowercase()];
+    if !op.is_object() {
+        assert!(
+            refused_by_router,
+            "{method} {path}: no {method} on {template} in the contract"
+        );
+        return;
+    }
+    let code = status.as_u16().to_string();
+    let response = if op["responses"][&code].is_object() {
+        &op["responses"][&code]
+    } else if !status.is_success() && op["responses"]["default"].is_object() {
+        &op["responses"]["default"]
+    } else {
+        panic!("{method} {path}: status {code} is not in the contract for {template}");
+    };
+    let json = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|ct| ct.starts_with("application/json"));
+    let schema = &response["content"]["application/json"]["schema"];
+    if !json || schema.is_null() {
+        return;
+    }
+    let key = format!("{method} {template} {code}");
+    let validator = {
+        let mut cache = VALIDATORS.get_or_init(Default::default).lock().unwrap();
+        cache
+            .entry(key.clone())
+            .or_insert_with(|| {
+                let root = serde_json::json!({
+                    "$schema": "https://json-schema.org/draft/2020-12/schema",
+                    "allOf": [schema],
+                    "components": spec()["components"],
+                });
+                Arc::new(jsonschema::validator_for(&root).expect("the contract's schema compiles"))
+            })
+            .clone()
+    };
+    let errors: Vec<String> = validator
+        .iter_errors(body)
+        .take(5)
+        .map(|e| format!("{} at {}", e, e.instance_path()))
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "{key}: the body is not what the contract says:\n  {}\nbody: {body}",
+        errors.join("\n  ")
+    );
 }
 
 /// A key naming a moment (not a duration: `_ms`, `_secs`, `_seconds` and
@@ -7235,7 +7360,9 @@ async fn live_conference_controls_are_proxied_with_the_meetings_tenant() {
         .admin(Method::GET, "/api/v1/conferences/live/9999/video", None)
         .await;
     assert_eq!(res.status, StatusCode::NOT_FOUND, "{}", res.text);
-    assert_eq!(res.json["error"], "Conference room not active");
+    // In the API's error shape, with what the conference server said.
+    assert_eq!(res.json["code"], "not_found", "{}", res.text);
+    assert_eq!(res.json["details"], "Conference room not active");
 
     // End users are kept out of the admin routes.
     app.create_user_with_role("viewer", "end_user").await;
