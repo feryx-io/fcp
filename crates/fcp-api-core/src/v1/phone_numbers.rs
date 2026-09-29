@@ -56,7 +56,9 @@ pub struct PhoneNumberResponse {
     pub rate_center: Option<String>,
 
     // Lifecycle
+    #[serde(with = "crate::time::rfc3339")]
     pub acquired_at: SystemTime,
+    #[serde(default, with = "crate::time::rfc3339_opt")]
     pub activated_at: Option<SystemTime>,
 
     // Features
@@ -65,7 +67,9 @@ pub struct PhoneNumberResponse {
     pub tags: Vec<String>,
 
     // Audit
+    #[serde(with = "crate::time::rfc3339")]
     pub created_at: SystemTime,
+    #[serde(with = "crate::time::rfc3339")]
     pub updated_at: SystemTime,
 }
 
@@ -82,7 +86,7 @@ pub struct E911AddressResponse {
     /// it here (`docs/E911_BLOCK_2.md` §7).
     #[serde(default)]
     pub validated: bool,
-    #[serde(default)]
+    #[serde(default, with = "crate::time::rfc3339_opt")]
     pub validated_at: Option<SystemTime>,
     /// The validator that confirmed it, and the reference it gave.
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -1,9 +1,9 @@
 # API tokens and permissions
 
 How programs authenticate to the admin API (`/api/v1`), what a token can
-reach, how often it may call, what an error looks like, and what changed
-in v0.25.293 and v0.25.294 (`docs/DEVELOPER_SURFACE.md` §3, phases 1 and
-2).
+reach, how often it may call, what an error and a time look like, and
+what changed in v0.25.293–295 (`docs/DEVELOPER_SURFACE.md` §3, phases 1
+and 2).
 
 ## 1. Three kinds of credential
 
@@ -185,7 +185,7 @@ per_tenant_per_minute = 3000  # the default
 - The API gateway's per-address limit still stands in front, for anonymous
   traffic.
 
-## 6. Errors and request ids
+## 6. Errors, request ids, times and ids
 
 Every error under `/api/v1` has one shape, whether a handler, the
 authentication layer, the permission check, or a malformed body, path or
@@ -206,3 +206,37 @@ otherwise a fresh UUID. Quote it when reporting a problem.
 
 A browser client may use `PATCH` and send `X-FCP-Tenant-Id`. It can read
 `Retry-After`, `X-Request-Id` and the `RateLimit-*` headers.
+
+### Times
+
+Since v0.25.295, every time in a response is an RFC 3339 string in UTC,
+such as `2026-09-29T14:31:44Z`. Fractional seconds appear only when the
+time has them.
+
+Before v0.25.295 there were four forms:
+- serde's `{"secs_since_epoch", "nanos_since_epoch"}`;
+- epoch seconds;
+- epoch milliseconds (the SIP and flow traces);
+- fractional epoch seconds.
+
+A request may still send a time as epoch seconds, but RFC 3339 is the form
+to use. A duration stays a number, and its name says the unit: `_ms`,
+`_secs`, `_seconds` or `_days`.
+
+The events WebSocket and webhook payloads are not covered by this rule;
+their shape is `docs/API_EVENTS.md`'s.
+
+### Ids
+
+An id whose type has a prefix is written with it: `tenant-…`, `user-…`,
+`dev-…`, `site-…` and so on (`fcp_core::identifiers`). A request may send
+a bare UUID or the prefixed form, and both are read.
+
+Four resources have ids with no prefixed type, and these are plain UUIDs:
+- audit-log entries;
+- billing transactions;
+- rate plans;
+- voicemail mailboxes.
+
+`api_postgres.rs` checks every response its tests receive against these
+two rules (`check_shape`).

@@ -36,7 +36,9 @@ pub struct ExtensionResponse {
     pub description: Option<String>,
     pub location_id: Option<String>,
     pub enabled: bool,
+    #[serde(with = "crate::time::rfc3339")]
     pub created_at: SystemTime,
+    #[serde(with = "crate::time::rfc3339")]
     pub updated_at: SystemTime,
 }
 

@@ -144,9 +144,9 @@ format = "compact"
         |s| s["status"] == "enrolled" && s["link_up"] == true,
     )
     .await;
-    assert!(shown["last_seen_at"].as_u64().is_some(), "{shown}");
+    assert!(shown["last_seen_at"].as_str().is_some(), "{shown}");
     assert!(
-        shown["certificate_expires_at"].as_u64().is_some(),
+        shown["certificate_expires_at"].as_str().is_some(),
         "{shown}"
     );
     assert_eq!(shown["link_version"], env!("CARGO_PKG_VERSION"), "{shown}");

@@ -35,6 +35,7 @@ pub struct ScheduleResponse {
     pub holidays: Vec<Holiday>,
     /// `open`, `closed` or `holiday`, now.
     pub state: &'static str,
+    #[serde(with = "crate::time::epoch_secs")]
     pub updated_at: u64,
 }
 

@@ -331,7 +331,7 @@ export function VoicemailPage() {
           Date <ArrowUpDown className="ml-2 h-4 w-4" />
         </Button>
       ),
-      cell: ({ row }) => new Date(row.original.created_at * 1000).toLocaleString(),
+      cell: ({ row }) => new Date(row.original.created_at).toLocaleString(),
     },
     {
       accessorKey: 'transcription',
@@ -595,7 +595,7 @@ export function VoicemailPage() {
                 const existing = greetings.find(g => g.greeting_type === type_)
                 const showRadio = (type_ === 'unavailable' || type_ === 'temporary') && existing
                 const expiresAt = existing && type_ === 'temporary' && existing.expires_at
-                  ? new Date(existing.expires_at * 1000) : null
+                  ? new Date(existing.expires_at) : null
                 const isExpired = expiresAt ? expiresAt.getTime() < Date.now() : false
                 return (
                   <div key={type_} className="flex items-center justify-between gap-2">
@@ -621,7 +621,7 @@ export function VoicemailPage() {
                         </span>
                       ) : existing ? (
                         <span className="text-xs text-muted-foreground truncate">
-                          {new Date(typeof existing.created_at === 'number' ? existing.created_at * 1000 : existing.created_at).toLocaleDateString()}
+                          {new Date(existing.created_at).toLocaleDateString()}
                         </span>
                       ) : null}
                     </div>

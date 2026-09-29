@@ -48,15 +48,15 @@ const KIND_ICON: Record<ContactKind, React.ElementType> = {
 /** Device types a tenant can trust to send their own location. */
 const DEVICE_TYPES = ['desk_phone', 'softphone', 'mobile', 'webrtc', 'ata', 'conference_phone']
 
-const when = (secs: number | null | undefined) =>
-  secs ? new Date(secs * 1000).toLocaleString() : '-'
+const when = (at: string | null | undefined) =>
+  at ? new Date(at).toLocaleString() : '-'
 
-const ago = (secs: number | null | undefined) => {
-  if (!secs) return 'never'
-  const days = Math.floor((Date.now() / 1000 - secs) / 86_400)
+const ago = (at: string | null | undefined) => {
+  if (!at) return 'never'
+  const days = Math.floor((Date.now() - Date.parse(at)) / 86_400_000)
   if (days > 1) return `${days} days ago`
   if (days === 1) return 'yesterday'
-  return new Date(secs * 1000).toLocaleTimeString()
+  return new Date(at).toLocaleTimeString()
 }
 
 const outcomeBadge = (outcome: string) => {

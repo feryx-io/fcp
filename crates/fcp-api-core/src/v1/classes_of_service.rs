@@ -39,6 +39,7 @@ pub struct ClassOfServiceResponse {
     pub max_calls: Option<u32>,
     pub caller_id: CallerIdPolicy,
     pub is_default: bool,
+    #[serde(with = "crate::time::epoch_secs")]
     pub updated_at: u64,
 }
 

@@ -91,7 +91,9 @@ pub struct TrunkResponse {
     /// Whether any node would route a call to it now.
     #[serde(default)]
     pub routable_somewhere: bool,
+    #[serde(with = "crate::time::rfc3339")]
     pub created_at: SystemTime,
+    #[serde(with = "crate::time::rfc3339")]
     pub updated_at: SystemTime,
 }
 

@@ -26,7 +26,8 @@ const EVENT_TYPE_LABELS: Record<string, string> = {
   failed: 'Failed',
 }
 
-function formatTimestamp(ms: number): string {
+function formatTimestamp(at: string): string {
+  const ms = Date.parse(at)
   return new Date(ms).toLocaleString(undefined, {
     year: 'numeric',
     month: '2-digit',

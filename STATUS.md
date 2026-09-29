@@ -1461,7 +1461,24 @@ Phase 2 is split into three PRs. 2a done (v0.25.294):
   routes).
 - Proved by `every_error_is_json_and_every_response_has_an_id`.
 
-2b (RFC 3339 times, prefixed ids) and 2c (list envelopes) follow.
+2b done (v0.25.295): every time in an admin API response is an RFC 3339
+string in UTC.
+- 105 response fields carry `fcp_api_core::time` serde helpers:
+  `SystemTime`, epoch seconds, epoch milliseconds and `f64` seconds.
+  Requests still accept numbers.
+- The site's registrations and the cluster node's `started_at` get the
+  same, through a view and a serializer. Domain structs keep their
+  stored shapes.
+- Ids are prefixed wherever a typed id exists. Audit entries, billing
+  transactions, rate plans and mailboxes stay plain UUIDs.
+- The debug subscription's `expires_at` duration is `expires_in_secs`.
+- The UI's types and pages and the CLI's models read the new form; the
+  CLI also reads the old ones.
+- `api_postgres.rs` checks every response any test receives
+  (`check_shape`: no numeric or serde-shaped times, no bare UUID where a
+  prefix exists).
+
+2c (list envelopes) follows.
 
 ## Historical documents
 

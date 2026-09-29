@@ -5,6 +5,11 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
 
+/** Seconds since the epoch of an RFC 3339 time from the API. */
+export function epochSecs(at: string): number {
+  return Date.parse(at) / 1000
+}
+
 function toDate(date: string | Date | { secs_since_epoch: number; nanos_since_epoch: number }): Date {
   if (typeof date === 'object' && 'secs_since_epoch' in date) {
     return new Date(date.secs_since_epoch * 1000)

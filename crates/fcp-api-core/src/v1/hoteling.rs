@@ -35,8 +35,11 @@ pub struct SessionResponse {
     pub device_name: Option<String>,
     pub user_id: String,
     pub username: Option<String>,
+    #[serde(with = "crate::time::rfc3339")]
     pub started_at: SystemTime,
+    #[serde(with = "crate::time::rfc3339")]
     pub expires_at: SystemTime,
+    #[serde(default, with = "crate::time::rfc3339_opt")]
     pub ended_at: Option<SystemTime>,
     /// `logout`, `admin`, `expired` or `replaced`.
     pub ended_by: Option<String>,

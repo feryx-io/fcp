@@ -70,7 +70,8 @@ pub struct SubscriptionInfo {
     pub event: String,
     pub state: String,
     pub contact: String,
-    pub expires_at: String,
+    /// The subscription's lifetime, as its `Expires` gave it.
+    pub expires_in_secs: u64,
 }
 
 /// Rate limit state response.
@@ -173,7 +174,7 @@ pub async fn list_subscriptions(
             event: s.id().event().to_string(),
             state: format!("{:?}", s.state()),
             contact: format!("{:?}", s.contact()),
-            expires_at: format!("{:?}", s.expires()),
+            expires_in_secs: s.expires().as_secs(),
         })
         .collect();
 

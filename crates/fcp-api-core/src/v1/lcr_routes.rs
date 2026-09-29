@@ -42,7 +42,9 @@ pub struct LcrRouteResponse {
     pub priority: u32,
     pub enabled: bool,
     pub description: Option<String>,
+    #[serde(with = "crate::time::epoch_secs")]
     pub created_at: u64,
+    #[serde(with = "crate::time::epoch_secs")]
     pub updated_at: u64,
 }
 

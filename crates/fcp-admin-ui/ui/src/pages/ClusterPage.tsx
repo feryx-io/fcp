@@ -9,7 +9,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { DataTable } from '@/components/DataTable'
 import { cluster, dashboard } from '@/api/endpoints'
-import { formatDuration } from '@/lib/utils'
+import { formatDuration, epochSecs } from '@/lib/utils'
 import type { ClusterNodeInfo, DashboardSummary, SiteInfo } from '@/types'
 
 const statusBadge = (status: string) => {
@@ -427,8 +427,8 @@ function VersionSkewBanner({ versions }: { versions: Record<string, string[]> })
 // this cloud and kept by fcp-link; the cloud sees it through its link's
 // heartbeats, not through cluster membership.
 function SitesSection({ sites }: { sites: SiteInfo[] }) {
-  const ago = (secs?: number) =>
-    secs === undefined ? 'never' : formatDuration(Math.max(0, Math.floor(Date.now() / 1000) - secs)) + ' ago'
+  const ago = (at?: string) =>
+    at === undefined ? 'never' : formatDuration(Math.max(0, Math.floor(Date.now() / 1000 - epochSecs(at)))) + ' ago'
   return (
     <div>
       <h2 className="text-lg font-semibold mb-3">Sites</h2>

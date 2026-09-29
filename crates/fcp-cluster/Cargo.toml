@@ -22,6 +22,7 @@ async-trait = "0.1"
 
 # Serialization
 serde = { workspace = true }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 serde_json = { workspace = true }
 
 # Logging

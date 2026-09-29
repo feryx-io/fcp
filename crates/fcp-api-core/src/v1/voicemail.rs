@@ -44,7 +44,9 @@ pub struct MailboxResponse {
     pub include_transcription: bool,
     pub transcription_enabled: bool,
     pub retention_days: Option<u32>,
+    #[serde(with = "crate::time::epoch_secs_f64")]
     pub created_at: f64,
+    #[serde(with = "crate::time::epoch_secs_f64")]
     pub updated_at: f64,
 }
 
@@ -83,7 +85,9 @@ pub struct MessageResponse {
     pub duration: u32,
     pub recording_path: String,
     pub transcription: Option<String>,
+    #[serde(with = "crate::time::epoch_secs_f64")]
     pub created_at: f64,
+    #[serde(default, with = "crate::time::epoch_secs_f64_opt")]
     pub accessed_at: Option<f64>,
 }
 
@@ -686,8 +690,10 @@ pub struct GreetingResponse {
     pub audio_path: String,
     pub is_active: bool,
     /// Unix timestamp in seconds
+    #[serde(with = "crate::time::epoch_secs_f64")]
     pub created_at: f64,
     /// Unix timestamp in seconds, or null
+    #[serde(default, with = "crate::time::epoch_secs_f64_opt")]
     pub expires_at: Option<f64>,
 }
 

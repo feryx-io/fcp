@@ -53,6 +53,7 @@ pub struct CallingResponse {
     /// `assistants_and_executive`), and `assistants` (`user_id`,
     /// `opted_in`) in order.
     pub executive: Option<ExecutiveView>,
+    #[serde(with = "crate::time::epoch_secs")]
     pub updated_at: u64,
 }
 

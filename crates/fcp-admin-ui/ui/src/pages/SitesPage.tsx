@@ -14,7 +14,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from '@/components/ui/dialog'
 import { sites, cluster } from '@/api/endpoints'
-import { formatDuration } from '@/lib/utils'
+import { formatDuration, epochSecs } from '@/lib/utils'
 import { useEffectiveTenantId } from '@/components/TenantSelector'
 import type { SiteInfo, SiteWithToken } from '@/types'
 
@@ -29,8 +29,8 @@ const createSchema = z.object({
 
 type CreateForm = z.infer<typeof createSchema>
 
-const ago = (secs?: number) =>
-  secs === undefined ? 'never' : formatDuration(Math.max(0, Math.floor(Date.now() / 1000) - secs)) + ' ago'
+const ago = (at?: string) =>
+  at === undefined ? 'never' : formatDuration(Math.max(0, Math.floor(Date.now() / 1000 - epochSecs(at)))) + ' ago'
 
 export function SitesPage() {
   const tenantId = useEffectiveTenantId()
@@ -261,7 +261,7 @@ export function SitesPage() {
             <DialogTitle>Enrollment token for {token?.name}</DialogTitle>
             <DialogDescription>
               Copy it now; it is not shown again. It is spent by the first enrollment and expires
-              {token ? ' ' + new Date(token.enrollment_token_expires_at * 1000).toLocaleString() : ''}.
+              {token ? ' ' + new Date(token.enrollment_token_expires_at).toLocaleString() : ''}.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
@@ -301,8 +301,8 @@ export function SitesPage() {
               <div className="grid grid-cols-2 gap-x-6 gap-y-2">
                 <div><span className="text-muted-foreground">Status</span><div>{detail.status}</div></div>
                 <div><span className="text-muted-foreground">Link</span><div>{detail.link_up ? 'up' : 'down'}, last seen {ago(detail.last_seen_at)}</div></div>
-                <div><span className="text-muted-foreground">Enrolled</span><div>{detail.enrolled_at ? new Date(detail.enrolled_at * 1000).toLocaleString() : 'not yet'}</div></div>
-                <div><span className="text-muted-foreground">Certificate ends</span><div>{detail.certificate_expires_at ? new Date(detail.certificate_expires_at * 1000).toLocaleDateString() : '—'}</div></div>
+                <div><span className="text-muted-foreground">Enrolled</span><div>{detail.enrolled_at ? new Date(detail.enrolled_at).toLocaleString() : 'not yet'}</div></div>
+                <div><span className="text-muted-foreground">Certificate ends</span><div>{detail.certificate_expires_at ? new Date(detail.certificate_expires_at).toLocaleDateString() : '—'}</div></div>
                 <div><span className="text-muted-foreground">Link release</span><div className="font-mono text-xs">{detail.link_version ?? '—'}</div></div>
                 <div><span className="text-muted-foreground">Link trunk</span><div className="font-mono text-xs">{detail.trunk_id ?? 'none'}</div></div>
                 <div>

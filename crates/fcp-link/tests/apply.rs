@@ -165,7 +165,7 @@ format = "compact"
         |s| s["sync_behind"] == 0 && s["sync_cursor"].as_i64().is_some_and(|c| c > 0),
     )
     .await;
-    assert!(shown["sync_applied_at"].as_u64().is_some(), "{shown}");
+    assert!(shown["sync_applied_at"].as_str().is_some(), "{shown}");
 
     // A user made in the cloud registers at the site within seconds.
     let (code, made) = cloud

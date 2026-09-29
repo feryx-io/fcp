@@ -291,10 +291,10 @@ function SipLadderInner({ messages, live }: SipLadderProps) {
 
   const columns = useMemo(() => inferColumns(messages), [messages])
 
-  const baseTime = messages.length > 0 ? messages[0].timestamp : 0
+  const baseTime = messages.length > 0 ? Date.parse(messages[0].timestamp) : 0
   const formatRelTime = useCallback(
-    (ts: number) => {
-      const delta = ts - baseTime
+    (ts: string) => {
+      const delta = Date.parse(ts) - baseTime
       if (delta < 1000) return `+${delta}ms`
       return `+${(delta / 1000).toFixed(2)}s`
     },

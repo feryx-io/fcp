@@ -20,6 +20,7 @@ pub mod route_permissions;
 pub mod shape;
 pub mod site_files;
 pub mod state;
+pub mod time;
 pub mod trunk_health;
 
 /// Where `/v1/trunks` reads what every node sees of a trunk

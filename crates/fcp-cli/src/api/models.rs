@@ -37,8 +37,11 @@ pub struct TenantResponse {
     pub max_phone_numbers: Option<u32>,
     pub max_concurrent_calls: Option<u32>,
     pub billing_id: Option<String>,
+    #[serde(deserialize_with = "any_time::secs")]
     pub created_at: u64,
+    #[serde(deserialize_with = "any_time::secs")]
     pub updated_at: u64,
+    #[serde(default, deserialize_with = "any_time::secs_opt")]
     pub trial_expires_at: Option<u64>,
     pub metadata: Option<String>,
 }
@@ -639,16 +642,67 @@ pub struct DeviceBindingResponse {
 
 // ==================== Serde Helpers ====================
 
-/// Serialize/deserialize SystemTime as string for display
+/// A time as the admin API has written it: an RFC 3339 string since
+/// v0.25.295 (`docs/DEVELOPER_SURFACE.md` §3, phase 2b), epoch seconds or
+/// serde's `{secs_since_epoch, nanos_since_epoch}` before.
+mod any_time {
+    use serde::{Deserialize, Deserializer};
+    use std::time::{Duration, SystemTime};
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    pub enum Incoming {
+        Text(String),
+        Secs(u64),
+        Object {
+            secs_since_epoch: u64,
+            #[serde(default)]
+            nanos_since_epoch: u32,
+        },
+    }
+
+    impl Incoming {
+        pub fn into_time<E: serde::de::Error>(self) -> Result<SystemTime, E> {
+            let since = match self {
+                Incoming::Text(text) => {
+                    let dt = chrono::DateTime::parse_from_rfc3339(&text).map_err(E::custom)?;
+                    Duration::new(dt.timestamp().max(0) as u64, dt.timestamp_subsec_nanos())
+                }
+                Incoming::Secs(secs) => Duration::from_secs(secs),
+                Incoming::Object {
+                    secs_since_epoch,
+                    nanos_since_epoch,
+                } => Duration::new(secs_since_epoch, nanos_since_epoch),
+            };
+            Ok(SystemTime::UNIX_EPOCH + since)
+        }
+    }
+
+    pub fn secs<'de, D: Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
+        let t: SystemTime = Incoming::deserialize(d)?.into_time()?;
+        Ok(t.duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs())
+    }
+
+    pub fn secs_opt<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
+        Option::<Incoming>::deserialize(d)?
+            .map(|i| {
+                i.into_time().map(|t: SystemTime| {
+                    t.duration_since(SystemTime::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs()
+                })
+            })
+            .transpose()
+    }
+}
+
+/// Serialize a SystemTime as epoch seconds; read it in any form the API
+/// has used (`any_time`).
 mod system_time_as_string {
     use serde::{Deserialize, Deserializer, Serializer};
     use std::time::SystemTime;
-
-    #[derive(Deserialize)]
-    struct TimeStamp {
-        secs_since_epoch: u64,
-        nanos_since_epoch: u32,
-    }
 
     pub fn serialize<S>(time: &SystemTime, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -664,22 +718,15 @@ mod system_time_as_string {
     where
         D: Deserializer<'de>,
     {
-        let ts = TimeStamp::deserialize(deserializer)?;
-        Ok(SystemTime::UNIX_EPOCH
-            + std::time::Duration::new(ts.secs_since_epoch, ts.nanos_since_epoch))
+        super::any_time::Incoming::deserialize(deserializer)?.into_time()
     }
 }
 
-/// Serialize/deserialize Option<SystemTime> as string for display
+/// Serialize an Option<SystemTime> as epoch seconds; read it in any form
+/// the API has used (`any_time`).
 mod optional_system_time_as_string {
     use serde::{Deserialize, Deserializer, Serializer};
     use std::time::SystemTime;
-
-    #[derive(Deserialize)]
-    struct TimeStamp {
-        secs_since_epoch: u64,
-        nanos_since_epoch: u32,
-    }
 
     pub fn serialize<S>(time: &Option<SystemTime>, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -700,11 +747,9 @@ mod optional_system_time_as_string {
     where
         D: Deserializer<'de>,
     {
-        let ts_opt = Option::<TimeStamp>::deserialize(deserializer)?;
-        Ok(ts_opt.map(|ts| {
-            SystemTime::UNIX_EPOCH
-                + std::time::Duration::new(ts.secs_since_epoch, ts.nanos_since_epoch)
-        }))
+        Option::<super::any_time::Incoming>::deserialize(deserializer)?
+            .map(|i| i.into_time())
+            .transpose()
     }
 }
 
@@ -758,5 +803,33 @@ mod tests {
         assert_eq!(call.node_id, Some("node-1".to_string()));
         assert_eq!(call.duration_seconds, Some(5)); // 5000ms / 1000 = 5s
         assert!(call.media_anchored); // codec is Some
+    }
+
+    #[test]
+    fn times_read_in_every_form_the_api_has_used() {
+        let base = serde_json::json!({
+            "id": "tenant-1", "name": "t", "description": null, "status": "active",
+            "contact_email": null, "contact_phone": null, "max_users": null,
+            "max_phone_numbers": null, "max_concurrent_calls": null, "billing_id": null,
+            "metadata": null,
+        });
+        for (created, trial) in [
+            (
+                serde_json::json!("2026-09-21T14:13:20Z"),
+                serde_json::json!("2026-09-21T14:13:20Z"),
+            ),
+            (
+                serde_json::json!(1_790_000_000u64),
+                serde_json::json!(1_790_000_000u64),
+            ),
+        ] {
+            let mut t = base.clone();
+            t["created_at"] = created.clone();
+            t["updated_at"] = created;
+            t["trial_expires_at"] = trial;
+            let parsed: TenantResponse = serde_json::from_value(t).unwrap();
+            assert_eq!(parsed.created_at, 1_790_000_000);
+            assert_eq!(parsed.trial_expires_at, Some(1_790_000_000));
+        }
     }
 }

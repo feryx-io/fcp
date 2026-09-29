@@ -44,6 +44,7 @@ pub struct BalanceResponse {
     pub available: Decimal,
     pub enforce: bool,
     pub low_balance_threshold: Option<Decimal>,
+    #[serde(with = "crate::time::epoch_secs")]
     pub updated_at: u64,
 }
 
@@ -74,6 +75,7 @@ pub struct BalanceTransactionResponse {
     pub call_id: Option<String>,
     pub description: Option<String>,
     pub external_ref: Option<String>,
+    #[serde(with = "crate::time::epoch_secs")]
     pub created_at: u64,
 }
 

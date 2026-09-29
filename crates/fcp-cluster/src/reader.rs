@@ -29,6 +29,12 @@ pub enum ClusterNodeStatus {
     Offline,
 }
 
+/// Epoch seconds written as an RFC 3339 time.
+fn rfc3339_secs<S: serde::Serializer>(secs: &u64, s: S) -> Result<S::Ok, S::Error> {
+    let at = chrono::DateTime::from_timestamp(*secs as i64, 0).unwrap_or_default();
+    s.serialize_str(&at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+}
+
 /// Information about a single cluster node, enriched with derived fields.
 #[derive(Debug, Clone, Serialize)]
 pub struct ClusterNodeInfo {
@@ -38,6 +44,9 @@ pub struct ClusterNodeInfo {
     pub sip_address: String,
     pub capabilities: Vec<String>,
     pub active_calls: usize,
+    /// When the node started, as RFC 3339 in the admin API
+    /// (`docs/DEVELOPER_SURFACE.md` §3, phase 2b); epoch seconds here.
+    #[serde(serialize_with = "rfc3339_secs")]
     pub started_at: u64,
     pub version: String,
     pub status: ClusterNodeStatus,

@@ -57,6 +57,7 @@ pub struct FlowTraceResponse {
     pub flow_name: Option<String>,
     pub node_id: Option<String>,
     pub event_type: String,
+    #[serde(with = "crate::time::epoch_millis")]
     pub timestamp: u64, // Unix timestamp in milliseconds
     pub detail: Option<String>,
     pub flow_version: Option<u32>,

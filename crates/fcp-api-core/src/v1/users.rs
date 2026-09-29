@@ -35,11 +35,14 @@ pub struct UserResponse {
     pub enabled: bool,
     pub role: String, // Role name (e.g., "super_admin", "telecom_admin")
     pub department_id: Option<String>, // For department-scoped admins
+    #[serde(with = "crate::time::rfc3339")]
     pub created_at: std::time::SystemTime,
+    #[serde(with = "crate::time::rfc3339")]
     pub updated_at: std::time::SystemTime,
 
     // Enterprise fields
     pub email: Option<String>,
+    #[serde(default, with = "crate::time::rfc3339_opt")]
     pub password_last_reset: Option<std::time::SystemTime>,
     pub phone_number: Option<String>,
     pub mobile_number: Option<String>,
@@ -51,8 +54,10 @@ pub struct UserResponse {
     pub language: String,
     pub timezone: String,
     pub account_status: String,
+    #[serde(default, with = "crate::time::rfc3339_opt")]
     pub last_login: Option<std::time::SystemTime>,
     pub failed_login_attempts: i32,
+    #[serde(default, with = "crate::time::rfc3339_opt")]
     pub account_locked_until: Option<std::time::SystemTime>,
     pub emergency_contact_name: Option<String>,
     pub emergency_contact_phone: Option<String>,

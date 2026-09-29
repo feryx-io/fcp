@@ -52,10 +52,13 @@ pub struct LocationResponse {
     /// Whether a validator has confirmed the address
     /// (`POST /locations/:id/e911/validate`); editing it clears this.
     pub e911_validated: bool,
+    #[serde(default, with = "crate::time::rfc3339_opt")]
     pub e911_validated_at: Option<SystemTime>,
     pub e911_validated_by: Option<String>,
     pub e911_validation_reference: Option<String>,
+    #[serde(with = "crate::time::rfc3339")]
     pub created_at: SystemTime,
+    #[serde(with = "crate::time::rfc3339")]
     pub updated_at: SystemTime,
 }
 

@@ -79,7 +79,9 @@ pub struct MeetingResponse {
     /// How the composite shows a shared screen: `presentation` or
     /// `content_only`.
     pub video_content_layout: String,
+    #[serde(with = "crate::time::rfc3339")]
     pub created_at: SystemTime,
+    #[serde(with = "crate::time::rfc3339")]
     pub updated_at: SystemTime,
 }
 

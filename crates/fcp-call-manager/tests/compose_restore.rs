@@ -460,7 +460,8 @@ async fn stored_call_record(admin_token: &str, n: usize) -> String {
         if calls.len() >= n {
             return calls
                 .iter()
-                .max_by_key(|r| r["start_time"].as_u64().unwrap_or(0))
+                // RFC 3339 in UTC to the second sorts as the time does.
+                .max_by_key(|r| r["start_time"].as_str().unwrap_or("").to_string())
                 .and_then(|r| r["cdr_id"].as_str())
                 .expect("a record has a cdr_id")
                 .to_string();

@@ -40,8 +40,11 @@ pub struct CdrResponse {
     pub from_display_name: Option<String>,
     pub to_uri: String,
     pub to_display_name: Option<String>,
+    #[serde(with = "crate::time::epoch_secs")]
     pub start_time: u64, // Unix timestamp (seconds since epoch)
+    #[serde(default, with = "crate::time::epoch_secs_opt")]
     pub answer_time: Option<u64>,
+    #[serde(default, with = "crate::time::epoch_secs_opt")]
     pub end_time: Option<u64>,
     pub setup_duration_ms: Option<u64>,
     pub call_duration_ms: Option<u64>,
@@ -79,7 +82,9 @@ pub struct CdrResponse {
     pub rate_plan_id: Option<String>,
     pub matched_prefix: Option<String>,
     pub billable_seconds: Option<u32>,
+    #[serde(default, with = "crate::time::epoch_secs_opt")]
     pub rated_at: Option<u64>,
+    #[serde(default, with = "crate::time::epoch_secs_opt")]
     pub created_at: Option<u64>,
     pub custom_data: Option<serde_json::Value>,
 }

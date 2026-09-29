@@ -43,7 +43,9 @@ pub struct ConfigTemplateResponse {
     pub model_pattern: Option<String>,
     pub template_body: String,
     pub description: Option<String>,
+    #[serde(with = "crate::time::rfc3339")]
     pub created_at: SystemTime,
+    #[serde(with = "crate::time::rfc3339")]
     pub updated_at: SystemTime,
 }
 

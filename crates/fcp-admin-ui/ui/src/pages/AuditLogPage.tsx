@@ -34,7 +34,7 @@ const causeBadge = (cause: string) => {
 const sinceOf = (date: string): number | undefined =>
   date ? Math.floor(new Date(`${date}T00:00:00`).getTime() / 1000) : undefined
 
-const when = (secs: number) => new Date(secs * 1000).toLocaleString()
+const when = (at: string) => new Date(at).toLocaleString()
 
 const LIMITS = [100, 500, 1000]
 

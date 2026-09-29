@@ -86,11 +86,13 @@ async fn registration_visible_to_tenant(
 pub struct RegistrationResponse {
     pub aor: String,
     pub contact: String,
+    #[serde(with = "crate::time::rfc3339")]
     pub expires_at: std::time::SystemTime,
     pub call_id: String,
     pub cseq: u32,
     pub user_agent: Option<String>,
     pub q: Option<f32>,
+    #[serde(with = "crate::time::rfc3339")]
     pub registered_at: std::time::SystemTime,
     pub expires_in_seconds: u64,
 }

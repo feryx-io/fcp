@@ -49,7 +49,7 @@ export function CDRsPage() {
     ]
     const rows = cdrList.map((c) => [
       c.call_id, c.from_uri, c.to_uri,
-      new Date(c.start_time * 1000).toISOString(),
+      new Date(c.start_time).toISOString(),
       c.disposition, c.hangup_cause,
       c.call_duration_ms ?? '', c.codec_a_leg ?? '', c.codec_b_leg ?? '',
     ])
@@ -118,7 +118,7 @@ export function CDRsPage() {
           Time <ArrowUpDown className="ml-2 h-4 w-4" />
         </Button>
       ),
-      cell: ({ row }) => new Date(row.original.start_time * 1000).toLocaleString(),
+      cell: ({ row }) => new Date(row.original.start_time).toLocaleString(),
     },
     {
       accessorKey: 'disposition',
@@ -305,9 +305,9 @@ export function CDRsPage() {
               <Field label="From Name" value={selectedCdr.from_display_name} />
               <Field label="To" value={selectedCdr.to_uri} mono />
               <Field label="To Name" value={selectedCdr.to_display_name} />
-              <Field label="Start Time" value={new Date(selectedCdr.start_time * 1000).toLocaleString()} />
-              <Field label="Answer Time" value={selectedCdr.answer_time ? new Date(selectedCdr.answer_time * 1000).toLocaleString() : null} />
-              <Field label="End Time" value={selectedCdr.end_time ? new Date(selectedCdr.end_time * 1000).toLocaleString() : null} />
+              <Field label="Start Time" value={new Date(selectedCdr.start_time).toLocaleString()} />
+              <Field label="Answer Time" value={selectedCdr.answer_time ? new Date(selectedCdr.answer_time).toLocaleString() : null} />
+              <Field label="End Time" value={selectedCdr.end_time ? new Date(selectedCdr.end_time).toLocaleString() : null} />
               <Field label="Setup Duration" value={selectedCdr.setup_duration_ms != null ? `${selectedCdr.setup_duration_ms}ms` : null} />
               <Field label="Call Duration" value={selectedCdr.call_duration_ms != null ? formatDuration(Math.round(selectedCdr.call_duration_ms / 1000)) : null} />
               <Field label="Total Duration" value={selectedCdr.total_duration_ms != null ? formatDuration(Math.round(selectedCdr.total_duration_ms / 1000)) : null} />

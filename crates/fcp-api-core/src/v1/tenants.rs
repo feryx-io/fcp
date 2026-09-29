@@ -73,8 +73,11 @@ pub struct TenantResponse {
     pub max_phone_numbers: Option<u32>,
     pub max_concurrent_calls: Option<u32>,
     pub billing_id: Option<String>,
+    #[serde(with = "crate::time::epoch_secs")]
     pub created_at: u64,
+    #[serde(with = "crate::time::epoch_secs")]
     pub updated_at: u64,
+    #[serde(default, with = "crate::time::epoch_secs_opt")]
     pub trial_expires_at: Option<u64>,
     pub metadata: Option<String>,
     /// SIP domains claimed by this tenant. See `Tenant::sip_domains`.
@@ -135,6 +138,7 @@ pub struct CreateTenantRequest {
     pub max_phone_numbers: Option<u32>,
     pub max_concurrent_calls: Option<u32>,
     pub billing_id: Option<String>,
+    #[serde(default, with = "crate::time::epoch_secs_opt")]
     pub trial_expires_at: Option<u64>,
     pub metadata: Option<String>,
     /// SIP domains to claim on behalf of the new tenant.
@@ -162,6 +166,7 @@ pub struct UpdateTenantRequest {
     pub max_phone_numbers: Option<u32>,
     pub max_concurrent_calls: Option<u32>,
     pub billing_id: Option<String>,
+    #[serde(default, with = "crate::time::epoch_secs_opt")]
     pub trial_expires_at: Option<u64>,
     pub metadata: Option<String>,
     /// Full replacement for the tenant's SIP domain list. Use `None` to

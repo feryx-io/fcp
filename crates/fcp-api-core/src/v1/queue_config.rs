@@ -103,7 +103,9 @@ pub struct QueueConfigResponse {
     pub schedule_id: Option<String>,
     pub closed_target: Option<String>,
     pub enabled: bool,
+    #[serde(with = "crate::time::rfc3339")]
     pub created_at: SystemTime,
+    #[serde(with = "crate::time::rfc3339")]
     pub updated_at: SystemTime,
 }
 
