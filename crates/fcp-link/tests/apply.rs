@@ -143,6 +143,20 @@ format = "compact"
         status["sync_applied"].as_u64().unwrap() >= 1,
         "the tenant itself: {status}"
     );
+
+    // Nothing changes for longer than a whole poll: the feed's long poll
+    // answers empty, and the sync reports no error (found by the nightly's
+    // site stack, where the link's request timeout was shorter than the
+    // wait).
+    tokio::time::sleep(Duration::from_secs(9)).await;
+    let (_, text) = http_request("GET", &loopback(cloud.link_health, "/status"), &[], None)
+        .await
+        .unwrap();
+    let idle: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert!(
+        idle["sync"]["error"].is_null(),
+        "an idle feed is no error: {idle}"
+    );
     let shown = until(
         "the cloud never saw the site caught up",
         cloud.http,

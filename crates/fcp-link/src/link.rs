@@ -354,7 +354,16 @@ impl Link {
                 return;
             }
         };
-        let client = match self.client(true) {
+        // The change feed is a long poll: the cloud holds it up to
+        // `feed_wait_secs` before answering an idle one, so the request
+        // may take that long on top of the usual timeout — shorter, and
+        // every quiet stretch ended as a sync error.
+        let client = match self.client_with(
+            true,
+            Duration::from_secs(
+                self.config.link.request_timeout_secs + self.config.site.feed_wait_secs,
+            ),
+        ) {
             Ok(c) => c,
             Err(e) => {
                 warn!(error = %e, "No client for the sync");
