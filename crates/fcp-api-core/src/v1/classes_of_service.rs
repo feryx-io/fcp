@@ -352,6 +352,7 @@ pub async fn delete_class(
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ClassifyQuery {
     pub dialed: String,
 }

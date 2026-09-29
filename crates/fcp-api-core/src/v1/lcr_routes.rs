@@ -75,6 +75,7 @@ impl From<LcrRoute> for LcrRouteResponse {
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ListLcrRoutesQuery {
     /// Only the routes on this trunk.
     pub trunk_id: Option<String>,

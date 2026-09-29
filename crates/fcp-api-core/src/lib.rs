@@ -82,6 +82,7 @@ pub trait CallSupervisor: Send + Sync {
 #[derive(
     Debug, Clone, serde::Deserialize, serde::Serialize, utoipa::ToSchema, utoipa::IntoParams,
 )]
+#[into_params(parameter_in = Query)]
 pub struct RoutePreviewQuery {
     pub to: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

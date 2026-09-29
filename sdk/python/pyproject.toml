@@ -1,0 +1,25 @@
+[project]
+name = "fcp-sdk"
+version = "0.25.0"
+description = "The FCP admin API's Python client, generated from its OpenAPI contract"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Proprietary" }
+dependencies = [
+    "httpx>=0.23.0,<1",
+    "attrs>=22.2.0",
+    "python-dateutil>=2.8.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["fcp_sdk", "fcp_api"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -636,6 +636,7 @@ pub async fn activate_phone_number(
 
 /// Query parameters for searching available pool phone numbers.
 #[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct SearchAvailableQuery {
     pub area_code: Option<String>,
     pub pattern: Option<String>,

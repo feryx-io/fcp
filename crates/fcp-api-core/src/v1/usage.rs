@@ -30,6 +30,7 @@ macro_rules! require_storage {
 
 /// Query parameters for usage endpoints.
 #[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct UsageQuery {
     /// Predefined period: "current_month" or "last_month".
     pub period: Option<String>,

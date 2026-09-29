@@ -507,4 +507,26 @@ mod tests {
         let clashes: Vec<_> = names.iter().filter(|(_, at)| at.len() > 1).collect();
         assert!(clashes.is_empty(), "schema names used twice: {clashes:#?}");
     }
+
+    /// A parameter "in path" names a segment of the path; one that does not
+    /// is a query parameter declared in the wrong place.
+    #[test]
+    fn path_parameters_are_in_the_path() {
+        let spec = serde_json::to_value(ApiDoc::openapi()).unwrap();
+        let mut wrong = Vec::new();
+        for (path, item) in spec["paths"].as_object().unwrap() {
+            for (method, op) in item.as_object().unwrap() {
+                for p in op["parameters"].as_array().into_iter().flatten() {
+                    let name = p["name"].as_str().unwrap_or_default();
+                    if p["in"] == "path" && !path.contains(&format!("{{{name}}}")) {
+                        wrong.push(format!("{method} {path}: {name}"));
+                    }
+                }
+            }
+        }
+        assert!(
+            wrong.is_empty(),
+            "path parameters not in the path: {wrong:#?}"
+        );
+    }
 }

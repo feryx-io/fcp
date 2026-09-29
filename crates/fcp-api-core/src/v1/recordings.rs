@@ -102,6 +102,7 @@ impl From<Recording> for RecordingResponse {
 // ─── List ────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 #[schema(as = recordings::ListQuery)]
 pub struct ListQuery {
     pub room_number: Option<String>,

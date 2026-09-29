@@ -166,7 +166,23 @@ jobs:
         run: |
           command -v pg_dump >/dev/null || sudo apt-get install -y postgresql-client
           pg_dump --version
+      # The SDKs' own suites run against a live admin from
+      # crates/fcp-admin/tests/sdks.rs (docs/DEVELOPER_SURFACE.md §3,
+      # phase 4): Node and the TypeScript SDK's dependencies, and uv for
+      # the Python SDK, must be here, and FCP_SDK_TESTS=required makes their
+      # absence a failure rather than a skip.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: sdk/typescript/package-lock.json
+      - name: The TypeScript SDK's dependencies
+        working-directory: sdk/typescript
+        run: npm ci
+      - uses: astral-sh/setup-uv@v6
       - name: Tests
+        env:
+          FCP_SDK_TESTS: required
         run: cargo test --all-targets --features fcp-conference-server/recording-webm,fcp-conference-server/recording-mp4,fcp-conference-server/video-openh264
 
   # The packaging: the compose file, alone and with the GPU overlay, must
@@ -204,6 +220,46 @@ jobs:
             echo "::error::a submodule's fuzzing is red or stale:$failed"
             exit 1
           fi
+
+  sdks:
+    name: SDKs
+    # The SDKs' generated code is what docs/openapi.json makes
+    # (docs/DEVELOPER_SURFACE.md §3, phase 4); their tests against a live
+    # admin run in the test job.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: sdk/typescript/package-lock.json
+      - uses: astral-sh/setup-uv@v6
+      - name: The TypeScript SDK's schema is the contract's
+        working-directory: sdk/typescript
+        run: |
+          npm ci
+          npm run -s gen
+          git diff --exit-code src/schema.ts \
+            || { echo "::error::sdk/typescript/src/schema.ts is stale: run npm run gen"; exit 1; }
+          npm run -s build
+      - name: The Python SDK's client is the contract's
+        working-directory: sdk/python
+        run: |
+          uvx openapi-python-client@0.29.1 generate --path ../../docs/openapi.json \
+            --meta none --output-path fcp_api --overwrite --config openapi-python-client.yaml
+          if [ -n "$(git status --porcelain fcp_api)" ]; then
+            git status --short fcp_api | head
+            echo "::error::sdk/python/fcp_api is stale: regenerate it (README.md)"
+            exit 1
+          fi
+      - name: The SDKs' versions follow the release
+        run: |
+          release=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2 | cut -d. -f1,2)
+          ts=$(jq -r .version sdk/typescript/package.json | cut -d. -f1,2)
+          py=$(grep -m1 '^version = ' sdk/python/pyproject.toml | cut -d'"' -f2 | cut -d. -f1,2)
+          test "$ts" = "$release" && test "$py" = "$release" \
+            || { echo "::error::SDK versions $ts/$py do not follow the release $release"; exit 1; }
 
   admin-ui:
     name: Admin UI

@@ -1,0 +1,4 @@
+# The generator's settings (sdk/python/README.md). No post-hooks: the
+# generated code is not reformatted, so what it makes depends on the
+# generator's pinned version alone, and CI can compare it byte for byte.
+post_hooks: []

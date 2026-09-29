@@ -929,7 +929,7 @@ pub async fn list_greetings(
     tag = "voicemail",
     operation_id = "voicemail_upload_greeting",
     params(("id" = String, Path)),
-    request_body(content_type = "multipart/form-data", description = "A multipart upload"),
+    request_body(content = crate::v1::uploads::GreetingUpload, content_type = "multipart/form-data"),
     responses(
         (status = 201, description = "OK", body = GreetingResponse),
         (status = "default", description = "An error", body = crate::error::ErrorResponse),

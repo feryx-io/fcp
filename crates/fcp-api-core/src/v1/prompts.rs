@@ -100,6 +100,7 @@ impl From<Prompt> for PromptResponse {
 // ── Request types ─────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ListPromptsQuery {
     pub category: Option<String>,
     pub language: Option<String>,
@@ -420,7 +421,7 @@ pub async fn update_prompt(
     tag = "prompts",
     operation_id = "prompts_upload_audio",
     params(("id" = String, Path)),
-    request_body(content_type = "multipart/form-data", description = "A multipart upload"),
+    request_body(content = crate::v1::uploads::PromptAudioUpload, content_type = "multipart/form-data"),
     responses(
         (status = 200, description = "OK", body = PromptResponse),
         (status = "default", description = "An error", body = crate::error::ErrorResponse),

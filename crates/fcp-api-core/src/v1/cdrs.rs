@@ -168,6 +168,7 @@ impl From<fcp_core::storage::CallDetailRecord> for CdrResponse {
 
 /// Query parameters for listing CDRs.
 #[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ListCdrsQuery {
     /// Filter by tenant ID
     pub tenant_id: Option<String>,

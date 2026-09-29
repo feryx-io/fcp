@@ -112,6 +112,7 @@ pub struct UpdateFlowRequest {
 
 /// Query parameters for listing flows.
 #[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ListFlowsQuery {
     /// Filter by tenant ID
     pub tenant_id: Option<String>,

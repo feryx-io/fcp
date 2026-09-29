@@ -1531,6 +1531,20 @@ types generated from it).
 
 Phase 3 is complete.
 
+Phase 4 done (v0.25.299): the SDKs.
+- `sdk/typescript` (`@fcp/sdk`) and `sdk/python` (`fcp-sdk`) are generated
+  from the contract. Each has a layer for the token and tenant, retries on
+  429 and 503 per `Retry-After`, the API's errors (`FcpError` with code
+  and request id), cursor paging, and webhook verification against a
+  shared vector.
+- Both suites run against a live admin (`fcp-admin/tests/sdks.rs`,
+  required in CI). A new **SDKs** job checks the generated code and the
+  versions.
+- The Python generator found 200 query parameters the contract declared
+  "in path", and a tuple schema. Both are fixed, with a spec test.
+- Upload forms are described in the contract.
+- Publishing to npm and PyPI is the owner's step.
+
 ## Historical documents
 
 Superseded status docs live in [`docs/archive/`](docs/archive/README.md) — they describe

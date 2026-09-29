@@ -108,6 +108,7 @@ pub async fn end_session(
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ListQuery {
     /// Ended sessions too, newest first.
     #[serde(default)]

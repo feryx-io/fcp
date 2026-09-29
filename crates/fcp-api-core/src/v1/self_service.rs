@@ -733,7 +733,7 @@ pub async fn list_voicemail_greetings(
     path = "/api/v1/me/voicemail/greetings",
     tag = "self_service",
     operation_id = "self_service_upload_voicemail_greeting",
-    request_body(content_type = "multipart/form-data", description = "A multipart upload"),
+    request_body(content = crate::v1::uploads::MyGreetingUpload, content_type = "multipart/form-data"),
     responses(
         (status = 201, description = "OK", body = GreetingResponse),
         (status = "default", description = "An error", body = crate::error::ErrorResponse),
@@ -1599,7 +1599,7 @@ const MAX_AVATAR_SIZE: usize = 2 * 1024 * 1024; // 2 MB
     path = "/api/v1/me/profile/avatar",
     tag = "self_service",
     operation_id = "self_service_upload_avatar",
-    request_body(content_type = "multipart/form-data", description = "A multipart upload"),
+    request_body(content = crate::v1::uploads::AvatarUpload, content_type = "multipart/form-data"),
     responses(
         (status = 201, description = "Stored"),
         (status = "default", description = "An error", body = crate::error::ErrorResponse),

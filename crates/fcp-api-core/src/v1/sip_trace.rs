@@ -72,6 +72,7 @@ pub struct SipTraceListResponse {
 
 /// Query parameters for SIP trace lookup.
 #[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct SipTraceQuery {
     /// Alternative lookup by SIP Call-ID header instead of FCP call_id
     pub sip_call_id: Option<String>,
