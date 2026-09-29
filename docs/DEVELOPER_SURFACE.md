@@ -11,8 +11,8 @@ manages, signed webhooks and speech input. FCP has an API of about 300
 routes, and a developer can find almost none of it. It has keys that let a
 read-only user mint an administrator's, webhooks that a tenant cannot
 manage and that a receiver cannot verify against replay, and flows that
-hear only digits. This document designs the fixes. The questions are in
-§5.
+hear only digits. This document designs the fixes. Agreed 2026-09-29: the eleven
+questions in §5, each settled on its recommendation.
 
 ## 1. What the code has, and what it lacks
 

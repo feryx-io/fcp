@@ -1420,7 +1420,7 @@ The model:
 - speech recognition with the same shape as TTS.
 
 Eight phases, from keys made safe to live call control and the guide;
-eleven questions (§5).
+eleven questions (§5), agreed 2026-09-29 on their recommendations.
 
 ## Historical documents
 
