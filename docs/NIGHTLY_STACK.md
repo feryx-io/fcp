@@ -151,6 +151,8 @@ the first data key on an empty ring (an advisory lock, and
 | 2026-09-27, -28 | the stack job, *A site for the live tenant* | the step's `jq` read `(.tenants // .)[]`, which is an error when the admin API answers a bare array — so the site stack has never run in the nightly | v0.25.288: `if type == "array" then . else .tenants end` |
 | 2026-09-27, -28 | forge-media's Fuzz, `bfcp_parse` | a grouped BFCP attribute whose last child's padding was cut short was read, but could not be written back within its one-octet length | forge-media #168 (forge-bfcp 0.1.1), the input kept as a regression test |
 
+| 2026-09-28 (the phase 4 branch's own run) | the stack job, *The site, enrolled and in step* — the first time the site stack ran | the testkit took a health check's in-container URL as the host's: the site's admin (8080 inside, 18080 published) was checked on 8080 — the *cloud's* admin, a false pass — and the site's link, which published nothing, was refused | v0.25.289: `fcp_testkit::compose` maps a health URL through the service's published ports; the site's link publishes its health on the host's loopback (`127.0.0.1:18096`) |
+
 siphon-rs's nightly fuzzing has been green every night since phase 1.
 
 **Open, for the owner:** the GHCR packages are private — an anonymous

@@ -167,6 +167,7 @@ impl ComposeStack {
                 .filter_map(|v| v.as_str())
                 .find(|s| s.starts_with("http://") || s.starts_with("https://"))
                 .map(|u| u.replace("localhost", "127.0.0.1"))
+                .map(|u| on_the_host(&u, svc.get("ports")))
                 .unwrap_or_else(|| panic!("{name}: no HTTP health check"));
             services.insert(
                 name.clone(),
@@ -313,5 +314,61 @@ mod tests {
         assert_eq!(interpolate("${B:-dflt}", &vars), "dflt");
         assert_eq!(interpolate("${B}", &vars), "");
         assert_eq!(interpolate("plain", &vars), "plain");
+    }
+}
+
+/// A health check's URL as the host reaches it: the check runs inside the
+/// container, so its port is the container's; a service that publishes
+/// that port (`HOST:CONTAINER`, `IP:HOST:CONTAINER`) is reached on the
+/// host's side of the mapping. One on the host's network, or that maps it
+/// to the same number, keeps its URL.
+fn on_the_host(url: &str, ports: Option<&serde_yaml::Value>) -> String {
+    let Some((scheme_host, rest)) = url.rsplit_once(':') else {
+        return url.to_string();
+    };
+    let (port, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
+    let published = ports
+        .and_then(|p| p.as_sequence())
+        .into_iter()
+        .flatten()
+        .filter_map(|p| p.as_str())
+        .find_map(|mapping| {
+            let mapping = mapping.split('/').next().unwrap_or(mapping);
+            let parts: Vec<&str> = mapping.split(':').collect();
+            match parts.as_slice() {
+                [host, container] | [_, host, container] if *container == port => {
+                    Some(host.to_string())
+                }
+                _ => None,
+            }
+        });
+    match published {
+        Some(host_port) => format!("{scheme_host}:{host_port}{path}"),
+        None => url.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod host_port_tests {
+    use super::on_the_host;
+
+    #[test]
+    fn a_health_check_is_reached_on_the_published_port() {
+        let ports: serde_yaml::Value =
+            serde_yaml::from_str(r#"["18080:8080", "127.0.0.1:18096:8096", "5060:5060/udp"]"#)
+                .unwrap();
+        assert_eq!(
+            on_the_host("http://127.0.0.1:8080/api/v1/health", Some(&ports)),
+            "http://127.0.0.1:18080/api/v1/health"
+        );
+        assert_eq!(
+            on_the_host("http://127.0.0.1:8096/health", Some(&ports)),
+            "http://127.0.0.1:18096/health"
+        );
+        assert_eq!(
+            on_the_host("http://127.0.0.1:18084/health", None),
+            "http://127.0.0.1:18084/health",
+            "on the host's network, as it is"
+        );
     }
 }
