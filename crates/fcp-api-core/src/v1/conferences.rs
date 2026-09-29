@@ -29,7 +29,7 @@ macro_rules! require_storage {
 }
 
 /// Meeting response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct MeetingResponse {
     pub id: String,
     pub tenant_id: String,
@@ -80,8 +80,10 @@ pub struct MeetingResponse {
     /// `content_only`.
     pub video_content_layout: String,
     #[serde(with = "crate::time::rfc3339")]
+    #[schema(value_type = String, format = DateTime)]
     pub created_at: SystemTime,
     #[serde(with = "crate::time::rfc3339")]
+    #[schema(value_type = String, format = DateTime)]
     pub updated_at: SystemTime,
 }
 
@@ -129,7 +131,7 @@ impl From<Meeting> for MeetingResponse {
 }
 
 /// Create meeting request body.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct CreateMeetingRequest {
     pub room_number: String,
     pub name: String,
@@ -224,7 +226,7 @@ async fn room_number_exists_in_tenant(
 }
 
 /// Update meeting request body (all fields optional).
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpdateMeetingRequest {
     pub name: Option<String>,
     pub guest_pin: Option<Option<String>>,
@@ -260,6 +262,17 @@ pub struct UpdateMeetingRequest {
 }
 
 /// GET /conferences/meetings — List all meetings for the default tenant.
+#[utoipa::path(
+    get,
+    path = "/api/v1/conferences/meetings",
+    tag = "conferences",
+    operation_id = "conferences_list_meetings",
+    params(crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<MeetingResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn list_meetings(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -283,6 +296,17 @@ pub async fn list_meetings(
 }
 
 /// POST /conferences/meetings — Create a new meeting.
+#[utoipa::path(
+    post,
+    path = "/api/v1/conferences/meetings",
+    tag = "conferences",
+    operation_id = "conferences_create_meeting",
+    request_body = CreateMeetingRequest,
+    responses(
+        (status = 201, description = "OK", body = MeetingResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn create_meeting(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -364,6 +388,17 @@ pub async fn create_meeting(
 }
 
 /// GET /conferences/meetings/:id — Get a meeting by ID.
+#[utoipa::path(
+    get,
+    path = "/api/v1/conferences/meetings/{id}",
+    tag = "conferences",
+    operation_id = "conferences_get_meeting",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = MeetingResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn get_meeting(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -388,6 +423,18 @@ pub async fn get_meeting(
 }
 
 /// PATCH /conferences/meetings/:id — Update a meeting.
+#[utoipa::path(
+    patch,
+    path = "/api/v1/conferences/meetings/{id}",
+    tag = "conferences",
+    operation_id = "conferences_update_meeting",
+    params(("id" = String, Path)),
+    request_body = UpdateMeetingRequest,
+    responses(
+        (status = 200, description = "OK", body = MeetingResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn update_meeting(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -522,6 +569,17 @@ pub async fn update_meeting(
 }
 
 /// DELETE /conferences/meetings/:id — Delete a meeting.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/conferences/meetings/{id}",
+    tag = "conferences",
+    operation_id = "conferences_delete_meeting",
+    params(("id" = String, Path)),
+    responses(
+        (status = 204, description = "Done"),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn delete_meeting(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -558,6 +616,17 @@ pub async fn delete_meeting(
 }
 
 /// POST /conferences/meetings/:id/enable — Enable a meeting.
+#[utoipa::path(
+    post,
+    path = "/api/v1/conferences/meetings/{id}/enable",
+    tag = "conferences",
+    operation_id = "conferences_enable_meeting",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = MeetingResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn enable_meeting(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -592,6 +661,17 @@ pub async fn enable_meeting(
 }
 
 /// POST /conferences/meetings/:id/disable — Disable a meeting.
+#[utoipa::path(
+    post,
+    path = "/api/v1/conferences/meetings/{id}/disable",
+    tag = "conferences",
+    operation_id = "conferences_disable_meeting",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = MeetingResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn disable_meeting(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -627,6 +707,18 @@ pub async fn disable_meeting(
 
 /// POST /conferences/meetings/:id/join-tokens — Mint a browser join token
 /// for a meeting in the caller's tenant.
+#[utoipa::path(
+    post,
+    path = "/api/v1/conferences/meetings/{id}/join-tokens",
+    tag = "conferences",
+    operation_id = "conferences_mint_join_token",
+    params(("id" = String, Path)),
+    request_body = super::join_tokens::MintJoinTokenRequest,
+    responses(
+        (status = 201, description = "Minted", body = crate::v1::join_tokens::JoinTokenResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn mint_join_token(
     State(state): State<ApiState>,
     tenant: TenantContext,

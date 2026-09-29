@@ -25,7 +25,7 @@ macro_rules! require_storage {
     };
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ScheduleResponse {
     pub id: String,
     pub tenant_id: String,
@@ -36,6 +36,7 @@ pub struct ScheduleResponse {
     /// `open`, `closed` or `holiday`, now.
     pub state: &'static str,
     #[serde(with = "crate::time::epoch_secs")]
+    #[schema(value_type = String, format = DateTime)]
     pub updated_at: u64,
 }
 
@@ -59,7 +60,7 @@ impl From<Schedule> for ScheduleResponse {
 }
 
 /// What a schedule is written as.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ScheduleRequest {
     pub name: String,
     /// IANA; unset, the tenant's timezone (§3.7), else UTC — and on an
@@ -90,6 +91,17 @@ async fn announce(state: &ApiState, schedule: &Schedule) {
 }
 
 /// GET /api/v1/schedules
+#[utoipa::path(
+    get,
+    path = "/api/v1/schedules",
+    tag = "schedules",
+    operation_id = "schedules_list_schedules",
+    params(crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<ScheduleResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn list_schedules(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -132,6 +144,17 @@ async fn owned(
 }
 
 /// GET /api/v1/schedules/:id
+#[utoipa::path(
+    get,
+    path = "/api/v1/schedules/{id}",
+    tag = "schedules",
+    operation_id = "schedules_get_schedule",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = ScheduleResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn get_schedule(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -149,6 +172,17 @@ pub async fn get_schedule(
 }
 
 /// POST /api/v1/schedules
+#[utoipa::path(
+    post,
+    path = "/api/v1/schedules",
+    tag = "schedules",
+    operation_id = "schedules_create_schedule",
+    request_body = ScheduleRequest,
+    responses(
+        (status = 201, description = "OK", body = ScheduleResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn create_schedule(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -183,6 +217,18 @@ pub async fn create_schedule(
 }
 
 /// PUT /api/v1/schedules/:id — the whole schedule, replaced.
+#[utoipa::path(
+    put,
+    path = "/api/v1/schedules/{id}",
+    tag = "schedules",
+    operation_id = "schedules_update_schedule",
+    params(("id" = String, Path)),
+    request_body = ScheduleRequest,
+    responses(
+        (status = 200, description = "OK", body = ScheduleResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn update_schedule(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -214,6 +260,17 @@ pub async fn update_schedule(
 }
 
 /// DELETE /api/v1/schedules/:id — what named it stays open from then on.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/schedules/{id}",
+    tag = "schedules",
+    operation_id = "schedules_delete_schedule",
+    params(("id" = String, Path)),
+    responses(
+        (status = 204, description = "Done"),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn delete_schedule(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,

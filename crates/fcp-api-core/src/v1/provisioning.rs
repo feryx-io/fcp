@@ -120,6 +120,17 @@ fn authorize_device_provisioning_token(
 ///
 /// Unknown or unauthorized devices all return the same 404 to avoid turning
 /// this endpoint into an enumeration surface.
+#[utoipa::path(
+    get,
+    path = "/api/v1/provisioning/{mac_address}",
+    tag = "provisioning",
+    operation_id = "provisioning_auto_provision",
+    params(("mac_address" = String, Path)),
+    responses(
+        (status = 200, description = "The device's rendered configuration", content_type = "text/plain", body = String),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn auto_provision(
     State(state): State<ApiState>,
     headers: HeaderMap,

@@ -33,7 +33,7 @@ macro_rules! require_storage {
     };
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct RoutingRuleResponse {
     pub id: String,
     pub tenant_id: String,
@@ -53,8 +53,10 @@ pub struct RoutingRuleResponse {
     pub target_trunk_group: Option<String>,
     pub reason: Option<String>,
     #[serde(with = "crate::time::rfc3339")]
+    #[schema(value_type = String, format = DateTime)]
     pub created_at: SystemTime,
     #[serde(with = "crate::time::rfc3339")]
+    #[schema(value_type = String, format = DateTime)]
     pub updated_at: SystemTime,
 }
 
@@ -84,7 +86,7 @@ impl From<RoutingRule> for RoutingRuleResponse {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct CreateRoutingRuleRequest {
     pub name: String,
     pub description: Option<String>,
@@ -122,7 +124,7 @@ fn default_action() -> String {
     "allow".to_string()
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpdateRoutingRuleRequest {
     pub name: Option<String>,
     pub description: Option<String>,
@@ -141,6 +143,17 @@ pub struct UpdateRoutingRuleRequest {
     pub reason: Option<String>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/routing/rules",
+    tag = "routing",
+    operation_id = "routing_list_routing_rules",
+    params(crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<RoutingRuleResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn list_routing_rules(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -167,6 +180,17 @@ pub async fn list_routing_rules(
     )?))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/routing/rules/{id}",
+    tag = "routing",
+    operation_id = "routing_get_routing_rule",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = RoutingRuleResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn get_routing_rule(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -188,6 +212,17 @@ pub async fn get_routing_rule(
     Ok(Json(RoutingRuleResponse::from(rule)))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/routing/rules",
+    tag = "routing",
+    operation_id = "routing_create_routing_rule",
+    request_body = CreateRoutingRuleRequest,
+    responses(
+        (status = 201, description = "OK", body = RoutingRuleResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn create_routing_rule(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -250,6 +285,18 @@ pub async fn create_routing_rule(
     Ok((StatusCode::CREATED, Json(RoutingRuleResponse::from(rule))))
 }
 
+#[utoipa::path(
+    patch,
+    path = "/api/v1/routing/rules/{id}",
+    tag = "routing",
+    operation_id = "routing_update_routing_rule",
+    params(("id" = String, Path)),
+    request_body = UpdateRoutingRuleRequest,
+    responses(
+        (status = 200, description = "OK", body = RoutingRuleResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn update_routing_rule(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -344,6 +391,17 @@ pub async fn update_routing_rule(
     Ok(Json(RoutingRuleResponse::from(rule)))
 }
 
+#[utoipa::path(
+    delete,
+    path = "/api/v1/routing/rules/{id}",
+    tag = "routing",
+    operation_id = "routing_delete_routing_rule",
+    params(("id" = String, Path)),
+    responses(
+        (status = 204, description = "Done"),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn delete_routing_rule(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -446,6 +504,17 @@ fn names_a_carrier<'a>(
 /// manager would do with this tenant's call — the policy and rule that
 /// decide it and the trunks it would try, in order, each with its price
 /// (`docs/TENANT_TRUNKS.md` §12, phase 6d).
+#[utoipa::path(
+    get,
+    path = "/api/v1/routing/preview",
+    tag = "routing",
+    operation_id = "routing_preview_routing",
+    params(crate::RoutePreviewQuery),
+    responses(
+        (status = 200, description = "What a call manager would do with the number", body = serde_json::Value),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn preview_routing(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,

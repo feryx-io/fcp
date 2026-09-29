@@ -22,6 +22,7 @@ pub struct ClusterReader {
 
 /// Status of a cluster node, derived from its Redis key TTL.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum ClusterNodeStatus {
     Healthy,
@@ -37,6 +38,7 @@ fn rfc3339_secs<S: serde::Serializer>(secs: &u64, s: S) -> Result<S::Ok, S::Erro
 
 /// Information about a single cluster node, enriched with derived fields.
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ClusterNodeInfo {
     pub node_id: String,
     pub node_type: String,
@@ -47,6 +49,7 @@ pub struct ClusterNodeInfo {
     /// When the node started, as RFC 3339 in the admin API
     /// (`docs/DEVELOPER_SURFACE.md` §3, phase 2b); epoch seconds here.
     #[serde(serialize_with = "rfc3339_secs")]
+    #[cfg_attr(feature = "openapi", schema(value_type = String, format = DateTime))]
     pub started_at: u64,
     pub version: String,
     pub status: ClusterNodeStatus,
@@ -74,6 +77,7 @@ pub struct ClusterNodeInfo {
 
 /// Aggregate statistics across all cluster nodes.
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ClusterStats {
     pub total_nodes: usize,
     pub healthy_nodes: usize,

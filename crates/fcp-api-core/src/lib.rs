@@ -15,6 +15,7 @@ pub mod auth;
 pub mod e911_validator;
 pub mod error;
 pub mod managed;
+pub mod openapi;
 pub mod page;
 pub mod rate_limit;
 pub mod route_permissions;
@@ -78,12 +79,16 @@ pub trait CallSupervisor: Send + Sync {
 }
 
 /// What a route preview asks about.
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[derive(
+    Debug, Clone, serde::Deserialize, serde::Serialize, utoipa::ToSchema, utoipa::IntoParams,
+)]
 pub struct RoutePreviewQuery {
     pub to: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>)]
+    #[param(value_type = Option<String>)]
     pub source_ip: Option<std::net::IpAddr>,
 }
 pub mod v1;

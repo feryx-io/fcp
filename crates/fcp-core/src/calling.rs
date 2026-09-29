@@ -161,6 +161,33 @@ pub enum FindMeTarget {
     Target(CallTarget),
 }
 
+/// A string schema for a type serialised as its string form.
+#[cfg(feature = "openapi")]
+macro_rules! string_schema {
+    ($ty:ty, $doc:expr) => {
+        impl utoipa::PartialSchema for $ty {
+            fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+                utoipa::openapi::ObjectBuilder::new()
+                    .schema_type(utoipa::openapi::schema::Type::String)
+                    .description(Some($doc))
+                    .into()
+            }
+        }
+        impl utoipa::ToSchema for $ty {}
+    };
+}
+
+#[cfg(feature = "openapi")]
+string_schema!(
+    CallTarget,
+    "Where a call goes: `voicemail`, `number:+…`, `ext:…`, `user:…`, `flow:…`, `queue:…`, or a SIP URI"
+);
+#[cfg(feature = "openapi")]
+string_schema!(
+    FindMeTarget,
+    "Who a find-me step rings: `devices`, or a target (`number:+…`, `ext:…`, `user:…`, a SIP URI)"
+);
+
 impl FindMeTarget {
     pub fn parse(s: &str) -> Result<Self, CallTargetError> {
         if s.trim().eq_ignore_ascii_case("devices") {
@@ -200,6 +227,7 @@ impl<'de> Deserialize<'de> for FindMeTarget {
 
 /// One step of find-me: these targets rung together for `ring_secs`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct FindMeStep {
     pub targets: Vec<FindMeTarget>,
     #[serde(default = "default_step_secs")]
@@ -217,6 +245,7 @@ fn default_step_secs() -> u32 {
 /// A user's find-me: steps rung one after another once the user's own
 /// phones have rung, before the no-answer treatment.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct FindMe {
     #[serde(default)]
     pub enabled: bool,
@@ -230,6 +259,7 @@ pub const MAX_FIND_ME_STEPS: usize = 5;
 /// Which of an executive's calls their assistants take first
 /// (`docs/ENTERPRISE_CALLING.md` §3.10).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ExecutiveFilter {
     /// Every call.
@@ -243,6 +273,7 @@ pub enum ExecutiveFilter {
 
 /// Who rings for a call the filter takes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ExecutiveAlert {
     /// The assistants alone.

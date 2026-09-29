@@ -27,7 +27,7 @@ macro_rules! require_storage {
 }
 
 /// CDR response model.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct CdrResponse {
     /// The record's own identity (`docs/CDR_PIPELINE.md` §5).
     pub cdr_id: String,
@@ -41,10 +41,13 @@ pub struct CdrResponse {
     pub to_uri: String,
     pub to_display_name: Option<String>,
     #[serde(with = "crate::time::epoch_secs")]
+    #[schema(value_type = String, format = DateTime)]
     pub start_time: u64, // Unix timestamp (seconds since epoch)
     #[serde(default, with = "crate::time::epoch_secs_opt")]
+    #[schema(value_type = Option<String>, format = DateTime)]
     pub answer_time: Option<u64>,
     #[serde(default, with = "crate::time::epoch_secs_opt")]
+    #[schema(value_type = Option<String>, format = DateTime)]
     pub end_time: Option<u64>,
     pub setup_duration_ms: Option<u64>,
     pub call_duration_ms: Option<u64>,
@@ -77,14 +80,17 @@ pub struct CdrResponse {
     /// `announced`, `failed`, `not_required` or `refused` when the call was
     /// to be recorded; absent otherwise.
     pub recording_consent: Option<String>,
+    #[schema(value_type = Option<f64>)]
     pub cost: Option<fcp_core::billing::Decimal>,
     pub currency: Option<String>,
     pub rate_plan_id: Option<String>,
     pub matched_prefix: Option<String>,
     pub billable_seconds: Option<u32>,
     #[serde(default, with = "crate::time::epoch_secs_opt")]
+    #[schema(value_type = Option<String>, format = DateTime)]
     pub rated_at: Option<u64>,
     #[serde(default, with = "crate::time::epoch_secs_opt")]
+    #[schema(value_type = Option<String>, format = DateTime)]
     pub created_at: Option<u64>,
     pub custom_data: Option<serde_json::Value>,
 }
@@ -161,7 +167,7 @@ impl From<fcp_core::storage::CallDetailRecord> for CdrResponse {
 }
 
 /// Query parameters for listing CDRs.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
 pub struct ListCdrsQuery {
     /// Filter by tenant ID
     pub tenant_id: Option<String>,
@@ -210,7 +216,7 @@ fn default_limit() -> usize {
 
 /// A page of CDRs: the list envelope (`crate::page`), whose cursor is the
 /// CDR store's own keyset cursor, and whose total may be an estimate.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ListCdrsResponse {
     pub data: Vec<CdrResponse>,
     /// Pass as `cursor` for the page after this one; null on the last.
@@ -233,6 +239,17 @@ const EXPORT_PAGE: usize = 1_000;
 /// List CDRs with filters and pagination.
 ///
 /// GET /api/v1/cdrs
+#[utoipa::path(
+    get,
+    path = "/api/v1/cdrs",
+    tag = "cdrs",
+    operation_id = "cdrs_list_cdrs",
+    params(ListCdrsQuery),
+    responses(
+        (status = 200, description = "OK", body = ListCdrsResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn list_cdrs(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -311,6 +328,17 @@ pub async fn list_cdrs(
 /// Get a specific CDR by call ID.
 ///
 /// GET /api/v1/cdrs/:call_id
+#[utoipa::path(
+    get,
+    path = "/api/v1/cdrs/{call_id}",
+    tag = "cdrs",
+    operation_id = "cdrs_get_cdr",
+    params(("call_id" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = CdrResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn get_cdr(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -504,6 +532,17 @@ fn csv_row(r: &CdrResponse) -> String {
 /// CSV, or JSON Lines with `format=jsonl`.
 ///
 /// GET /api/v1/cdrs/export
+#[utoipa::path(
+    get,
+    path = "/api/v1/cdrs/export",
+    tag = "cdrs",
+    operation_id = "cdrs_export_cdrs",
+    params(ListCdrsQuery),
+    responses(
+        (status = 200, description = "The records, streamed as CSV or JSON Lines", content_type = "text/csv", body = String),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn export_cdrs(
     State(state): State<ApiState>,
     tenant: TenantContext,

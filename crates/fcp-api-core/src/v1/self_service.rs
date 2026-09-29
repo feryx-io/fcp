@@ -48,7 +48,7 @@ async fn load_claims_user(
 // ---- Profile Endpoints ----
 
 /// Profile response (limited fields for end users).
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ProfileResponse {
     pub username: String,
     pub display_name: Option<String>,
@@ -65,6 +65,16 @@ pub struct ProfileResponse {
 }
 
 /// GET /me/profile
+#[utoipa::path(
+    get,
+    path = "/api/v1/me/profile",
+    tag = "self_service",
+    operation_id = "self_service_get_profile",
+    responses(
+        (status = 200, description = "OK", body = ProfileResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn get_profile(
     State(state): State<ApiState>,
     Me(claims): Me,
@@ -90,7 +100,7 @@ pub async fn get_profile(
     }))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpdateProfileRequest {
     pub display_name: Option<String>,
     pub email: Option<String>,
@@ -100,6 +110,17 @@ pub struct UpdateProfileRequest {
 }
 
 /// PUT /me/profile
+#[utoipa::path(
+    put,
+    path = "/api/v1/me/profile",
+    tag = "self_service",
+    operation_id = "self_service_update_profile",
+    request_body = UpdateProfileRequest,
+    responses(
+        (status = 200, description = "OK", body = ProfileResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn update_profile(
     State(state): State<ApiState>,
     Me(claims): Me,
@@ -150,13 +171,24 @@ pub async fn update_profile(
     }))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ChangePasswordRequest {
     pub current_password: String,
     pub new_password: String,
 }
 
 /// PUT /me/password
+#[utoipa::path(
+    put,
+    path = "/api/v1/me/password",
+    tag = "self_service",
+    operation_id = "self_service_change_password",
+    request_body = ChangePasswordRequest,
+    responses(
+        (status = 204, description = "Done"),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn change_password(
     State(state): State<ApiState>,
     headers: HeaderMap,
@@ -205,7 +237,8 @@ pub async fn change_password(
 // ---- Voicemail Endpoints ----
 
 /// Mailbox response (reuse same shape as admin).
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[schema(as = me::MailboxResponse)]
 pub struct MailboxResponse {
     pub id: String,
     pub extension: String,
@@ -219,6 +252,16 @@ pub struct MailboxResponse {
 }
 
 /// GET /me/voicemail
+#[utoipa::path(
+    get,
+    path = "/api/v1/me/voicemail",
+    tag = "self_service",
+    operation_id = "self_service_get_voicemail",
+    responses(
+        (status = 200, description = "OK", body = MailboxResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn get_voicemail(
     State(state): State<ApiState>,
     Me(claims): Me,
@@ -244,7 +287,7 @@ pub async fn get_voicemail(
     }))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpdateVoicemailRequest {
     pub pin: Option<String>,
     pub email_notification: Option<bool>,
@@ -253,6 +296,17 @@ pub struct UpdateVoicemailRequest {
 }
 
 /// PUT /me/voicemail
+#[utoipa::path(
+    put,
+    path = "/api/v1/me/voicemail",
+    tag = "self_service",
+    operation_id = "self_service_update_voicemail",
+    request_body = UpdateVoicemailRequest,
+    responses(
+        (status = 200, description = "OK", body = MailboxResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn update_voicemail(
     State(state): State<ApiState>,
     Me(claims): Me,
@@ -301,7 +355,8 @@ pub async fn update_voicemail(
 }
 
 /// Mailbox stats response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[schema(as = me::MailboxStatsResponse)]
 pub struct MailboxStatsResponse {
     pub mailbox_id: String,
     pub total_messages: usize,
@@ -311,6 +366,16 @@ pub struct MailboxStatsResponse {
 }
 
 /// GET /me/voicemail/stats
+#[utoipa::path(
+    get,
+    path = "/api/v1/me/voicemail/stats",
+    tag = "self_service",
+    operation_id = "self_service_get_voicemail_stats",
+    responses(
+        (status = 200, description = "OK", body = MailboxStatsResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn get_voicemail_stats(
     State(state): State<ApiState>,
     Me(claims): Me,
@@ -352,7 +417,8 @@ pub async fn get_voicemail_stats(
 }
 
 /// Message response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[schema(as = me::MessageResponse)]
 pub struct MessageResponse {
     pub id: String,
     pub mailbox_id: String,
@@ -364,12 +430,25 @@ pub struct MessageResponse {
     pub recording_path: String,
     pub transcription: Option<String>,
     #[serde(with = "crate::time::epoch_secs_f64")]
+    #[schema(value_type = String, format = DateTime)]
     pub created_at: f64,
     #[serde(default, with = "crate::time::epoch_secs_f64_opt")]
+    #[schema(value_type = Option<String>, format = DateTime)]
     pub accessed_at: Option<f64>,
 }
 
 /// GET /me/voicemail/messages
+#[utoipa::path(
+    get,
+    path = "/api/v1/me/voicemail/messages",
+    tag = "self_service",
+    operation_id = "self_service_list_voicemail_messages",
+    params(crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<MessageResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn list_voicemail_messages(
     State(state): State<ApiState>,
     Me(claims): Me,
@@ -397,12 +476,25 @@ pub async fn list_voicemail_messages(
     )?))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[schema(as = me::UpdateMessageRequest)]
 pub struct UpdateMessageRequest {
     pub status: Option<String>,
 }
 
 /// PUT /me/voicemail/messages/:id
+#[utoipa::path(
+    put,
+    path = "/api/v1/me/voicemail/messages/{id}",
+    tag = "self_service",
+    operation_id = "self_service_update_voicemail_message",
+    params(("id" = String, Path)),
+    request_body = UpdateMessageRequest,
+    responses(
+        (status = 200, description = "OK", body = MessageResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn update_voicemail_message(
     State(state): State<ApiState>,
     Me(claims): Me,
@@ -454,6 +546,17 @@ pub async fn update_voicemail_message(
 }
 
 /// DELETE /me/voicemail/messages/:id
+#[utoipa::path(
+    delete,
+    path = "/api/v1/me/voicemail/messages/{id}",
+    tag = "self_service",
+    operation_id = "self_service_delete_voicemail_message",
+    params(("id" = String, Path)),
+    responses(
+        (status = 204, description = "Done"),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn delete_voicemail_message(
     State(state): State<ApiState>,
     Me(claims): Me,
@@ -491,6 +594,17 @@ pub async fn delete_voicemail_message(
 }
 
 /// GET /me/voicemail/messages/:id/audio
+#[utoipa::path(
+    get,
+    path = "/api/v1/me/voicemail/messages/{id}/audio",
+    tag = "self_service",
+    operation_id = "self_service_get_message_audio",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, description = "The audio", content_type = "audio/wav", body = Vec<u8>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn get_message_audio(
     State(state): State<ApiState>,
     Me(claims): Me,
@@ -556,17 +670,31 @@ pub async fn get_message_audio(
 // ---- Voicemail Greetings Endpoints ----
 
 /// Greeting response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[schema(as = me::GreetingResponse)]
 pub struct GreetingResponse {
     pub greeting_type: String,
     pub is_active: bool,
     #[serde(with = "crate::time::epoch_secs_f64")]
+    #[schema(value_type = String, format = DateTime)]
     pub created_at: f64,
     #[serde(default, with = "crate::time::epoch_secs_f64_opt")]
+    #[schema(value_type = Option<String>, format = DateTime)]
     pub expires_at: Option<f64>,
 }
 
 /// GET /me/voicemail/greetings
+#[utoipa::path(
+    get,
+    path = "/api/v1/me/voicemail/greetings",
+    tag = "self_service",
+    operation_id = "self_service_list_voicemail_greetings",
+    params(crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<GreetingResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn list_voicemail_greetings(
     State(state): State<ApiState>,
     Me(claims): Me,
@@ -600,6 +728,17 @@ pub async fn list_voicemail_greetings(
 }
 
 /// POST /me/voicemail/greetings
+#[utoipa::path(
+    post,
+    path = "/api/v1/me/voicemail/greetings",
+    tag = "self_service",
+    operation_id = "self_service_upload_voicemail_greeting",
+    request_body(content_type = "multipart/form-data", description = "A multipart upload"),
+    responses(
+        (status = 201, description = "OK", body = GreetingResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn upload_voicemail_greeting(
     State(state): State<ApiState>,
     Me(claims): Me,
@@ -702,6 +841,17 @@ pub async fn upload_voicemail_greeting(
 /// POST /me/voicemail/greetings/synthesize
 ///
 /// Synthesize a greeting from text using TTS.
+#[utoipa::path(
+    post,
+    path = "/api/v1/me/voicemail/greetings/synthesize",
+    tag = "self_service",
+    operation_id = "self_service_synthesize_voicemail_greeting",
+    request_body = SynthesizeGreetingRequest,
+    responses(
+        (status = 201, description = "OK", body = GreetingResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn synthesize_voicemail_greeting(
     State(state): State<ApiState>,
     Me(claims): Me,
@@ -780,7 +930,7 @@ pub async fn synthesize_voicemail_greeting(
     ))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct SynthesizeGreetingRequest {
     pub greeting_type: String,
     pub text: String,
@@ -790,6 +940,17 @@ pub struct SynthesizeGreetingRequest {
 }
 
 /// DELETE /me/voicemail/greetings/:type
+#[utoipa::path(
+    delete,
+    path = "/api/v1/me/voicemail/greetings/{greeting_type}",
+    tag = "self_service",
+    operation_id = "self_service_delete_voicemail_greeting",
+    params(("greeting_type" = String, Path)),
+    responses(
+        (status = 204, description = "Done"),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn delete_voicemail_greeting(
     State(state): State<ApiState>,
     Me(claims): Me,
@@ -840,12 +1001,25 @@ pub async fn delete_voicemail_greeting(
     Ok(StatusCode::NO_CONTENT)
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[schema(as = me::SetGreetingActiveRequest)]
 pub struct SetGreetingActiveRequest {
     pub active: bool,
 }
 
 /// PUT /me/voicemail/greetings/:type/active
+#[utoipa::path(
+    put,
+    path = "/api/v1/me/voicemail/greetings/{greeting_type}/active",
+    tag = "self_service",
+    operation_id = "self_service_set_voicemail_greeting_active",
+    params(("greeting_type" = String, Path)),
+    request_body = SetGreetingActiveRequest,
+    responses(
+        (status = 200, description = "OK", body = serde_json::Value),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn set_voicemail_greeting_active(
     State(state): State<ApiState>,
     Me(claims): Me,
@@ -887,6 +1061,17 @@ pub async fn set_voicemail_greeting_active(
 }
 
 /// GET /me/voicemail/greetings/:type/audio
+#[utoipa::path(
+    get,
+    path = "/api/v1/me/voicemail/greetings/{greeting_type}/audio",
+    tag = "self_service",
+    operation_id = "self_service_download_voicemail_greeting_audio",
+    params(("greeting_type" = String, Path)),
+    responses(
+        (status = 200, description = "The audio", content_type = "audio/wav", body = Vec<u8>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn download_voicemail_greeting_audio(
     State(state): State<ApiState>,
     Me(claims): Me,
@@ -925,18 +1110,20 @@ pub async fn download_voicemail_greeting_audio(
 // ─── Where I am (docs/E911_BLOCK_2.md §6.4) ──────────────────────────────
 
 /// A user's declared location: where they are when no network places them.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 pub struct DeclaredLocationResponse {
     pub address: crate::v1::phone_numbers::E911AddressResponse,
     #[serde(with = "crate::time::epoch_secs")]
+    #[schema(value_type = String, format = DateTime)]
     pub declared_at: u64,
     #[serde(with = "crate::time::epoch_secs")]
+    #[schema(value_type = String, format = DateTime)]
     pub expires_at: u64,
     /// False once it has expired: the platform stops using it.
     pub current: bool,
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
 pub struct DeclareLocationRequest {
     pub address1: String,
     pub address2: Option<String>,
@@ -967,6 +1154,16 @@ fn emergency_store(
 }
 
 /// `GET /v1/me/location` — where I last said I was.
+#[utoipa::path(
+    get,
+    path = "/api/v1/me/location",
+    tag = "self_service",
+    operation_id = "self_service_get_my_location",
+    responses(
+        (status = 200, description = "OK", body = DeclaredLocationResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn get_my_location(
     State(state): State<ApiState>,
     Me(claims): Me,
@@ -993,6 +1190,17 @@ pub async fn get_my_location(
 /// `PUT /v1/me/location` — say where I am, for emergency calls. The
 /// address is validated like any other; it stands for the tenant's
 /// `declared_location_ttl_secs` (a day by default).
+#[utoipa::path(
+    put,
+    path = "/api/v1/me/location",
+    tag = "self_service",
+    operation_id = "self_service_declare_my_location",
+    request_body = DeclareLocationRequest,
+    responses(
+        (status = 200, description = "OK", body = DeclaredLocationResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn declare_my_location(
     State(state): State<ApiState>,
     Me(claims): Me,
@@ -1029,6 +1237,7 @@ pub async fn declare_my_location(
             axum::http::StatusCode::UNPROCESSABLE_ENTITY,
             Json(serde_json::json!({
                 "error": "The address could not be validated",
+                "code": "unprocessable_entity",
                 "issues": validation.issues,
                 "notes": validation.notes,
                 "validator": validation.validator,
@@ -1073,6 +1282,16 @@ pub async fn declare_my_location(
 }
 
 /// `DELETE /v1/me/location` — I am no longer there.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/me/location",
+    tag = "self_service",
+    operation_id = "self_service_clear_my_location",
+    responses(
+        (status = 204, description = "Done"),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn clear_my_location(
     State(state): State<ApiState>,
     Me(claims): Me,
@@ -1088,6 +1307,16 @@ pub async fn clear_my_location(
 
 /// GET /me/calling — the user's own calling settings
 /// (`docs/ENTERPRISE_CALLING.md` §3.1).
+#[utoipa::path(
+    get,
+    path = "/api/v1/me/calling",
+    tag = "self_service",
+    operation_id = "self_service_get_my_calling",
+    responses(
+        (status = 200, description = "OK", body = crate::v1::calling::CallingResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn get_my_calling(
     State(state): State<ApiState>,
     Me(claims): Me,
@@ -1101,6 +1330,17 @@ pub async fn get_my_calling(
 }
 
 /// PUT /me/calling
+#[utoipa::path(
+    put,
+    path = "/api/v1/me/calling",
+    tag = "self_service",
+    operation_id = "self_service_update_my_calling",
+    request_body = crate::v1::calling::UpdateCallingRequest,
+    responses(
+        (status = 200, description = "OK", body = crate::v1::calling::CallingResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn update_my_calling(
     State(state): State<ApiState>,
     Me(claims): Me,
@@ -1115,7 +1355,7 @@ pub async fn update_my_calling(
 }
 
 /// An executive the user assists (`docs/ENTERPRISE_CALLING.md` §3.10).
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct MyExecutive {
     pub user_id: String,
     pub username: String,
@@ -1128,6 +1368,17 @@ pub struct MyExecutive {
 }
 
 /// GET /me/executives — the executives the user assists.
+#[utoipa::path(
+    get,
+    path = "/api/v1/me/executives",
+    tag = "self_service",
+    operation_id = "self_service_get_my_executives",
+    params(crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<MyExecutive>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn get_my_executives(
     State(state): State<ApiState>,
     Me(claims): Me,
@@ -1167,12 +1418,24 @@ pub async fn get_my_executives(
 }
 
 /// What an assistant changes of their own part in an executive's handling.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpdateMyExecutive {
     pub opted_in: bool,
 }
 
 /// PUT /me/executives/:user_id — take an executive's calls, or not.
+#[utoipa::path(
+    put,
+    path = "/api/v1/me/executives/{user_id}",
+    tag = "self_service",
+    operation_id = "self_service_update_my_executive",
+    params(("user_id" = String, Path)),
+    request_body = UpdateMyExecutive,
+    responses(
+        (status = 204, description = "Done"),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn update_my_executive(
     State(state): State<ApiState>,
     Me(claims): Me,
@@ -1219,6 +1482,16 @@ pub async fn update_my_executive(
 
 /// GET /me/hoteling — the host phone the user is logged in on, or `null`
 /// (`docs/ENTERPRISE_CALLING.md` §3.8).
+#[utoipa::path(
+    get,
+    path = "/api/v1/me/hoteling",
+    tag = "self_service",
+    operation_id = "self_service_get_my_hoteling",
+    responses(
+        (status = 200, description = "The caller's session, or null", body = Option<crate::v1::hoteling::SessionResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn get_my_hoteling(
     State(state): State<ApiState>,
     Me(claims): Me,
@@ -1238,6 +1511,16 @@ pub async fn get_my_hoteling(
 }
 
 /// DELETE /me/hoteling — log out of the host phone.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/me/hoteling",
+    tag = "self_service",
+    operation_id = "self_service_logout_my_hoteling",
+    responses(
+        (status = 204, description = "Done"),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn logout_my_hoteling(
     State(state): State<ApiState>,
     Me(claims): Me,
@@ -1311,6 +1594,17 @@ fn require_profile_pictures_dir(state: &ApiState) -> Result<&PathBuf, ApiError> 
 const MAX_AVATAR_SIZE: usize = 2 * 1024 * 1024; // 2 MB
 
 /// POST /me/profile/avatar
+#[utoipa::path(
+    post,
+    path = "/api/v1/me/profile/avatar",
+    tag = "self_service",
+    operation_id = "self_service_upload_avatar",
+    request_body(content_type = "multipart/form-data", description = "A multipart upload"),
+    responses(
+        (status = 201, description = "Stored"),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn upload_avatar(
     State(state): State<ApiState>,
     Me(claims): Me,
@@ -1398,6 +1692,16 @@ pub async fn upload_avatar(
 }
 
 /// GET /me/profile/avatar
+#[utoipa::path(
+    get,
+    path = "/api/v1/me/profile/avatar",
+    tag = "self_service",
+    operation_id = "self_service_get_avatar",
+    responses(
+        (status = 200, description = "The picture", content_type = "image/*", body = Vec<u8>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn get_avatar(
     State(state): State<ApiState>,
     Me(claims): Me,
@@ -1435,6 +1739,16 @@ pub async fn get_avatar(
 }
 
 /// DELETE /me/profile/avatar
+#[utoipa::path(
+    delete,
+    path = "/api/v1/me/profile/avatar",
+    tag = "self_service",
+    operation_id = "self_service_delete_avatar",
+    responses(
+        (status = 204, description = "Done"),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn delete_avatar(
     State(state): State<ApiState>,
     Me(claims): Me,
@@ -1465,6 +1779,17 @@ pub async fn delete_avatar(
 // ---- Conference Self-Service Endpoints ----
 
 /// GET /me/conferences -- List conferences owned by the current user
+#[utoipa::path(
+    get,
+    path = "/api/v1/me/conferences",
+    tag = "self_service",
+    operation_id = "self_service_list_my_conferences",
+    params(crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<super::conferences::MeetingResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn list_my_conferences(
     State(state): State<ApiState>,
     Me(claims): Me,
@@ -1492,6 +1817,17 @@ pub async fn list_my_conferences(
 }
 
 /// GET /me/conferences/:id -- Get a specific conference owned by the current user
+#[utoipa::path(
+    get,
+    path = "/api/v1/me/conferences/{id}",
+    tag = "self_service",
+    operation_id = "self_service_get_my_conference",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = crate::v1::conferences::MeetingResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn get_my_conference(
     State(state): State<ApiState>,
     Me(claims): Me,
@@ -1519,6 +1855,18 @@ pub async fn get_my_conference(
 
 /// POST /me/conferences/:id/dial-out -- Invite someone into a conference
 /// owned by the current user, through the conference server.
+#[utoipa::path(
+    post,
+    path = "/api/v1/me/conferences/{id}/dial-out",
+    tag = "self_service",
+    operation_id = "self_service_dial_out_my_conference",
+    params(("id" = String, Path)),
+    request_body = serde_json::Value,
+    responses(
+        (status = 200, description = "The conference server's answer, passed through", body = serde_json::Value),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn dial_out_my_conference(
     State(state): State<ApiState>,
     Me(claims): Me,
@@ -1553,6 +1901,17 @@ pub async fn dial_out_my_conference(
 
 /// POST /me/conferences/:id/join-tokens -- Mint a browser join token for a
 /// conference owned by the current user.
+#[utoipa::path(
+    post,
+    path = "/api/v1/me/conferences/{id}/join-tokens",
+    tag = "self_service",
+    operation_id = "self_service_mint_my_join_token",
+    params(("id" = String, Path)),
+    responses(
+        (status = 201, description = "Minted", body = crate::v1::join_tokens::JoinTokenResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn mint_my_join_token(
     State(state): State<ApiState>,
     Me(claims): Me,
@@ -1590,6 +1949,18 @@ pub async fn mint_my_join_token(
 }
 
 /// PATCH /me/conferences/:id -- Update a conference owned by the current user
+#[utoipa::path(
+    patch,
+    path = "/api/v1/me/conferences/{id}",
+    tag = "self_service",
+    operation_id = "self_service_update_my_conference",
+    params(("id" = String, Path)),
+    request_body = UpdateMyConferenceRequest,
+    responses(
+        (status = 200, description = "OK", body = crate::v1::conferences::MeetingResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn update_my_conference(
     State(state): State<ApiState>,
     Me(claims): Me,
@@ -1651,7 +2022,7 @@ pub async fn update_my_conference(
     Ok(Json(super::conferences::MeetingResponse::from(meeting)))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpdateMyConferenceRequest {
     pub name: Option<String>,
     pub guest_pin: Option<Option<String>>,

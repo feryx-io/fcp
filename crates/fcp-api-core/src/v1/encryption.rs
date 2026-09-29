@@ -23,6 +23,16 @@ fn require_platform(identity: Option<&AuthIdentity>) -> Result<(), ApiError> {
 }
 
 /// GET /api/v1/system/encryption — Key ring status.
+#[utoipa::path(
+    get,
+    path = "/api/v1/system/encryption",
+    tag = "encryption",
+    operation_id = "encryption_status",
+    responses(
+        (status = 200, description = "OK", body = fcp_core::EncryptionStatus),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn status(
     State(state): State<ApiState>,
     identity: Option<Extension<AuthIdentity>>,
@@ -39,6 +49,16 @@ pub async fn status(
 }
 
 /// POST /api/v1/system/encryption/rotate — Create and activate a new DEK.
+#[utoipa::path(
+    post,
+    path = "/api/v1/system/encryption/rotate",
+    tag = "encryption",
+    operation_id = "encryption_rotate",
+    responses(
+        (status = 200, description = "OK", body = fcp_core::EncryptionStatus),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn rotate(
     State(state): State<ApiState>,
     identity: Option<Extension<AuthIdentity>>,
@@ -61,6 +81,16 @@ pub async fn rotate(
 
 /// POST /api/v1/system/encryption/reencrypt — Re-seal every stored secret
 /// with the active DEK (plaintext rows and rows sealed with older keys).
+#[utoipa::path(
+    post,
+    path = "/api/v1/system/encryption/reencrypt",
+    tag = "encryption",
+    operation_id = "encryption_reencrypt",
+    responses(
+        (status = 200, description = "OK", body = fcp_core::ReencryptReport),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn reencrypt(
     State(state): State<ApiState>,
     identity: Option<Extension<AuthIdentity>>,
@@ -85,13 +115,13 @@ pub async fn reencrypt(
     Ok(Json(report))
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
 pub struct SealRequest {
     /// The credential to seal, in plaintext.
     pub value: String,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 pub struct SealResponse {
     /// The sealed form (`enc:v1:…`) to put in a configuration file.
     pub sealed: String,
@@ -101,6 +131,17 @@ pub struct SealResponse {
 /// active DEK, for secrets that live in a configuration file rather than a
 /// column: the E911 validator's bearer token (`docs/E911_BLOCK_2.md` §7).
 /// The value is never stored or logged.
+#[utoipa::path(
+    post,
+    path = "/api/v1/system/encryption/seal",
+    tag = "encryption",
+    operation_id = "encryption_seal",
+    request_body = SealRequest,
+    responses(
+        (status = 200, description = "OK", body = SealResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn seal(
     State(state): State<ApiState>,
     identity: Option<Extension<AuthIdentity>>,

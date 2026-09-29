@@ -16,7 +16,7 @@ use fcp_core::Permission;
 use serde::Deserialize;
 
 /// Who supervises, and who hears a whisper.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct SuperviseRequest {
     /// A user's extension or name, or a SIP URI.
     pub supervisor: String,
@@ -41,6 +41,11 @@ async fn forward(
         .await
         .map_err(ApiError::ServiceUnavailable)?;
     let status = StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY);
+    if !status.is_success() {
+        // The API's one error shape, whatever the node said.
+        let error = crate::error::ErrorResponse::from_upstream(status, &body);
+        return Ok((status, Json(error)).into_response());
+    }
     Ok((status, Json(body)).into_response())
 }
 
@@ -70,6 +75,18 @@ async fn join(
 }
 
 /// POST /api/v1/calls/:call_id/monitor
+#[utoipa::path(
+    post,
+    path = "/api/v1/calls/{call_id}/monitor",
+    tag = "supervision",
+    operation_id = "supervision_monitor",
+    params(("call_id" = String, Path)),
+    request_body = SuperviseRequest,
+    responses(
+        (status = 200, description = "The node's answer, passed through", body = serde_json::Value),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn monitor(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -81,6 +98,18 @@ pub async fn monitor(
 }
 
 /// POST /api/v1/calls/:call_id/whisper
+#[utoipa::path(
+    post,
+    path = "/api/v1/calls/{call_id}/whisper",
+    tag = "supervision",
+    operation_id = "supervision_whisper",
+    params(("call_id" = String, Path)),
+    request_body = SuperviseRequest,
+    responses(
+        (status = 200, description = "The node's answer, passed through", body = serde_json::Value),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn whisper(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -92,6 +121,18 @@ pub async fn whisper(
 }
 
 /// POST /api/v1/calls/:call_id/barge
+#[utoipa::path(
+    post,
+    path = "/api/v1/calls/{call_id}/barge",
+    tag = "supervision",
+    operation_id = "supervision_barge",
+    params(("call_id" = String, Path)),
+    request_body = SuperviseRequest,
+    responses(
+        (status = 200, description = "The node's answer, passed through", body = serde_json::Value),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn barge(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -103,6 +144,17 @@ pub async fn barge(
 }
 
 /// GET /api/v1/calls/:call_id/supervisor
+#[utoipa::path(
+    get,
+    path = "/api/v1/calls/{call_id}/supervisor",
+    tag = "supervision",
+    operation_id = "supervision_get",
+    params(("call_id" = String, Path)),
+    responses(
+        (status = 200, description = "The node's answer, passed through", body = serde_json::Value),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn get(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -120,6 +172,17 @@ pub async fn get(
 }
 
 /// DELETE /api/v1/calls/:call_id/supervisor
+#[utoipa::path(
+    delete,
+    path = "/api/v1/calls/{call_id}/supervisor",
+    tag = "supervision",
+    operation_id = "supervision_leave",
+    params(("call_id" = String, Path)),
+    responses(
+        (status = 204, description = "Left"),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn leave(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,

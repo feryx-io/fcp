@@ -16,14 +16,14 @@ use std::collections::HashSet;
 use std::time::SystemTime;
 
 /// Health check response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct HealthResponse {
     pub status: String,
     pub version: String,
 }
 
 /// System status response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct StatusResponse {
     pub status: String,
     pub version: String,
@@ -100,6 +100,16 @@ async fn status_with_scope(
     }))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/status",
+    tag = "system",
+    operation_id = "system_status_scoped",
+    responses(
+        (status = 200, description = "OK", body = StatusResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn status_scoped(
     State(state): State<ApiState>,
     tenant: TenantContext,

@@ -20,10 +20,11 @@ use std::time::UNIX_EPOCH;
 use tracing::{debug, warn};
 
 /// Response model for a single SIP trace message.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct SipTraceResponse {
     pub id: i64,
     #[serde(with = "crate::time::epoch_millis")]
+    #[schema(value_type = String, format = DateTime)]
     pub timestamp: u64, // Unix timestamp in milliseconds
     pub direction: String,
     pub method_or_status: String,
@@ -63,14 +64,14 @@ impl From<fcp_core::SipTraceMessage> for SipTraceResponse {
 }
 
 /// Response for SIP trace messages for a call.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct SipTraceListResponse {
     pub call_id: String,
     pub messages: Vec<SipTraceResponse>,
 }
 
 /// Query parameters for SIP trace lookup.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
 pub struct SipTraceQuery {
     /// Alternative lookup by SIP Call-ID header instead of FCP call_id
     pub sip_call_id: Option<String>,
@@ -82,6 +83,17 @@ pub struct SipTraceQuery {
 ///
 /// Query parameters:
 /// - sip_call_id: Alternative lookup by SIP Call-ID header value
+#[utoipa::path(
+    get,
+    path = "/api/v1/calls/{call_id}/sip-messages",
+    tag = "sip_trace",
+    operation_id = "sip_trace_get_sip_messages",
+    params(("call_id" = String, Path), SipTraceQuery),
+    responses(
+        (status = 200, description = "OK", body = SipTraceListResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn get_sip_messages(
     State(state): State<ApiState>,
     tenant: TenantContext,

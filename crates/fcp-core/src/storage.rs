@@ -426,6 +426,7 @@ pub struct EmergencyContact {
 /// Media preferences for a user account.
 /// These settings control default behavior for calls to/from this user.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct MediaPreferences {
     /// Force media to always flow through server (for testing/debugging)
     #[serde(default)]

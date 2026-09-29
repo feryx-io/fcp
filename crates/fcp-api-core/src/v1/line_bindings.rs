@@ -27,7 +27,7 @@ macro_rules! require_storage {
 }
 
 /// Line binding response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct LineBindingResponse {
     pub id: String,
     pub phone_number_id: String,
@@ -51,12 +51,14 @@ pub struct LineBindingResponse {
     /// (§3.11).
     pub barge_in: bool,
     #[serde(with = "crate::time::rfc3339")]
+    #[schema(value_type = String, format = DateTime)]
     pub created_at: SystemTime,
     #[serde(with = "crate::time::rfc3339")]
+    #[schema(value_type = String, format = DateTime)]
     pub updated_at: SystemTime,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct DeviceBindingResponse {
     pub device_id: String,
     pub priority: u8,
@@ -116,7 +118,7 @@ impl From<LineBinding> for LineBindingResponse {
 }
 
 /// Create line binding request.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct CreateLineBindingRequest {
     pub phone_number_id: String,
     pub owner_user_id: Option<String>,
@@ -157,7 +159,7 @@ fn ensure_line_binding_in_tenant(
 }
 
 /// Update line binding request.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpdateLineBindingRequest {
     pub devices: Option<Vec<DeviceBindingResponse>>,
     pub ring_strategy: Option<String>,
@@ -179,6 +181,17 @@ pub struct UpdateLineBindingRequest {
 }
 
 /// List line bindings.
+#[utoipa::path(
+    get,
+    path = "/api/v1/line-bindings",
+    tag = "line_bindings",
+    operation_id = "line_bindings_list_line_bindings",
+    params(crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<LineBindingResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn list_line_bindings(
     State(state): State<ApiState>,
     tenant: crate::auth::TenantContext,
@@ -205,6 +218,17 @@ pub async fn list_line_bindings(
 }
 
 /// Get line binding by ID.
+#[utoipa::path(
+    get,
+    path = "/api/v1/line-bindings/{id}",
+    tag = "line_bindings",
+    operation_id = "line_bindings_get_line_binding",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = LineBindingResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn get_line_binding(
     State(state): State<ApiState>,
     tenant: crate::auth::TenantContext,
@@ -226,6 +250,17 @@ pub async fn get_line_binding(
 }
 
 /// Create line binding.
+#[utoipa::path(
+    post,
+    path = "/api/v1/line-bindings",
+    tag = "line_bindings",
+    operation_id = "line_bindings_create_line_binding",
+    request_body = CreateLineBindingRequest,
+    responses(
+        (status = 201, description = "OK", body = LineBindingResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn create_line_binding(
     State(state): State<ApiState>,
     tenant: crate::auth::TenantContext,
@@ -331,6 +366,18 @@ pub async fn create_line_binding(
 }
 
 /// Update line binding.
+#[utoipa::path(
+    patch,
+    path = "/api/v1/line-bindings/{id}",
+    tag = "line_bindings",
+    operation_id = "line_bindings_update_line_binding",
+    params(("id" = String, Path)),
+    request_body = UpdateLineBindingRequest,
+    responses(
+        (status = 200, description = "OK", body = LineBindingResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn update_line_binding(
     State(state): State<ApiState>,
     tenant: crate::auth::TenantContext,
@@ -418,6 +465,17 @@ pub async fn update_line_binding(
 }
 
 /// Delete line binding.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/line-bindings/{id}",
+    tag = "line_bindings",
+    operation_id = "line_bindings_delete_line_binding",
+    params(("id" = String, Path)),
+    responses(
+        (status = 204, description = "Done"),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn delete_line_binding(
     State(state): State<ApiState>,
     tenant: crate::auth::TenantContext,

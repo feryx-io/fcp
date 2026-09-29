@@ -860,6 +860,7 @@ impl Default for Trunk {
 
 /// Aggregated statistics for a trunk computed from CDRs.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct TrunkStats {
     /// Total calls through this trunk (last 24h)
     pub total_calls_24h: u64,

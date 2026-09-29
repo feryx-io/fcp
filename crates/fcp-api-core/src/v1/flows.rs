@@ -34,7 +34,7 @@ fn ensure_flow_in_tenant(
 }
 
 /// Flow response model.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct FlowResponse {
     pub id: String,
     pub name: String,
@@ -79,7 +79,7 @@ impl From<FlowDefinition> for FlowResponse {
 }
 
 /// Create flow request model.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct CreateFlowRequest {
     pub id: String,
     pub name: String,
@@ -99,7 +99,7 @@ fn default_true() -> bool {
 }
 
 /// Update flow request model.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpdateFlowRequest {
     pub name: Option<String>,
     pub description: Option<String>,
@@ -111,7 +111,7 @@ pub struct UpdateFlowRequest {
 }
 
 /// Query parameters for listing flows.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
 pub struct ListFlowsQuery {
     /// Filter by tenant ID
     pub tenant_id: Option<String>,
@@ -129,6 +129,17 @@ pub struct ListFlowsQuery {
 /// List flows with filters and pagination.
 ///
 /// GET /api/v1/flows
+#[utoipa::path(
+    get,
+    path = "/api/v1/flows",
+    tag = "flows",
+    operation_id = "flows_list_flows",
+    params(ListFlowsQuery, crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<FlowResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn list_flows(
     State(state): State<ApiState>,
     tenant: crate::auth::TenantContext,
@@ -176,6 +187,17 @@ pub async fn list_flows(
 /// Get a flow by ID.
 ///
 /// GET /api/v1/flows/:id
+#[utoipa::path(
+    get,
+    path = "/api/v1/flows/{id}",
+    tag = "flows",
+    operation_id = "flows_get_flow",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = FlowResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn get_flow(
     State(state): State<ApiState>,
     tenant: crate::auth::TenantContext,
@@ -198,6 +220,17 @@ pub async fn get_flow(
 /// Create a new flow.
 ///
 /// POST /api/v1/flows
+#[utoipa::path(
+    post,
+    path = "/api/v1/flows",
+    tag = "flows",
+    operation_id = "flows_create_flow",
+    request_body = CreateFlowRequest,
+    responses(
+        (status = 201, description = "OK", body = FlowResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn create_flow(
     State(state): State<ApiState>,
     tenant: crate::auth::TenantContext,
@@ -247,6 +280,18 @@ pub async fn create_flow(
 /// Update a flow.
 ///
 /// PUT /api/v1/flows/:id
+#[utoipa::path(
+    put,
+    path = "/api/v1/flows/{id}",
+    tag = "flows",
+    operation_id = "flows_update_flow",
+    params(("id" = String, Path)),
+    request_body = UpdateFlowRequest,
+    responses(
+        (status = 200, description = "OK", body = FlowResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn update_flow(
     State(state): State<ApiState>,
     tenant: crate::auth::TenantContext,
@@ -304,6 +349,17 @@ pub async fn update_flow(
 /// Delete a flow.
 ///
 /// DELETE /api/v1/flows/:id
+#[utoipa::path(
+    delete,
+    path = "/api/v1/flows/{id}",
+    tag = "flows",
+    operation_id = "flows_delete_flow",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = serde_json::Value),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn delete_flow(
     State(state): State<ApiState>,
     tenant: crate::auth::TenantContext,
@@ -336,6 +392,17 @@ pub async fn delete_flow(
 /// Get all versions of a flow.
 ///
 /// GET /api/v1/flows/:id/versions
+#[utoipa::path(
+    get,
+    path = "/api/v1/flows/{id}/versions",
+    tag = "flows",
+    operation_id = "flows_list_flow_versions",
+    params(("id" = String, Path), crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<FlowResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn list_flow_versions(
     State(state): State<ApiState>,
     tenant: crate::auth::TenantContext,

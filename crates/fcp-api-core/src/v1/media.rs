@@ -30,7 +30,7 @@ fn scoped_call(
     }
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, utoipa::ToSchema)]
 pub struct StartRecordingRequest {
     /// Where the recording is written, under the tenant's directory; the
     /// extension picks the format (`.wav` or `.opus`). Absent: a WAV file
@@ -39,7 +39,8 @@ pub struct StartRecordingRequest {
     pub path: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[schema(as = media::RecordingResponse)]
 pub struct RecordingResponse {
     pub call_id: String,
     pub message: String,
@@ -77,6 +78,17 @@ fn recording_error(e: fcp_sip::recording::RecordingError) -> ApiError {
 /// recording is running. `409` when the call is not anchored, is already
 /// recorded, or the announcement failed under a policy that does not
 /// record without one.
+#[utoipa::path(
+    post,
+    path = "/api/v1/calls/{call_id}/recording/start",
+    tag = "media",
+    operation_id = "media_start_recording",
+    params(("call_id" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = RecordingResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn start_recording(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -129,6 +141,17 @@ pub async fn start_recording(
 
 /// POST /v1/calls/:call_id/recording/stop
 /// Stop recording a call
+#[utoipa::path(
+    post,
+    path = "/api/v1/calls/{call_id}/recording/stop",
+    tag = "media",
+    operation_id = "media_stop_recording",
+    params(("call_id" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = RecordingResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn stop_recording(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -163,7 +186,7 @@ pub async fn stop_recording(
     ))
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct CallInfo {
     pub id: String,
     pub state: String,
@@ -210,6 +233,17 @@ impl CallInfo {
 ///
 /// When an events server URL is configured, proxies to the events server
 /// for a cluster-wide view. Otherwise falls back to the local call manager.
+#[utoipa::path(
+    get,
+    path = "/api/v1/calls",
+    tag = "media",
+    operation_id = "media_list_calls",
+    params(crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<CallInfo>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn list_calls(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -323,6 +357,17 @@ pub async fn list_calls(
 
 /// GET /v1/calls/:call_id
 /// Get details of a specific call
+#[utoipa::path(
+    get,
+    path = "/api/v1/calls/{call_id}",
+    tag = "media",
+    operation_id = "media_get_call",
+    params(("call_id" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = CallInfo),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn get_call(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -342,7 +387,7 @@ pub async fn get_call(
     Ok(Json(CallInfo::from_call(&call)))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct OriginateCallRequest {
     /// Extension or SIP URI of the party to ring first (caller).
     pub from: String,
@@ -354,7 +399,7 @@ pub struct OriginateCallRequest {
     pub tenant_id: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct OriginateCallResponse {
     pub call_id: String,
     pub status: String,
@@ -365,6 +410,17 @@ pub struct OriginateCallResponse {
 ///
 /// Rings the `from` party first; when they answer, rings the `to` party.
 /// Returns immediately with a call ID — poll GET /v1/calls/:id for status.
+#[utoipa::path(
+    post,
+    path = "/api/v1/calls",
+    tag = "media",
+    operation_id = "media_originate_call",
+    request_body = OriginateCallRequest,
+    responses(
+        (status = 200, description = "OK", body = OriginateCallResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn originate_call(
     State(state): State<ApiState>,
     tenant: crate::auth::TenantContext,
@@ -393,6 +449,17 @@ pub async fn originate_call(
 
 /// DELETE /v1/calls/:call_id
 /// Hangup an active call
+#[utoipa::path(
+    delete,
+    path = "/api/v1/calls/{call_id}",
+    tag = "media",
+    operation_id = "media_hangup_call",
+    params(("call_id" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = serde_json::Value),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn hangup_call(
     State(state): State<ApiState>,
     tenant: TenantContext,

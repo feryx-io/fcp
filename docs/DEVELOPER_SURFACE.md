@@ -317,6 +317,28 @@ SDKs and the guide are checked in CI.
      `openapi-typescript`, so `npx tsc -b` catches drift.
    - The CLI's models are generated or taken from `fcp-api-core`.
    - `docs/API_CURL.md` and `API_EXAMPLES.md` are deleted.
+   - Phase 3 is split in two. **3a** covers the spec, its checks, where it
+     is served and the reference page; **3b** covers the UI's and the CLI's
+     types generated from it.
+   - **3a done (v0.25.297).**
+     - `utoipa` 6 is used (5 when this was written): a `#[utoipa::path]` on
+       all 306 routes, plus fcp-admin's three cluster routes.
+     - `ToSchema` goes on the API's types, and on the fcp-core, presence
+       and cluster types it returns, behind their `openapi` features.
+     - `fcp_api_core::openapi::ApiDoc` holds the spec. A test holds it to
+       the route table, and another refuses two schemas with one name.
+     - `docs/openapi.json` is checked by fcp-admin's
+       `docs_openapi_json_is_the_spec` (regenerate it with
+       `FCP_WRITE_OPENAPI=1`).
+     - The spec is served at `/api/v1/openapi.json`, rendered at
+       `/admin/api`.
+     - `api_postgres.rs` validates every response any test receives
+       against its operation's schema, which covers 198 of the 306
+       operations. That check found:
+       - eleven types sharing schema names;
+       - proxied conference and supervision errors outside the error
+         shape;
+       - a 422 without a code.
 4. **SDKs.**
    - TypeScript and Python clients in `sdk/`, generated from the spec,
      under a thin hand-written layer: auth, the tenant header, a pager over

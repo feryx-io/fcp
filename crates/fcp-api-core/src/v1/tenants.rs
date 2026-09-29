@@ -61,7 +61,7 @@ macro_rules! require_storage {
 }
 
 /// Response for tenant API calls
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct TenantResponse {
     pub id: String,
     pub name: String,
@@ -74,10 +74,13 @@ pub struct TenantResponse {
     pub max_concurrent_calls: Option<u32>,
     pub billing_id: Option<String>,
     #[serde(with = "crate::time::epoch_secs")]
+    #[schema(value_type = String, format = DateTime)]
     pub created_at: u64,
     #[serde(with = "crate::time::epoch_secs")]
+    #[schema(value_type = String, format = DateTime)]
     pub updated_at: u64,
     #[serde(default, with = "crate::time::epoch_secs_opt")]
+    #[schema(value_type = Option<String>, format = DateTime)]
     pub trial_expires_at: Option<u64>,
     pub metadata: Option<String>,
     /// SIP domains claimed by this tenant. See `Tenant::sip_domains`.
@@ -127,7 +130,7 @@ impl From<Tenant> for TenantResponse {
 }
 
 /// Request to create a new tenant
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct CreateTenantRequest {
     pub name: String,
     pub description: Option<String>,
@@ -139,6 +142,7 @@ pub struct CreateTenantRequest {
     pub max_concurrent_calls: Option<u32>,
     pub billing_id: Option<String>,
     #[serde(default, with = "crate::time::epoch_secs_opt")]
+    #[schema(value_type = Option<String>, format = DateTime)]
     pub trial_expires_at: Option<u64>,
     pub metadata: Option<String>,
     /// SIP domains to claim on behalf of the new tenant.
@@ -155,7 +159,7 @@ pub struct CreateTenantRequest {
 }
 
 /// Request to update a tenant
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpdateTenantRequest {
     pub name: Option<String>,
     pub description: Option<String>,
@@ -167,6 +171,7 @@ pub struct UpdateTenantRequest {
     pub max_concurrent_calls: Option<u32>,
     pub billing_id: Option<String>,
     #[serde(default, with = "crate::time::epoch_secs_opt")]
+    #[schema(value_type = Option<String>, format = DateTime)]
     pub trial_expires_at: Option<u64>,
     pub metadata: Option<String>,
     /// Full replacement for the tenant's SIP domain list. Use `None` to
@@ -264,6 +269,17 @@ async fn ensure_sip_domains_unique<S: fcp_core::TenantStore + ?Sized>(
 /// Platform admins see every tenant. Tenant-scoped identities (including
 /// the new tenant_admin role) only see their own tenant so they can render
 /// their own tenant card in the admin UI without learning about siblings.
+#[utoipa::path(
+    get,
+    path = "/api/v1/tenants",
+    tag = "tenants",
+    operation_id = "tenants_list_tenants",
+    params(crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<TenantResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn list_tenants(
     State(state): State<ApiState>,
     identity: Option<Extension<AuthIdentity>>,
@@ -297,6 +313,17 @@ pub async fn list_tenants(
 /// Get a specific tenant by ID
 ///
 /// Tenant-scoped identities may only load their own tenant.
+#[utoipa::path(
+    get,
+    path = "/api/v1/tenants/{id}",
+    tag = "tenants",
+    operation_id = "tenants_get_tenant",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = TenantResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn get_tenant(
     State(state): State<ApiState>,
     identity: Option<Extension<AuthIdentity>>,
@@ -314,6 +341,17 @@ pub async fn get_tenant(
 }
 
 /// Create a new tenant (platform admin only)
+#[utoipa::path(
+    post,
+    path = "/api/v1/tenants",
+    tag = "tenants",
+    operation_id = "tenants_create_tenant",
+    request_body = CreateTenantRequest,
+    responses(
+        (status = 201, description = "OK", body = TenantResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn create_tenant(
     State(state): State<ApiState>,
     identity: Option<Extension<AuthIdentity>>,
@@ -386,6 +424,18 @@ pub async fn create_tenant(
 ///
 /// Tenant admins may update their own tenant (name, contact info, etc.)
 /// but not cross-tenant. Platform admins may update any tenant.
+#[utoipa::path(
+    put,
+    path = "/api/v1/tenants/{id}",
+    tag = "tenants",
+    operation_id = "tenants_update_tenant",
+    params(("id" = String, Path)),
+    request_body = UpdateTenantRequest,
+    responses(
+        (status = 200, description = "OK", body = TenantResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn update_tenant(
     State(state): State<ApiState>,
     identity: Option<Extension<AuthIdentity>>,
@@ -507,6 +557,17 @@ pub async fn update_tenant(
 /// tenant deletion request, which `fcp-admin` runs — every row of the
 /// tenant removed, the tenant last. Its progress is at
 /// `/compliance/subject-requests/:id` in the tenant.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/tenants/{id}",
+    tag = "tenants",
+    operation_id = "tenants_delete_tenant",
+    params(("id" = String, Path)),
+    responses(
+        (status = 202, description = "Deletion filed as a subject request", body = crate::v1::compliance::SubjectRequestResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn delete_tenant(
     State(state): State<ApiState>,
     identity: Option<Extension<AuthIdentity>>,
@@ -587,6 +648,17 @@ pub async fn delete_tenant(
 /// the tenant is gone.
 ///
 /// GET /api/v1/tenants/:id/deletion
+#[utoipa::path(
+    get,
+    path = "/api/v1/tenants/{id}/deletion",
+    tag = "tenants",
+    operation_id = "tenants_get_tenant_deletion",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = super::compliance::SubjectRequestResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn get_tenant_deletion(
     State(state): State<ApiState>,
     identity: Option<Extension<AuthIdentity>>,

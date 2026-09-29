@@ -34,7 +34,7 @@ fn require_template_store(
 }
 
 /// Config template response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ConfigTemplateResponse {
     pub id: String,
     pub tenant_id: String,
@@ -44,8 +44,10 @@ pub struct ConfigTemplateResponse {
     pub template_body: String,
     pub description: Option<String>,
     #[serde(with = "crate::time::rfc3339")]
+    #[schema(value_type = String, format = DateTime)]
     pub created_at: SystemTime,
     #[serde(with = "crate::time::rfc3339")]
+    #[schema(value_type = String, format = DateTime)]
     pub updated_at: SystemTime,
 }
 
@@ -66,7 +68,7 @@ impl From<ConfigTemplate> for ConfigTemplateResponse {
 }
 
 /// Create config template request.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct CreateConfigTemplateRequest {
     pub name: String,
     pub vendor: String,
@@ -76,7 +78,7 @@ pub struct CreateConfigTemplateRequest {
 }
 
 /// Update config template request.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpdateConfigTemplateRequest {
     pub name: Option<String>,
     pub vendor: Option<String>,
@@ -86,6 +88,17 @@ pub struct UpdateConfigTemplateRequest {
 }
 
 /// List config templates for the authenticated tenant.
+#[utoipa::path(
+    get,
+    path = "/api/v1/config-templates",
+    tag = "config_templates",
+    operation_id = "config_templates_list_config_templates",
+    params(crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<ConfigTemplateResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn list_config_templates(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -113,6 +126,17 @@ pub async fn list_config_templates(
 }
 
 /// Get a config template by ID.
+#[utoipa::path(
+    get,
+    path = "/api/v1/config-templates/{id}",
+    tag = "config_templates",
+    operation_id = "config_templates_get_config_template",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = ConfigTemplateResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn get_config_template(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -143,6 +167,17 @@ pub async fn get_config_template(
 }
 
 /// Create a new config template.
+#[utoipa::path(
+    post,
+    path = "/api/v1/config-templates",
+    tag = "config_templates",
+    operation_id = "config_templates_create_config_template",
+    request_body = CreateConfigTemplateRequest,
+    responses(
+        (status = 201, description = "OK", body = ConfigTemplateResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn create_config_template(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -188,6 +223,18 @@ pub async fn create_config_template(
 }
 
 /// Update a config template.
+#[utoipa::path(
+    patch,
+    path = "/api/v1/config-templates/{id}",
+    tag = "config_templates",
+    operation_id = "config_templates_update_config_template",
+    params(("id" = String, Path)),
+    request_body = UpdateConfigTemplateRequest,
+    responses(
+        (status = 200, description = "OK", body = ConfigTemplateResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn update_config_template(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -248,6 +295,17 @@ pub async fn update_config_template(
 }
 
 /// Delete a config template.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/config-templates/{id}",
+    tag = "config_templates",
+    operation_id = "config_templates_delete_config_template",
+    params(("id" = String, Path)),
+    responses(
+        (status = 204, description = "Done"),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn delete_config_template(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -285,7 +343,7 @@ pub async fn delete_config_template(
 }
 
 /// Built-in template library entry response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct LibraryTemplateResponse {
     pub vendor: String,
     pub name: String,
@@ -296,6 +354,17 @@ pub struct LibraryTemplateResponse {
 
 /// GET /api/v1/config-templates/library — List the built-in vendor starter
 /// templates shipped with FCP.
+#[utoipa::path(
+    get,
+    path = "/api/v1/config-templates/library",
+    tag = "config_templates",
+    operation_id = "config_templates_list_template_library",
+    params(crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<LibraryTemplateResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn list_template_library(
     axum::extract::Query(page): axum::extract::Query<crate::page::PageQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
@@ -320,6 +389,17 @@ pub async fn list_template_library(
 /// POST /api/v1/config-templates/library/:vendor — Instantiate a built-in
 /// starter template as a tenant-owned config template the tenant can then
 /// customize and assign to devices.
+#[utoipa::path(
+    post,
+    path = "/api/v1/config-templates/library/{vendor}",
+    tag = "config_templates",
+    operation_id = "config_templates_instantiate_library_template",
+    params(("vendor" = String, Path)),
+    responses(
+        (status = 201, description = "OK", body = ConfigTemplateResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn instantiate_library_template(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,

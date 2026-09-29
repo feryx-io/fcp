@@ -51,7 +51,7 @@ fn unix_secs(t: SystemTime) -> u64 {
 
 // ─── Policy ──────────────────────────────────────────────────────────────
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct PolicyResponse {
     pub tenant_id: String,
     pub cdr_retention_days: Option<u32>,
@@ -79,6 +79,7 @@ pub struct PolicyResponse {
     /// False until the tenant has saved a policy (defaults shown).
     pub configured: bool,
     #[serde(with = "crate::time::epoch_secs")]
+    #[schema(value_type = String, format = DateTime)]
     pub updated_at: u64,
 }
 
@@ -111,7 +112,7 @@ impl PolicyResponse {
 }
 
 /// Every field optional; `null` on a retention field means "keep forever".
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpdatePolicyRequest {
     #[serde(default, deserialize_with = "deserialize_double_option")]
     pub cdr_retention_days: Option<Option<u32>>,
@@ -170,6 +171,16 @@ fn check_days(name: &str, days: Option<u32>) -> Result<(), ApiError> {
     Ok(())
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/compliance/policy",
+    tag = "compliance",
+    operation_id = "compliance_get_policy",
+    responses(
+        (status = 200, description = "OK", body = PolicyResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn get_policy(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -189,6 +200,17 @@ pub async fn get_policy(
     )))
 }
 
+#[utoipa::path(
+    put,
+    path = "/api/v1/compliance/policy",
+    tag = "compliance",
+    operation_id = "compliance_update_policy",
+    request_body = UpdatePolicyRequest,
+    responses(
+        (status = 200, description = "OK", body = PolicyResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn update_policy(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -312,10 +334,11 @@ pub async fn update_policy(
 
 // ─── Retention ───────────────────────────────────────────────────────────
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct RetentionRunResponse {
     pub tenant_id: String,
     #[serde(with = "crate::time::epoch_secs")]
+    #[schema(value_type = String, format = DateTime)]
     pub ran_at: u64,
     pub cdrs_deleted: u64,
     pub sip_traces_deleted: u64,
@@ -348,6 +371,16 @@ impl From<RetentionReport> for RetentionRunResponse {
 }
 
 /// Run the tenant's retention policy now and record the outcome.
+#[utoipa::path(
+    post,
+    path = "/api/v1/compliance/retention/run",
+    tag = "compliance",
+    operation_id = "compliance_run_retention_now",
+    responses(
+        (status = 200, description = "OK", body = RetentionRunResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn run_retention_now(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -382,6 +415,17 @@ pub async fn run_retention_now(
     Ok(Json(RetentionRunResponse::from(report)))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/compliance/retention/runs",
+    tag = "compliance",
+    operation_id = "compliance_list_retention_runs",
+    params(crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<RetentionRunResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn list_retention_runs(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -406,7 +450,7 @@ pub async fn list_retention_runs(
 
 // ─── Audit log ───────────────────────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
 pub struct AuditLogQuery {
     pub actor: Option<String>,
     /// Route-template prefix, e.g. `POST /api/v1/users`.
@@ -434,7 +478,7 @@ fn parse_log_key(key: &str) -> Result<(SystemTime, i64), ApiError> {
     Ok((at, id))
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct AuditEventResponse {
     pub id: i64,
     pub tenant_id: Option<String>,
@@ -447,6 +491,7 @@ pub struct AuditEventResponse {
     pub detail: Option<serde_json::Value>,
     pub source_ip: Option<String>,
     #[serde(with = "crate::time::epoch_secs")]
+    #[schema(value_type = String, format = DateTime)]
     pub occurred_at: u64,
 }
 
@@ -470,6 +515,17 @@ impl From<AuditEvent> for AuditEventResponse {
 
 /// Tenant admins see their tenant; the platform token sees every tenant
 /// unless it selected one with the override header.
+#[utoipa::path(
+    get,
+    path = "/api/v1/audit-log",
+    tag = "compliance",
+    operation_id = "compliance_list_audit_log",
+    params(AuditLogQuery, crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<AuditEventResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn list_audit_log(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -508,7 +564,7 @@ pub async fn list_audit_log(
 
 // ─── Deletion log ────────────────────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
 pub struct DeletionLogQuery {
     /// `cdr`, `call_recording`, `conference_recording`, `voicemail`,
     /// `sip_trace`, `flow_trace`, `audit_event`, `orphan_file`.
@@ -519,7 +575,7 @@ pub struct DeletionLogQuery {
     pub request_id: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct DeletionResponse {
     pub id: i64,
     pub tenant_id: Option<String>,
@@ -530,6 +586,7 @@ pub struct DeletionResponse {
     pub actor: String,
     pub request_id: Option<String>,
     #[serde(with = "crate::time::epoch_secs")]
+    #[schema(value_type = String, format = DateTime)]
     pub deleted_at: u64,
 }
 
@@ -537,6 +594,17 @@ pub struct DeletionResponse {
 /// (`docs/COMPLIANCE_FOLLOWUPS.md` §7). Tenant admins see their tenant; the
 /// platform token sees every tenant, platform upkeep included, unless it
 /// selected one.
+#[utoipa::path(
+    get,
+    path = "/api/v1/compliance/deletions",
+    tag = "compliance",
+    operation_id = "compliance_list_deletions",
+    params(DeletionLogQuery, crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<DeletionResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn list_deletions(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -589,7 +657,7 @@ pub async fn list_deletions(
 
 use fcp_core::legal_hold::{DataClass, HoldRelease, HoldScope, LegalHold, SubjectIdentifier};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct PlaceHoldRequest {
     pub matter: String,
     #[serde(default)]
@@ -608,19 +676,19 @@ pub struct PlaceHoldRequest {
     pub classes: Vec<DataClass>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ReleaseHoldRequest {
     pub reason: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
 pub struct ListHoldsQuery {
     /// Released holds too.
     #[serde(default)]
     pub all: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct HoldResponse {
     pub id: String,
     pub tenant_id: String,
@@ -635,10 +703,12 @@ pub struct HoldResponse {
     pub subject_keys: Vec<String>,
     pub created_by: String,
     #[serde(with = "crate::time::epoch_secs")]
+    #[schema(value_type = String, format = DateTime)]
     pub created_at: u64,
     pub active: bool,
     pub released_by: Option<String>,
     #[serde(default, with = "crate::time::epoch_secs_opt")]
+    #[schema(value_type = Option<String>, format = DateTime)]
     pub released_at: Option<u64>,
     pub release_reason: Option<String>,
     /// Items held now, by class; `null` for a class too large to count
@@ -684,6 +754,17 @@ fn parse_hold_id(id: &str) -> Result<fcp_core::LegalHoldId, ApiError> {
 }
 
 /// `POST /compliance/holds`: place a hold.
+#[utoipa::path(
+    post,
+    path = "/api/v1/compliance/holds",
+    tag = "compliance",
+    operation_id = "compliance_place_hold",
+    request_body = PlaceHoldRequest,
+    responses(
+        (status = 201, description = "OK", body = HoldResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn place_hold(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -748,6 +829,17 @@ pub async fn place_hold(
 
 /// `GET /compliance/holds?all=`: the tenant's holds, active ones unless
 /// `all`.
+#[utoipa::path(
+    get,
+    path = "/api/v1/compliance/holds",
+    tag = "compliance",
+    operation_id = "compliance_list_holds",
+    params(ListHoldsQuery, crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<HoldResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn list_holds(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -770,6 +862,17 @@ pub async fn list_holds(
 }
 
 /// `GET /compliance/holds/:id`: a hold, with what it holds now.
+#[utoipa::path(
+    get,
+    path = "/api/v1/compliance/holds/{id}",
+    tag = "compliance",
+    operation_id = "compliance_get_hold",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = HoldResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn get_hold(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -804,6 +907,18 @@ pub async fn get_hold(
 
 /// `POST /compliance/holds/:id/release`: release an active hold. The hold
 /// stays, with who released it, when and why.
+#[utoipa::path(
+    post,
+    path = "/api/v1/compliance/holds/{id}/release",
+    tag = "compliance",
+    operation_id = "compliance_release_hold",
+    params(("id" = String, Path)),
+    request_body = ReleaseHoldRequest,
+    responses(
+        (status = 200, description = "OK", body = HoldResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn release_hold(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -857,7 +972,7 @@ pub async fn release_hold(
 
 use fcp_core::subject_request::{SubjectRequest, SubjectRequestKind, SubjectRequestStatus};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct FileSubjectRequest {
     /// `export` or `erasure`.
     pub kind: String,
@@ -867,22 +982,23 @@ pub struct FileSubjectRequest {
     pub reference: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
 pub struct ListSubjectRequestsQuery {
     #[serde(default)]
     pub status: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct BundleResponse {
     pub size_bytes: u64,
     pub sha256: String,
     #[serde(with = "crate::time::epoch_secs")]
+    #[schema(value_type = String, format = DateTime)]
     pub expires_at: u64,
     pub removed: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct SubjectRequestResponse {
     pub id: String,
     pub tenant_id: String,
@@ -894,19 +1010,24 @@ pub struct SubjectRequestResponse {
     pub reference: Option<String>,
     pub requested_by: String,
     #[serde(with = "crate::time::epoch_secs")]
+    #[schema(value_type = String, format = DateTime)]
     pub received_at: u64,
     #[serde(with = "crate::time::epoch_secs")]
+    #[schema(value_type = String, format = DateTime)]
     pub due_at: u64,
     /// Open and past `due_at`.
     pub overdue: bool,
     #[serde(default, with = "crate::time::epoch_secs_opt")]
+    #[schema(value_type = Option<String>, format = DateTime)]
     pub started_at: Option<u64>,
     #[serde(default, with = "crate::time::epoch_secs_opt")]
+    #[schema(value_type = Option<String>, format = DateTime)]
     pub completed_at: Option<u64>,
     pub report: Option<fcp_core::subject_request::ExportReport>,
     pub bundle: Option<BundleResponse>,
     pub error: Option<String>,
     #[serde(default, with = "crate::time::epoch_secs_opt")]
+    #[schema(value_type = Option<String>, format = DateTime)]
     pub confirmed_at: Option<u64>,
     pub confirmed_by: Option<String>,
     /// What an erasure would do, for a person to confirm.
@@ -955,6 +1076,17 @@ fn parse_request_id(id: &str) -> Result<fcp_core::SubjectRequestId, ApiError> {
 /// `POST /compliance/subject-requests`: file a request. The subjects are
 /// checked now (a user the tenant does not have is refused) and expanded
 /// again when the request runs.
+#[utoipa::path(
+    post,
+    path = "/api/v1/compliance/subject-requests",
+    tag = "compliance",
+    operation_id = "compliance_file_subject_request",
+    request_body = FileSubjectRequest,
+    responses(
+        (status = 201, description = "OK", body = SubjectRequestResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn file_subject_request(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -1022,6 +1154,17 @@ pub async fn file_subject_request(
 }
 
 /// `GET /compliance/subject-requests`: the tenant's requests, newest first.
+#[utoipa::path(
+    get,
+    path = "/api/v1/compliance/subject-requests",
+    tag = "compliance",
+    operation_id = "compliance_list_subject_requests",
+    params(ListSubjectRequestsQuery, crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<SubjectRequestResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn list_subject_requests(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -1065,6 +1208,17 @@ async fn scoped_subject_request(
 }
 
 /// `GET /compliance/subject-requests/:id`: one request, with its report.
+#[utoipa::path(
+    get,
+    path = "/api/v1/compliance/subject-requests/{id}",
+    tag = "compliance",
+    operation_id = "compliance_get_subject_request",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = SubjectRequestResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn get_subject_request(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -1079,6 +1233,17 @@ pub async fn get_subject_request(
 /// `POST /compliance/subject-requests/:id/confirm`: confirm an erasure's
 /// preview. The erasure then runs against the data as it is, not as the
 /// preview found it, and cannot be undone. `409` unless a preview is waiting.
+#[utoipa::path(
+    post,
+    path = "/api/v1/compliance/subject-requests/{id}/confirm",
+    tag = "compliance",
+    operation_id = "compliance_confirm_subject_request",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = SubjectRequestResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn confirm_subject_request(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -1112,6 +1277,17 @@ pub async fn confirm_subject_request(
 /// `GET /compliance/subject-requests/:id/bundle`: the export's bundle, a
 /// gzipped tar. Every download is in the audit log. `409` until the export
 /// has completed, `410` once the bundle has expired.
+#[utoipa::path(
+    get,
+    path = "/api/v1/compliance/subject-requests/{id}/bundle",
+    tag = "compliance",
+    operation_id = "compliance_download_subject_bundle",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, description = "The bundle", content_type = "application/gzip", body = Vec<u8>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn download_subject_bundle(
     State(state): State<ApiState>,
     tenant: TenantContext,

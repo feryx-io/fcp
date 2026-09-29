@@ -104,6 +104,7 @@ pub struct ClusterMember {
 /// is carrying now (`docs/CAPACITY_AND_SURVIVABILITY.md` §7). Zero means
 /// no limit, as it does in the configuration.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct NodeCapacity {
     /// `[admission] max_concurrent_calls`.
     #[serde(default)]
@@ -139,6 +140,7 @@ impl NodeCapacity {
 /// millicore of one codec-pool thread). `left` is what a new room or
 /// participant may still cost here.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct VideoDeviceBudget {
     /// `host`, or a GPU as `backend:address`.
     pub device: String,
@@ -169,6 +171,7 @@ impl VideoDeviceBudget {
 
 /// The three budgets of a GPU.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct VideoEngines {
     pub encode: EngineBudget,
     pub decode: EngineBudget,
@@ -176,6 +179,7 @@ pub struct VideoEngines {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct EngineBudget {
     pub left: u32,
     pub total: u32,

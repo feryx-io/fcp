@@ -25,7 +25,7 @@ macro_rules! require_storage {
 }
 
 /// Location response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct LocationResponse {
     pub id: String,
     pub tenant_id: String,
@@ -53,12 +53,15 @@ pub struct LocationResponse {
     /// (`POST /locations/:id/e911/validate`); editing it clears this.
     pub e911_validated: bool,
     #[serde(default, with = "crate::time::rfc3339_opt")]
+    #[schema(value_type = Option<String>, format = DateTime)]
     pub e911_validated_at: Option<SystemTime>,
     pub e911_validated_by: Option<String>,
     pub e911_validation_reference: Option<String>,
     #[serde(with = "crate::time::rfc3339")]
+    #[schema(value_type = String, format = DateTime)]
     pub created_at: SystemTime,
     #[serde(with = "crate::time::rfc3339")]
+    #[schema(value_type = String, format = DateTime)]
     pub updated_at: SystemTime,
 }
 
@@ -96,7 +99,7 @@ impl From<SiteLocation> for LocationResponse {
 }
 
 /// Create location request.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct CreateLocationRequest {
     pub name: String,
     #[serde(default = "default_tenant_id")]
@@ -138,7 +141,7 @@ fn ensure_location_in_tenant(
 }
 
 /// Update location request.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpdateLocationRequest {
     pub name: Option<String>,
     pub description: Option<String>,
@@ -163,6 +166,17 @@ pub struct UpdateLocationRequest {
 }
 
 /// List locations.
+#[utoipa::path(
+    get,
+    path = "/api/v1/locations",
+    tag = "locations",
+    operation_id = "locations_list_locations",
+    params(crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<LocationResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn list_locations(
     State(state): State<ApiState>,
     tenant: crate::auth::TenantContext,
@@ -189,6 +203,17 @@ pub async fn list_locations(
 }
 
 /// Get location by ID.
+#[utoipa::path(
+    get,
+    path = "/api/v1/locations/{id}",
+    tag = "locations",
+    operation_id = "locations_get_location",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = LocationResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn get_location(
     State(state): State<ApiState>,
     tenant: crate::auth::TenantContext,
@@ -210,6 +235,17 @@ pub async fn get_location(
 }
 
 /// Create location.
+#[utoipa::path(
+    post,
+    path = "/api/v1/locations",
+    tag = "locations",
+    operation_id = "locations_create_location",
+    request_body = CreateLocationRequest,
+    responses(
+        (status = 201, description = "OK", body = LocationResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn create_location(
     State(state): State<ApiState>,
     tenant: crate::auth::TenantContext,
@@ -266,6 +302,18 @@ pub async fn create_location(
 }
 
 /// Update location.
+#[utoipa::path(
+    patch,
+    path = "/api/v1/locations/{id}",
+    tag = "locations",
+    operation_id = "locations_update_location",
+    params(("id" = String, Path)),
+    request_body = UpdateLocationRequest,
+    responses(
+        (status = 200, description = "OK", body = LocationResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn update_location(
     State(state): State<ApiState>,
     tenant: crate::auth::TenantContext,
@@ -379,6 +427,17 @@ pub async fn update_location(
 }
 
 /// Delete location.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/locations/{id}",
+    tag = "locations",
+    operation_id = "locations_delete_location",
+    params(("id" = String, Path)),
+    responses(
+        (status = 204, description = "Done"),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn delete_location(
     State(state): State<ApiState>,
     tenant: crate::auth::TenantContext,

@@ -31,6 +31,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// What this node's view of the cluster looks like.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ViewState {
     /// Nothing suggests the view is wrong.
@@ -55,6 +56,7 @@ impl ViewState {
 /// This node's view, as `/status`, the heartbeat record and the
 /// `system.cluster_view_changed` event carry it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ClusterView {
     pub state: ViewState,
     /// When the current state began (Unix seconds); absent while whole.

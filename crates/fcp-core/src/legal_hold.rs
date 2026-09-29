@@ -16,6 +16,7 @@ use std::time::SystemTime;
 
 /// The classes of data a hold can cover.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum DataClass {
     Cdr,
@@ -57,6 +58,7 @@ impl DataClass {
 
 /// Who a hold concerns.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SubjectIdentifier {
     /// A platform user of the tenant: their extension, numbers, addresses
@@ -182,6 +184,7 @@ pub struct LegalHoldViolation {
 /// §6.1). Taken once, when a hold is placed or a request starts, and kept
 /// with it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct SubjectExpansion {
     /// Usernames, extensions, their addresses on the tenant's SIP domains,
     /// numbers and email addresses.

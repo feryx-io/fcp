@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use tracing::{info, warn};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct SignupRequest {
     pub company_name: String,
     pub username: String,
@@ -25,7 +25,7 @@ pub struct SignupRequest {
     pub email: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct SignupResponse {
     pub token: String,
     pub tenant_id: String,
@@ -61,6 +61,17 @@ async fn cleanup_failed_signup(
 }
 
 /// POST /auth/signup — Create a new tenant and admin user when enabled.
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/signup",
+    tag = "signup",
+    operation_id = "signup_signup",
+    request_body = SignupRequest,
+    responses(
+        (status = 201, description = "OK", body = SignupResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn signup(
     State(state): State<ApiState>,
     Json(req): Json<SignupRequest>,

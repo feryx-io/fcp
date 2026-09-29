@@ -82,6 +82,7 @@ impl AudioCodec {
 /// fixed payload type here: the old fixed numbers put VP9 on 101, the
 /// telephone-event type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "UPPERCASE")]
 pub enum VideoCodec {
     /// H.264 / AVC (RFC 6184)

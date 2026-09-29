@@ -28,7 +28,7 @@ macro_rules! require_storage {
 }
 
 /// A session, with the names of the host and the guest.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct SessionResponse {
     pub id: String,
     pub device_id: String,
@@ -36,10 +36,13 @@ pub struct SessionResponse {
     pub user_id: String,
     pub username: Option<String>,
     #[serde(with = "crate::time::rfc3339")]
+    #[schema(value_type = String, format = DateTime)]
     pub started_at: SystemTime,
     #[serde(with = "crate::time::rfc3339")]
+    #[schema(value_type = String, format = DateTime)]
     pub expires_at: SystemTime,
     #[serde(default, with = "crate::time::rfc3339_opt")]
+    #[schema(value_type = Option<String>, format = DateTime)]
     pub ended_at: Option<SystemTime>,
     /// `logout`, `admin`, `expired` or `replaced`.
     pub ended_by: Option<String>,
@@ -104,7 +107,7 @@ pub async fn end_session(
     Ok(true)
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
 pub struct ListQuery {
     /// Ended sessions too, newest first.
     #[serde(default)]
@@ -112,6 +115,17 @@ pub struct ListQuery {
 }
 
 /// GET /v1/hoteling/sessions
+#[utoipa::path(
+    get,
+    path = "/api/v1/hoteling/sessions",
+    tag = "hoteling",
+    operation_id = "hoteling_list_sessions",
+    params(ListQuery, crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<SessionResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn list_sessions(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -138,6 +152,17 @@ pub async fn list_sessions(
 }
 
 /// DELETE /v1/hoteling/sessions/:id
+#[utoipa::path(
+    delete,
+    path = "/api/v1/hoteling/sessions/{id}",
+    tag = "hoteling",
+    operation_id = "hoteling_end_session_by_id",
+    params(("id" = String, Path)),
+    responses(
+        (status = 204, description = "Done"),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn end_session_by_id(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,

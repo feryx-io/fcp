@@ -8,7 +8,7 @@ repository.workspace = true
 
 [dependencies]
 # FCP crates
-fcp-core = { path = "../fcp-core" }
+fcp-core = { path = "../fcp-core", features = ["openapi"] }
 ipnetwork = "0.20"
 fcp-sip = { path = "../fcp-sip" }
 fcp-media = { path = "../fcp-media" }
@@ -17,10 +17,12 @@ fcp-policy = { path = "../fcp-policy" }
 fcp-billing = { path = "../fcp-billing" }
 fcp-flow = { path = "../fcp-flow" }
 fcp-queue = { path = "../fcp-queue" }
-fcp-presence = { path = "../fcp-presence" }
+fcp-presence = { path = "../fcp-presence", features = ["openapi"] }
 
 # REST API framework
 axum = { version = "0.7", features = ["ws", "multipart"] }
+# The OpenAPI contract (docs/DEVELOPER_SURFACE.md §3, phase 3)
+utoipa = { version = "6", features = ["preserve_order", "preserve_path_order"] }
 tower-http = { version = "0.5", features = ["cors", "trace", "request-id", "util"] }
 
 # Async runtime
@@ -58,6 +60,9 @@ regex = "1"
 async-trait = "0.1"
 
 [dev-dependencies]
+# Every response the Postgres suite sees is checked against the OpenAPI
+# contract (docs/DEVELOPER_SURFACE.md §3, phase 3).
+jsonschema = { version = "0.58", default-features = false }
 rust_decimal.workspace = true
 rust_decimal_macros.workspace = true
 tower = { version = "0.5", features = ["util"] }

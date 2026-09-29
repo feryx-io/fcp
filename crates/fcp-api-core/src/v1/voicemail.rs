@@ -28,7 +28,7 @@ macro_rules! require_storage {
 }
 
 /// Voicemail mailbox response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct MailboxResponse {
     pub id: String,
     pub tenant_id: String,
@@ -45,8 +45,10 @@ pub struct MailboxResponse {
     pub transcription_enabled: bool,
     pub retention_days: Option<u32>,
     #[serde(with = "crate::time::epoch_secs_f64")]
+    #[schema(value_type = String, format = DateTime)]
     pub created_at: f64,
     #[serde(with = "crate::time::epoch_secs_f64")]
+    #[schema(value_type = String, format = DateTime)]
     pub updated_at: f64,
 }
 
@@ -74,7 +76,7 @@ impl From<VoicemailMailbox> for MailboxResponse {
 }
 
 /// Voicemail message response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct MessageResponse {
     pub id: String,
     pub mailbox_id: String,
@@ -86,8 +88,10 @@ pub struct MessageResponse {
     pub recording_path: String,
     pub transcription: Option<String>,
     #[serde(with = "crate::time::epoch_secs_f64")]
+    #[schema(value_type = String, format = DateTime)]
     pub created_at: f64,
     #[serde(default, with = "crate::time::epoch_secs_f64_opt")]
+    #[schema(value_type = Option<String>, format = DateTime)]
     pub accessed_at: Option<f64>,
 }
 
@@ -113,7 +117,7 @@ impl From<VoicemailMessage> for MessageResponse {
 }
 
 /// Create mailbox request.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct CreateMailboxRequest {
     pub tenant_id: String,
     pub user_id: String,
@@ -128,7 +132,7 @@ pub struct CreateMailboxRequest {
 }
 
 /// Update mailbox request.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpdateMailboxRequest {
     pub pin: Option<String>,
     pub enabled: Option<bool>,
@@ -144,7 +148,7 @@ pub struct UpdateMailboxRequest {
 }
 
 /// Update message request.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpdateMessageRequest {
     pub status: Option<String>,
 }
@@ -203,6 +207,17 @@ async fn get_message_for_tenant(
 }
 
 /// List all mailboxes for a tenant.
+#[utoipa::path(
+    get,
+    path = "/api/v1/voicemail/mailboxes",
+    tag = "voicemail",
+    operation_id = "voicemail_list_mailboxes",
+    params(crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<MailboxResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn list_mailboxes(
     State(state): State<ApiState>,
     tenant: crate::auth::TenantContext,
@@ -229,6 +244,17 @@ pub async fn list_mailboxes(
 }
 
 /// Get a specific mailbox by ID.
+#[utoipa::path(
+    get,
+    path = "/api/v1/voicemail/mailboxes/{id}",
+    tag = "voicemail",
+    operation_id = "voicemail_get_mailbox",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = MailboxResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn get_mailbox(
     State(state): State<ApiState>,
     tenant: crate::auth::TenantContext,
@@ -255,6 +281,17 @@ fn validate_mailbox_controls(max_message_duration: u32, max_messages: u32) -> Re
 }
 
 /// Create a new voicemail mailbox.
+#[utoipa::path(
+    post,
+    path = "/api/v1/voicemail/mailboxes",
+    tag = "voicemail",
+    operation_id = "voicemail_create_mailbox",
+    request_body = CreateMailboxRequest,
+    responses(
+        (status = 201, description = "OK", body = MailboxResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn create_mailbox(
     State(state): State<ApiState>,
     tenant: crate::auth::TenantContext,
@@ -397,6 +434,18 @@ pub async fn create_mailbox(
 }
 
 /// Update an existing mailbox.
+#[utoipa::path(
+    put,
+    path = "/api/v1/voicemail/mailboxes/{id}",
+    tag = "voicemail",
+    operation_id = "voicemail_update_mailbox",
+    params(("id" = String, Path)),
+    request_body = UpdateMailboxRequest,
+    responses(
+        (status = 200, description = "OK", body = MailboxResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn update_mailbox(
     State(state): State<ApiState>,
     tenant: crate::auth::TenantContext,
@@ -485,6 +534,17 @@ pub async fn update_mailbox(
 }
 
 /// Delete a mailbox.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/voicemail/mailboxes/{id}",
+    tag = "voicemail",
+    operation_id = "voicemail_delete_mailbox",
+    params(("id" = String, Path)),
+    responses(
+        (status = 204, description = "Done"),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn delete_mailbox(
     State(state): State<ApiState>,
     tenant: crate::auth::TenantContext,
@@ -515,6 +575,17 @@ pub async fn delete_mailbox(
 }
 
 /// List messages for a mailbox.
+#[utoipa::path(
+    get,
+    path = "/api/v1/voicemail/mailboxes/{mailbox_id}/messages",
+    tag = "voicemail",
+    operation_id = "voicemail_list_messages",
+    params(("mailbox_id" = String, Path), crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<MessageResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn list_messages(
     State(state): State<ApiState>,
     tenant: crate::auth::TenantContext,
@@ -541,6 +612,17 @@ pub async fn list_messages(
 }
 
 /// Get a specific message.
+#[utoipa::path(
+    get,
+    path = "/api/v1/voicemail/messages/{id}",
+    tag = "voicemail",
+    operation_id = "voicemail_get_message",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = MessageResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn get_message(
     State(state): State<ApiState>,
     tenant: crate::auth::TenantContext,
@@ -552,6 +634,18 @@ pub async fn get_message(
 }
 
 /// Update a message (typically to mark as heard/saved).
+#[utoipa::path(
+    put,
+    path = "/api/v1/voicemail/messages/{id}",
+    tag = "voicemail",
+    operation_id = "voicemail_update_message",
+    params(("id" = String, Path)),
+    request_body = UpdateMessageRequest,
+    responses(
+        (status = 200, description = "OK", body = MessageResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn update_message(
     State(state): State<ApiState>,
     tenant: crate::auth::TenantContext,
@@ -590,6 +684,17 @@ pub async fn update_message(
 }
 
 /// Delete a message.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/voicemail/messages/{id}",
+    tag = "voicemail",
+    operation_id = "voicemail_delete_message",
+    params(("id" = String, Path)),
+    responses(
+        (status = 204, description = "Done"),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn delete_message(
     State(state): State<ApiState>,
     tenant: crate::auth::TenantContext,
@@ -610,6 +715,17 @@ pub async fn delete_message(
 }
 
 /// Enable a mailbox.
+#[utoipa::path(
+    post,
+    path = "/api/v1/voicemail/mailboxes/{id}/enable",
+    tag = "voicemail",
+    operation_id = "voicemail_enable_mailbox",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = MailboxResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn enable_mailbox(
     State(state): State<ApiState>,
     tenant: crate::auth::TenantContext,
@@ -633,6 +749,17 @@ pub async fn enable_mailbox(
 }
 
 /// Disable a mailbox.
+#[utoipa::path(
+    post,
+    path = "/api/v1/voicemail/mailboxes/{id}/disable",
+    tag = "voicemail",
+    operation_id = "voicemail_disable_mailbox",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = MailboxResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn disable_mailbox(
     State(state): State<ApiState>,
     tenant: crate::auth::TenantContext,
@@ -656,7 +783,7 @@ pub async fn disable_mailbox(
 }
 
 /// Mailbox statistics response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct MailboxStatsResponse {
     pub mailbox_id: String,
     pub total_messages: u32,
@@ -668,6 +795,17 @@ pub struct MailboxStatsResponse {
 }
 
 /// Get mailbox statistics.
+#[utoipa::path(
+    get,
+    path = "/api/v1/voicemail/mailboxes/{id}/stats",
+    tag = "voicemail",
+    operation_id = "voicemail_get_mailbox_stats",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = MailboxStatsResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn get_mailbox_stats(
     State(state): State<ApiState>,
     tenant: crate::auth::TenantContext,
@@ -696,16 +834,18 @@ pub async fn get_mailbox_stats(
 // --- Greeting Management ---
 
 /// Greeting response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct GreetingResponse {
     pub greeting_type: String,
     pub audio_path: String,
     pub is_active: bool,
     /// Unix timestamp in seconds
     #[serde(with = "crate::time::epoch_secs_f64")]
+    #[schema(value_type = String, format = DateTime)]
     pub created_at: f64,
     /// Unix timestamp in seconds, or null
     #[serde(default, with = "crate::time::epoch_secs_f64_opt")]
+    #[schema(value_type = Option<String>, format = DateTime)]
     pub expires_at: Option<f64>,
 }
 
@@ -749,6 +889,17 @@ fn require_greetings_dir(state: &ApiState) -> Result<&PathBuf, ApiError> {
 }
 
 /// List all greetings for a mailbox.
+#[utoipa::path(
+    get,
+    path = "/api/v1/voicemail/mailboxes/{id}/greetings",
+    tag = "voicemail",
+    operation_id = "voicemail_list_greetings",
+    params(("id" = String, Path), crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<GreetingResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn list_greetings(
     State(state): State<ApiState>,
     tenant: crate::auth::TenantContext,
@@ -772,6 +923,18 @@ pub async fn list_greetings(
 }
 
 /// Upload a greeting (multipart: greeting_type + audio file).
+#[utoipa::path(
+    post,
+    path = "/api/v1/voicemail/mailboxes/{id}/greetings",
+    tag = "voicemail",
+    operation_id = "voicemail_upload_greeting",
+    params(("id" = String, Path)),
+    request_body(content_type = "multipart/form-data", description = "A multipart upload"),
+    responses(
+        (status = 201, description = "OK", body = GreetingResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn upload_greeting(
     State(state): State<ApiState>,
     tenant: crate::auth::TenantContext,
@@ -852,6 +1015,17 @@ pub async fn upload_greeting(
 }
 
 /// Delete a greeting.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/voicemail/mailboxes/{id}/greetings/{greeting_type}",
+    tag = "voicemail",
+    operation_id = "voicemail_delete_greeting",
+    params(("id" = String, Path), ("greeting_type" = String, Path)),
+    responses(
+        (status = 204, description = "Done"),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn delete_greeting(
     State(state): State<ApiState>,
     tenant: crate::auth::TenantContext,
@@ -904,12 +1078,24 @@ pub async fn delete_greeting(
 }
 
 /// Request body for toggling greeting active state.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct SetGreetingActiveRequest {
     pub active: bool,
 }
 
 /// Set the active state of a greeting.
+#[utoipa::path(
+    put,
+    path = "/api/v1/voicemail/mailboxes/{id}/greetings/{greeting_type}/active",
+    tag = "voicemail",
+    operation_id = "voicemail_set_greeting_active",
+    params(("id" = String, Path), ("greeting_type" = String, Path)),
+    request_body = SetGreetingActiveRequest,
+    responses(
+        (status = 200, description = "OK", body = serde_json::Value),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn set_greeting_active(
     State(state): State<ApiState>,
     tenant: crate::auth::TenantContext,
@@ -955,6 +1141,17 @@ pub async fn set_greeting_active(
 }
 
 /// Download a greeting audio file.
+#[utoipa::path(
+    get,
+    path = "/api/v1/voicemail/mailboxes/{id}/greetings/{greeting_type}/audio",
+    tag = "voicemail",
+    operation_id = "voicemail_download_greeting_audio",
+    params(("id" = String, Path), ("greeting_type" = String, Path)),
+    responses(
+        (status = 200, description = "The audio", content_type = "audio/wav", body = Vec<u8>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn download_greeting_audio(
     State(state): State<ApiState>,
     tenant: crate::auth::TenantContext,

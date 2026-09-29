@@ -17,6 +17,7 @@ use std::time::SystemTime;
 
 /// What kind of destination a dialled number is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum DestinationClass {
     /// An extension, a user, a feature code, a number of the tenant's own.
@@ -65,6 +66,7 @@ impl std::fmt::Display for DestinationClass {
 /// starts with `+` (`+1900`), or the digits as dialled otherwise (`118`).
 /// The longest matching override wins over the built-in table.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct DestinationOverride {
     pub prefix: String,
     pub class: DestinationClass,
@@ -323,6 +325,7 @@ fn longest_override(
 
 /// How a user's caller ID leaves on a trunk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum CallerIdPolicy {
     /// The number of the user's line (its `outbound_caller_id`), as the

@@ -545,6 +545,7 @@ pub struct E911Address {
 /// The RFC 5139 civic address elements beyond city, state, postal code and
 /// country, which [`E911Address`] carries as fields of its own.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct CivicElements {
     /// `HNO`: the numeric part of the house number (`1455`).
     #[serde(default, skip_serializing_if = "Option::is_none")]

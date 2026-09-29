@@ -106,6 +106,7 @@ impl SubjectRequestStatus {
 
 /// What one class of data gave up to an export.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ClassReport {
     /// Items that are the subject's.
     pub items: u64,
@@ -122,6 +123,7 @@ pub struct ClassReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct MissingFile {
     pub item: String,
     pub path: String,
@@ -130,6 +132,7 @@ pub struct MissingFile {
 
 /// What an export found, class by class, and what it could not reach.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ExportReport {
     pub classes: BTreeMap<String, ClassReport>,
     /// Stores the export does not reach, with why (transit stores, operator

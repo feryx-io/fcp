@@ -1496,6 +1496,26 @@ string in UTC.
 
 Phase 2 is complete.
 
+Phase 3 is split into 3a (the contract) and 3b (the UI's and the CLI's
+types generated from it).
+
+3a done (v0.25.297):
+- `utoipa` annotations on all 306 routes and fcp-admin's three cluster
+  routes. `ToSchema` is on the API's types, and on the fcp-core, presence
+  and cluster types it returns, behind `openapi` features.
+- The spec is OpenAPI 3.1: 309 operations, 293 schemas.
+- `docs/openapi.json` is kept equal to the code by a test
+  (`FCP_WRITE_OPENAPI=1` rewrites it).
+- The spec is served at `/api/v1/openapi.json`, with a reference page at
+  `/admin/api` (Scalar).
+- Tests hold the spec to the route table and forbid two schemas with one
+  name.
+- `api_postgres.rs` validates every response against its operation's
+  schema, which covers 198 operations. That found eleven clashing schema
+  names, proxied errors outside the error shape and a 422 without a code;
+  all are fixed.
+- `docs/API_CURL.md` and `docs/API_EXAMPLES.md` are deleted.
+
 ## Historical documents
 
 Superseded status docs live in [`docs/archive/`](docs/archive/README.md) — they describe

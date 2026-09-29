@@ -41,6 +41,7 @@ impl TransportDispatcher for NoopDispatcher {
     }
 }
 
+mod api_docs;
 mod call_supervision;
 mod cli;
 mod cluster_api;
@@ -763,6 +764,9 @@ async fn main() -> Result<()> {
                 .layer(axum::middleware::from_fn(fcp_api_core::auth::require_admin));
         let mut app = fcp_api_core::create_router_with(api_state, &api_config, cluster_routes);
         app = app.merge(fcp_admin_ui::admin_ui_router());
+        // The contract and its reference page (docs/DEVELOPER_SURFACE.md
+        // §3, phase 3), outside the bearer layer.
+        app = app.merge(api_docs::router());
 
         let listener = tokio::net::TcpListener::bind(bind_addr).await?;
         tracing::info!("API server listening on {}", bind_addr);

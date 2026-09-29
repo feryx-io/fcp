@@ -5,6 +5,11 @@ reach, how often it may call, what an error and a time look like, and
 what changed in v0.25.293–296 (`docs/DEVELOPER_SURFACE.md` §3, phases 1
 and 2).
 
+The whole API is described by its OpenAPI contract, since v0.25.297:
+- `GET /api/v1/openapi.json` on any admin serves the spec, no token needed;
+- `/admin/api` renders it as a reference;
+- `docs/openapi.json` is the same spec, kept equal to the code by a test.
+
 ## 1. Three kinds of credential
 
 Every request carries `Authorization: Bearer <credential>`.

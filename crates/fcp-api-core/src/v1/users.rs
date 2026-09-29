@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 
 /// User response (excludes password hash).
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct UserResponse {
     pub id: String,
     pub username: String,
@@ -36,13 +36,16 @@ pub struct UserResponse {
     pub role: String, // Role name (e.g., "super_admin", "telecom_admin")
     pub department_id: Option<String>, // For department-scoped admins
     #[serde(with = "crate::time::rfc3339")]
+    #[schema(value_type = String, format = DateTime)]
     pub created_at: std::time::SystemTime,
     #[serde(with = "crate::time::rfc3339")]
+    #[schema(value_type = String, format = DateTime)]
     pub updated_at: std::time::SystemTime,
 
     // Enterprise fields
     pub email: Option<String>,
     #[serde(default, with = "crate::time::rfc3339_opt")]
+    #[schema(value_type = Option<String>, format = DateTime)]
     pub password_last_reset: Option<std::time::SystemTime>,
     pub phone_number: Option<String>,
     pub mobile_number: Option<String>,
@@ -55,9 +58,11 @@ pub struct UserResponse {
     pub timezone: String,
     pub account_status: String,
     #[serde(default, with = "crate::time::rfc3339_opt")]
+    #[schema(value_type = Option<String>, format = DateTime)]
     pub last_login: Option<std::time::SystemTime>,
     pub failed_login_attempts: i32,
     #[serde(default, with = "crate::time::rfc3339_opt")]
+    #[schema(value_type = Option<String>, format = DateTime)]
     pub account_locked_until: Option<std::time::SystemTime>,
     pub emergency_contact_name: Option<String>,
     pub emergency_contact_phone: Option<String>,
@@ -102,7 +107,7 @@ impl From<User> for UserResponse {
 }
 
 /// Create user request.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct CreateUserRequest {
     pub username: String,
     pub password: String,
@@ -185,7 +190,7 @@ fn parse_user_role(role_str: Option<&str>) -> Result<UserRole, ApiError> {
 }
 
 /// Update user request.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpdateUserRequest {
     pub display_name: Option<String>,
     pub enabled: Option<bool>,
@@ -210,13 +215,13 @@ pub struct UpdateUserRequest {
 }
 
 /// Update password request.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpdatePasswordRequest {
     pub password: String,
 }
 
 /// Update digest password request (for Cisco-style separate SIP credentials).
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpdateDigestPasswordRequest {
     pub digest_password: String,
     /// Retain the plaintext SIP password for auto-provisioning templates.
@@ -230,6 +235,17 @@ pub struct UpdateDigestPasswordRequest {
 /// List all users.
 ///
 /// GET /api/v1/users
+#[utoipa::path(
+    get,
+    path = "/api/v1/users",
+    tag = "users",
+    operation_id = "users_list_users",
+    params(crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<UserResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn list_users(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -256,6 +272,17 @@ pub async fn list_users(
 /// Get a specific user.
 ///
 /// GET /api/v1/users/:username
+#[utoipa::path(
+    get,
+    path = "/api/v1/users/{username}",
+    tag = "users",
+    operation_id = "users_get_user",
+    params(("username" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = UserResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn get_user(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -282,6 +309,17 @@ pub async fn get_user(
 /// **Security Note**: This endpoint uses constant-time operations to prevent
 /// user enumeration attacks. Even if a user exists, we perform password hashing
 /// before returning an error to match the timing of successful creation.
+#[utoipa::path(
+    post,
+    path = "/api/v1/users",
+    tag = "users",
+    operation_id = "users_create_user",
+    request_body = CreateUserRequest,
+    responses(
+        (status = 201, description = "OK", body = UserResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn create_user(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -455,6 +493,18 @@ pub async fn create_user(
 /// Update a user.
 ///
 /// PUT /api/v1/users/:username
+#[utoipa::path(
+    put,
+    path = "/api/v1/users/{username}",
+    tag = "users",
+    operation_id = "users_update_user",
+    params(("username" = String, Path)),
+    request_body = UpdateUserRequest,
+    responses(
+        (status = 200, description = "OK", body = UserResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn update_user(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -613,6 +663,18 @@ pub async fn update_user(
 /// Update a user's password.
 ///
 /// PUT /api/v1/users/:username/password
+#[utoipa::path(
+    put,
+    path = "/api/v1/users/{username}/password",
+    tag = "users",
+    operation_id = "users_update_password",
+    params(("username" = String, Path)),
+    request_body = UpdatePasswordRequest,
+    responses(
+        (status = 204, description = "Done"),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn update_password(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -693,6 +755,18 @@ pub async fn update_password(
 /// - Separate rotation schedules for SIP and API credentials
 ///
 /// **Note:** If digest_password is not set (NULL), the main password is used for SIP.
+#[utoipa::path(
+    put,
+    path = "/api/v1/users/{username}/digest-password",
+    tag = "users",
+    operation_id = "users_update_digest_password",
+    params(("username" = String, Path)),
+    request_body = UpdateDigestPasswordRequest,
+    responses(
+        (status = 204, description = "Done"),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn update_digest_password(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -767,6 +841,17 @@ pub async fn update_digest_password(
 ///
 /// Removes the separate digest password and reverts to using the main password
 /// for SIP authentication. The HA1 hash will be recomputed from the main password.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/users/{username}/digest-password",
+    tag = "users",
+    operation_id = "users_delete_digest_password",
+    params(("username" = String, Path)),
+    responses(
+        (status = 204, description = "Done"),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn delete_digest_password(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -834,6 +919,17 @@ pub async fn delete_digest_password(
 /// POST /api/v1/users/:username/unlock
 ///
 /// Resets failed login attempts, clears lockout, and sets account status to Active.
+#[utoipa::path(
+    post,
+    path = "/api/v1/users/{username}/unlock",
+    tag = "users",
+    operation_id = "users_unlock_user",
+    params(("username" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = UserResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn unlock_user(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -869,6 +965,17 @@ pub async fn unlock_user(
 /// Delete a user.
 ///
 /// DELETE /api/v1/users/:username
+#[utoipa::path(
+    delete,
+    path = "/api/v1/users/{username}",
+    tag = "users",
+    operation_id = "users_delete_user",
+    params(("username" = String, Path)),
+    responses(
+        (status = 204, description = "Done"),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn delete_user(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,

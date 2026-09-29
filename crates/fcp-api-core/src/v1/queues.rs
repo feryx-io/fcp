@@ -90,7 +90,7 @@ fn agent_response(agent: Agent) -> AgentResponse {
 // ---- Response types ----
 
 /// Queue info response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct QueueResponse {
     pub name: String,
     pub display_name: String,
@@ -104,7 +104,7 @@ pub struct QueueResponse {
 }
 
 /// Queue stats response (real-time).
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct QueueStatsResponse {
     pub queue_name: String,
     pub calls_waiting: usize,
@@ -119,7 +119,7 @@ pub struct QueueStatsResponse {
 }
 
 /// Agent info response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct AgentResponse {
     pub id: String,
     pub extension: String,
@@ -132,7 +132,7 @@ pub struct AgentResponse {
 // ---- Request types ----
 
 /// Agent login request body.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct AgentLoginRequest {
     pub agent_id: String,
     pub extension: String,
@@ -141,7 +141,7 @@ pub struct AgentLoginRequest {
 }
 
 /// Update agent state request body.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpdateAgentStateRequest {
     pub state: String,
 }
@@ -152,6 +152,17 @@ pub struct UpdateAgentStateRequest {
 ///
 /// When the queue runtime is available (call-manager), returns live state.
 /// When it's not (admin server), falls back to queue configs from storage.
+#[utoipa::path(
+    get,
+    path = "/api/v1/queues",
+    tag = "queues",
+    operation_id = "queues_list_queues",
+    params(crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<QueueResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn list_queues(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -216,6 +227,17 @@ pub async fn list_queues(
 }
 
 /// GET /queues/:name — Get a single queue's info.
+#[utoipa::path(
+    get,
+    path = "/api/v1/queues/{name}",
+    tag = "queues",
+    operation_id = "queues_get_queue",
+    params(("name" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = QueueResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn get_queue(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -235,6 +257,17 @@ pub async fn get_queue(
 }
 
 /// GET /queues/:name/stats — Real-time stats for a single queue.
+#[utoipa::path(
+    get,
+    path = "/api/v1/queues/{name}/stats",
+    tag = "queues",
+    operation_id = "queues_get_queue_stats",
+    params(("name" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = QueueStatsResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn get_queue_stats(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -261,6 +294,17 @@ pub async fn get_queue_stats(
 }
 
 /// GET /queues/stats — Real-time stats for all queues.
+#[utoipa::path(
+    get,
+    path = "/api/v1/queues/stats",
+    tag = "queues",
+    operation_id = "queues_get_all_queue_stats",
+    params(crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<QueueStatsResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn get_all_queue_stats(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -294,6 +338,17 @@ pub async fn get_all_queue_stats(
 }
 
 /// GET /queues/:name/agents — List agents in a queue.
+#[utoipa::path(
+    get,
+    path = "/api/v1/queues/{name}/agents",
+    tag = "queues",
+    operation_id = "queues_list_queue_agents",
+    params(("name" = String, Path), crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<AgentResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn list_queue_agents(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -316,6 +371,18 @@ pub async fn list_queue_agents(
 }
 
 /// POST /queues/:name/agents — Log an agent into a queue.
+#[utoipa::path(
+    post,
+    path = "/api/v1/queues/{name}/agents",
+    tag = "queues",
+    operation_id = "queues_agent_login",
+    params(("name" = String, Path)),
+    request_body = AgentLoginRequest,
+    responses(
+        (status = 201, description = "Logged in", body = AgentResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn agent_login(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -352,6 +419,17 @@ pub async fn agent_login(
 }
 
 /// DELETE /queues/:name/agents/:id — Log an agent out.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/queues/{name}/agents/{id}",
+    tag = "queues",
+    operation_id = "queues_agent_logout",
+    params(("name" = String, Path), ("id" = String, Path)),
+    responses(
+        (status = 204, description = "Done"),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn agent_logout(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -372,6 +450,17 @@ pub async fn agent_logout(
 }
 
 /// POST /queues/:name/agents/:id/pause — Pause an agent.
+#[utoipa::path(
+    post,
+    path = "/api/v1/queues/{name}/agents/{id}/pause",
+    tag = "queues",
+    operation_id = "queues_pause_agent",
+    params(("name" = String, Path), ("id" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = AgentResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn pause_agent(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -396,6 +485,17 @@ pub async fn pause_agent(
 }
 
 /// POST /queues/:name/agents/:id/resume — Resume a paused agent.
+#[utoipa::path(
+    post,
+    path = "/api/v1/queues/{name}/agents/{id}/resume",
+    tag = "queues",
+    operation_id = "queues_resume_agent",
+    params(("name" = String, Path), ("id" = String, Path)),
+    responses(
+        (status = 200, description = "OK", body = AgentResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn resume_agent(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -420,6 +520,18 @@ pub async fn resume_agent(
 }
 
 /// PATCH /queues/:name/agents/:id — Update agent state.
+#[utoipa::path(
+    patch,
+    path = "/api/v1/queues/{name}/agents/{id}",
+    tag = "queues",
+    operation_id = "queues_update_agent_state",
+    params(("name" = String, Path), ("id" = String, Path)),
+    request_body = UpdateAgentStateRequest,
+    responses(
+        (status = 200, description = "OK", body = AgentResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn update_agent_state(
     State(state): State<ApiState>,
     tenant: TenantContext,

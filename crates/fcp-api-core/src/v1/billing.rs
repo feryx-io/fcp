@@ -34,17 +34,22 @@ macro_rules! require_storage {
 }
 
 /// Balance response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct BalanceResponse {
     pub tenant_id: String,
+    #[schema(value_type = f64)]
     pub balance: Decimal,
     pub currency: String,
+    #[schema(value_type = f64)]
     pub credit_limit: Decimal,
     /// Funds that may still be spent (balance + credit limit).
+    #[schema(value_type = f64)]
     pub available: Decimal,
     pub enforce: bool,
+    #[schema(value_type = Option<f64>)]
     pub low_balance_threshold: Option<Decimal>,
     #[serde(with = "crate::time::epoch_secs")]
+    #[schema(value_type = String, format = DateTime)]
     pub updated_at: u64,
 }
 
@@ -64,18 +69,21 @@ impl From<TenantBalance> for BalanceResponse {
 }
 
 /// Ledger entry response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct BalanceTransactionResponse {
     pub id: String,
     pub tenant_id: String,
     pub kind: BalanceTransactionKind,
+    #[schema(value_type = f64)]
     pub amount: Decimal,
+    #[schema(value_type = f64)]
     pub balance_after: Decimal,
     pub currency: String,
     pub call_id: Option<String>,
     pub description: Option<String>,
     pub external_ref: Option<String>,
     #[serde(with = "crate::time::epoch_secs")]
+    #[schema(value_type = String, format = DateTime)]
     pub created_at: u64,
 }
 
@@ -98,13 +106,15 @@ impl From<BalanceTransaction> for BalanceTransactionResponse {
 
 /// Balance settings update. Every field is optional; the balance amount
 /// itself is only changed through transactions.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpdateBalanceRequest {
     pub currency: Option<String>,
+    #[schema(value_type = Option<f64>)]
     pub credit_limit: Option<Decimal>,
     pub enforce: Option<bool>,
     /// `null` clears the threshold; omit to leave it unchanged.
     #[serde(default, deserialize_with = "deserialize_double_option")]
+    #[schema(value_type = Option<f64>)]
     pub low_balance_threshold: Option<Option<Decimal>>,
 }
 
@@ -118,11 +128,12 @@ where
 }
 
 /// Credit or adjustment request.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct CreateTransactionRequest {
     /// `top_up` (positive amount) or `adjustment` (either sign).
     /// `call_charge` entries are written only by settlement.
     pub kind: BalanceTransactionKind,
+    #[schema(value_type = f64)]
     pub amount: Decimal,
     /// Currency used when this entry creates the tenant's balance row.
     /// Defaults to USD.
@@ -175,6 +186,16 @@ fn engine(state: &ApiState) -> Result<BillingEngine, ApiError> {
 }
 
 /// GET /api/v1/billing/balance — The tenant's balance and settings.
+#[utoipa::path(
+    get,
+    path = "/api/v1/billing/balance",
+    tag = "billing",
+    operation_id = "billing_get_balance",
+    responses(
+        (status = 200, description = "OK", body = BalanceResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn get_balance(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -192,6 +213,19 @@ pub async fn get_balance(
 ///
 /// Creates the balance row (at zero) when the tenant has none. The amount
 /// is never changed here; use transactions.
+#[utoipa::path(
+    put,
+    path = "/api/v1/billing/balance",
+    tag = "billing",
+    operation_id = "billing_update_balance",
+    request_body = UpdateBalanceRequest,
+    responses(
+        (status = 200, description = "Updated", body = BalanceResponse),
+        (status = 201, description = "Made", body = BalanceResponse),
+        (status = 201, description = "Made", body = BalanceResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn update_balance(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -262,6 +296,17 @@ pub async fn update_balance(
 }
 
 /// POST /api/v1/billing/balance/transactions — Credit or adjust the balance.
+#[utoipa::path(
+    post,
+    path = "/api/v1/billing/balance/transactions",
+    tag = "billing",
+    operation_id = "billing_create_transaction",
+    request_body = CreateTransactionRequest,
+    responses(
+        (status = 201, description = "OK", body = BalanceTransactionResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn create_transaction(
     State(state): State<ApiState>,
     tenant: TenantContext,
@@ -313,6 +358,17 @@ pub async fn create_transaction(
 }
 
 /// GET /api/v1/billing/balance/transactions — The ledger, newest first.
+#[utoipa::path(
+    get,
+    path = "/api/v1/billing/balance/transactions",
+    tag = "billing",
+    operation_id = "billing_list_transactions",
+    params(crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<BalanceTransactionResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
 pub async fn list_transactions(
     State(state): State<ApiState>,
     tenant: TenantContext,
