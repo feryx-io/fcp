@@ -451,6 +451,7 @@ pub async fn list_retention_runs(
 // ─── Audit log ───────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct AuditLogQuery {
     pub actor: Option<String>,
     /// Route-template prefix, e.g. `POST /api/v1/users`.
@@ -565,6 +566,7 @@ pub async fn list_audit_log(
 // ─── Deletion log ────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct DeletionLogQuery {
     /// `cdr`, `call_recording`, `conference_recording`, `voicemail`,
     /// `sip_trace`, `flow_trace`, `audit_event`, `orphan_file`.
@@ -682,6 +684,7 @@ pub struct ReleaseHoldRequest {
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ListHoldsQuery {
     /// Released holds too.
     #[serde(default)]
@@ -983,6 +986,7 @@ pub struct FileSubjectRequest {
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ListSubjectRequestsQuery {
     #[serde(default)]
     pub status: Option<String>,

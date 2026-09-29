@@ -90,6 +90,7 @@ impl From<fcp_core::flow_trace::FlowTraceEntry> for FlowTraceResponse {
 
 /// Query parameters for listing flow traces.
 #[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ListFlowTracesQuery {
     /// Filter by call ID
     pub call_id: Option<String>,

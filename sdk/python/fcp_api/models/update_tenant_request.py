@@ -1,0 +1,407 @@
+from __future__ import annotations
+
+from collections.abc import Mapping
+from typing import Any, TypeVar, BinaryIO, TextIO, TYPE_CHECKING, Generator
+
+from attrs import define as _attrs_define
+from attrs import field as _attrs_field
+
+from ..types import UNSET, Unset
+
+from ..types import UNSET, Unset
+from typing import cast
+import datetime
+
+if TYPE_CHECKING:
+  from ..models.tenant_calling import TenantCalling
+
+
+
+
+
+T = TypeVar("T", bound="UpdateTenantRequest")
+
+
+
+@_attrs_define
+class UpdateTenantRequest:
+    """ Request to update a tenant
+
+        Attributes:
+            name (None | str | Unset):
+            description (None | str | Unset):
+            status (None | str | Unset):
+            contact_email (None | str | Unset):
+            contact_phone (None | str | Unset):
+            max_users (int | None | Unset):
+            max_phone_numbers (int | None | Unset):
+            max_concurrent_calls (int | None | Unset):
+            billing_id (None | str | Unset):
+            trial_expires_at (datetime.datetime | None | Unset):
+            metadata (None | str | Unset):
+            sip_domains (list[str] | None | Unset): Full replacement for the tenant's SIP domain list. Use `None` to
+                leave the list alone; use `Some(vec![])` to clear it.
+            platform_trunk_fallback (bool | None | Unset): Whether the platform's trunks may carry this tenant's calls.
+            calling (None | TenantCalling | Unset):
+     """
+
+    name: None | str | Unset = UNSET
+    description: None | str | Unset = UNSET
+    status: None | str | Unset = UNSET
+    contact_email: None | str | Unset = UNSET
+    contact_phone: None | str | Unset = UNSET
+    max_users: int | None | Unset = UNSET
+    max_phone_numbers: int | None | Unset = UNSET
+    max_concurrent_calls: int | None | Unset = UNSET
+    billing_id: None | str | Unset = UNSET
+    trial_expires_at: datetime.datetime | None | Unset = UNSET
+    metadata: None | str | Unset = UNSET
+    sip_domains: list[str] | None | Unset = UNSET
+    platform_trunk_fallback: bool | None | Unset = UNSET
+    calling: None | TenantCalling | Unset = UNSET
+    additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
+
+
+
+
+
+    def to_dict(self) -> dict[str, Any]:
+        from ..models.tenant_calling import TenantCalling # noqa: PLC0415
+        name: None | str | Unset
+        if isinstance(self.name, Unset):
+            name = UNSET
+        else:
+            name = self.name
+
+        description: None | str | Unset
+        if isinstance(self.description, Unset):
+            description = UNSET
+        else:
+            description = self.description
+
+        status: None | str | Unset
+        if isinstance(self.status, Unset):
+            status = UNSET
+        else:
+            status = self.status
+
+        contact_email: None | str | Unset
+        if isinstance(self.contact_email, Unset):
+            contact_email = UNSET
+        else:
+            contact_email = self.contact_email
+
+        contact_phone: None | str | Unset
+        if isinstance(self.contact_phone, Unset):
+            contact_phone = UNSET
+        else:
+            contact_phone = self.contact_phone
+
+        max_users: int | None | Unset
+        if isinstance(self.max_users, Unset):
+            max_users = UNSET
+        else:
+            max_users = self.max_users
+
+        max_phone_numbers: int | None | Unset
+        if isinstance(self.max_phone_numbers, Unset):
+            max_phone_numbers = UNSET
+        else:
+            max_phone_numbers = self.max_phone_numbers
+
+        max_concurrent_calls: int | None | Unset
+        if isinstance(self.max_concurrent_calls, Unset):
+            max_concurrent_calls = UNSET
+        else:
+            max_concurrent_calls = self.max_concurrent_calls
+
+        billing_id: None | str | Unset
+        if isinstance(self.billing_id, Unset):
+            billing_id = UNSET
+        else:
+            billing_id = self.billing_id
+
+        trial_expires_at: None | str | Unset
+        if isinstance(self.trial_expires_at, Unset):
+            trial_expires_at = UNSET
+        elif isinstance(self.trial_expires_at, datetime.datetime):
+            trial_expires_at = self.trial_expires_at.isoformat()
+        else:
+            trial_expires_at = self.trial_expires_at
+
+        metadata: None | str | Unset
+        if isinstance(self.metadata, Unset):
+            metadata = UNSET
+        else:
+            metadata = self.metadata
+
+        sip_domains: list[str] | None | Unset
+        if isinstance(self.sip_domains, Unset):
+            sip_domains = UNSET
+        elif isinstance(self.sip_domains, list):
+            sip_domains = self.sip_domains
+
+
+        else:
+            sip_domains = self.sip_domains
+
+        platform_trunk_fallback: bool | None | Unset
+        if isinstance(self.platform_trunk_fallback, Unset):
+            platform_trunk_fallback = UNSET
+        else:
+            platform_trunk_fallback = self.platform_trunk_fallback
+
+        calling: dict[str, Any] | None | Unset
+        if isinstance(self.calling, Unset):
+            calling = UNSET
+        elif isinstance(self.calling, TenantCalling):
+            calling = self.calling.to_dict()
+        else:
+            calling = self.calling
+
+
+        field_dict: dict[str, Any] = {}
+        field_dict.update(self.additional_properties)
+        field_dict.update({
+        })
+        if name is not UNSET:
+            field_dict["name"] = name
+        if description is not UNSET:
+            field_dict["description"] = description
+        if status is not UNSET:
+            field_dict["status"] = status
+        if contact_email is not UNSET:
+            field_dict["contact_email"] = contact_email
+        if contact_phone is not UNSET:
+            field_dict["contact_phone"] = contact_phone
+        if max_users is not UNSET:
+            field_dict["max_users"] = max_users
+        if max_phone_numbers is not UNSET:
+            field_dict["max_phone_numbers"] = max_phone_numbers
+        if max_concurrent_calls is not UNSET:
+            field_dict["max_concurrent_calls"] = max_concurrent_calls
+        if billing_id is not UNSET:
+            field_dict["billing_id"] = billing_id
+        if trial_expires_at is not UNSET:
+            field_dict["trial_expires_at"] = trial_expires_at
+        if metadata is not UNSET:
+            field_dict["metadata"] = metadata
+        if sip_domains is not UNSET:
+            field_dict["sip_domains"] = sip_domains
+        if platform_trunk_fallback is not UNSET:
+            field_dict["platform_trunk_fallback"] = platform_trunk_fallback
+        if calling is not UNSET:
+            field_dict["calling"] = calling
+
+        return field_dict
+
+
+
+    @classmethod
+    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.tenant_calling import TenantCalling # noqa: PLC0415
+        d = dict(src_dict)
+        def _parse_name(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        name = _parse_name(d.pop("name", UNSET))
+
+
+        def _parse_description(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        description = _parse_description(d.pop("description", UNSET))
+
+
+        def _parse_status(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        status = _parse_status(d.pop("status", UNSET))
+
+
+        def _parse_contact_email(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        contact_email = _parse_contact_email(d.pop("contact_email", UNSET))
+
+
+        def _parse_contact_phone(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        contact_phone = _parse_contact_phone(d.pop("contact_phone", UNSET))
+
+
+        def _parse_max_users(data: object) -> int | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(int | None | Unset, data)
+
+        max_users = _parse_max_users(d.pop("max_users", UNSET))
+
+
+        def _parse_max_phone_numbers(data: object) -> int | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(int | None | Unset, data)
+
+        max_phone_numbers = _parse_max_phone_numbers(d.pop("max_phone_numbers", UNSET))
+
+
+        def _parse_max_concurrent_calls(data: object) -> int | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(int | None | Unset, data)
+
+        max_concurrent_calls = _parse_max_concurrent_calls(d.pop("max_concurrent_calls", UNSET))
+
+
+        def _parse_billing_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        billing_id = _parse_billing_id(d.pop("billing_id", UNSET))
+
+
+        def _parse_trial_expires_at(data: object) -> datetime.datetime | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, str):
+                    raise TypeError()
+                trial_expires_at_type_0 = datetime.datetime.fromisoformat(data)
+
+
+
+                return trial_expires_at_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(datetime.datetime | None | Unset, data)
+
+        trial_expires_at = _parse_trial_expires_at(d.pop("trial_expires_at", UNSET))
+
+
+        def _parse_metadata(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        metadata = _parse_metadata(d.pop("metadata", UNSET))
+
+
+        def _parse_sip_domains(data: object) -> list[str] | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, list):
+                    raise TypeError()
+                sip_domains_type_0 = cast(list[str], data)
+
+                return sip_domains_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(list[str] | None | Unset, data)
+
+        sip_domains = _parse_sip_domains(d.pop("sip_domains", UNSET))
+
+
+        def _parse_platform_trunk_fallback(data: object) -> bool | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(bool | None | Unset, data)
+
+        platform_trunk_fallback = _parse_platform_trunk_fallback(d.pop("platform_trunk_fallback", UNSET))
+
+
+        def _parse_calling(data: object) -> None | TenantCalling | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                calling_type_0 = TenantCalling.from_dict(data)
+
+
+
+                return calling_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(None | TenantCalling | Unset, data)
+
+        calling = _parse_calling(d.pop("calling", UNSET))
+
+
+        update_tenant_request = cls(
+            name=name,
+            description=description,
+            status=status,
+            contact_email=contact_email,
+            contact_phone=contact_phone,
+            max_users=max_users,
+            max_phone_numbers=max_phone_numbers,
+            max_concurrent_calls=max_concurrent_calls,
+            billing_id=billing_id,
+            trial_expires_at=trial_expires_at,
+            metadata=metadata,
+            sip_domains=sip_domains,
+            platform_trunk_fallback=platform_trunk_fallback,
+            calling=calling,
+        )
+
+
+        update_tenant_request.additional_properties = d
+        return update_tenant_request
+
+    @property
+    def additional_keys(self) -> list[str]:
+        return list(self.additional_properties.keys())
+
+    def __getitem__(self, key: str) -> Any:
+        return self.additional_properties[key]
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        self.additional_properties[key] = value
+
+    def __delitem__(self, key: str) -> None:
+        del self.additional_properties[key]
+
+    def __contains__(self, key: str) -> bool:
+        return key in self.additional_properties

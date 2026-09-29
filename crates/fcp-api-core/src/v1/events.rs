@@ -38,6 +38,7 @@ use tracing::{debug, error, info, warn};
 
 /// Query parameters for event stream filtering.
 #[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct EventStreamQuery {
     /// Filter by tenant ID (optional)
     pub tenant_id: Option<String>,

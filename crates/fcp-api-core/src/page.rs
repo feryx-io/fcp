@@ -22,6 +22,7 @@ pub const MAX_LIMIT: usize = 1000;
 
 /// `?limit=&cursor=`.
 #[derive(Debug, Default, Clone, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct PageQuery {
     pub limit: Option<usize>,
     pub cursor: Option<String>,

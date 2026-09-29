@@ -47,6 +47,7 @@ pub mod supervision;
 pub mod system;
 pub mod tenants;
 pub mod trunks;
+pub mod uploads;
 pub mod usage;
 pub mod users;
 pub mod voicemail;

@@ -361,6 +361,25 @@ SDKs and the guide are checked in CI.
    - CI builds both and runs each SDK's own tests against a live
      `fcp-admin` from the testkit.
    - Publishing to npm and PyPI is the owner's step (Q6).
+   - **Done (v0.25.299).**
+     - `sdk/typescript` (`@fcp/sdk`): `openapi-typescript` +
+       `openapi-fetch`, with a retrying fetch, `ok`/`FcpError`,
+       `paginate`/`all`, and `verifyWebhook`.
+     - `sdk/python` (`fcp-sdk`): `openapi-python-client` 0.29.1 generates
+       `fcp_api`, with no post-hooks so the output is byte-reproducible;
+       `fcp_sdk` is the layer (retrying transports, sync and async, `ok`,
+       `paginate`, `verify_webhook`).
+     - One webhook test vector is shared by both SDKs, for phase 5's
+       dispatcher.
+     - `fcp-admin/tests/sdks.rs` runs both suites against a live admin
+       (`FCP_SDK_TESTS=required` in CI). The **SDKs** job checks the
+       generated code and the versions' major and minor.
+     - Getting the Python client to generate found two contract bugs,
+       both fixed with a test that guards against them:
+       - 200 query parameters declared "in path" (`IntoParams` without
+         `parameter_in = Query`);
+       - a tuple schema no generator reads.
+     - The four upload forms are now described in the contract.
 5. **Webhooks.**
    - `/api/v1/webhooks`: CRUD, `test`, deliveries, replay,
      `rotate-secret` and `event-types`, tenant-scoped, under

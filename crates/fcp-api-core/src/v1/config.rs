@@ -48,12 +48,14 @@ fn scoped_config_tenant_id(
 // ── Request/Response Types ───────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ListConfigsQuery {
     pub service: Option<String>,
     pub tenant_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 #[schema(as = config::AuditLogQuery)]
 pub struct AuditLogQuery {
     pub service: Option<String>,
@@ -154,6 +156,7 @@ pub struct ValidateConfigResponse {
 // ── Query params for section-level endpoints ─────────────────────────────────
 
 #[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct SectionQuery {
     #[serde(default = "default_tenant_id")]
     pub tenant_id: String,

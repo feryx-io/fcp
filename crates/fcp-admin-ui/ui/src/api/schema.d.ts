@@ -4043,6 +4043,15 @@ export interface components {
             tenant_id: string;
             display_name?: string | null;
         };
+        /** @description `POST /me/profile/avatar`. */
+        AvatarUpload: {
+            /**
+             * Format: binary
+             * @description The picture: PNG, JPEG, GIF or WebP. The field may also be named
+             *     `avatar`.
+             */
+            file: string;
+        };
         BTreeMap: {
             [key: string]: string[];
         };
@@ -5414,6 +5423,16 @@ export interface components {
              */
             expires_at?: string | null;
         };
+        /** @description `POST /voicemail/mailboxes/:id/greetings`. */
+        GreetingUpload: {
+            /** @description `unavailable`, `busy`, `name` or `temporary`. */
+            greeting_type: string;
+            /**
+             * Format: binary
+             * @description The recording: a WAV file.
+             */
+            audio: string;
+        };
         HoldResponse: {
             id: string;
             tenant_id: string;
@@ -5762,6 +5781,21 @@ export interface components {
             /** @description Whether the executive has their assistants' handling on. */
             enabled: boolean;
             filter: components["schemas"]["ExecutiveFilter"];
+        };
+        /** @description `POST /me/voicemail/greetings`. */
+        MyGreetingUpload: {
+            /** @description `unavailable`, `busy`, `name` or `temporary`. */
+            greeting_type: string;
+            /**
+             * Format: binary
+             * @description The recording: a WAV file.
+             */
+            audio: string;
+            /**
+             * Format: int64
+             * @description A temporary greeting's lifetime, in hours.
+             */
+            expires_in?: number | null;
         };
         NetworkResponse: {
             id: string;
@@ -7797,6 +7831,14 @@ export interface components {
             role: string;
             has_profile_picture: boolean;
         };
+        /** @description `POST /prompts/:id/audio`. */
+        PromptAudioUpload: {
+            /**
+             * Format: binary
+             * @description The prompt's audio: a WAV file.
+             */
+            audio: string;
+        };
         PromptResponse: {
             id: string;
             tenant_id: string;
@@ -7974,11 +8016,11 @@ export interface components {
              * @description Rows already sealed with the active DEK.
              */
             already_current: number;
-            /** @description Per-column breakdown of rewritten rows (`table.column` → count). */
-            by_column: [
-                string,
-                number
-            ][];
+            /**
+             * @description Per-column breakdown of rewritten rows (`table.column` → count).
+             *     `[column, rows]` pairs.
+             */
+            by_column: unknown[][];
         };
         /** @description Registration response. */
         RegistrationResponse: {
@@ -9528,16 +9570,16 @@ export interface operations {
     };
     events_event_stream_websocket: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
+            query?: {
                 /** @description Filter by tenant ID (optional) */
-                tenant_id: string | null;
+                tenant_id?: string;
                 /** @description Filter by call ID (optional) */
-                call_id: string | null;
+                call_id?: string;
                 /** @description Filter by event types (comma-separated: call,media,ivr,recording,system) */
-                event_types: string | null;
+                event_types?: string;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -9716,10 +9758,9 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        /** @description A multipart upload */
-        requestBody?: {
+        requestBody: {
             content: {
-                "multipart/form-data": unknown;
+                "multipart/form-data": components["schemas"]["AvatarUpload"];
             };
         };
         responses: {
@@ -9892,12 +9933,12 @@ export interface operations {
     };
     self_service_list_voicemail_messages: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                limit: number | null;
-                cursor: string | null;
+            query?: {
+                limit?: number;
+                cursor?: string;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -10019,12 +10060,12 @@ export interface operations {
     };
     self_service_list_voicemail_greetings: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                limit: number | null;
-                cursor: string | null;
+            query?: {
+                limit?: number;
+                cursor?: string;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -10056,10 +10097,9 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        /** @description A multipart upload */
-        requestBody?: {
+        requestBody: {
             content: {
-                "multipart/form-data": unknown;
+                "multipart/form-data": components["schemas"]["MyGreetingUpload"];
             };
         };
         responses: {
@@ -10364,12 +10404,12 @@ export interface operations {
     };
     self_service_get_my_executives: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                limit: number | null;
-                cursor: string | null;
+            query?: {
+                limit?: number;
+                cursor?: string;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -10485,12 +10525,12 @@ export interface operations {
     };
     self_service_list_my_conferences: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                limit: number | null;
-                cursor: string | null;
+            query?: {
+                limit?: number;
+                cursor?: string;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -10649,12 +10689,12 @@ export interface operations {
     };
     api_tokens_list_my_api_tokens: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                limit: number | null;
-                cursor: string | null;
+            query?: {
+                limit?: number;
+                cursor?: string;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -11047,12 +11087,12 @@ export interface operations {
     };
     emergency_networks_list_networks: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                limit: number | null;
-                cursor: string | null;
+            query?: {
+                limit?: number;
+                cursor?: string;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -11207,12 +11247,12 @@ export interface operations {
     };
     emergency_list_calls: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                limit: number | null;
-                cursor: string | null;
+            query?: {
+                limit?: number;
+                cursor?: string;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -11272,12 +11312,13 @@ export interface operations {
     };
     emergency_list_call_notifications: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: number;
+                cursor?: string;
+            };
             header?: never;
             path: {
                 call_id: string;
-                limit: number | null;
-                cursor: string | null;
             };
             cookie?: never;
         };
@@ -11458,16 +11499,16 @@ export interface operations {
     };
     usage_get_usage: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
+            query?: {
                 /** @description Predefined period: "current_month" or "last_month". */
-                period: string | null;
+                period?: string;
                 /** @description Custom start date (ISO 8601 date, e.g. "2026-01-01"). */
-                from: string | null;
+                from?: string;
                 /** @description Custom end date (ISO 8601 date, e.g. "2026-02-01"). */
-                to: string | null;
+                to?: string;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -11494,18 +11535,18 @@ export interface operations {
     };
     usage_get_usage_by_number: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
+            query?: {
                 /** @description Predefined period: "current_month" or "last_month". */
-                period: string | null;
+                period?: string;
                 /** @description Custom start date (ISO 8601 date, e.g. "2026-01-01"). */
-                from: string | null;
+                from?: string;
                 /** @description Custom end date (ISO 8601 date, e.g. "2026-02-01"). */
-                to: string | null;
-                limit: number | null;
-                cursor: string | null;
+                to?: string;
+                limit?: number;
+                cursor?: string;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -11532,16 +11573,16 @@ export interface operations {
     };
     usage_billing_summary: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
+            query?: {
                 /** @description Predefined period: "current_month" or "last_month". */
-                period: string | null;
+                period?: string;
                 /** @description Custom start date (ISO 8601 date, e.g. "2026-01-01"). */
-                from: string | null;
+                from?: string;
                 /** @description Custom end date (ISO 8601 date, e.g. "2026-02-01"). */
-                to: string | null;
+                to?: string;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -11639,12 +11680,12 @@ export interface operations {
     };
     billing_list_transactions: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                limit: number | null;
-                cursor: string | null;
+            query?: {
+                limit?: number;
+                cursor?: string;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -11704,12 +11745,12 @@ export interface operations {
     };
     rate_plans_list_rate_plans: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                limit: number | null;
-                cursor: string | null;
+            query?: {
+                limit?: number;
+                cursor?: string;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -11864,12 +11905,13 @@ export interface operations {
     };
     rate_plans_list_rates: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: number;
+                cursor?: string;
+            };
             header?: never;
             path: {
                 id: string;
-                limit: number | null;
-                cursor: string | null;
             };
             cookie?: never;
         };
@@ -11991,12 +12033,12 @@ export interface operations {
     };
     debug_list_dialogs: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                limit: number | null;
-                cursor: string | null;
+            query?: {
+                limit?: number;
+                cursor?: string;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -12023,12 +12065,12 @@ export interface operations {
     };
     debug_list_subscriptions: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                limit: number | null;
-                cursor: string | null;
+            query?: {
+                limit?: number;
+                cursor?: string;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -12055,12 +12097,12 @@ export interface operations {
     };
     debug_list_calls: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                limit: number | null;
-                cursor: string | null;
+            query?: {
+                limit?: number;
+                cursor?: string;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -12087,12 +12129,12 @@ export interface operations {
     };
     debug_list_rate_limits: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                limit: number | null;
-                cursor: string | null;
+            query?: {
+                limit?: number;
+                cursor?: string;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -12119,12 +12161,12 @@ export interface operations {
     };
     tenants_list_tenants: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                limit: number | null;
-                cursor: string | null;
+            query?: {
+                limit?: number;
+                cursor?: string;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -12312,12 +12354,12 @@ export interface operations {
     };
     sites_list_sites: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                limit: number | null;
-                cursor: string | null;
+            query?: {
+                limit?: number;
+                cursor?: string;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -12530,12 +12572,12 @@ export interface operations {
     };
     users_list_users: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                limit: number | null;
-                cursor: string | null;
+            query?: {
+                limit?: number;
+                cursor?: string;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -12882,12 +12924,12 @@ export interface operations {
     };
     registrations_list_registrations: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                limit: number | null;
-                cursor: string | null;
+            query?: {
+                limit?: number;
+                cursor?: string;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -12914,12 +12956,13 @@ export interface operations {
     };
     registrations_get_registrations: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: number;
+                cursor?: string;
+            };
             header?: never;
             path: {
                 aor: string;
-                limit: number | null;
-                cursor: string | null;
             };
             cookie?: never;
         };
@@ -13006,12 +13049,12 @@ export interface operations {
     };
     media_list_calls: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                limit: number | null;
-                cursor: string | null;
+            query?: {
+                limit?: number;
+                cursor?: string;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -13360,12 +13403,13 @@ export interface operations {
     };
     sip_trace_get_sip_messages: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Alternative lookup by SIP Call-ID header instead of FCP call_id */
+                sip_call_id?: string;
+            };
             header?: never;
             path: {
                 call_id: string;
-                /** @description Alternative lookup by SIP Call-ID header instead of FCP call_id */
-                sip_call_id: string | null;
             };
             cookie?: never;
         };
@@ -13484,12 +13528,12 @@ export interface operations {
     };
     compliance_list_retention_runs: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                limit: number | null;
-                cursor: string | null;
+            query?: {
+                limit?: number;
+                cursor?: string;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -13516,17 +13560,17 @@ export interface operations {
     };
     compliance_list_audit_log: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                actor: string | null;
+            query?: {
+                actor?: string;
                 /** @description Route-template prefix, e.g. `POST /api/v1/users`. */
-                action: string | null;
+                action?: string;
                 /** @description Unix seconds. */
-                since: number | null;
-                limit: number | null;
-                cursor: string | null;
+                since?: number;
+                limit?: number;
+                cursor?: string;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -13553,21 +13597,21 @@ export interface operations {
     };
     compliance_list_deletions: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
+            query?: {
                 /**
                  * @description `cdr`, `call_recording`, `conference_recording`, `voicemail`,
                  *     `sip_trace`, `flow_trace`, `audit_event`, `orphan_file`.
                  */
-                class: string | null;
+                class?: string;
                 /** @description Unix seconds. */
-                since: number | null;
+                since?: number;
                 /** @description What one subject request deleted. */
-                request_id: string | null;
-                limit: number | null;
-                cursor: string | null;
+                request_id?: string;
+                limit?: number;
+                cursor?: string;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -13594,14 +13638,14 @@ export interface operations {
     };
     compliance_list_holds: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
+            query?: {
                 /** @description Released holds too. */
-                all: boolean;
-                limit: number | null;
-                cursor: string | null;
+                all?: boolean;
+                limit?: number;
+                cursor?: string;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -13727,13 +13771,13 @@ export interface operations {
     };
     compliance_list_subject_requests: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                status: string | null;
-                limit: number | null;
-                cursor: string | null;
+            query?: {
+                status?: string;
+                limit?: number;
+                cursor?: string;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -13886,20 +13930,20 @@ export interface operations {
     };
     recordings_list_recordings: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                room_number: string | null;
-                meeting_id: string | null;
+            query?: {
+                room_number?: string;
+                meeting_id?: string;
                 /** @description Unix seconds: recordings that started at or after this. */
-                since: number | null;
+                since?: number;
                 /** @description Unix seconds: recordings that started before this. */
-                until: number | null;
+                until?: number;
                 /** @description Only those still being written, or only those finished. */
-                running: boolean | null;
-                limit: number | null;
-                cursor: string | null;
+                running?: boolean;
+                limit?: number;
+                cursor?: string;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -14019,40 +14063,40 @@ export interface operations {
     };
     cdrs_list_cdrs: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
+            query?: {
                 /** @description Filter by tenant ID */
-                tenant_id: string | null;
+                tenant_id?: string;
                 /** @description Filter by call ID */
-                call_id: string | null;
+                call_id?: string;
                 /** @description Filter by from URI (caller) */
-                from_uri: string | null;
+                from_uri?: string;
                 /** @description Filter by to URI (callee) */
-                to_uri: string | null;
+                to_uri?: string;
                 /** @description Filter by disposition (answered, busy, no_answer, failed, cancelled) */
-                disposition: string | null;
+                disposition?: string;
                 /**
                  * @description What the records are records of: `call` (the default), `queue`,
                  *     `conference`, `gateway`, or `all`. With `call_id`, every kind.
                  */
-                kind: string | null;
+                kind?: string;
                 /** @description Filter by start time (Unix timestamp in seconds) */
-                start_time_from: string | null;
+                start_time_from?: string;
                 /** @description Filter by start time (Unix timestamp in seconds) */
-                start_time_to: string | null;
+                start_time_to?: string;
                 /**
                  * @description Keyset pagination: the `next_cursor` of the previous page. Takes the
                  *     place of `offset`, and goes as deep as the records do.
                  */
-                cursor: string | null;
+                cursor?: string;
                 /** @description Export format: `csv` (default) or `jsonl`. */
-                format: string | null;
+                format?: string;
                 /** @description Maximum number of results (default: 100, max: 1000) */
-                limit: number;
+                limit?: number;
                 /** @description Offset for pagination (default: 0) */
-                offset: number;
+                offset?: number;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -14079,40 +14123,40 @@ export interface operations {
     };
     cdrs_export_cdrs: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
+            query?: {
                 /** @description Filter by tenant ID */
-                tenant_id: string | null;
+                tenant_id?: string;
                 /** @description Filter by call ID */
-                call_id: string | null;
+                call_id?: string;
                 /** @description Filter by from URI (caller) */
-                from_uri: string | null;
+                from_uri?: string;
                 /** @description Filter by to URI (callee) */
-                to_uri: string | null;
+                to_uri?: string;
                 /** @description Filter by disposition (answered, busy, no_answer, failed, cancelled) */
-                disposition: string | null;
+                disposition?: string;
                 /**
                  * @description What the records are records of: `call` (the default), `queue`,
                  *     `conference`, `gateway`, or `all`. With `call_id`, every kind.
                  */
-                kind: string | null;
+                kind?: string;
                 /** @description Filter by start time (Unix timestamp in seconds) */
-                start_time_from: string | null;
+                start_time_from?: string;
                 /** @description Filter by start time (Unix timestamp in seconds) */
-                start_time_to: string | null;
+                start_time_to?: string;
                 /**
                  * @description Keyset pagination: the `next_cursor` of the previous page. Takes the
                  *     place of `offset`, and goes as deep as the records do.
                  */
-                cursor: string | null;
+                cursor?: string;
                 /** @description Export format: `csv` (default) or `jsonl`. */
-                format: string | null;
+                format?: string;
                 /** @description Maximum number of results (default: 100, max: 1000) */
-                limit: number;
+                limit?: number;
                 /** @description Offset for pagination (default: 0) */
-                offset: number;
+                offset?: number;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -14170,22 +14214,22 @@ export interface operations {
     };
     flow_traces_list_flow_traces: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
+            query?: {
                 /** @description Filter by call ID */
-                call_id: string | null;
+                call_id?: string;
                 /** @description Filter by flow ID */
-                flow_id: string | null;
+                flow_id?: string;
                 /** @description Filter by event type (started, node_executed, waiting_for_input, completed, failed) */
-                event_type: string | null;
+                event_type?: string;
                 /** @description Filter by timestamp start (Unix timestamp in seconds) */
-                time_from: string | null;
+                time_from?: string;
                 /** @description Filter by timestamp end (Unix timestamp in seconds) */
-                time_to: string | null;
-                limit: number | null;
-                cursor: string | null;
+                time_to?: string;
+                limit?: number;
+                cursor?: string;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -14212,12 +14256,13 @@ export interface operations {
     };
     flow_traces_get_call_flow_traces: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: number;
+                cursor?: string;
+            };
             header?: never;
             path: {
                 call_id: string;
-                limit: number | null;
-                cursor: string | null;
             };
             cookie?: never;
         };
@@ -14245,20 +14290,20 @@ export interface operations {
     };
     flows_list_flows: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
+            query?: {
                 /** @description Filter by tenant ID */
-                tenant_id: string | null;
+                tenant_id?: string;
                 /** @description Filter by enabled status */
-                enabled: boolean | null;
+                enabled?: boolean;
                 /** @description Search by name (partial match) */
-                name: string | null;
+                name?: string;
                 /** @description Search by description (partial match) */
-                description: string | null;
-                limit: number | null;
-                cursor: string | null;
+                description?: string;
+                limit?: number;
+                cursor?: string;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -14415,12 +14460,13 @@ export interface operations {
     };
     flows_list_flow_versions: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: number;
+                cursor?: string;
+            };
             header?: never;
             path: {
                 id: string;
-                limit: number | null;
-                cursor: string | null;
             };
             cookie?: never;
         };
@@ -14448,12 +14494,12 @@ export interface operations {
     };
     phone_numbers_list_phone_numbers: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                limit: number | null;
-                cursor: string | null;
+            query?: {
+                limit?: number;
+                cursor?: string;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -14513,14 +14559,14 @@ export interface operations {
     };
     phone_numbers_search_available_numbers: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                area_code: string | null;
-                pattern: string | null;
-                rate_center: string | null;
-                limit: number | null;
+            query?: {
+                area_code?: string;
+                pattern?: string;
+                rate_center?: string;
+                limit?: number;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -14733,12 +14779,12 @@ export interface operations {
     };
     line_bindings_list_line_bindings: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                limit: number | null;
-                cursor: string | null;
+            query?: {
+                limit?: number;
+                cursor?: string;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -14893,12 +14939,12 @@ export interface operations {
     };
     extensions_list_extensions: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                limit: number | null;
-                cursor: string | null;
+            query?: {
+                limit?: number;
+                cursor?: string;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -15053,12 +15099,12 @@ export interface operations {
     };
     devices_list_devices: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                limit: number | null;
-                cursor: string | null;
+            query?: {
+                limit?: number;
+                cursor?: string;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -15213,14 +15259,14 @@ export interface operations {
     };
     hoteling_list_sessions: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
+            query?: {
                 /** @description Ended sessions too, newest first. */
-                all: boolean;
-                limit: number | null;
-                cursor: string | null;
+                all?: boolean;
+                limit?: number;
+                cursor?: string;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -15276,12 +15322,12 @@ export interface operations {
     };
     config_templates_list_config_templates: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                limit: number | null;
-                cursor: string | null;
+            query?: {
+                limit?: number;
+                cursor?: string;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -15341,12 +15387,12 @@ export interface operations {
     };
     config_templates_list_template_library: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                limit: number | null;
-                cursor: string | null;
+            query?: {
+                limit?: number;
+                cursor?: string;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -15499,12 +15545,12 @@ export interface operations {
     };
     locations_list_locations: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                limit: number | null;
-                cursor: string | null;
+            query?: {
+                limit?: number;
+                cursor?: string;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -15659,12 +15705,12 @@ export interface operations {
     };
     queues_list_queues: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                limit: number | null;
-                cursor: string | null;
+            query?: {
+                limit?: number;
+                cursor?: string;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -15691,12 +15737,12 @@ export interface operations {
     };
     queues_get_all_queue_stats: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                limit: number | null;
-                cursor: string | null;
+            query?: {
+                limit?: number;
+                cursor?: string;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -15785,12 +15831,13 @@ export interface operations {
     };
     queues_list_queue_agents: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: number;
+                cursor?: string;
+            };
             header?: never;
             path: {
                 name: string;
-                limit: number | null;
-                cursor: string | null;
             };
             cookie?: never;
         };
@@ -15983,12 +16030,12 @@ export interface operations {
     };
     presence_list_presences: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                limit: number | null;
-                cursor: string | null;
+            query?: {
+                limit?: number;
+                cursor?: string;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -16139,12 +16186,13 @@ export interface operations {
     };
     presence_list_watchers: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: number;
+                cursor?: string;
+            };
             header?: never;
             path: {
                 aor: string;
-                limit: number | null;
-                cursor: string | null;
             };
             cookie?: never;
         };
@@ -16363,14 +16411,14 @@ export interface operations {
     };
     config_list_configs: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                service: string | null;
-                tenant_id: string | null;
-                limit: number | null;
-                cursor: string | null;
+            query?: {
+                service?: string;
+                tenant_id?: string;
+                limit?: number;
+                cursor?: string;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -16397,14 +16445,14 @@ export interface operations {
     };
     config_get_audit_log: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                service: string | null;
-                section: string | null;
-                limit: number | null;
-                cursor: string | null;
+            query?: {
+                service?: string;
+                section?: string;
+                limit?: number;
+                cursor?: string;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -16431,13 +16479,14 @@ export interface operations {
     };
     config_list_service_config: {
         parameters: {
-            query?: never;
+            query?: {
+                tenant_id?: string;
+                limit?: number;
+                cursor?: string;
+            };
             header?: never;
             path: {
                 service: string;
-                tenant_id: string;
-                limit: number | null;
-                cursor: string | null;
             };
             cookie?: never;
         };
@@ -16465,12 +16514,13 @@ export interface operations {
     };
     config_get_config: {
         parameters: {
-            query?: never;
+            query?: {
+                tenant_id?: string;
+            };
             header?: never;
             path: {
                 service: string;
                 section: string;
-                tenant_id: string;
             };
             cookie?: never;
         };
@@ -16534,12 +16584,13 @@ export interface operations {
     };
     config_delete_config: {
         parameters: {
-            query?: never;
+            query?: {
+                tenant_id?: string;
+            };
             header?: never;
             path: {
                 service: string;
                 section: string;
-                tenant_id: string;
             };
             cookie?: never;
         };
@@ -16603,14 +16654,14 @@ export interface operations {
     };
     prompts_list_prompts: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                category: string | null;
-                language: string | null;
-                limit: number | null;
-                cursor: string | null;
+            query?: {
+                category?: string;
+                language?: string;
+                limit?: number;
+                cursor?: string;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -16803,10 +16854,9 @@ export interface operations {
             };
             cookie?: never;
         };
-        /** @description A multipart upload */
-        requestBody?: {
+        requestBody: {
             content: {
-                "multipart/form-data": unknown;
+                "multipart/form-data": components["schemas"]["PromptAudioUpload"];
             };
         };
         responses: {
@@ -16863,12 +16913,12 @@ export interface operations {
     };
     voicemail_list_mailboxes: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                limit: number | null;
-                cursor: string | null;
+            query?: {
+                limit?: number;
+                cursor?: string;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -17116,12 +17166,13 @@ export interface operations {
     };
     voicemail_list_messages: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: number;
+                cursor?: string;
+            };
             header?: never;
             path: {
                 mailbox_id: string;
-                limit: number | null;
-                cursor: string | null;
             };
             cookie?: never;
         };
@@ -17244,12 +17295,13 @@ export interface operations {
     };
     voicemail_list_greetings: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: number;
+                cursor?: string;
+            };
             header?: never;
             path: {
                 id: string;
-                limit: number | null;
-                cursor: string | null;
             };
             cookie?: never;
         };
@@ -17284,10 +17336,9 @@ export interface operations {
             };
             cookie?: never;
         };
-        /** @description A multipart upload */
-        requestBody?: {
+        requestBody: {
             content: {
-                "multipart/form-data": unknown;
+                "multipart/form-data": components["schemas"]["GreetingUpload"];
             };
         };
         responses: {
@@ -17411,12 +17462,12 @@ export interface operations {
     };
     api_tokens_list_api_tokens: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                limit: number | null;
-                cursor: string | null;
+            query?: {
+                limit?: number;
+                cursor?: string;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -17476,12 +17527,12 @@ export interface operations {
     };
     api_tokens_grantable_permissions: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                limit: number | null;
-                cursor: string | null;
+            query?: {
+                limit?: number;
+                cursor?: string;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -17572,14 +17623,14 @@ export interface operations {
     };
     lcr_routes_list_lcr_routes: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
+            query?: {
                 /** @description Only the routes on this trunk. */
-                trunk_id: string | null;
-                limit: number | null;
-                cursor: string | null;
+                trunk_id?: string;
+                limit?: number;
+                cursor?: string;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -17734,13 +17785,13 @@ export interface operations {
     };
     routing_preview_routing: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
+            query: {
                 to: string;
-                from: string | null;
-                source_ip: string | null;
+                from?: string;
+                source_ip?: string;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -17767,12 +17818,12 @@ export interface operations {
     };
     classes_of_service_list_classes: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                limit: number | null;
-                cursor: string | null;
+            query?: {
+                limit?: number;
+                cursor?: string;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -17832,11 +17883,11 @@ export interface operations {
     };
     classes_of_service_classify: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
+            query: {
                 dialed: string;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -17958,12 +18009,12 @@ export interface operations {
     };
     schedules_list_schedules: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                limit: number | null;
-                cursor: string | null;
+            query?: {
+                limit?: number;
+                cursor?: string;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -18118,12 +18169,12 @@ export interface operations {
     };
     routing_list_routing_rules: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                limit: number | null;
-                cursor: string | null;
+            query?: {
+                limit?: number;
+                cursor?: string;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -18278,12 +18329,12 @@ export interface operations {
     };
     queue_config_list_queue_configs: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                limit: number | null;
-                cursor: string | null;
+            query?: {
+                limit?: number;
+                cursor?: string;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -18438,12 +18489,12 @@ export interface operations {
     };
     trunks_list_trunks: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                limit: number | null;
-                cursor: string | null;
+            query?: {
+                limit?: number;
+                cursor?: string;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -18691,12 +18742,12 @@ export interface operations {
     };
     conferences_list_meetings: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                limit: number | null;
-                cursor: string | null;
+            query?: {
+                limit?: number;
+                cursor?: string;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;

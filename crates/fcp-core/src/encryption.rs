@@ -47,6 +47,8 @@ pub struct ReencryptReport {
     /// Rows already sealed with the active DEK.
     pub already_current: u64,
     /// Per-column breakdown of rewritten rows (`table.column` → count).
+    /// `[column, rows]` pairs.
+    #[cfg_attr(feature = "openapi", schema(value_type = Vec<Vec<serde_json::Value>>))]
     pub by_column: Vec<(String, u64)>,
 }
 
