@@ -1390,6 +1390,38 @@ active appearance. The Active Calls page supervises. Proved by the engine,
 mixer and queue-bridge unit tests, `calling.rs` and `api_postgres.rs`. The
 enterprise calling project is complete: all eleven phases.
 
+## What is next (chosen 2026-09-29, after the nightly stack closed)
+
+**Developer surface** — design in `docs/DEVELOPER_SURFACE.md`
+(v0.25.292), the third recommendation of the 2026-09-25 feature review:
+what a developer outside the project meets first. Three surveys of the
+code found:
+- API keys a `read_only` user can mint with full tenant administration
+  (permissions copied unchecked behind `require_admin` alone), permission
+  names that match nothing, and no owner, revoke record, rotation or rate
+  limit.
+- An admin API of ~300 routes with no specification, two error shapes,
+  five pagination forms and four timestamp forms, and clients (UI and CLI)
+  copied by hand and drifting.
+- Webhooks managed only on the events server behind its service token,
+  with id routes that axum 0.7 never matches, caller-typed secrets, a
+  signature without a timestamp and no SSRF guard.
+- Flows that hear only digits: no speech recognition anywhere, forge-engine's
+  media bridge never attached, voicemail transcription modelled and never
+  produced, the INFO path's Gather reading variables nothing writes, and
+  Postgres keeping only a flow's latest version.
+
+The model:
+- one contract generated from the code (`utoipa`, `docs/openapi.json`
+  checked in CI);
+- one shape for errors, times, ids and lists;
+- keys as scoped credentials with an owner;
+- webhooks owned by the tenant and signed over a timestamp;
+- speech recognition with the same shape as TTS.
+
+Eight phases, from keys made safe to live call control and the guide;
+eleven questions (§5), agreed 2026-09-29 on their recommendations.
+
 ## Historical documents
 
 Superseded status docs live in [`docs/archive/`](docs/archive/README.md) — they describe
