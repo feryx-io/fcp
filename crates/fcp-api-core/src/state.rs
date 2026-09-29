@@ -157,6 +157,13 @@ pub struct ApiState {
     /// Deployment mode for permission evaluation (Enterprise, ServiceProvider, Carrier).
     pub deployment_mode: fcp_core::permissions::DeploymentMode,
 
+    /// API tokens' request limits (`crate::rate_limit`); the router sets
+    /// it from `[api.rate_limit]` over [`Self::rate_counter`].
+    pub rate_limiter: Arc<crate::rate_limit::RateLimiter>,
+    /// Where token requests are counted: the admin's Redis, when it has
+    /// one; this process otherwise.
+    pub rate_counter: Arc<dyn crate::rate_limit::RateCounter>,
+
     /// E911 address validator (completeness checks by default; a
     /// provider-backed validator can be injected).
     pub e911_validator: Arc<dyn fcp_core::e911::E911AddressValidator>,
@@ -226,6 +233,11 @@ impl ApiState {
             route_previewer: None,
             call_supervisor: None,
             deployment_mode: fcp_core::permissions::DeploymentMode::default(),
+            rate_limiter: Arc::new(crate::rate_limit::RateLimiter::new(
+                fcp_core::ApiRateLimitConfig::default(),
+                Arc::new(crate::rate_limit::LocalCounter::default()),
+            )),
+            rate_counter: Arc::new(crate::rate_limit::LocalCounter::default()),
             e911_validator: Arc::new(fcp_core::e911::BasicAddressValidator),
             call_recordings_dir: None,
             managed_by: None,
@@ -349,6 +361,13 @@ impl ApiState {
         validator: Arc<dyn fcp_core::e911::E911AddressValidator>,
     ) -> Self {
         self.e911_validator = validator;
+        self
+    }
+
+    /// Count API token requests here — the admin's Redis, so every admin
+    /// node counts together.
+    pub fn with_rate_counter(mut self, counter: Arc<dyn crate::rate_limit::RateCounter>) -> Self {
+        self.rate_counter = counter;
         self
     }
 

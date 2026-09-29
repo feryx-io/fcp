@@ -1,11 +1,6 @@
 //! API authentication middleware.
 
-use axum::{
-    extract::Request,
-    http::{header, StatusCode},
-    middleware::Next,
-    response::Response,
-};
+use axum::{extract::Request, http::header, middleware::Next, response::Response};
 use fcp_core::permissions::{DeploymentMode, Permission, UserRole};
 use fcp_core::storage::{ApiTokenStore, TenantStore};
 use fcp_core::{AccountStatus, CredentialStore, TenantId};
@@ -323,7 +318,7 @@ pub async fn validate_bearer_token(
     auth_config: AuthConfig,
     mut req: Request,
     next: Next,
-) -> Result<Response, (StatusCode, String)> {
+) -> Result<Response, crate::error::ApiError> {
     // Get the Authorization header
     let auth_header = req
         .headers()
@@ -340,8 +335,7 @@ pub async fn validate_bearer_token(
         }
     }
 
-    Err((
-        StatusCode::UNAUTHORIZED,
+    Err(crate::error::ApiError::Unauthorized(
         "Invalid or missing authentication token".to_string(),
     ))
 }
@@ -357,10 +351,12 @@ pub async fn validate_bearer_token(
 ///
 /// When no `AuthIdentity` is present (e.g. auth is disabled), the request
 /// is allowed through.
-pub async fn require_admin(req: Request, next: Next) -> Result<Response, (StatusCode, String)> {
+pub async fn require_admin(req: Request, next: Next) -> Result<Response, crate::error::ApiError> {
     if let Some(identity) = req.extensions().get::<AuthIdentity>() {
         if !identity.is_admin() {
-            return Err((StatusCode::FORBIDDEN, "Admin access required".to_string()));
+            return Err(crate::error::ApiError::Forbidden(
+                "Admin access required".to_string(),
+            ));
         }
     }
     Ok(next.run(req).await)
@@ -383,11 +379,10 @@ pub async fn require_admin(req: Request, next: Next) -> Result<Response, (Status
 pub async fn require_platform_admin(
     req: Request,
     next: Next,
-) -> Result<Response, (StatusCode, String)> {
+) -> Result<Response, crate::error::ApiError> {
     if let Some(identity) = req.extensions().get::<AuthIdentity>() {
         if !identity.is_platform_admin() {
-            return Err((
-                StatusCode::FORBIDDEN,
+            return Err(crate::error::ApiError::Forbidden(
                 "Platform admin access required".to_string(),
             ));
         }
@@ -474,7 +469,7 @@ pub struct TenantContext(pub fcp_core::TenantId);
 
 #[axum::async_trait]
 impl axum::extract::FromRequestParts<crate::state::ApiState> for TenantContext {
-    type Rejection = (StatusCode, String);
+    type Rejection = crate::error::ApiError;
 
     async fn from_request_parts(
         parts: &mut axum::http::request::Parts,
@@ -494,26 +489,26 @@ impl axum::extract::FromRequestParts<crate::state::ApiState> for TenantContext {
                     .filter(|value| !value.is_empty())
                 {
                     let tenant_id = raw_tenant_id.parse::<TenantId>().map_err(|e| {
-                        (
-                            StatusCode::BAD_REQUEST,
-                            format!("Invalid {} header: {}", PLATFORM_TENANT_HEADER, e),
-                        )
+                        crate::error::ApiError::BadRequest(format!(
+                            "Invalid {} header: {}",
+                            PLATFORM_TENANT_HEADER, e
+                        ))
                     })?;
 
                     if let Some(storage) = state.storage.as_ref() {
                         match storage.get_tenant(&tenant_id).await {
                             Ok(Some(_)) => {}
                             Ok(None) => {
-                                return Err((
-                                    StatusCode::NOT_FOUND,
-                                    format!("Tenant '{}' not found", tenant_id),
-                                ));
+                                return Err(crate::error::ApiError::NotFound(format!(
+                                    "Tenant '{}' not found",
+                                    tenant_id
+                                )));
                             }
                             Err(e) => {
-                                return Err((
-                                    StatusCode::INTERNAL_SERVER_ERROR,
-                                    format!("Failed to resolve tenant override: {}", e),
-                                ));
+                                return Err(crate::error::ApiError::Internal(format!(
+                                    "Failed to resolve tenant override: {}",
+                                    e
+                                )));
                             }
                         }
                     }
@@ -532,7 +527,12 @@ impl axum::extract::FromRequestParts<crate::state::ApiState> for TenantContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{body::Body, http::Request as HttpRequest, routing::get, Router};
+    use axum::{
+        body::Body,
+        http::{Request as HttpRequest, StatusCode},
+        routing::get,
+        Router,
+    };
     use fcp_core::storage::{ApiToken, ApiTokenStore};
     use fcp_core::{ApiTokenId, TenantId};
     use sha2::{Digest, Sha256};

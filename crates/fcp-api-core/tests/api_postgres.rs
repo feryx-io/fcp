@@ -1994,6 +1994,143 @@ async fn api_tokens_never_exceed_their_maker() {
     app.finish().await;
 }
 
+/// docs/DEVELOPER_SURFACE.md §3, phase 2: every error under /api/v1 is the
+/// JSON error, whoever refused; every response carries a request id; a
+/// browser may PATCH and name a tenant; a token's requests carry its limit.
+#[tokio::test]
+async fn every_error_is_json_and_every_response_has_an_id() {
+    let app = require_app!();
+    let is_json_error = |res: &Response, status: StatusCode, code: &str| {
+        assert_eq!(res.status, status, "{}", res.text);
+        assert_eq!(
+            res.headers.get(header::CONTENT_TYPE).unwrap(),
+            "application/json",
+            "{}",
+            res.text
+        );
+        assert_eq!(res.json["code"], code, "{}", res.text);
+        assert!(res.json["error"].is_string(), "{}", res.text);
+        assert!(
+            res.headers.get("x-request-id").is_some(),
+            "no request id on {}",
+            res.text
+        );
+    };
+
+    // The bearer layer, the permission gate, an extractor, the router.
+    let anonymous = app.send(Method::GET, "/api/v1/users", &[], None).await;
+    is_json_error(&anonymous, StatusCode::UNAUTHORIZED, "unauthorized");
+    app.create_user_with_role("peeker", "read_only").await;
+    let peeker = session(&app, "peeker").await;
+    let refused = app
+        .send_as(&peeker, Method::DELETE, "/api/v1/users/peeker", None)
+        .await;
+    is_json_error(&refused, StatusCode::FORBIDDEN, "forbidden");
+    let malformed = app
+        .send_raw(
+            ADMIN_TOKEN,
+            Method::POST,
+            "/api/v1/users",
+            "application/json",
+            b"{not json".to_vec(),
+        )
+        .await;
+    is_json_error(&malformed, StatusCode::BAD_REQUEST, "bad_request");
+    assert!(malformed.json["details"].is_string(), "{}", malformed.text);
+    let wrong_method = app.admin(Method::PATCH, "/api/v1/users", None).await;
+    is_json_error(
+        &wrong_method,
+        StatusCode::METHOD_NOT_ALLOWED,
+        "method_not_allowed",
+    );
+    let bad_tenant = app
+        .send(
+            Method::GET,
+            "/api/v1/users",
+            &[(AUTH_HEADER, BEARER), ("x-fcp-tenant-id", "not-a-tenant")],
+            None,
+        )
+        .await;
+    is_json_error(&bad_tenant, StatusCode::BAD_REQUEST, "bad_request");
+
+    // A caller's request id comes back; one is made when none is sent.
+    let quoted = app
+        .send(
+            Method::GET,
+            "/api/v1/users",
+            &[(AUTH_HEADER, BEARER), ("x-request-id", "trace-me-42")],
+            None,
+        )
+        .await;
+    assert_eq!(quoted.status, StatusCode::OK, "{}", quoted.text);
+    assert_eq!(quoted.headers.get("x-request-id").unwrap(), "trace-me-42");
+
+    // A browser may PATCH and name a tenant.
+    let preflight = app
+        .send(
+            Method::OPTIONS,
+            "/api/v1/devices/dev-1",
+            &[
+                ("origin", "https://portal.example.com"),
+                ("access-control-request-method", "PATCH"),
+                (
+                    "access-control-request-headers",
+                    "authorization,x-fcp-tenant-id",
+                ),
+            ],
+            None,
+        )
+        .await;
+    assert!(preflight.status.is_success(), "{}", preflight.text);
+    let methods = preflight
+        .headers
+        .get("access-control-allow-methods")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(methods.contains("PATCH"), "{methods}");
+    let allowed = preflight
+        .headers
+        .get("access-control-allow-headers")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_ascii_lowercase();
+    assert!(allowed.contains("x-fcp-tenant-id"), "{allowed}");
+
+    // A token's requests carry its limit; the static token's do not.
+    let token = app
+        .admin(
+            Method::POST,
+            "/api/v1/api-tokens",
+            Some(json!({ "name": "limited", "permissions": ["user_read"] })),
+        )
+        .await;
+    let secret = token.json["secret"].as_str().unwrap().to_string();
+    let first = app
+        .send_as(&secret, Method::GET, "/api/v1/users", None)
+        .await;
+    assert_eq!(first.status, StatusCode::OK, "{}", first.text);
+    assert_eq!(first.headers.get("ratelimit-limit").unwrap(), "600");
+    let second = app
+        .send_as(&secret, Method::GET, "/api/v1/users", None)
+        .await;
+    let remaining = |r: &Response| -> u32 {
+        r.headers
+            .get("ratelimit-remaining")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .parse()
+            .unwrap()
+    };
+    assert!(remaining(&second) < remaining(&first));
+    assert!(quoted.headers.get("ratelimit-limit").is_none());
+
+    app.finish().await;
+}
+
 // ─── CDRs, usage, billing ────────────────────────────────────────────────
 
 #[tokio::test]

@@ -1,8 +1,9 @@
 # API tokens and permissions
 
 How programs authenticate to the admin API (`/api/v1`), what a token can
-reach, and what changed in v0.25.293 (`docs/DEVELOPER_SURFACE.md` §3,
-phase 1).
+reach, how often it may call, what an error looks like, and what changed
+in v0.25.293 and v0.25.294 (`docs/DEVELOPER_SURFACE.md` §3, phases 1 and
+2).
 
 ## 1. Three kinds of credential
 
@@ -155,3 +156,53 @@ Who holds the new permissions:
   - New tokens never carry `admin`: at creation it becomes the list of
     what the maker may grant.
 - **Revoking now keeps the token.** It shows as revoked in the list.
+
+## 5. Limits
+
+Since v0.25.294, `[api.rate_limit]` in `fcp-admin.toml` sets how many
+requests each API token may make a minute, and how many all of a tenant's
+tokens may make together:
+
+```toml
+[api.rate_limit]
+enabled = true                # the default
+per_token_per_minute = 600    # the default
+per_tenant_per_minute = 3000  # the default
+```
+
+- Where requests are counted:
+  - With `[cluster] redis_url` set, in that Redis, so every admin node
+    counts together.
+  - Without it, in each admin process.
+- A count that cannot be made (Redis down) lets the request through.
+- A request past either limit is answered 429 with `Retry-After`: the
+  seconds until the minute turns.
+- Every token request carries, for the tighter of the two limits:
+  - `RateLimit-Limit`;
+  - `RateLimit-Remaining`;
+  - `RateLimit-Reset`, the seconds until the minute turns.
+- Sessions and the static token are not limited.
+- The API gateway's per-address limit still stands in front, for anonymous
+  traffic.
+
+## 6. Errors and request ids
+
+Every error under `/api/v1` has one shape, whether a handler, the
+authentication layer, the permission check, or a malformed body, path or
+query refused the request:
+
+```json
+{ "error": "Forbidden", "code": "forbidden", "details": "Insufficient permissions" }
+```
+
+- `error` is the status's reason.
+- `code` is stable and meant for programs: `bad_request`, `unauthorized`,
+  `forbidden`, `not_found`, `method_not_allowed`, `conflict`, `gone`,
+  `rate_limited`, `service_unavailable`, `internal`, and so on.
+- `details` says what was wrong.
+
+Every response carries `X-Request-Id`: the caller's own, when it sent one,
+otherwise a fresh UUID. Quote it when reporting a problem.
+
+A browser client may use `PATCH` and send `X-FCP-Tenant-Id`. It can read
+`Retry-After`, `X-Request-Id` and the `RateLimit-*` headers.

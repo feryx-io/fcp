@@ -276,6 +276,15 @@ SDKs and the guide are checked in CI.
      The UI and the CLI are changed in the same PR.
    - The UI's calls to routes that do not exist are removed or wired, as
      Q10 settles.
+   - Phase 2 is split into three PRs:
+     - **2a** covers errors, CORS, request ids, rate limits and the dead UI
+       calls. **Done (v0.25.294)**, as `docs/API_TOKENS.md` §5–6
+       describes. Where the counter runs was settled by Q11: in the
+       admin's Redis when it has one (`RedisStorage::count_in_window`),
+       in the process otherwise, and a failed count lets the request
+       through.
+     - **2b** makes times RFC 3339 and ids prefixed.
+     - **2c** puts every list in the `{data, next_cursor}` envelope.
 3. **The contract.**
    - `utoipa` on every admin route, and typed responses in place of
      `impl IntoResponse` where the body is JSON.

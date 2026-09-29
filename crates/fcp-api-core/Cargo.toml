@@ -21,7 +21,7 @@ fcp-presence = { path = "../fcp-presence" }
 
 # REST API framework
 axum = { version = "0.7", features = ["ws", "multipart"] }
-tower-http = { version = "0.5", features = ["cors", "trace"] }
+tower-http = { version = "0.5", features = ["cors", "trace", "request-id", "util"] }
 
 # Async runtime
 tokio = { workspace = true }

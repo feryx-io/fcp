@@ -1301,59 +1301,6 @@ export interface ClusterStatsResponse {
   }
 }
 
-// Number Porting (matches fcp-core porting.rs)
-export type PortStatus = 'draft' | 'submitted' | 'pending' | 'approved' | 'scheduled'
-  | 'in_progress' | 'completed' | 'rejected' | 'cancelled' | 'failed'
-
-export interface PortRequest {
-  id: string
-  tenant_id: string
-  phone_numbers: string[]
-  port_type: string
-  status: PortStatus
-  rejection_reason: string | null
-  customer_name: string
-  account_number: string
-  pin: string | null
-  service_address: PortAddress
-  authorized_contact_name: string
-  authorized_contact_phone: string
-  authorized_contact_email: string
-  losing_carrier: string
-  winning_carrier: string
-  requested_foc_date: string | null
-  actual_foc_date: string | null
-  submitted_at: string | null
-  completed_at: string | null
-  notes: string | null
-  created_at: string
-  updated_at: string
-}
-
-export interface PortAddress {
-  street: string
-  city: string
-  state: string
-  postal_code: string
-  country: string
-}
-
-export interface CreatePortRequest {
-  phone_numbers: string[]
-  port_type?: string
-  customer_name: string
-  account_number: string
-  pin?: string
-  service_address: PortAddress
-  authorized_contact_name: string
-  authorized_contact_phone: string
-  authorized_contact_email: string
-  losing_carrier: string
-  winning_carrier?: string
-  requested_foc_date?: string
-  notes?: string
-}
-
 // Audit Log
 /** One audited admin request (`GET /audit-log`). */
 export interface AuditEntry {

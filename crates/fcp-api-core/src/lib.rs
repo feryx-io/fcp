@@ -15,7 +15,9 @@ pub mod auth;
 pub mod e911_validator;
 pub mod error;
 pub mod managed;
+pub mod rate_limit;
 pub mod route_permissions;
+pub mod shape;
 pub mod site_files;
 pub mod state;
 pub mod trunk_health;
@@ -123,12 +125,33 @@ pub fn create_router_with(
     // CORS configuration
     let cors = CorsLayer::new()
         .allow_origin(Any)
-        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::PATCH,
+            Method::DELETE,
+        ])
         .allow_headers([
             header::CONTENT_TYPE,
             header::AUTHORIZATION,
             header::HeaderName::from_static("x-fcp-provisioning-token"),
+            header::HeaderName::from_static(auth::PLATFORM_TENANT_HEADER),
+            header::HeaderName::from_static(shape::REQUEST_ID_HEADER),
+        ])
+        .expose_headers([
+            header::RETRY_AFTER,
+            header::HeaderName::from_static(shape::REQUEST_ID_HEADER),
+            header::HeaderName::from_static(rate_limit::LIMIT_HEADER),
+            header::HeaderName::from_static(rate_limit::REMAINING_HEADER),
+            header::HeaderName::from_static(rate_limit::RESET_HEADER),
         ]);
+
+    // API tokens' request limits, counted where the state says.
+    state.rate_limiter = std::sync::Arc::new(rate_limit::RateLimiter::new(
+        api_config.rate_limit.clone(),
+        std::sync::Arc::clone(&state.rate_counter),
+    ));
 
     // Admin audit log: inside the auth layer (so it sees the caller's
     // identity and the matched route), on both the protected and the
@@ -150,6 +173,12 @@ pub fn create_router_with(
                 .layer(middleware::from_fn_with_state(
                     state.clone(),
                     route_permissions::enforce,
+                ))
+                // Outside the permission check, so a token refused a route
+                // still counts against its limit.
+                .layer(middleware::from_fn_with_state(
+                    state.clone(),
+                    rate_limit::enforce,
                 ))
                 .layer(audit_layer.clone())
                 .layer(middleware::from_fn_with_state(
@@ -238,9 +267,20 @@ pub fn create_router_with(
         Router::new().route("/health", axum::routing::get(v1::system::health)),
     ));
 
+    let request_id = header::HeaderName::from_static(shape::REQUEST_ID_HEADER);
     router
+        .layer(middleware::from_fn(shape::json_errors))
         .layer(cors)
         .layer(TraceLayer::new_for_http())
+        // Outermost: every response, errors and CORS refusals included,
+        // carries the request's id.
+        .layer(tower_http::request_id::PropagateRequestIdLayer::new(
+            request_id.clone(),
+        ))
+        .layer(tower_http::request_id::SetRequestIdLayer::new(
+            request_id,
+            tower_http::request_id::MakeRequestUuid,
+        ))
         .with_state(state)
 }
 

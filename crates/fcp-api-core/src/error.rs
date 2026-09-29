@@ -7,12 +7,52 @@ use axum::{
 };
 use serde::Serialize;
 
-/// API error response.
+/// API error response: the one shape every error under `/api/v1` has
+/// (docs/DEVELOPER_SURFACE.md §3, phase 2), whether a handler, the auth
+/// layer or an extractor refused the request.
 #[derive(Debug, Serialize)]
 pub struct ErrorResponse {
+    /// The status's reason phrase, e.g. `Not Found`.
     pub error: String,
+    /// A stable machine-readable code: the status as snake case
+    /// (`not_found`, `bad_request`, `rate_limited`, …).
+    pub code: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub details: Option<String>,
+}
+
+impl ErrorResponse {
+    /// The error body for a status, with the given detail.
+    pub fn for_status(status: StatusCode, details: Option<String>) -> Self {
+        Self {
+            error: status.canonical_reason().unwrap_or("Error").to_string(),
+            code: code_for(status).to_string(),
+            details,
+        }
+    }
+}
+
+/// The machine code for a status.
+pub fn code_for(status: StatusCode) -> &'static str {
+    match status {
+        StatusCode::BAD_REQUEST => "bad_request",
+        StatusCode::UNAUTHORIZED => "unauthorized",
+        StatusCode::PAYMENT_REQUIRED => "payment_required",
+        StatusCode::FORBIDDEN => "forbidden",
+        StatusCode::NOT_FOUND => "not_found",
+        StatusCode::METHOD_NOT_ALLOWED => "method_not_allowed",
+        StatusCode::CONFLICT => "conflict",
+        StatusCode::GONE => "gone",
+        StatusCode::PAYLOAD_TOO_LARGE => "payload_too_large",
+        StatusCode::UNSUPPORTED_MEDIA_TYPE => "unsupported_media_type",
+        StatusCode::UNPROCESSABLE_ENTITY => "unprocessable_entity",
+        StatusCode::TOO_MANY_REQUESTS => "rate_limited",
+        StatusCode::SERVICE_UNAVAILABLE => "service_unavailable",
+        StatusCode::BAD_GATEWAY => "bad_gateway",
+        StatusCode::GATEWAY_TIMEOUT => "gateway_timeout",
+        s if s.is_client_error() => "client_error",
+        _ => "internal",
+    }
 }
 
 /// API error type.
@@ -31,41 +71,40 @@ pub enum ApiError {
     Gone(String),
 }
 
+impl ApiError {
+    /// The status this error answers with.
+    pub fn status(&self) -> StatusCode {
+        match self {
+            ApiError::NotFound(_) => StatusCode::NOT_FOUND,
+            ApiError::BadRequest(_) => StatusCode::BAD_REQUEST,
+            ApiError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
+            ApiError::Forbidden(_) => StatusCode::FORBIDDEN,
+            ApiError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            ApiError::Conflict(_) => StatusCode::CONFLICT,
+            ApiError::Gone(_) => StatusCode::GONE,
+            ApiError::ServiceUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+        }
+    }
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let (status, message, details) = match self {
-            ApiError::NotFound(msg) => (StatusCode::NOT_FOUND, "Not Found".to_string(), Some(msg)),
-            ApiError::BadRequest(msg) => (
-                StatusCode::BAD_REQUEST,
-                "Bad Request".to_string(),
-                Some(msg),
-            ),
-            ApiError::Unauthorized(msg) => (
-                StatusCode::UNAUTHORIZED,
-                "Unauthorized".to_string(),
-                Some(msg),
-            ),
-            ApiError::Forbidden(msg) => (StatusCode::FORBIDDEN, "Forbidden".to_string(), Some(msg)),
-            ApiError::Internal(msg) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Internal Server Error".to_string(),
-                Some(msg),
-            ),
-            ApiError::Conflict(msg) => (StatusCode::CONFLICT, "Conflict".to_string(), Some(msg)),
-            ApiError::Gone(msg) => (StatusCode::GONE, "Gone".to_string(), Some(msg)),
-            ApiError::ServiceUnavailable(msg) => (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "Service Unavailable".to_string(),
-                Some(msg),
-            ),
+        let status = self.status();
+        let details = match self {
+            ApiError::NotFound(msg)
+            | ApiError::BadRequest(msg)
+            | ApiError::Unauthorized(msg)
+            | ApiError::Forbidden(msg)
+            | ApiError::Internal(msg)
+            | ApiError::Conflict(msg)
+            | ApiError::Gone(msg)
+            | ApiError::ServiceUnavailable(msg) => msg,
         };
-
-        let body = Json(ErrorResponse {
-            error: message,
-            details,
-        });
-
-        (status, body).into_response()
+        (
+            status,
+            Json(ErrorResponse::for_status(status, Some(details))),
+        )
+            .into_response()
     }
 }
 
