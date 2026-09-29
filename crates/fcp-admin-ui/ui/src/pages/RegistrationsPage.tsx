@@ -21,8 +21,8 @@ function formatExpiry(seconds: number): string {
   return `${hours}h ${mins % 60}m`
 }
 
-function formatTimestamp(ts: { secs_since_epoch: number }): string {
-  return new Date(ts.secs_since_epoch * 1000).toLocaleString()
+function formatTimestamp(at: string): string {
+  return new Date(at).toLocaleString()
 }
 
 function extractAorUser(aor: string): string {

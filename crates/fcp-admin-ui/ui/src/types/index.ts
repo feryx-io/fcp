@@ -122,7 +122,7 @@ export interface ClassOfService {
   max_calls: number | null
   caller_id: 'line' | 'withheld'
   is_default: boolean
-  updated_at: number
+  updated_at: string
 }
 
 export interface ClassOfServiceRequest {
@@ -453,12 +453,12 @@ export interface ActiveCall {
 export interface Registration {
   aor: string
   contact: string
-  expires_at: { secs_since_epoch: number; nanos_since_epoch: number }
+  expires_at: string
   call_id: string
   cseq: number
   user_agent: string | null
   q: number | null
-  registered_at: { secs_since_epoch: number; nanos_since_epoch: number }
+  registered_at: string
   expires_in_seconds: number
 }
 
@@ -540,9 +540,9 @@ export interface CdrResponse {
   from_display_name: string | null
   to_uri: string
   to_display_name: string | null
-  start_time: number
-  answer_time: number | null
-  end_time: number | null
+  start_time: string
+  answer_time: string | null
+  end_time: string | null
   setup_duration_ms: number | null
   call_duration_ms: number | null
   total_duration_ms: number | null
@@ -684,8 +684,8 @@ export interface MailboxResponse {
   include_transcription: boolean
   transcription_enabled: boolean
   retention_days: number | null
-  created_at: number
-  updated_at: number
+  created_at: string
+  updated_at: string
 }
 
 export interface VoicemailMessage {
@@ -698,8 +698,8 @@ export interface VoicemailMessage {
   duration: number
   recording_path: string
   transcription: string | null
-  created_at: number
-  accessed_at: number | null
+  created_at: string
+  accessed_at: string | null
 }
 
 export interface MailboxStats {
@@ -716,8 +716,8 @@ export interface GreetingResponse {
   greeting_type: string // "unavailable" | "busy" | "name" | "temporary"
   audio_path: string
   is_active: boolean
-  created_at: number
-  expires_at: number | null
+  created_at: string
+  expires_at: string | null
 }
 
 export interface CreateMailboxRequest {
@@ -878,8 +878,8 @@ export interface LcrRoute {
   priority: number
   enabled: boolean
   description: string | null
-  created_at: number
-  updated_at: number
+  created_at: string
+  updated_at: string
 }
 
 export interface CreateLcrRouteRequest {
@@ -1171,7 +1171,7 @@ export interface ClusterNodeInfo {
   sip_address: string
   capabilities: string[]
   active_calls: number
-  started_at: number
+  started_at: string
   version: string
   status: 'healthy' | 'degraded' | 'offline'
   uptime_seconds: number
@@ -1234,11 +1234,11 @@ export interface SiteInfo {
   tenant_id: string
   name: string
   status: 'pending' | 'enrolled' | 'disabled'
-  created_at: number
-  updated_at: number
-  enrolled_at?: number
-  certificate_expires_at?: number
-  last_seen_at?: number
+  created_at: string
+  updated_at: string
+  enrolled_at?: string
+  certificate_expires_at?: string
+  last_seen_at?: string
   link_up: boolean
   link_version?: string
   /** Release → node ids, from the site's last heartbeat. */
@@ -1246,7 +1246,7 @@ export interface SiteInfo {
   nodes: { node_id: string; node_type: string; version: string; healthy: boolean }[]
   /** The journal sequence the site has applied through; absent from a link without a site database. */
   sync_cursor?: number
-  sync_applied_at?: number
+  sync_applied_at?: string
   sync_error?: string
   /** Journal entries the site has not applied yet. */
   sync_behind?: number
@@ -1257,7 +1257,7 @@ export interface SiteInfo {
 }
 
 export interface SiteRegistrations {
-  users: { aor: string; contacts: number; since?: number }[]
+  users: { aor: string; contacts: number; since?: string }[]
   total_users: number
   total_contacts: number
 }
@@ -1265,7 +1265,7 @@ export interface SiteRegistrations {
 /** A site with the one-time enrollment token the cloud shows once. */
 export interface SiteWithToken extends SiteInfo {
   enrollment_token: string
-  enrollment_token_expires_at: number
+  enrollment_token_expires_at: string
 }
 
 export interface ClusterSitesResponse {
@@ -1318,7 +1318,7 @@ export interface AuditEntry {
   detail: Record<string, unknown> | null
   source_ip: string | null
   /** Unix seconds. */
-  occurred_at: number
+  occurred_at: string
 }
 
 export interface AuditQueryParams {
@@ -1341,7 +1341,7 @@ export interface DeletionEntry {
   cause: 'retention' | 'manual' | 'node_sweep' | 'upkeep' | 'cascade' | 'unattributed' | string
   actor: string
   /** Unix seconds. */
-  deleted_at: number
+  deleted_at: string
 }
 
 export interface DeletionQueryParams {
@@ -1365,8 +1365,8 @@ export interface ConferenceRecording {
   /** `not_required`, `announced` or `failed`. */
   consent: string
   /** Unix seconds. */
-  started_at: number
-  ended_at: number | null
+  started_at: string
+  ended_at: string | null
   duration_secs: number | null
   size_bytes: number | null
   participants: number
@@ -1526,7 +1526,7 @@ export interface CallingSettings {
   class_of_service_id: string | null
   /** The user as an executive, with assistants (§3.10) */
   executive: Executive | null
-  updated_at: number
+  updated_at: string
 }
 
 export type ExecutiveFilter = 'all' | 'external' | 'none'
@@ -1780,7 +1780,7 @@ export interface EmergencyConfig {
   declared_location_ttl_secs: number
   /** False while the tenant has never saved a configuration (defaults shown). */
   configured: boolean
-  updated_at: number
+  updated_at: string
 }
 
 export interface UpdateEmergencyConfigRequest {
@@ -1820,8 +1820,8 @@ export interface ContactReadiness {
   target: string
   name: string | null
   issues: string[]
-  last_delivery_at: number | null
-  last_test_at: number | null
+  last_delivery_at: string | null
+  last_test_at: string | null
 }
 
 export interface EmergencyReadiness {
@@ -1850,8 +1850,8 @@ export interface EmergencyNetwork {
   priority: number
   /** `nomadic` (softphones, mobiles, browsers) or `all`. */
   applies_to: string
-  created_at: number
-  updated_at: number
+  created_at: string
+  updated_at: string
 }
 
 export interface CreateEmergencyNetworkRequest {
@@ -1876,11 +1876,11 @@ export interface EmergencyCall {
   location: DispatchableLocation | null
   trunk_name: string | null
   outcome: string
-  placed_at: number
+  placed_at: string
   notified: boolean
   sip_status: number | null
-  answered_at: number | null
-  ended_at: number | null
+  answered_at: string | null
+  ended_at: string | null
   duration_secs: number | null
   /** How the location travelled: `elin`, `pidf_lo`, `elin+pidf_lo`. */
   delivery: string | null
@@ -1899,10 +1899,10 @@ export interface EmergencyNotification {
   /** `delivered`, `retrying` or `failed`. */
   status: string
   error: string | null
-  delivered_at: number | null
-  next_retry_at: number | null
+  delivered_at: string | null
+  next_retry_at: string | null
   test: boolean
-  created_at: number
+  created_at: string
 }
 
 export interface AddressValidation {
@@ -1920,7 +1920,7 @@ export interface LocationValidationResponse {
   location_id: string
   name: string
   validated: boolean
-  validated_at: number | null
+  validated_at: string | null
 }
 
 export interface DeviceValidationResponse {
@@ -1928,7 +1928,7 @@ export interface DeviceValidationResponse {
   device_id: string
   name: string
   validated: boolean
-  validated_at: number | null
+  validated_at: string | null
 }
 
 export interface NumberValidationResponse {
@@ -1936,7 +1936,7 @@ export interface NumberValidationResponse {
   phone_number_id: string
   e164: string
   validated: boolean
-  validated_at: number | null
+  validated_at: string | null
 }
 
 // Schedules (docs/ENTERPRISE_CALLING.md §3.5)
@@ -1963,7 +1963,7 @@ export interface Schedule {
   weekly: WeeklyWindow[]
   holidays: Holiday[]
   state: 'open' | 'closed' | 'holiday'
-  updated_at: number
+  updated_at: string
 }
 
 export interface ScheduleRequest {

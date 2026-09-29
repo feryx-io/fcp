@@ -38,6 +38,7 @@ pub struct JoinTokenResponse {
     pub display_name: String,
     pub role: JoinRole,
     /// Seconds since the Unix epoch.
+    #[serde(with = "crate::time::epoch_secs")]
     pub expires_at: u64,
     /// The gateway's join page with the token filled in, when
     /// `[conference] gateway_url` is configured.

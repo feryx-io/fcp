@@ -363,7 +363,9 @@ pub struct MessageResponse {
     pub duration: u32,
     pub recording_path: String,
     pub transcription: Option<String>,
+    #[serde(with = "crate::time::epoch_secs_f64")]
     pub created_at: f64,
+    #[serde(default, with = "crate::time::epoch_secs_f64_opt")]
     pub accessed_at: Option<f64>,
 }
 
@@ -552,7 +554,9 @@ pub async fn get_message_audio(
 pub struct GreetingResponse {
     pub greeting_type: String,
     pub is_active: bool,
+    #[serde(with = "crate::time::epoch_secs_f64")]
     pub created_at: f64,
+    #[serde(default, with = "crate::time::epoch_secs_f64_opt")]
     pub expires_at: Option<f64>,
 }
 
@@ -912,7 +916,9 @@ pub async fn download_voicemail_greeting_audio(
 #[derive(Debug, serde::Serialize)]
 pub struct DeclaredLocationResponse {
     pub address: crate::v1::phone_numbers::E911AddressResponse,
+    #[serde(with = "crate::time::epoch_secs")]
     pub declared_at: u64,
+    #[serde(with = "crate::time::epoch_secs")]
     pub expires_at: u64,
     /// False once it has expired: the platform stops using it.
     pub current: bool,

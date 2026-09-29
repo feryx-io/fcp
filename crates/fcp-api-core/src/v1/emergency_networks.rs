@@ -42,7 +42,9 @@ pub struct NetworkResponse {
     pub priority: i32,
     /// `nomadic` (the default) or `all`.
     pub applies_to: String,
+    #[serde(with = "crate::time::epoch_secs")]
     pub created_at: u64,
+    #[serde(with = "crate::time::epoch_secs")]
     pub updated_at: u64,
 }
 

@@ -306,6 +306,9 @@ impl App {
             .expect("read body");
         let text = String::from_utf8_lossy(&bytes).into_owned();
         let json = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        if status.is_success() && path.starts_with("/api/v1/") {
+            check_shape(path, "", &json);
+        }
         Response {
             status,
             headers,
@@ -791,6 +794,115 @@ impl App {
 type Part<'a> = (&'a str, Option<(&'a str, &'a str)>, &'a [u8]);
 
 const AUTH_HEADER: &str = "authorization";
+
+/// docs/DEVELOPER_SURFACE.md §3, phase 2b: every response any test sees is
+/// checked — a time is an RFC 3339 string, never a number or serde's
+/// `{secs_since_epoch, …}`; an id is never a bare UUID where its type has a
+/// prefix.
+fn check_shape(path: &str, at: &str, value: &Value) {
+    match value {
+        Value::Object(map) => {
+            assert!(
+                !map.contains_key("secs_since_epoch"),
+                "{path}: {at} is serde's SystemTime shape: {value}"
+            );
+            for (key, v) in map {
+                let here = format!("{at}.{key}");
+                if is_time_key(key) {
+                    match v {
+                        Value::Null => {}
+                        Value::String(s) => assert!(
+                            chrono::DateTime::parse_from_rfc3339(s).is_ok(),
+                            "{path}: {here} = {s:?} is not RFC 3339"
+                        ),
+                        other => panic!("{path}: {here} = {other} is not an RFC 3339 string"),
+                    }
+                    continue;
+                }
+                if is_prefixed_id_key(key) && !unprefixed_resource(path, key) {
+                    if let Value::String(s) = v {
+                        assert!(
+                            uuid::Uuid::parse_str(s).is_err(),
+                            "{path}: {here} = {s:?} is a bare UUID; ids carry their prefix"
+                        );
+                    }
+                }
+                check_shape(path, &here, v);
+            }
+        }
+        Value::Array(items) => {
+            for (i, v) in items.iter().enumerate() {
+                check_shape(path, &format!("{at}[{i}]"), v);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Seconds since the epoch of an RFC 3339 time in a response.
+fn rfc3339_secs(value: &Value) -> i64 {
+    chrono::DateTime::parse_from_rfc3339(value.as_str().expect("an RFC 3339 string"))
+        .expect("RFC 3339")
+        .timestamp()
+}
+
+/// A key naming a moment (not a duration: `_ms`, `_secs`, `_seconds` and
+/// `_days` stay numbers).
+fn is_time_key(key: &str) -> bool {
+    key.ends_with("_at")
+        || key.ends_with("_time")
+        || key.ends_with("_until")
+        || key.ends_with("_since")
+        || matches!(key, "timestamp" | "expires" | "last_seen" | "when")
+}
+
+/// Resources whose ids no `fcp_core::identifiers` type prefixes: an audit
+/// entry, a billing transaction, a rate plan, a voicemail mailbox. Their
+/// ids are plain UUIDs (`docs/API_TOKENS.md` §6).
+fn unprefixed_resource(path: &str, key: &str) -> bool {
+    (key == "id"
+        && [
+            "/api/v1/audit-log",
+            "/api/v1/billing/balance/transactions",
+            "/api/v1/rate-plans",
+            "/api/v1/voicemail/mailboxes",
+            "/api/v1/me/voicemail",
+        ]
+        .iter()
+        .any(|p| path.starts_with(p)))
+        || key == "mailbox_id"
+}
+
+/// A key naming one of the identifiers `fcp_core::identifiers` gives a
+/// prefix.
+fn is_prefixed_id_key(key: &str) -> bool {
+    matches!(
+        key,
+        "id" | "tenant_id"
+            | "user_id"
+            | "device_id"
+            | "location_id"
+            | "number_id"
+            | "phone_number_id"
+            | "binding_id"
+            | "line_binding_id"
+            | "extension_id"
+            | "mailbox_id"
+            | "site_id"
+            | "schedule_id"
+            | "class_of_service_id"
+            | "hold_id"
+            | "prompt_id"
+            | "template_id"
+            | "token_id"
+            | "network_id"
+            | "meeting_id"
+            | "webhook_id"
+            | "session_id"
+            | "request_id"
+    )
+}
+
 const PASSWORD: &str = "Str0ng-Passw0rd!";
 const BEARER: &str = "Bearer test-admin-token";
 
@@ -5071,8 +5183,8 @@ async fn e911_networks_and_declared_locations() {
     assert_eq!(declared.json["address"]["street_name"], "Hotel");
     assert_eq!(declared.json["address"]["validated"], true);
     assert_eq!(declared.json["current"], true);
-    let declared_at = declared.json["declared_at"].as_u64().unwrap();
-    let expires_at = declared.json["expires_at"].as_u64().unwrap();
+    let declared_at = rfc3339_secs(&declared.json["declared_at"]);
+    let expires_at = rfc3339_secs(&declared.json["expires_at"]);
     assert_eq!(expires_at - declared_at, 7200, "the tenant's TTL");
 
     // An address the validator refuses is not stored.
@@ -7157,7 +7269,7 @@ async fn a_subject_export_is_filed_run_downloaded_and_audited() {
         .await;
     assert_eq!(filed.status, StatusCode::CREATED, "{}", filed.text);
     assert_eq!(filed.json["status"], "received");
-    let due = filed.json["due_at"].as_u64().unwrap() - filed.json["received_at"].as_u64().unwrap();
+    let due = rfc3339_secs(&filed.json["due_at"]) - rfc3339_secs(&filed.json["received_at"]);
     assert_eq!(due, 10 * 86_400);
     let id = filed.json["id"].as_str().unwrap().to_string();
 
@@ -7860,7 +7972,7 @@ async fn sites_are_made_with_a_token_shown_once_and_managed_in_their_tenant() {
         .expect("the token, shown once")
         .to_string();
     assert!(token.len() >= 40, "{token}");
-    assert!(made.json["enrollment_token_expires_at"].as_u64().is_some());
+    assert!(rfc3339_secs(&made.json["enrollment_token_expires_at"]) > 0);
 
     // Listed and read back, without the token.
     let listed = app.admin(Method::GET, "/api/v1/sites", None).await;

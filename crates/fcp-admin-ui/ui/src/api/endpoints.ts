@@ -270,7 +270,7 @@ export const cdrs = {
 // SIP Trace (for ladder diagram debugging)
 export interface SipTraceMessage {
   id: number
-  timestamp: number // Unix timestamp in milliseconds
+  timestamp: string // RFC 3339
   direction: string
   method_or_status: string
   cseq: string
@@ -301,7 +301,7 @@ export interface FlowTraceEntry {
   flow_name: string | null
   node_id: string | null
   event_type: string
-  timestamp: number // Unix timestamp in milliseconds
+  timestamp: string // RFC 3339
   detail: string | null
   flow_version: number | null
   elapsed_ms: number | null
@@ -422,8 +422,8 @@ export interface PromptResponse {
   file_size: number | null
   is_system: boolean
   has_audio: boolean
-  created_at: number
-  updated_at: number
+  created_at: string
+  updated_at: string
 }
 
 export interface CreatePromptRequest {
@@ -1066,7 +1066,7 @@ export interface JoinTokenResponse {
   room_number: string
   display_name: string
   role: 'guest' | 'host'
-  expires_at: number
+  expires_at: string
   join_url?: string
 }
 

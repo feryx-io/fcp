@@ -68,6 +68,7 @@ pub struct EmergencyConfigResponse {
     pub declared_location_ttl_secs: u64,
     /// False when the tenant has never saved a config (defaults shown).
     pub configured: bool,
+    #[serde(with = "crate::time::epoch_secs")]
     pub updated_at: u64,
 }
 
@@ -382,8 +383,10 @@ pub struct ContactReadiness {
     /// What keeps this contact from being delivered to.
     pub issues: Vec<String>,
     /// When anything was last delivered to it.
+    #[serde(default, with = "crate::time::epoch_secs_opt")]
     pub last_delivery_at: Option<u64>,
     /// When a `933` test call's notice last reached it.
+    #[serde(default, with = "crate::time::epoch_secs_opt")]
     pub last_test_at: Option<u64>,
 }
 
@@ -606,11 +609,14 @@ pub struct EmergencyCallResponse {
     /// Which trunk carried it; a name is unique only within its tenant.
     pub trunk_id: Option<String>,
     pub outcome: String,
+    #[serde(with = "crate::time::epoch_secs")]
     pub placed_at: u64,
     pub notified: bool,
     /// The final SIP status, once the call has ended.
     pub sip_status: Option<u16>,
+    #[serde(default, with = "crate::time::epoch_secs_opt")]
     pub answered_at: Option<u64>,
+    #[serde(default, with = "crate::time::epoch_secs_opt")]
     pub ended_at: Option<u64>,
     /// Seconds from answer to end, for an answered call.
     pub duration_secs: Option<u64>,
@@ -683,10 +689,13 @@ pub struct NotificationResponse {
     /// `delivered`, `retrying` or `failed`.
     pub status: String,
     pub error: Option<String>,
+    #[serde(default, with = "crate::time::epoch_secs_opt")]
     pub delivered_at: Option<u64>,
+    #[serde(default, with = "crate::time::epoch_secs_opt")]
     pub next_retry_at: Option<u64>,
     /// Whether this told someone about a test call.
     pub test: bool,
+    #[serde(with = "crate::time::epoch_secs")]
     pub created_at: u64,
 }
 
@@ -863,6 +872,7 @@ pub struct NumberValidationResponse {
     pub phone_number_id: String,
     pub e164: String,
     pub validated: bool,
+    #[serde(default, with = "crate::time::epoch_secs_opt")]
     pub validated_at: Option<u64>,
 }
 
@@ -925,6 +935,7 @@ pub struct LocationValidationResponse {
     pub location_id: String,
     pub name: String,
     pub validated: bool,
+    #[serde(default, with = "crate::time::epoch_secs_opt")]
     pub validated_at: Option<u64>,
 }
 
@@ -1020,6 +1031,7 @@ pub struct DeviceValidationResponse {
     pub device_id: String,
     pub name: String,
     pub validated: bool,
+    #[serde(default, with = "crate::time::epoch_secs_opt")]
     pub validated_at: Option<u64>,
 }
 

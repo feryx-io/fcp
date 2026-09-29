@@ -50,7 +50,9 @@ pub struct LineBindingResponse {
     /// A phone on the shared line may barge into an active appearance
     /// (§3.11).
     pub barge_in: bool,
+    #[serde(with = "crate::time::rfc3339")]
     pub created_at: SystemTime,
+    #[serde(with = "crate::time::rfc3339")]
     pub updated_at: SystemTime,
 }
 

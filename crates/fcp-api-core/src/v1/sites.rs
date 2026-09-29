@@ -36,13 +36,27 @@ pub struct SiteResponse {
     pub tenant_id: String,
     pub name: String,
     pub status: SiteStatus,
+    #[serde(with = "crate::time::epoch_secs")]
     pub created_at: u64,
+    #[serde(with = "crate::time::epoch_secs")]
     pub updated_at: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        with = "crate::time::epoch_secs_opt",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub enrolled_at: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        with = "crate::time::epoch_secs_opt",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub certificate_expires_at: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        with = "crate::time::epoch_secs_opt",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub last_seen_at: Option<u64>,
     pub link_up: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -56,7 +70,11 @@ pub struct SiteResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sync_cursor: Option<i64>,
     /// When the site last applied a snapshot or a change.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        with = "crate::time::epoch_secs_opt",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub sync_applied_at: Option<u64>,
     /// The site's last failure to fetch or apply, until its next success.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -71,7 +89,7 @@ pub struct SiteResponse {
     /// Who is registered at the site, from its last heartbeat
     /// (`docs/HYBRID_CONTROL_PLANE.md` §3.3).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub registrations: Option<fcp_core::SiteRegistrations>,
+    pub registrations: Option<SiteRegistrationsView>,
 }
 
 impl SiteResponse {
@@ -88,6 +106,46 @@ fn secs(t: SystemTime) -> u64 {
         .unwrap_or_default()
 }
 
+/// The site's registrations as its link last saw them, with times as
+/// RFC 3339 (the heartbeat carries epoch seconds).
+#[derive(Debug, Serialize)]
+pub struct SiteRegistrationsView {
+    pub users: Vec<SiteRegistrationView>,
+    pub total_users: u32,
+    pub total_contacts: u32,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SiteRegistrationView {
+    pub aor: String,
+    pub contacts: u32,
+    /// The earliest registration among the contacts.
+    #[serde(
+        default,
+        with = "crate::time::epoch_secs_opt",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub since: Option<u64>,
+}
+
+impl From<&fcp_core::SiteRegistrations> for SiteRegistrationsView {
+    fn from(r: &fcp_core::SiteRegistrations) -> Self {
+        Self {
+            users: r
+                .users
+                .iter()
+                .map(|u| SiteRegistrationView {
+                    aor: u.aor.clone(),
+                    contacts: u.contacts,
+                    since: u.since,
+                })
+                .collect(),
+            total_users: r.total_users,
+            total_contacts: r.total_contacts,
+        }
+    }
+}
+
 impl From<Site> for SiteResponse {
     fn from(site: Site) -> Self {
         let versions = site.versions();
@@ -95,7 +153,7 @@ impl From<Site> for SiteResponse {
         let registrations = site
             .last_heartbeat
             .as_ref()
-            .and_then(|b| b.registrations.clone());
+            .and_then(|b| b.registrations.as_ref().map(SiteRegistrationsView::from));
         Self {
             id: site.id.to_string(),
             tenant_id: site.tenant_id.to_string(),
@@ -134,6 +192,7 @@ pub struct SiteWithTokenResponse {
     /// The one-time enrollment token; `fcp-link` spends it. Not stored,
     /// not shown again.
     pub enrollment_token: String,
+    #[serde(with = "crate::time::epoch_secs")]
     pub enrollment_token_expires_at: u64,
 }
 

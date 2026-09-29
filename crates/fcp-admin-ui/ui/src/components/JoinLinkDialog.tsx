@@ -111,7 +111,7 @@ export function JoinLinkDialog({ meeting, onOpenChange, mint }: {
                 <Button variant="outline" size="icon" onClick={copy} title="Copy"><Copy className="h-4 w-4" /></Button>
               </div>
               <p className="text-xs text-muted-foreground mt-1">
-                {copied ? 'Copied.' : `${result.display_name} as ${result.role}, valid until ${new Date(result.expires_at * 1000).toLocaleString()}.`}
+                {copied ? 'Copied.' : `${result.display_name} as ${result.role}, valid until ${new Date(result.expires_at).toLocaleString()}.`}
                 {!link && ' Set [conference] gateway_url in the admin config to get a link instead of a bare token.'}
               </p>
             </div>

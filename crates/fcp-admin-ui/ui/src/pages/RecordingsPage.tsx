@@ -17,8 +17,8 @@ import { recordings } from '@/api/endpoints'
 import type { ConferenceRecording, RecordingQueryParams } from '@/types'
 
 /** Unix seconds → a local date and time. */
-const when = (secs: number | null) =>
-  secs ? new Date(secs * 1000).toLocaleString() : '-'
+const when = (at: string | null) =>
+  at ? new Date(at).toLocaleString() : '-'
 
 const duration = (secs: number | null) => {
   if (secs === null) return '-'

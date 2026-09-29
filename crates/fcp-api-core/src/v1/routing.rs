@@ -52,7 +52,9 @@ pub struct RoutingRuleResponse {
     pub target_trunk_id: Option<String>,
     pub target_trunk_group: Option<String>,
     pub reason: Option<String>,
+    #[serde(with = "crate::time::rfc3339")]
     pub created_at: SystemTime,
+    #[serde(with = "crate::time::rfc3339")]
     pub updated_at: SystemTime,
 }
 

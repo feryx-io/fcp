@@ -283,7 +283,16 @@ SDKs and the guide are checked in CI.
        admin's Redis when it has one (`RedisStorage::count_in_window`),
        in the process otherwise, and a failed count lets the request
        through.
-     - **2b** makes times RFC 3339 and ids prefixed.
+     - **2b** makes times RFC 3339 and ids prefixed. **Done (v0.25.295).**
+       - Every response time is RFC 3339, through `fcp_api_core::time`'s
+         serde helpers on the handlers' own structs. Domain structs, which
+         also go into JSONB, heartbeats and events, keep their shapes, and
+         the API gives them views.
+       - Typed ids were already prefixed wherever a response held one.
+       - Four resources have unprefixed UUID ids.
+       - The UI and the CLI read the new forms, and the CLI still reads
+         the old ones.
+       - The test suite checks every response it sees.
      - **2c** puts every list in the `{data, next_cursor}` envelope.
 3. **The contract.**
    - `utoipa` on every admin route, and typed responses in place of

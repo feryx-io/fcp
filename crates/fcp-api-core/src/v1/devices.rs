@@ -49,6 +49,7 @@ pub struct DeviceResponse {
     pub hoteling_host: bool,
     pub sip_uri: Option<String>,
     pub registration_state: String,
+    #[serde(default, with = "crate::time::rfc3339_opt")]
     pub last_registration: Option<SystemTime>,
     pub last_ip_address: Option<String>,
     pub user_agent: Option<String>,
@@ -68,7 +69,9 @@ pub struct DeviceResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provisioning_token: Option<String>,
     pub enabled: bool,
+    #[serde(with = "crate::time::rfc3339")]
     pub created_at: SystemTime,
+    #[serde(with = "crate::time::rfc3339")]
     pub updated_at: SystemTime,
 }
 

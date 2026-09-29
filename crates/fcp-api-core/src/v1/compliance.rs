@@ -78,6 +78,7 @@ pub struct PolicyResponse {
     pub cdr_archived_before: Option<u64>,
     /// False until the tenant has saved a policy (defaults shown).
     pub configured: bool,
+    #[serde(with = "crate::time::epoch_secs")]
     pub updated_at: u64,
 }
 
@@ -314,6 +315,7 @@ pub async fn update_policy(
 #[derive(Debug, Serialize)]
 pub struct RetentionRunResponse {
     pub tenant_id: String,
+    #[serde(with = "crate::time::epoch_secs")]
     pub ran_at: u64,
     pub cdrs_deleted: u64,
     pub sip_traces_deleted: u64,
@@ -435,6 +437,7 @@ pub struct AuditEventResponse {
     pub action: String,
     pub detail: Option<serde_json::Value>,
     pub source_ip: Option<String>,
+    #[serde(with = "crate::time::epoch_secs")]
     pub occurred_at: u64,
 }
 
@@ -511,6 +514,7 @@ pub struct DeletionResponse {
     pub cause: String,
     pub actor: String,
     pub request_id: Option<String>,
+    #[serde(with = "crate::time::epoch_secs")]
     pub deleted_at: u64,
 }
 
@@ -607,9 +611,11 @@ pub struct HoldResponse {
     /// The subjects as the store matches them.
     pub subject_keys: Vec<String>,
     pub created_by: String,
+    #[serde(with = "crate::time::epoch_secs")]
     pub created_at: u64,
     pub active: bool,
     pub released_by: Option<String>,
+    #[serde(default, with = "crate::time::epoch_secs_opt")]
     pub released_at: Option<u64>,
     pub release_reason: Option<String>,
     /// Items held now, by class; `null` for a class too large to count
@@ -849,6 +855,7 @@ pub struct ListSubjectRequestsQuery {
 pub struct BundleResponse {
     pub size_bytes: u64,
     pub sha256: String,
+    #[serde(with = "crate::time::epoch_secs")]
     pub expires_at: u64,
     pub removed: bool,
 }
@@ -864,15 +871,20 @@ pub struct SubjectRequestResponse {
     pub expansion: Option<fcp_core::legal_hold::SubjectExpansion>,
     pub reference: Option<String>,
     pub requested_by: String,
+    #[serde(with = "crate::time::epoch_secs")]
     pub received_at: u64,
+    #[serde(with = "crate::time::epoch_secs")]
     pub due_at: u64,
     /// Open and past `due_at`.
     pub overdue: bool,
+    #[serde(default, with = "crate::time::epoch_secs_opt")]
     pub started_at: Option<u64>,
+    #[serde(default, with = "crate::time::epoch_secs_opt")]
     pub completed_at: Option<u64>,
     pub report: Option<fcp_core::subject_request::ExportReport>,
     pub bundle: Option<BundleResponse>,
     pub error: Option<String>,
+    #[serde(default, with = "crate::time::epoch_secs_opt")]
     pub confirmed_at: Option<u64>,
     pub confirmed_by: Option<String>,
     /// What an erasure would do, for a person to confirm.

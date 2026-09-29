@@ -233,7 +233,7 @@ function MessagesTab({ retentionDays }: { retentionDays: number | null }) {
     try {
       const url = await me.fetchMessageAudio(msg.id)
       const caller = (msg.caller_name || msg.caller || 'unknown').replace(/[^a-zA-Z0-9._-]/g, '_')
-      const date = new Date(msg.created_at * 1000).toISOString().slice(0, 10)
+      const date = new Date(msg.created_at).toISOString().slice(0, 10)
       const a = document.createElement('a')
       a.href = url
       a.download = `voicemail-${caller}-${date}.wav`
@@ -517,7 +517,7 @@ function GreetingsTab() {
 
       {GREETING_TYPES.map((gt) => {
         const greeting = greetings.find((g) => g.greeting_type === gt.id)
-        const isExpired = greeting?.expires_at && greeting.expires_at * 1000 < Date.now()
+        const isExpired = greeting?.expires_at && Date.parse(greeting.expires_at) < Date.now()
 
         return (
           <Card key={gt.id}>
@@ -542,7 +542,7 @@ function GreetingsTab() {
                 {greeting?.expires_at && !isExpired && (
                   <p className="text-xs text-muted-foreground flex items-center gap-1 mt-1">
                     <Clock className="h-3 w-3" />
-                    Expires {new Date(greeting.expires_at * 1000).toLocaleString()}
+                    Expires {new Date(greeting.expires_at).toLocaleString()}
                   </p>
                 )}
               </div>
@@ -803,8 +803,8 @@ function SettingsTab({ mailbox, onUpdate }: { mailbox: MeMailbox; onUpdate: (mb:
 
 // ---- Expiry Indicator ----
 
-function ExpiryIndicator({ createdAt, retentionDays }: { createdAt: number; retentionDays: number }) {
-  const expiresAt = (createdAt + retentionDays * 86400) * 1000 // ms
+function ExpiryIndicator({ createdAt, retentionDays }: { createdAt: string; retentionDays: number }) {
+  const expiresAt = Date.parse(createdAt) + retentionDays * 86_400_000 // ms
   const now = Date.now()
   const remainingMs = expiresAt - now
 
@@ -836,8 +836,8 @@ function formatDuration(seconds: number): string {
   return `${mins}:${secs.toString().padStart(2, '0')}`
 }
 
-function formatDate(epochSecs: number): string {
-  return new Date(epochSecs * 1000).toLocaleDateString(undefined, {
+function formatDate(at: string): string {
+  return new Date(at).toLocaleDateString(undefined, {
     month: 'short',
     day: 'numeric',
     hour: 'numeric',

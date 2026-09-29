@@ -23,6 +23,7 @@ use tracing::{debug, warn};
 #[derive(Debug, Serialize)]
 pub struct SipTraceResponse {
     pub id: i64,
+    #[serde(with = "crate::time::epoch_millis")]
     pub timestamp: u64, // Unix timestamp in milliseconds
     pub direction: String,
     pub method_or_status: String,

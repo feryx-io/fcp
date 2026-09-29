@@ -60,7 +60,9 @@ pub struct PromptResponse {
     pub file_size: Option<u64>,
     pub is_system: bool,
     pub has_audio: bool,
+    #[serde(with = "crate::time::epoch_secs_f64")]
     pub created_at: f64,
+    #[serde(with = "crate::time::epoch_secs_f64")]
     pub updated_at: f64,
 }
 

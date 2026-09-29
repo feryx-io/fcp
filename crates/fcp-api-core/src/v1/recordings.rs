@@ -61,7 +61,9 @@ pub struct RecordingResponse {
     pub format: String,
     pub trigger: String,
     pub consent: String,
+    #[serde(with = "crate::time::epoch_secs")]
     pub started_at: u64,
+    #[serde(default, with = "crate::time::epoch_secs_opt")]
     pub ended_at: Option<u64>,
     pub duration_secs: Option<u64>,
     pub size_bytes: Option<u64>,
