@@ -207,7 +207,7 @@ function ConfigurationTab() {
         ) : (
           <div className="space-y-2">
             {current.contacts.map((contact, index) => {
-              const Icon = KIND_ICON[contact.kind]
+              const Icon = KIND_ICON[contact.kind as ContactKind]
               const hint = CONTACT_KINDS.find((k) => k.value === contact.kind)?.hint
               return (
                 <div key={index} className="flex items-start gap-2">

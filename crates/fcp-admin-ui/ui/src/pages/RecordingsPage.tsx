@@ -21,8 +21,8 @@ import type { ConferenceRecording, RecordingQueryParams } from '@/types'
 const when = (at: string | null) =>
   at ? new Date(at).toLocaleString() : '-'
 
-const duration = (secs: number | null) => {
-  if (secs === null) return '-'
+const duration = (secs?: number | null) => {
+  if (secs == null) return '-'
   const h = Math.floor(secs / 3600)
   const m = Math.floor((secs % 3600) / 60)
   const s = secs % 60
@@ -31,8 +31,8 @@ const duration = (secs: number | null) => {
     : `${m}:${String(s).padStart(2, '0')}`
 }
 
-const size = (bytes: number | null) => {
-  if (bytes === null) return '-'
+const size = (bytes?: number | null) => {
+  if (bytes == null) return '-'
   const units = ['B', 'KB', 'MB', 'GB']
   let n = bytes
   let i = 0

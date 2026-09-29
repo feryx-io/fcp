@@ -1,3 +1,4 @@
+import type { components } from '@/api/schema'
 import { apiClient } from './client'
 import type {
   User,
@@ -268,25 +269,9 @@ export const cdrs = {
 }
 
 // SIP Trace (for ladder diagram debugging)
-export interface SipTraceMessage {
-  id: number
-  timestamp: string // RFC 3339
-  direction: string
-  method_or_status: string
-  cseq: string
-  from_uri: string
-  to_uri: string
-  source_addr: string
-  dest_addr: string
-  transport: string
-  raw_message: string
-  node_id: string | null
-}
+export type SipTraceMessage = components['schemas']['SipTraceResponse']
 
-export interface SipTraceListResponse {
-  call_id: string
-  messages: SipTraceMessage[]
-}
+export type SipTraceListResponse = components['schemas']['SipTraceListResponse']
 
 export const sipTrace = {
   getMessages: (callId: string) =>
@@ -294,18 +279,7 @@ export const sipTrace = {
 }
 
 // Flow Execution Traces
-export interface FlowTraceEntry {
-  id: number
-  call_id: string
-  flow_id: string
-  flow_name: string | null
-  node_id: string | null
-  event_type: string
-  timestamp: string // RFC 3339
-  detail: string | null
-  flow_version: number | null
-  elapsed_ms: number | null
-}
+export type FlowTraceEntry = components['schemas']['FlowTraceResponse']
 
 export type ListFlowTracesResponse = Page<FlowTraceEntry>
 
@@ -402,43 +376,11 @@ export const voicemail = {
 }
 
 // Audio Prompts
-export interface PromptResponse {
-  id: string
-  tenant_id: string
-  name: string
-  description: string | null
-  category: string
-  language: string
-  source_type: string
-  tts_text: string | null
-  tts_voice: string | null
-  audio_path: string | null
-  audio_format: string | null
-  duration_ms: number | null
-  file_size: number | null
-  is_system: boolean
-  has_audio: boolean
-  created_at: string
-  updated_at: string
-}
+export type PromptResponse = components['schemas']['PromptResponse']
 
-export interface CreatePromptRequest {
-  name: string
-  description?: string
-  category?: string
-  language?: string
-  source_type?: string
-  tts_text?: string
-  tts_voice?: string
-}
+export type CreatePromptRequest = components['schemas']['CreatePromptRequest']
 
-export interface UpdatePromptRequest {
-  description?: string
-  category?: string
-  language?: string
-  tts_text?: string
-  tts_voice?: string
-}
+export type UpdatePromptRequest = components['schemas']['UpdatePromptRequest']
 
 export const prompts = {
   list: (params?: { category?: string; language?: string }) => {
@@ -691,39 +633,13 @@ export const apiTokens = {
 }
 
 // Configuration Management
-export interface ConfigEntry {
-  service: string
-  section: string
-  tenant_id: string
-  value: Record<string, unknown>
-  version: number
-  updated_at: string
-  updated_by: string | null
-}
+export type ConfigEntry = components['schemas']['ConfigEntryResponse']
 
-export interface ConfigAuditEntry {
-  id: number
-  service: string
-  section: string
-  tenant_id: string
-  old_value: Record<string, unknown> | null
-  new_value: Record<string, unknown>
-  changed_by: string | null
-  changed_at: string
-  version: number
-}
+export type ConfigAuditEntry = components['schemas']['AuditEntryResponse']
 
-export interface UpdateConfigResponse {
-  version: number
-  service: string
-  section: string
-  tenant_id: string
-}
+export type UpdateConfigResponse = components['schemas']['UpdateConfigResponse']
 
-export interface ValidateConfigResponse {
-  valid: boolean
-  errors: string[]
-}
+export type ValidateConfigResponse = components['schemas']['ValidateConfigResponse']
 
 export const config = {
   list: (service?: string, tenant_id?: string) => {
@@ -1057,21 +973,10 @@ export const conferenceLive = {
 }
 
 /** `POST /conferences/meetings/{id}/join-tokens` body. */
-export interface MintJoinTokenRequest {
-  display_name?: string
-  role?: 'guest' | 'host'
-  ttl_secs?: number
-}
+export type MintJoinTokenRequest = components['schemas']['MintJoinTokenRequest']
 
 /** A minted browser join token and, when the gateway URL is configured, its link. */
-export interface JoinTokenResponse {
-  token: string
-  room_number: string
-  display_name: string
-  role: 'guest' | 'host'
-  expires_at: string
-  join_url?: string
-}
+export type JoinTokenResponse = components['schemas']['JoinTokenResponse']
 
 export const joinTokens = {
   /** `POST /conferences/meetings/{id}/join-tokens` — a browser join link for a meeting (admins). */

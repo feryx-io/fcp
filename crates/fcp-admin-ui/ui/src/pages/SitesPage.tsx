@@ -29,8 +29,8 @@ const createSchema = z.object({
 
 type CreateForm = z.infer<typeof createSchema>
 
-const ago = (at?: string) =>
-  at === undefined ? 'never' : formatDuration(Math.max(0, Math.floor(Date.now() / 1000 - epochSecs(at)))) + ' ago'
+const ago = (at?: string | null) =>
+  at == null ? 'never' : formatDuration(Math.max(0, Math.floor(Date.now() / 1000 - epochSecs(at)))) + ' ago'
 
 export function SitesPage() {
   const tenantId = useEffectiveTenantId()

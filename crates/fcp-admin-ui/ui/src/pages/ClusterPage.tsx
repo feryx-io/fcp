@@ -139,17 +139,18 @@ const columns: ColumnDef<ClusterNodeInfo>[] = [
         )
       }
       const left = node.calls_left ?? 0
-      const used = capacity.max_concurrent_calls - left
-      const pct = Math.round((used / capacity.max_concurrent_calls) * 100)
+      const max = capacity.max_concurrent_calls ?? 0
+      const used = max - left
+      const pct = max > 0 ? Math.round((used / max) * 100) : 0
       const tone = pct >= 90 ? 'text-destructive' : pct >= 70 ? 'text-yellow-600' : ''
       return (
         <div className="text-xs space-y-0.5">
           <div className={tone}>
-            <span className="font-mono">{left}</span> free of {capacity.max_concurrent_calls}
+            <span className="font-mono">{left}</span> free of {max}
           </div>
           <div className="text-muted-foreground">
-            {capacity.max_cps > 0 && <span className="mr-2">{capacity.cps}/{capacity.max_cps} cps</span>}
-            {capacity.max_concurrent_registrations > 0 && (
+            {(capacity.max_cps ?? 0) > 0 && <span className="mr-2">{capacity.cps}/{capacity.max_cps} cps</span>}
+            {(capacity.max_concurrent_registrations ?? 0) > 0 && (
               <span>
                 {capacity.registrations}/{capacity.max_concurrent_registrations} reg
               </span>
@@ -427,8 +428,8 @@ function VersionSkewBanner({ versions }: { versions: Record<string, string[]> })
 // this cloud and kept by fcp-link; the cloud sees it through its link's
 // heartbeats, not through cluster membership.
 function SitesSection({ sites }: { sites: SiteInfo[] }) {
-  const ago = (at?: string) =>
-    at === undefined ? 'never' : formatDuration(Math.max(0, Math.floor(Date.now() / 1000 - epochSecs(at)))) + ' ago'
+  const ago = (at?: string | null) =>
+    at == null ? 'never' : formatDuration(Math.max(0, Math.floor(Date.now() / 1000 - epochSecs(at)))) + ' ago'
   return (
     <div>
       <h2 className="text-lg font-semibold mb-3">Sites</h2>
@@ -535,7 +536,7 @@ function PageHeader({ onRefresh }: { onRefresh: () => void }) {
   )
 }
 
-function NotConfiguredBanner({ message }: { message?: string }) {
+function NotConfiguredBanner({ message }: { message?: string | null }) {
   return (
     <Card className="border-dashed">
       <CardContent className="p-6">

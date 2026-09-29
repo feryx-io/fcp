@@ -158,7 +158,7 @@ export function UserVoicemailPage() {
         ))}
       </div>
 
-      {tab === 'messages' && <MessagesTab retentionDays={mailbox.retention_days} />}
+      {tab === 'messages' && <MessagesTab retentionDays={mailbox.retention_days ?? null} />}
       {tab === 'greetings' && <GreetingsTab />}
       {tab === 'settings' && <SettingsTab mailbox={mailbox} onUpdate={setMailbox} />}
     </div>

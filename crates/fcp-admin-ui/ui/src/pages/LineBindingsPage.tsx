@@ -316,7 +316,6 @@ export function LineBindingsPage() {
         shared: editItem.binding_type === 'user' ? (data.shared ?? false) : undefined,
         max_appearances: editItem.binding_type === 'user' ? data.max_appearances : undefined,
         barge_in: editItem.binding_type === 'user' ? (data.barge_in ?? false) : undefined,
-        tenant_id: data.tenant_id || undefined,
       },
     })
   }

@@ -205,6 +205,32 @@ jobs:
             exit 1
           fi
 
+  admin-ui:
+    name: Admin UI
+    # The UI's types are generated from the API's OpenAPI contract
+    # (docs/DEVELOPER_SURFACE.md §3, phase 3b): the generated file must be
+    # what docs/openapi.json makes, and the UI must typecheck against it.
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: crates/fcp-admin-ui/ui
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: crates/fcp-admin-ui/ui/package-lock.json
+      - name: Install
+        run: npm ci
+      - name: The generated API types are the contract's
+        run: |
+          npm run -s gen:api
+          git diff --exit-code src/api/schema.d.ts \
+            || { echo "::error::src/api/schema.d.ts is stale: run npm run gen:api"; exit 1; }
+      - name: Typecheck
+        run: npx tsc -b
+
   packaging:
     name: Packaging
     runs-on: ubuntu-latest

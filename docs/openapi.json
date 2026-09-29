@@ -14598,8 +14598,23 @@
           "tenant_id": {
             "type": "string"
           },
-          "old_value": {},
-          "new_value": {},
+          "old_value": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": {},
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "new_value": {
+            "type": "object",
+            "additionalProperties": {},
+            "propertyNames": {
+              "type": "string"
+            }
+          },
           "changed_by": {
             "type": [
               "string",
@@ -15965,7 +15980,14 @@
           "tenant_id": {
             "type": "string"
           },
-          "value": {},
+          "value": {
+            "type": "object",
+            "description": "A configuration section: a JSON object.",
+            "additionalProperties": {},
+            "propertyNames": {
+              "type": "string"
+            }
+          },
           "version": {
             "type": "integer",
             "format": "int64"
@@ -21050,8 +21072,23 @@
                 "tenant_id": {
                   "type": "string"
                 },
-                "old_value": {},
-                "new_value": {},
+                "old_value": {
+                  "type": [
+                    "object",
+                    "null"
+                  ],
+                  "additionalProperties": {},
+                  "propertyNames": {
+                    "type": "string"
+                  }
+                },
+                "new_value": {
+                  "type": "object",
+                  "additionalProperties": {},
+                  "propertyNames": {
+                    "type": "string"
+                  }
+                },
                 "changed_by": {
                   "type": [
                     "string",
@@ -21456,7 +21493,14 @@
                 "tenant_id": {
                   "type": "string"
                 },
-                "value": {},
+                "value": {
+                  "type": "object",
+                  "description": "A configuration section: a JSON object.",
+                  "additionalProperties": {},
+                  "propertyNames": {
+                    "type": "string"
+                  }
+                },
                 "version": {
                   "type": "integer",
                   "format": "int64"
@@ -29651,7 +29695,14 @@
           "value"
         ],
         "properties": {
-          "value": {},
+          "value": {
+            "type": "object",
+            "description": "A configuration section: a JSON object.",
+            "additionalProperties": {},
+            "propertyNames": {
+              "type": "string"
+            }
+          },
           "tenant_id": {
             "type": "string"
           },

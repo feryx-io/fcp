@@ -22,7 +22,7 @@ import {
 import { Switch } from '@/components/ui/switch'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
 import { users, locations, tenants } from '@/api/endpoints'
-import type { User, CreateUserRequest, UpdateUserRequest, Location } from '@/types'
+import type { User, CreateUserRequest, Location } from '@/types'
 import { TenantField, useEffectiveTenantId, useTenantListFilter, useShowTenantColumn } from '@/components/TenantSelector'
 import { CallingDialog } from '@/components/CallingDialog'
 
@@ -124,7 +124,7 @@ export function UsersPage() {
     return tenantList.find((t) => t.id === id)?.name ?? id.slice(0, 8)
   }
 
-  const locationName = (id: string | null) => {
+  const locationName = (id?: string | null) => {
     if (!id) return '-'
     const loc = locationList.find((l: Location) => l.id === id)
     return loc ? loc.name : id
@@ -925,7 +925,7 @@ function BulkImportDialog({
 
       const username = row.data.username.trim()
       const password = row.data.password.trim()
-      const updateData: UpdateUserRequest = {}
+      const updateData: Partial<CreateUserRequest> = {}
       if (row.data.display_name?.trim()) updateData.display_name = row.data.display_name.trim()
       if (row.data.email?.trim()) updateData.email = row.data.email.trim()
       if (row.data.role?.trim()) updateData.role = row.data.role.trim()
