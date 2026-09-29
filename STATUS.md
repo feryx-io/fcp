@@ -1446,6 +1446,23 @@ Phase 1 done (v0.25.293): keys made safe.
   and are flagged `legacy_full_access`, to be reviewed.
 - Proved by `api_tokens_never_exceed_their_maker` (`api_postgres.rs`).
 
+Phase 2 is split into three PRs. 2a done (v0.25.294):
+- One error shape, `{error, code, details}`, from every layer: the
+  handlers, the bearer layer, the tenant extractor and the permission
+  gate. `shape::json_errors` rewrites axum's plain-text rejections and
+  405s.
+- `X-Request-Id` on every response.
+- CORS takes `PATCH` and `X-FCP-Tenant-Id`.
+- `[api.rate_limit]`: 600 requests a minute per API token, 3000 per
+  tenant's tokens. Counted in the cluster's Redis
+  (`RedisStorage::count_in_window`) or in the process; 429 with
+  `Retry-After`, and `RateLimit-*` headers.
+- The UI's porting page and call mute are deleted (no such server
+  routes).
+- Proved by `every_error_is_json_and_every_response_has_an_id`.
+
+2b (RFC 3339 times, prefixed ids) and 2c (list envelopes) follow.
+
 ## Historical documents
 
 Superseded status docs live in [`docs/archive/`](docs/archive/README.md) — they describe

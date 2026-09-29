@@ -98,6 +98,22 @@ fn init_tracing(config: &config::AdminConfig) -> Result<()> {
     Ok(())
 }
 
+/// API tokens' request counts in the cluster's Redis
+/// (`fcp_api_core::rate_limit`), so every admin node counts together.
+struct RedisRateCounter(fcp_storage_redis::RedisStorage);
+
+#[async_trait::async_trait]
+impl fcp_api_core::rate_limit::RateCounter for RedisRateCounter {
+    async fn hit(&self, key: &str, window: u64) -> anyhow::Result<u64> {
+        self.0
+            .count_in_window(
+                &format!("ratelimit:{key}:{window}"),
+                fcp_api_core::rate_limit::WINDOW * 2,
+            )
+            .await
+    }
+}
+
 /// `/v1/trunks` reading the views the nodes publish to the cluster.
 struct ClusterTrunkReports(fcp_cluster::TrunkRegistry);
 
@@ -389,6 +405,7 @@ async fn main() -> Result<()> {
         metrics_enabled: false,
         metrics_path: "/metrics".to_string(),
         deployment_mode: config.api.deployment_mode,
+        rate_limit: config.api.rate_limit.clone(),
     };
     let realm = "fcp.local".to_string();
     let default_tenant_id = config.service.default_tenant_id;
@@ -649,6 +666,7 @@ async fn main() -> Result<()> {
 
     // Initialize cluster reader (optional — only when Redis is configured)
     let mut trunk_reports: Option<std::sync::Arc<dyn fcp_api_core::TrunkNodeReports>> = None;
+    let mut rate_counter: Option<std::sync::Arc<dyn fcp_api_core::rate_limit::RateCounter>> = None;
     let cluster_reader = if let Some(ref redis_url) = config.cluster.redis_url {
         match fcp_storage_redis::RedisStorage::new(fcp_storage_redis::RedisConfig {
             url: redis_url.clone(),
@@ -664,6 +682,9 @@ async fn main() -> Result<()> {
                     fcp_cluster::TrunkRegistry::new(redis_storage.clone(), "fcp-admin".to_string()),
                 ))
                     as std::sync::Arc<dyn fcp_api_core::TrunkNodeReports>);
+                // API tokens' request counts, shared by every admin node
+                // on this Redis.
+                rate_counter = Some(std::sync::Arc::new(RedisRateCounter(redis_storage.clone())));
                 let reader = fcp_cluster::ClusterReader::new(redis_storage, 15);
                 info!(redis_url = %redis_url, "Cluster monitoring enabled via Redis");
                 Some(std::sync::Arc::new(reader))
@@ -682,6 +703,10 @@ async fn main() -> Result<()> {
     // it from.
     let api_state = match trunk_reports {
         Some(reports) => api_state.with_trunk_reports(reports),
+        None => api_state,
+    };
+    let api_state = match rate_counter {
+        Some(counter) => api_state.with_rate_counter(counter),
         None => api_state,
     };
 

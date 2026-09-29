@@ -18,7 +18,7 @@ use crate::auth::{check_permission, AuthIdentity};
 use crate::state::ApiState;
 use axum::{
     extract::{MatchedPath, Request, State},
-    http::{Method, StatusCode},
+    http::Method,
     middleware::Next,
     response::{IntoResponse, Response},
 };
@@ -540,7 +540,7 @@ pub fn gate(method: &Method, path: &str) -> Option<Gate> {
 }
 
 fn refuse(message: &str) -> Response {
-    (StatusCode::FORBIDDEN, message.to_string()).into_response()
+    crate::error::ApiError::Forbidden(message.to_string()).into_response()
 }
 
 /// Check the caller against the matched route's gate. A caller without an

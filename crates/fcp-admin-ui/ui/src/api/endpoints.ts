@@ -61,8 +61,6 @@ import type {
   ListFlowsResponse,
   ListFlowsQuery,
   SystemStatus,
-  PortRequest,
-  CreatePortRequest,
   AuditEntry,
   AuditQueryParams,
   DeletionEntry,
@@ -237,8 +235,6 @@ export const calls = {
   resume: (callId: string) => apiClient.post<void>(`/calls/${encodeURIComponent(callId)}/resume`),
   transfer: (callId: string, target: string) =>
     apiClient.post<void>(`/calls/${encodeURIComponent(callId)}/transfer`, { target }),
-  mute: (callId: string) => apiClient.post<void>(`/calls/${encodeURIComponent(callId)}/mute`),
-  unmute: (callId: string) => apiClient.post<void>(`/calls/${encodeURIComponent(callId)}/unmute`),
   /** Put a supervisor on the call: they are dialed and join when they answer (§3.11). */
   supervise: (
     callId: string,
@@ -604,18 +600,6 @@ export const cluster = {
   nodes: () => apiClient.get<ClusterNodesResponse>('/cluster/nodes'),
   stats: () => apiClient.get<ClusterStatsResponse>('/cluster/stats'),
   sites: () => apiClient.get<ClusterSitesResponse>('/cluster/sites'),
-}
-
-// Number Porting
-export const porting = {
-  list: () => apiClient.get<PortRequest[]>('/porting/requests'),
-  get: (id: string) => apiClient.get<PortRequest>(`/porting/requests/${encodeURIComponent(id)}`),
-  create: (data: CreatePortRequest) => apiClient.post<PortRequest>('/porting/requests', data),
-  update: (id: string, data: Partial<CreatePortRequest>) =>
-    apiClient.put<PortRequest>(`/porting/requests/${encodeURIComponent(id)}`, data),
-  delete: (id: string) => apiClient.delete<void>(`/porting/requests/${encodeURIComponent(id)}`),
-  submit: (id: string) => apiClient.post<void>(`/porting/requests/${encodeURIComponent(id)}/submit`),
-  cancel: (id: string) => apiClient.post<void>(`/porting/requests/${encodeURIComponent(id)}/cancel`),
 }
 
 // Audit Log

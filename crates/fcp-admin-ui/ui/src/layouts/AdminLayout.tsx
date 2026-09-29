@@ -57,7 +57,6 @@ const navItems: NavItem[] = [
   { label: 'Flow Traces', href: '/admin/flow-traces', icon: Activity, section: 'Advanced' },
   { label: 'Cluster', href: '/admin/cluster', icon: Globe, section: 'Advanced' },
   { label: 'Sites', href: '/admin/sites', icon: Cable, section: 'Advanced' },
-  { label: 'Number Porting', href: '/admin/porting', icon: Phone, section: 'Advanced' },
   { label: 'Audit Log', href: '/admin/audit', icon: ScrollText, section: 'Advanced' },
   { label: 'API Tokens', href: '/admin/tokens', icon: Key, section: 'Advanced' },
   { label: 'System Settings', href: '/admin/system-settings', icon: Settings, section: 'Advanced' },

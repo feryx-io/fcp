@@ -190,4 +190,25 @@ impl RedisStorage {
     pub fn key(&self, suffix: &str) -> String {
         format!("{}{}", self.key_prefix, suffix)
     }
+
+    /// Count one hit on `suffix` (under the key prefix) and return the
+    /// count so far, the key expiring `ttl` after its first hit — a fixed
+    /// window counter, as the admin API's rate limits use
+    /// (docs/DEVELOPER_SURFACE.md §3, phase 2).
+    pub async fn count_in_window(&self, suffix: &str, ttl: std::time::Duration) -> Result<u64> {
+        let key = self.key(suffix);
+        let mut conn = self.conn.clone();
+        let (count,): (u64,) = redis::pipe()
+            .atomic()
+            .incr(&key, 1u64)
+            .cmd("EXPIRE")
+            .arg(&key)
+            .arg(ttl.as_secs().max(1))
+            .arg("NX")
+            .ignore()
+            .query_async(&mut conn)
+            .await
+            .context("Redis window count failed")?;
+        Ok(count)
+    }
 }

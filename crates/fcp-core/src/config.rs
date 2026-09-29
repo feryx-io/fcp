@@ -799,6 +799,48 @@ pub struct ApiConfig {
     /// is only enabled in Carrier/ServiceProvider modes).
     #[serde(default)]
     pub deployment_mode: crate::permissions::DeploymentMode,
+
+    /// Request limits for API tokens (docs/DEVELOPER_SURFACE.md §3,
+    /// phase 2).
+    #[serde(default)]
+    pub rate_limit: ApiRateLimitConfig,
+}
+
+/// `[api.rate_limit]`: how many requests an API token, and all of a
+/// tenant's tokens together, may make a minute. Counted in the admin's
+/// Redis when it has one (so every admin node counts together), else in
+/// the process. Sessions and the static token are not limited: they are
+/// people at the UI and the platform itself.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApiRateLimitConfig {
+    /// Whether tokens are limited at all.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Requests one token may make a minute.
+    #[serde(default = "default_per_token_per_minute")]
+    pub per_token_per_minute: u32,
+    /// Requests all of one tenant's tokens may make a minute.
+    #[serde(default = "default_per_tenant_per_minute")]
+    pub per_tenant_per_minute: u32,
+}
+
+fn default_per_token_per_minute() -> u32 {
+    600
+}
+
+fn default_per_tenant_per_minute() -> u32 {
+    3000
+}
+
+impl Default for ApiRateLimitConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            per_token_per_minute: default_per_token_per_minute(),
+            per_tenant_per_minute: default_per_tenant_per_minute(),
+        }
+    }
 }
 
 impl Default for ApiConfig {
@@ -814,6 +856,7 @@ impl Default for ApiConfig {
             provisioning_require_https: true,
             allow_public_signup: false,
             deployment_mode: crate::permissions::DeploymentMode::default(),
+            rate_limit: ApiRateLimitConfig::default(),
         }
     }
 }

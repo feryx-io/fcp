@@ -34,7 +34,6 @@ const commands: CommandItem[] = [
   { label: 'IVR Flows', href: '/admin/flows', icon: Workflow, keywords: ['ivr', 'menu', 'builder'] },
   { label: 'Cluster Monitor', href: '/admin/cluster', icon: Globe, keywords: ['nodes', 'health', 'system'] },
   { label: 'Sites', href: '/admin/sites', icon: Cable, keywords: ['site', 'hybrid', 'link', 'enroll', 'premises'] },
-  { label: 'Number Porting', href: '/admin/porting', icon: Phone, keywords: ['port', 'transfer', 'carrier'] },
   { label: 'Recordings', href: '/admin/recordings', icon: Disc, keywords: ['recording', 'conference', 'webm', 'mp4', 'wav', 'playback'] },
   { label: 'Audit Log', href: '/admin/audit', icon: ScrollText, keywords: ['audit', 'who', 'changes'] },
   { label: 'Emergency Calling', href: '/admin/emergency', icon: Siren, keywords: ['e911', '911', 'emergency', 'kari', 'readiness', 'notification'] },

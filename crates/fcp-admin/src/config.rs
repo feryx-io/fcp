@@ -481,6 +481,12 @@ pub struct ApiConfig {
     /// cloud and in a deployment that is nobody's site.
     #[serde(default)]
     pub managed_by: Option<String>,
+
+    /// `[api.rate_limit]`: requests a minute per API token and per tenant
+    /// (docs/DEVELOPER_SURFACE.md §3, phase 2), counted in the cluster's
+    /// Redis when `[cluster] redis_url` is set, else in this process.
+    #[serde(default)]
+    pub rate_limit: fcp_core::ApiRateLimitConfig,
 }
 
 fn default_bind_address() -> SocketAddr {
@@ -502,6 +508,7 @@ impl Default for ApiConfig {
             allow_public_signup: false,
             deployment_mode: fcp_core::permissions::DeploymentMode::default(),
             managed_by: None,
+            rate_limit: fcp_core::ApiRateLimitConfig::default(),
         }
     }
 }
