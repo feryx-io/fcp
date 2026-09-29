@@ -1007,7 +1007,13 @@ at once on first boot (made under an advisory lock now, and the five
 health checks without a start period have one). Phase 3 done (v0.25.287): a test's Redis database is emptied when the
 testkit hands it out (`private_redis_url`), so what one test binary left
 reaches no other; a binary asking for more than the fifteen databases is
-refused.
+refused. Phase 4 done (v0.25.288): what the nightly found is written down
+(`docs/NIGHTLY_STACK.md` §6) — the restore's Postgres readiness race and
+the compose health checks (TCP now), the site step's `jq` (the site stack
+had never run in the nightly), forge-bfcp's parser (forge-media #168) —
+and the packages' visibility left to the owner; `docs/TEST_FLOOR.md` gets
+the shipped stack as its top layer. The nightly-stack project is
+complete.
 
 ## What is next (chosen 2026-09-25, to follow the nightly stack)
 

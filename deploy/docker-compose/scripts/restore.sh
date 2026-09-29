@@ -118,11 +118,15 @@ done
 # 5. The database, into postgres started alone.
 say "starting postgres"
 docker compose up -d --no-build postgres >/dev/null
+# Over TCP: on an empty volume the image first runs a temporary server on
+# the socket alone for its init scripts, then restarts; a socket check
+# passes against that server and the restore then finds it gone.
+ready() { docker compose exec -T postgres pg_isready -h 127.0.0.1 -U fcp -d fcp >/dev/null 2>&1; }
 for _ in $(seq 1 60); do
-    if docker compose exec -T postgres pg_isready -U fcp -d fcp >/dev/null 2>&1; then break; fi
+    if ready; then break; fi
     sleep 1
 done
-docker compose exec -T postgres pg_isready -U fcp -d fcp >/dev/null 2>&1 || fail "postgres did not become ready"
+ready || fail "postgres did not become ready"
 say "restoring the database from $DATABASE"
 docker compose exec -T postgres pg_restore -U fcp -d fcp --no-owner --no-privileges --exit-on-error < "$BACKUP/$DATABASE" \
     || fail "pg_restore failed; the database is partial — docker compose down -v and start over"

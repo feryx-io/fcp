@@ -131,6 +131,20 @@ measurements it needed are in the phone itself now:
 `MediaLeg::stream_stats` for loss, reordering and RFC 3550 jitter, and
 `Call::timings` for INVITE→100, →18x and →200.
 
+## The top layer: the shipped stack
+
+Everything above runs the binaries this checkout just built. The layer
+over them runs what is shipped: the Images workflow's `stack` job pulls
+the nightly images the matrix pushed a few minutes before, brings the
+compose stack up with the shipped `.env`, and drives it with the same
+phone — `crates/fcp-call-manager/tests/compose_live.rs` (a phone
+registers over SIP and SIPS, calls a room, is on the admin's node list),
+then `backup.sh`, `down -v`, `restore.sh` and the call again, then the
+site project (`crates/fcp-link/tests/compose_site.rs`). Those tests are
+gated on `FCP_LIVE_STACK` / `FCP_LIVE_SITE`, so they skip everywhere
+but that job. What each night finds is kept in
+`docs/NIGHTLY_STACK.md` §6.
+
 ## Phases
 
 One PR each, in order.
