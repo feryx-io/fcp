@@ -1269,11 +1269,27 @@ async fn run() -> Result<()> {
             .map(|h| Arc::clone(h) as Arc<dyn fcp_sip::presence::PresenceHandler>);
 
     // 17c. Create VoicemailService for *98 voicemail access
-    let voicemail_service = Arc::new(VoicemailService::new(
-        Arc::clone(&dyn_storage) as Arc<dyn fcp_core::storage::VoicemailStore>,
-        Arc::clone(&media_manager),
-        VoicemailConfig::default(),
-    ));
+    let voicemail_service = {
+        // A flow's Voicemail node records through this node's recorder,
+        // which writes under `[media] recording_dir`: the message's path
+        // must be the file the recorder wrote.
+        let vm_config = VoicemailConfig {
+            recordings_dir: std::path::PathBuf::from(&config.media.recording_dir),
+            ..VoicemailConfig::default()
+        };
+        if let Err(e) = vm_config.validate() {
+            warn!(error = %e, "voicemail recordings directory unusable: messages cannot be left here");
+        }
+        let service = VoicemailService::new(
+            Arc::clone(&dyn_storage) as Arc<dyn fcp_core::storage::VoicemailStore>,
+            Arc::clone(&media_manager),
+            vm_config,
+        );
+        Arc::new(match media_manager.stt_service() {
+            Some(stt) => service.with_stt(Arc::clone(stt)),
+            None => service,
+        })
+    };
 
     // 17d. Create FlowCallHandler for IVR flows (*98 voicemail access, future IVR features)
     let flow_store: Arc<dyn fcp_flow::FlowStore> = pg_flow_store;
@@ -2529,6 +2545,7 @@ async fn create_media_manager(config: &CallManagerConfig) -> Result<Arc<fcp_medi
         recording_dir: config.media.recording_dir.clone(),
         tts: None, // TTS config not needed — injecting shared service directly
         tts_service,
+        stt: config.stt.clone(),
         ..Default::default()
     };
 

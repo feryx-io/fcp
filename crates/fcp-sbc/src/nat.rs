@@ -55,6 +55,8 @@ pub fn build_fcp_media_config(
         turn_server,
         tts: None,
         tts_service: None,
+        stt: None,
+        stt_service: None,
         xdp_enabled: nat.xdp_enabled,
         xdp_interface: nat.xdp_interface.clone(),
         xdp_mode: nat.xdp_mode.clone(),

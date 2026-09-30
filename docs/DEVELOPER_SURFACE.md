@@ -432,6 +432,41 @@ SDKs and the guide are checked in CI.
    - Tests use a scripted provider in `fcp-testkit` that answers a known
      transcript for known audio. Real providers are proved by a manual
      check recorded in the PR.
+   - **Done (v0.25.301)** (`docs/SPEECH.md`).
+     - `fcp_media::stt`: `SttProvider` (one-shot `transcribe`, native
+       `stream` or none), `SttService` (`transcribe_wav` for any WAV,
+       `stream` cutting a provider without one into utterances by energy
+       with `Endpointer`), and the four providers: `deepgram` (files and
+       its WebSocket, an utterance's pieces joined), `openai`, `local`
+       (`scripts/whisper_stt_worker.py`, faster-whisper) and `remote`.
+     - `MediaBackend::listen` over forge-engine's `MediaBridgeManager`,
+       which forge-media already exported: no forge-media release. One
+       bridge per session, fanned out per leg and resampled to 16 kHz,
+       detached when nobody listens or the session ends.
+       `MediaManager::recognize` feeds a leg to the provider and stops
+       when the stream is finished or dropped.
+     - `fcp-tts-server`: `[stt.providers.<name>]`, `POST /v1/transcribe`
+       and the `/v1/transcribe/stream` WebSocket; a server may now carry
+       speech recognition without TTS.
+     - `[stt]` on the call manager and the voicemail server. A mailbox
+       with `transcription_enabled` has each message transcribed after
+       the call, stored on the message, and published as
+       `voicemail.transcribed`, which carries the tenant so webhooks get
+       it.
+     - Found on the way: the call manager's voicemail service wrote its
+       messages' paths under `/var/fcp/voicemail/recordings` while its
+       recorder wrote under `[media] recording_dir`, so no message it
+       recorded could be played or read. Both are now `recording_dir`.
+     - Not done: the email half. No node sends a voicemail notification
+       email, so `include_transcription` has nothing to put the text in.
+       The voicemail events other than `voicemail.transcribed` carry no
+       tenant and so reach no webhook.
+     - Proved by `stt_providers.rs` (Deepgram's and OpenAI's requests and
+       answers against stand-ins), the listener test over real RTP in
+       `backend.rs`, `fcp-tts-server/tests/transcribe.rs` and
+       `fcp-call-manager/tests/speech.rs` (a message left through a flow,
+       transcribed by `fcp_testkit::stt::ScriptedStt`, and one not sent
+       when the mailbox does not ask).
 7. **Flows that listen.**
    - Gather gains:
      - `input` (`dtmf`, `speech`, `dtmf_speech`);

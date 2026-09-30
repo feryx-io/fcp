@@ -1,3 +1,4 @@
+use fcp_media::stt::SttService;
 use fcp_media::tts::TtsService;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -13,6 +14,10 @@ pub struct AppState {
     pub services: HashMap<String, Arc<TtsService>>,
     /// Name of the default provider.
     pub default_provider: String,
+    /// Named speech recognition services.
+    pub stt: HashMap<String, Arc<SttService>>,
+    /// The speech provider a request naming none gets.
+    pub stt_default: Option<String>,
 }
 
 impl AppState {
@@ -27,6 +32,11 @@ impl AppState {
             Some(n) => self.services.get(n),
             None => self.default_service(),
         }
+    }
+
+    /// A speech recognition service by name, or the default.
+    pub fn stt_service(&self, name: Option<&str>) -> Option<&Arc<SttService>> {
+        self.stt.get(name.or(self.stt_default.as_deref())?)
     }
 }
 
@@ -51,6 +61,7 @@ mod tests {
                 default_voice: None,
                 providers: Vec::new(),
             },
+            stt: crate::config::SttSection::default(),
             logging: crate::config::LoggingSection::default(),
             cluster: crate::config::ClusterSection::default(),
         }
@@ -82,6 +93,8 @@ mod tests {
             config: build_config(),
             services,
             default_provider: "primary".to_string(),
+            stt: HashMap::new(),
+            stt_default: None,
         };
 
         assert!(state.service(None).is_some());

@@ -55,6 +55,11 @@ pub struct CallManagerConfig {
     #[serde(default)]
     pub media: MediaSection,
 
+    /// Speech recognition (`docs/DEVELOPER_SURFACE.md` phase 6): voicemail
+    /// transcribed for mailboxes that ask. Unset, nothing is recognised.
+    #[serde(default)]
+    pub stt: Option<fcp_media::SttConfig>,
+
     /// Routing configuration
     #[serde(default)]
     pub routing: RoutingSection,

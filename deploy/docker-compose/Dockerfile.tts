@@ -1,6 +1,7 @@
 # Multi-stage build for fcp-tts (fcp-tts-server): the Rust server on a
 # Python runtime that carries its Kokoro engine (docs/PRODUCTION_STACK.md
-# phase 1). The image is large — `kokoro` brings PyTorch — which is why the
+# phase 1) and the faster-whisper worker its `local` speech provider runs
+# (docs/DEVELOPER_SURFACE.md phase 6). The image is large — `kokoro` brings PyTorch — which is why the
 # compose stack runs it under the `tts` profile. CPU-only PyTorch; the
 # model itself is fetched from the Hugging Face hub on first use.
 FROM rust:1.92 AS builder
@@ -26,14 +27,16 @@ RUN apt-get update && apt-get install -y \
     espeak-ng \
     && rm -rf /var/lib/apt/lists/*
 RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch \
-    && pip install --no-cache-dir kokoro soundfile numpy
+    && pip install --no-cache-dir kokoro soundfile numpy faster-whisper
 
 WORKDIR /app
 COPY --from=builder /app/target/release/fcp-tts /app/fcp-tts
 COPY scripts/kokoro_tts_worker.py /app/scripts/kokoro_tts_worker.py
+COPY scripts/whisper_stt_worker.py /app/scripts/whisper_stt_worker.py
 RUN mkdir -p /var/lib/fcp/tts_cache
-# Where the local provider finds its worker.
+# Where the local providers find their workers.
 ENV FCP_KOKORO_WORKER=/app/scripts/kokoro_tts_worker.py
+ENV FCP_WHISPER_WORKER=/app/scripts/whisper_stt_worker.py
 
 EXPOSE 8093
 

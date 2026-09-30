@@ -454,11 +454,17 @@ async fn main() -> Result<()> {
         beep_audio_path: config.voicemail.beep_audio_path.as_ref().map(PathBuf::from),
     };
 
-    let voicemail_service = Arc::new(VoicemailService::new(
-        Arc::clone(&dyn_storage) as Arc<dyn fcp_core::storage::VoicemailStore>,
-        Arc::clone(&media_manager),
-        vm_config,
-    ));
+    let voicemail_service = {
+        let service = VoicemailService::new(
+            Arc::clone(&dyn_storage) as Arc<dyn fcp_core::storage::VoicemailStore>,
+            Arc::clone(&media_manager),
+            vm_config,
+        );
+        Arc::new(match media_manager.stt_service() {
+            Some(stt) => service.with_stt(Arc::clone(stt)),
+            None => service,
+        })
+    };
 
     info!("VoicemailService created");
 
@@ -1260,6 +1266,7 @@ async fn create_media_manager(
         rtp_port_end: config.media.rtp_port_end,
         public_ip: config.media.public_ip.clone(),
         recording_dir: config.voicemail.recordings_dir.clone(),
+        stt: config.stt.clone(),
         ..Default::default()
     };
 

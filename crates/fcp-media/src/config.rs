@@ -63,6 +63,14 @@ pub struct MediaConfig {
     #[serde(skip)]
     pub tts_service: Option<Arc<crate::tts::TtsService>>,
 
+    /// Speech recognition configuration (`[stt]`).
+    #[serde(default)]
+    pub stt: Option<crate::stt::SttConfig>,
+
+    /// Pre-created speech recognition service; used instead of `stt`.
+    #[serde(skip)]
+    pub stt_service: Option<Arc<crate::stt::SttService>>,
+
     /// Enable XDP kernel-level RTP forwarding (Linux only).
     #[serde(default)]
     pub xdp_enabled: bool,
@@ -119,6 +127,8 @@ impl std::fmt::Debug for MediaConfig {
             .field("public_ip", &self.public_ip)
             .field("tts", &self.tts.is_some())
             .field("tts_service", &self.tts_service.is_some())
+            .field("stt", &self.stt.is_some())
+            .field("stt_service", &self.stt_service.is_some())
             .finish()
     }
 }
@@ -140,6 +150,8 @@ impl Default for MediaConfig {
             turn_server: None,
             tts: None,
             tts_service: None,
+            stt: None,
+            stt_service: None,
             xdp_enabled: false,
             xdp_interface: default_xdp_interface(),
             xdp_mode: default_xdp_mode(),

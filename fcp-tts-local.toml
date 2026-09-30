@@ -22,6 +22,20 @@ python_path = ".venv/bin/python3"
 # GPU device: "auto" (cuda if available, else cpu), "cuda", "cuda:0", "cpu"
 device = "auto"
 
+# Speech recognition at /v1/transcribe (docs/SPEECH.md). Uncomment one
+# provider; with several, default_provider names the one a request gets.
+# [stt]
+# language = "en-US"
+#
+# [stt.providers.whisper]
+# type = "local"                 # scripts/whisper_stt_worker.py (pip install faster-whisper)
+# python_path = ".venv/bin/python3"
+# model = "base"
+#
+# [stt.providers.deepgram]
+# type = "deepgram"
+# api_key = "${DEEPGRAM_API_KEY}"
+
 [logging]
 level = "info"
 format = "pretty"

@@ -13,6 +13,9 @@ pub struct TtsServerConfig {
     pub auth: AuthSection,
     #[serde(default)]
     pub tts: TtsSection,
+    /// Speech recognition, served at `/v1/transcribe`.
+    #[serde(default)]
+    pub stt: SttSection,
     #[serde(default)]
     pub logging: LoggingSection,
     #[serde(default)]
@@ -173,6 +176,38 @@ fn default_device() -> String {
 }
 
 // ---------------------------------------------------------------------------
+// STT
+// ---------------------------------------------------------------------------
+
+/// Speech recognition: named providers, each an
+/// [`fcp_media::stt::SttProviderConfig`] —
+/// `[stt.providers.deepgram] type = "deepgram"` and so on.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SttSection {
+    /// The provider a request naming none is sent to; the only one when
+    /// there is one.
+    #[serde(default)]
+    pub default_provider: Option<String>,
+
+    /// The language a request naming none is in.
+    #[serde(default = "default_language")]
+    pub language: String,
+
+    #[serde(default)]
+    pub providers: std::collections::BTreeMap<String, fcp_media::stt::SttProviderConfig>,
+}
+
+impl SttSection {
+    /// The default provider's name, when any provider is configured.
+    pub fn default_name(&self) -> Option<&str> {
+        self.default_provider
+            .as_deref()
+            .or_else(|| self.providers.keys().next().map(String::as_str))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Logging
 // ---------------------------------------------------------------------------
 
@@ -266,6 +301,7 @@ pub fn load_config(path: Option<&str>) -> anyhow::Result<TtsServerConfig> {
             http: HttpSection::default(),
             auth: AuthSection::default(),
             tts: TtsSection::default(),
+            stt: SttSection::default(),
             logging: LoggingSection::default(),
             cluster: ClusterSection::default(),
         }),
@@ -279,8 +315,19 @@ pub fn validate_runtime_config(config: &TtsServerConfig) -> anyhow::Result<()> {
         );
     }
 
-    if config.tts.providers.is_empty() {
-        anyhow::bail!("At least one TTS provider must be configured under [tts].providers");
+    if config.tts.providers.is_empty() && config.stt.providers.is_empty() {
+        anyhow::bail!(
+            "At least one provider must be configured, under [tts].providers or [stt.providers]"
+        );
+    }
+
+    if config.stt.providers.len() > 1 && config.stt.default_provider.is_none() {
+        anyhow::bail!("[stt] default_provider must name one of the [stt.providers]");
+    }
+    if let Some(name) = &config.stt.default_provider {
+        if !config.stt.providers.contains_key(name) {
+            anyhow::bail!("[stt] default_provider = \"{name}\" is not one of the [stt.providers]");
+        }
     }
 
     Ok(())
@@ -311,6 +358,7 @@ mod tests {
                     device: "auto".to_string(),
                 }],
             },
+            stt: SttSection::default(),
             logging: LoggingSection::default(),
             cluster: ClusterSection::default(),
         }
@@ -336,5 +384,38 @@ mod tests {
         config.auth.allow_unauthenticated = true;
 
         validate_runtime_config(&config).unwrap();
+    }
+
+    #[test]
+    fn speech_providers_are_named_and_the_default_must_be_one_of_them() {
+        let mut config: TtsServerConfig = fcp_core::config::parse_toml(
+            r#"[auth]
+tokens = ["t"]
+
+[stt]
+language = "en-GB"
+
+[stt.providers.deepgram]
+type = "deepgram"
+api_key = "dg"
+
+[stt.providers.whisper]
+type = "local"
+model = "small"
+"#,
+        )
+        .unwrap();
+        assert!(config.tts.providers.is_empty());
+        let error = validate_runtime_config(&config).unwrap_err().to_string();
+        assert!(error.contains("default_provider must name"), "{error}");
+        config.stt.default_provider = Some("whisper".into());
+        validate_runtime_config(&config).unwrap();
+        assert_eq!(config.stt.default_name(), Some("whisper"));
+        config.stt.default_provider = Some("nope".into());
+        assert!(validate_runtime_config(&config).is_err());
+        assert!(fcp_core::config::parse_toml::<TtsServerConfig>(
+            "[stt.providers.x]\ntype = \"deepgram\"\napi_key = \"k\"\nvoice = \"v\"\n"
+        )
+        .is_err());
     }
 }

@@ -292,11 +292,14 @@ mod tests {
                         device: "auto".to_string(),
                     }],
                 },
+                stt: crate::config::SttSection::default(),
                 logging: crate::config::LoggingSection::default(),
                 cluster: crate::config::ClusterSection::default(),
             },
             services,
             default_provider: "primary".to_string(),
+            stt: std::collections::HashMap::new(),
+            stt_default: None,
         })
     }
 

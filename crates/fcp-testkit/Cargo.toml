@@ -32,6 +32,10 @@ rustls-pemfile = "2"
 # The seed writes fixtures the way the binaries read them.
 fcp-core = { path = "../fcp-core" }
 fcp-storage-postgres = { path = "../fcp-storage-postgres" }
+# The scripted recognizer speaks fcp-media's STT protocol with its types.
+fcp-media = { path = "../fcp-media" }
+axum = { version = "0.7", features = ["ws"] }
+futures-util = "0.3"
 
 # The phone: siphon-rs for SIP, forge-media for RTP and codecs.
 sip-core = { path = "../../external/siphon-rs/crates/sip-core" }
