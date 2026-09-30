@@ -1470,6 +1470,20 @@ pub enum VoicemailEvent {
         timestamp: SystemTime,
     },
 
+    /// A message's speech recognised, when its mailbox asks for
+    /// transcription (`docs/DEVELOPER_SURFACE.md` phase 6). The text is
+    /// also stored on the message.
+    MessageTranscribed {
+        tenant_id: TenantId,
+        mailbox_id: String,
+        message_id: String,
+        transcription: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        confidence: Option<f64>,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
     /// Voicemail message deleted
     MessageDeleted {
         mailbox_id: String,
@@ -1652,6 +1666,7 @@ impl PlatformEvent {
         "registration.expired",
         "registration.failed",
         "voicemail.message_recorded",
+        "voicemail.transcribed",
         "voicemail.message_deleted",
         "voicemail.message_played",
         "voicemail.mwi_updated",
@@ -1801,6 +1816,7 @@ impl PlatformEvent {
             },
             PlatformEvent::Voicemail(e) => match e {
                 VoicemailEvent::MessageRecorded { .. } => "voicemail.message_recorded",
+                VoicemailEvent::MessageTranscribed { .. } => "voicemail.transcribed",
                 VoicemailEvent::MessageDeleted { .. } => "voicemail.message_deleted",
                 VoicemailEvent::MessagePlayed { .. } => "voicemail.message_played",
                 VoicemailEvent::MwiUpdated { .. } => "voicemail.mwi_updated",
@@ -1996,6 +2012,9 @@ impl PlatformEvent {
                 | SystemEvent::VersionSkew { .. }
                 | SystemEvent::SiteLinkChanged { .. } => None,
             },
+            PlatformEvent::Voicemail(VoicemailEvent::MessageTranscribed { tenant_id, .. }) => {
+                Some(tenant_id)
+            }
             PlatformEvent::Billing(e) => Some(e.tenant_id()),
             PlatformEvent::Cdr(
                 CdrEvent::Written { tenant_id, .. } | CdrEvent::Archived { tenant_id, .. },
@@ -2245,7 +2264,8 @@ impl VoicemailEvent {
         match self {
             VoicemailEvent::MessageRecorded { call_id, .. }
             | VoicemailEvent::MessagePlayed { call_id, .. } => Some(call_id),
-            VoicemailEvent::MessageDeleted { .. }
+            VoicemailEvent::MessageTranscribed { .. }
+            | VoicemailEvent::MessageDeleted { .. }
             | VoicemailEvent::MwiUpdated { .. }
             | VoicemailEvent::MailboxCreated { .. }
             | VoicemailEvent::MailboxUpdated { .. }
@@ -2256,6 +2276,7 @@ impl VoicemailEvent {
     pub fn timestamp(&self) -> SystemTime {
         match self {
             VoicemailEvent::MessageRecorded { timestamp, .. }
+            | VoicemailEvent::MessageTranscribed { timestamp, .. }
             | VoicemailEvent::MessageDeleted { timestamp, .. }
             | VoicemailEvent::MessagePlayed { timestamp, .. }
             | VoicemailEvent::MwiUpdated { timestamp, .. }
@@ -2535,7 +2556,7 @@ mod content_event_tests {
 
     #[test]
     fn a_video_state_from_an_older_node_reads_as_the_camera() {
-        let tenant = TenantId::new();
+        let tenant = super::TenantId::new();
         let json = serde_json::json!({
             "type": "video_state_changed",
             "room_number": "1000",
@@ -2679,6 +2700,26 @@ mod event_type_list {
             })
             .map(str::to_string)
             .collect()
+    }
+
+    /// A transcription names its tenant, so the tenant's webhooks get it
+    /// (`docs/DEVELOPER_SURFACE.md` phase 6).
+    #[test]
+    fn a_transcription_reaches_its_tenant() {
+        let tenant = super::TenantId::new();
+        let event = PlatformEvent::Voicemail(super::VoicemailEvent::MessageTranscribed {
+            tenant_id: tenant,
+            mailbox_id: "mbx".into(),
+            message_id: "msg".into(),
+            transcription: "call me back".into(),
+            confidence: Some(0.9),
+            timestamp: std::time::SystemTime::now(),
+        });
+        assert_eq!(event.event_type_name(), "voicemail.transcribed");
+        assert_eq!(event.tenant_id(), Some(&tenant));
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["transcription"], "call me back", "{json}");
+        assert_eq!(json["confidence"], 0.9, "{json}");
     }
 
     #[test]

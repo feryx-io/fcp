@@ -15,13 +15,13 @@ above, or an API token granted it: `docs/API_TOKENS.md`). The admin UI's
 ```bash
 curl -s -X POST https://fcp.example.com/api/v1/webhooks \
   -H "Authorization: Bearer $FCP_TOKEN" -H 'Content-Type: application/json' \
-  -d '{"url": "https://crm.example.com/fcp/events", "events": ["call.*", "voicemail.new_message"]}'
+  -d '{"url": "https://crm.example.com/fcp/events", "events": ["call.*", "voicemail.transcribed"]}'
 ```
 
 ```json
 {
   "webhook": { "id": "whk-…", "url": "https://crm.example.com/fcp/events",
-               "events": ["call.*", "voicemail.new_message"], "enabled": true,
+               "events": ["call.*", "voicemail.transcribed"], "enabled": true,
                "secret_prefix": "whsec_AbC", "…": "…" },
   "secret": "whsec_…"
 }

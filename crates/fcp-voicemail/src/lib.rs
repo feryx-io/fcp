@@ -146,6 +146,9 @@ pub struct VoicemailService {
     /// already spoken is not lost with the process
     /// (`docs/CAPACITY_AND_SURVIVABILITY.md` §6).
     recording_now: Arc<AtomicUsize>,
+
+    /// Speech recognition, for mailboxes that ask for transcription.
+    stt: Option<Arc<fcp_media::SttService>>,
 }
 
 impl VoicemailService {
@@ -161,6 +164,7 @@ impl VoicemailService {
             mwi_notifier: None,
             config,
             recording_now: Arc::new(AtomicUsize::new(0)),
+            stt: None,
         }
     }
 
@@ -177,7 +181,60 @@ impl VoicemailService {
             mwi_notifier: Some(mwi_notifier),
             config,
             recording_now: Arc::new(AtomicUsize::new(0)),
+            stt: None,
         }
+    }
+
+    /// Transcribe messages, for mailboxes with `transcription_enabled`.
+    pub fn with_stt(mut self, stt: Arc<fcp_media::SttService>) -> Self {
+        self.stt = Some(stt);
+        self
+    }
+
+    /// Recognise a message's speech and store the text on it, when its
+    /// mailbox asks for transcription and speech recognition is
+    /// configured; `None` otherwise (`docs/DEVELOPER_SURFACE.md` phase 6).
+    ///
+    /// The message is read again before it is written, so a caller who has
+    /// listened to it meanwhile keeps it heard.
+    #[instrument(skip(self, message), fields(message_id = %message.id))]
+    pub async fn transcribe_message(
+        &self,
+        message: &VoicemailMessage,
+    ) -> Result<Option<(VoicemailMailbox, fcp_media::Transcript)>> {
+        let Some(stt) = &self.stt else {
+            return Ok(None);
+        };
+        let Some(mailbox) = self.storage.get_mailbox(&message.mailbox_id).await? else {
+            return Ok(None);
+        };
+        if !mailbox.transcription_enabled {
+            return Ok(None);
+        }
+        let started = std::time::Instant::now();
+        let transcript = stt
+            .transcribe_wav(
+                std::path::Path::new(&message.recording_path),
+                &fcp_media::SttOptions::default(),
+            )
+            .await
+            .context("transcribing the message")?;
+        let Some(mut stored) = self.storage.get_message(&message.id).await? else {
+            // Deleted while it was being transcribed.
+            return Ok(None);
+        };
+        stored.transcription = Some(transcript.text.clone());
+        self.storage
+            .put_message(stored)
+            .await
+            .context("storing the transcription")?;
+        info!(
+            provider = %stt.provider_name(),
+            chars = transcript.text.len(),
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "voicemail transcribed"
+        );
+        Ok(Some((mailbox, transcript)))
     }
 
     /// How many messages are being recorded or written down right now.

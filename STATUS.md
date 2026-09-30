@@ -1565,6 +1565,22 @@ Phase 5 done (v0.25.300): tenant webhooks (`docs/WEBHOOKS.md`).
 - The spec has a `webhooks` section; the admin UI has a Webhooks page.
 - Proved in `api_postgres.rs` and by both SDKs' live tests.
 
+Phase 6 done (v0.25.301): speech recognition (`docs/SPEECH.md`).
+- `fcp_media::stt`, shaped like TTS: Deepgram (file and stream), OpenAI,
+  a local faster-whisper worker and `remote`; a provider without a stream
+  is cut into utterances by energy.
+- `MediaManager::listen` gives one leg's audio at 16 kHz over
+  forge-engine's media bridge, and `recognize` feeds it to the provider.
+- `fcp-tts-server` serves `/v1/transcribe` (a WAV) and
+  `/v1/transcribe/stream` (a WebSocket) from `[stt.providers]`.
+- Voicemail is transcribed when the mailbox asks: stored on the message
+  and published as `voicemail.transcribed`, with the tenant, for webhooks.
+  No node sends voicemail email, so the text is in no email yet.
+- The call manager's voicemail wrote message paths where its recorder did
+  not; fixed.
+- Proved end to end by `fcp-call-manager/tests/speech.rs` against the
+  testkit's scripted recognizer, and by the server's own live test.
+
 ## Historical documents
 
 Superseded status docs live in [`docs/archive/`](docs/archive/README.md) — they describe

@@ -152,6 +152,21 @@ pub trait MediaBackend: Send + Sync {
         None
     }
 
+    /// One leg's audio as this node hears it, as 16 kHz mono PCM frames
+    /// ([`crate::stt::STT_SAMPLE_RATE`]) of about 20 ms, until the session
+    /// ends or the receiver is dropped. A listener a second behind loses
+    /// frames rather than holding the call's media up.
+    async fn listen(
+        &self,
+        _call_id: &CallId,
+        _leg: MediaLeg,
+    ) -> Result<tokio::sync::mpsc::Receiver<Vec<i16>>> {
+        Err(Error::Backend(format!(
+            "the {} backend cannot listen to a call",
+            self.backend_name()
+        )))
+    }
+
     /// Create a DTMF collector wired to the media backend's event stream.
     ///
     /// The returned collector automatically receives DTMF events for the
@@ -451,6 +466,95 @@ pub mod embedded {
 
         /// Forge event bus for subscribing to DTMF and other media events
         event_bus: Arc<EventBus>,
+
+        /// The media bridge every listened-to session is given: forge
+        /// hands it each leg's decoded audio.
+        bridge: Arc<forge_engine::MediaBridgeManager>,
+
+        /// Per forge session, the listeners its audio is fanned out to.
+        listeners: Arc<DashMap<forge_core::CallId, Arc<Listeners>>>,
+    }
+
+    /// How many frames a listener may fall behind: a second.
+    const LISTEN_QUEUE: usize = 50;
+
+    /// Each listener: the leg it hears and where its frames go.
+    type Subscribers = Vec<(MediaLeg, tokio::sync::mpsc::Sender<Vec<i16>>)>;
+
+    /// The listeners of one session; `None` once its pump has stopped.
+    struct Listeners {
+        subscribers: std::sync::Mutex<Option<Subscribers>>,
+    }
+
+    impl Listeners {
+        fn lock(&self) -> std::sync::MutexGuard<'_, Option<Subscribers>> {
+            self.subscribers.lock().unwrap_or_else(|e| e.into_inner())
+        }
+
+        /// Add a listener; false when the pump has stopped.
+        fn add(&self, leg: MediaLeg, tx: tokio::sync::mpsc::Sender<Vec<i16>>) -> bool {
+            match self.lock().as_mut() {
+                Some(list) => {
+                    list.push((leg, tx));
+                    true
+                }
+                None => false,
+            }
+        }
+    }
+
+    /// Carry a session's audio from its bridge to its listeners, each leg
+    /// resampled to 16 kHz, until the session ends or nobody listens.
+    async fn pump_listeners(
+        mut handle: forge_engine::MediaBridgeHandle,
+        fanout: Arc<Listeners>,
+        listeners: Arc<DashMap<forge_core::CallId, Arc<Listeners>>>,
+    ) {
+        let mut resamplers: [Option<(u32, forge_resampler::Resampler)>; 2] = [None, None];
+        while let Some(frame) = handle.recv_frame().await {
+            let (leg, slot) = match frame.leg {
+                forge_engine::ParticipantLabel::A => (MediaLeg::A, 0),
+                forge_engine::ParticipantLabel::B => (MediaLeg::B, 1),
+            };
+            let pcm = if frame.sample_rate == crate::stt::STT_SAMPLE_RATE {
+                frame.samples
+            } else {
+                let resampler = match &mut resamplers[slot] {
+                    Some((rate, r)) if *rate == frame.sample_rate => r,
+                    other => {
+                        match forge_resampler::Resampler::new(
+                            frame.sample_rate,
+                            crate::stt::STT_SAMPLE_RATE,
+                            1,
+                        ) {
+                            Ok(r) => &mut other.insert((frame.sample_rate, r)).1,
+                            Err(e) => {
+                                warn!(rate = frame.sample_rate, error = %e, "cannot resample a listened leg");
+                                continue;
+                            }
+                        }
+                    }
+                };
+                match resampler.resample(&frame.samples) {
+                    Ok(pcm) => pcm,
+                    Err(_) => continue,
+                }
+            };
+            let mut subscribers = fanout.lock();
+            let Some(list) = subscribers.as_mut() else {
+                break;
+            };
+            list.retain(|(_, tx)| !tx.is_closed());
+            if list.is_empty() {
+                break;
+            }
+            for (_, tx) in list.iter().filter(|(l, _)| *l == leg) {
+                let _ = tx.try_send(pcm.clone());
+            }
+        }
+        *fanout.lock() = None;
+        listeners.remove_if(handle.call_id(), |_, v| Arc::ptr_eq(v, &fanout));
+        // The handle detaches the bridge as it drops.
     }
 
     /// Information about a forge-media session
@@ -628,6 +732,8 @@ pub mod embedded {
                 advertise_ip,
                 tts_service,
                 event_bus,
+                bridge: Arc::new(forge_engine::MediaBridgeManager::new()),
+                listeners: Arc::new(DashMap::new()),
             })
         }
     }
@@ -1141,6 +1247,9 @@ pub mod embedded {
                     }
                 }
 
+                // Listeners hear the session end.
+                self.bridge.detach_call(forge_call_id);
+
                 // Stop forwarding (terminate session)
                 session_info
                     .forge_session
@@ -1216,6 +1325,58 @@ pub mod embedded {
                 .forge_session
                 .set_rfc2833_relay_to(forge_leg(leg), relay);
             Ok(())
+        }
+
+        async fn listen(
+            &self,
+            call_id: &fcp_core::CallId,
+            leg: MediaLeg,
+        ) -> Result<tokio::sync::mpsc::Receiver<Vec<i16>>> {
+            let (forge_session, forge_call_id) = {
+                let info = self
+                    .sessions
+                    .get(call_id)
+                    .ok_or_else(|| Error::SessionNotFound(call_id.to_string()))?;
+                (Arc::clone(&info.forge_session), info.forge_call_id.clone())
+            };
+            forge_session
+                .set_media_bridge_manager(Arc::clone(&self.bridge))
+                .await;
+            let (tx, rx) = tokio::sync::mpsc::channel(LISTEN_QUEUE);
+            // A pump that has just stopped may not yet have let the bridge
+            // go: try again for a moment.
+            for _ in 0..50 {
+                match self.listeners.entry(forge_call_id.clone()) {
+                    dashmap::mapref::entry::Entry::Occupied(entry) => {
+                        if entry.get().add(leg, tx.clone()) {
+                            return Ok(rx);
+                        }
+                        entry.remove();
+                    }
+                    dashmap::mapref::entry::Entry::Vacant(slot) => {
+                        match self.bridge.attach_call(forge_call_id.clone()) {
+                            Ok(handle) => {
+                                let fanout = Arc::new(Listeners {
+                                    subscribers: std::sync::Mutex::new(Some(vec![(leg, tx)])),
+                                });
+                                slot.insert(Arc::clone(&fanout));
+                                tokio::spawn(pump_listeners(
+                                    handle,
+                                    fanout,
+                                    Arc::clone(&self.listeners),
+                                ));
+                                debug!(?call_id, ?leg, "listening to the call");
+                                return Ok(rx);
+                            }
+                            Err(_) => drop(slot),
+                        }
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            Err(Error::Backend(format!(
+                "the media bridge of {call_id} did not come free"
+            )))
         }
 
         fn subscribe_digits(
@@ -2246,6 +2407,84 @@ pub mod embedded {
                         c=IN IP4 192.168.1.100\r\n";
             let result = parse_remote_endpoint_from_sdp(sdp);
             assert!(result.is_err());
+        }
+
+        /// A listener hears one leg's audio at 16 kHz, the other leg's
+        /// not at all, and its stream ends with the session.
+        #[tokio::test]
+        async fn a_listener_hears_one_leg_resampled_until_the_session_ends() {
+            let config = crate::config::MediaConfig {
+                rtp_port_start: 43100,
+                rtp_port_end: 43300,
+                public_ip: Some("127.0.0.1".into()),
+                ..Default::default()
+            };
+            let backend = EmbeddedBackend::new(&config).await.unwrap();
+            let call_id = fcp_core::CallId::new();
+            backend
+                .create_session(
+                    call_id,
+                    fcp_core::DialogId::new(),
+                    crate::MediaSessionConfig::default(),
+                )
+                .await
+                .unwrap();
+            let phone_a = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let phone_b = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let sdp = |port: u16| {
+                format!(
+                    "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\n\
+                     m=audio {port} RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n"
+                )
+            };
+            let local = backend
+                .update_session(&call_id, sdp(phone_a.local_addr().unwrap().port()))
+                .await
+                .unwrap();
+            backend
+                .update_session_b_leg(&call_id, sdp(phone_b.local_addr().unwrap().port()))
+                .await
+                .unwrap();
+            let node = crate::sdp::remote_audio_endpoint(&local).unwrap();
+
+            let mut a = backend.listen(&call_id, MediaLeg::A).await.unwrap();
+            let mut b = backend.listen(&call_id, MediaLeg::B).await.unwrap();
+
+            // One second of a 1 kHz tone from phone A, as PCMU at 20 ms.
+            for n in 0..50u16 {
+                let mut packet = vec![0x80, 0x00];
+                packet.extend(n.to_be_bytes());
+                packet.extend((n as u32 * 160).to_be_bytes());
+                packet.extend(0x1234_5678u32.to_be_bytes());
+                packet.extend((0..160).map(|i| {
+                    let t = (n as usize * 160 + i) as f64 / 8000.0;
+                    forge_codecs::g711::encode_ulaw(
+                        (8000.0 * (2.0 * std::f64::consts::PI * 1000.0 * t).sin()) as i16,
+                    )
+                }));
+                phone_a.send_to(&packet, node).await.unwrap();
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+
+            let mut heard = Vec::new();
+            while heard.len() < 16_000 * 3 / 4 {
+                let frame = tokio::time::timeout(Duration::from_secs(5), a.recv())
+                    .await
+                    .expect("leg A's audio")
+                    .expect("the listener is open");
+                heard.extend(frame);
+            }
+            // 20 ms at 8 kHz is 320 samples at 16 kHz, and the tone is there.
+            let power = crate::stt::rms(&heard[3200..]);
+            assert!(power > 3000.0, "the tone, resampled: rms {power}");
+            assert!(b.try_recv().is_err(), "leg B sent nothing");
+
+            backend.terminate_session(&call_id).await.unwrap();
+            let ended = tokio::time::timeout(Duration::from_secs(5), async {
+                while a.recv().await.is_some() {}
+            })
+            .await;
+            assert!(ended.is_ok(), "the listener ends with the session");
         }
 
         #[tokio::test]

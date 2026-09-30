@@ -24,7 +24,8 @@ fcp-storage-redis = { path = "../fcp-storage-redis", optional = true }
 fcp-cluster = { path = "../fcp-cluster", optional = true }
 
 # HTTP framework
-axum = "0.7"
+axum = { version = "0.7", features = ["ws"] }
+futures-util = "0.3"
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 
 # CLI and configuration
@@ -50,3 +51,4 @@ uuid = { workspace = true }
 
 [dev-dependencies]
 fcp-testkit = { path = "../fcp-testkit" }
+reqwest = { version = "0.12", default-features = false, features = ["json"] }

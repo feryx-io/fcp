@@ -22,6 +22,9 @@ pub struct MediaManager {
 
     /// Shared TTS service (available for other subsystems to reuse)
     tts_service: Option<Arc<crate::tts::TtsService>>,
+
+    /// Speech recognition, when configured.
+    stt_service: Option<Arc<crate::stt::SttService>>,
 }
 
 impl MediaManager {
@@ -68,10 +71,23 @@ impl MediaManager {
         // Capture TTS service for sharing with other subsystems
         let tts_service = config.tts_service.clone();
 
+        let stt_service = match (&config.stt_service, &config.stt) {
+            (Some(shared), _) => Some(Arc::clone(shared)),
+            (None, Some(stt)) => {
+                let service = crate::stt::SttService::new(stt.clone())
+                    .await
+                    .map_err(|e| Error::Config(format!("speech recognition: {e:#}")))?;
+                info!(provider = %service.provider_name(), "speech recognition configured");
+                Some(Arc::new(service))
+            }
+            (None, None) => None,
+        };
+
         Ok(Self {
             backend,
             config,
             tts_service,
+            stt_service,
         })
     }
 
@@ -457,6 +473,43 @@ impl MediaManager {
     /// instead of creating their own TTS instance.
     pub fn tts_service(&self) -> Option<&Arc<crate::tts::TtsService>> {
         self.tts_service.as_ref()
+    }
+
+    /// Speech recognition, when configured.
+    pub fn stt_service(&self) -> Option<&Arc<crate::stt::SttService>> {
+        self.stt_service.as_ref()
+    }
+
+    /// One leg's audio as 16 kHz mono PCM frames, until the session ends
+    /// or the receiver is dropped ([`MediaBackend::listen`]).
+    pub async fn listen(
+        &self,
+        call_id: &CallId,
+        leg: crate::MediaLeg,
+    ) -> Result<tokio::sync::mpsc::Receiver<Vec<i16>>> {
+        self.backend.listen(call_id, leg).await
+    }
+
+    /// A streaming recognition of one leg: its audio fed to the configured
+    /// provider until the session ends or the stream is finished or
+    /// dropped.
+    pub async fn recognize(
+        &self,
+        call_id: &CallId,
+        leg: crate::MediaLeg,
+        options: &crate::stt::SttOptions,
+    ) -> Result<crate::stt::SttStream> {
+        let stt = self
+            .stt_service
+            .as_ref()
+            .ok_or_else(|| Error::Config("speech recognition is not configured".into()))?;
+        let audio = self.listen(call_id, leg).await?;
+        let mut stream = stt
+            .stream(options)
+            .await
+            .map_err(|e| Error::Backend(format!("speech recognition: {e:#}")))?;
+        stream.feed_from(audio);
+        Ok(stream)
     }
 
     /// Bridge two calls together for B2BUA operation

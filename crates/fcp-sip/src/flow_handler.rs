@@ -2080,6 +2080,39 @@ impl FlowCallHandler {
                     "Voicemail recorded successfully"
                 );
 
+                // Transcribed after the call, when the mailbox asks for it;
+                // the text lands on the message and in
+                // `voicemail.transcribed` (`docs/DEVELOPER_SURFACE.md`
+                // phase 6).
+                {
+                    let voicemail_service = Arc::clone(&voicemail_service);
+                    let events = self.events.clone();
+                    let message = message.clone();
+                    tokio::spawn(async move {
+                        match voicemail_service.transcribe_message(&message).await {
+                            Ok(Some((mailbox, transcript))) => {
+                                let Some(events) = events else { return };
+                                let event =
+                                    PlatformEvent::Voicemail(VoicemailEvent::MessageTranscribed {
+                                        tenant_id: mailbox.tenant_id,
+                                        mailbox_id: mailbox.id,
+                                        message_id: message.id,
+                                        transcription: transcript.text,
+                                        confidence: transcript.confidence,
+                                        timestamp: std::time::SystemTime::now(),
+                                    });
+                                if let Err(e) = events.publish(event).await {
+                                    error!(error = %e, "Failed to publish voicemail.transcribed");
+                                }
+                            }
+                            Ok(None) => {}
+                            Err(e) => {
+                                warn!(message_id = %message.id, error = %e, "Voicemail transcription failed")
+                            }
+                        }
+                    });
+                }
+
                 // Set context variables
                 let mut context_guard = context.write().await;
                 context_guard.set_variable("voicemail_status".to_string(), "success".to_string());

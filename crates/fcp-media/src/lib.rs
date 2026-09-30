@@ -57,6 +57,7 @@ pub mod error;
 pub mod manager;
 pub mod sdp;
 pub mod session;
+pub mod stt;
 pub mod tts;
 
 // Re-exports
@@ -83,6 +84,9 @@ pub use sdp::{
 };
 pub use session::{
     DtmfMode, MediaSession, MediaSessionConfig, MediaSessionState, MediaSessionStats,
+};
+pub use stt::{
+    SttConfig, SttOptions, SttProvider, SttProviderConfig, SttService, SttStream, Transcript,
 };
 pub use tts::{TtsConfig, TtsProvider, TtsProviderConfig, TtsService, VoiceInfo};
 

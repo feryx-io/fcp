@@ -745,11 +745,16 @@ impl ToneDetector {
 /// How much of a frame's energy sits at `hz`: about 1 for a pure tone
 /// there, about 0 for anything else.
 pub fn goertzel_ratio(samples: &[i16], hz: u32) -> f64 {
+    goertzel_ratio_at(samples, hz, 8000)
+}
+
+/// [`goertzel_ratio`] for audio at `rate`.
+pub fn goertzel_ratio_at(samples: &[i16], hz: u32, rate: u32) -> f64 {
     let n = samples.len();
     if n == 0 {
         return 0.0;
     }
-    let k = (n as f64 * hz as f64 / 8000.0).round();
+    let k = (n as f64 * hz as f64 / rate as f64).round();
     let w = 2.0 * std::f64::consts::PI * k / n as f64;
     let coeff = 2.0 * w.cos();
     let (mut s1, mut s2) = (0.0f64, 0.0f64);

@@ -28,6 +28,7 @@ pub mod seed;
 pub mod service;
 pub mod sinks;
 pub mod smoke;
+pub mod stt;
 pub mod tls;
 pub mod wav;
 

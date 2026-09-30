@@ -8,13 +8,14 @@ mod cli;
 mod config;
 mod routes;
 mod state;
+mod transcribe;
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use axum::{
-    extract::Request,
+    extract::{DefaultBodyLimit, Request},
     http::StatusCode,
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -69,6 +70,7 @@ async fn main() -> Result<()> {
         node_id = %config.service.node_id,
         bind = %config.http.bind_address,
         providers = config.tts.providers.len(),
+        speech_providers = config.stt.providers.len(),
         "fcp-tts starting"
     );
 
@@ -115,20 +117,38 @@ async fn main() -> Result<()> {
         }
     }
 
-    if services.is_empty() {
-        anyhow::bail!("No TTS providers initialized");
+    if !config.tts.providers.is_empty() {
+        if services.is_empty() {
+            anyhow::bail!("No TTS providers initialized");
+        }
+
+        if !services.contains_key(&config.tts.default_provider) {
+            anyhow::bail!(
+                "Default provider '{}' is not available after initialization",
+                config.tts.default_provider
+            );
+        }
     }
 
-    if !services.contains_key(&config.tts.default_provider) {
-        anyhow::bail!(
-            "Default provider '{}' is not available after initialization",
-            config.tts.default_provider
-        );
+    // Speech recognition: every named provider, or the server refuses to
+    // start — a misconfigured recognizer is not skipped.
+    let mut stt = HashMap::new();
+    for (name, provider) in &config.stt.providers {
+        let service = fcp_media::stt::SttService::new(fcp_media::stt::SttConfig {
+            provider: provider.clone(),
+            language: config.stt.language.clone(),
+        })
+        .await
+        .with_context(|| format!("speech provider '{name}'"))?;
+        info!(provider = %name, kind = %service.provider_name(), "speech provider initialized");
+        stt.insert(name.clone(), Arc::new(service));
     }
 
     let app_state = Arc::new(AppState {
         default_provider: config.tts.default_provider.clone(),
         services,
+        stt,
+        stt_default: config.stt.default_name().map(String::from),
         config: config.clone(),
     });
 
@@ -143,6 +163,12 @@ async fn main() -> Result<()> {
         .route("/v1/providers", get(routes::list_providers))
         .route("/v1/cache/stats", get(routes::cache_stats))
         .route("/v1/cache", delete(routes::clear_cache))
+        .route(
+            "/v1/transcribe",
+            // A recording of up to half an hour at 16 kHz.
+            post(transcribe::transcribe).layer(DefaultBodyLimit::max(64 * 1024 * 1024)),
+        )
+        .route("/v1/transcribe/stream", get(transcribe::transcribe_stream))
         .layer(middleware::from_fn(move |req, next| {
             let tokens = auth_tokens.clone();
             require_api_token(tokens, req, next)

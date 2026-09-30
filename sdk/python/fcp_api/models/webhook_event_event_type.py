@@ -129,6 +129,7 @@ class WebhookEventEventType(StrEnum):
     VOICEMAIL_MESSAGE_PLAYED = "voicemail.message_played"
     VOICEMAIL_MESSAGE_RECORDED = "voicemail.message_recorded"
     VOICEMAIL_MWI_UPDATED = "voicemail.mwi_updated"
+    VOICEMAIL_TRANSCRIBED = "voicemail.transcribed"
     WEBHOOK_TEST = "webhook.test"
 
     def __str__(self) -> str:

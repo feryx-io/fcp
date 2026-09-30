@@ -32778,6 +32778,7 @@
               "registration.expired",
               "registration.failed",
               "voicemail.message_recorded",
+              "voicemail.transcribed",
               "voicemail.message_deleted",
               "voicemail.message_played",
               "voicemail.mwi_updated",
