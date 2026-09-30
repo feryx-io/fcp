@@ -51,6 +51,7 @@ pub mod uploads;
 pub mod usage;
 pub mod users;
 pub mod voicemail;
+pub mod webhooks;
 
 use crate::state::ApiState;
 use axum::{
@@ -701,6 +702,27 @@ pub fn router() -> Router<ApiState> {
             get(classes_of_service::get_class)
                 .put(classes_of_service::update_class)
                 .delete(classes_of_service::delete_class),
+        )
+        .route(
+            "/webhooks",
+            get(webhooks::list_webhooks).post(webhooks::create_webhook),
+        )
+        .route("/webhooks/event-types", get(webhooks::list_event_types))
+        .route(
+            "/webhooks/:id",
+            get(webhooks::get_webhook)
+                .patch(webhooks::update_webhook)
+                .delete(webhooks::delete_webhook),
+        )
+        .route(
+            "/webhooks/:id/rotate-secret",
+            post(webhooks::rotate_webhook_secret),
+        )
+        .route("/webhooks/:id/test", post(webhooks::test_webhook))
+        .route("/webhooks/:id/deliveries", get(webhooks::list_deliveries))
+        .route(
+            "/webhooks/:id/deliveries/:delivery_id/replay",
+            post(webhooks::replay_delivery),
         )
         .route(
             "/schedules",

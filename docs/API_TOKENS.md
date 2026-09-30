@@ -229,7 +229,8 @@ to use. A duration stays a number, and its name says the unit: `_ms`,
 `_secs`, `_seconds` or `_days`.
 
 The events WebSocket and webhook payloads are not covered by this rule;
-their shape is `docs/API_EVENTS.md`'s.
+their shape is `docs/API_EVENTS.md`'s (a delivery's envelope is
+`docs/WEBHOOKS.md`'s).
 
 ### Ids
 

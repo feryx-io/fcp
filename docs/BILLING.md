@@ -87,7 +87,8 @@ The platform default (`EventBusHook`) publishes it on the event bus, so an
 external system integrates by:
 
 - **Webhook** — subscribe an endpoint to `billing.*` (or specific types) via
-  `/v1/webhooks`; payloads are HMAC-signed and retried like every other event.
+  the admin API's `/api/v1/webhooks`; deliveries are signed and retried like
+  every other event (`docs/WEBHOOKS.md`).
 - **WebSocket** — `/v1/events?event_types=billing`.
 - **In-process** — implement `fcp_billing::BillingHook` and install it with
   `BillingEngine::with_hook` / `CompositeHook` (e.g. a metering sidecar).

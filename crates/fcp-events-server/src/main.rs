@@ -11,7 +11,6 @@ mod cli;
 mod config;
 mod connection;
 mod nodes;
-mod routes;
 mod state;
 mod storage;
 
@@ -191,13 +190,14 @@ async fn main() -> Result<()> {
     // Initialize PostgreSQL storage for the config store, webhooks and the
     // emergency notifier, which all read `webhook.database_url`.
     let storage_result = if config.webhook.enabled || notifications_wanted {
-        match storage::initialize_storage(&config.webhook.database_url).await {
-            Ok(result) => Some(result),
-            Err(e) => {
-                warn!(error = %e, "Failed to initialize PostgreSQL storage — config store and webhooks disabled");
-                None
-            }
-        }
+        // Webhooks on and no store to read them from would be webhooks
+        // silently off: refuse to start instead, as every database service
+        // does (docs/DEVELOPER_SURFACE.md §3, phase 5).
+        Some(
+            storage::initialize_storage(&config.webhook.database_url)
+                .await
+                .context("webhooks or notifications are on, and their store cannot be opened")?,
+        )
     } else {
         None
     };
@@ -401,7 +401,11 @@ async fn main() -> Result<()> {
                 max_retry_delay: Duration::from_secs(config.webhook.max_retry_delay_secs),
                 max_concurrent: config.webhook.max_concurrent,
                 retry_interval: Duration::from_secs(config.webhook.retry_interval_secs),
+                allow_private_targets: config.webhook.allow_private_targets,
             };
+            if config.webhook.allow_private_targets {
+                warn!("[webhook] allow_private_targets: webhooks may reach loopback and private addresses");
+            }
 
             let dispatcher = Arc::new(WebhookDispatcher::new(webhook_store, dispatcher_config));
 
@@ -604,16 +608,9 @@ async fn main() -> Result<()> {
         .route("/stats", get(stats_handler))
         .with_state(state.clone());
 
-    // Merge webhook routes if dispatcher is available
-    let protected_routes = if let Some(ref dispatcher) = webhook_dispatcher {
-        let webhook_state = routes::webhooks::WebhookRouteState {
-            dispatcher: dispatcher.clone(),
-        };
-        protected_routes.merge(routes::webhooks::webhook_router(webhook_state))
-    } else {
-        protected_routes
-    }
-    .route_layer(middleware::from_fn_with_state(
+    // Webhooks are managed on the admin API, tenant by tenant
+    // (docs/DEVELOPER_SURFACE.md §3, phase 5); this server delivers them.
+    let protected_routes = protected_routes.route_layer(middleware::from_fn_with_state(
         state.clone(),
         require_api_token,
     ));

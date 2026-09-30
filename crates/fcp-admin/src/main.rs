@@ -549,6 +549,17 @@ async fn main() -> Result<()> {
         None
     };
     let cluster_storage = storage.clone();
+    if config.webhooks.allow_private_targets {
+        warn!("[webhooks] allow_private_targets: a tenant's webhook may reach loopback and private addresses");
+    }
+    let webhook_dispatcher = Arc::new(fcp_webhooks::WebhookDispatcher::new(
+        Arc::clone(storage.webhook_store()),
+        fcp_webhooks::WebhookDispatcherConfig {
+            request_timeout: std::time::Duration::from_secs(config.webhooks.request_timeout_secs),
+            allow_private_targets: config.webhooks.allow_private_targets,
+            ..Default::default()
+        },
+    ));
 
     // Create API state
     let api_state = fcp_api_core::ApiState::new(
@@ -579,7 +590,8 @@ async fn main() -> Result<()> {
     .with_site_files(Some(
         Arc::clone(&site_requests) as Arc<dyn fcp_api_core::site_files::SiteFiles>
     ))
-    .with_e911_validator(e911_validator);
+    .with_e911_validator(e911_validator)
+    .with_webhook_dispatcher(Some(webhook_dispatcher));
 
     // Set security policy from config
     let api_state = api_state.with_security_policy(fcp_api_core::SecurityPolicy {

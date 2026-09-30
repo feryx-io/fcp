@@ -1592,6 +1592,140 @@ impl PlatformEvent {
     ///
     /// Returns names like `"call.initiated"`, `"voicemail.message_recorded"`,
     /// `"presence.status_changed"`, etc.
+    /// Every name [`Self::event_type_name`] gives, in its order: what a
+    /// webhook may subscribe to (docs/DEVELOPER_SURFACE.md §3, phase 5).
+    /// `every_event_type_is_listed` keeps it in step.
+    pub const EVENT_TYPES: &'static [&'static str] = &[
+        "call.initiated",
+        "call.ringing",
+        "call.progress",
+        "call.answered",
+        "call.ended",
+        "call.failed",
+        "call.emergency",
+        "call.emergency_completed",
+        "emergency.notification_failed",
+        "call.parked",
+        "call.unparked",
+        "call.held",
+        "call.resumed",
+        "call.party_joined",
+        "call.party_left",
+        "media.session_started",
+        "media.session_ended",
+        "media.dtmf_received",
+        "media.quality_warning",
+        "ivr.prompt_started",
+        "ivr.prompt_completed",
+        "ivr.input_gathered",
+        "ivr.gather_timeout",
+        "recording.started",
+        "recording.completed",
+        "recording.failed",
+        "flow.started",
+        "flow.node_executed",
+        "flow.waiting_for_input",
+        "flow.completed",
+        "flow.failed",
+        "system.started",
+        "system.stopping",
+        "system.health_check",
+        "system.config_changed",
+        "system.node_draining",
+        "system.node_drained",
+        "system.node_joined",
+        "system.node_left",
+        "system.cluster_view_changed",
+        "system.version_skew",
+        "system.site_link_changed",
+        "user.created",
+        "user.updated",
+        "user.deleted",
+        "user.enabled",
+        "user.disabled",
+        "user.calling_changed",
+        "hoteling.login",
+        "hoteling.logout",
+        "registration.registered",
+        "registration.refreshed",
+        "registration.unregistered",
+        "registration.expired",
+        "registration.failed",
+        "voicemail.message_recorded",
+        "voicemail.message_deleted",
+        "voicemail.message_played",
+        "voicemail.mwi_updated",
+        "voicemail.mailbox_created",
+        "voicemail.mailbox_updated",
+        "voicemail.mailbox_deleted",
+        "conference.participant_joined",
+        "conference.participant_left",
+        "conference.room_locked",
+        "conference.room_unlocked",
+        "conference.recording_started",
+        "conference.recording_stopped",
+        "conference.pin_failed",
+        "conference.room_destroyed",
+        "conference.meeting_created",
+        "conference.meeting_updated",
+        "conference.meeting_deleted",
+        "conference.meeting_started",
+        "conference.meeting_ended",
+        "conference.dial_out_invited",
+        "conference.dial_out_failed",
+        "conference.video_state_changed",
+        "conference.content_started",
+        "conference.content_stopped",
+        "conference.video_overload",
+        "conference.video_layout_changed",
+        "conference.active_speaker_changed",
+        "queue.caller_enqueued",
+        "queue.caller_dequeued",
+        "queue.caller_abandoned",
+        "queue.caller_overflowed",
+        "queue.agent_logged_in",
+        "queue.agent_logged_out",
+        "queue.agent_state_changed",
+        "queue.agent_kicked",
+        "queue.callback_initiated",
+        "queue.stats_snapshot",
+        "queue.caller_transferred",
+        "queue.supervisor_joined",
+        "queue.supervisor_left",
+        "queue.callback_attempted",
+        "queue.callback_completed",
+        "queue.callback_failed",
+        "queue.service_level_warning",
+        "queue.queue_draining",
+        "queue.queue_drained",
+        "queue.campaign_call_placed",
+        "queue.campaign_call_connected",
+        "queue.campaign_call_failed",
+        "presence.status_changed",
+        "presence.watcher_added",
+        "presence.watcher_removed",
+        "presence.publish_received",
+        "presence.dialog_changed",
+        "presence.publish_expiry_warning",
+        "presence.publish_expired",
+        "line.appearance_changed",
+        "sip.message_captured",
+        "billing.call_rated",
+        "billing.balance_changed",
+        "billing.balance_low",
+        "billing.balance_depleted",
+        "billing.call_rejected",
+        "billing.call_cut_off",
+        "cdr.written",
+        "cdr.archived",
+        "trunk.registered",
+        "trunk.registration_failed",
+        "trunk.health_changed",
+        "compliance.hold_placed",
+        "compliance.hold_released",
+        "compliance.subject_request_completed",
+    ];
+
     pub fn event_type_name(&self) -> &'static str {
         match self {
             PlatformEvent::Call(e) => match e {
@@ -2521,5 +2655,47 @@ mod compliance_event_tests {
         let json = serde_json::to_value(&event).unwrap();
         assert_eq!(json["type"], "subject_request_completed");
         assert_eq!(json["kind"], "export");
+    }
+}
+
+#[cfg(test)]
+mod event_type_list {
+    use super::PlatformEvent;
+    use std::collections::BTreeSet;
+
+    /// The names `event_type_name` writes, read from its source.
+    fn named_in_source() -> BTreeSet<String> {
+        let src = include_str!("types.rs");
+        let start = src.find("pub fn event_type_name").expect("event_type_name");
+        let end = start + src[start..].find("\n    }\n").expect("its end");
+        src[start..end]
+            .split('"')
+            .skip(1)
+            .step_by(2)
+            .filter(|s| {
+                s.contains('.')
+                    && s.chars()
+                        .all(|c| c.is_ascii_lowercase() || c == '_' || c == '.')
+            })
+            .map(str::to_string)
+            .collect()
+    }
+
+    #[test]
+    fn every_event_type_is_listed() {
+        let listed: BTreeSet<String> = PlatformEvent::EVENT_TYPES
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            listed.len(),
+            PlatformEvent::EVENT_TYPES.len(),
+            "a name listed twice"
+        );
+        assert_eq!(
+            listed,
+            named_in_source(),
+            "EVENT_TYPES and event_type_name disagree"
+        );
     }
 }

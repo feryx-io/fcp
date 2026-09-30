@@ -2480,6 +2480,31 @@ pub struct WebhookEndpoint {
     /// Last modified timestamp
     #[serde(with = "system_time_serde")]
     pub updated_at: SystemTime,
+    /// The secret a rotation replaced, still signing deliveries beside the
+    /// new one until `previous_secret_expires_at`, so a receiver can move to
+    /// the new secret without refusing a genuine delivery
+    /// (docs/DEVELOPER_SURFACE.md §3, phase 5).
+    #[serde(default)]
+    pub previous_secret: Option<String>,
+    /// Until when the previous secret also signs.
+    #[serde(default, with = "optional_system_time_serde")]
+    pub previous_secret_expires_at: Option<SystemTime>,
+}
+
+impl WebhookEndpoint {
+    /// The secrets a delivery made at `now` is signed with: the current
+    /// one, and the one a rotation replaced while its overlap lasts.
+    pub fn signing_secrets(&self, now: SystemTime) -> Vec<&str> {
+        let mut secrets = vec![self.secret.as_str()];
+        if let (Some(previous), Some(until)) =
+            (&self.previous_secret, self.previous_secret_expires_at)
+        {
+            if now <= until && !previous.is_empty() {
+                secrets.push(previous);
+            }
+        }
+        secrets
+    }
 }
 
 /// A delivery log entry for a webhook invocation.

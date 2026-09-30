@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
-  LayoutDashboard, Users, Phone, MonitorSmartphone, Link2, Building2, PhoneCall, FileText, Headphones, Voicemail, Radio, Server, Shield, Workflow, Globe, Key, Coins, ScrollText, Search, Disc, Siren, Cable,
+  LayoutDashboard, Users, Phone, MonitorSmartphone, Link2, Building2, PhoneCall, FileText, Headphones, Voicemail, Radio, Server, Shield, Workflow, Globe, Key, Coins, ScrollText, Search, Disc, Siren, Cable, Webhook,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import {
@@ -38,6 +38,7 @@ const commands: CommandItem[] = [
   { label: 'Audit Log', href: '/admin/audit', icon: ScrollText, keywords: ['audit', 'who', 'changes'] },
   { label: 'Emergency Calling', href: '/admin/emergency', icon: Siren, keywords: ['e911', '911', 'emergency', 'kari', 'readiness', 'notification'] },
   { label: 'API Tokens', href: '/admin/tokens', icon: Key, keywords: ['api', 'key', 'secret'] },
+  { label: 'Webhooks', href: '/admin/webhooks', icon: Webhook, keywords: ['events', 'callback', 'http'] },
 ]
 
 export function CommandPalette() {

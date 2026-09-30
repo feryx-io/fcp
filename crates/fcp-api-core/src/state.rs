@@ -178,6 +178,11 @@ pub struct ApiState {
     /// Who fetches a file a site holds, through its link
     /// (`docs/HYBRID_CONTROL_PLANE.md` §3.3); none where no site links here.
     pub site_files: Option<Arc<dyn crate::site_files::SiteFiles>>,
+    /// Sends a tenant's test deliveries and replays
+    /// (docs/DEVELOPER_SURFACE.md §3, phase 5); its configuration says
+    /// whether a webhook may name a private address. Absent, webhooks are
+    /// managed but not tested or replayed here.
+    pub webhook_dispatcher: Option<Arc<fcp_webhooks::WebhookDispatcher>>,
 }
 
 impl ApiState {
@@ -242,6 +247,7 @@ impl ApiState {
             call_recordings_dir: None,
             managed_by: None,
             site_files: None,
+            webhook_dispatcher: None,
         }
     }
 
@@ -381,6 +387,14 @@ impl ApiState {
     /// become read-only (see [`crate::managed`]).
     pub fn with_site_files(mut self, files: Option<Arc<dyn crate::site_files::SiteFiles>>) -> Self {
         self.site_files = files;
+        self
+    }
+
+    pub fn with_webhook_dispatcher(
+        mut self,
+        dispatcher: Option<Arc<fcp_webhooks::WebhookDispatcher>>,
+    ) -> Self {
+        self.webhook_dispatcher = dispatcher;
         self
     }
 

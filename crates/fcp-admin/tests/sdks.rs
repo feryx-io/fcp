@@ -59,7 +59,7 @@ fn run(name: &str, dir: &Path, tool: &str, args: &[&str], url: &str) -> Option<(
     // The live tests ran, not skipped.
     let text = format!("{stdout}{stderr}");
     assert!(
-        !text.contains("# skipped 3") && !text.contains("3 skipped"),
+        !text.contains("# skipped 4") && !text.contains("4 skipped"),
         "{name}: the live tests were skipped:\n{text}"
     );
     Some(())
@@ -86,6 +86,10 @@ auth_token = "{TOKEN}"
 
 [storage]
 database_url = "{db}"
+
+# The SDKs' webhook tests receive on loopback.
+[webhooks]
+allow_private_targets = true
 
 [logging]
 level = "info"

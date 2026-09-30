@@ -1696,6 +1696,8 @@ fn webhook(tenant_id: TenantId, secret: &str) -> fcp_core::storage::WebhookEndpo
         description: None,
         created_at: now,
         updated_at: now,
+        previous_secret: None,
+        previous_secret_expires_at: None,
     }
 }
 
@@ -1908,6 +1910,28 @@ async fn encryption_seals_secret_columns_and_reads_them_back() {
         s.list_endpoints(&a.id).await.unwrap()[0].secret,
         "whsec_123"
     );
+
+    // A rotation's previous secret is sealed beside the current one.
+    let mut rotated = back.clone();
+    rotated.secret = "whsec_456".to_string();
+    rotated.previous_secret = Some("whsec_123".to_string());
+    rotated.previous_secret_expires_at = Some(SystemTime::now() + Duration::from_secs(3600));
+    s.update_endpoint(rotated).await.unwrap();
+    let back = s.get_endpoint(&webhook_id).await.unwrap().unwrap();
+    assert_eq!(back.secret, "whsec_456");
+    assert_eq!(back.previous_secret.as_deref(), Some("whsec_123"));
+    assert_eq!(
+        back.signing_secrets(SystemTime::now()),
+        vec!["whsec_456", "whsec_123"]
+    );
+    let raw = db
+        .raw(
+            "SELECT endpoint_json->>'previous_secret' FROM webhook_endpoints WHERE id = $1",
+            &webhook_id.to_string(),
+        )
+        .await
+        .unwrap();
+    assert!(raw.starts_with("enc:v1:"), "{raw}");
 
     db.finish().await;
 }

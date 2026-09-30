@@ -70,6 +70,13 @@ format = "json"
 # Bearer token for that API when it has http.auth_enabled.
 # auth_token = "conference-server-api-token"
 
+# [webhooks]
+# Tenants' webhook tests and replays are sent from here (docs/WEBHOOKS.md).
+# Reach loopback and private addresses too: a lab only, and set it as the
+# events server's [webhook] allow_private_targets is.
+# allow_private_targets = false
+# request_timeout_secs = 10
+
 # ============================================================
 # Example Configurations for Different Deployment Scenarios
 # ============================================================

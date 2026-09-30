@@ -6,6 +6,8 @@ Real-time event streaming via WebSocket.
 
 The FCP Event Streaming API provides a WebSocket endpoint that streams platform events in real-time. Clients can subscribe to events and optionally filter by tenant, call, or event type.
 
+The same events reach a tenant's webhooks, signed and retried: see `docs/WEBHOOKS.md`.
+
 ## Endpoint
 
 ```

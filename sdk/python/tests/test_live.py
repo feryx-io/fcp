@@ -59,3 +59,56 @@ def test_a_scoped_token_made_through_the_sdk_reaches_what_it_names():
     with pytest.raises(FcpError) as err:
         ok(devices_list_devices.sync_detailed(client=scoped))
     assert err.value.code == "forbidden"
+
+
+@live
+def test_a_webhook_delivery_verifies_and_a_replay_later_is_stale():
+    import json
+    import re
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    from fcp_api.api.webhooks import (
+        webhooks_create_webhook,
+        webhooks_delete_webhook,
+        webhooks_test_webhook,
+    )
+    from fcp_api.models import CreateWebhookRequest, TestWebhookRequest
+    from fcp_sdk import verify_webhook
+
+    seen = []
+
+    class Hook(BaseHTTPRequestHandler):
+        def do_POST(self):
+            body = self.rfile.read(int(self.headers["Content-Length"]))
+            seen.append((self.headers["X-FCP-Signature"], body))
+            self.send_response(200)
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Hook)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        fcp = client(URL, TOKEN)
+        made = ok(
+            webhooks_create_webhook.sync_detailed(
+                client=fcp,
+                body=CreateWebhookRequest(url=f"http://127.0.0.1:{server.server_port}/hook"),
+            )
+        )
+        assert made.secret.startswith("whsec_")
+        outcome = ok(
+            webhooks_test_webhook.sync_detailed(made.webhook.id, client=fcp, body=TestWebhookRequest())
+        )
+        assert outcome.delivered
+        signature, body = seen[-1]
+        assert verify_webhook(made.secret, signature, body)
+        assert json.loads(body)["event_type"] == "webhook.test"
+        t = int(re.search(r"t=(\d+)", signature).group(1))
+        assert not verify_webhook(made.secret, signature, body, now=t + 600)
+        assert not verify_webhook("whsec_wrong", signature, body)
+        webhooks_delete_webhook.sync_detailed(made.webhook.id, client=fcp)
+    finally:
+        server.shutdown()

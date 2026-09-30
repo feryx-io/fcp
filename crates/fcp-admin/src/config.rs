@@ -90,6 +90,42 @@ pub struct AdminConfig {
 
     #[serde(default)]
     pub link: LinkConfig,
+
+    /// Tenants' webhooks: where a test or a replay may be sent
+    /// (docs/DEVELOPER_SURFACE.md §3, phase 5).
+    #[serde(default)]
+    pub webhooks: WebhooksConfig,
+}
+
+/// `[webhooks]`: how the admin sends a tenant's test deliveries and
+/// replays. The events server delivers events; set
+/// `allow_private_targets` the same on both.
+///
+/// ```toml
+/// [webhooks]
+/// allow_private_targets = false  # true only in a lab: webhooks may then reach loopback and private addresses
+/// request_timeout_secs = 10
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WebhooksConfig {
+    #[serde(default)]
+    pub allow_private_targets: bool,
+    #[serde(default = "default_webhook_timeout")]
+    pub request_timeout_secs: u64,
+}
+
+fn default_webhook_timeout() -> u64 {
+    10
+}
+
+impl Default for WebhooksConfig {
+    fn default() -> Self {
+        Self {
+            allow_private_targets: false,
+            request_timeout_secs: default_webhook_timeout(),
+        }
+    }
 }
 
 /// `[link]`: what sites enroll to and heartbeat at
