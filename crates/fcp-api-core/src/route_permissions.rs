@@ -259,6 +259,7 @@ pub const ROUTES: &[(&str, &str, Gate)] = &[
     (PUT, "/flows/:id", Needs(FlowManage)),
     (DELETE, "/flows/:id", Needs(FlowManage)),
     (GET, "/flows/:id/versions", Needs(FlowRead)),
+    (GET, "/flows/:id/versions/:version", Needs(FlowRead)),
     // Numbers, lines and extensions.
     (GET, "/phone-numbers", Needs(PhoneNumberRead)),
     (POST, "/phone-numbers", Needs(PhoneNumberCreate)),

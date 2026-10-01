@@ -513,6 +513,26 @@ SDKs and the guide are checked in CI.
      - Proved by `fcp-call-manager/tests/listen.rs`: a menu spoken to,
        pressed by INFO and left silent, and the sales branch's transcript
        read from the node's events.
+   - **7b done (v0.25.304)** (`docs/FLOWS.md`).
+     - `Http`: `send_variables` posts the flow's variables as JSON; the
+       status lands in `<response_variable>_status`; a JSON body is
+       unpacked into dotted variables (256 at most, 16 deep, the previous
+       response's cleared); `on_error` is taken for no response, a body
+       over 1 MiB, or a status of 400 or above. Without `on_error` an
+       error status still goes to `next`, as before, so no existing flow
+       starts failing.
+     - `flow_versions` (migration 089), written by a trigger on `flows`
+       and backfilled; the version reads come from it, and
+       `GET /flows/{id}/versions/{version}` is new. `PUT /flows/{id}`
+       now answers with the version it stored (it answered the old one).
+       A call already ran the version it started on (the flow is loaded
+       once per call); now it is proved, and the version a trace names
+       can be read back.
+     - `webhook_url` is gone from the model, the API, the spec and the
+       SDKs. The column stays until a later contraction.
+     - Proved by the engine's tests against a local HTTP server, the
+       tightened `flows_crud_versions_and_tenant_scoping`, and
+       `a_call_runs_the_version_it_started_on` in `listen.rs`.
 8. **Live call control and the guide.**
    - `/api/v1/calls/:id/{hold,resume,transfer,redirect,play,say,hangup}`
      over the node API that enterprise calling built. `redirect` moves a

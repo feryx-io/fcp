@@ -5,7 +5,8 @@
 //! INFO goes to the other branch, and one who says nothing times out. The
 //! sales branch starts the call's live transcript, and what the caller
 //! says next reaches the events endpoint as `call.transcript`. A noise
-//! recognised as no words does not hold the menu open. Skipped
+//! recognised as no words does not hold the menu open. And a call runs
+//! the version of its flow it started on (phase 7b). Skipped
 //! without `FCP_TEST_DATABASE_URL`.
 
 use axum::{extract::State, routing::post, Json, Router};
@@ -24,6 +25,7 @@ const BIN: &str = env!("CARGO_BIN_EXE_fcp-call-manager");
 const REALM: &str = "e2e.local";
 const SOON: Duration = Duration::from_secs(5);
 const MENU: &str = "+15125550910";
+const VERSIONED: &str = "+15125550911";
 /// What the recognizer hears in each tone.
 const SALES_HZ: u32 = 700;
 const SALES: &str = "Sales, please.";
@@ -39,61 +41,13 @@ async fn a_menu_hears_words_digits_and_silence_and_a_call_is_transcribed() {
         return;
     };
     let seed = Seed::new(db.url(), REALM).await;
-    let scripted = ScriptedStt::start("stt-token", &[(SALES_HZ, SALES), (LATER_HZ, LATER)]).await;
-    let events = EventSink::start().await;
-    let sip_port = free_port();
-    let http = free_port();
-    let rtp_start = allocate_port_pair().rtp_port;
-    let dir = tempfile::tempdir().unwrap();
-    let config = format!(
-        r#"
-[service]
-node_id = "e2e-listen"
-
-[sip]
-udp_bind = "127.0.0.1:{sip_port}"
-tcp_bind = "127.0.0.1:{sip_port}"
-local_ip = "127.0.0.1"
-
-[registrar]
-auth_enabled = true
-realm = "{REALM}"
-
-[storage]
-database_url = "{db}"
-
-[cdr]
-spool_dir = "{dir}/cdr-spool"
-
-[http]
-bind_address = "127.0.0.1:{http}"
-
-[media]
-rtp_port_start = {rtp_start}
-rtp_port_end = {rtp_end}
-prompts_dir = "{dir}/prompts"
-tts_cache_dir = "{dir}/tts-cache"
-recording_dir = "{dir}/recordings"
-
-[stt.provider]
-type = "remote"
-url = "{stt}"
-auth_token = "stt-token"
-
-[events]
-server_url = "{events}"
-
-[logging]
-level = "info"
-format = "compact"
-"#,
-        db = db.url(),
-        rtp_end = rtp_start + 40,
-        dir = dir.path().display(),
-        stt = scripted.url(),
-        events = events.url,
-    );
-    let service = Service::start("call-manager", BIN, &config, &loopback(http, "/health")).await;
+    let Node {
+        service,
+        sip_port,
+        scripted,
+        events,
+        _dir,
+    } = Node::start(&db, &[(SALES_HZ, SALES), (LATER_HZ, LATER)]).await;
 
     let alice = seed.user("alice", "alice-pw", "1001").await;
     let storage = seed.storage();
@@ -232,36 +186,224 @@ format = "compact"
     db.drop_db().await;
 }
 
+/// A call runs the version of its flow it started on
+/// (`docs/DEVELOPER_SURFACE.md` phase 7b): the flow edited while the call
+/// is in it does not change what the call does, and the next call runs
+/// the edit. Both versions are kept.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_call_runs_the_version_it_started_on() {
+    let Some(db) = TestDatabase::create().await else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let seed = Seed::new(db.url(), REALM).await;
+    let node = Node::start(&db, &[]).await;
+    let alice = seed.user("alice", "alice-pw", "1001").await;
+    let storage = seed.storage();
+
+    let version = |said: &str| -> fcp_flow::FlowDefinition {
+        serde_json::from_value(serde_json::json!({
+            "id": "versioned",
+            "name": "Versioned",
+            "version": 1,
+            "initial_node": "answer",
+            "enabled": true,
+            "tenant_id": seed.tenant_id.to_string(),
+            "nodes": {
+                "answer": {"type": "answer", "next": "wait"},
+                "wait": {"type": "pause", "duration": 2, "next": said},
+                said: {"type": "log", "message": said, "next": "bye"},
+                "bye": {"type": "hangup"}
+            }
+        }))
+        .unwrap()
+    };
+    fcp_flow::FlowStore::insert_flow(storage, version("one"))
+        .await
+        .unwrap();
+    let number = fcp_core::PhoneNumber::new(VERSIONED.to_string(), seed.tenant_id).unwrap();
+    let mut binding =
+        fcp_core::LineBinding::new(number.id, None, fcp_core::BindingType::Ivr, seed.tenant_id);
+    binding.flow_id = Some("versioned".to_string());
+    storage.put_phone_number(number).await.unwrap();
+    storage.put_line_binding(binding).await.unwrap();
+
+    let phone = Phone::new(
+        &alice.username,
+        &alice.password,
+        REALM,
+        SocketAddr::from(([127, 0, 0, 1], node.sip_port)),
+    )
+    .await
+    .unwrap();
+    assert_eq!(phone.register().await.unwrap(), 200);
+    let traces =
+        fcp_storage_postgres::flow_trace::PostgresFlowTraceStore::new(storage.pool().clone());
+
+    // The flow is edited while the call waits in it.
+    let call = phone.call(VERSIONED).await.unwrap();
+    call.answered(SOON).await.expect("the flow answers");
+    fcp_flow::FlowStore::update_flow(storage, version("two"))
+        .await
+        .unwrap();
+    assert!(
+        call.ended(Duration::from_secs(8)).await,
+        "the flow hangs up"
+    );
+    let (nodes, ran) = newest_call(&traces, "versioned").await;
+    if !nodes.contains(&"one".to_string()) {
+        panic!("{nodes:?}\n{}", node.service.kill().await);
+    }
+    assert_eq!(ran, Some(1), "{nodes:?}");
+
+    // The next call runs the edit.
+    let call = phone.call(VERSIONED).await.unwrap();
+    call.answered(SOON).await.expect("the flow answers");
+    assert!(
+        call.ended(Duration::from_secs(8)).await,
+        "the flow hangs up"
+    );
+    let (nodes, ran) = newest_call(&traces, "versioned").await;
+    assert!(nodes.contains(&"two".to_string()), "{nodes:?}");
+    assert_eq!(ran, Some(2));
+
+    // Both versions are kept, each as it was.
+    let kept = fcp_flow::FlowStore::list_flow_versions(storage, "versioned")
+        .await
+        .unwrap();
+    assert_eq!(
+        kept.iter().map(|f| f.version).collect::<Vec<_>>(),
+        vec![2, 1]
+    );
+    let first = fcp_flow::FlowStore::get_flow_version(storage, "versioned", 1)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(first.nodes.contains_key("one") && !first.nodes.contains_key("two"));
+
+    node.service.stop().await;
+    db.drop_db().await;
+}
+
 /// The nodes the flow ran for the newest call (the trace is keyed by the
 /// call manager's own id, not the SIP Call-ID). A Hangup node ends the
 /// flow rather than being recorded as run.
 async fn nodes_run(
     traces: &fcp_storage_postgres::flow_trace::PostgresFlowTraceStore,
 ) -> Vec<String> {
+    newest_call(traces, "menu").await.0
+}
+
+/// The newest call's run of `flow_id`: the nodes it ran, and the flow
+/// version it ran them from.
+async fn newest_call(
+    traces: &fcp_storage_postgres::flow_trace::PostgresFlowTraceStore,
+    flow_id: &str,
+) -> (Vec<String>, Option<u32>) {
     // Traces are written off the call path; give them a moment.
     tokio::time::sleep(Duration::from_millis(500)).await;
     let (entries, _) = traces
         .query_flow_traces(&FlowTraceQuery {
-            flow_id: Some("menu".to_string()),
+            flow_id: Some(flow_id.to_string()),
             event_type: Some(FlowTraceEventType::NodeExecuted),
             limit: Some(1000),
             ..Default::default()
         })
         .await
         .unwrap();
-    let mut calls: BTreeMap<String, (std::time::SystemTime, Vec<String>)> = BTreeMap::new();
+    type Run = (std::time::SystemTime, Vec<String>, Option<u32>);
+    let mut calls: BTreeMap<String, Run> = BTreeMap::new();
     for entry in entries {
-        let call = calls
-            .entry(entry.call_id.clone())
-            .or_insert((entry.timestamp, Vec::new()));
+        let call = calls.entry(entry.call_id.clone()).or_insert((
+            entry.timestamp,
+            Vec::new(),
+            entry.flow_version,
+        ));
         call.0 = call.0.min(entry.timestamp);
         call.1.extend(entry.node_id);
     }
     calls
         .into_values()
-        .max_by_key(|(started, _)| *started)
-        .map(|(_, nodes)| nodes)
+        .max_by_key(|(started, _, _)| *started)
+        .map(|(_, nodes, version)| (nodes, version))
         .unwrap_or_default()
+}
+
+/// A call manager with speech recognition and its events forwarded.
+struct Node {
+    service: Service,
+    sip_port: u16,
+    scripted: ScriptedStt,
+    events: EventSink,
+    _dir: tempfile::TempDir,
+}
+
+impl Node {
+    async fn start(db: &TestDatabase, script: &[(u32, &str)]) -> Self {
+        let scripted = ScriptedStt::start("stt-token", script).await;
+        let events = EventSink::start().await;
+        let sip_port = free_port();
+        let http = free_port();
+        let rtp_start = allocate_port_pair().rtp_port;
+        let dir = tempfile::tempdir().unwrap();
+        let config = format!(
+            r#"
+    [service]
+    node_id = "e2e-listen"
+
+    [sip]
+    udp_bind = "127.0.0.1:{sip_port}"
+    tcp_bind = "127.0.0.1:{sip_port}"
+    local_ip = "127.0.0.1"
+
+    [registrar]
+    auth_enabled = true
+    realm = "{REALM}"
+
+    [storage]
+    database_url = "{db}"
+
+    [cdr]
+    spool_dir = "{dir}/cdr-spool"
+
+    [http]
+    bind_address = "127.0.0.1:{http}"
+
+    [media]
+    rtp_port_start = {rtp_start}
+    rtp_port_end = {rtp_end}
+    prompts_dir = "{dir}/prompts"
+    tts_cache_dir = "{dir}/tts-cache"
+    recording_dir = "{dir}/recordings"
+
+    [stt.provider]
+    type = "remote"
+    url = "{stt}"
+    auth_token = "stt-token"
+
+    [events]
+    server_url = "{events}"
+
+    [logging]
+    level = "info"
+    format = "compact"
+    "#,
+            db = db.url(),
+            rtp_end = rtp_start + 40,
+            dir = dir.path().display(),
+            stt = scripted.url(),
+            events = events.url,
+        );
+        let service =
+            Service::start("call-manager", BIN, &config, &loopback(http, "/health")).await;
+        Self {
+            service,
+            sip_port,
+            scripted,
+            events,
+            _dir: dir,
+        }
+    }
 }
 
 /// A stand-in events server: every event the node forwards.

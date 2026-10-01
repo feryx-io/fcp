@@ -409,6 +409,7 @@ impl FlowEngine {
                 body,
                 headers,
                 timeout,
+                send_variables,
                 response_variable,
                 next,
                 on_error,
@@ -427,22 +428,37 @@ impl FlowEngine {
                         method,
                         &interpolated_url,
                         body.as_deref(),
+                        *send_variables,
                         headers,
                         *timeout,
                         context,
                     )
                     .await
                 {
-                    Ok(response_body) => {
-                        context.set_variable(response_variable.clone(), response_body);
-                        Ok(FlowExecutionResult::Continue(next.clone()))
+                    Ok((status, response_body)) => {
+                        store_http_response(context, response_variable, status, &response_body);
+                        if status >= 400 {
+                            warn!(
+                                call_id = %context.call_id,
+                                status,
+                                url = %interpolated_url,
+                                "HTTP request answered with an error status"
+                            );
+                        }
+                        // The flow builder writes an unset node as "".
+                        let node = match on_error.as_ref().filter(|n| !n.is_empty()) {
+                            Some(error_node) if status >= 400 => error_node,
+                            _ => next,
+                        };
+                        Ok(FlowExecutionResult::Continue(node.clone()))
                     }
                     Err(e) => {
                         error!(error = %e, "HTTP request failed");
-                        if let Some(error_node) = on_error {
-                            Ok(FlowExecutionResult::Continue(error_node.clone()))
-                        } else {
-                            Err(e)
+                        match on_error.as_ref().filter(|n| !n.is_empty()) {
+                            Some(error_node) => {
+                                Ok(FlowExecutionResult::Continue(error_node.clone()))
+                            }
+                            None => Err(e),
                         }
                     }
                 }
@@ -847,16 +863,20 @@ impl FlowEngine {
         Ok(result)
     }
 
-    /// Execute an HTTP request.
+    /// Make an HTTP request: its status and body (at most
+    /// [`HTTP_RESPONSE_LIMIT`] bytes, as text). An error only when no
+    /// response came.
+    #[allow(clippy::too_many_arguments)]
     async fn execute_http_request(
         &self,
         method: &crate::schema::HttpMethod,
         url: &str,
         body: Option<&str>,
+        send_variables: bool,
         headers: &HashMap<String, String>,
         timeout: u32,
         context: &FlowContext,
-    ) -> Result<String> {
+    ) -> Result<(u16, String)> {
         use crate::schema::HttpMethod;
 
         let mut request = match method {
@@ -867,33 +887,51 @@ impl FlowEngine {
             HttpMethod::Patch => self.http_client.patch(url),
         };
 
-        // Add headers
+        let mut content_type_set = false;
         for (key, value) in headers {
             let interpolated_value = self.interpolate_variables(value, context)?;
+            content_type_set |= key.eq_ignore_ascii_case("content-type");
             request = request.header(key, interpolated_value);
         }
 
-        // Add body if present
-        if let Some(body_str) = body {
+        if send_variables {
+            let variables: serde_json::Map<String, serde_json::Value> = context
+                .variables_snapshot()
+                .into_iter()
+                // The runner's own bookkeeping is not the flow's.
+                .filter(|(name, _)| !name.starts_with("__"))
+                .map(|(name, value)| (name, serde_json::Value::String(value)))
+                .collect();
+            if !content_type_set {
+                request = request.header("content-type", "application/json");
+            }
+            request = request.body(serde_json::Value::Object(variables).to_string());
+        } else if let Some(body_str) = body {
             let interpolated_body = self.interpolate_variables(body_str, context)?;
             request = request.body(interpolated_body);
         }
 
-        // Set timeout
         request = request.timeout(std::time::Duration::from_secs(timeout as u64));
 
-        // Execute request
-        let response = request
+        let mut response = request
             .send()
             .await
             .map_err(|e| FlowError::HttpError(e.to_string()))?;
-
-        let body_text = response
-            .text()
+        let status = response.status().as_u16();
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
             .await
-            .map_err(|e| FlowError::HttpError(e.to_string()))?;
-
-        Ok(body_text)
+            .map_err(|e| FlowError::HttpError(e.to_string()))?
+        {
+            if bytes.len() + chunk.len() > HTTP_RESPONSE_LIMIT {
+                return Err(FlowError::HttpError(format!(
+                    "the response is larger than {HTTP_RESPONSE_LIMIT} bytes"
+                )));
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        Ok((status, String::from_utf8_lossy(&bytes).into_owned()))
     }
 
     /// Evaluate a branch condition.
@@ -923,6 +961,65 @@ impl FlowEngine {
             BranchOperator::Exists => !left.is_empty(),
             BranchOperator::NotExists => left.is_empty(),
         }
+    }
+}
+
+/// The largest HTTP response a flow reads.
+pub const HTTP_RESPONSE_LIMIT: usize = 1024 * 1024;
+
+/// The most variables one JSON response is unpacked into.
+const HTTP_JSON_MAX_VARIABLES: usize = 256;
+
+/// How deep a JSON response is unpacked.
+const HTTP_JSON_MAX_DEPTH: usize = 16;
+
+/// Store an HTTP response: the body under `name`, the status under
+/// `<name>_status`, and a JSON body's values under `<name>.<path>`, the
+/// previous response's dotted values cleared first.
+fn store_http_response(context: &FlowContext, name: &str, status: u16, body: &str) {
+    let prefix = format!("{name}.");
+    context.remove_variables_with_prefix(&prefix);
+    context.set_variable(name.to_string(), body.to_string());
+    context.set_variable(format!("{name}_status"), status.to_string());
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(body) else {
+        return;
+    };
+    let mut values = Vec::new();
+    flatten_json(&json, name, 0, &mut values);
+    for (path, value) in values {
+        context.set_variable(path, value);
+    }
+}
+
+/// A JSON value's leaves as dotted paths under `path`: object keys and
+/// array indexes joined by `.`, strings as they are, other scalars as
+/// JSON, null as empty. At most [`HTTP_JSON_MAX_VARIABLES`] leaves,
+/// [`HTTP_JSON_MAX_DEPTH`] deep.
+pub(crate) fn flatten_json(
+    value: &serde_json::Value,
+    path: &str,
+    depth: usize,
+    out: &mut Vec<(String, String)>,
+) {
+    if out.len() >= HTTP_JSON_MAX_VARIABLES || depth > HTTP_JSON_MAX_DEPTH {
+        return;
+    }
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, child) in map {
+                flatten_json(child, &format!("{path}.{key}"), depth + 1, out);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for (index, child) in items.iter().enumerate() {
+                flatten_json(child, &format!("{path}.{index}"), depth + 1, out);
+            }
+        }
+        // The whole body is already stored under the name itself.
+        _ if depth == 0 => {}
+        serde_json::Value::String(text) => out.push((path.to_string(), text.clone())),
+        serde_json::Value::Null => out.push((path.to_string(), String::new())),
+        other => out.push((path.to_string(), other.to_string())),
     }
 }
 
@@ -1036,6 +1133,19 @@ impl FlowContext {
     /// Remove a variable.
     pub fn remove_variable(&self, name: &str) {
         self.variables.write().unwrap().remove(name);
+    }
+
+    /// Remove every variable whose name starts with `prefix`.
+    pub fn remove_variables_with_prefix(&self, prefix: &str) {
+        self.variables
+            .write()
+            .unwrap()
+            .retain(|name, _| !name.starts_with(prefix));
+    }
+
+    /// Every variable, as it is now.
+    pub fn variables_snapshot(&self) -> HashMap<String, String> {
+        self.variables.read().unwrap().clone()
     }
 
     /// Get all variables.
@@ -1209,7 +1319,6 @@ mod tests {
             variables: HashMap::new(),
             tenant_id: None,
             enabled: true,
-            webhook_url: None,
             created_at: None,
             updated_at: None,
         };
@@ -1250,7 +1359,6 @@ mod tests {
             variables: HashMap::new(),
             tenant_id: None,
             enabled: true,
-            webhook_url: None,
             created_at: None,
             updated_at: None,
         };
@@ -1431,5 +1539,208 @@ mod tests {
             result.unwrap_err(),
             FlowError::VariableNotFound(_)
         ));
+    }
+
+    /// A one-request HTTP server answering `status` and `body`; the
+    /// request it read (head and body) comes back on the receiver.
+    async fn answer_once(
+        status: u16,
+        body: &'static str,
+    ) -> (String, tokio::sync::oneshot::Receiver<String>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/hook", listener.local_addr().unwrap());
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut buf = [0u8; 4096];
+            loop {
+                let n = stream.read(&mut buf).await.unwrap();
+                request.extend_from_slice(&buf[..n]);
+                let text = String::from_utf8_lossy(&request).to_string();
+                if let Some(head_end) = text.find("\r\n\r\n") {
+                    let length = text[..head_end]
+                        .lines()
+                        .find_map(|l| {
+                            l.to_ascii_lowercase()
+                                .strip_prefix("content-length:")
+                                .map(|v| v.trim().parse::<usize>().unwrap())
+                        })
+                        .unwrap_or(0);
+                    if request.len() >= head_end + 4 + length || n == 0 {
+                        break;
+                    }
+                }
+            }
+            let response = format!(
+                "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            let _ = tx.send(String::from_utf8_lossy(&request).to_string());
+        });
+        (url, rx)
+    }
+
+    fn http_flow(node: serde_json::Value) -> Arc<FlowDefinition> {
+        Arc::new(
+            serde_json::from_value(serde_json::json!({
+                "id": "http", "name": "http", "version": 1, "initial_node": "call",
+                "nodes": {
+                    "call": node,
+                    "ok": {"type": "hangup"},
+                    "failed": {"type": "hangup"}
+                }
+            }))
+            .unwrap(),
+        )
+    }
+
+    async fn run_http(
+        node: serde_json::Value,
+        variables: &[(&str, &str)],
+    ) -> (FlowContext, FlowExecutionResult) {
+        let engine = FlowEngine::new();
+        let flow = http_flow(node);
+        let initial = variables
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let mut context = engine.execute(flow, CallId::new(), initial).await.unwrap();
+        let result = engine.execute_node(&mut context, "call").await.unwrap();
+        (context, result)
+    }
+
+    fn went_to(result: &FlowExecutionResult) -> &str {
+        match result {
+            FlowExecutionResult::Continue(node) => node,
+            other => panic!("not a continue: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_json_response_is_unpacked_into_dotted_variables() {
+        let (url, _) = answer_once(
+            200,
+            r#"{"customer": {"name": "Ada", "vip": true, "balance": 12.5, "note": null},
+                "items": [{"id": "a1"}, {"id": "b2"}]}"#,
+        )
+        .await;
+        let (context, result) = run_http(
+            serde_json::json!({"type": "http", "method": "GET", "url": url,
+                "next": "ok", "on_error": "failed"}),
+            &[],
+        )
+        .await;
+        assert_eq!(went_to(&result), "ok");
+        let var = |name: &str| context.get_variable(name).unwrap();
+        assert_eq!(var("http_response_status"), "200");
+        assert_eq!(var("http_response.customer.name"), "Ada");
+        assert_eq!(var("http_response.customer.vip"), "true");
+        assert_eq!(var("http_response.customer.balance"), "12.5");
+        assert_eq!(var("http_response.customer.note"), "");
+        assert_eq!(var("http_response.items.1.id"), "b2");
+        assert!(var("http_response").contains("\"Ada\""), "the raw body too");
+    }
+
+    #[tokio::test]
+    async fn an_error_status_takes_on_error_and_without_it_goes_on() {
+        let (url, _) = answer_once(503, r#"{"error": "busy"}"#).await;
+        let (context, result) = run_http(
+            serde_json::json!({"type": "http", "method": "GET", "url": url,
+                "next": "ok", "on_error": "failed"}),
+            &[],
+        )
+        .await;
+        assert_eq!(went_to(&result), "failed");
+        assert_eq!(context.get_variable("http_response_status").unwrap(), "503");
+        assert_eq!(context.get_variable("http_response.error").unwrap(), "busy");
+
+        let (url, _) = answer_once(404, "missing").await;
+        let (_, result) = run_http(
+            serde_json::json!({"type": "http", "method": "GET", "url": url, "next": "ok"}),
+            &[],
+        )
+        .await;
+        assert_eq!(went_to(&result), "ok", "no on_error: on to next, as before");
+
+        // The flow builder's unset on_error is "", and is no node.
+        let (url, _) = answer_once(500, "broken").await;
+        let (_, result) = run_http(
+            serde_json::json!({"type": "http", "method": "GET", "url": url,
+                "next": "ok", "on_error": ""}),
+            &[],
+        )
+        .await;
+        assert_eq!(went_to(&result), "ok");
+    }
+
+    #[tokio::test]
+    async fn send_variables_posts_the_flows_variables_as_json() {
+        let (url, request) = answer_once(200, "{}").await;
+        let (_, result) = run_http(
+            serde_json::json!({"type": "http", "method": "POST", "url": url,
+                "send_variables": true, "body": "ignored", "next": "ok"}),
+            &[("caller", "+15125550100"), ("__tts_next_node", "x")],
+        )
+        .await;
+        assert_eq!(went_to(&result), "ok");
+        let request = request.await.unwrap();
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains("content-type: application/json"),
+            "{request}"
+        );
+        let body = &request[request.find("\r\n\r\n").unwrap() + 4..];
+        let sent: serde_json::Value = serde_json::from_str(body).unwrap();
+        assert_eq!(sent["caller"], "+15125550100");
+        assert!(
+            sent.get("__tts_next_node").is_none(),
+            "the runner's own are not sent"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_second_response_clears_the_first_ones_values() {
+        let (url, _) = answer_once(200, r#"{"a": "1", "b": "2"}"#).await;
+        let engine = FlowEngine::new();
+        let node = serde_json::json!({"type": "http", "method": "GET", "url": url, "next": "ok"});
+        let mut context = engine
+            .execute(http_flow(node), CallId::new(), HashMap::new())
+            .await
+            .unwrap();
+        engine.execute_node(&mut context, "call").await.unwrap();
+        assert_eq!(context.get_variable("http_response.b").unwrap(), "2");
+
+        let (url, _) = answer_once(200, r#"{"a": "3"}"#).await;
+        let node = serde_json::json!({"type": "http", "method": "GET", "url": url, "next": "ok"});
+        let mut context2 = engine
+            .execute(http_flow(node), CallId::new(), context.variables_snapshot())
+            .await
+            .unwrap();
+        engine.execute_node(&mut context2, "call").await.unwrap();
+        assert_eq!(context2.get_variable("http_response.a").unwrap(), "3");
+        assert!(
+            context2.get_variable("http_response.b").is_err(),
+            "a stale value"
+        );
+    }
+
+    #[test]
+    fn unpacking_stops_at_its_limits() {
+        let wide = serde_json::Value::Array((0..1000).map(serde_json::Value::from).collect());
+        let mut out = Vec::new();
+        flatten_json(&wide, "r", 0, &mut out);
+        assert_eq!(out.len(), HTTP_JSON_MAX_VARIABLES);
+
+        let mut deep = serde_json::json!("bottom");
+        for _ in 0..40 {
+            deep = serde_json::json!({ "x": deep });
+        }
+        let mut out = Vec::new();
+        flatten_json(&deep, "r", 0, &mut out);
+        assert!(out.is_empty(), "too deep to reach");
     }
 }

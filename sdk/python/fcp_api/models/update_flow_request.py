@@ -31,7 +31,6 @@ class UpdateFlowRequest:
             nodes (Any | Unset):
             variables (Any | Unset):
             enabled (bool | None | Unset):
-            webhook_url (None | str | Unset):
      """
 
     name: None | str | Unset = UNSET
@@ -40,7 +39,6 @@ class UpdateFlowRequest:
     nodes: Any | Unset = UNSET
     variables: Any | Unset = UNSET
     enabled: bool | None | Unset = UNSET
-    webhook_url: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -76,12 +74,6 @@ class UpdateFlowRequest:
         else:
             enabled = self.enabled
 
-        webhook_url: None | str | Unset
-        if isinstance(self.webhook_url, Unset):
-            webhook_url = UNSET
-        else:
-            webhook_url = self.webhook_url
-
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -99,8 +91,6 @@ class UpdateFlowRequest:
             field_dict["variables"] = variables
         if enabled is not UNSET:
             field_dict["enabled"] = enabled
-        if webhook_url is not UNSET:
-            field_dict["webhook_url"] = webhook_url
 
         return field_dict
 
@@ -153,16 +143,6 @@ class UpdateFlowRequest:
         enabled = _parse_enabled(d.pop("enabled", UNSET))
 
 
-        def _parse_webhook_url(data: object) -> None | str | Unset:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            return cast(None | str | Unset, data)
-
-        webhook_url = _parse_webhook_url(d.pop("webhook_url", UNSET))
-
-
         update_flow_request = cls(
             name=name,
             description=description,
@@ -170,7 +150,6 @@ class UpdateFlowRequest:
             nodes=nodes,
             variables=variables,
             enabled=enabled,
-            webhook_url=webhook_url,
         )
 
 

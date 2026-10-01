@@ -45,7 +45,6 @@ pub struct FlowResponse {
     pub variables: serde_json::Value, // Variables map as JSON
     pub tenant_id: Option<String>,
     pub enabled: bool,
-    pub webhook_url: Option<String>,
     pub created_at: Option<String>, // ISO 8601
     pub updated_at: Option<String>, // ISO 8601
 }
@@ -71,7 +70,6 @@ impl From<FlowDefinition> for FlowResponse {
             variables,
             tenant_id: flow.tenant_id,
             enabled: flow.enabled,
-            webhook_url: flow.webhook_url,
             created_at,
             updated_at,
         }
@@ -91,7 +89,6 @@ pub struct CreateFlowRequest {
     pub tenant_id: Option<String>,
     #[serde(default = "default_true")]
     pub enabled: bool,
-    pub webhook_url: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -107,7 +104,6 @@ pub struct UpdateFlowRequest {
     pub nodes: Option<serde_json::Value>,
     pub variables: Option<serde_json::Value>,
     pub enabled: Option<bool>,
-    pub webhook_url: Option<String>,
 }
 
 /// Query parameters for listing flows.
@@ -259,7 +255,6 @@ pub async fn create_flow(
         variables,
         tenant_id: Some(tenant.0.to_string()),
         enabled: req.enabled,
-        webhook_url: req.webhook_url,
         created_at: None, // Will be set by storage
         updated_at: None,
     };
@@ -332,17 +327,20 @@ pub async fn update_flow(
     if let Some(enabled) = req.enabled {
         flow.enabled = enabled;
     }
-    if req.webhook_url.is_some() {
-        flow.webhook_url = req.webhook_url;
-    }
 
-    // Update flow (increments version)
+    // Update flow (a new version), and answer with what was stored: its
+    // version number is the store's to give.
     store
-        .update_flow(flow.clone())
+        .update_flow(flow)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to update flow: {}", e)))?;
+    let flow = store
+        .get_flow(&id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to get flow: {}", e)))?
+        .ok_or_else(|| ApiError::NotFound(format!("Flow not found: {}", id)))?;
 
-    info!(flow_id = %id, version = flow.version + 1, "Flow updated successfully");
+    info!(flow_id = %id, version = flow.version, "Flow updated successfully");
 
     Ok(Json(FlowResponse::from(flow)))
 }
@@ -435,4 +433,34 @@ pub async fn list_flow_versions(
         crate::page::Order::Descending,
         |r| format!("{:010}", r.version),
     )?))
+}
+
+/// One version of a flow: what a call that ran it ran (a flow trace names
+/// the version).
+///
+/// GET /api/v1/flows/:id/versions/:version
+#[utoipa::path(
+    get,
+    path = "/api/v1/flows/{id}/versions/{version}",
+    tag = "flows",
+    operation_id = "flows_get_flow_version",
+    params(("id" = String, Path), ("version" = u32, Path)),
+    responses(
+        (status = 200, description = "OK", body = FlowResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn get_flow_version(
+    State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
+    Path((id, version)): Path<(String, u32)>,
+) -> Result<impl IntoResponse, ApiError> {
+    let store = get_flow_store(&state)?;
+    let flow = store
+        .get_flow_version(&id, version)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to get flow version: {}", e)))?
+        .ok_or_else(|| ApiError::NotFound(format!("Flow version not found: {id} v{version}")))
+        .and_then(|flow| ensure_flow_in_tenant(flow, &tenant.0.to_string(), &id))?;
+    Ok(Json(FlowResponse::from(flow)))
 }

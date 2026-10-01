@@ -442,6 +442,7 @@ pub fn router() -> Router<ApiState> {
                 .delete(flows::delete_flow),
         )
         .route("/flows/:id/versions", get(flows::list_flow_versions))
+        .route("/flows/:id/versions/:version", get(flows::get_flow_version))
         // Phone numbers
         .route(
             "/phone-numbers",

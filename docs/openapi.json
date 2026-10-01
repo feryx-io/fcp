@@ -7052,6 +7052,58 @@
         }
       }
     },
+    "/api/v1/flows/{id}/versions/{version}": {
+      "get": {
+        "tags": [
+          "flows"
+        ],
+        "summary": "One version of a flow: what a call that ran it ran (a flow trace names\nthe version).",
+        "description": "GET /api/v1/flows/:id/versions/:version",
+        "operationId": "flows_get_flow_version",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FlowResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/phone-numbers": {
       "get": {
         "tags": [
@@ -16394,12 +16446,6 @@
           },
           "enabled": {
             "type": "boolean"
-          },
-          "webhook_url": {
-            "type": [
-              "string",
-              "null"
-            ]
           }
         }
       },
@@ -19228,12 +19274,6 @@
           },
           "enabled": {
             "type": "boolean"
-          },
-          "webhook_url": {
-            "type": [
-              "string",
-              "null"
-            ]
           },
           "created_at": {
             "type": [
@@ -22323,12 +22363,6 @@
                 },
                 "enabled": {
                   "type": "boolean"
-                },
-                "webhook_url": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
                 },
                 "created_at": {
                   "type": [
@@ -30384,12 +30418,6 @@
           "enabled": {
             "type": [
               "boolean",
-              "null"
-            ]
-          },
-          "webhook_url": {
-            "type": [
-              "string",
               "null"
             ]
           }

@@ -2241,6 +2241,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/flows/{id}/versions/{version}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * One version of a flow: what a call that ran it ran (a flow trace names
+         *     the version).
+         * @description GET /api/v1/flows/:id/versions/:version
+         */
+        get: operations["flows_get_flow_version"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/phone-numbers": {
         parameters: {
             query?: never;
@@ -4728,7 +4749,6 @@ export interface components {
             variables?: unknown;
             tenant_id?: string | null;
             enabled?: boolean;
-            webhook_url?: string | null;
         };
         CreateLcrRouteRequest: {
             prefix: string;
@@ -5530,7 +5550,6 @@ export interface components {
             variables: unknown;
             tenant_id?: string | null;
             enabled: boolean;
-            webhook_url?: string | null;
             created_at?: string | null;
             updated_at?: string | null;
         };
@@ -6510,7 +6529,6 @@ export interface components {
                 variables: unknown;
                 tenant_id?: string | null;
                 enabled: boolean;
-                webhook_url?: string | null;
                 created_at?: string | null;
                 updated_at?: string | null;
             }[];
@@ -9027,7 +9045,6 @@ export interface components {
             nodes?: unknown;
             variables?: unknown;
             enabled?: boolean | null;
-            webhook_url?: string | null;
         };
         UpdateLcrRouteRequest: {
             prefix?: string | null;
@@ -14825,6 +14842,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Page_FlowResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    flows_get_flow_version: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                version: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FlowResponse"];
                 };
             };
             /** @description An error */

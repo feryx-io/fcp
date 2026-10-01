@@ -6479,7 +6479,6 @@ fn parse_flow_from_row_pg(
     let variables_json: serde_json::Value = row.get("variables");
     let tenant_id: Option<String> = row.get("tenant_id");
     let enabled: bool = row.get("enabled");
-    let webhook_url: Option<String> = row.get("webhook_url");
     let created_at: DateTime<Utc> = row.get("created_at");
     let updated_at: DateTime<Utc> = row.get("updated_at");
 
@@ -6502,7 +6501,6 @@ fn parse_flow_from_row_pg(
         variables,
         tenant_id,
         enabled,
-        webhook_url,
         created_at: Some(created_at),
         updated_at: Some(updated_at),
     })
@@ -6513,7 +6511,7 @@ impl FlowStore for PostgresStorage {
     async fn get_flow(&self, id: &str) -> std::result::Result<Option<FlowDefinition>, FlowError> {
         let row = sqlx::query(
             "SELECT id, name, description, version, initial_node, nodes, variables,
-                    tenant_id, enabled, webhook_url, created_at, updated_at
+                    tenant_id, enabled, created_at, updated_at
              FROM flows
              WHERE id = $1
              ORDER BY version DESC
@@ -6536,10 +6534,10 @@ impl FlowStore for PostgresStorage {
         version: u32,
     ) -> std::result::Result<Option<FlowDefinition>, FlowError> {
         let row = sqlx::query(
-            "SELECT id, name, description, version, initial_node, nodes, variables,
-                    tenant_id, enabled, webhook_url, created_at, updated_at
-             FROM flows
-             WHERE id = $1 AND version = $2",
+            "SELECT flow_id AS id, name, description, version, initial_node, nodes,
+                    variables, tenant_id, enabled, created_at, created_at AS updated_at
+             FROM flow_versions
+             WHERE flow_id = $1 AND version = $2",
         )
         .bind(id)
         .bind(version as i32)
@@ -6560,7 +6558,7 @@ impl FlowStore for PostgresStorage {
         let rows = if let Some(tid) = tenant_id {
             sqlx::query(
                 "SELECT id, name, description, version, initial_node, nodes, variables,
-                        tenant_id, enabled, webhook_url, created_at, updated_at
+                        tenant_id, enabled, created_at, updated_at
                  FROM flows
                  WHERE tenant_id = $1
                  ORDER BY updated_at DESC",
@@ -6572,7 +6570,7 @@ impl FlowStore for PostgresStorage {
         } else {
             sqlx::query(
                 "SELECT id, name, description, version, initial_node, nodes, variables,
-                        tenant_id, enabled, webhook_url, created_at, updated_at
+                        tenant_id, enabled, created_at, updated_at
                  FROM flows
                  ORDER BY updated_at DESC",
             )
@@ -6667,7 +6665,7 @@ impl FlowStore for PostgresStorage {
         let offset_param = param_num + 2;
         let select_query = format!(
             "SELECT id, name, description, version, initial_node, nodes, variables,
-                    tenant_id, enabled, webhook_url, created_at, updated_at
+                    tenant_id, enabled, created_at, updated_at
              FROM flows
              {}
              ORDER BY {} {}
@@ -6725,8 +6723,8 @@ impl FlowStore for PostgresStorage {
         sqlx::query(
             "INSERT INTO flows (
                 id, name, description, version, initial_node, nodes, variables,
-                tenant_id, enabled, webhook_url, created_at, updated_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+                tenant_id, enabled, created_at, updated_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
         )
         .bind(&flow.id)
         .bind(&flow.name)
@@ -6737,7 +6735,6 @@ impl FlowStore for PostgresStorage {
         .bind(&variables_json)
         .bind(&flow.tenant_id)
         .bind(flow.enabled)
-        .bind(&flow.webhook_url)
         .bind(now)
         .bind(now)
         .execute(self.writes())
@@ -6755,14 +6752,14 @@ impl FlowStore for PostgresStorage {
         sqlx::query(
             "INSERT INTO flows (
                 id, name, description, version, initial_node, nodes, variables,
-                tenant_id, enabled, webhook_url, created_at, updated_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                tenant_id, enabled, created_at, updated_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             ON CONFLICT (id) DO UPDATE SET
                 name = EXCLUDED.name, description = EXCLUDED.description,
                 version = EXCLUDED.version, initial_node = EXCLUDED.initial_node,
                 nodes = EXCLUDED.nodes, variables = EXCLUDED.variables,
                 tenant_id = EXCLUDED.tenant_id, enabled = EXCLUDED.enabled,
-                webhook_url = EXCLUDED.webhook_url, updated_at = EXCLUDED.updated_at",
+                updated_at = EXCLUDED.updated_at",
         )
         .bind(&flow.id)
         .bind(&flow.name)
@@ -6773,7 +6770,6 @@ impl FlowStore for PostgresStorage {
         .bind(&variables_json)
         .bind(&flow.tenant_id)
         .bind(flow.enabled)
-        .bind(&flow.webhook_url)
         .bind(flow.created_at.unwrap_or(now))
         .bind(flow.updated_at.unwrap_or(now))
         .execute(self.writes())
@@ -6791,8 +6787,8 @@ impl FlowStore for PostgresStorage {
             "UPDATE flows SET
                 name = $1, description = $2, version = version + 1,
                 initial_node = $3, nodes = $4, variables = $5,
-                tenant_id = $6, enabled = $7, webhook_url = $8, updated_at = NOW()
-             WHERE id = $9",
+                tenant_id = $6, enabled = $7, updated_at = NOW()
+             WHERE id = $8",
         )
         .bind(&flow.name)
         .bind(&flow.description)
@@ -6801,7 +6797,6 @@ impl FlowStore for PostgresStorage {
         .bind(&variables_json)
         .bind(&flow.tenant_id)
         .bind(flow.enabled)
-        .bind(&flow.webhook_url)
         .bind(&flow.id)
         .execute(self.writes())
         .await
@@ -6835,10 +6830,10 @@ impl FlowStore for PostgresStorage {
         id: &str,
     ) -> std::result::Result<Vec<FlowDefinition>, FlowError> {
         let rows = sqlx::query(
-            "SELECT id, name, description, version, initial_node, nodes, variables,
-                    tenant_id, enabled, webhook_url, created_at, updated_at
-             FROM flows
-             WHERE id = $1
+            "SELECT flow_id AS id, name, description, version, initial_node, nodes,
+                    variables, tenant_id, enabled, created_at, created_at AS updated_at
+             FROM flow_versions
+             WHERE flow_id = $1
              ORDER BY version DESC",
         )
         .bind(id)

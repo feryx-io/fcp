@@ -34,7 +34,6 @@ class PageFlowResponseDataItem:
             enabled (bool):
             description (None | str | Unset):
             tenant_id (None | str | Unset):
-            webhook_url (None | str | Unset):
             created_at (None | str | Unset):
             updated_at (None | str | Unset):
      """
@@ -48,7 +47,6 @@ class PageFlowResponseDataItem:
     enabled: bool
     description: None | str | Unset = UNSET
     tenant_id: None | str | Unset = UNSET
-    webhook_url: None | str | Unset = UNSET
     created_at: None | str | Unset = UNSET
     updated_at: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -84,12 +82,6 @@ class PageFlowResponseDataItem:
         else:
             tenant_id = self.tenant_id
 
-        webhook_url: None | str | Unset
-        if isinstance(self.webhook_url, Unset):
-            webhook_url = UNSET
-        else:
-            webhook_url = self.webhook_url
-
         created_at: None | str | Unset
         if isinstance(self.created_at, Unset):
             created_at = UNSET
@@ -118,8 +110,6 @@ class PageFlowResponseDataItem:
             field_dict["description"] = description
         if tenant_id is not UNSET:
             field_dict["tenant_id"] = tenant_id
-        if webhook_url is not UNSET:
-            field_dict["webhook_url"] = webhook_url
         if created_at is not UNSET:
             field_dict["created_at"] = created_at
         if updated_at is not UNSET:
@@ -166,16 +156,6 @@ class PageFlowResponseDataItem:
         tenant_id = _parse_tenant_id(d.pop("tenant_id", UNSET))
 
 
-        def _parse_webhook_url(data: object) -> None | str | Unset:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            return cast(None | str | Unset, data)
-
-        webhook_url = _parse_webhook_url(d.pop("webhook_url", UNSET))
-
-
         def _parse_created_at(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -206,7 +186,6 @@ class PageFlowResponseDataItem:
             enabled=enabled,
             description=description,
             tenant_id=tenant_id,
-            webhook_url=webhook_url,
             created_at=created_at,
             updated_at=updated_at,
         )
