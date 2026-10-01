@@ -62,6 +62,13 @@ pub enum SupervisionRequest {
     Get,
     /// Take the supervisor off.
     Leave,
+    /// Live call control (`docs/DEVELOPER_SURFACE.md` phase 8): `action`
+    /// is `hold`, `resume`, `transfer`, `redirect`, `play`, `say` or
+    /// `hangup`, with its fields in `body`.
+    Control {
+        action: &'static str,
+        body: serde_json::Value,
+    },
 }
 
 /// Where a call's supervision is asked: the node holding the call answers.

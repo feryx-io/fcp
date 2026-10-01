@@ -1685,6 +1685,128 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/calls/{call_id}/hold": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/v1/calls/:call_id/hold */
+        post: operations["call_control_hold"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/calls/{call_id}/resume": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/v1/calls/:call_id/resume */
+        post: operations["call_control_resume"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/calls/{call_id}/transfer": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/v1/calls/:call_id/transfer */
+        post: operations["call_control_transfer"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/calls/{call_id}/redirect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/v1/calls/:call_id/redirect */
+        post: operations["call_control_redirect"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/calls/{call_id}/play": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/v1/calls/:call_id/play */
+        post: operations["call_control_play"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/calls/{call_id}/say": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/v1/calls/:call_id/say */
+        post: operations["call_control_say"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/calls/{call_id}/hangup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /api/v1/calls/:call_id/hangup — the node holding the call ends
+         *     it, wherever this API runs.
+         */
+        post: operations["call_control_hangup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/calls/{call_id}/monitor": {
         parameters: {
             query?: never;
@@ -4277,6 +4399,21 @@ export interface components {
             expires_at: string;
             removed: boolean;
         };
+        /** @description What the node answered a control with. */
+        CallControlResponse: {
+            call_id: string;
+            /**
+             * @description `held`, `resumed`, `transferring`, `redirecting`, `playing` or
+             *     `ended`.
+             */
+            status: string;
+            /** @description Who was held, transferred or redirected. */
+            party?: string | null;
+            target?: string | null;
+            flow_id?: string | null;
+            /** @description A playback, for play and say. */
+            playback_id?: string | null;
+        };
         CallInfo: {
             id: string;
             state: string;
@@ -5601,6 +5738,14 @@ export interface components {
              * @description The recording: a WAV file.
              */
             audio: string;
+        };
+        /** @description Who is put on hold. */
+        HoldRequest: {
+            /**
+             * @description `caller` (the default) or `callee`: they hear the hold music, and
+             *     the other party stops hearing them.
+             */
+            party?: string | null;
         };
         HoldResponse: {
             id: string;
@@ -7945,6 +8090,13 @@ export interface components {
             call_ids?: string[];
             classes?: components["schemas"]["DataClass"][];
         };
+        /** @description A prompt played into the call. */
+        PlayRequest: {
+            /** @description One of the tenant's prompts, with audio. */
+            prompt_id: string;
+            /** @description Who hears it: `both` (the default), `caller` or `callee`. */
+            to?: string | null;
+        };
         PolicyResponse: {
             tenant_id: string;
             /** Format: int32 */
@@ -8254,6 +8406,16 @@ export interface components {
             /** @description Where the bytes are, on this API. */
             download_url: string;
         };
+        /** @description The flow a party is moved into. */
+        RedirectRequest: {
+            /** @description One of the tenant's flows, enabled. */
+            flow_id: string;
+            /**
+             * @description Who is moved: `caller` (the default) or `callee`. The other party is
+             *     dropped.
+             */
+            party?: string | null;
+        };
         /** @description Outcome of a bulk re-seal pass. */
         ReencryptReport: {
             /**
@@ -8364,6 +8526,14 @@ export interface components {
             created_at: string;
             /** Format: date-time */
             updated_at: string;
+        };
+        /** @description Text spoken into the call by the node's text-to-speech. */
+        SayRequest: {
+            text: string;
+            language?: string | null;
+            voice?: string | null;
+            /** @description Who hears it: `both` (the default), `caller` or `callee`. */
+            to?: string | null;
         };
         /** @description What a schedule is written as. */
         ScheduleRequest: {
@@ -8727,6 +8897,16 @@ export interface components {
             end_hour: number;
             /** @description Days of week (0=Sun, 1=Mon, ..., 6=Sat). Empty = all days. */
             days?: number[];
+        };
+        /** @description Where a party is transferred. */
+        TransferRequest: {
+            /** @description A user, an extension or a number, routed as a call to it would be. */
+            target: string;
+            /**
+             * @description Who is transferred: `caller` (the default) or `callee`. The other
+             *     party is dropped once the target answers.
+             */
+            party?: string | null;
         };
         /** @description What one node sees of one trunk. */
         TrunkNodeView: {
@@ -13586,6 +13766,243 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["media.RecordingResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    call_control_hold: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                call_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["HoldRequest"];
+            };
+        };
+        responses: {
+            /** @description Held */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CallControlResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    call_control_resume: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                call_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Resumed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CallControlResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    call_control_transfer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                call_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TransferRequest"];
+            };
+        };
+        responses: {
+            /** @description The target is being dialed */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CallControlResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    call_control_redirect: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                call_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RedirectRequest"];
+            };
+        };
+        responses: {
+            /** @description The party is being moved into the flow */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CallControlResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    call_control_play: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                call_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PlayRequest"];
+            };
+        };
+        responses: {
+            /** @description Playing */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CallControlResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    call_control_say: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                call_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SayRequest"];
+            };
+        };
+        responses: {
+            /** @description Playing */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CallControlResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    call_control_hangup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                call_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Ended */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CallControlResponse"];
                 };
             };
             /** @description An error */

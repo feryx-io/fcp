@@ -2711,3 +2711,208 @@ async fn a_phone_on_a_shared_line_barges_into_its_active_appearance() {
     assert!(call.ended(SOON).await);
     stack.finish().await;
 }
+
+// ---------------------------------------------------------------------------
+// Live call control (docs/DEVELOPER_SURFACE.md phase 8)
+// ---------------------------------------------------------------------------
+
+/// Ask the node to `action` the call: its status and answer.
+async fn control(stack: &Stack, call_id: &str, action: &str, body: &str) -> (u16, String) {
+    let url = loopback(stack.http, &format!("/calls/{call_id}/{action}"));
+    fcp_testkit::smoke::http_post(&url, body)
+        .await
+        .expect("POST")
+}
+
+/// The only call on the node: its id.
+async fn only_call_id(stack: &Stack) -> String {
+    let calls = stack.calls().await;
+    calls[0]["call_id"].as_str().expect("call id").to_string()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_api_holds_plays_into_and_hangs_up_a_call() {
+    let Some(stack) = Stack::start_with("[b2bua.media_anchoring]\nmode = \"Always\"\n").await
+    else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let alice = stack.seed.user("alice", "alice-pw", "1001").await;
+    let bob = stack.seed.user("bob", "bob-pw", "1002").await;
+    let alice_phone = stack.phone(&alice).await;
+    let bob_phone = stack.phone(&bob).await;
+    let (alice_call, bob_call) = answered(&stack, &alice_phone, &bob, &bob_phone).await;
+    let call_id = only_call_id(&stack).await;
+
+    // Nothing for a call this node does not hold, or a party it has not.
+    let (status, _) = control(
+        &stack,
+        "call-00000000-0000-0000-0000-000000000000",
+        "hold",
+        "{}",
+    )
+    .await;
+    assert_eq!(status, 404);
+    let (status, text) = control(&stack, &call_id, "hold", r#"{"party":"agent"}"#).await;
+    assert_eq!(status, 400, "{text}");
+
+    // Hold the caller: Alice hears the music and not Bob.
+    let (status, text) = control(&stack, &call_id, "hold", r#"{"party":"caller"}"#).await;
+    assert_eq!(status, 200, "{text}");
+    bob_call.media().play_tone(1400.0, 20_000);
+    if !alice_call.media().heard(DEFAULT_MUSIC_HZ, SOON).await {
+        stack
+            .fail("Alice, held by the API, hears no music", &alice_phone)
+            .await;
+    }
+    assert!(
+        !alice_call
+            .media()
+            .heard(1400, Duration::from_millis(1500))
+            .await,
+        "Alice hears Bob while held"
+    );
+    held_as(&stack, Some("a")).await;
+    // One party on hold at a time.
+    let (status, _) = control(&stack, &call_id, "hold", r#"{"party":"callee"}"#).await;
+    assert_eq!(status, 409);
+
+    // Resume: she hears him again.
+    let (status, text) = control(&stack, &call_id, "resume", "{}").await;
+    assert_eq!(status, 200, "{text}");
+    assert!(
+        alice_call.media().heard(1400, SOON).await,
+        "Alice does not hear Bob after the resume"
+    );
+
+    // Play the tenant's prompt to the callee.
+    let dir = tempfile::tempdir().unwrap();
+    let wav = dir.path().join("chime.wav");
+    tone_wav(&wav, 880.0, 3.0);
+    let prompt = fcp_core::Prompt::new_file(
+        stack.seed.tenant_id,
+        "chime",
+        fcp_core::PromptCategory::Custom,
+        "en-US",
+        wav,
+    );
+    let prompts =
+        fcp_storage_postgres::prompt::PostgresPromptStore::new(stack.seed.storage().pool().clone());
+    fcp_core::PromptStore::put_prompt(&prompts, prompt.clone())
+        .await
+        .unwrap();
+    let (status, text) = control(
+        &stack,
+        &call_id,
+        "play",
+        &format!(r#"{{"prompt_id":"{}","to":"callee"}}"#, prompt.id),
+    )
+    .await;
+    assert_eq!(status, 200, "{text}");
+    assert!(text.contains("playback_id"), "{text}");
+    assert!(
+        bob_call.media().heard(880, SOON).await,
+        "Bob does not hear the prompt"
+    );
+    let (status, _) = control(
+        &stack,
+        &call_id,
+        "play",
+        &format!(r#"{{"prompt_id":"{}"}}"#, fcp_core::PromptId::new()),
+    )
+    .await;
+    assert_eq!(status, 404, "a prompt that is not the tenant's");
+
+    // Say needs a text-to-speech engine, which this node has not.
+    let (status, text) = control(&stack, &call_id, "say", r#"{"text":"Hello"}"#).await;
+    assert_eq!(status, 503, "{text}");
+
+    // Hang up: both phones are told.
+    let (status, text) = control(&stack, &call_id, "hangup", "{}").await;
+    assert_eq!(status, 200, "{text}");
+    assert!(alice_call.ended(SOON).await, "Alice's call did not end");
+    assert!(bob_call.ended(SOON).await, "Bob's call did not end");
+    stack.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_api_transfers_a_call_and_redirects_it_into_a_flow() {
+    let Some(stack) = Stack::start_with("[b2bua.media_anchoring]\nmode = \"Always\"\n").await
+    else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let [(_, alice), (bob, bob_phone), (carol, carol_phone)] = three_phones(&stack).await;
+    let (alice_call, bob_call) = answered(&stack, &alice, &bob, &bob_phone).await;
+    let call_id = only_call_id(&stack).await;
+
+    // Transfer the caller to Carol: she rings, answers, Bob is dropped.
+    let (status, text) = control(
+        &stack,
+        &call_id,
+        "transfer",
+        &format!(r#"{{"party":"caller","target":"{}"}}"#, carol.extension),
+    )
+    .await;
+    assert_eq!(status, 202, "{text}");
+    let Some(ringing) = carol_phone.incoming(SOON).await else {
+        stack.fail("Carol's phone did not ring", &alice).await;
+    };
+    let carol_call = ringing.answer().await.unwrap();
+    assert!(bob_call.ended(SOON).await, "Bob was not dropped");
+    carol_call.media().play_tone(440.0, 20_000);
+    if !alice_call.media().heard(440, SOON).await {
+        stack.fail("Alice does not hear Carol", &alice).await;
+    }
+    let (status, _) = control(
+        &stack,
+        &call_id,
+        "transfer",
+        r#"{"target":"sip:evil@elsewhere"}"#,
+    )
+    .await;
+    assert_eq!(status, 400, "a target is dialed at this node");
+
+    // Redirect the caller into a flow: Carol is dropped, and the flow runs
+    // for Alice until it hangs up.
+    let flow: fcp_flow::FlowDefinition = serde_json::from_value(serde_json::json!({
+        "id": "goodbye", "name": "Goodbye", "version": 1, "initial_node": "answer",
+        "enabled": true, "tenant_id": stack.seed.tenant_id.to_string(),
+        "nodes": {
+            "answer": {"type": "answer", "next": "wait"},
+            "wait": {"type": "pause", "duration": 2, "next": "noted"},
+            "noted": {"type": "log", "message": "redirected", "next": "bye"},
+            "bye": {"type": "hangup"}
+        }
+    }))
+    .unwrap();
+    fcp_flow::FlowStore::insert_flow(stack.seed.storage(), flow)
+        .await
+        .unwrap();
+    let (status, _) = control(&stack, &call_id, "redirect", r#"{"flow_id":"missing"}"#).await;
+    assert_eq!(status, 404);
+    let (status, text) = control(&stack, &call_id, "redirect", r#"{"flow_id":"goodbye"}"#).await;
+    assert_eq!(status, 202, "{text}");
+    assert!(carol_call.ended(SOON).await, "Carol was not dropped");
+    if !alice_call.ended(Duration::from_secs(10)).await {
+        stack.fail("the flow did not run for Alice", &alice).await;
+    }
+    let traces = fcp_storage_postgres::flow_trace::PostgresFlowTraceStore::new(
+        stack.seed.storage().pool().clone(),
+    );
+    let ran = fcp_core::flow_trace::FlowTraceStore::query_flow_traces(
+        &traces,
+        &fcp_core::flow_trace::FlowTraceQuery {
+            flow_id: Some("goodbye".to_string()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap()
+    .0;
+    assert!(
+        ran.iter().any(|t| t.node_id.as_deref() == Some("noted")),
+        "{ran:?}"
+    );
+    stack.finish().await;
+}

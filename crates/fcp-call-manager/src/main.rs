@@ -31,6 +31,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{info, warn};
 
+mod call_control;
 mod cli;
 #[cfg(feature = "storage-redis")]
 mod conference_placement;
@@ -1774,6 +1775,7 @@ async fn run() -> Result<()> {
         cluster_parking: cluster_parking.clone(),
         call_recorder: Arc::clone(&call_recorder),
         supervisions: Some(Arc::clone(&supervisions)),
+        sip_handler: Some(Arc::clone(&handler)),
         trunks: config.trunks.clone(),
         trunk_health,
         trunk_set: Some(Arc::clone(&trunk_set)),

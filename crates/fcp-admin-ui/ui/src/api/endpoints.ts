@@ -238,11 +238,13 @@ export const calls = {
   list: () => apiClient.getAll<CallInfo>('/calls'),
   get: (callId: string) => apiClient.get<CallInfo>(`/calls/${encodeURIComponent(callId)}`),
   originate: (data: OriginateCallRequest) => apiClient.post<CallInfo>('/calls', data),
-  hangup: (callId: string) => apiClient.delete<void>(`/calls/${encodeURIComponent(callId)}`),
-  hold: (callId: string) => apiClient.post<void>(`/calls/${encodeURIComponent(callId)}/hold`),
+  /** Live call control, put to the node holding the call (docs/DEVELOPER_SURFACE.md phase 8). */
+  hangup: (callId: string) => apiClient.post<void>(`/calls/${encodeURIComponent(callId)}/hangup`),
+  hold: (callId: string, party: 'caller' | 'callee' = 'caller') =>
+    apiClient.post<void>(`/calls/${encodeURIComponent(callId)}/hold`, { party }),
   resume: (callId: string) => apiClient.post<void>(`/calls/${encodeURIComponent(callId)}/resume`),
-  transfer: (callId: string, target: string) =>
-    apiClient.post<void>(`/calls/${encodeURIComponent(callId)}/transfer`, { target }),
+  transfer: (callId: string, target: string, party: 'caller' | 'callee' = 'caller') =>
+    apiClient.post<void>(`/calls/${encodeURIComponent(callId)}/transfer`, { target, party }),
   /** Put a supervisor on the call: they are dialed and join when they answer (§3.11). */
   supervise: (
     callId: string,

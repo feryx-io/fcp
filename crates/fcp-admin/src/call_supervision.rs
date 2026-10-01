@@ -1,5 +1,6 @@
-//! A supervisor on a call, asked of the call manager holding it
-//! (`docs/ENTERPRISE_CALLING.md` §3.11).
+//! A supervisor on a call (`docs/ENTERPRISE_CALLING.md` §3.11), and live
+//! call control (`docs/DEVELOPER_SURFACE.md` phase 8), asked of the call
+//! manager holding the call.
 //!
 //! The admin API holds no calls: a call lives on the call manager that
 //! placed it. The request is put to the node `[call_manager] url` names,
@@ -95,6 +96,13 @@ impl NodeCallSupervisor {
                 .http
                 .post(format!("{call}/supervisor/leave"))
                 .query(&tenant_query),
+            SupervisionRequest::Control { action, body } => {
+                let mut body = body.clone();
+                if let Some(fields) = body.as_object_mut() {
+                    fields.insert("tenant_id".to_string(), serde_json::json!(tenant));
+                }
+                self.http.post(format!("{call}/{action}")).json(&body)
+            }
         };
         let builder = match &self.config.auth_token {
             Some(token) => builder.bearer_auth(token),

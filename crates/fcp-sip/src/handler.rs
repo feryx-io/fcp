@@ -683,6 +683,9 @@ pub struct SipMessageHandler {
     /// Conference calls whose B-leg is being moved to another conference
     /// node (phase 5b), so a second REFER while one is in flight is refused.
     conference_migrations: Arc<dashmap::DashMap<fcp_b2bua_core::CallId, ()>>,
+    /// Calls being redirected into a flow by the API, until their
+    /// dial-back arrives (`docs/DEVELOPER_SURFACE.md` phase 8).
+    redirect_tickets: Arc<crate::call_control::RedirectTickets>,
 }
 
 #[derive(Clone)]
@@ -1042,6 +1045,7 @@ impl SipMessageHandler {
             admission: None,
             call_signer: None,
             conference_migrations: Arc::new(dashmap::DashMap::new()),
+            redirect_tickets: Arc::new(crate::call_control::RedirectTickets::default()),
         };
 
         // Start session timer event loop
@@ -3264,6 +3268,29 @@ impl SipMessageHandler {
         // counts against them while it is up (`docs/ENTERPRISE_CALLING.md`
         // §3.4).
         self.note_caller_user(request, &call_id).await;
+
+        // A call the API redirected into a flow, dialed back by this node
+        // with the redirect's one-time ticket (`docs/DEVELOPER_SURFACE.md`
+        // phase 8): the flow runs for it, as the call's tenant's.
+        let dialed = request.uri().to_string();
+        let dialed_user = crate::class_of_service::uri_user(&dialed);
+        if dialed_user.starts_with(crate::call_control::REDIRECT_PREFIX) {
+            let Some(redirect) = self.redirect_tickets.redeem(dialed_user) else {
+                let response = self.create_simple_response(request, 404, "Not Found");
+                handle.send_final(response).await;
+                let _ = self.call_manager.terminate_call_with(
+                    &call_id,
+                    fcp_cdr::TerminationReason::failed("an unknown redirect".to_string()),
+                );
+                return Ok(());
+            };
+            let _ = self
+                .call_manager
+                .update_call(&call_id, |c| c.tenant_id = redirect.tenant_id);
+            return self
+                .start_flow_for_call(request, handle, call_id, redirect.flow_id, "")
+                .await;
+        }
 
         // An INVITE that replaces a leg of a call this node holds: an
         // attended transfer's second half, or a phone taking over a call
@@ -12646,13 +12673,48 @@ impl SipMessageHandler {
         if self.conference_migrations.insert(call.id, ()).is_some() {
             return self.create_simple_response(request, 491, "Request Pending");
         }
+        info!(
+            call_id = %call.id,
+            referrer = referrer.as_str(),
+            target = %target.user,
+            attended = target.replaces.is_some(),
+            "Carrying out a transfer"
+        );
+        let run = self.transfer_run(
+            uac,
+            call,
+            referrer,
+            Some(referrer_dialog),
+            &target.user,
+            target.replaces.clone(),
+            true,
+        );
+        tokio::spawn(run.run());
+        self.create_simple_response(request, 202, "Accepted")
+    }
+
+    /// A transfer of `call`'s party on the other side of `referrer` to
+    /// `user`, dialed back into this node so the target is routed as any
+    /// call is. `notify_referrer`: the referrer asked by REFER and is told
+    /// the outcome.
+    #[allow(clippy::too_many_arguments)]
+    fn transfer_run(
+        &self,
+        uac: Arc<SipUserAgentClient>,
+        call: &fcp_b2bua_core::Call,
+        referrer: fcp_b2bua_core::LegSide,
+        referrer_dialog: Option<sip_dialog::Dialog>,
+        user: &str,
+        replaces: Option<String>,
+        notify_referrer: bool,
+    ) -> crate::transfer::TransferRun {
         let host = match self.uas.local_uri.port() {
             Some(port) => format!("{}:{}", self.uas.local_uri.host(), port),
             None => self.uas.local_uri.host().to_string(),
         };
         let mut headers = vec![(TRANSFERRED_FROM_HEADER.to_string(), call.id.to_string())];
-        if let Some(replaces) = &target.replaces {
-            headers.push(("Replaces".to_string(), replaces.clone()));
+        if let Some(replaces) = replaces {
+            headers.push(("Replaces".to_string(), replaces));
         }
         // The target sees the transferred party calling.
         let caller = call
@@ -12673,14 +12735,7 @@ impl SipMessageHandler {
                     })
                     .map(|uri| (None, uri)),
             });
-        info!(
-            call_id = %call.id,
-            referrer = referrer.as_str(),
-            target = %target.user,
-            attended = target.replaces.is_some(),
-            "Carrying out a transfer"
-        );
-        let run = crate::transfer::TransferRun {
+        crate::transfer::TransferRun {
             uac,
             local_uri: self.uas.local_uri.clone(),
             call_manager: self.call_manager.clone(),
@@ -12693,13 +12748,12 @@ impl SipMessageHandler {
             local_addr: self.local_addr.clone(),
             call_id: call.id,
             referrer,
-            referrer_dialog: Some(referrer_dialog),
-            target: format!("sip:{}@{}", target.user, host),
+            referrer_dialog,
+            target: format!("sip:{}@{}", user, host),
             headers,
             caller,
-        };
-        tokio::spawn(run.run());
-        self.create_simple_response(request, 202, "Accepted")
+            notify_referrer,
+        }
     }
 
     /// Park the party on the other side of `parker`: an orbit taken, the
@@ -13584,6 +13638,7 @@ impl SipMessageHandler {
                 parked_call_id.to_string(),
             )],
             caller,
+            notify_referrer: true,
         };
         run.run().await;
         Ok(())
@@ -15563,6 +15618,7 @@ impl SipMessageHandler {
             target,
             headers: vec![(TRANSFERRED_FROM_HEADER.to_string(), call.id.to_string())],
             caller,
+            notify_referrer: true,
         };
         tokio::spawn(run.run());
         finish(200, "OK").await
@@ -16299,6 +16355,223 @@ impl SipMessageHandler {
             debug!(error = %e, "Notification call BYE failed");
         }
         Ok(AnnouncementOutcome::Answered)
+    }
+
+    /// Put `party` of a call on hold from the node
+    /// (`docs/DEVELOPER_SURFACE.md` phase 8): the party hears the hold
+    /// music and the other party stops hearing them, as for a phone's own
+    /// hold. Needs the call's media through the node.
+    pub fn hold_call(
+        &self,
+        call_id: &fcp_b2bua_core::CallId,
+        party: fcp_b2bua_core::LegSide,
+    ) -> std::result::Result<(), crate::call_control::CallControlError> {
+        use crate::call_control::CallControlError;
+        let call = self
+            .call_manager
+            .get_call(call_id)
+            .ok_or_else(|| CallControlError::not_found(call_id))?;
+        if call.state != fcp_b2bua_core::CallState::Established {
+            return Err(CallControlError::conflict("the call is not answered"));
+        }
+        if !call.media_anchored || call.media_session_id.is_none() {
+            return Err(CallControlError::conflict(
+                "the call's media does not pass through the node, so it cannot be held here",
+            ));
+        }
+        match call.held {
+            Some(held) if held == party => return Ok(()),
+            Some(_) => {
+                return Err(CallControlError::conflict(
+                    "the other party is on hold; resume the call first",
+                ))
+            }
+            None => {}
+        }
+        self.call_manager
+            .update_call(call_id, |c| c.held = Some(party))
+            .map_err(|_| CallControlError::not_found(call_id))?;
+        info!(call_id = %call_id, party = party.as_str(), "Call held by the API");
+        Ok(())
+    }
+
+    /// Take a call off hold.
+    pub fn resume_call(
+        &self,
+        call_id: &fcp_b2bua_core::CallId,
+    ) -> std::result::Result<(), crate::call_control::CallControlError> {
+        use crate::call_control::CallControlError;
+        let call = self
+            .call_manager
+            .get_call(call_id)
+            .ok_or_else(|| CallControlError::not_found(call_id))?;
+        if call.held.is_some() {
+            self.call_manager
+                .update_call(call_id, |c| c.held = None)
+                .map_err(|_| CallControlError::not_found(call_id))?;
+            info!(call_id = %call_id, "Call resumed by the API");
+        }
+        Ok(())
+    }
+
+    /// Transfer a call (`docs/DEVELOPER_SURFACE.md` phase 8): `keep` is
+    /// connected to `target`, dialed back into this node so it is routed as
+    /// any call is (a user, a number, a trunk, a flow), and the other party
+    /// is dropped once the target answers. It runs in the background; the
+    /// call's events say how it went.
+    pub fn transfer_call(
+        &self,
+        call_id: &fcp_b2bua_core::CallId,
+        keep: fcp_b2bua_core::LegSide,
+        target: &str,
+    ) -> std::result::Result<(), crate::call_control::CallControlError> {
+        use crate::call_control::CallControlError;
+        let target = target.trim();
+        if target.is_empty()
+            || target.starts_with(crate::call_control::REDIRECT_PREFIX)
+            || target.contains(|c: char| c.is_whitespace() || "<>@;?\"".contains(c))
+        {
+            return Err(CallControlError::bad_request(
+                "a target is a user, an extension or a number",
+            ));
+        }
+        self.start_transfer(call_id, keep, target)
+    }
+
+    /// Redirect a call into a flow: `keep` runs `flow_id` (the call's
+    /// tenant's) and the other party is dropped.
+    pub async fn redirect_call(
+        &self,
+        call_id: &fcp_b2bua_core::CallId,
+        keep: fcp_b2bua_core::LegSide,
+        flow_id: &str,
+    ) -> std::result::Result<(), crate::call_control::CallControlError> {
+        use crate::call_control::CallControlError;
+        let call = self
+            .call_manager
+            .get_call(call_id)
+            .ok_or_else(|| CallControlError::not_found(call_id))?;
+        let Some(flows) = self.flow_handler.as_ref() else {
+            return Err(CallControlError::new(
+                503,
+                "flows are not available on this node",
+            ));
+        };
+        let flow = flows
+            .flow_store()
+            .get_flow(flow_id)
+            .await
+            .map_err(|e| CallControlError::new(500, format!("reading the flow: {e}")))?
+            .filter(|f| f.tenant_id.as_deref() == Some(call.tenant_id.to_string().as_str()))
+            .ok_or_else(|| CallControlError::new(404, format!("Flow not found: {flow_id}")))?;
+        if !flow.enabled {
+            return Err(CallControlError::conflict(format!(
+                "the flow {flow_id} is disabled"
+            )));
+        }
+        let user = self.redirect_tickets.issue(flow_id, call.tenant_id);
+        let started = self.start_transfer(call_id, keep, &user);
+        if started.is_err() {
+            self.redirect_tickets.cancel(&user);
+        }
+        started
+    }
+
+    fn start_transfer(
+        &self,
+        call_id: &fcp_b2bua_core::CallId,
+        keep: fcp_b2bua_core::LegSide,
+        user: &str,
+    ) -> std::result::Result<(), crate::call_control::CallControlError> {
+        use crate::call_control::CallControlError;
+        let call = self
+            .call_manager
+            .get_call(call_id)
+            .ok_or_else(|| CallControlError::not_found(call_id))?;
+        if call.state != fcp_b2bua_core::CallState::Established {
+            return Err(CallControlError::conflict("the call is not answered"));
+        }
+        let Some(uac) = self.uac.clone() else {
+            return Err(CallControlError::new(503, "this node places no calls"));
+        };
+        let referrer = keep.other();
+        let referrer_dialog = match referrer {
+            fcp_b2bua_core::LegSide::A => call.a_leg.dialog.clone(),
+            fcp_b2bua_core::LegSide::B => call.b_leg.as_ref().and_then(|b| b.dialog.clone()),
+        };
+        if referrer_dialog.is_none() {
+            return Err(CallControlError::conflict("the call has no party to drop"));
+        }
+        if self.conference_migrations.insert(call.id, ()).is_some() {
+            return Err(CallControlError::conflict(
+                "the call is already being transferred",
+            ));
+        }
+        info!(call_id = %call.id, keep = keep.as_str(), target = %user, "Transfer asked by the API");
+        let run = self.transfer_run(uac, &call, referrer, referrer_dialog, user, None, false);
+        tokio::spawn(run.run());
+        Ok(())
+    }
+
+    /// Play an audio file into a call, to one party or both; the playback's
+    /// id. Needs the call's media through the node.
+    pub async fn play_into_call(
+        &self,
+        call_id: &fcp_b2bua_core::CallId,
+        file: String,
+        target: fcp_media::AudioTarget,
+    ) -> std::result::Result<String, crate::call_control::CallControlError> {
+        let (media, session) = self.answered_media(call_id)?;
+        media
+            .play_file(&session, file, target)
+            .await
+            .map_err(|e| crate::call_control::CallControlError::new(500, e.to_string()))
+    }
+
+    /// Speak text into a call with the node's text-to-speech.
+    pub async fn say_into_call(
+        &self,
+        call_id: &fcp_b2bua_core::CallId,
+        text: &str,
+        language: Option<&str>,
+        voice: Option<&str>,
+        target: fcp_media::AudioTarget,
+    ) -> std::result::Result<String, crate::call_control::CallControlError> {
+        let (media, session) = self.answered_media(call_id)?;
+        media
+            .play_tts(
+                &session,
+                text.to_string(),
+                language.unwrap_or("en-US").to_string(),
+                voice.map(str::to_string),
+                target,
+            )
+            .await
+            .map_err(|e| crate::call_control::CallControlError::new(503, e.to_string()))
+    }
+
+    fn answered_media(
+        &self,
+        call_id: &fcp_b2bua_core::CallId,
+    ) -> std::result::Result<
+        (Arc<fcp_media::MediaManager>, fcp_core::CallId),
+        crate::call_control::CallControlError,
+    > {
+        use crate::call_control::CallControlError;
+        let call = self
+            .call_manager
+            .get_call(call_id)
+            .ok_or_else(|| CallControlError::not_found(call_id))?;
+        if call.state != fcp_b2bua_core::CallState::Established {
+            return Err(CallControlError::conflict("the call is not answered"));
+        }
+        let (Some(media), Some(session)) = (self.media_manager.clone(), call.media_session_id)
+        else {
+            return Err(CallControlError::conflict(
+                "the call's media does not pass through the node",
+            ));
+        };
+        Ok((media, session))
     }
 
     /// Hangs up an active call by sending BYE on both legs and terminating the call.

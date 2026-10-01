@@ -539,6 +539,32 @@ SDKs and the guide are checked in CI.
      live call into a flow.
    - `docs/DEVELOPER_GUIDE.md`: a token, a call, a webhook, a flow that
      listens, in each SDK, run in CI as the SDK tests' examples.
+   - Split in two: 8a the call control, 8b the guide.
+   - **8a done (v0.25.305)** (`docs/CALL_CONTROL.md`).
+     - The node's `/calls/:id/{hold,resume,transfer,redirect,play,say,hangup}`
+       (`fcp-call-manager/src/call_control.rs`) over new
+       `SipMessageHandler` methods (`fcp_sip::call_control`): hold and
+       resume set the call's held leg, so the hold music and the muting
+       are the phone-hold path's; transfer is the REFER path's
+       `TransferRun` with `notify_referrer` off; play resolves the
+       tenant's prompt; say is the node's text-to-speech; hangup BYEs
+       both legs.
+     - Redirect is a transfer to the node itself at `flow~<ticket>`, a
+       one-time ticket naming the flow and tenant, redeemed by the
+       dial-back's INVITE, which starts the flow.
+     - The admin API's `/api/v1/calls/:id/…` under `call_control`,
+       forwarded like supervision (`SupervisionRequest::Control`), with
+       typed requests in the spec and the SDKs.
+     - The admin UI's Hold, Resume, Transfer and hangup reach the node.
+       Its buttons showed for states no source reports (`active`,
+       `confirmed`, `held`), so they never appeared; an answered call
+       (`answered` or `Established`) now offers them. Mute was never a
+       route and is not one.
+     - Proved by `calling.rs` (hold heard, music and silence; a prompt
+       heard; say refused without TTS; hangup; a transfer answered by
+       Carol with Bob dropped; a redirect running the flow for Alice) and
+       `fcp-admin/tests/call_control.rs` (every control forwarded with its
+       fields, token and tenant; the node's refusal in the API's shape).
 
 ## 4. What this does not do
 
