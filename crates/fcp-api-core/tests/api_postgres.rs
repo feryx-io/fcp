@@ -3504,6 +3504,14 @@ async fn flows_crud_versions_and_tenant_scoping() {
     assert_eq!(got.status, StatusCode::OK, "{}", got.text);
     assert_eq!(got.json["nodes"]["hangup"]["type"], "hangup");
 
+    // `variables` is optional.
+    let mut bare = hangup_flow("bare", "No variables");
+    bare.as_object_mut().unwrap().remove("variables");
+    let created = app.admin(Method::POST, "/api/v1/flows", Some(bare)).await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.text);
+    assert_eq!(created.json["variables"], json!({}));
+    app.admin(Method::DELETE, "/api/v1/flows/bare", None).await;
+
     let list = app.admin(Method::GET, "/api/v1/flows", None).await;
     assert_eq!(list.status, StatusCode::OK, "{}", list.text);
     assert_eq!(list.body["total"], 1, "{}", list.text);

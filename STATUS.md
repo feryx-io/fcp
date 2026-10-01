@@ -1613,7 +1613,15 @@ Phase 8a done (v0.25.305): live call control (`docs/CALL_CONTROL.md`).
   moves a party into a flow; play takes a tenant prompt, say the node's
   TTS; hangup ends both legs.
 - The admin UI's Hold, Resume, Transfer and hang-up buttons work, and show.
-- 8b (the developer guide) is next.
+
+Phase 8b done (v0.25.306): the developer guide (`docs/DEVELOPER_GUIDE.md`).
+- A token, a webhook, a flow that listens and a live call, in TypeScript
+  and Python, as example files CI runs against an admin and a call manager
+  with a real call up.
+- A test fails if the guide quotes an example differently from its file.
+- A flow can now be created without `variables`.
+
+The developer surface is complete: all eight phases (v0.25.293–306).
 
 ## Historical documents
 
