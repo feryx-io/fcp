@@ -310,12 +310,23 @@ impl TrunkHealthMonitor {
         let Some(entry) = self.state.get(&self.key_of(trunk)) else {
             return true;
         };
-        entry
-            .concurrent_calls
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-                (max == 0 || current < max as u64).then_some(current + 1)
-            })
-            .is_ok()
+        // A compare-exchange loop rather than `fetch_update`, which Rust
+        // 1.99 renames `try_update`: this builds on both.
+        let mut current = entry.concurrent_calls.load(Ordering::Relaxed);
+        loop {
+            if max != 0 && current >= max as u64 {
+                return false;
+            }
+            match entry.concurrent_calls.compare_exchange_weak(
+                current,
+                current + 1,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return true,
+                Err(actual) => current = actual,
+            }
+        }
     }
 
     /// Decrement concurrent calls for a trunk.
