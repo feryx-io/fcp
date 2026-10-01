@@ -565,6 +565,22 @@ SDKs and the guide are checked in CI.
        Carol with Bob dropped; a redirect running the flow for Alice) and
        `fcp-admin/tests/call_control.rs` (every control forwarded with its
        fields, token and tenant; the node's refusal in the API's shape).
+   - **8b done (v0.25.306)** (`docs/DEVELOPER_GUIDE.md`).
+     - Four examples per SDK in `sdk/{typescript,python}/examples/`: a
+       scoped token, a webhook receiver that verifies, a flow that listens
+       with its number, a live call held, resumed and ended.
+     - `sdks.rs` runs them through each SDK's suite against the admin and,
+       now, a call manager: before each suite two testkit phones are put on
+       a call (`FCP_SDK_CALL_ID`) that the example ends, and the phones'
+       BYE is checked. The skip check counts no skips at all instead of a
+       fixed number.
+     - `the_guide_quotes_the_examples_as_they_are` holds the guide to the
+       files.
+     - Found on the way: `POST /api/v1/flows` without `variables` was a
+       400 (`null` is not a map); it is optional now. And `call.answered`
+       carries no tenant, so no tenant's webhook receives it: the guide
+       names `call.initiated` for a call's id.
+   - **The developer surface is complete**: all eight phases.
 
 ## 4. What this does not do
 

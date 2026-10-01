@@ -241,8 +241,12 @@ pub async fn create_flow(
     let nodes = serde_json::from_value(req.nodes)
         .map_err(|e| ApiError::BadRequest(format!("Invalid nodes: {}", e)))?;
 
-    let variables = serde_json::from_value(req.variables)
-        .map_err(|e| ApiError::BadRequest(format!("Invalid variables: {}", e)))?;
+    // `variables` is optional: left out, it is `null`, and no variables.
+    let variables = match req.variables {
+        serde_json::Value::Null => Default::default(),
+        variables => serde_json::from_value(variables)
+            .map_err(|e| ApiError::BadRequest(format!("Invalid variables: {}", e)))?,
+    };
 
     // Create flow definition
     let flow = FlowDefinition {
