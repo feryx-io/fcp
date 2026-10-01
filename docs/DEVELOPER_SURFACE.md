@@ -487,6 +487,32 @@ SDKs and the guide are checked in CI.
      - Postgres keeps every version (`flow_versions`), and a call runs the
        version it started on.
      - `webhook_url` is deleted.
+   - Split in two: 7a the listening, 7b the flow fixes other than INFO.
+   - **7a done (v0.25.302)** (`docs/SPEECH.md` §6).
+     - Gather's `input`, `speech_timeout_ms` (milliseconds, named for its
+       unit), `hints`, `language` and `speech_transitions`, matched as
+       whole words with the longest phrase winning
+       (`fcp_flow::schema::match_speech`); `speech`, `speech_confidence`
+       and `gather_input` set. A caller who has begun to speak is waited
+       for past `timeout`; 200 ms of voice or a partial transcript stops
+       the prompt.
+     - `fcp_sip::flow_listen`: the Gather's digits and recognition set up
+       before the prompt, and the `Transcribe` node (`start`/`stop`,
+       `caller`/`callee`/`both`, `interim_results`) publishing
+       `call.transcript` with the tenant, so webhooks get it.
+     - The INFO path: a digit by SIP INFO joins the Gather in progress.
+       It never could: `start_flow` set the call's `flow_id` on a copy and
+       not in the call manager, so the INFO handler never saw a flow, and
+       the variables it read were never written.
+     - Found on the way: the listener heard nothing while a phone sent
+       nothing, so a phone suppressing silence never ended an utterance.
+       A leg that has been sending and goes quiet is now heard as silence
+       after 60 ms.
+     - The flow builder's fields, the Transcribe node in its palette and
+       spoken transitions drawn as edges.
+     - Proved by `fcp-call-manager/tests/listen.rs`: a menu spoken to,
+       pressed by INFO and left silent, and the sales branch's transcript
+       read from the node's events.
 8. **Live call control and the guide.**
    - `/api/v1/calls/:id/{hold,resume,transfer,redirect,play,say,hangup}`
      over the node API that enterprise calling built. `redirect` moves a

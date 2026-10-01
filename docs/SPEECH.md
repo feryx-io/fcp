@@ -2,7 +2,7 @@
 
 What FCP hears: a recording transcribed, or a call's audio recognised as
 it is spoken. Built in `docs/DEVELOPER_SURFACE.md` phase 6; flows that
-listen (Gather by speech) are phase 7.
+listen (Gather by speech, the Transcribe node) are phase 7 (§6).
 
 ## 1. The shape
 
@@ -109,7 +109,86 @@ A mailbox's `include_transcription` (the text in a notification email) has
 nothing to act on yet: no voicemail notification email is sent by any
 node.
 
-## 6. Tests
+## 6. Flows that listen
+
+A flow's **Gather** listens for digits, speech, or either:
+
+```json
+"menu": {
+  "type": "gather",
+  "input": "dtmf_speech",
+  "prompt": {"type": "say", "text": "Say sales or support, or press 2."},
+  "num_digits": 1,
+  "timeout": 5,
+  "speech_timeout_ms": 800,
+  "hints": ["sales", "support"],
+  "language": "en-US",
+  "transitions": {"2": "support"},
+  "speech_transitions": {"sales": "sales", "support": "support"},
+  "default": "menu",
+  "on_timeout": "nothing",
+  "on_error": "digits_only"
+}
+```
+
+- `input`: `dtmf` (the default, and what a Gather written before speech
+  reads as), `speech`, or `dtmf_speech` — whichever the caller gives
+  first.
+- `timeout`: seconds the caller has to begin. A caller who has begun to
+  speak is waited for until their utterance ends, however long the
+  timeout. A noise recognised as no words does not hold the Gather open:
+  once the caller has been quiet for the end-of-speech silence and three
+  seconds more, the timeout counts again.
+- `speech_timeout_ms`: the silence that ends the utterance; the
+  recognizer's default (800) when unset.
+- `hints` and `language`: passed to the provider; `[stt] language` when
+  `language` is unset.
+- `speech_transitions`: a phrase or keyword to a node. A phrase matches
+  when the caller's words contain it as whole words, case and punctuation
+  aside ("Sales, please." matches `sales`, "wholesale" does not); the
+  longest matching phrase wins. With none matching, `default`, then the
+  Gather again.
+- What was said is in `speech`, the confidence (0.00–1.00, empty when the
+  provider gives none) in `speech_confidence`, and `gather_input` is
+  `dtmf` or `speech`. A Gather that listens for speech clears `speech` and
+  `speech_confidence` first, so a Branch with `exists` can tell.
+- `barge_in` (the default): the caller speaking for 200 ms, or a partial
+  transcript, stops the prompt, and the digits that complete the Gather
+  do. Without it the prompt plays out and speech during it is not heard;
+  digits pressed during it are kept, as they always were.
+- `on_error`: taken when speech is asked for alone and the node cannot
+  listen (no `[stt]`, or the recognizer refused); without it, the timeout
+  branch. A `dtmf_speech` Gather that cannot listen goes on with digits.
+
+A digit sent by SIP INFO (`application/dtmf-relay`) joins the Gather in
+progress like one in the media.
+
+A **Transcribe** node sends the call's live transcript as `call.transcript`
+events until a Transcribe with `"action": "stop"`, the end of the flow, or
+the end of the call:
+
+```json
+"transcript": {
+  "type": "transcribe",
+  "leg": "both",
+  "language": "en-US",
+  "interim_results": false,
+  "next": "agent"
+}
+```
+
+`leg` is `caller` (the default: the party the flow answered), `callee`
+(the party a `Dial` reached) or `both`. Each event carries the call, the
+tenant (so webhooks get it), the `leg`, the `text`, the `confidence` and
+`is_final`; with `interim_results` the partial transcripts a streaming
+provider sends come too, each revised by the next. A Transcribe that
+cannot start takes `on_error`, or `next`.
+
+A phone that stops sending during silence (silence suppression) is heard
+as silence: the listener fills a leg's gaps after 60 ms, so an utterance
+ends when the caller stops.
+
+## 7. Tests
 
 `fcp_testkit::stt::ScriptedStt` stands in for the server: it answers a
 known phrase for a known tone, so a scripted phone can "say" something.
@@ -117,4 +196,7 @@ known phrase for a known tone, so a scripted phone can "say" something.
 reads the transcription back; `fcp-tts-server/tests/transcribe.rs` sends
 a file and a stream through the running server;
 `fcp-media/tests/stt_providers.rs` holds Deepgram's and OpenAI's requests
-and answers against stand-ins. The real services are checked by hand.
+and answers against stand-ins; `fcp-call-manager/tests/listen.rs` runs a
+menu that is spoken to, pressed by SIP INFO and left silent, and reads a
+`call.transcript` from the node's events. The real services are checked by
+hand.

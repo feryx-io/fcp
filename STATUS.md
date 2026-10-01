@@ -1581,6 +1581,22 @@ Phase 6 done (v0.25.301): speech recognition (`docs/SPEECH.md`).
 - Proved end to end by `fcp-call-manager/tests/speech.rs` against the
   testkit's scripted recognizer, and by the server's own live test.
 
+Phase 7a done (v0.25.302): flows that listen (`docs/SPEECH.md` §6).
+- Gather takes digits, speech or either (`input`), with `hints`,
+  `language`, `speech_timeout_ms` and `speech_transitions` (whole words,
+  the longest phrase wins). What was said lands in `speech` and
+  `speech_confidence`. A caller who has begun speaking is waited for, and
+  stops the prompt.
+- The `Transcribe` node publishes the call's live transcript as
+  `call.transcript` (caller, callee or both), with the tenant, so
+  webhooks get it.
+- A digit by SIP INFO now joins a Gather. It never did: the call manager's
+  copy of the call never learned it ran a flow.
+- A phone suppressing silence is heard as silence, so its utterances end.
+- The flow builder has the fields and the node.
+- Proved by `fcp-call-manager/tests/listen.rs`.
+- 7b (the `Http` node, flow versions, `webhook_url`) is next.
+
 ## Historical documents
 
 Superseded status docs live in [`docs/archive/`](docs/archive/README.md) — they describe

@@ -1568,6 +1568,7 @@ fn extract_node_id_from_call_event(event: &CallEvent) -> Option<String> {
         | CallEvent::Unparked { .. }
         | CallEvent::Held { .. }
         | CallEvent::Resumed { .. }
+        | CallEvent::Transcript { .. }
         | CallEvent::PartyJoined { .. }
         | CallEvent::PartyLeft { .. } => None,
     }

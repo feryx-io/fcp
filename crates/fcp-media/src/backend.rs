@@ -503,15 +503,48 @@ pub mod embedded {
         }
     }
 
+    /// A listened leg's 20 ms of silence, at 16 kHz.
+    const SILENT_FRAME: usize = crate::stt::STT_SAMPLE_RATE as usize / 50;
+
+    /// How long a leg that has been sending may go quiet before its gap is
+    /// heard as silence. A phone suppressing silence sends nothing, and a
+    /// listener timing the pause after an utterance must still hear one.
+    const GAP_BEFORE_SILENCE: Duration = Duration::from_millis(60);
+
     /// Carry a session's audio from its bridge to its listeners, each leg
-    /// resampled to 16 kHz, until the session ends or nobody listens.
+    /// resampled to 16 kHz, until the session ends or nobody listens. A
+    /// leg that has started sending and then stops is heard as silence.
     async fn pump_listeners(
         mut handle: forge_engine::MediaBridgeHandle,
         fanout: Arc<Listeners>,
         listeners: Arc<DashMap<forge_core::CallId, Arc<Listeners>>>,
     ) {
         let mut resamplers: [Option<(u32, forge_resampler::Resampler)>; 2] = [None, None];
-        while let Some(frame) = handle.recv_frame().await {
+        // Per leg, until when its audio has been delivered.
+        let mut heard_until: [Option<tokio::time::Instant>; 2] = [None, None];
+        let mut tick = tokio::time::interval(Duration::from_millis(20));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            let frame = tokio::select! {
+                frame = handle.recv_frame() => match frame {
+                    Some(frame) => frame,
+                    None => break,
+                },
+                now = tick.tick() => {
+                    let mut gaps = Vec::new();
+                    for (slot, leg) in [(0, MediaLeg::A), (1, MediaLeg::B)] {
+                        let Some(until) = heard_until[slot].as_mut() else { continue };
+                        while now.saturating_duration_since(*until) >= GAP_BEFORE_SILENCE {
+                            *until += Duration::from_millis(20);
+                            gaps.push(leg);
+                        }
+                    }
+                    if !gaps.is_empty() && !deliver_silence(&fanout, &gaps) {
+                        break;
+                    }
+                    continue;
+                }
+            };
             let (leg, slot) = match frame.leg {
                 forge_engine::ParticipantLabel::A => (MediaLeg::A, 0),
                 forge_engine::ParticipantLabel::B => (MediaLeg::B, 1),
@@ -540,21 +573,43 @@ pub mod embedded {
                     Err(_) => continue,
                 }
             };
-            let mut subscribers = fanout.lock();
-            let Some(list) = subscribers.as_mut() else {
+            let now = tokio::time::Instant::now();
+            let duration = Duration::from_micros(
+                pcm.len() as u64 * 1_000_000 / crate::stt::STT_SAMPLE_RATE as u64,
+            );
+            heard_until[slot] = Some(match heard_until[slot] {
+                Some(until) if until > now => until + duration,
+                _ => now + duration,
+            });
+            if !deliver(&fanout, leg, &pcm) {
                 break;
-            };
-            list.retain(|(_, tx)| !tx.is_closed());
-            if list.is_empty() {
-                break;
-            }
-            for (_, tx) in list.iter().filter(|(l, _)| *l == leg) {
-                let _ = tx.try_send(pcm.clone());
             }
         }
         *fanout.lock() = None;
         listeners.remove_if(handle.call_id(), |_, v| Arc::ptr_eq(v, &fanout));
         // The handle detaches the bridge as it drops.
+    }
+
+    /// Hand `pcm` to `leg`'s listeners; false once nobody listens.
+    fn deliver(fanout: &Listeners, leg: MediaLeg, pcm: &[i16]) -> bool {
+        let mut subscribers = fanout.lock();
+        let Some(list) = subscribers.as_mut() else {
+            return false;
+        };
+        list.retain(|(_, tx)| !tx.is_closed());
+        if list.is_empty() {
+            return false;
+        }
+        for (_, tx) in list.iter().filter(|(l, _)| *l == leg) {
+            let _ = tx.try_send(pcm.to_vec());
+        }
+        true
+    }
+
+    /// A frame of silence to each leg in `gaps`, once per entry.
+    fn deliver_silence(fanout: &Listeners, gaps: &[MediaLeg]) -> bool {
+        let silence = [0i16; SILENT_FRAME];
+        gaps.iter().all(|leg| deliver(fanout, *leg, &silence))
     }
 
     /// Information about a forge-media session

@@ -126,7 +126,8 @@ pub enum NodeType {
         on_error: Option<String>,
     },
 
-    /// Gather DTMF input from caller
+    /// Gather input from the caller: digits, speech, or either
+    /// (`docs/DEVELOPER_SURFACE.md` phase 7).
     Gather {
         /// Optional prompt to play/say before gathering
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -163,9 +164,71 @@ pub enum NodeType {
         #[serde(skip_serializing_if = "Option::is_none")]
         on_error: Option<String>,
 
-        /// Allow DTMF input during prompt playback (default: true)
+        /// Allow input during prompt playback (default: true): a digit, or
+        /// the caller starting to speak, stops the prompt.
         #[serde(default = "default_barge_in")]
         barge_in: bool,
+
+        /// What is listened for: `dtmf` (the default), `speech`, or
+        /// `dtmf_speech` (whichever comes first).
+        #[serde(default, skip_serializing_if = "GatherInput::is_dtmf")]
+        input: GatherInput,
+
+        /// The silence, in milliseconds, that ends the caller's utterance;
+        /// the recognizer's default (800) when unset.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        speech_timeout_ms: Option<u32>,
+
+        /// Words or phrases the caller is likely to say, to bias
+        /// recognition.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        hints: Vec<String>,
+
+        /// The language spoken (BCP 47, `en-US`); the recognizer's default
+        /// when unset.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        language: Option<String>,
+
+        /// Spoken transitions: a phrase or keyword to the node it leads
+        /// to. A phrase matches when the caller's words contain it, case
+        /// and punctuation aside; the longest matching phrase wins. What
+        /// was said is in `speech`, the recognizer's confidence in
+        /// `speech_confidence`.
+        #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+        speech_transitions: HashMap<String, String>,
+    },
+
+    /// Send a call's live transcript as `call.transcript` events
+    /// (`docs/DEVELOPER_SURFACE.md` phase 7), or stop sending it. The
+    /// transcript runs until stopped, the flow ends, or the call does.
+    Transcribe {
+        /// `start` (the default) or `stop`.
+        #[serde(default)]
+        action: TranscribeAction,
+
+        /// Whose speech: `caller` (the default), `callee`, or `both`.
+        #[serde(default)]
+        leg: TranscribeLeg,
+
+        /// The language spoken; the recognizer's default when unset.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        language: Option<String>,
+
+        /// Words or phrases to bias recognition.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        hints: Vec<String>,
+
+        /// Send partial transcripts as well as finals.
+        #[serde(default)]
+        interim_results: bool,
+
+        /// Next node to execute.
+        next: String,
+
+        /// Node to execute when the transcript cannot start (no
+        /// recognizer configured, no media).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        on_error: Option<String>,
     },
 
     /// Dial/bridge to another destination
@@ -466,6 +529,96 @@ pub enum GatherPrompt {
     },
 }
 
+/// What a Gather listens for.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GatherInput {
+    /// Digits only.
+    #[default]
+    Dtmf,
+    /// Speech only.
+    Speech,
+    /// Digits or speech, whichever comes first.
+    DtmfSpeech,
+}
+
+impl GatherInput {
+    /// Whether digits are listened for.
+    pub fn digits(self) -> bool {
+        matches!(self, Self::Dtmf | Self::DtmfSpeech)
+    }
+
+    /// Whether speech is listened for.
+    pub fn speech(self) -> bool {
+        matches!(self, Self::Speech | Self::DtmfSpeech)
+    }
+
+    fn is_dtmf(&self) -> bool {
+        *self == Self::Dtmf
+    }
+}
+
+/// Start or stop a call's transcript.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TranscribeAction {
+    #[default]
+    Start,
+    Stop,
+}
+
+/// Whose speech a transcript carries.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TranscribeLeg {
+    /// The party the flow answered.
+    #[default]
+    Caller,
+    /// The party a `Dial` reached.
+    Callee,
+    /// Both, each transcript naming its leg.
+    Both,
+}
+
+/// The node a caller's words lead to: the longest phrase of
+/// `transitions` their words contain, case and punctuation aside.
+pub fn match_speech<'a>(
+    transitions: &'a HashMap<String, String>,
+    said: &str,
+) -> Option<&'a String> {
+    let said = normalize_words(said);
+    let padded = format!(" {said} ");
+    transitions
+        .iter()
+        .filter_map(|(phrase, node)| {
+            let phrase = normalize_words(phrase);
+            (!phrase.is_empty() && padded.contains(&format!(" {phrase} "))).then_some((
+                phrase.len(),
+                phrase,
+                node,
+            ))
+        })
+        // The longest phrase, then the first by name, so a tie is stable.
+        .max_by(|a, b| a.0.cmp(&b.0).then_with(|| b.1.cmp(&a.1)))
+        .map(|(_, _, node)| node)
+}
+
+/// Lowercase words separated by single spaces, punctuation dropped.
+fn normalize_words(text: &str) -> String {
+    text.chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '\'' {
+                c.to_lowercase().next().unwrap_or(c)
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// HTTP methods
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
@@ -579,6 +732,48 @@ fn default_pin_attempts() -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spoken_transitions_match_whole_words_and_the_longest_phrase() {
+        let transitions: HashMap<String, String> = [
+            ("sales", "to_sales"),
+            ("billing", "to_billing"),
+            ("billing question", "to_billing_question"),
+            ("Customer Service!", "to_service"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        let node = |said| match_speech(&transitions, said).map(String::as_str);
+        assert_eq!(node("Sales, please."), Some("to_sales"));
+        assert_eq!(
+            node("I have a billing question"),
+            Some("to_billing_question")
+        );
+        assert_eq!(node("billing"), Some("to_billing"));
+        assert_eq!(node("customer service"), Some("to_service"));
+        // A word inside another word is not that word.
+        assert_eq!(node("wholesales"), None);
+        assert_eq!(node(""), None);
+    }
+
+    #[test]
+    fn a_gather_written_before_speech_reads_as_digits() {
+        let node: FlowNode = serde_json::from_value(serde_json::json!({
+            "type": "gather",
+            "transitions": {"1": "a"},
+        }))
+        .unwrap();
+        let NodeType::Gather { input, hints, .. } = &node.node_type else {
+            panic!("a gather");
+        };
+        assert_eq!(*input, GatherInput::Dtmf);
+        assert!(hints.is_empty());
+        // And it is written back without the new fields.
+        let json = serde_json::to_value(&node).unwrap();
+        assert!(json.get("input").is_none());
+        assert!(json.get("speech_transitions").is_none());
+    }
 
     #[test]
     fn test_flow_serialization() {

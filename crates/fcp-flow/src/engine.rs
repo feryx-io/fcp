@@ -188,16 +188,28 @@ impl FlowEngine {
                 transitions,
                 default,
                 on_timeout,
-                on_error: _,
+                on_error,
                 barge_in,
+                input,
+                speech_timeout_ms,
+                hints,
+                language,
+                speech_transitions,
             } => {
                 info!(
                     call_id = %context.call_id,
                     num_digits = %num_digits,
                     timeout = %timeout,
+                    input = ?input,
                     has_prompt = prompt.is_some(),
-                    "Gathering DTMF input"
+                    "Gathering input"
                 );
+                // A prompt is played afresh each time: a previous Gather's
+                // must not stand in for one this node does not have.
+                context.remove_variable("__gather_prompt_type");
+                context.remove_variable("__gather_prompt_url");
+                context.remove_variable("__gather_finish_on_key");
+                context.remove_variable("__gather_on_timeout");
 
                 // Handle prompt if present
                 if let Some(gather_prompt) = prompt {
@@ -302,8 +314,35 @@ impl FlowEngine {
                     variable: variable.clone(),
                     transitions: transitions.clone(),
                     default: default.clone(),
+                    // The flow builder writes an unset field empty.
+                    speech: SpeechGather {
+                        input: *input,
+                        speech_timeout_ms: speech_timeout_ms.filter(|ms| *ms > 0),
+                        hints: hints.clone(),
+                        language: language.clone().filter(|l| !l.is_empty()),
+                        transitions: speech_transitions.clone(),
+                    },
+                    on_error: on_error.clone(),
                 })
             }
+
+            NodeType::Transcribe {
+                action,
+                leg,
+                language,
+                hints,
+                interim_results,
+                next,
+                on_error,
+            } => Ok(FlowExecutionResult::Transcribe {
+                action: *action,
+                leg: *leg,
+                language: language.clone().filter(|l| !l.is_empty()),
+                hints: hints.clone(),
+                interim_results: *interim_results,
+                next: next.clone(),
+                on_error: on_error.clone(),
+            }),
 
             NodeType::Dial {
                 destination,
@@ -715,6 +754,13 @@ impl FlowEngine {
                     "Flow execution ending with hangup"
                 );
             }
+            Ok(FlowExecutionResult::Transcribe { action, .. }) => {
+                debug!(
+                    call_id = %context.call_id,
+                    action = ?action,
+                    "Flow execution paused, starting or stopping a transcript"
+                );
+            }
             Ok(FlowExecutionResult::WaitingForInput { .. }) => {
                 debug!(
                     call_id = %context.call_id,
@@ -987,10 +1033,30 @@ impl FlowContext {
         variables.insert(name, value);
     }
 
+    /// Remove a variable.
+    pub fn remove_variable(&self, name: &str) {
+        self.variables.write().unwrap().remove(name);
+    }
+
     /// Get all variables.
     pub async fn get_all_variables(&self) -> HashMap<String, String> {
         self.variables.read().unwrap().clone()
     }
+}
+
+/// A Gather's speech settings, as the runner needs them.
+#[derive(Debug, Clone, Default)]
+pub struct SpeechGather {
+    /// What is listened for.
+    pub input: crate::schema::GatherInput,
+    /// The end-of-utterance silence.
+    pub speech_timeout_ms: Option<u32>,
+    /// Phrases to bias recognition.
+    pub hints: Vec<String>,
+    /// The language spoken.
+    pub language: Option<String>,
+    /// Phrase or keyword to node.
+    pub transitions: HashMap<String, String>,
 }
 
 /// Result of executing a flow node.
@@ -1002,11 +1068,26 @@ pub enum FlowExecutionResult {
     /// Hangup the call
     Hangup(Option<String>),
 
-    /// Waiting for user input (DTMF)
+    /// Waiting for the caller's input: digits, speech or either.
     WaitingForInput {
         variable: String,
         transitions: HashMap<String, String>,
         default: Option<String>,
+        /// What is listened for, and how speech is recognised and routed.
+        speech: SpeechGather,
+        /// Node when speech cannot be listened for.
+        on_error: Option<String>,
+    },
+
+    /// Start or stop a call's live transcript (Transcribe node).
+    Transcribe {
+        action: crate::schema::TranscribeAction,
+        leg: crate::schema::TranscribeLeg,
+        language: Option<String>,
+        hints: Vec<String>,
+        interim_results: bool,
+        next: String,
+        on_error: Option<String>,
     },
 
     /// Waiting for media playback to complete (Play/Say nodes)

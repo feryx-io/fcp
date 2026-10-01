@@ -114,6 +114,26 @@ pub struct FlowCallHandler {
     /// The routes emergency calls take, shared with the SIP handler, so a
     /// `Dial` to an emergency number goes where the B2BUA would send it.
     outbound_route_provider: Option<Arc<dyn crate::handler::OutboundRouteProvider>>,
+
+    /// The digit collection of each call's Gather in progress, so a digit
+    /// that arrives by SIP INFO joins it.
+    gather_digits: Arc<DashMap<CallId, mpsc::UnboundedSender<char>>>,
+
+    /// Each call's live transcript (the Transcribe node), one task per leg.
+    transcripts: Arc<DashMap<CallId, Vec<tokio::task::JoinHandle<()>>>>,
+}
+
+/// A call's Gather collection, taken out of [`FlowCallHandler`]'s map when
+/// the Gather ends however it ends.
+struct GatherDigitSlot {
+    slots: Arc<DashMap<CallId, mpsc::UnboundedSender<char>>>,
+    call_id: CallId,
+}
+
+impl Drop for GatherDigitSlot {
+    fn drop(&mut self) {
+        self.slots.remove(&self.call_id);
+    }
 }
 
 /// How a `Dial` node places an emergency call: the emergency routes in
@@ -176,6 +196,8 @@ impl FlowCallHandler {
             dispatcher: None,
             call_recorder: std::sync::OnceLock::new(),
             outbound_route_provider: None,
+            gather_digits: Arc::new(DashMap::new()),
+            transcripts: Arc::new(DashMap::new()),
         }
     }
 
@@ -500,9 +522,16 @@ impl FlowCallHandler {
         self.contexts
             .insert(call.id, Arc::new(RwLock::new(context)));
 
-        // Update call
+        // Update call, and the call manager's copy before the flow runs:
+        // an in-dialog request (a digit by SIP INFO) finds the flow there.
         call.flow_id = Some(flow_id.clone());
         call.flow_current_node = Some(flow.initial_node.clone());
+        if let Some(call_manager) = &self.call_manager {
+            let _ = call_manager.update_call(&call.id, |stored| {
+                stored.flow_id = Some(flow_id.clone());
+                stored.flow_current_node = Some(flow.initial_node.clone());
+            });
+        }
 
         // Publish flow started event
         if let Some(events) = &self.events {
@@ -3297,6 +3326,7 @@ impl FlowCallHandler {
                     // Clone callback before dropping guard
                     let callback = context_guard.hangup_callback.clone();
                     drop(context_guard);
+                    self.stop_transcript(&call_id);
 
                     // Execute hangup callback if available
                     if let Some(callback) = callback {
@@ -3667,6 +3697,7 @@ impl FlowCallHandler {
                 let callback = context_guard.hangup_callback.clone();
                 drop(context_guard);
                 self.contexts.remove(&call_id);
+                self.stop_transcript(&call_id);
 
                 if let Some(callback) = callback {
                     if let Err(e) = callback(reason).await {
@@ -3679,12 +3710,20 @@ impl FlowCallHandler {
                 variable,
                 transitions,
                 default,
+                speech,
+                on_error,
             } => {
                 info!(
                     call_id = %call_id,
                     variable = %variable,
-                    "Flow waiting for user input (DTMF)"
+                    input = ?speech.input,
+                    "Flow waiting for the caller's input"
                 );
+                if speech.input.speech() {
+                    // Cleared so a Branch can tell nothing was said.
+                    context_guard.set_variable("speech".to_string(), String::new());
+                    context_guard.set_variable("speech_confidence".to_string(), String::new());
+                }
 
                 // Get gather configuration from context
                 let num_digits = context_guard
@@ -3751,202 +3790,215 @@ impl FlowCallHandler {
                     });
                 }
 
-                // Create DTMF collector and play prompt
-                if let Some(media_manager) = &self.media_manager {
-                    let gather_call_id = media_session_id
-                        .unwrap_or_else(|| fcp_core::CallId::from_uuid(*call_id.as_uuid()));
+                let Some(media_manager) = self.media_manager.clone() else {
+                    warn!(call_id = %call_id, "Media manager not available for a Gather");
+                    return Ok(());
+                };
+                let gather_call_id = media_session_id
+                    .unwrap_or_else(|| fcp_core::CallId::from_uuid(*call_id.as_uuid()));
+                info!(
+                    call_id = %call_id,
+                    gather_call_id = %gather_call_id,
+                    num_digits = num_digits,
+                    finish_on_key = ?finish_on_key,
+                    has_prompt = prompt_url.is_some(),
+                    transitions_count = transitions.len(),
+                    speech_transitions = speech.transitions.len(),
+                    "Gather: listening"
+                );
 
-                    info!(
-                        call_id = %call_id,
-                        gather_call_id = %gather_call_id,
-                        media_session_id = ?media_session_id,
-                        num_digits = num_digits,
-                        finish_on_key = ?finish_on_key,
-                        has_prompt = prompt_url.is_some(),
-                        transitions_count = transitions.len(),
-                        transition_keys = ?transitions.keys().collect::<Vec<_>>(),
-                        "Gather: creating DTMF collector"
-                    );
-
-                    // Create collector BEFORE playback so digits during prompt are captured
-                    let collector = media_manager.create_dtmf_collector(
-                        &gather_call_id,
-                        num_digits,
-                        finish_on_key,
-                    );
-
-                    // Start prompt playback if available
-                    let playback_id: Option<String> = if let (Some(prompt_url), Some(session_id)) =
-                        (&prompt_url, media_session_id)
-                    {
-                        let resolved_url = self
-                            .resolve_prompt_url(prompt_url)
-                            .await
-                            .unwrap_or(prompt_url.clone());
-                        info!(
-                            call_id = %call_id,
-                            prompt_url = %resolved_url,
-                            barge_in = barge_in,
-                            "Playing Gather prompt"
-                        );
-                        match media_manager
-                            .play_file(
-                                &session_id,
-                                resolved_url.clone(),
-                                fcp_media::AudioTarget::ParticipantA,
-                            )
-                            .await
-                        {
-                            Ok(pid) => {
-                                if !barge_in {
-                                    // No barge-in: wait for prompt to finish before collecting
-                                    if let Err(e) =
-                                        media_manager.wait_playback_completion(pid.clone()).await
-                                    {
-                                        warn!(call_id = %call_id, error = %e, "Gather prompt playback failed");
-                                    } else {
-                                        info!(call_id = %call_id, "Gather prompt playback complete");
-                                    }
-                                    None // already finished
-                                } else {
-                                    Some(pid) // barge-in: collect concurrently, stop later
-                                }
-                            }
-                            Err(e) => {
-                                warn!(call_id = %call_id, error = %e, "Failed to play Gather prompt");
-                                None
-                            }
-                        }
-                    } else {
-                        None
-                    };
-
-                    info!(
-                        call_id = %call_id,
-                        num_digits = num_digits,
-                        timeout_secs = timeout_secs,
-                        finish_on_key = ?finish_on_key,
-                        barge_in = barge_in,
-                        "Starting DTMF collection"
-                    );
-
-                    // Collect DTMF — when done, stop any still-active playback
-                    let result = collector
-                        .collect(std::time::Duration::from_secs(timeout_secs as u64))
-                        .await;
-                    if let Some(pid) = playback_id {
-                        let _ = media_manager.stop_playback(&gather_call_id, pid).await;
+                // Listen BEFORE the prompt plays, so input during it is heard.
+                let mut listening = crate::flow_listen::Listening::start(
+                    &media_manager,
+                    &gather_call_id,
+                    num_digits,
+                    finish_on_key,
+                    &speech,
+                );
+                // Digits that arrive by SIP INFO join the same collection.
+                let digit_slot = listening.digit_sender().map(|sender| {
+                    self.gather_digits.insert(call_id, sender);
+                    GatherDigitSlot {
+                        slots: Arc::clone(&self.gather_digits),
+                        call_id,
                     }
+                });
+                if barge_in {
+                    listening
+                        .listen_for_speech(&media_manager, &gather_call_id, &speech)
+                        .await;
+                }
 
+                let playback_id: Option<String> = if let (Some(prompt_url), Some(session_id)) =
+                    (&prompt_url, media_session_id)
+                {
+                    let resolved_url = self
+                        .resolve_prompt_url(prompt_url)
+                        .await
+                        .unwrap_or(prompt_url.clone());
                     info!(
                         call_id = %call_id,
-                        result = ?result,
-                        "DTMF collection completed"
+                        prompt_url = %resolved_url,
+                        barge_in = barge_in,
+                        "Playing Gather prompt"
                     );
-
-                    // Process collection result
-                    match result {
-                        fcp_media::CollectionResult::Complete(digits) => {
-                            // Store collected digits in variable
-                            let mut context_guard = context.write().await;
-                            context_guard.set_variable(variable.clone(), digits.clone());
-
-                            // Determine next node based on transitions
-                            let next_node = if let Some(next) = transitions.get(&digits) {
-                                next.clone()
-                            } else if let Some(default_node) = &default {
-                                default_node.clone()
-                            } else {
-                                // No transition found and no default - stay on current node
-                                warn!(
-                                    call_id = %call_id,
-                                    digits = %digits,
-                                    "No transition found for collected digits"
-                                );
-                                context_guard.current_node.clone()
-                            };
-
-                            info!(
-                                call_id = %call_id,
-                                digits = %digits,
-                                next_node = %next_node,
-                                "DTMF collection complete, continuing to next node"
-                            );
-
-                            context_guard.current_node = next_node;
-                            drop(context_guard);
-
-                            // Continue to next node
-                            Box::pin(self.execute_next_node(call_id)).await?;
-                        }
-                        fcp_media::CollectionResult::Timeout(partial_digits) => {
-                            // Store partial digits if any
-                            let mut context_guard = context.write().await;
-                            if !partial_digits.is_empty() {
-                                context_guard
-                                    .set_variable(variable.clone(), partial_digits.clone());
+                    match media_manager
+                        .play_file(
+                            &session_id,
+                            resolved_url.clone(),
+                            fcp_media::AudioTarget::ParticipantA,
+                        )
+                        .await
+                    {
+                        Ok(pid) if barge_in => Some(pid),
+                        Ok(pid) => {
+                            // No barge-in: the prompt plays out first.
+                            if let Err(e) = media_manager.wait_playback_completion(pid).await {
+                                warn!(call_id = %call_id, error = %e, "Gather prompt playback failed");
                             }
-
-                            // If digits were collected before timeout, check transitions
-                            // first — the user pressed a valid digit but the timeout
-                            // fired before max_digits was reached.
-                            let next_node = if !partial_digits.is_empty() {
-                                if let Some(next) = transitions.get(&partial_digits) {
-                                    info!(
-                                        call_id = %call_id,
-                                        digits = %partial_digits,
-                                        next_node = %next,
-                                        "Timeout with collected digits — matched transition"
-                                    );
-                                    next.clone()
-                                } else if let Some(timeout_node) = on_timeout_node {
-                                    timeout_node
-                                } else if let Some(ref default_node) = default {
-                                    default_node.clone()
-                                } else {
-                                    warn!(
-                                        call_id = %call_id,
-                                        digits = %partial_digits,
-                                        "Timeout with digits but no matching transition or handler"
-                                    );
-                                    context_guard.current_node.clone()
-                                }
-                            } else if let Some(timeout_node) = on_timeout_node {
-                                timeout_node
-                            } else if let Some(default_node) = default {
-                                default_node
-                            } else {
-                                warn!(
-                                    call_id = %call_id,
-                                    "DTMF collection timeout with no timeout handler"
-                                );
-                                context_guard.current_node.clone()
-                            };
-
-                            info!(
-                                call_id = %call_id,
-                                partial_digits = %partial_digits,
-                                next_node = %next_node,
-                                "DTMF collection timeout, continuing to next node"
-                            );
-
-                            context_guard.current_node = next_node;
-                            drop(context_guard);
-
-                            // Continue to next node
-                            Box::pin(self.execute_next_node(call_id)).await?;
+                            None
                         }
-                        fcp_media::CollectionResult::Cancelled => {
-                            warn!(call_id = %call_id, "DTMF collection cancelled");
-                            // Don't continue execution - call likely terminated
+                        Err(e) => {
+                            warn!(call_id = %call_id, error = %e, "Failed to play Gather prompt");
+                            None
                         }
                     }
                 } else {
-                    warn!(
-                        call_id = %call_id,
-                        "Media manager not available for DTMF collection"
-                    );
+                    None
+                };
+                if !barge_in {
+                    listening
+                        .listen_for_speech(&media_manager, &gather_call_id, &speech)
+                        .await;
                 }
+
+                let outcome = listening
+                    .wait(
+                        &media_manager,
+                        &gather_call_id,
+                        std::time::Duration::from_secs(timeout_secs as u64),
+                        playback_id,
+                    )
+                    .await;
+                drop(digit_slot);
+                info!(call_id = %call_id, outcome = ?outcome, "Gather complete");
+
+                use crate::flow_listen::GatherOutcome;
+                let mut context_guard = context.write().await;
+                let next_node = match outcome {
+                    GatherOutcome::Digits(digits) => {
+                        context_guard.set_variable(variable.clone(), digits.clone());
+                        context_guard.set_variable("gather_input".to_string(), "dtmf".to_string());
+                        if let Some(next) = transitions.get(&digits) {
+                            next.clone()
+                        } else if let Some(default_node) = &default {
+                            default_node.clone()
+                        } else {
+                            // No transition and no default: the Gather runs again.
+                            warn!(call_id = %call_id, digits = %digits, "No transition found for collected digits");
+                            context_guard.current_node.clone()
+                        }
+                    }
+                    GatherOutcome::PartialDigits(digits) => {
+                        // The timeout fired before num_digits was reached;
+                        // a valid choice may still have been made.
+                        context_guard.set_variable(variable.clone(), digits.clone());
+                        context_guard.set_variable("gather_input".to_string(), "dtmf".to_string());
+                        if let Some(next) = transitions.get(&digits) {
+                            next.clone()
+                        } else if let Some(timeout_node) = on_timeout_node {
+                            timeout_node
+                        } else if let Some(default_node) = &default {
+                            default_node.clone()
+                        } else {
+                            warn!(call_id = %call_id, digits = %digits, "Timeout with digits but no matching transition or handler");
+                            context_guard.current_node.clone()
+                        }
+                    }
+                    GatherOutcome::Speech(transcript) => {
+                        context_guard.set_variable("speech".to_string(), transcript.text.clone());
+                        context_guard.set_variable(
+                            "speech_confidence".to_string(),
+                            transcript
+                                .confidence
+                                .map(|c| format!("{c:.2}"))
+                                .unwrap_or_default(),
+                        );
+                        context_guard
+                            .set_variable("gather_input".to_string(), "speech".to_string());
+                        if let Some(next) =
+                            fcp_flow::schema::match_speech(&speech.transitions, &transcript.text)
+                        {
+                            next.clone()
+                        } else if let Some(default_node) = &default {
+                            default_node.clone()
+                        } else {
+                            warn!(call_id = %call_id, speech = %transcript.text, "No transition found for what was said");
+                            context_guard.current_node.clone()
+                        }
+                    }
+                    GatherOutcome::SpeechUnavailable if on_error.is_some() => {
+                        on_error.clone().unwrap_or_default()
+                    }
+                    GatherOutcome::Timeout | GatherOutcome::SpeechUnavailable => {
+                        if let Some(timeout_node) = on_timeout_node {
+                            timeout_node
+                        } else if let Some(default_node) = default {
+                            default_node
+                        } else {
+                            warn!(call_id = %call_id, "Gather timeout with no timeout handler");
+                            context_guard.current_node.clone()
+                        }
+                    }
+                    GatherOutcome::Cancelled => {
+                        warn!(call_id = %call_id, "Gather cancelled");
+                        // The call has likely ended: nothing more runs.
+                        return Ok(());
+                    }
+                };
+                info!(call_id = %call_id, next_node = %next_node, "Gather continuing to next node");
+                context_guard.current_node = next_node;
+                drop(context_guard);
+                Box::pin(self.execute_next_node(call_id)).await?;
+            }
+
+            FlowExecutionResult::Transcribe {
+                action,
+                leg,
+                language,
+                hints,
+                interim_results,
+                next,
+                on_error,
+            } => {
+                let media_session_id = context_guard.media_session_id;
+                drop(context_guard);
+                let next_node = match action {
+                    fcp_flow::schema::TranscribeAction::Stop => {
+                        self.stop_transcript(&call_id);
+                        next
+                    }
+                    fcp_flow::schema::TranscribeAction::Start => {
+                        let request = crate::flow_listen::TranscriptRequest {
+                            leg,
+                            language,
+                            hints,
+                            interim_results,
+                        };
+                        match self
+                            .start_transcript(call_id, media_session_id, &request)
+                            .await
+                        {
+                            Ok(()) => next,
+                            Err(e) => {
+                                warn!(call_id = %call_id, error = %e, "The call's transcript cannot start");
+                                on_error.unwrap_or(next)
+                            }
+                        }
+                    }
+                };
+                context.write().await.current_node = next_node;
+                Box::pin(self.execute_next_node(call_id)).await?;
             }
 
             FlowExecutionResult::WaitingForMedia => {
@@ -4146,69 +4198,80 @@ impl FlowCallHandler {
         Ok(())
     }
 
-    /// Handle DTMF input from the caller.
-    ///
-    /// This is called when DTMF digits are received during a Gather node.
-    /// Looks up the pending gather transitions to determine the next node,
-    /// stores digits in the named variable, and resumes flow execution.
+    /// A digit from the caller that arrived by SIP INFO rather than in the
+    /// media. It joins the call's Gather in progress, as an RFC 2833 digit
+    /// would; outside a Gather it is only noted in `dtmf_input`.
     pub async fn handle_dtmf_input(&self, call_id: CallId, digits: String) -> Result<()> {
-        info!(
-            call_id = %call_id,
-            digits = %digits,
-            "Received DTMF input"
-        );
-
-        let context_entry = self
+        info!(call_id = %call_id, digits = %digits, "Received DTMF input");
+        let context = self
             .contexts
             .get(&call_id)
+            .map(|entry| Arc::clone(entry.value()))
             .ok_or_else(|| anyhow::anyhow!("No flow context for call: {}", call_id))?;
-
-        let context = Arc::clone(context_entry.value());
-        drop(context_entry);
-
-        let mut context_guard = context.write().await;
-
-        // Store the digits as a variable
-        context_guard.set_variable("dtmf_input".to_string(), digits.clone());
-
-        // Check if there's a pending gather with transitions
-        let transitions_json = context_guard.get_variable("__gather_transitions").ok();
-        let default_node = context_guard.get_variable("__gather_default").ok();
-        let variable_name = context_guard.get_variable("__gather_variable").ok();
-
-        // Store digits in the named variable if specified
-        if let Some(var_name) = &variable_name {
-            context_guard.set_variable(var_name.clone(), digits.clone());
-        }
-
-        // Determine next node based on transitions
-        if let Some(transitions_str) = transitions_json {
-            if let Ok(transitions) =
-                serde_json::from_str::<HashMap<String, String>>(&transitions_str)
-            {
-                if let Some(next_node) = transitions.get(&digits) {
-                    context_guard.current_node = next_node.clone();
-                    drop(context_guard);
-                    return self.execute_next_node(call_id).await;
+        context
+            .read()
+            .await
+            .set_variable("dtmf_input".to_string(), digits.clone());
+        match self.gather_digits.get(&call_id) {
+            Some(sender) => {
+                for digit in digits.chars() {
+                    // A closed collection has just finished: the digit is late.
+                    let _ = sender.send(digit);
                 }
             }
+            None => debug!(call_id = %call_id, "A digit outside a Gather"),
         }
-
-        // Fall back to default node
-        if let Some(default) = default_node {
-            context_guard.current_node = default;
-            drop(context_guard);
-            return self.execute_next_node(call_id).await;
-        }
-
-        drop(context_guard);
         Ok(())
+    }
+
+    /// Start a call's live transcript (`docs/DEVELOPER_SURFACE.md` phase 7),
+    /// replacing one already running.
+    async fn start_transcript(
+        &self,
+        call_id: CallId,
+        media_session_id: Option<fcp_core::CallId>,
+        request: &crate::flow_listen::TranscriptRequest,
+    ) -> Result<()> {
+        let media = self
+            .media_manager
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("no media manager"))?;
+        let session =
+            media_session_id.unwrap_or_else(|| fcp_core::CallId::from_uuid(*call_id.as_uuid()));
+        let tenant_id = self
+            .call_manager
+            .as_ref()
+            .and_then(|call_manager| call_manager.get_call(&call_id))
+            .map(|call| call.tenant_id)
+            .ok_or_else(|| anyhow::anyhow!("the call is gone"))?;
+        let tasks = crate::flow_listen::start_transcript(
+            media,
+            &session,
+            call_id,
+            tenant_id,
+            self.events.clone(),
+            request,
+        )
+        .await?;
+        self.stop_transcript(&call_id);
+        self.transcripts.insert(call_id, tasks);
+        Ok(())
+    }
+
+    /// Stop a call's live transcript, if one runs.
+    fn stop_transcript(&self, call_id: &CallId) {
+        if let Some((_, tasks)) = self.transcripts.remove(call_id) {
+            for task in tasks {
+                task.abort();
+            }
+        }
     }
 
     /// Stop flow execution for a call.
     pub async fn stop_flow(&self, call_id: CallId) -> Result<()> {
         info!(call_id = %call_id, "Stopping flow execution");
 
+        self.stop_transcript(&call_id);
         if let Some((_, context)) = self.contexts.remove(&call_id) {
             let context_guard = context.read().await;
 

@@ -335,6 +335,22 @@ pub enum CallEvent {
         node_id: Option<String>,
     },
 
+    /// A piece of a call's live transcript, from a flow's `Transcribe`
+    /// node (`docs/DEVELOPER_SURFACE.md` phase 7): `leg` is `caller` or
+    /// `callee`; a partial transcript (`is_final` false) may be revised by
+    /// the next one.
+    Transcript {
+        call_id: CallId,
+        tenant_id: TenantId,
+        leg: String,
+        text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        confidence: Option<f64>,
+        is_final: bool,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
     /// The held leg taken off hold.
     Resumed {
         call_id: CallId,
@@ -1623,6 +1639,7 @@ impl PlatformEvent {
         "call.unparked",
         "call.held",
         "call.resumed",
+        "call.transcript",
         "call.party_joined",
         "call.party_left",
         "media.session_started",
@@ -1757,6 +1774,7 @@ impl PlatformEvent {
                 CallEvent::Unparked { .. } => "call.unparked",
                 CallEvent::Held { .. } => "call.held",
                 CallEvent::Resumed { .. } => "call.resumed",
+                CallEvent::Transcript { .. } => "call.transcript",
                 CallEvent::PartyJoined { .. } => "call.party_joined",
                 CallEvent::PartyLeft { .. } => "call.party_left",
             },
@@ -1922,7 +1940,8 @@ impl PlatformEvent {
                 CallEvent::Initiated { tenant_id, .. }
                 | CallEvent::Emergency { tenant_id, .. }
                 | CallEvent::EmergencyCompleted { tenant_id, .. }
-                | CallEvent::EmergencyNotificationFailed { tenant_id, .. } => Some(tenant_id),
+                | CallEvent::EmergencyNotificationFailed { tenant_id, .. }
+                | CallEvent::Transcript { tenant_id, .. } => Some(tenant_id),
                 _ => None,
             },
             PlatformEvent::User(e) => match e {
@@ -2157,6 +2176,7 @@ impl CallEvent {
             | CallEvent::Unparked { call_id, .. }
             | CallEvent::Held { call_id, .. }
             | CallEvent::Resumed { call_id, .. }
+            | CallEvent::Transcript { call_id, .. }
             | CallEvent::PartyJoined { call_id, .. }
             | CallEvent::PartyLeft { call_id, .. } => Some(call_id),
         }
@@ -2175,6 +2195,7 @@ impl CallEvent {
             | CallEvent::Unparked { timestamp, .. }
             | CallEvent::Held { timestamp, .. }
             | CallEvent::Resumed { timestamp, .. }
+            | CallEvent::Transcript { timestamp, .. }
             | CallEvent::PartyJoined { timestamp, .. }
             | CallEvent::PartyLeft { timestamp, .. } => *timestamp,
             CallEvent::Answered { answer_time, .. } => *answer_time,

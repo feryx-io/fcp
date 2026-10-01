@@ -32735,6 +32735,7 @@
               "call.unparked",
               "call.held",
               "call.resumed",
+              "call.transcript",
               "call.party_joined",
               "call.party_left",
               "media.session_started",
