@@ -91,6 +91,11 @@ pub struct TenantResponse {
     /// Country, timezone and number-range overrides
     /// (`docs/ENTERPRISE_CALLING.md` §3.7).
     pub calling: fcp_core::TenantCalling,
+    /// Email domains whose people are this tenant's
+    /// (`docs/IDENTITY_AND_DEVICES.md` phase 2).
+    pub login_domains: Vec<String>,
+    /// How the tenant's people may sign in.
+    pub sign_in: fcp_core::TenantSignIn,
 }
 
 impl From<Tenant> for TenantResponse {
@@ -125,6 +130,8 @@ impl From<Tenant> for TenantResponse {
             sip_domains: tenant.sip_domains,
             platform_trunk_fallback: tenant.platform_trunk_fallback,
             calling: tenant.calling,
+            login_domains: tenant.login_domains,
+            sign_in: tenant.sign_in,
         }
     }
 }
@@ -156,6 +163,12 @@ pub struct CreateTenantRequest {
     /// How the tenant dials and keeps time.
     #[serde(default)]
     pub calling: Option<fcp_core::TenantCalling>,
+    /// Email domains whose people are this tenant's.
+    #[serde(default)]
+    pub login_domains: Vec<String>,
+    /// How the tenant's people may sign in.
+    #[serde(default)]
+    pub sign_in: Option<fcp_core::TenantSignIn>,
 }
 
 /// Request to update a tenant
@@ -181,6 +194,11 @@ pub struct UpdateTenantRequest {
     pub platform_trunk_fallback: Option<bool>,
     /// Replaces the tenant's calling defaults whole when given.
     pub calling: Option<fcp_core::TenantCalling>,
+    /// Replaces the tenant's login domains whole. A platform admin's to
+    /// set: a domain decides where a person's sign-in goes.
+    pub login_domains: Option<Vec<String>>,
+    /// Replaces how the tenant's people may sign in.
+    pub sign_in: Option<fcp_core::TenantSignIn>,
 }
 
 /// A tenant's calling defaults as stored: the country upper-cased, blanks
@@ -242,6 +260,49 @@ fn normalize_sip_domains(input: &[String]) -> Result<Vec<String>, ApiError> {
         }
     }
     Ok(out)
+}
+
+/// Login domains as stored: normalized, without duplicates.
+fn normalize_login_domains(input: &[String]) -> Result<Vec<String>, ApiError> {
+    let mut out: Vec<String> = Vec::new();
+    for raw in input.iter().filter(|d| !d.trim().is_empty()) {
+        let domain = fcp_core::normalize_login_domain(raw).map_err(ApiError::BadRequest)?;
+        if !out.contains(&domain) {
+            out.push(domain);
+        }
+    }
+    Ok(out)
+}
+
+/// No other tenant claims any of `domains` as a login domain.
+async fn ensure_login_domains_unique<S: fcp_core::TenantStore + ?Sized>(
+    storage: &S,
+    domains: &[String],
+    exclude: Option<&TenantId>,
+) -> Result<(), ApiError> {
+    for d in domains {
+        if let Some(existing) = storage.get_tenant_by_login_domain(d).await? {
+            if exclude != Some(&existing.id) {
+                return Err(ApiError::Conflict(format!(
+                    "Login domain '{}' is already claimed by tenant '{}'",
+                    d, existing.name
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A sign-in policy the tenant's people can live with: a password is the
+/// only way in until the tenant has an identity provider, so it cannot be
+/// taken from them before then.
+fn check_sign_in(sign_in: &fcp_core::TenantSignIn) -> Result<(), ApiError> {
+    if sign_in.password_login != fcp_core::PasswordLogin::Allowed {
+        return Err(ApiError::BadRequest(
+            "password_login can be restricted once the tenant has an identity provider to sign in with; it has none".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// Ensure no other tenant already claims any of `domains`. Pass the
@@ -371,6 +432,10 @@ pub async fn create_tenant(
     // Normalize and uniqueness-check any SIP domains the create provided.
     let sip_domains = normalize_sip_domains(&req.sip_domains)?;
     ensure_sip_domains_unique(storage.as_ref(), &sip_domains, None).await?;
+    let login_domains = normalize_login_domains(&req.login_domains)?;
+    ensure_login_domains_unique(storage.as_ref(), &login_domains, None).await?;
+    let sign_in = req.sign_in.clone().unwrap_or_default();
+    check_sign_in(&sign_in)?;
 
     let now = SystemTime::now();
     let status = if let Some(status_str) = &req.status {
@@ -412,6 +477,8 @@ pub async fn create_tenant(
         sip_domains,
         platform_trunk_fallback: req.platform_trunk_fallback.unwrap_or(true),
         calling: normalize_calling(req.calling.unwrap_or_default())?,
+        login_domains,
+        sign_in,
     };
 
     storage.put_tenant(tenant.clone()).await?;
@@ -523,6 +590,19 @@ pub async fn update_tenant(
         let normalized = normalize_sip_domains(&raw_domains)?;
         ensure_sip_domains_unique(storage.as_ref(), &normalized, Some(&tenant.id)).await?;
         tenant.sip_domains = normalized;
+    }
+
+    if let Some(raw_domains) = req.login_domains {
+        // A domain decides where a person's sign-in goes: the platform's.
+        require_platform(identity.as_ref().map(|ext| &ext.0))?;
+        let normalized = normalize_login_domains(&raw_domains)?;
+        ensure_login_domains_unique(storage.as_ref(), &normalized, Some(&tenant.id)).await?;
+        tenant.login_domains = normalized;
+    }
+
+    if let Some(sign_in) = req.sign_in {
+        check_sign_in(&sign_in)?;
+        tenant.sign_in = sign_in;
     }
 
     let fallback_changed = req

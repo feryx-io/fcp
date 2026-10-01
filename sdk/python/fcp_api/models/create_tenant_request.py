@@ -14,6 +14,7 @@ import datetime
 
 if TYPE_CHECKING:
   from ..models.tenant_calling import TenantCalling
+  from ..models.tenant_sign_in import TenantSignIn
 
 
 
@@ -45,6 +46,8 @@ class CreateTenantRequest:
                 has none of its own that can (`docs/TENANT_TRUNKS.md` §5). True
                 unless said otherwise.
             calling (None | TenantCalling | Unset):
+            login_domains (list[str] | Unset): Email domains whose people are this tenant's.
+            sign_in (None | TenantSignIn | Unset):
      """
 
     name: str
@@ -61,6 +64,8 @@ class CreateTenantRequest:
     sip_domains: list[str] | Unset = UNSET
     platform_trunk_fallback: bool | None | Unset = UNSET
     calling: None | TenantCalling | Unset = UNSET
+    login_domains: list[str] | Unset = UNSET
+    sign_in: None | TenantSignIn | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -69,6 +74,7 @@ class CreateTenantRequest:
 
     def to_dict(self) -> dict[str, Any]:
         from ..models.tenant_calling import TenantCalling # noqa: PLC0415
+        from ..models.tenant_sign_in import TenantSignIn # noqa: PLC0415
         name = self.name
 
         description: None | str | Unset
@@ -153,6 +159,20 @@ class CreateTenantRequest:
         else:
             calling = self.calling
 
+        login_domains: list[str] | Unset = UNSET
+        if not isinstance(self.login_domains, Unset):
+            login_domains = self.login_domains
+
+
+
+        sign_in: dict[str, Any] | None | Unset
+        if isinstance(self.sign_in, Unset):
+            sign_in = UNSET
+        elif isinstance(self.sign_in, TenantSignIn):
+            sign_in = self.sign_in.to_dict()
+        else:
+            sign_in = self.sign_in
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -185,6 +205,10 @@ class CreateTenantRequest:
             field_dict["platform_trunk_fallback"] = platform_trunk_fallback
         if calling is not UNSET:
             field_dict["calling"] = calling
+        if login_domains is not UNSET:
+            field_dict["login_domains"] = login_domains
+        if sign_in is not UNSET:
+            field_dict["sign_in"] = sign_in
 
         return field_dict
 
@@ -193,6 +217,7 @@ class CreateTenantRequest:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.tenant_calling import TenantCalling # noqa: PLC0415
+        from ..models.tenant_sign_in import TenantSignIn # noqa: PLC0415
         d = dict(src_dict)
         name = d.pop("name")
 
@@ -339,6 +364,29 @@ class CreateTenantRequest:
         calling = _parse_calling(d.pop("calling", UNSET))
 
 
+        login_domains = cast(list[str], d.pop("login_domains", UNSET))
+
+
+        def _parse_sign_in(data: object) -> None | TenantSignIn | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                sign_in_type_0 = TenantSignIn.from_dict(data)
+
+
+
+                return sign_in_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(None | TenantSignIn | Unset, data)
+
+        sign_in = _parse_sign_in(d.pop("sign_in", UNSET))
+
+
         create_tenant_request = cls(
             name=name,
             description=description,
@@ -354,6 +402,8 @@ class CreateTenantRequest:
             sip_domains=sip_domains,
             platform_trunk_fallback=platform_trunk_fallback,
             calling=calling,
+            login_domains=login_domains,
+            sign_in=sign_in,
         )
 
 

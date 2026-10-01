@@ -14,6 +14,7 @@ import datetime
 
 if TYPE_CHECKING:
   from ..models.tenant_calling import TenantCalling
+  from ..models.tenant_sign_in import TenantSignIn
 
 
 
@@ -37,6 +38,9 @@ class TenantResponse:
             platform_trunk_fallback (bool): Whether this tenant's calls may leave on the platform's trunks when
                 it has none of its own that can take them (`docs/TENANT_TRUNKS.md`).
             calling (TenantCalling): A tenant's calling defaults.
+            login_domains (list[str]): Email domains whose people are this tenant's
+                (`docs/IDENTITY_AND_DEVICES.md` phase 2).
+            sign_in (TenantSignIn): How a tenant's people may sign in (`docs/IDENTITY_AND_DEVICES.md` §2).
             description (None | str | Unset):
             contact_email (None | str | Unset):
             contact_phone (None | str | Unset):
@@ -56,6 +60,8 @@ class TenantResponse:
     sip_domains: list[str]
     platform_trunk_fallback: bool
     calling: TenantCalling
+    login_domains: list[str]
+    sign_in: TenantSignIn
     description: None | str | Unset = UNSET
     contact_email: None | str | Unset = UNSET
     contact_phone: None | str | Unset = UNSET
@@ -73,6 +79,7 @@ class TenantResponse:
 
     def to_dict(self) -> dict[str, Any]:
         from ..models.tenant_calling import TenantCalling # noqa: PLC0415
+        from ..models.tenant_sign_in import TenantSignIn # noqa: PLC0415
         id = self.id
 
         name = self.name
@@ -90,6 +97,12 @@ class TenantResponse:
         platform_trunk_fallback = self.platform_trunk_fallback
 
         calling = self.calling.to_dict()
+
+        login_domains = self.login_domains
+
+
+
+        sign_in = self.sign_in.to_dict()
 
         description: None | str | Unset
         if isinstance(self.description, Unset):
@@ -159,6 +172,8 @@ class TenantResponse:
             "sip_domains": sip_domains,
             "platform_trunk_fallback": platform_trunk_fallback,
             "calling": calling,
+            "login_domains": login_domains,
+            "sign_in": sign_in,
         })
         if description is not UNSET:
             field_dict["description"] = description
@@ -186,6 +201,7 @@ class TenantResponse:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.tenant_calling import TenantCalling # noqa: PLC0415
+        from ..models.tenant_sign_in import TenantSignIn # noqa: PLC0415
         d = dict(src_dict)
         id = d.pop("id")
 
@@ -209,6 +225,14 @@ class TenantResponse:
         platform_trunk_fallback = d.pop("platform_trunk_fallback")
 
         calling = TenantCalling.from_dict(d.pop("calling"))
+
+
+
+
+        login_domains = cast(list[str], d.pop("login_domains"))
+
+
+        sign_in = TenantSignIn.from_dict(d.pop("sign_in"))
 
 
 
@@ -322,6 +346,8 @@ class TenantResponse:
             sip_domains=sip_domains,
             platform_trunk_fallback=platform_trunk_fallback,
             calling=calling,
+            login_domains=login_domains,
+            sign_in=sign_in,
             description=description,
             contact_email=contact_email,
             contact_phone=contact_phone,

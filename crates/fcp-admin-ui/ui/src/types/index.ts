@@ -137,6 +137,7 @@ export type AuthUser = S['AuthUserResponse']
 export type LoginRequest = S['LoginRequest']
 
 export type LoginResponse = S['LoginResponse']
+export type DiscoverResponse = S['DiscoverResponse']
 
 export type ChangeExpiredPasswordRequest = S['ChangeExpiredPasswordRequest']
 

@@ -12,6 +12,17 @@ import { setExpiredPasswordState } from '@/stores/expired-password'
 
 export function LoginPage() {
   const [username, setUsername] = useState('')
+  const [organisation, setOrganisation] = useState<string | null>(null)
+
+  // An email finds its tenant by its domain (docs/IDENTITY_AND_DEVICES.md
+  // phase 2): say which organisation the sign-in goes to.
+  const discover = () => {
+    if (!username.includes('@')) return
+    auth
+      .discover(username)
+      .then((found) => setOrganisation(found.tenant_name ?? null))
+      .catch(() => setOrganisation(null))
+  }
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
@@ -66,16 +77,20 @@ export function LoginPage() {
               </div>
             )}
             <div className="space-y-2">
-              <Label htmlFor="username">Username</Label>
+              <Label htmlFor="username">Username or email</Label>
               <Input
                 id="username"
                 value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                placeholder="Username"
+                onChange={(e) => { setUsername(e.target.value); setOrganisation(null) }}
+                onBlur={discover}
+                placeholder="Username or name@company.com"
                 required
                 autoComplete="username"
                 autoFocus
               />
+              {organisation && (
+                <p className="text-xs text-muted-foreground">Signing in to {organisation}</p>
+              )}
             </div>
             <div className="space-y-2">
               <Label htmlFor="password">Password</Label>

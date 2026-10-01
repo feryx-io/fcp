@@ -139,6 +139,89 @@ pub struct Tenant {
     /// §3.7): its country, its timezone, and its own word on number ranges.
     #[serde(default)]
     pub calling: TenantCalling,
+
+    /// Email domains whose people are this tenant's
+    /// (`docs/IDENTITY_AND_DEVICES.md` phase 2): `jane@acme.com` signing in
+    /// is sent to the tenant claiming `acme.com`. Lowercase, unique across
+    /// tenants, and set only by a platform admin: a domain decides where a
+    /// person's sign-in goes.
+    #[serde(default)]
+    pub login_domains: Vec<String>,
+
+    /// How the tenant's people may sign in.
+    #[serde(default)]
+    pub sign_in: TenantSignIn,
+}
+
+/// How a tenant's people may sign in (`docs/IDENTITY_AND_DEVICES.md` §2).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct TenantSignIn {
+    /// Whether a password signs in.
+    #[serde(default)]
+    pub password_login: PasswordLogin,
+}
+
+/// Who may sign in with a password.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum PasswordLogin {
+    /// Everyone with a password.
+    #[default]
+    Allowed,
+    /// Administrators only; everyone else signs in through the tenant's
+    /// identity provider.
+    AdminsOnly,
+    /// Nobody; only a platform super-admin, whatever the tenant says
+    /// (break-glass), and the platform's static token.
+    Disabled,
+}
+
+impl PasswordLogin {
+    /// Whether a user of `role` may sign in with a password.
+    pub fn permits(self, role: &crate::UserRole) -> bool {
+        use crate::UserRole;
+        match self {
+            Self::Allowed => true,
+            // A super admin is the platform's, never shut out by a tenant.
+            _ if *role == UserRole::SuperAdmin => true,
+            Self::AdminsOnly => *role != UserRole::EndUser,
+            Self::Disabled => false,
+        }
+    }
+}
+
+/// A login domain as stored: trimmed and lowercased; an error for one
+/// that is not a domain.
+pub fn normalize_login_domain(raw: &str) -> Result<String, String> {
+    let domain = raw.trim().trim_start_matches('@').to_ascii_lowercase();
+    let valid = domain.contains('.')
+        && !domain.starts_with('.')
+        && !domain.ends_with('.')
+        && domain.len() <= 253
+        && domain.parse::<std::net::IpAddr>().is_err()
+        && domain.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        });
+    if valid {
+        Ok(domain)
+    } else {
+        Err(format!("`{raw}` is not an email domain"))
+    }
+}
+
+/// The domain of a login that is an email address.
+pub fn login_domain(login: &str) -> Option<String> {
+    let (local, domain) = login.trim().rsplit_once('@')?;
+    if local.is_empty() {
+        return None;
+    }
+    normalize_login_domain(domain).ok()
 }
 
 /// A tenant's calling defaults.
@@ -230,6 +313,8 @@ impl Tenant {
             sip_domains: Vec::new(),
             platform_trunk_fallback: true,
             calling: TenantCalling::default(),
+            login_domains: Vec::new(),
+            sign_in: TenantSignIn::default(),
         }
     }
 
@@ -325,5 +410,44 @@ mod tests {
         // Set expiration in the future
         tenant.trial_expires_at = Some(SystemTime::now() + std::time::Duration::from_secs(86400));
         assert!(!tenant.is_trial_expired());
+    }
+}
+
+#[cfg(test)]
+mod sign_in_tests {
+    use super::*;
+    use crate::UserRole;
+
+    #[test]
+    fn a_login_domain_is_a_domain() {
+        assert_eq!(normalize_login_domain(" @ACME.com ").unwrap(), "acme.com");
+        assert_eq!(
+            normalize_login_domain("mail.acme.co.uk").unwrap(),
+            "mail.acme.co.uk"
+        );
+        for bad in [
+            "acme",
+            "192.168.1.1",
+            ".acme.com",
+            "acme..com",
+            "-acme.com",
+            "ac me.com",
+            "",
+        ] {
+            assert!(normalize_login_domain(bad).is_err(), "{bad}");
+        }
+        assert_eq!(login_domain("Jane@Acme.com").as_deref(), Some("acme.com"));
+        assert_eq!(login_domain("jane"), None);
+        assert_eq!(login_domain("@acme.com"), None);
+    }
+
+    #[test]
+    fn a_password_policy_never_shuts_out_a_super_admin() {
+        use PasswordLogin::*;
+        assert!(Allowed.permits(&UserRole::EndUser));
+        assert!(!AdminsOnly.permits(&UserRole::EndUser));
+        assert!(AdminsOnly.permits(&UserRole::TenantAdmin));
+        assert!(!Disabled.permits(&UserRole::TenantAdmin));
+        assert!(Disabled.permits(&UserRole::SuperAdmin));
     }
 }

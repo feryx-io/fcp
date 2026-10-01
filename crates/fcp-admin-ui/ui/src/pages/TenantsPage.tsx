@@ -41,6 +41,7 @@ const editSchema = z.object({
   max_phone_numbers: z.coerce.number().positive().optional().or(z.literal(0).transform(() => undefined)),
   max_concurrent_calls: z.coerce.number().positive().optional().or(z.literal(0).transform(() => undefined)),
   sip_domains: z.string().optional(),
+  login_domains: z.string().optional(),
   platform_trunk_fallback: z.boolean().optional(),
   calling_country: z.string().optional(),
   calling_timezone: z.string().optional(),
@@ -211,6 +212,7 @@ export function TenantsPage() {
       max_phone_numbers: editItem.max_phone_numbers ?? undefined,
       max_concurrent_calls: editItem.max_concurrent_calls ?? undefined,
       sip_domains: (editItem.sip_domains ?? []).join('\n'),
+      login_domains: (editItem.login_domains ?? []).join('\n'),
       platform_trunk_fallback: editItem.platform_trunk_fallback ?? true,
       calling_country: editItem.calling?.country ?? '',
       calling_timezone: editItem.calling?.timezone ?? '',
@@ -236,6 +238,7 @@ export function TenantsPage() {
     if (!editItem) return
     const {
       sip_domains: rawDomains,
+      login_domains: rawLoginDomains,
       calling_country,
       calling_timezone,
       calling_overrides,
@@ -256,6 +259,9 @@ export function TenantsPage() {
         contact_email: data.contact_email || undefined,
         contact_phone: data.contact_phone || undefined,
         sip_domains: parseSipDomains(rawDomains),
+        // A login domain decides where a person's sign-in goes: only a
+        // platform admin sets them (docs/IDENTITY_AND_DEVICES.md phase 2).
+        ...(isPlatformAdmin ? { login_domains: parseSipDomains(rawLoginDomains) } : {}),
       },
     })
   }
@@ -425,6 +431,21 @@ export function TenantsPage() {
                 One per line. SIP REGISTER / INVITE requests whose From or
                 Request-URI host matches one of these will be routed to this
                 tenant. Leave blank to use only the default-tenant fallback.
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="e-login_domains">Login Domains</Label>
+              <textarea
+                id="e-login_domains"
+                rows={2}
+                placeholder="acme.com"
+                disabled={!isPlatformAdmin}
+                className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring font-mono disabled:opacity-60"
+                {...editForm.register('login_domains')}
+              />
+              <p className="text-xs text-muted-foreground">
+                One per line. Someone signing in as name@one-of-these is this
+                tenant's. Set by a platform admin.
               </p>
             </div>
             <div className="grid grid-cols-2 gap-4">

@@ -342,6 +342,30 @@ Each phase is one PR based on main, with its admin UI and its docs.
    - Per-tenant `password_login` policy with break-glass.
    - TOTP for password sign-in, required by role if the tenant says so,
      with recovery codes (Q4).
+   - Split in two: 2a the domains, optional passwords and the policy; 2b
+     TOTP.
+   - **2a done (v0.25.309)** (`docs/API_TOKENS.md` §7).
+     - Migration 091: `tenants.login_domains` (GIN) and `sign_in_json`;
+       `Tenant::{login_domains, sign_in}`, `PasswordLogin`,
+       `get_tenant_by_login_domain`.
+     - Login domains are set by a platform admin only, since a domain
+       decides where a person's sign-in goes, and are unique across
+       tenants.
+     - `POST /auth/discover`. Login takes an email: its domain's tenant,
+       then the username, then the users' email
+       (`find_users_by_email_in_tenant`).
+     - `password` optional on user creation, with a generated SIP
+       password. An empty password hash matches nothing; before, it
+       answered 500.
+     - The policy is enforced after the password is checked. The API
+       accepts only `allowed` until phase 3 gives a tenant an identity
+       provider.
+     - The tenant form's login domains; the login page's "Signing in to".
+     - Proved by `a_tenants_people_find_it_by_their_email_domain` and
+       `a_tenants_password_policy_is_kept_and_never_shuts_out_a_super_admin`.
+     - Login domains are claimed without a DNS proof of ownership: the
+       platform admin vouches. A TXT-record check is a later refinement.
+
 3. **OIDC sign-in.**
    - `identity_providers` per tenant: issuer discovery, client id, and
      secret sealed at rest.

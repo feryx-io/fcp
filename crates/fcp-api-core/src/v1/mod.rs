@@ -71,6 +71,7 @@ use axum::{
 /// Tenant signup is only mounted when explicitly enabled by configuration.
 pub fn pre_auth_router(enable_signup: bool) -> Router<ApiState> {
     let router = Router::new()
+        .route("/auth/discover", post(auth_session::discover))
         .route("/auth/login", post(auth_session::login))
         .route("/auth/refresh", post(auth_session::refresh))
         .route("/auth/logout", post(auth_session::logout))

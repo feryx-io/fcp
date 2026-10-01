@@ -678,6 +678,28 @@ pub trait CredentialStore: Send + Sync {
     /// List all users.
     async fn list_users(&self) -> Result<Vec<User>>;
 
+    /// A tenant's users whose email is `email`, case aside
+    /// (`docs/IDENTITY_AND_DEVICES.md` phase 2): who `jane@acme.com` is when
+    /// it is not a username. Email is not unique, so there may be several.
+    async fn find_users_by_email_in_tenant(
+        &self,
+        email: &str,
+        tenant_id: &crate::TenantId,
+    ) -> Result<Vec<User>> {
+        let email = email.trim();
+        Ok(self
+            .list_users()
+            .await?
+            .into_iter()
+            .filter(|u| {
+                u.tenant_id == *tenant_id
+                    && u.email
+                        .as_deref()
+                        .is_some_and(|e| e.eq_ignore_ascii_case(email))
+            })
+            .collect())
+    }
+
     /// Get a user by their ID.
     ///
     /// Default implementation iterates `list_users()`. Backends should override
@@ -770,6 +792,18 @@ pub trait TenantStore: Send + Sync {
     /// `sip_domains` column) so that the lookup is O(log n) in the number
     /// of tenants.
     async fn get_tenant_by_sip_domain(&self, domain: &str) -> Result<Option<crate::Tenant>>;
+
+    /// The tenant claiming `domain` as a login domain
+    /// (`docs/IDENTITY_AND_DEVICES.md` phase 2): where `someone@domain`
+    /// signs in. A backend should use an index; this default reads them all.
+    async fn get_tenant_by_login_domain(&self, domain: &str) -> Result<Option<crate::Tenant>> {
+        let needle = domain.trim().to_ascii_lowercase();
+        Ok(self
+            .list_tenants()
+            .await?
+            .into_iter()
+            .find(|t| t.login_domains.contains(&needle)))
+    }
 
     /// List all tenants.
     async fn list_tenants(&self) -> Result<Vec<crate::Tenant>>;
@@ -3791,6 +3825,16 @@ impl CredentialStore for DynStorage {
     async fn get_user_by_id(&self, user_id: &crate::UserId) -> Result<Option<User>> {
         self.credential_store.get_user_by_id(user_id).await
     }
+
+    async fn find_users_by_email_in_tenant(
+        &self,
+        email: &str,
+        tenant_id: &crate::TenantId,
+    ) -> Result<Vec<User>> {
+        self.credential_store
+            .find_users_by_email_in_tenant(email, tenant_id)
+            .await
+    }
 }
 
 #[async_trait]
@@ -4848,6 +4892,10 @@ impl TenantStore for DynStorage {
 
     async fn get_tenant_by_sip_domain(&self, domain: &str) -> Result<Option<crate::Tenant>> {
         self.tenant_store.get_tenant_by_sip_domain(domain).await
+    }
+
+    async fn get_tenant_by_login_domain(&self, domain: &str) -> Result<Option<crate::Tenant>> {
+        self.tenant_store.get_tenant_by_login_domain(domain).await
     }
 
     async fn list_tenants(&self) -> Result<Vec<crate::Tenant>> {

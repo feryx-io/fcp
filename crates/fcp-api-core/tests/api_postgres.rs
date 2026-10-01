@@ -9580,3 +9580,208 @@ async fn a_user_made_again_with_the_same_name_inherits_nothing() {
 
     app.finish().await;
 }
+
+// ---------------------------------------------------------------------------
+// Login domains and the password policy (docs/IDENTITY_AND_DEVICES.md phase 2)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_tenants_people_find_it_by_their_email_domain() {
+    let app = require_app!();
+    let tenant_path = format!("/api/v1/tenants/{}", app.tenant_a);
+
+    // A platform admin claims a domain for tenant A; tenant B cannot claim
+    // it too, and nothing that is not a domain is taken.
+    let set = app
+        .admin(
+            Method::PUT,
+            &tenant_path,
+            Some(json!({"login_domains": ["ACME.example"]})),
+        )
+        .await;
+    assert_eq!(set.status, StatusCode::OK, "{}", set.text);
+    assert_eq!(set.json["login_domains"], json!(["acme.example"]));
+    let taken = app
+        .admin(
+            Method::PUT,
+            &format!("/api/v1/tenants/{}", app.tenant_b),
+            Some(json!({"login_domains": ["acme.example"]})),
+        )
+        .await;
+    assert_eq!(taken.status, StatusCode::CONFLICT, "{}", taken.text);
+    let bad = app
+        .admin(
+            Method::PUT,
+            &tenant_path,
+            Some(json!({"login_domains": ["10.0.0.1"]})),
+        )
+        .await;
+    assert_eq!(bad.status, StatusCode::BAD_REQUEST, "{}", bad.text);
+
+    // A tenant admin may not: a domain decides where people sign in.
+    app.create_user_with_role("owner", "tenant_admin").await;
+    let owner = app.login("owner", PASSWORD).await.json["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let refused = app
+        .send_as(
+            &owner,
+            Method::PUT,
+            &tenant_path,
+            Some(json!({"login_domains": ["evil.example"]})),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.text);
+
+    // Discovery: an email at the domain finds the tenant; anything else
+    // finds nothing, and nobody learns whether a user exists.
+    let found = app
+        .send(
+            Method::POST,
+            "/api/v1/auth/discover",
+            &[],
+            Some(json!({"login": "jane@Acme.Example"})),
+        )
+        .await;
+    assert_eq!(found.status, StatusCode::OK, "{}", found.text);
+    assert_eq!(found.json["tenant_id"], app.tenant_a.to_string());
+    assert_eq!(found.json["methods"], json!(["password"]));
+    for login in ["jane", "jane@elsewhere.example"] {
+        let none = app
+            .send(
+                Method::POST,
+                "/api/v1/auth/discover",
+                &[],
+                Some(json!({"login": login})),
+            )
+            .await;
+        assert!(
+            none.json.get("tenant_id").is_none(),
+            "{login}: {}",
+            none.text
+        );
+        assert_eq!(none.json["methods"], json!(["password"]));
+    }
+
+    // Jane signs in with her email: by her email field, in tenant A, though
+    // a Jane in tenant B shares her username.
+    let made = app
+        .admin(
+            Method::POST,
+            "/api/v1/users",
+            Some(json!({"username": "jane", "password": PASSWORD, "email": "jane@acme.example"})),
+        )
+        .await;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.text);
+    let other = app
+        .admin_in(
+            app.tenant_b,
+            Method::POST,
+            "/api/v1/users",
+            Some(json!({"username": "jane", "password": PASSWORD})),
+        )
+        .await;
+    assert_eq!(other.status, StatusCode::CREATED, "{}", other.text);
+    let by_email = app.login("jane@acme.example", PASSWORD).await;
+    assert_eq!(by_email.status, StatusCode::OK, "{}", by_email.text);
+    assert_eq!(by_email.json["user"]["tenant_id"], app.tenant_a.to_string());
+    assert_eq!(by_email.json["user"]["username"], "jane");
+    let wrong = app.login("jane@acme.example", "Wr0ng-Passw0rd!").await;
+    assert_eq!(wrong.status, StatusCode::UNAUTHORIZED);
+
+    // A user made without a password has none to sign in with, and a SIP
+    // password of their own.
+    let bare = app
+        .admin(
+            Method::POST,
+            "/api/v1/users",
+            Some(json!({"username": "sso-only"})),
+        )
+        .await;
+    assert_eq!(bare.status, StatusCode::CREATED, "{}", bare.text);
+    let stored = fcp_core::CredentialStore::get_user_in_tenant(
+        app.storage.as_ref(),
+        "sso-only",
+        &app.tenant_a,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(stored.password.is_empty());
+    assert!(stored.sip_ha1_hash.is_some() && stored.digest_password.is_some());
+    for guess in ["", PASSWORD] {
+        let res = app.login("sso-only", guess).await;
+        assert_eq!(res.status, StatusCode::UNAUTHORIZED, "{}", res.text);
+    }
+
+    app.finish().await;
+}
+
+#[tokio::test]
+async fn a_tenants_password_policy_is_kept_and_never_shuts_out_a_super_admin() {
+    let app = require_app!();
+    app.create_user_with_role("ann", "end_user").await;
+    app.create_user_with_role("tom", "tenant_admin").await;
+    app.create_user_with_role("root", "super_admin").await;
+
+    // Until the tenant has an identity provider, a password is the only
+    // way in: the API will not take it away.
+    let refused = app
+        .admin(
+            Method::PUT,
+            &format!("/api/v1/tenants/{}", app.tenant_a),
+            Some(json!({"sign_in": {"password_login": "admins_only"}})),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.text);
+
+    // As a tenant with one will have it: administrators only.
+    let set = |policy: fcp_core::PasswordLogin| {
+        let storage = Arc::clone(&app.storage);
+        let tenant = app.tenant_a;
+        async move {
+            let mut t = TenantStore::get_tenant(storage.as_ref(), &tenant)
+                .await
+                .unwrap()
+                .unwrap();
+            t.sign_in.password_login = policy;
+            TenantStore::put_tenant(storage.as_ref(), t).await.unwrap();
+        }
+    };
+    set(fcp_core::PasswordLogin::AdminsOnly).await;
+    let ann = app.login("ann", PASSWORD).await;
+    assert_eq!(ann.status, StatusCode::FORBIDDEN, "{}", ann.text);
+    assert_eq!(app.login("tom", PASSWORD).await.status, StatusCode::OK);
+    // A wrong password is refused as wrong: the policy is said only to
+    // someone who knows the password.
+    assert_eq!(
+        app.login("ann", "Wr0ng-Passw0rd!").await.status,
+        StatusCode::UNAUTHORIZED
+    );
+
+    // Nobody but a super admin.
+    set(fcp_core::PasswordLogin::Disabled).await;
+    assert_eq!(
+        app.login("tom", PASSWORD).await.status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(app.login("root", PASSWORD).await.status, StatusCode::OK);
+    app.admin(
+        Method::PUT,
+        &format!("/api/v1/tenants/{}", app.tenant_a),
+        Some(json!({"login_domains": ["policy.example"]})),
+    )
+    .await;
+    let found = app
+        .send(
+            Method::POST,
+            "/api/v1/auth/discover",
+            &[],
+            Some(json!({"login": "x@policy.example"})),
+        )
+        .await;
+    assert_eq!(found.json["methods"], json!([]), "{}", found.text);
+
+    app.finish().await;
+}
