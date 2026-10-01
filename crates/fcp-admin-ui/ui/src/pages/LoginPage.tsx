@@ -31,7 +31,7 @@ export function LoginPage() {
         navigate('/change-password', { replace: true })
         return
       }
-      login(response.token, response.user)
+      login(response.token, response.user, response.expires_in)
       if (response.user.role === 'end_user') {
         navigate('/user')
       } else {

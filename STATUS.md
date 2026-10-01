@@ -1645,6 +1645,21 @@ passwords and TOTP; OIDC; SAML; a user's lifecycle with groups; SCIM 2.0;
 provisioning phones can use; zero-touch redirection; firmware. Twelve
 questions, agreed 2026-10-01 on their recommendations (§5).
 
+Phase 1 done (v0.25.308): users by id, sessions as rows
+(`docs/API_TOKENS.md` §7).
+- A sign-in is a session row. The browser holds a 15-minute access token
+  and an HttpOnly refresh cookie, rotated on use, a reused secret
+  revoking the session.
+- Logout, a password change, a disable or a delete end the user's
+  sessions.
+- Access tokens are signed with `[api.session] signing_key`, rotatable,
+  and verified by the admin and the events server alike.
+- API tokens and sessions name the user by id: a user re-created with the
+  same name inherits nothing.
+- Sign-ins are audited and published.
+- A reload keeps the admin UI signed in.
+- Renaming a user moved to phase 5.
+
 ## Historical documents
 
 Superseded status docs live in [`docs/archive/`](docs/archive/README.md) — they describe

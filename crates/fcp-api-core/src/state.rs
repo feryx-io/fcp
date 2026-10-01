@@ -127,10 +127,14 @@ pub struct ApiState {
     /// When set, WebSocket endpoints require a valid token in the first message.
     pub auth_config: Option<crate::auth::AuthConfig>,
 
-    /// JWT signing secret for auth session tokens.
-    /// Derived from the configured `auth_token` at startup. When `None`,
-    /// JWT-based auth endpoints (login, me, refresh) will fail.
-    pub jwt_secret: Option<Vec<u8>>,
+    /// The keys sign-in sessions' access tokens are signed and verified
+    /// with (`[api.session]`, else derived from `auth_token`). When `None`,
+    /// sign-in (login, me, refresh) fails.
+    pub session_keys: Option<fcp_core::session::SessionKeys>,
+
+    /// How long a sign-in session lasts, and its access tokens.
+    pub session_ttl: std::time::Duration,
+    pub session_access_ttl: std::time::Duration,
 
     /// Shared token required for device auto-provisioning requests.
     /// When unset, the provisioning endpoint fails closed.
@@ -230,7 +234,9 @@ impl ApiState {
             security_policy: SecurityPolicy::default(),
             tts_service: None,
             auth_config: None,
-            jwt_secret: None,
+            session_keys: None,
+            session_ttl: fcp_core::session::DEFAULT_SESSION_TTL,
+            session_access_ttl: fcp_core::session::DEFAULT_ACCESS_TTL,
             provisioning_auth_token: None,
             provisioning_require_https: true,
             trunk_health: None,
@@ -428,14 +434,15 @@ impl ApiState {
         self
     }
 
-    pub fn with_jwt_secret_from_token(mut self, auth_token: &str) -> Self {
-        use hmac::{Hmac, Mac};
-        use sha2::Sha256;
-
-        let mut mac = Hmac::<Sha256>::new_from_slice(b"fcp-jwt-key-derivation")
-            .expect("HMAC accepts any key length");
-        mac.update(auth_token.as_bytes());
-        self.jwt_secret = Some(mac.finalize().into_bytes().to_vec());
+    /// Sign sessions as `[api.session]` says.
+    pub fn with_session_config(
+        mut self,
+        session: &fcp_core::ApiSessionConfig,
+        auth_token: Option<&str>,
+    ) -> Self {
+        self.session_keys = session.keys(auth_token);
+        self.session_ttl = std::time::Duration::from_secs(session.ttl_secs);
+        self.session_access_ttl = std::time::Duration::from_secs(session.access_ttl_secs);
         self
     }
 

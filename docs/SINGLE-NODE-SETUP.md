@@ -88,6 +88,13 @@ breaks one prints the rule and exits.
 `[registrar] auth_enabled = true` on the call manager and registrar,
 `[sip] auth_enabled = true` on the presence server. All default to on.
 
+**The admin's session key** (`[api.session] signing_key`,
+`FCP_ADMIN_SESSION_SIGNING_KEY`) signs a signed-in user's access tokens.
+It must be at least 32 characters and differ from `auth_token`. Unset, it
+is derived from `auth_token`. The events server takes the same key as
+`[auth] session_signing_key` (`FCP_EVENTS_SESSION_SIGNING_KEY`) so the
+admin UI's live views work (`docs/API_TOKENS.md` §7).
+
 **The admin's provisioning token** (`[api] provisioning_auth_token`,
 what phones fetch their configuration with) must be at least 32
 characters and differ from `auth_token`; `provisioning_require_https`

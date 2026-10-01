@@ -167,6 +167,9 @@ async fn main() -> Result<()> {
     if let Some(bind_addr) = cli.bind_addr {
         config.api.bind_address = bind_addr.parse().context("Invalid bind address format")?;
     }
+    if let Some(key) = cli.session_signing_key {
+        config.api.session.signing_key = Some(key);
+    }
     if let Some(auth_token) = cli.auth_token {
         config.api.auth_token = Some(auth_token);
     }
@@ -211,6 +214,23 @@ async fn main() -> Result<()> {
         Arc::clone(&storage) as Arc<dyn fcp_core::storage::CdrStore>,
         fcp_cdr::MaintenanceConfig::default(),
     );
+
+    // Sign-in sessions that ended a month ago are deleted, once an hour
+    // (docs/IDENTITY_AND_DEVICES.md phase 1).
+    if let Some(sessions) = storage.login_session_store().cloned() {
+        tokio::spawn(async move {
+            let keep = std::time::Duration::from_secs(30 * 86_400);
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+            loop {
+                interval.tick().await;
+                match sessions.sweep_ended_sessions(keep).await {
+                    Ok(0) => {}
+                    Ok(n) => info!(sessions = n, "Ended sign-in sessions deleted"),
+                    Err(e) => warn!(error = %e, "Sign-in session sweep failed"),
+                }
+            }
+        });
+    }
 
     // Retention sweep: apply every tenant's compliance policy once an hour,
     // then the platform's upkeep (docs/COMPLIANCE_FOLLOWUPS.md §4).
@@ -407,6 +427,7 @@ async fn main() -> Result<()> {
         metrics_path: "/metrics".to_string(),
         deployment_mode: config.api.deployment_mode,
         rate_limit: config.api.rate_limit.clone(),
+        session: config.api.session.clone(),
     };
     let realm = "fcp.local".to_string();
     let default_tenant_id = config.service.default_tenant_id;

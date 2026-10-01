@@ -69,6 +69,15 @@ pub struct Cli {
     )]
     pub auth_token: Option<String>,
 
+    /// The key sign-in sessions are signed with (`[api.session] signing_key`)
+    #[arg(
+        long = "session-signing-key",
+        value_name = "KEY",
+        help = "Key sign-in sessions are signed with (32 characters or more)",
+        env = "FCP_ADMIN_SESSION_SIGNING_KEY"
+    )]
+    pub session_signing_key: Option<String>,
+
     /// Device auto-provisioning token
     #[arg(
         long = "provisioning-auth-token",

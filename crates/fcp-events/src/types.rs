@@ -766,6 +766,35 @@ pub enum UserEvent {
         timestamp: SystemTime,
     },
 
+    /// A user signed in to the admin API or the user portal
+    /// (`docs/IDENTITY_AND_DEVICES.md` phase 1): `method` is `password`,
+    /// later `oidc`, `saml`.
+    SignedIn {
+        user_id: String,
+        username: String,
+        tenant_id: TenantId,
+        method: String,
+        session_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_ip: Option<String>,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// A sign-in was refused: `reason` is `bad_credentials`, `locked`,
+    /// `disabled` or `suspended`. The tenant is the user's when the
+    /// username was found.
+    SignInFailed {
+        username: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tenant_id: Option<TenantId>,
+        reason: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_ip: Option<String>,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
     /// A user logged in on a host phone (`hoteling.login`,
     /// `docs/ENTERPRISE_CALLING.md` §3.8).
     HotelingLogin {
@@ -1675,6 +1704,8 @@ impl PlatformEvent {
         "user.enabled",
         "user.disabled",
         "user.calling_changed",
+        "user.signed_in",
+        "user.sign_in_failed",
         "hoteling.login",
         "hoteling.logout",
         "registration.registered",
@@ -1824,6 +1855,8 @@ impl PlatformEvent {
                 UserEvent::CallingChanged { .. } => "user.calling_changed",
                 UserEvent::HotelingLogin { .. } => "hoteling.login",
                 UserEvent::HotelingLogout { .. } => "hoteling.logout",
+                UserEvent::SignedIn { .. } => "user.signed_in",
+                UserEvent::SignInFailed { .. } => "user.sign_in_failed",
             },
             PlatformEvent::Registration(e) => match e {
                 RegistrationEvent::Registered { .. } => "registration.registered",
@@ -1952,7 +1985,9 @@ impl PlatformEvent {
                 | UserEvent::Disabled { tenant_id, .. }
                 | UserEvent::CallingChanged { tenant_id, .. }
                 | UserEvent::HotelingLogin { tenant_id, .. }
-                | UserEvent::HotelingLogout { tenant_id, .. } => Some(tenant_id),
+                | UserEvent::HotelingLogout { tenant_id, .. }
+                | UserEvent::SignedIn { tenant_id, .. } => Some(tenant_id),
+                UserEvent::SignInFailed { tenant_id, .. } => tenant_id.as_ref(),
             },
             PlatformEvent::Registration(e) => match e {
                 RegistrationEvent::Registered { tenant_id, .. }
@@ -2121,7 +2156,9 @@ impl UserEvent {
             | UserEvent::Disabled { timestamp, .. }
             | UserEvent::CallingChanged { timestamp, .. }
             | UserEvent::HotelingLogin { timestamp, .. }
-            | UserEvent::HotelingLogout { timestamp, .. } => *timestamp,
+            | UserEvent::HotelingLogout { timestamp, .. }
+            | UserEvent::SignedIn { timestamp, .. }
+            | UserEvent::SignInFailed { timestamp, .. } => *timestamp,
         }
     }
 }

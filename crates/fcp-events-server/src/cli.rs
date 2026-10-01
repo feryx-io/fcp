@@ -74,6 +74,16 @@ pub struct Cli {
     )]
     pub auth_token: Option<String>,
 
+    /// `[auth] session_signing_key` from the environment: the admin's
+    /// session key (`docs/IDENTITY_AND_DEVICES.md` phase 1).
+    #[arg(
+        long = "session-signing-key",
+        value_name = "KEY",
+        env = "FCP_EVENTS_SESSION_SIGNING_KEY",
+        hide_env_values = true
+    )]
+    pub session_signing_key: Option<String>,
+
     /// `[webhook] database_url` from the environment, for a secret store or a compose
     /// `.env` to inject; wins over the file (`docs/SHIP_AND_OPERATE.md`
     /// phase 2).

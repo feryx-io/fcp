@@ -280,6 +280,8 @@ mod tests {
             username: "u".into(),
             role: "tenant_admin".into(),
             tenant_id: None,
+            user_id: None,
+            session_id: None,
         };
         assert!(stand(&limiter, &session).await.is_none());
     }

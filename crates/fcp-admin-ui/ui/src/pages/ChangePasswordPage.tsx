@@ -49,7 +49,7 @@ export function ChangePasswordPage() {
         current_password: state.currentPassword,
         new_password: newPassword,
       })
-      login(response.token, response.user)
+      login(response.token, response.user, response.expires_in)
       if (response.user.role === 'end_user') {
         navigate('/user', { replace: true })
       } else {

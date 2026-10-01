@@ -122,6 +122,7 @@ define_id!(SiteRequestId, "sitereq");
 define_id!(ScheduleId, "sched");
 define_id!(ClassOfServiceId, "cos");
 define_id!(HotelingSessionId, "hotel");
+define_id!(LoginSessionId, "login");
 
 /// SIP Call-ID header value (not our internal CallId).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

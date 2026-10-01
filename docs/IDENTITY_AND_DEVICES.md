@@ -295,6 +295,43 @@ Each phase is one PR based on main, with its admin UI and its docs.
        tokens;
      - logout revokes;
      - a key rotation keeps sessions.
+   - **Done (v0.25.308)** (`docs/API_TOKENS.md` §7).
+     - `fcp_core::session`:
+       - `SessionKeys`: HS256 with a key id; the derived key kept as the
+         fallback and for tokens made before;
+       - `LoginSessionStore`;
+       - `authenticate_session`, shared by the admin API and the events
+         server, which now verifies the same tokens through it.
+     - Migration 090: `users.id` unique (a duplicate re-keyed first),
+       `login_sessions` referencing it with `ON DELETE CASCADE`.
+     - Login answers a 15-minute access token and the `fcp_refresh`
+       cookie (`HttpOnly`, `SameSite=Strict`, path `/api/v1/auth`).
+       `/auth/refresh` moved before the bearer layer and takes only the
+       cookie. The secret turns over in one `UPDATE`; reuse after ten
+       seconds revokes the session.
+     - Logout revokes. A password change revokes the user's other
+       sessions, a reset all of them; a disable or a suspension revokes
+       all.
+     - API tokens record the maker's id in `user_id`. A username there is
+       matched once and rewritten. Usernames of the form `user-<uuid>`
+       are refused.
+     - `[api.session]` (`signing_key`, `previous_signing_keys`, `ttl_secs`,
+       `access_ttl_secs`), `FCP_ADMIN_SESSION_SIGNING_KEY`, and the events
+       server's `[auth] session_signing_key`.
+     - The audit names a sign-in's user and tenant (`actor_kind`
+       `sign_in`); `user.signed_in` and `user.sign_in_failed`; ended
+       sessions swept after a month; `GET /users/by-id/{id}`.
+     - The admin UI restores a session on load, refreshes a minute before
+       expiry and on a 401.
+     - **Moved to phase 5: renaming a user.** A user's SIP HA1 is computed
+       over the username, which a rename cannot recompute without the
+       password. Separating the SIP identity from the login name belongs
+       with the lifecycle.
+     - Proved by
+       `a_session_is_a_row_refreshed_by_its_cookie_and_revoked` and
+       `a_user_made_again_with_the_same_name_inherits_nothing`
+       (`api_postgres.rs`), and the key rotation and forgery tests in
+       `fcp_core::session`.
 2. **Tenants have login domains, and passwords are optional.**
    - `tenants.login_domains`.
    - Home-realm discovery: `POST /auth/discover {login}` answers the

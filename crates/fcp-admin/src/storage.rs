@@ -74,6 +74,11 @@ pub async fn initialize_storage(config: &StorageConfig) -> Result<StorageResult>
         .with_encryption_store(storage.clone() as Arc<dyn fcp_core::encryption::EncryptionStore>)
         .with_sip_trace_store(sip_trace_store as Arc<dyn fcp_core::sip_trace::SipTraceStore>)
         .with_api_token_store(api_token_store as Arc<dyn fcp_core::storage::ApiTokenStore>)
+        .with_login_session_store(Arc::new(
+            fcp_storage_postgres::login_session::PostgresLoginSessionStore::new(
+                storage.pool().clone(),
+            ),
+        ) as Arc<dyn fcp_core::session::LoginSessionStore>)
         .with_prompt_store(prompt_store as Arc<dyn fcp_core::prompt::PromptStore>)
         .with_flow_trace_store(flow_trace_store as Arc<dyn fcp_core::flow_trace::FlowTraceStore>)
         .with_config_template_store(

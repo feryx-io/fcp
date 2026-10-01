@@ -264,6 +264,49 @@ fn identity_of(identity: Option<Extension<AuthIdentity>>) -> AuthIdentity {
         .unwrap_or(AuthIdentity::StaticToken)
 }
 
+/// Show each token's maker by username: a token records its maker by id
+/// (`docs/IDENTITY_AND_DEVICES.md` phase 1), or, made before, by username.
+async fn named(state: &ApiState, mut tokens: Vec<ApiTokenResponse>) -> Vec<ApiTokenResponse> {
+    let Some(storage) = state.storage.as_ref() else {
+        return tokens;
+    };
+    let mut names: std::collections::HashMap<String, Option<String>> = Default::default();
+    for token in &mut tokens {
+        let Ok(id) = token.created_by.parse::<fcp_core::UserId>() else {
+            continue;
+        };
+        if !names.contains_key(&token.created_by) {
+            let name = fcp_core::CredentialStore::get_user_by_id(storage.as_ref(), &id)
+                .await
+                .ok()
+                .flatten()
+                .map(|u| u.username);
+            names.insert(token.created_by.clone(), name);
+        }
+        if let Some(Some(name)) = names.get(&token.created_by) {
+            token.created_by = name.clone();
+        }
+    }
+    tokens
+}
+
+/// A made or rotated token's answer, its maker by username.
+async fn named_one(
+    state: &ApiState,
+    mut response: CreateApiTokenResponse,
+) -> CreateApiTokenResponse {
+    let token = response.token;
+    response.token = named(state, vec![token]).await.remove(0);
+    response
+}
+
+/// Whether `token` is the caller's own personal token: made by their id,
+/// or, before makers were ids, by their username.
+fn owned_by(token: &ApiToken, me: &Me) -> bool {
+    token.scope == ApiTokenScope::Personal
+        && (me.0.user_id.as_deref() == Some(token.user_id.as_str()) || token.user_id == me.0.sub)
+}
+
 async fn find_in_tenant(
     store: &dyn ApiTokenStore,
     id: &str,
@@ -389,7 +432,7 @@ pub async fn list_api_tokens(
         .list_api_tokens(&tenant.0)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to list API tokens: {e}")))?;
-    let response: Vec<ApiTokenResponse> = tokens.into_iter().map(Into::into).collect();
+    let response = named(&state, tokens.into_iter().map(Into::into).collect()).await;
     Ok(Json(crate::page::paginate(
         response,
         &page,
@@ -459,7 +502,12 @@ pub async fn create_api_token(
     let identity = identity_of(identity);
     let maker = match &identity {
         AuthIdentity::StaticToken => String::new(),
-        AuthIdentity::Session { username, .. } => username.clone(),
+        // The maker by id, so a user later made with the same name is not.
+        AuthIdentity::Session {
+            user_id, username, ..
+        } => user_id
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| username.clone()),
         AuthIdentity::ApiToken { .. } | AuthIdentity::Personal { .. } => {
             return Err(ApiError::Forbidden(
                 "An API token cannot make API tokens; sign in to make one".to_string(),
@@ -482,6 +530,7 @@ pub async fn create_api_token(
         expires_at,
     )
     .await?;
+    let response = named_one(&state, response).await;
     Ok((StatusCode::CREATED, Json(response)))
 }
 
@@ -536,6 +585,7 @@ pub async fn rotate_api_token(
         ));
     }
     let response = rotate(store.as_ref(), token, body.map(|b| b.0).unwrap_or_default()).await?;
+    let response = named_one(&state, response).await;
     Ok(Json(response))
 }
 
@@ -590,7 +640,7 @@ async fn my_token(store: &dyn ApiTokenStore, id: &str, me: &Me) -> Result<ApiTok
             .parse()
             .map_err(|_| ApiError::Unauthorized("Invalid session tenant".to_string()))?;
     let token = find_in_tenant(store, id, &tenant).await?;
-    if token.scope != ApiTokenScope::Personal || token.user_id != me.0.sub {
+    if !owned_by(&token, me) {
         return Err(ApiError::NotFound("API token not found".to_string()));
     }
     Ok(token)
@@ -627,9 +677,10 @@ pub async fn list_my_api_tokens(
         .map_err(|e| ApiError::Internal(format!("Failed to list API tokens: {e}")))?;
     let response: Vec<ApiTokenResponse> = tokens
         .into_iter()
-        .filter(|t| t.scope == ApiTokenScope::Personal && t.user_id == me.0.sub)
+        .filter(|t| owned_by(t, &me))
         .map(Into::into)
         .collect();
+    let response = named(&state, response).await;
     Ok(Json(crate::page::paginate(
         response,
         &page,
@@ -669,13 +720,14 @@ pub async fn create_my_api_token(
     let response = store_new_token(
         store.as_ref(),
         req.name,
-        me.0.sub,
+        me.0.user_id.clone().unwrap_or_else(|| me.0.sub.clone()),
         tenant,
         ApiTokenScope::Personal,
         Vec::new(),
         expires_at,
     )
     .await?;
+    let response = named_one(&state, response).await;
     Ok((StatusCode::CREATED, Json(response)))
 }
 
@@ -705,6 +757,7 @@ pub async fn rotate_my_api_token(
     let store = token_store(&state)?;
     let token = my_token(store.as_ref(), &id, &me).await?;
     let response = rotate(store.as_ref(), token, body.map(|b| b.0).unwrap_or_default()).await?;
+    let response = named_one(&state, response).await;
     Ok(Json(response))
 }
 

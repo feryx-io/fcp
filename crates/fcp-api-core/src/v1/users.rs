@@ -302,6 +302,38 @@ pub async fn get_user(
     Ok(Json(UserResponse::from(user)))
 }
 
+/// A user by id (`docs/IDENTITY_AND_DEVICES.md` phase 1): what a token's
+/// maker, a session or an event names.
+///
+/// GET /api/v1/users/by-id/:id
+#[utoipa::path(
+    get,
+    path = "/api/v1/users/by-id/{id}",
+    tag = "users",
+    operation_id = "users_get_user_by_id",
+    params(("id" = String, Path, description = "`user-<uuid>`")),
+    responses(
+        (status = 200, description = "OK", body = UserResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn get_user_by_id(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
+    tenant: crate::auth::TenantContext,
+    Path(id): Path<String>,
+) -> Result<Json<UserResponse>, ApiError> {
+    crate::auth::check_permission(&identity, Permission::UserRead, state.deployment_mode)?;
+    let not_found = || ApiError::NotFound(format!("User '{id}' not found"));
+    let user_id = id.parse::<fcp_core::UserId>().map_err(|_| not_found())?;
+    let user = require_storage!(state)
+        .get_user_by_id(&user_id)
+        .await?
+        .filter(|user| user.tenant_id == tenant.0)
+        .ok_or_else(not_found)?;
+    Ok(Json(UserResponse::from(user)))
+}
+
 /// Create a new user.
 ///
 /// POST /api/v1/users
@@ -330,6 +362,13 @@ pub async fn create_user(
     let storage = require_storage!(state);
 
     validation::validate_username(&req.username)?;
+    // A user is named by id (`user-<uuid>`) where a token or session records
+    // them; a username of that shape could be mistaken for one.
+    if req.username.starts_with("user-") && req.username.parse::<fcp_core::UserId>().is_ok() {
+        return Err(ApiError::BadRequest(
+            "A username cannot have the form of a user id (user-<uuid>)".to_string(),
+        ));
+    }
     validation::validate_display_name(&req.display_name)?;
     validation::reject_crlf("password", &req.password)?;
     if let Some(ref sip_password) = req.sip_provisioning_password {
@@ -523,6 +562,7 @@ pub async fn update_user(
         .await?
         .ok_or_else(|| ApiError::NotFound(format!("User '{}' not found", username)))
         .and_then(|user| ensure_user_in_tenant(user, &tenant.0, &username))?;
+    let was_active = fcp_core::session::user_is_active(&user);
 
     // Update fields
     if let Some(display_name) = req.display_name {
@@ -627,6 +667,11 @@ pub async fn update_user(
     // Save user
     require_storage!(state).put_user(user.clone()).await?;
 
+    // A user disabled, suspended or locked is signed out everywhere.
+    if was_active && !fcp_core::session::user_is_active(&user) {
+        crate::v1::auth_session::revoke_sessions(&state, &user.id, None, "account disabled").await;
+    }
+
     // Publish user updated event
     let _ = state
         .event_bus
@@ -716,10 +761,13 @@ pub async fn update_password(
     user.updated_at = std::time::SystemTime::now();
 
     let tenant_id = user.tenant_id;
+    let user_id = user.id;
     let user_id_str = user.id.to_string();
 
     // Save user
     require_storage!(state).put_user(user).await?;
+    // A password set by an administrator signs the user out everywhere.
+    crate::v1::auth_session::revoke_sessions(&state, &user_id, None, "password reset").await;
 
     // Publish ConfigChanged event for cache invalidation (credentials changed)
     let _ = state

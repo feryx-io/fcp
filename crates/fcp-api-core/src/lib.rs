@@ -202,11 +202,10 @@ pub fn create_router_with(
                 )),
         );
 
-    // Always derive JWT secret from auth_token when available.
-    // JWT session auth (admin UI login) is independent of bearer middleware.
-    if let Some(ref auth_token) = api_config.auth_token {
-        state = state.with_jwt_secret_from_token(auth_token);
-    }
+    // Sign-in sessions (`docs/IDENTITY_AND_DEVICES.md` phase 1): signed
+    // with `[api.session] signing_key`, else a key derived from the static
+    // token as before. Independent of the bearer middleware.
+    state = state.with_session_config(&api_config.session, api_config.auth_token.as_deref());
     state = state
         .with_provisioning_auth_token(api_config.provisioning_auth_token.clone())
         .with_provisioning_require_https(api_config.provisioning_require_https);
@@ -232,9 +231,17 @@ pub fn create_router_with(
             auth_config = auth_config.with_api_token_store(store);
             tracing::info!("API token authentication enabled");
         }
-        // Share JWT secret so bearer middleware also accepts JWT session tokens
-        if let Some(ref jwt_secret) = state.jwt_secret {
-            auth_config = auth_config.with_jwt_secret(jwt_secret.clone());
+        // Share the session keys and sessions so the bearer middleware also
+        // accepts a signed-in user's access token, while its session lives.
+        if let Some(ref keys) = state.session_keys {
+            auth_config = auth_config.with_session_keys(keys.clone());
+        }
+        if let Some(sessions) = state
+            .storage
+            .as_ref()
+            .and_then(|s| s.login_session_store().cloned())
+        {
+            auth_config = auth_config.with_login_sessions(sessions);
         }
         // Share credential store so JWT auth can verify user is still active
         if let Some(ref storage) = state.storage {
@@ -263,7 +270,7 @@ pub fn create_router_with(
     // - pre_auth: login/logout/change-expired-password (user has no token yet)
     // - optional signup: only exposed when explicitly enabled and JWT issuance works
     // - ws: browsers can't set Authorization headers on WebSocket connections
-    let enable_signup = api_config.allow_public_signup && state.jwt_secret.is_some();
+    let enable_signup = api_config.allow_public_signup && state.session_keys.is_some();
     if api_config.allow_public_signup && !enable_signup {
         tracing::warn!(
             "Public signup requested but auth_token/JWT secret is unavailable; signup route disabled"

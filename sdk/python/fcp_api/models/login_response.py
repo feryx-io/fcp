@@ -26,13 +26,15 @@ T = TypeVar("T", bound="LoginResponse")
 class LoginResponse:
     """ 
         Attributes:
-            token (str):
+            token (str): The access token: `Authorization: Bearer <token>`.
             user (AuthUserResponse):
+            expires_in (int | None | Unset): Seconds the access token lasts; refresh before then.
             password_expired (bool | None | Unset):
      """
 
     token: str
     user: AuthUserResponse
+    expires_in: int | None | Unset = UNSET
     password_expired: bool | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -45,6 +47,12 @@ class LoginResponse:
         token = self.token
 
         user = self.user.to_dict()
+
+        expires_in: int | None | Unset
+        if isinstance(self.expires_in, Unset):
+            expires_in = UNSET
+        else:
+            expires_in = self.expires_in
 
         password_expired: bool | None | Unset
         if isinstance(self.password_expired, Unset):
@@ -59,6 +67,8 @@ class LoginResponse:
             "token": token,
             "user": user,
         })
+        if expires_in is not UNSET:
+            field_dict["expires_in"] = expires_in
         if password_expired is not UNSET:
             field_dict["password_expired"] = password_expired
 
@@ -77,6 +87,16 @@ class LoginResponse:
 
 
 
+        def _parse_expires_in(data: object) -> int | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(int | None | Unset, data)
+
+        expires_in = _parse_expires_in(d.pop("expires_in", UNSET))
+
+
         def _parse_password_expired(data: object) -> bool | None | Unset:
             if data is None:
                 return data
@@ -90,6 +110,7 @@ class LoginResponse:
         login_response = cls(
             token=token,
             user=user,
+            expires_in=expires_in,
             password_expired=password_expired,
         )
 
