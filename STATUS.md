@@ -1643,7 +1643,7 @@ how people and phones arrive. Three surveys of the code found:
 Nine phases: users by id and sessions as rows; login domains, optional
 passwords and TOTP; OIDC; SAML; a user's lifecycle with groups; SCIM 2.0;
 provisioning phones can use; zero-touch redirection; firmware. Twelve
-questions are open (§5).
+questions, agreed 2026-10-01 on their recommendations (§5).
 
 ## Historical documents
 

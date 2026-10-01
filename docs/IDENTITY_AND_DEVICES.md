@@ -15,7 +15,8 @@ sign in with a password FCP stores, users are typed in by hand, and a phone
 is configured by an administrator who enters its MAC and then types a URL
 into it. That URL needs a header no phone can send. Under all four sits a
 user who is a row keyed by its username, owning nothing the database knows
-about. This document designs the fixes. The questions in §5 are open.
+about. This document designs the fixes. Agreed 2026-10-01: the twelve
+questions in §5, each settled on its recommendation.
 
 ## 1. What the code has, and what it lacks
 
