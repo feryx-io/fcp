@@ -1069,7 +1069,6 @@ fn build_voicemail_flow(
         variables: HashMap::new(),
         tenant_id: None,
         enabled: true,
-        webhook_url: None,
         created_at: None,
         updated_at: None,
     }
@@ -1129,7 +1128,6 @@ fn build_voicemail_access_flow(flow_id: &str) -> fcp_flow::FlowDefinition {
         variables: HashMap::new(),
         tenant_id: None,
         enabled: true,
-        webhook_url: None,
         created_at: None,
         updated_at: None,
     }

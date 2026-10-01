@@ -12225,7 +12225,6 @@ impl SipMessageHandler {
                 variables: std::collections::HashMap::new(),
                 tenant_id: None,
                 enabled: true,
-                webhook_url: None,
                 created_at: None,
                 updated_at: None,
             }
@@ -13858,7 +13857,6 @@ impl SipMessageHandler {
                 variables: std::collections::HashMap::new(),
                 tenant_id: None,
                 enabled: true,
-                webhook_url: None,
                 created_at: None,
                 updated_at: None,
             }

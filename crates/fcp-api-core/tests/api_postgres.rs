@@ -3519,13 +3519,65 @@ async fn flows_crud_versions_and_tenant_scoping() {
     assert_eq!(updated.status, StatusCode::OK, "{}", updated.text);
     assert_eq!(updated.json["name"], "Main IVR v2");
     assert_eq!(updated.json["enabled"], false);
+    assert_eq!(updated.json["version"], 2, "the version it was stored as");
+
+    // A second edit, of the nodes: every version is kept, as it was.
+    let edited = app
+        .admin(
+            Method::PUT,
+            "/api/v1/flows/main-ivr",
+            Some(json!({ "nodes": {
+                "answer": { "type": "answer", "next": "bye" },
+                "bye": { "type": "hangup", "reason": "edited" }
+            }})),
+        )
+        .await;
+    assert_eq!(edited.status, StatusCode::OK, "{}", edited.text);
+    assert_eq!(edited.json["version"], 3);
 
     let versions = app
         .admin(Method::GET, "/api/v1/flows/main-ivr/versions", None)
         .await;
     assert_eq!(versions.status, StatusCode::OK, "{}", versions.text);
-    let version_count = versions.json.as_array().map(|v| v.len()).unwrap_or(0);
-    assert!(version_count >= 1, "{}", versions.text);
+    let numbers: Vec<_> = versions
+        .json
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v["version"].as_u64().unwrap())
+        .collect();
+    assert_eq!(numbers, vec![3, 2, 1], "{}", versions.text);
+
+    let first = app
+        .admin(Method::GET, "/api/v1/flows/main-ivr/versions/1", None)
+        .await;
+    assert_eq!(first.status, StatusCode::OK, "{}", first.text);
+    assert_eq!(first.json["name"], "Main IVR");
+    assert_eq!(first.json["enabled"], true);
+    assert_eq!(first.json["nodes"]["hangup"]["type"], "hangup");
+    assert!(first.json["nodes"].get("bye").is_none(), "{}", first.text);
+    let second = app
+        .admin(Method::GET, "/api/v1/flows/main-ivr/versions/2", None)
+        .await;
+    assert_eq!(second.json["name"], "Main IVR v2");
+    assert!(second.json["nodes"].get("bye").is_none(), "{}", second.text);
+    assert_eq!(
+        app.admin(Method::GET, "/api/v1/flows/main-ivr/versions/9", None)
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        app.admin_in(
+            app.tenant_b,
+            Method::GET,
+            "/api/v1/flows/main-ivr/versions/1",
+            None
+        )
+        .await
+        .status,
+        StatusCode::NOT_FOUND
+    );
 
     // Tenant B cannot see, edit, or delete it.
     let cross = app
@@ -3557,6 +3609,13 @@ async fn flows_crud_versions_and_tenant_scoping() {
     );
     assert_eq!(
         app.admin(Method::GET, "/api/v1/flows/main-ivr", None)
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+    // Its versions went with it.
+    assert_eq!(
+        app.admin(Method::GET, "/api/v1/flows/main-ivr/versions/1", None)
             .await
             .status,
         StatusCode::NOT_FOUND

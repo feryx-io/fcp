@@ -84,7 +84,7 @@ const NODE_REF_FIELDS = new Set([
 ])
 
 // Boolean fields
-const BOOL_FIELDS = new Set(['is_busy', 'play_beep', 'barge_in', 'interim_results'])
+const BOOL_FIELDS = new Set(['is_busy', 'play_beep', 'barge_in', 'interim_results', 'send_variables'])
 
 // Maps from a key to a node: digits for transitions, phrases for spoken ones
 const MAP_FIELDS = new Set(['transitions', 'branches', 'speech_transitions'])
@@ -187,6 +187,7 @@ const FIELD_LABELS: Record<string, string> = {
   action: 'Action',
   leg: 'Leg',
   interim_results: 'Partial Transcripts',
+  send_variables: 'Send Flow Variables (JSON)',
   message: 'Message',
   level: 'Log Level',
   strategy: 'Strategy',
@@ -692,7 +693,10 @@ export function FlowBuilderPage() {
       transcribe: { action: 'start', leg: 'caller', hints: [], language: '', interim_results: false, next: '' },
       dial: { destination: '', timeout: 30, max_duration: 0, next: '' },
       hangup: { reason: '' },
-      http: { method: 'GET', url: '', timeout: 10, response_variable: 'http_response', next: '' },
+      http: {
+        method: 'GET', url: '', timeout: 10, send_variables: false,
+        response_variable: 'http_response', next: '', on_error: '',
+      },
       branch: { variable: '', operator: 'equals', value: '', if_true: '', if_false: '' },
       voicemail: { mailbox: '', is_busy: false, max_duration: 300, play_beep: true, next_on_success: '' },
       voicemail_access: { mailbox: '', max_pin_attempts: 3, next: '' },

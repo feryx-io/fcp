@@ -40,10 +40,6 @@ pub struct FlowDefinition {
     #[serde(default = "default_true")]
     pub enabled: bool,
 
-    /// Optional webhook URL for flow events
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub webhook_url: Option<String>,
-
     /// Timestamp when flow was created
     #[serde(skip_serializing_if = "Option::is_none")]
     pub created_at: Option<chrono::DateTime<chrono::Utc>>,
@@ -291,14 +287,25 @@ pub enum NodeType {
         #[serde(default = "default_http_timeout")]
         timeout: u32,
 
-        /// Variable name to store response body
+        /// Send the flow's variables as a JSON object, in place of `body`
+        /// (`Content-Type: application/json` unless a header says
+        /// otherwise).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        send_variables: bool,
+
+        /// Variable to store the response body in. A JSON response is also
+        /// unpacked into dotted variables under it (`http_response.name`,
+        /// `http_response.items.0.id`), and the status is stored in
+        /// `<response_variable>_status`.
         #[serde(default = "default_http_response_var")]
         response_variable: String,
 
         /// Next node after request completes
         next: String,
 
-        /// Node to execute on error
+        /// Node to execute on error: no response, or a status of 400 or
+        /// above. Without it a request that could not be made fails the
+        /// flow, and an error status goes on to `next`.
         #[serde(skip_serializing_if = "Option::is_none")]
         on_error: Option<String>,
     },
@@ -815,7 +822,6 @@ mod tests {
             variables: HashMap::new(),
             tenant_id: None,
             enabled: true,
-            webhook_url: None,
             created_at: None,
             updated_at: None,
         };

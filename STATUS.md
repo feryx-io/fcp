@@ -1595,7 +1595,15 @@ Phase 7a done (v0.25.302): flows that listen (`docs/SPEECH.md` §6).
 - A phone suppressing silence is heard as silence, so its utterances end.
 - The flow builder has the fields and the node.
 - Proved by `fcp-call-manager/tests/listen.rs`.
-- 7b (the `Http` node, flow versions, `webhook_url`) is next.
+
+Phase 7b done (v0.25.304): the flow fixes (`docs/FLOWS.md`).
+- The `Http` node can post the flow's variables as JSON, stores the
+  status, unpacks a JSON response into dotted variables, and takes
+  `on_error` for a status of 400 or above.
+- Every flow version is kept (`flow_versions`), read back by
+  `/flows/{id}/versions/{version}`; a call is proved to run the version it
+  started on.
+- `webhook_url`, never read, is removed.
 
 ## Historical documents
 
