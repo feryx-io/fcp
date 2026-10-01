@@ -9,7 +9,9 @@ pub mod schema;
 pub mod storage;
 
 // Re-exports
-pub use engine::{AnswerCallback, FlowContext, FlowEngine, FlowExecutionResult, HangupCallback};
+pub use engine::{
+    AnswerCallback, FlowContext, FlowEngine, FlowExecutionResult, HangupCallback, SpeechGather,
+};
 pub use schema::{FlowDefinition, FlowNode, NodeType};
 pub use storage::{FlowQuery, FlowStore, InMemoryFlowStore};
 

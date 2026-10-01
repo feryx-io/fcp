@@ -464,6 +464,12 @@ impl Endpointer {
     }
 }
 
+/// Whether a frame is loud enough to be speech (the [`Endpointer`]'s
+/// threshold).
+pub fn is_voiced(frame: &[i16]) -> bool {
+    !frame.is_empty() && rms(frame) >= SPEECH_RMS
+}
+
 /// The root mean square of a frame.
 pub fn rms(frame: &[i16]) -> f64 {
     if frame.is_empty() {

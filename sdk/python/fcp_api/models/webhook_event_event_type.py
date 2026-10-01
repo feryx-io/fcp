@@ -20,6 +20,7 @@ class WebhookEventEventType(StrEnum):
     CALL_PROGRESS = "call.progress"
     CALL_RESUMED = "call.resumed"
     CALL_RINGING = "call.ringing"
+    CALL_TRANSCRIPT = "call.transcript"
     CALL_UNPARKED = "call.unparked"
     CDR_ARCHIVED = "cdr.archived"
     CDR_WRITTEN = "cdr.written"

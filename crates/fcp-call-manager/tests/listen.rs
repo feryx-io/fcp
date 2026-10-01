@@ -1,0 +1,319 @@
+//! Flows that listen, against the running binary
+//! (`docs/DEVELOPER_SURFACE.md` phase 7). A menu's Gather takes digits or
+//! speech: a caller who "says" sales (a tone the testkit's scripted
+//! recognizer hears as words) is taken there, one who presses 2 by SIP
+//! INFO goes to the other branch, and one who says nothing times out. The
+//! sales branch starts the call's live transcript, and what the caller
+//! says next reaches the events endpoint as `call.transcript`. A noise
+//! recognised as no words does not hold the menu open. Skipped
+//! without `FCP_TEST_DATABASE_URL`.
+
+use axum::{extract::State, routing::post, Json, Router};
+use fcp_core::flow_trace::{FlowTraceEventType, FlowTraceQuery, FlowTraceStore};
+use fcp_core::storage::{LineBindingStore, PhoneNumberStore};
+use fcp_testkit::media::allocate_port_pair;
+use fcp_testkit::smoke::loopback;
+use fcp_testkit::stt::ScriptedStt;
+use fcp_testkit::{free_port, Phone, Seed, Service, TestDatabase};
+use std::collections::BTreeMap;
+use std::net::SocketAddr;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+const BIN: &str = env!("CARGO_BIN_EXE_fcp-call-manager");
+const REALM: &str = "e2e.local";
+const SOON: Duration = Duration::from_secs(5);
+const MENU: &str = "+15125550910";
+/// What the recognizer hears in each tone.
+const SALES_HZ: u32 = 700;
+const SALES: &str = "Sales, please.";
+const LATER_HZ: u32 = 1100;
+const LATER: &str = "I would like a quote for ten phones";
+/// A tone the recognizer hears as no words.
+const NOISE_HZ: u32 = 1500;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_menu_hears_words_digits_and_silence_and_a_call_is_transcribed() {
+    let Some(db) = TestDatabase::create().await else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let seed = Seed::new(db.url(), REALM).await;
+    let scripted = ScriptedStt::start("stt-token", &[(SALES_HZ, SALES), (LATER_HZ, LATER)]).await;
+    let events = EventSink::start().await;
+    let sip_port = free_port();
+    let http = free_port();
+    let rtp_start = allocate_port_pair().rtp_port;
+    let dir = tempfile::tempdir().unwrap();
+    let config = format!(
+        r#"
+[service]
+node_id = "e2e-listen"
+
+[sip]
+udp_bind = "127.0.0.1:{sip_port}"
+tcp_bind = "127.0.0.1:{sip_port}"
+local_ip = "127.0.0.1"
+
+[registrar]
+auth_enabled = true
+realm = "{REALM}"
+
+[storage]
+database_url = "{db}"
+
+[cdr]
+spool_dir = "{dir}/cdr-spool"
+
+[http]
+bind_address = "127.0.0.1:{http}"
+
+[media]
+rtp_port_start = {rtp_start}
+rtp_port_end = {rtp_end}
+prompts_dir = "{dir}/prompts"
+tts_cache_dir = "{dir}/tts-cache"
+recording_dir = "{dir}/recordings"
+
+[stt.provider]
+type = "remote"
+url = "{stt}"
+auth_token = "stt-token"
+
+[events]
+server_url = "{events}"
+
+[logging]
+level = "info"
+format = "compact"
+"#,
+        db = db.url(),
+        rtp_end = rtp_start + 40,
+        dir = dir.path().display(),
+        stt = scripted.url(),
+        events = events.url,
+    );
+    let service = Service::start("call-manager", BIN, &config, &loopback(http, "/health")).await;
+
+    let alice = seed.user("alice", "alice-pw", "1001").await;
+    let storage = seed.storage();
+
+    let flow: fcp_flow::FlowDefinition = serde_json::from_value(serde_json::json!({
+        "id": "menu",
+        "name": "Menu",
+        "version": 1,
+        "initial_node": "answer",
+        "enabled": true,
+        "tenant_id": seed.tenant_id.to_string(),
+        "nodes": {
+            "answer": {"type": "answer", "next": "menu"},
+            "menu": {
+                "type": "gather",
+                "input": "dtmf_speech",
+                "num_digits": 1,
+                "timeout": 3,
+                "hints": ["sales", "support"],
+                "language": "en-US",
+                "transitions": {"2": "support"},
+                "speech_transitions": {"sales": "sales", "support": "support"},
+                "on_timeout": "nothing"
+            },
+            "sales": {"type": "transcribe", "next": "listen"},
+            "listen": {"type": "pause", "duration": 4, "next": "stop"},
+            "stop": {"type": "transcribe", "action": "stop", "next": "bye"},
+            "support": {"type": "log", "message": "support", "next": "bye"},
+            "nothing": {"type": "log", "message": "nothing said", "next": "bye"},
+            "bye": {"type": "hangup"}
+        }
+    }))
+    .unwrap();
+    fcp_flow::FlowStore::insert_flow(storage, flow)
+        .await
+        .unwrap();
+    let number = fcp_core::PhoneNumber::new(MENU.to_string(), seed.tenant_id).unwrap();
+    let mut binding =
+        fcp_core::LineBinding::new(number.id, None, fcp_core::BindingType::Ivr, seed.tenant_id);
+    binding.flow_id = Some("menu".to_string());
+    storage.put_phone_number(number).await.unwrap();
+    storage.put_line_binding(binding).await.unwrap();
+
+    let phone = Phone::new(
+        &alice.username,
+        &alice.password,
+        REALM,
+        SocketAddr::from(([127, 0, 0, 1], sip_port)),
+    )
+    .await
+    .unwrap();
+    assert_eq!(phone.register().await.unwrap(), 200);
+    let traces =
+        fcp_storage_postgres::flow_trace::PostgresFlowTraceStore::new(storage.pool().clone());
+
+    // Said: "sales", then something the transcript carries.
+    let call = phone.call(MENU).await.unwrap();
+    call.answered(SOON).await.expect("the flow answers");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    call.media().play_tone(SALES_HZ as f32, 1200);
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    call.media().play_tone(LATER_HZ as f32, 1500);
+    if !call.ended(Duration::from_secs(10)).await {
+        call.hangup().await.unwrap();
+    }
+    let path = nodes_run(&traces).await;
+    if !(path.contains(&"sales".to_string()) && path.contains(&"stop".to_string())) {
+        panic!(
+            "the spoken choice: {path:?}\nrecognizer: {:?}\n{}",
+            scripted.requests(),
+            service.kill().await
+        );
+    }
+    let transcript = events
+        .wait_for(|e| e["type"] == "transcript" && e["text"] == LATER)
+        .await
+        .unwrap_or_else(|| panic!("no call.transcript: {:?}", events.all()));
+    assert_eq!(transcript["leg"], "caller");
+    assert_eq!(transcript["is_final"], true);
+    assert_eq!(
+        transcript["tenant_id"],
+        seed.tenant_id.as_uuid().to_string()
+    );
+    // The menu's own words were not sent as the transcript.
+    assert!(!events.all().iter().any(|e| e["text"] == SALES));
+    let asked = scripted.requests();
+    let gather = asked.iter().find(|r| r.answered.iter().any(|a| a == SALES));
+    let gather = gather.unwrap_or_else(|| panic!("the menu was not recognised: {asked:?}"));
+    assert_eq!(gather.kind, "stream");
+    assert_eq!(gather.query["language"], "en-US");
+    assert!(
+        gather.query["hints"].contains("sales"),
+        "{:?}",
+        gather.query
+    );
+
+    // Pressed: 2, by SIP INFO.
+    let call = phone.call(MENU).await.unwrap();
+    call.answered(SOON).await.expect("the flow answers");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let code = call.send_info_dtmf('2').await.unwrap();
+    if code != 200 {
+        panic!("INFO answered {code}\n{}", service.kill().await);
+    }
+    assert!(call.ended(SOON).await, "the support branch hangs up");
+    let path = nodes_run(&traces).await;
+    assert!(
+        path.contains(&"support".to_string()),
+        "the INFO digit: {path:?}"
+    );
+
+    // Silence: the timeout.
+    let call = phone.call(MENU).await.unwrap();
+    call.answered(SOON).await.expect("the flow answers");
+    assert!(
+        call.ended(Duration::from_secs(8)).await,
+        "the menu times out"
+    );
+    let path = nodes_run(&traces).await;
+    assert!(path.contains(&"nothing".to_string()), "silence: {path:?}");
+
+    // A noise heard as speech and recognised as no words: the caller is
+    // not waited for as if still speaking.
+    let call = phone.call(MENU).await.unwrap();
+    call.answered(SOON).await.expect("the flow answers");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    call.media().play_tone(NOISE_HZ as f32, 400);
+    assert!(
+        call.ended(Duration::from_secs(9)).await,
+        "the menu times out after a noise"
+    );
+    let path = nodes_run(&traces).await;
+    assert!(path.contains(&"nothing".to_string()), "a noise: {path:?}");
+
+    service.stop().await;
+    db.drop_db().await;
+}
+
+/// The nodes the flow ran for the newest call (the trace is keyed by the
+/// call manager's own id, not the SIP Call-ID). A Hangup node ends the
+/// flow rather than being recorded as run.
+async fn nodes_run(
+    traces: &fcp_storage_postgres::flow_trace::PostgresFlowTraceStore,
+) -> Vec<String> {
+    // Traces are written off the call path; give them a moment.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let (entries, _) = traces
+        .query_flow_traces(&FlowTraceQuery {
+            flow_id: Some("menu".to_string()),
+            event_type: Some(FlowTraceEventType::NodeExecuted),
+            limit: Some(1000),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let mut calls: BTreeMap<String, (std::time::SystemTime, Vec<String>)> = BTreeMap::new();
+    for entry in entries {
+        let call = calls
+            .entry(entry.call_id.clone())
+            .or_insert((entry.timestamp, Vec::new()));
+        call.0 = call.0.min(entry.timestamp);
+        call.1.extend(entry.node_id);
+    }
+    calls
+        .into_values()
+        .max_by_key(|(started, _)| *started)
+        .map(|(_, nodes)| nodes)
+        .unwrap_or_default()
+}
+
+/// A stand-in events server: every event the node forwards.
+struct EventSink {
+    url: String,
+    events: Arc<Mutex<Vec<serde_json::Value>>>,
+}
+
+impl EventSink {
+    async fn start() -> Self {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let router = Router::new()
+            .route(
+                "/ingest",
+                post(
+                    |State(events): State<Arc<Mutex<Vec<serde_json::Value>>>>,
+                     Json(event): Json<serde_json::Value>| async move {
+                        events.lock().unwrap().push(event);
+                        axum::http::StatusCode::ACCEPTED
+                    },
+                ),
+            )
+            .with_state(Arc::clone(&events));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/ingest", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+        Self { url, events }
+    }
+
+    /// Every event, its payload flattened to the variant's fields.
+    fn all(&self) -> Vec<serde_json::Value> {
+        self.events
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|e| e.get("data").cloned().unwrap_or_else(|| e.clone()))
+            .collect()
+    }
+
+    async fn wait_for(
+        &self,
+        matches: impl Fn(&serde_json::Value) -> bool,
+    ) -> Option<serde_json::Value> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            if let Some(found) = self.all().into_iter().find(|e| matches(e)) {
+                return Some(found);
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        None
+    }
+}

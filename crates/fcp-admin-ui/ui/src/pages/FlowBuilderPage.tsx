@@ -63,6 +63,7 @@ const NODE_TYPES_PALETTE = [
   { type: 'say', label: 'Say', icon: Mic, color: '#3b82f6' },
   { type: 'play', label: 'Play', icon: Play, color: '#8b5cf6' },
   { type: 'gather', label: 'Gather', icon: Phone, color: '#10b981' },
+  { type: 'transcribe', label: 'Transcribe', icon: Mic, color: '#0ea5e9' },
   { type: 'dial', label: 'Dial', icon: Phone, color: '#f59e0b' },
   { type: 'queue', label: 'Queue', icon: Users, color: '#6366f1' },
   { type: 'voicemail', label: 'Voicemail', icon: Voicemail, color: '#ec4899' },
@@ -83,12 +84,15 @@ const NODE_REF_FIELDS = new Set([
 ])
 
 // Boolean fields
-const BOOL_FIELDS = new Set(['is_busy', 'play_beep'])
+const BOOL_FIELDS = new Set(['is_busy', 'play_beep', 'barge_in', 'interim_results'])
+
+// Maps from a key to a node: digits for transitions, phrases for spoken ones
+const MAP_FIELDS = new Set(['transitions', 'branches', 'speech_transitions'])
 
 // Numeric fields
 const NUMERIC_FIELDS = new Set([
   'loop_count', 'num_digits', 'timeout', 'max_duration',
-  'max_pin_attempts', 'duration',
+  'max_pin_attempts', 'duration', 'speech_timeout_ms',
 ])
 
 // Select field options
@@ -118,6 +122,20 @@ const SELECT_OPTIONS: Record<string, { label: string; value: string }[]> = {
   format: [
     { label: 'WAV', value: 'wav' },
     { label: 'MP3', value: 'mp3' },
+  ],
+  input: [
+    { label: 'Digits', value: 'dtmf' },
+    { label: 'Speech', value: 'speech' },
+    { label: 'Digits or speech', value: 'dtmf_speech' },
+  ],
+  action: [
+    { label: 'Start', value: 'start' },
+    { label: 'Stop', value: 'stop' },
+  ],
+  leg: [
+    { label: 'Caller', value: 'caller' },
+    { label: 'Callee', value: 'callee' },
+    { label: 'Both', value: 'both' },
   ],
   level: [
     { label: 'Debug', value: 'debug' },
@@ -161,6 +179,14 @@ const FIELD_LABELS: Record<string, string> = {
   is_busy: 'Busy Greeting',
   play_beep: 'Play Beep',
   max_pin_attempts: 'Max PIN Attempts',
+  input: 'Listen For',
+  speech_timeout_ms: 'End of Speech (ms)',
+  hints: 'Speech Hints',
+  speech_transitions: 'Spoken Transitions',
+  barge_in: 'Barge-in',
+  action: 'Action',
+  leg: 'Leg',
+  interim_results: 'Partial Transcripts',
   message: 'Message',
   level: 'Log Level',
   strategy: 'Strategy',
@@ -229,11 +255,14 @@ function flowNodesToReactFlow(
       })
     }
 
-    // Branch edges from transitions (gather node)
-    const transitions = (node as Record<string, unknown>).transitions as
-      | Record<string, string>
-      | undefined
-    if (transitions) {
+    // Branch edges from transitions, digits and spoken (gather node)
+    const transitions = {
+      ...((node as Record<string, unknown>).transitions as Record<string, string> | undefined),
+      ...((node as Record<string, unknown>).speech_transitions as
+        | Record<string, string>
+        | undefined),
+    }
+    if (Object.keys(transitions).length > 0) {
       Object.entries(transitions).forEach(([key, target]) => {
         if (flowNodes[target]) {
           edges.push({
@@ -480,6 +509,24 @@ export function FlowBuilderPage() {
     [],
   )
 
+  // A spoken transition's phrase is typed in, so its key can change
+  const renameMapEntry = useCallback(
+    (nodeId: string, mapKey: string, from: string, to: string) => {
+      if (!to || from === to) return
+      setFlowNodes((prev) => {
+        const node = prev[nodeId]
+        const map = (node as Record<string, unknown>)[mapKey] as Record<string, string> || {}
+        if (to in map) return prev
+        const renamed = Object.fromEntries(
+          Object.entries(map).map(([k, v]) => [k === from ? to : k, v]),
+        )
+        return { ...prev, [nodeId]: { ...node, [mapKey]: renamed } }
+      })
+      setDirty(true)
+    },
+    [],
+  )
+
   const addMapEntry = useCallback(
     (nodeId: string, mapKey: string) => {
       setFlowNodes((prev) => {
@@ -487,7 +534,10 @@ export function FlowBuilderPage() {
         const map = ((node as Record<string, unknown>)[mapKey] as Record<string, string>) || {}
         // Find next available key
         const usedKeys = Object.keys(map)
-        const allKeys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '*', '#']
+        const allKeys =
+          mapKey === 'speech_transitions'
+            ? Array.from({ length: usedKeys.length + 1 }, (_, i) => `phrase ${i + 1}`)
+            : ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '*', '#']
         const nextKey = allKeys.find((k) => !usedKeys.includes(k)) || `key_${usedKeys.length}`
         return {
           ...prev,
@@ -635,7 +685,11 @@ export function FlowBuilderPage() {
       answer: { next: '' },
       say: { text: '', language: 'en-US', next: '' },
       play: { url: '', loop_count: 0, next: '' },
-      gather: { num_digits: 1, timeout: 5, variable: 'digits', transitions: {}, next: '' },
+      gather: {
+        input: 'dtmf', num_digits: 1, timeout: 5, variable: 'digits', transitions: {},
+        speech_transitions: {}, hints: [], language: '', speech_timeout_ms: 800, barge_in: true,
+      },
+      transcribe: { action: 'start', leg: 'caller', hints: [], language: '', interim_results: false, next: '' },
       dial: { destination: '', timeout: 30, max_duration: 0, next: '' },
       hangup: { reason: '' },
       http: { method: 'GET', url: '', timeout: 10, response_variable: 'http_response', next: '' },
@@ -711,19 +765,29 @@ export function FlowBuilderPage() {
     const label = FIELD_LABELS[key] || key
 
     // Map fields (transitions, branches, headers) - render as key/value editor
-    if (key === 'transitions' || key === 'branches') {
+    if (MAP_FIELDS.has(key)) {
       const map = (value as Record<string, string>) || {}
+      const spoken = key === 'speech_transitions'
       return (
         <div key={key}>
           <Label className="text-xs font-medium">{label}</Label>
           <div className="mt-1 space-y-1">
             {Object.entries(map).map(([dtmfKey, target]) => (
               <div key={dtmfKey} className="flex items-center gap-1">
-                <Input
-                  value={dtmfKey}
-                  className="h-7 w-12 text-xs font-mono text-center"
-                  readOnly
-                />
+                {spoken ? (
+                  <Input
+                    defaultValue={dtmfKey}
+                    onBlur={(e) => renameMapEntry(nodeId, key, dtmfKey, e.target.value.trim())}
+                    className="h-7 w-28 text-xs"
+                    placeholder="phrase"
+                  />
+                ) : (
+                  <Input
+                    value={dtmfKey}
+                    className="h-7 w-12 text-xs font-mono text-center"
+                    readOnly
+                  />
+                )}
                 <Select
                   value={target || '__unset__'}
                   onValueChange={(v) => updateMapEntry(nodeId, key, dtmfKey, v === '__unset__' ? '' : v)}
@@ -885,6 +949,28 @@ export function FlowBuilderPage() {
               </div>
             </>
           )}
+        </div>
+      )
+    }
+
+    // Speech hints: a comma-separated list
+    if (key === 'hints') {
+      const hints = Array.isArray(value) ? (value as string[]) : []
+      return (
+        <div key={key}>
+          <Label className="text-xs font-medium">{label}</Label>
+          <Input
+            defaultValue={hints.join(', ')}
+            onBlur={(e) =>
+              updateNodeProperty(
+                nodeId,
+                key,
+                e.target.value.split(',').map((h) => h.trim()).filter(Boolean),
+              )
+            }
+            className="mt-1 h-8 text-xs"
+            placeholder="sales, support, billing"
+          />
         </div>
       )
     }

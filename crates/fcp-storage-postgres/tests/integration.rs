@@ -1049,16 +1049,19 @@ async fn retention_drops_a_month_only_once_its_rows_are_gone_and_locks_keep_to_o
     let a = tenant("a");
     s.put_tenant(a.clone()).await.unwrap();
 
-    let last_month = SystemTime::now() - Duration::from_secs(35 * 86_400);
-    let mut old = cdr(a.id, "sip:bob@a.example.com", Some(1_000), None);
-    old.start_time = last_month;
-    s.insert_cdr(old).await.unwrap();
     let this_month_start: chrono::DateTime<chrono::Utc> =
         sqlx::query_scalar("SELECT date_trunc('month', now())")
             .fetch_one(s.pool())
             .await
             .unwrap();
     let cutoff = SystemTime::from(this_month_start);
+    // A day before the cutoff, so the record is in last month's partition
+    // whatever today is (35 days back skipped September on 1 October and
+    // left it empty, and droppable).
+    let last_month = cutoff - Duration::from_secs(86_400);
+    let mut old = cdr(a.id, "sip:bob@a.example.com", Some(1_000), None);
+    old.start_time = last_month;
+    s.insert_cdr(old).await.unwrap();
 
     assert!(
         s.drop_cdr_partitions_before(cutoff)
