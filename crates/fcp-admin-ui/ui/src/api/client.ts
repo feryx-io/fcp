@@ -4,9 +4,19 @@ const API_BASE = '/api/v1'
 
 export class ApiClient {
   private token: string | null = null
+  private refresher: (() => Promise<boolean>) | null = null
 
   setToken(token: string | null) {
     this.token = token
+  }
+
+  /**
+   * What renews the access token when a request is refused with 401: the
+   * session's refresh cookie (docs/IDENTITY_AND_DEVICES.md phase 1). The
+   * request is tried once more if it worked.
+   */
+  setRefresher(refresher: (() => Promise<boolean>) | null) {
+    this.refresher = refresher
   }
 
   /** Get current token (for components that need it — prefer using ApiClient methods instead). */
@@ -24,6 +34,7 @@ export class ApiClient {
   private async request<T>(
     path: string,
     options: RequestInit = {},
+    retried = false,
   ): Promise<T> {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
@@ -34,7 +45,20 @@ export class ApiClient {
     const response = await fetch(`${API_BASE}${path}`, {
       ...options,
       headers,
+      // The refresh cookie travels to the sign-in routes, same origin only.
+      credentials: 'same-origin',
     })
+
+    if (
+      response.status === 401 &&
+      !retried &&
+      this.token &&
+      this.refresher &&
+      !path.startsWith('/auth/') &&
+      (await this.refresher())
+    ) {
+      return this.request<T>(path, options, true)
+    }
 
     if (!response.ok) {
       let error: ApiError

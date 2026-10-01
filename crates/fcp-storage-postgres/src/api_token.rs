@@ -152,6 +152,19 @@ impl ApiTokenStore for PostgresApiTokenStore {
             .await?;
         Ok(())
     }
+
+    async fn set_api_token_maker(
+        &self,
+        id: &ApiTokenId,
+        maker: &fcp_core::UserId,
+    ) -> anyhow::Result<()> {
+        sqlx::query("UPDATE api_tokens SET user_id = $2 WHERE id = $1")
+            .bind(id.to_string())
+            .bind(maker.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
 }
 
 fn row_to_api_token(row: &sqlx::postgres::PgRow) -> ApiToken {

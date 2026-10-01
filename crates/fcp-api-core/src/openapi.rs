@@ -18,7 +18,7 @@ use utoipa::{Modify, OpenApi};
         // The API's version, not the release's: the release changes with
         // every commit, the contract only when it changes.
         version = "v1",
-        description = "The Ferrous Communications Platform admin API. Every request carries `Authorization: Bearer <token>`: the static token, a session from `/auth/login`, or an API token (`docs/API_TOKENS.md`). Errors are `{error, code, details}`, times are RFC 3339, and lists are `{data, next_cursor, total}` paged by `limit` and `cursor`.",
+        description = "The Ferrous Communications Platform admin API. Every request carries `Authorization: Bearer <token>`: the static token, a session's access token from `/auth/login` (refreshed by `/auth/refresh` with its HttpOnly cookie), or an API token (`docs/API_TOKENS.md`). Errors are `{error, code, details}`, times are RFC 3339, and lists are `{data, next_cursor, total}` paged by `limit` and `cursor`.",
         license(name = "Proprietary")
     ),
     servers((url = "/", description = "This server")),
@@ -127,6 +127,7 @@ use utoipa::{Modify, OpenApi};
         crate::v1::users::list_users,
         crate::v1::users::create_user,
         crate::v1::users::get_user,
+        crate::v1::users::get_user_by_id,
         crate::v1::users::update_user,
         crate::v1::users::delete_user,
         crate::v1::users::update_password,
@@ -511,6 +512,7 @@ mod tests {
         // The routes outside the bearer layer.
         for (method, path) in [
             ("POST", "/auth/login"),
+            ("POST", "/auth/refresh"),
             ("POST", "/auth/logout"),
             ("POST", "/auth/change-expired-password"),
             ("POST", "/auth/signup"),

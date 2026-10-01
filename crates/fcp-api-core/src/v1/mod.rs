@@ -64,12 +64,15 @@ use axum::{
 
 /// Pre-auth routes accessible without bearer token.
 ///
-/// Login, logout, and change-expired-password must be callable before the
-/// user has a token. They are registered outside the bearer middleware layer.
+/// Login, refresh, logout, and change-expired-password must be callable
+/// without an access token: refresh and logout read the session's HttpOnly
+/// cookie (`docs/IDENTITY_AND_DEVICES.md` phase 1). They are registered
+/// outside the bearer middleware layer.
 /// Tenant signup is only mounted when explicitly enabled by configuration.
 pub fn pre_auth_router(enable_signup: bool) -> Router<ApiState> {
     let router = Router::new()
         .route("/auth/login", post(auth_session::login))
+        .route("/auth/refresh", post(auth_session::refresh))
         .route("/auth/logout", post(auth_session::logout))
         .route(
             "/auth/change-expired-password",
@@ -107,7 +110,6 @@ pub fn router() -> Router<ApiState> {
     let user_routes = Router::new()
         // Auth session endpoints that require a valid JWT
         .route("/auth/me", get(auth_session::me))
-        .route("/auth/refresh", post(auth_session::refresh))
         // Self-service (end-user portal)
         .route(
             "/me/profile",
@@ -320,6 +322,7 @@ pub fn router() -> Router<ApiState> {
         .route("/sites/:id/enable", post(sites::enable_site))
         // User management
         .route("/users", get(users::list_users).post(users::create_user))
+        .route("/users/by-id/:id", get(users::get_user_by_id))
         .route(
             "/users/:username",
             get(users::get_user)

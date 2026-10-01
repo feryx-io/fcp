@@ -122,6 +122,8 @@ class WebhookEventEventType(StrEnum):
     USER_DELETED = "user.deleted"
     USER_DISABLED = "user.disabled"
     USER_ENABLED = "user.enabled"
+    USER_SIGNED_IN = "user.signed_in"
+    USER_SIGN_IN_FAILED = "user.sign_in_failed"
     USER_UPDATED = "user.updated"
     VOICEMAIL_MAILBOX_CREATED = "voicemail.mailbox_created"
     VOICEMAIL_MAILBOX_DELETED = "voicemail.mailbox_deleted"

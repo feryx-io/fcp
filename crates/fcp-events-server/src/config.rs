@@ -359,6 +359,17 @@ pub struct AuthConfig {
     /// WebSocket clients may provide the same token via `?token=...`.
     #[serde(default)]
     pub token: Option<String>,
+
+    /// The admin's `[api.session] signing_key`, so a signed-in browser's
+    /// access token is accepted here too (`docs/IDENTITY_AND_DEVICES.md`
+    /// phase 1). Unset, the key is derived from `token`, which works while
+    /// the admin derives its key from the same token.
+    #[serde(default)]
+    pub session_signing_key: Option<String>,
+
+    /// The admin's `[api.session] previous_signing_keys`.
+    #[serde(default)]
+    pub previous_session_signing_keys: Vec<String>,
 }
 
 /// Cluster configuration.

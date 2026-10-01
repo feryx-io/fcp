@@ -119,10 +119,10 @@ routes below are the ones that exist; a binary has no others.
 | `fcp-presence` | `[http] api_token` | `/v1/metrics`, `/v1/presence/*`, `/v1/analytics/*`, `/v1/webhooks*`, `/drain`; `/v1/health` open; no `/status` |
 | `fcp-sbc` | `--health-api-token` | `/drain`, `/metrics` (a JSON snapshot, not Prometheus text); no `/status` — `/ready` carries `trunks_healthy`, `active_calls` and `replica` |
 | `fcp-webrtc-gw` | `[auth] tokens` | `/status`, `/drain`, `/v1/rooms*`, `/v1/calls*`; `/join` open when `public_join` |
-| `fcp-events-server` | `[auth] token` | `/status`, `/ingest`, `/ingest/batch`, `/calls`, `/registrations`, `/nodes`, `/stats`, `/ws/:tenant_id` (the token as a bearer header or `?token=`); `/metrics` open |
+| `fcp-events-server` | `[auth] token`, or a signed-in user's access token (with the admin's key as `[auth] session_signing_key`) | `/status`, `/ingest`, `/ingest/batch`, `/calls`, `/registrations`, `/nodes`, `/stats`, `/ws/:tenant_id` (the token as a bearer header or `?token=`); `/metrics` open |
 | `fcp-jobs` | none | `/status`, `/metrics` — open, so bind it privately |
 | `fcp-api-gateway` | none of its own | `/gateway/status` open; `/api/v1/*` and `/metrics` proxied to the admin with the caller's header |
-| `fcp-admin` | `[api] auth_token`, or a user's JWT | `/api/v1/*`; `/metrics` for an admin; `/api/v1/health` open |
+| `fcp-admin` | `[api] auth_token`, a signed-in user's access token (`[api.session]`, `docs/API_TOKENS.md` §7), or an API token | `/api/v1/*`; `/metrics` for an admin; `/api/v1/health` open |
 
 `/status` is a JSON of the node's own numbers: uptime, calls, `draining`,
 and on the call manager and conference server `cluster_view`,

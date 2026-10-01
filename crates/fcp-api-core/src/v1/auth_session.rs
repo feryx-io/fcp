@@ -1,27 +1,40 @@
-//! Auth session endpoints for the admin UI.
+//! Signing in (`docs/IDENTITY_AND_DEVICES.md` phase 1).
 //!
-//! Provides JWT-based authentication:
-//! - POST /api/v1/auth/login  — authenticate with username/password, returns JWT
-//! - POST /api/v1/auth/logout — client-side token discard
-//! - GET  /api/v1/auth/me     — get current user info from JWT
+//! A sign-in makes a session (a row: `fcp_core::session`), answers a short
+//! access token naming it and the user's id, and sets the session's refresh
+//! secret in an HttpOnly cookie scoped to `/api/v1/auth`:
+//! - POST /api/v1/auth/login   — a password; the access token and the cookie
+//! - POST /api/v1/auth/refresh — the cookie; a new access token, the secret
+//!   turned over
+//! - POST /api/v1/auth/logout  — the session revoked, the cookie cleared
+//! - GET  /api/v1/auth/me      — who the access token is
 //! - POST /api/v1/auth/change-expired-password — change an expired password
 
 use crate::error::ApiError;
 use crate::state::ApiState;
 use axum::{
     extract::State,
-    http::{header, StatusCode},
-    response::IntoResponse,
+    http::{header, HeaderMap, HeaderValue, StatusCode},
+    response::{IntoResponse, Response},
     Json,
 };
+use fcp_core::session::{self, LoginSessionStore, RefreshOutcome, SessionClaims};
 use fcp_core::storage::password;
+use fcp_core::LoginSessionId;
 use fcp_core::{AccountStatus, CredentialStore};
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, SystemTime};
 
 use fcp_core::UserRole;
 
-const JWT_EXPIRY_HOURS: i64 = 24;
+/// How long a token made without a session store lasts, as every token
+/// did before sessions were rows.
+const LEGACY_TOKEN_HOURS: u64 = 24;
+
+/// The cookie a session's refresh secret travels in.
+pub const REFRESH_COOKIE: &str = "fcp_refresh";
+/// Where the browser sends it: the sign-in routes, and nowhere else.
+const REFRESH_COOKIE_PATH: &str = "/api/v1/auth";
 
 /// Serialize a UserRole to its serde snake_case string (e.g. EndUser -> "end_user").
 pub fn role_to_string(role: &UserRole) -> String {
@@ -41,7 +54,11 @@ pub struct LoginRequest {
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct LoginResponse {
+    /// The access token: `Authorization: Bearer <token>`.
     pub token: String,
+    /// Seconds the access token lasts; refresh before then.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_in: Option<u64>,
     pub user: AuthUserResponse,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub password_expired: Option<bool>,
@@ -55,14 +72,27 @@ pub struct AuthUserResponse {
     pub display_name: Option<String>,
 }
 
+/// The caller of a `/me` route, as its handler reads it ([`Me`]): the
+/// username as it is now, the role, the tenant, and the user's id and
+/// session where known.
 #[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Claims {
-    pub sub: String, // username
+    /// The username, as it is now.
+    pub sub: String,
     pub role: String,
     pub tenant_id: String,
     pub display_name: Option<String>,
-    pub exp: usize, // expiry timestamp
-    pub iat: usize, // issued at
+    pub exp: usize,
+    pub iat: usize,
+    /// The user's id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<String>,
+    /// The sign-in session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sid: Option<String>,
+    /// The caller came with a personal API token, not a session.
+    #[serde(skip)]
+    pub personal: bool,
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
@@ -111,11 +141,218 @@ async fn load_user_for_login(
     }
 }
 
-fn claims_tenant_id(claims: &Claims) -> Result<fcp_core::TenantId, ApiError> {
-    claims
-        .tenant_id
-        .parse::<fcp_core::TenantId>()
-        .map_err(|e| ApiError::Unauthorized(format!("Invalid tenant in token: {}", e)))
+// ---- Sessions (docs/IDENTITY_AND_DEVICES.md phase 1) ----
+
+/// What a sign-in hands the browser.
+pub(crate) struct Issued {
+    pub token: String,
+    pub expires_in: u64,
+    /// The refresh cookie, when a session store keeps sessions.
+    pub cookie: Option<HeaderValue>,
+    pub session: Option<LoginSessionId>,
+}
+
+fn session_store(state: &ApiState) -> Option<std::sync::Arc<dyn LoginSessionStore>> {
+    state
+        .storage
+        .as_ref()
+        .and_then(|s| s.login_session_store().cloned())
+}
+
+fn keys(state: &ApiState) -> Result<&session::SessionKeys, ApiError> {
+    state
+        .session_keys
+        .as_ref()
+        .ok_or_else(|| ApiError::Internal("Sign-in is not configured".to_string()))
+}
+
+/// An access token for `user` in `session`, and how long it lasts.
+fn access_token(
+    state: &ApiState,
+    user: &fcp_core::User,
+    sid: Option<&LoginSessionId>,
+    now: SystemTime,
+) -> Result<(String, u64), ApiError> {
+    let ttl = match sid {
+        Some(_) => state.session_access_ttl.as_secs(),
+        None => LEGACY_TOKEN_HOURS * 3600,
+    };
+    let iat = session::epoch(now);
+    let claims = SessionClaims {
+        // A session's token names the user by id; one made without a
+        // session store names the username, as tokens did before.
+        sub: match sid {
+            Some(_) => user.id.to_string(),
+            None => user.username.clone(),
+        },
+        sid: sid.map(|s| s.to_string()),
+        username: Some(user.username.clone()),
+        role: role_to_string(&user.role),
+        tenant_id: user.tenant_id.to_string(),
+        display_name: user.display_name.clone(),
+        exp: iat + ttl as usize,
+        iat,
+    };
+    Ok((keys(state)?.encode(&claims), ttl))
+}
+
+/// Whether the request reached us over HTTPS, as the proxy in front says.
+fn is_https(headers: &HeaderMap) -> bool {
+    headers
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.eq_ignore_ascii_case("https"))
+}
+
+fn cookie(value: &str, max_age: u64, secure: bool) -> HeaderValue {
+    let secure = if secure { "; Secure" } else { "" };
+    HeaderValue::from_str(&format!(
+        "{REFRESH_COOKIE}={value}; Path={REFRESH_COOKIE_PATH}; Max-Age={max_age}; HttpOnly; SameSite=Strict{secure}"
+    ))
+    .expect("a cookie of base64url and ids is a header value")
+}
+
+/// The cookie that clears the refresh cookie.
+fn clear_cookie(headers: &HeaderMap) -> HeaderValue {
+    cookie("", 0, is_https(headers))
+}
+
+/// The refresh cookie the request carries.
+fn refresh_cookie(headers: &HeaderMap) -> Option<(LoginSessionId, String)> {
+    headers
+        .get_all(header::COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(';'))
+        .find_map(|pair| {
+            let (name, value) = pair.trim().split_once('=')?;
+            (name == REFRESH_COOKIE).then(|| session::parse_refresh_cookie(value))?
+        })
+}
+
+/// Begin a session for `user`, who has just proved who they are by
+/// `method`: the session's row, its access token and its refresh cookie.
+/// Without a session store, a token as before sessions were rows.
+pub(crate) async fn begin_session(
+    state: &ApiState,
+    user: &fcp_core::User,
+    method: &str,
+    headers: &HeaderMap,
+) -> Result<Issued, ApiError> {
+    let now = SystemTime::now();
+    let Some(store) = session_store(state) else {
+        let (token, expires_in) = access_token(state, user, None, now)?;
+        return Ok(Issued {
+            token,
+            expires_in,
+            cookie: None,
+            session: None,
+        });
+    };
+    let (secret, refresh_hash) = session::new_refresh_secret();
+    let row = session::LoginSession {
+        id: LoginSessionId::new(),
+        tenant_id: user.tenant_id,
+        user_id: user.id,
+        method: method.to_string(),
+        created_at: now,
+        refreshed_at: now,
+        expires_at: now + state.session_ttl,
+        revoked_at: None,
+        revoked_reason: None,
+        ip: crate::audit::source_ip(headers),
+        user_agent: headers
+            .get(header::USER_AGENT)
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v.chars().take(512).collect()),
+        refresh_hash,
+        previous_refresh_hash: None,
+    };
+    store
+        .create_login_session(&row)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to start a session: {e}")))?;
+    let (token, expires_in) = access_token(state, user, Some(&row.id), now)?;
+    Ok(Issued {
+        token,
+        expires_in,
+        cookie: Some(cookie(
+            &session::refresh_cookie_value(&row.id, &secret),
+            state.session_ttl.as_secs(),
+            is_https(headers),
+        )),
+        session: Some(row.id),
+    })
+}
+
+/// A sign-in's answer: the body, and the cookie when there is one.
+fn signed_in(issued: Issued, user: &fcp_core::User, password_expired: bool) -> Response {
+    let body = Json(LoginResponse {
+        token: issued.token,
+        expires_in: Some(issued.expires_in),
+        user: AuthUserResponse {
+            username: user.username.clone(),
+            role: role_to_string(&user.role),
+            tenant_id: user.tenant_id.to_string(),
+            display_name: user.display_name.clone(),
+        },
+        password_expired: password_expired.then_some(true),
+    });
+    let mut response = (StatusCode::OK, body).into_response();
+    if let Some(cookie) = issued.cookie {
+        response.headers_mut().append(header::SET_COOKIE, cookie);
+    }
+    response
+}
+
+/// Revoke every session of `user` but `keep`: a password changed, a user
+/// disabled. Logged, never fatal: the change itself has happened.
+pub(crate) async fn revoke_sessions(
+    state: &ApiState,
+    user_id: &fcp_core::UserId,
+    keep: Option<&LoginSessionId>,
+    reason: &str,
+) {
+    let Some(store) = session_store(state) else {
+        return;
+    };
+    match store
+        .revoke_user_sessions(user_id, keep, reason, SystemTime::now())
+        .await
+    {
+        Ok(0) => {}
+        Ok(n) => tracing::info!(user_id = %user_id, sessions = n, reason, "Sessions revoked"),
+        Err(e) => tracing::warn!(user_id = %user_id, error = %e, "Failed to revoke sessions"),
+    }
+}
+
+fn publish(state: &ApiState, event: fcp_events::UserEvent) {
+    let bus = std::sync::Arc::clone(&state.event_bus);
+    tokio::spawn(async move {
+        let _ = bus.publish(fcp_events::PlatformEvent::User(event)).await;
+    });
+}
+
+/// A refused sign-in: published, and its error.
+fn refused(
+    state: &ApiState,
+    headers: &HeaderMap,
+    username: &str,
+    tenant_id: Option<fcp_core::TenantId>,
+    reason: &str,
+    error: ApiError,
+) -> ApiError {
+    publish(
+        state,
+        fcp_events::UserEvent::SignInFailed {
+            username: username.to_string(),
+            tenant_id,
+            reason: reason.to_string(),
+            source_ip: crate::audit::source_ip(headers),
+            timestamp: SystemTime::now(),
+        },
+    );
+    error
 }
 
 /// POST /api/v1/auth/login
@@ -132,8 +369,28 @@ fn claims_tenant_id(claims: &Claims) -> Result<fcp_core::TenantId, ApiError> {
 )]
 pub async fn login(
     State(state): State<ApiState>,
+    headers: HeaderMap,
     Json(req): Json<LoginRequest>,
-) -> Result<impl IntoResponse, ApiError> {
+) -> Response {
+    let mut subject = crate::audit::SignInSubject {
+        username: req.username.clone(),
+        tenant_id: None,
+    };
+    let mut response = match sign_in(&state, &headers, req, &mut subject).await {
+        Ok(response) => response,
+        Err(e) => e.into_response(),
+    };
+    // The audit row names who tried, though the request had no identity.
+    response.extensions_mut().insert(subject);
+    response
+}
+
+async fn sign_in(
+    state: &ApiState,
+    headers: &HeaderMap,
+    req: LoginRequest,
+    subject: &mut crate::audit::SignInSubject,
+) -> Result<Response, ApiError> {
     let storage = state
         .storage
         .as_ref()
@@ -141,6 +398,7 @@ pub async fn login(
 
     // Get user first (we need to check lock status before password verification)
     let requested_tenant = parse_tenant_id(req.tenant_id.as_deref())?;
+    let invalid = || ApiError::Unauthorized("Invalid username or password".to_string());
 
     let mut user =
         match load_user_for_login(storage, &req.username, requested_tenant.as_ref()).await? {
@@ -151,11 +409,18 @@ pub async fn login(
                     &req.password,
                     "$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewY5jtRKm5T6fHGC",
                 );
-                return Err(ApiError::Unauthorized(
-                    "Invalid username or password".to_string(),
+                return Err(refused(
+                    state,
+                    headers,
+                    &req.username,
+                    None,
+                    "bad_credentials",
+                    invalid(),
                 ));
             }
         };
+    subject.tenant_id = Some(user.tenant_id);
+    let tenant = Some(user.tenant_id);
 
     let now = SystemTime::now();
     let policy = &state.security_policy;
@@ -166,8 +431,13 @@ pub async fn login(
             if now < locked_until {
                 // Still locked — do constant-time bcrypt to prevent timing attacks
                 let _ = password::verify_password(&req.password, &user.password);
-                return Err(ApiError::Forbidden(
-                    "Account is locked. Try again later.".to_string(),
+                return Err(refused(
+                    state,
+                    headers,
+                    &req.username,
+                    tenant,
+                    "locked",
+                    ApiError::Forbidden("Account is locked. Try again later.".to_string()),
                 ));
             }
             // Lock expired — auto-unlock
@@ -184,8 +454,13 @@ pub async fn login(
         } else {
             // Locked without expiry (admin-locked) — still do bcrypt for timing
             let _ = password::verify_password(&req.password, &user.password);
-            return Err(ApiError::Forbidden(
-                "Account is locked. Contact an administrator.".to_string(),
+            return Err(refused(
+                state,
+                headers,
+                &req.username,
+                tenant,
+                "locked",
+                ApiError::Forbidden("Account is locked. Contact an administrator.".to_string()),
             ));
         }
     }
@@ -193,13 +468,27 @@ pub async fn login(
     // Check account is enabled
     if !user.enabled {
         let _ = password::verify_password(&req.password, &user.password);
-        return Err(ApiError::Forbidden("Account is disabled".to_string()));
+        return Err(refused(
+            state,
+            headers,
+            &req.username,
+            tenant,
+            "disabled",
+            ApiError::Forbidden("Account is disabled".to_string()),
+        ));
     }
 
     // Check account is not suspended
     if user.account_status == AccountStatus::Suspended {
         let _ = password::verify_password(&req.password, &user.password);
-        return Err(ApiError::Forbidden("Account is suspended".to_string()));
+        return Err(refused(
+            state,
+            headers,
+            &req.username,
+            tenant,
+            "suspended",
+            ApiError::Forbidden("Account is suspended".to_string()),
+        ));
     }
 
     // Verify password
@@ -227,8 +516,13 @@ pub async fn login(
 
         let _ = storage.put_user(user).await;
         // Return generic error — don't reveal lockout details to attacker
-        return Err(ApiError::Unauthorized(
-            "Invalid username or password".to_string(),
+        return Err(refused(
+            state,
+            headers,
+            &req.username,
+            tenant,
+            "bad_credentials",
+            invalid(),
         ));
     }
 
@@ -255,44 +549,28 @@ pub async fn login(
         false
     };
 
-    // Build JWT claims
-    let epoch_secs = now.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as usize;
-
-    let claims = Claims {
-        sub: user.username.clone(),
-        role: role_to_string(&user.role),
-        tenant_id: user.tenant_id.to_string(),
-        display_name: user.display_name.clone(),
-        exp: epoch_secs + (JWT_EXPIRY_HOURS as usize * 3600),
-        iat: epoch_secs,
-    };
-
-    // Encode JWT using HMAC-SHA256
-    let jwt_secret = get_jwt_secret(&state)?;
-    let token = encode_jwt(&claims, jwt_secret)?;
-
-    let auth_user = AuthUserResponse {
-        username: user.username,
-        role: claims.role,
-        tenant_id: claims.tenant_id,
-        display_name: user.display_name,
-    };
-
+    let issued = begin_session(state, &user, session::method::PASSWORD, headers).await?;
+    if let Some(session_id) = &issued.session {
+        publish(
+            state,
+            fcp_events::UserEvent::SignedIn {
+                user_id: user.id.to_string(),
+                username: user.username.clone(),
+                tenant_id: user.tenant_id,
+                method: session::method::PASSWORD.to_string(),
+                session_id: session_id.to_string(),
+                source_ip: crate::audit::source_ip(headers),
+                timestamp: now,
+            },
+        );
+    }
     tracing::info!(
-        username = %auth_user.username,
-        tenant_id = %auth_user.tenant_id,
+        username = %user.username,
+        tenant_id = %user.tenant_id,
         password_expired = password_expired,
         "Login successful"
     );
-
-    Ok((
-        StatusCode::OK,
-        Json(LoginResponse {
-            token,
-            user: auth_user,
-            password_expired: if password_expired { Some(true) } else { None },
-        }),
-    ))
+    Ok(signed_in(issued, &user, password_expired))
 }
 
 /// POST /api/v1/auth/logout
@@ -306,10 +584,40 @@ pub async fn login(
         (status = "default", description = "An error", body = crate::error::ErrorResponse),
     ),
 )]
-pub async fn logout() -> impl IntoResponse {
-    // JWT is stateless — client discards the token.
-    // In the future, we could maintain a token blacklist.
-    StatusCode::NO_CONTENT
+pub async fn logout(State(state): State<ApiState>, headers: HeaderMap) -> Response {
+    // The session the cookie names, else the one the access token names.
+    let session = match refresh_cookie(&headers) {
+        Some((id, _)) => Some(id),
+        None => bearer(&headers).and_then(|token| {
+            let keys = state.session_keys.as_ref()?;
+            keys.decode(token, SystemTime::now())
+                .ok()?
+                .sid?
+                .parse()
+                .ok()
+        }),
+    };
+    if let (Some(id), Some(store)) = (session, session_store(&state)) {
+        match store
+            .revoke_login_session(&id, "signed out", SystemTime::now())
+            .await
+        {
+            Ok(_) => tracing::info!(session = %id, "Signed out"),
+            Err(e) => tracing::warn!(session = %id, error = %e, "Failed to revoke a session"),
+        }
+    }
+    let mut response = StatusCode::NO_CONTENT.into_response();
+    response
+        .headers_mut()
+        .append(header::SET_COOKIE, clear_cookie(&headers));
+    response
+}
+
+fn bearer(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(header::AUTHORIZATION)
+        .and_then(|h| h.to_str().ok())
+        .and_then(|h| h.strip_prefix("Bearer "))
 }
 
 /// GET /api/v1/auth/me
@@ -323,31 +631,17 @@ pub async fn logout() -> impl IntoResponse {
         (status = "default", description = "An error", body = crate::error::ErrorResponse),
     ),
 )]
-pub async fn me(
-    State(state): State<ApiState>,
-    req: axum::extract::Request,
-) -> Result<impl IntoResponse, ApiError> {
-    let claims = extract_claims(&req, &state)?;
-    let tenant_id = claims_tenant_id(&claims)?;
-
-    // Optionally refresh user data from storage
-    if let Some(storage) = &state.storage {
-        if let Ok(Some(user)) = storage.get_user_in_tenant(&claims.sub, &tenant_id).await {
-            return Ok(Json(AuthUserResponse {
-                username: user.username,
-                role: role_to_string(&user.role),
-                tenant_id: user.tenant_id.to_string(),
-                display_name: user.display_name,
-            }));
-        }
+pub async fn me(me: Me) -> Result<impl IntoResponse, ApiError> {
+    if me.0.personal {
+        return Err(ApiError::Unauthorized(
+            "Sign in to see your session".to_string(),
+        ));
     }
-
-    // Fallback to claims data
     Ok(Json(AuthUserResponse {
-        username: claims.sub,
-        role: claims.role,
-        tenant_id: claims.tenant_id,
-        display_name: claims.display_name,
+        username: me.0.sub,
+        role: me.0.role,
+        tenant_id: me.0.tenant_id,
+        display_name: me.0.display_name,
     }))
 }
 
@@ -358,64 +652,79 @@ pub async fn me(
     tag = "auth_session",
     operation_id = "auth_session_refresh",
     responses(
-        (status = 200, description = "OK", body = LoginResponse),
+        (status = 200, description = "A new access token; the refresh cookie turned over", body = LoginResponse),
         (status = "default", description = "An error", body = crate::error::ErrorResponse),
     ),
 )]
-pub async fn refresh(
-    State(state): State<ApiState>,
-    req: axum::extract::Request,
-) -> Result<impl IntoResponse, ApiError> {
-    let claims = extract_claims(&req, &state)?;
-    let tenant_id = claims_tenant_id(&claims)?;
-
-    // Verify user still exists and is active
-    if let Some(storage) = &state.storage {
-        let user = storage
-            .get_user_in_tenant(&claims.sub, &tenant_id)
-            .await
-            .map_err(|e| ApiError::Internal(e.to_string()))?
-            .ok_or_else(|| ApiError::Unauthorized("User no longer exists".to_string()))?;
-
-        if !user.enabled {
-            return Err(ApiError::Forbidden("Account is disabled".to_string()));
+pub async fn refresh(State(state): State<ApiState>, headers: HeaderMap) -> Response {
+    match renew(&state, &headers).await {
+        Ok(response) => response,
+        Err(e) => {
+            // Whatever the cookie was, it opens nothing now.
+            let mut response = e.into_response();
+            response
+                .headers_mut()
+                .append(header::SET_COOKIE, clear_cookie(&headers));
+            response
         }
-
-        // Check lock status on refresh too
-        if user.account_status == AccountStatus::Locked {
-            return Err(ApiError::Forbidden("Account is locked".to_string()));
-        }
-
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as usize;
-
-        let new_claims = Claims {
-            sub: user.username.clone(),
-            role: role_to_string(&user.role),
-            tenant_id: user.tenant_id.to_string(),
-            display_name: user.display_name.clone(),
-            exp: now + (JWT_EXPIRY_HOURS as usize * 3600),
-            iat: now,
-        };
-
-        let jwt_secret = get_jwt_secret(&state)?;
-        let token = encode_jwt(&new_claims, jwt_secret)?;
-
-        return Ok(Json(LoginResponse {
-            token,
-            user: AuthUserResponse {
-                username: user.username,
-                role: new_claims.role,
-                tenant_id: new_claims.tenant_id,
-                display_name: user.display_name,
-            },
-            password_expired: None,
-        }));
     }
+}
 
-    Err(ApiError::Internal("Storage not configured".to_string()))
+async fn renew(state: &ApiState, headers: &HeaderMap) -> Result<Response, ApiError> {
+    let unauthorized = |why: &str| ApiError::Unauthorized(why.to_string());
+    let (id, secret) = refresh_cookie(headers).ok_or_else(|| unauthorized("Not signed in"))?;
+    let store = session_store(state).ok_or_else(|| unauthorized("Not signed in"))?;
+    let storage = state
+        .storage
+        .as_ref()
+        .ok_or_else(|| ApiError::Internal("Storage not configured".to_string()))?;
+    let now = SystemTime::now();
+    let (next_secret, next_hash) = session::new_refresh_secret();
+    let outcome = store
+        .rotate_refresh(&id, &session::refresh_hash(&secret), &next_hash, now)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    match outcome {
+        RefreshOutcome::Rotated | RefreshOutcome::RecentlyRotated => {}
+        RefreshOutcome::Reused => {
+            tracing::warn!(session = %id, "A refresh secret was used twice: the session is revoked");
+            return Err(unauthorized("Session ended"));
+        }
+        RefreshOutcome::Unknown => return Err(unauthorized("Session ended")),
+    }
+    let session = store
+        .get_login_session(&id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .filter(|s| s.is_live(now))
+        .ok_or_else(|| unauthorized("Session ended"))?;
+    let user = storage
+        .get_user_by_id(&session.user_id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .filter(|u| u.tenant_id == session.tenant_id && session::user_is_active(u))
+        .ok_or_else(|| unauthorized("Session ended"))?;
+    let (token, expires_in) = access_token(state, &user, Some(&id), now)?;
+    let issued = Issued {
+        token,
+        expires_in,
+        // A secret turned over goes back in the cookie; a second tab that
+        // presented the one before it keeps the cookie the first tab set.
+        cookie: (outcome == RefreshOutcome::Rotated).then(|| {
+            let left = session
+                .expires_at
+                .duration_since(now)
+                .unwrap_or_default()
+                .as_secs();
+            cookie(
+                &session::refresh_cookie_value(&id, &next_secret),
+                left,
+                is_https(headers),
+            )
+        }),
+        session: Some(id),
+    };
+    Ok(signed_in(issued, &user, false))
 }
 
 /// POST /api/v1/auth/change-expired-password
@@ -435,6 +744,7 @@ pub async fn refresh(
 )]
 pub async fn change_expired_password(
     State(state): State<ApiState>,
+    headers: HeaderMap,
     Json(req): Json<ChangeExpiredPasswordRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = state
@@ -603,116 +913,20 @@ pub async fn change_expired_password(
         "User changed expired password"
     );
 
-    // Issue JWT token so user can proceed
-    let epoch_secs = now.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as usize;
-
-    let claims = Claims {
-        sub: user.username.clone(),
-        role: role_to_string(&user.role),
-        tenant_id: user.tenant_id.to_string(),
-        display_name: user.display_name.clone(),
-        exp: epoch_secs + (JWT_EXPIRY_HOURS as usize * 3600),
-        iat: epoch_secs,
-    };
-
-    let jwt_secret = get_jwt_secret(&state)?;
-    let token = encode_jwt(&claims, jwt_secret)?;
-
-    let auth_user = AuthUserResponse {
-        username: user.username,
-        role: claims.role,
-        tenant_id: claims.tenant_id,
-        display_name: user.display_name,
-    };
-
-    Ok((
-        StatusCode::OK,
-        Json(LoginResponse {
-            token,
-            user: auth_user,
-            password_expired: None,
-        }),
-    ))
+    // Whoever else held the old password is signed out; a session, so the
+    // user can proceed.
+    revoke_sessions(&state, &user.id, None, "password changed").await;
+    let issued = begin_session(&state, &user, session::method::PASSWORD, &headers).await?;
+    Ok(signed_in(issued, &user, false))
 }
 
-// ---- JWT helpers ----
+// ---- Who is calling ----
 
-/// Get the JWT secret from ApiState, or return an error.
-fn get_jwt_secret(state: &ApiState) -> Result<&[u8], ApiError> {
-    state
-        .jwt_secret
-        .as_deref()
-        .ok_or_else(|| ApiError::Internal("JWT secret not configured".to_string()))
-}
-
-pub(crate) fn encode_jwt(claims: &Claims, secret: &[u8]) -> Result<String, ApiError> {
-    use hmac::{Hmac, Mac};
-    use sha2::Sha256;
-
-    let header = base64url_encode(b"{\"alg\":\"HS256\",\"typ\":\"JWT\"}");
-    let payload = base64url_encode(
-        &serde_json::to_vec(claims).map_err(|e| ApiError::Internal(e.to_string()))?,
-    );
-
-    let message = format!("{}.{}", header, payload);
-
-    let mut mac =
-        Hmac::<Sha256>::new_from_slice(secret).map_err(|e| ApiError::Internal(e.to_string()))?;
-    mac.update(message.as_bytes());
-    let signature = base64url_encode(&mac.finalize().into_bytes());
-
-    Ok(format!("{}.{}", message, signature))
-}
-
-pub(crate) fn decode_jwt(token: &str, secret: &[u8]) -> Result<Claims, ApiError> {
-    use hmac::{Hmac, Mac};
-    use sha2::Sha256;
-
-    let parts: Vec<&str> = token.split('.').collect();
-    if parts.len() != 3 {
-        return Err(ApiError::Unauthorized("Invalid token format".to_string()));
-    }
-
-    // Verify signature
-    let message = format!("{}.{}", parts[0], parts[1]);
-    let mut mac =
-        Hmac::<Sha256>::new_from_slice(secret).map_err(|e| ApiError::Internal(e.to_string()))?;
-    mac.update(message.as_bytes());
-
-    let signature = base64url_decode(parts[2])
-        .map_err(|_| ApiError::Unauthorized("Invalid token signature".to_string()))?;
-
-    mac.verify_slice(&signature)
-        .map_err(|_| ApiError::Unauthorized("Invalid token signature".to_string()))?;
-
-    // Decode payload
-    let payload_bytes = base64url_decode(parts[1])
-        .map_err(|_| ApiError::Unauthorized("Invalid token payload".to_string()))?;
-
-    let claims: Claims = serde_json::from_slice(&payload_bytes)
-        .map_err(|_| ApiError::Unauthorized("Invalid token claims".to_string()))?;
-
-    // Check expiry
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as usize;
-
-    if claims.exp < now {
-        return Err(ApiError::Unauthorized("Token expired".to_string()));
-    }
-
-    Ok(claims)
-}
-
-pub fn extract_claims(req: &axum::extract::Request, state: &ApiState) -> Result<Claims, ApiError> {
-    extract_claims_from_headers(req.headers(), state)
-}
-
-/// The caller of a `/me` route, as the claims a session carries: the
-/// session's own, or — for a personal API token (docs/DEVELOPER_SURFACE.md
-/// §3, phase 1) — its maker, as an end user. A personal token has no expiry
-/// in these claims; the bearer layer has already judged it.
+/// The caller of a `/me` route, as the claims its handler reads: a
+/// signed-in user as the bearer layer found them, or — for a personal API
+/// token (docs/DEVELOPER_SURFACE.md §3, phase 1) — its maker, as an end
+/// user. With authentication off there is no bearer layer, and the access
+/// token is checked here the same way.
 pub struct Me(pub Claims);
 
 #[axum::async_trait]
@@ -723,49 +937,75 @@ impl axum::extract::FromRequestParts<ApiState> for Me {
         parts: &mut axum::http::request::Parts,
         state: &ApiState,
     ) -> Result<Self, Self::Rejection> {
-        if let Some(crate::auth::AuthIdentity::Personal {
-            username,
-            tenant_id,
-            ..
-        }) = parts.extensions.get::<crate::auth::AuthIdentity>()
-        {
-            return Ok(Me(Claims {
-                sub: username.clone(),
-                role: "end_user".to_string(),
-                tenant_id: tenant_id.to_string(),
-                display_name: None,
-                exp: 0,
-                iat: 0,
-            }));
+        use crate::auth::AuthIdentity;
+        match parts.extensions.get::<AuthIdentity>() {
+            Some(AuthIdentity::Personal {
+                username,
+                tenant_id,
+                user_id,
+                ..
+            }) => {
+                return Ok(Me(Claims {
+                    sub: username.clone(),
+                    role: "end_user".to_string(),
+                    tenant_id: tenant_id.to_string(),
+                    display_name: None,
+                    exp: 0,
+                    iat: 0,
+                    user_id: user_id.map(|id| id.to_string()),
+                    sid: None,
+                    personal: true,
+                }))
+            }
+            Some(AuthIdentity::Session {
+                username,
+                role,
+                tenant_id: Some(tenant_id),
+                user_id,
+                session_id,
+            }) => {
+                return Ok(Me(Claims {
+                    sub: username.clone(),
+                    role: role.clone(),
+                    tenant_id: tenant_id.to_string(),
+                    display_name: None,
+                    exp: 0,
+                    iat: 0,
+                    user_id: user_id.map(|id| id.to_string()),
+                    sid: session_id.map(|id| id.to_string()),
+                    personal: false,
+                }))
+            }
+            _ => {}
         }
-        extract_claims_from_headers(&parts.headers, state).map(Me)
+        let token = bearer(&parts.headers)
+            .ok_or_else(|| ApiError::Unauthorized("Missing Authorization header".to_string()))?;
+        let users = state
+            .storage
+            .as_ref()
+            .map(|s| s.credential_store_arc())
+            .ok_or_else(|| ApiError::Internal("Storage not configured".to_string()))?;
+        let sessions = session_store(state);
+        let principal = session::authenticate_session(
+            token,
+            keys(state)?,
+            users.as_ref(),
+            sessions.as_deref(),
+            SystemTime::now(),
+        )
+        .await
+        .ok_or_else(|| ApiError::Unauthorized("Invalid or expired session".to_string()))?;
+        let user = principal.user;
+        Ok(Me(Claims {
+            sub: user.username,
+            role: role_to_string(&user.role),
+            tenant_id: user.tenant_id.to_string(),
+            display_name: user.display_name,
+            exp: 0,
+            iat: 0,
+            user_id: Some(user.id.to_string()),
+            sid: principal.session.map(|id| id.to_string()),
+            personal: false,
+        }))
     }
-}
-
-/// Extract JWT claims from a `HeaderMap` (useful when Request is not available).
-pub fn extract_claims_from_headers(
-    headers: &axum::http::HeaderMap,
-    state: &ApiState,
-) -> Result<Claims, ApiError> {
-    let secret = get_jwt_secret(state)?;
-    let auth_header = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|h| h.to_str().ok())
-        .ok_or_else(|| ApiError::Unauthorized("Missing Authorization header".to_string()))?;
-
-    let token = auth_header
-        .strip_prefix("Bearer ")
-        .ok_or_else(|| ApiError::Unauthorized("Invalid Authorization format".to_string()))?;
-
-    decode_jwt(token, secret)
-}
-
-fn base64url_encode(data: &[u8]) -> String {
-    use base64::Engine;
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(data)
-}
-
-fn base64url_decode(data: &str) -> Result<Vec<u8>, base64::DecodeError> {
-    use base64::Engine;
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(data)
 }

@@ -2706,6 +2706,8 @@ pub struct AuthenticatedApiToken {
     /// The maker's role now, when the token names a maker and a user store
     /// was given; a token never does more than its maker could today.
     pub maker_role: Option<crate::UserRole>,
+    /// The maker, by id and by their username now, when known.
+    pub maker: Option<(crate::UserId, String)>,
 }
 
 /// Authenticate a presented API token secret: find it by hash, check it is
@@ -2732,17 +2734,42 @@ pub async fn authenticate_api_token(
         return None;
     }
     let mut maker_role = None;
+    let mut maker = None;
     if let (false, Some(users)) = (token.user_id.is_empty(), users) {
-        match users
-            .get_user_in_tenant(&token.user_id, &token.tenant_id)
-            .await
-        {
+        // The maker by id (`docs/IDENTITY_AND_DEVICES.md` phase 1); a token
+        // made before makers were ids names a username, matched once in its
+        // tenant and rewritten to that user's id, so a user later made with
+        // the same name is not its maker.
+        let by_id = token
+            .user_id
+            .starts_with("user-")
+            .then(|| token.user_id.parse::<crate::UserId>().ok())
+            .flatten();
+        let found = match by_id {
+            Some(id) => users
+                .get_user_by_id(&id)
+                .await
+                .map(|u| u.filter(|u| u.tenant_id == token.tenant_id)),
+            None => {
+                let found = users
+                    .get_user_in_tenant(&token.user_id, &token.tenant_id)
+                    .await;
+                if let Ok(Some(user)) = &found {
+                    if let Err(e) = tokens.set_api_token_maker(&token.id, &user.id).await {
+                        tracing::warn!(token_id = %token.id, error = %e, "Failed to record an API token's maker by id");
+                    }
+                }
+                found
+            }
+        };
+        match found {
             Ok(Some(user)) => {
                 if !user.enabled || user.account_status == AccountStatus::Suspended {
                     tracing::debug!(token_id = %token.id, maker = %token.user_id, "API token refused: its maker is inactive");
                     return None;
                 }
                 maker_role = Some(user.role);
+                maker = Some((user.id, user.username));
             }
             Ok(None) => {
                 tracing::debug!(token_id = %token.id, maker = %token.user_id, "API token refused: its maker is gone");
@@ -2754,7 +2781,11 @@ pub async fn authenticate_api_token(
             }
         }
     }
-    Some(AuthenticatedApiToken { token, maker_role })
+    Some(AuthenticatedApiToken {
+        token,
+        maker_role,
+        maker,
+    })
 }
 
 /// Storage backend for API tokens.
@@ -2791,6 +2822,17 @@ pub trait ApiTokenStore: Send + Sync {
 
     /// Update the last_used_at timestamp.
     async fn update_last_used(&self, id: &crate::ApiTokenId) -> Result<()>;
+
+    /// Record a token's maker by id, in place of the username a token made
+    /// before makers were ids carries.
+    async fn set_api_token_maker(
+        &self,
+        id: &crate::ApiTokenId,
+        maker: &crate::UserId,
+    ) -> Result<()> {
+        let _ = (id, maker);
+        Ok(())
+    }
 }
 
 /// Serde helper for Optional<SystemTime>
@@ -3295,6 +3337,8 @@ pub struct DynStorage {
     config_store: Option<Arc<dyn crate::config_store::ConfigStore>>,
     sip_trace_store: Option<Arc<dyn crate::sip_trace::SipTraceStore>>,
     api_token_store: Option<Arc<dyn ApiTokenStore>>,
+    /// Sign-in sessions (`docs/IDENTITY_AND_DEVICES.md` phase 1).
+    login_session_store: Option<Arc<dyn crate::session::LoginSessionStore>>,
     prompt_store: Option<Arc<dyn crate::prompt::PromptStore>>,
     flow_trace_store: Option<Arc<dyn crate::flow_trace::FlowTraceStore>>,
     config_template_store: Option<Arc<dyn ConfigTemplateStore>>,
@@ -3373,6 +3417,7 @@ impl DynStorage {
             config_store: None,
             sip_trace_store: None,
             api_token_store: None,
+            login_session_store: None,
             prompt_store: None,
             flow_trace_store: None,
             config_template_store: None,
@@ -3453,6 +3498,7 @@ impl DynStorage {
             config_store: None,
             sip_trace_store: None,
             api_token_store: None,
+            login_session_store: None,
             prompt_store: None,
             flow_trace_store: None,
             config_template_store: Some(storage),
@@ -3539,6 +3585,20 @@ impl DynStorage {
     /// Get the API token store, if one has been set.
     pub fn api_token_store(&self) -> Option<&Arc<dyn ApiTokenStore>> {
         self.api_token_store.as_ref()
+    }
+
+    /// Attach the sign-in session store.
+    pub fn with_login_session_store(
+        mut self,
+        store: Arc<dyn crate::session::LoginSessionStore>,
+    ) -> Self {
+        self.login_session_store = Some(store);
+        self
+    }
+
+    /// The sign-in session store, if one is attached.
+    pub fn login_session_store(&self) -> Option<&Arc<dyn crate::session::LoginSessionStore>> {
+        self.login_session_store.as_ref()
     }
 
     /// Get a clone of the credential store Arc.

@@ -36,7 +36,7 @@ pub fn should_audit(method: &Method, path: &str) -> bool {
     }
 }
 
-fn source_ip(headers: &HeaderMap) -> Option<String> {
+pub(crate) fn source_ip(headers: &HeaderMap) -> Option<String> {
     headers
         .get("x-forwarded-for")
         .and_then(|v| v.to_str().ok())
@@ -81,6 +81,16 @@ fn percent_decode(text: &str) -> String {
         i += 1;
     }
     String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Who a sign-in attempt named, put on its response by the sign-in routes
+/// (`docs/IDENTITY_AND_DEVICES.md` phase 1): the request carries no
+/// identity, and the audit row should still say who tried, and in which
+/// tenant when the username was found.
+#[derive(Clone, Debug)]
+pub struct SignInSubject {
+    pub username: String,
+    pub tenant_id: Option<TenantId>,
 }
 
 /// Middleware: record the request after it completes.
@@ -129,20 +139,24 @@ pub async fn audit_requests(State(state): State<ApiState>, req: Request, next: N
         return response;
     };
 
+    let sign_in = response.extensions().get::<SignInSubject>().cloned();
     let actor = identity
         .as_ref()
         .map(AuthIdentity::actor)
+        .or_else(|| sign_in.as_ref().map(|s| s.username.clone()))
         .unwrap_or_else(|| "anonymous".to_string());
-    let actor_kind = match &identity {
-        Some(AuthIdentity::StaticToken) => "static_token",
-        Some(AuthIdentity::ApiToken { .. }) => "api_token",
-        Some(AuthIdentity::Personal { .. }) => "personal_token",
-        Some(AuthIdentity::Session { .. }) => "session",
-        None => "anonymous",
+    let actor_kind = match (&identity, &sign_in) {
+        (Some(AuthIdentity::StaticToken), _) => "static_token",
+        (Some(AuthIdentity::ApiToken { .. }), _) => "api_token",
+        (Some(AuthIdentity::Personal { .. }), _) => "personal_token",
+        (Some(AuthIdentity::Session { .. }), _) => "session",
+        (None, Some(_)) => "sign_in",
+        (None, None) => "anonymous",
     };
     let tenant_id = identity
         .as_ref()
         .and_then(|i| i.tenant_id().copied())
+        .or_else(|| sign_in.as_ref().and_then(|s| s.tenant_id))
         .or(header_tenant)
         .or_else(|| identity.as_ref().map(|_| state.default_tenant_id));
 

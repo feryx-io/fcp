@@ -3,7 +3,7 @@
 use axum::{extract::Request, http::header, middleware::Next, response::Response};
 use fcp_core::permissions::{DeploymentMode, Permission, UserRole};
 use fcp_core::storage::{ApiTokenStore, TenantStore};
-use fcp_core::{AccountStatus, CredentialStore, TenantId};
+use fcp_core::{CredentialStore, TenantId};
 use std::sync::Arc;
 
 /// Header that platform-admin credentials can use to target a specific tenant.
@@ -32,12 +32,19 @@ pub enum AuthIdentity {
         token_id: String,
         username: String,
         tenant_id: TenantId,
+        /// The maker's id, when the token records it.
+        user_id: Option<fcp_core::UserId>,
     },
-    /// JWT session token with role from claims.
+    /// A signed-in user: their username and role as they are now.
     Session {
         username: String,
         role: String,
         tenant_id: Option<TenantId>,
+        /// The user's id; `None` only for a token made before sessions
+        /// were rows (`docs/IDENTITY_AND_DEVICES.md` phase 1).
+        user_id: Option<fcp_core::UserId>,
+        /// The sign-in session the token belongs to.
+        session_id: Option<fcp_core::LoginSessionId>,
     },
 }
 
@@ -177,10 +184,13 @@ pub fn can_access_all_tenants(identity: Option<&AuthIdentity>) -> bool {
 pub struct AuthConfig {
     pub token: String,
     pub api_token_store: Option<Arc<dyn ApiTokenStore>>,
-    /// JWT secret for validating session tokens in the bearer middleware.
-    /// When set, `validate_token` also accepts valid JWT session tokens,
-    /// so the admin UI can use its JWT for both REST and WebSocket requests.
-    pub jwt_secret: Option<Vec<u8>>,
+    /// The keys session tokens are verified with. When set,
+    /// `validate_token` also accepts a signed-in user's access token, so the
+    /// admin UI can use it for both REST and WebSocket requests.
+    pub session_keys: Option<fcp_core::session::SessionKeys>,
+    /// Where sign-in sessions are kept: a token naming a session is refused
+    /// once the session is revoked.
+    pub login_sessions: Option<Arc<dyn fcp_core::session::LoginSessionStore>>,
     /// Credential store for checking user status (enabled/locked) on JWT auth.
     /// When set, JWT tokens for disabled/locked users are rejected at the
     /// middleware level without waiting for token expiry.
@@ -195,7 +205,8 @@ impl AuthConfig {
         Self {
             token,
             api_token_store: None,
-            jwt_secret: None,
+            session_keys: None,
+            login_sessions: None,
             credential_store: None,
             mode: DeploymentMode::default(),
         }
@@ -213,9 +224,19 @@ impl AuthConfig {
         self
     }
 
-    /// Attach a JWT secret so the bearer middleware also accepts JWT session tokens.
-    pub fn with_jwt_secret(mut self, secret: Vec<u8>) -> Self {
-        self.jwt_secret = Some(secret);
+    /// Attach the session keys so the bearer middleware also accepts a
+    /// signed-in user's access token.
+    pub fn with_session_keys(mut self, keys: fcp_core::session::SessionKeys) -> Self {
+        self.session_keys = Some(keys);
+        self
+    }
+
+    /// Attach the sign-in session store.
+    pub fn with_login_sessions(
+        mut self,
+        store: Arc<dyn fcp_core::session::LoginSessionStore>,
+    ) -> Self {
+        self.login_sessions = Some(store);
         self
     }
 
@@ -243,58 +264,25 @@ pub async fn validate_token(token: &str, config: &AuthConfig) -> Option<AuthIden
         }
     }
 
-    // Check JWT session tokens (admin UI sends these after login)
-    if let Some(ref jwt_secret) = config.jwt_secret {
-        if let Ok(claims) = crate::v1::auth_session::decode_jwt(token, jwt_secret) {
-            // Verify user is still active (not disabled/locked/deleted) and
-            // fetch current role from DB so demotions take effect immediately
-            // (not after JWT expiry).
-            if let Some(ref cred_store) = config.credential_store {
-                let tenant_id = match claims.tenant_id.parse::<TenantId>() {
-                    Ok(tenant_id) => tenant_id,
-                    Err(_) => return None,
-                };
-
-                match cred_store.get_user_in_tenant(&claims.sub, &tenant_id).await {
-                    Ok(Some(user)) => {
-                        if !user.enabled
-                            || user.account_status == AccountStatus::Locked
-                            || user.account_status == AccountStatus::Suspended
-                        {
-                            tracing::debug!(
-                                username = %claims.sub,
-                                status = ?user.account_status,
-                                enabled = user.enabled,
-                                "JWT rejected: user account inactive"
-                            );
-                            return None;
-                        }
-                        // Use current DB role, not the (possibly stale) JWT claim
-                        let current_role = crate::v1::auth_session::role_to_string(&user.role);
-                        return Some(AuthIdentity::Session {
-                            username: claims.sub,
-                            role: current_role,
-                            tenant_id: Some(tenant_id),
-                        });
-                    }
-                    Ok(None) => {
-                        tracing::debug!(username = %claims.sub, "JWT rejected: user deleted");
-                        return None;
-                    }
-                    Err(e) => {
-                        // Storage error — reject to fail closed
-                        tracing::warn!(error = %e, "JWT user status check failed");
-                        return None;
-                    }
-                }
-            }
-
-            return Some(AuthIdentity::Session {
-                username: claims.sub,
-                role: claims.role,
-                tenant_id: claims.tenant_id.parse().ok(),
-            });
-        }
+    // A signed-in user's access token (`docs/IDENTITY_AND_DEVICES.md`
+    // phase 1): the session live, the user active, the role as it is now.
+    if let (Some(keys), Some(users)) = (&config.session_keys, &config.credential_store) {
+        let principal = fcp_core::session::authenticate_session(
+            token,
+            keys,
+            users.as_ref(),
+            config.login_sessions.as_deref(),
+            std::time::SystemTime::now(),
+        )
+        .await?;
+        let user = principal.user;
+        return Some(AuthIdentity::Session {
+            role: crate::v1::auth_session::role_to_string(&user.role),
+            tenant_id: Some(user.tenant_id),
+            user_id: Some(user.id),
+            session_id: principal.session,
+            username: user.username,
+        });
     }
 
     None
@@ -404,8 +392,11 @@ async fn validate_api_token(
     config: &AuthConfig,
 ) -> Option<AuthIdentity> {
     let users = config.credential_store.as_deref();
-    let fcp_core::AuthenticatedApiToken { token, maker_role } =
-        fcp_core::authenticate_api_token(store.as_ref(), users, token).await?;
+    let fcp_core::AuthenticatedApiToken {
+        token,
+        maker_role,
+        maker,
+    } = fcp_core::authenticate_api_token(store.as_ref(), users, token).await?;
 
     let store = Arc::clone(store);
     let token_id = token.id;
@@ -420,10 +411,15 @@ async fn validate_api_token(
             if token.user_id.is_empty() {
                 return None;
             }
+            let (user_id, username) = match maker {
+                Some((id, username)) => (Some(id), username),
+                None => (None, token.user_id),
+            };
             Some(AuthIdentity::Personal {
                 token_id: token.id.to_string(),
-                username: token.user_id,
+                username,
                 tenant_id: token.tenant_id,
+                user_id,
             })
         }
         fcp_core::ApiTokenScope::Admin => Some(AuthIdentity::ApiToken {

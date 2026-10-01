@@ -25,14 +25,12 @@ use axum::{
 };
 use clap::Parser;
 use fcp_core::storage::{ApiTokenStore, CredentialStore};
-use fcp_core::{AccountStatus, TenantId};
+use fcp_core::TenantId;
 use fcp_events::{
     CallEvent, EventPublisher, EventSubscriber, InMemoryEventBus, PlatformEvent, SystemEvent,
 };
 use fcp_webhooks::{WebhookDispatcher, WebhookDispatcherConfig};
-use hmac::{Hmac, Mac};
-use serde::{Deserialize, Serialize};
-use sha2::Sha256;
+use serde::Deserialize;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -79,7 +77,8 @@ struct EventsAuthState {
     expected_token: Option<String>,
     api_token_store: Option<Arc<dyn ApiTokenStore>>,
     credential_store: Option<Arc<dyn CredentialStore>>,
-    jwt_secret: Option<Vec<u8>>,
+    session_keys: Option<fcp_core::session::SessionKeys>,
+    login_sessions: Option<Arc<dyn fcp_core::session::LoginSessionStore>>,
 }
 
 impl EventsAuthState {
@@ -125,16 +124,6 @@ impl AuthPrincipal {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-struct SessionClaims {
-    sub: String,
-    role: String,
-    tenant_id: String,
-    display_name: Option<String>,
-    exp: usize,
-    iat: usize,
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     // Parse command-line arguments
@@ -147,6 +136,9 @@ async fn main() -> Result<()> {
     // (`docs/SHIP_AND_OPERATE.md` phase 2).
     if let Some(v) = &cli.auth_token {
         config.auth.token = Some(v.clone());
+    }
+    if let Some(v) = &cli.session_signing_key {
+        config.auth.session_signing_key = Some(v.clone());
     }
     if let Some(v) = &cli.webhook_database_url {
         config.webhook.database_url = v.clone();
@@ -802,13 +794,30 @@ fn build_auth_state(
     });
     let credential_store =
         storage_result.map(|storage| storage.pg_storage.clone() as Arc<dyn CredentialStore>);
-    let jwt_secret = expected_token.as_deref().map(derive_jwt_secret_from_token);
+    let login_sessions = storage_result.map(|storage| {
+        Arc::new(
+            fcp_storage_postgres::login_session::PostgresLoginSessionStore::new(
+                storage.pg_storage.pool().clone(),
+            ),
+        ) as Arc<dyn fcp_core::session::LoginSessionStore>
+    });
+    let session_keys = fcp_core::session::SessionKeys::from_config(
+        config
+            .auth
+            .session_signing_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|k| !k.is_empty()),
+        &config.auth.previous_session_signing_keys,
+        expected_token.as_deref(),
+    );
 
     EventsAuthState {
         expected_token,
         api_token_store,
         credential_store,
-        jwt_secret,
+        session_keys,
+        login_sessions,
     }
 }
 
@@ -817,13 +826,6 @@ fn extract_bearer_token(header_value: &str) -> Option<&str> {
         .strip_prefix("Bearer ")
         .or_else(|| header_value.strip_prefix("bearer "))
         .map(str::trim)
-}
-
-fn derive_jwt_secret_from_token(auth_token: &str) -> Vec<u8> {
-    let mut mac = Hmac::<Sha256>::new_from_slice(b"fcp-jwt-key-derivation")
-        .expect("HMAC accepts any key length");
-    mac.update(auth_token.as_bytes());
-    mac.finalize().into_bytes().to_vec()
 }
 
 fn extract_token_from_headers(headers: &axum::http::HeaderMap) -> Option<String> {
@@ -892,72 +894,36 @@ async fn authenticate_request_token(
 }
 
 async fn validate_session_token(auth: &EventsAuthState, token: &str) -> Option<AuthPrincipal> {
-    let secret = auth.jwt_secret.as_deref()?;
-    let claims = decode_jwt(token, secret).ok()?;
-    let tenant_id = claims.tenant_id.parse().ok()?;
-
-    if let Some(store) = auth.credential_store.as_ref() {
-        match store.get_user_in_tenant(&claims.sub, &tenant_id).await {
-            Ok(Some(user)) => {
-                if !user.enabled
-                    || user.account_status == AccountStatus::Locked
-                    || user.account_status == AccountStatus::Suspended
-                {
-                    debug!(
-                        username = %claims.sub,
-                        status = ?user.account_status,
-                        enabled = user.enabled,
-                        "JWT rejected: user account inactive"
-                    );
-                    return None;
-                }
-            }
-            Ok(None) => {
-                debug!(username = %claims.sub, "JWT rejected: user deleted");
-                return None;
-            }
-            Err(error) => {
-                warn!(error = %error, "JWT user status check failed");
-                return None;
-            }
-        }
+    let keys = auth.session_keys.as_ref()?;
+    let now = std::time::SystemTime::now();
+    // With the users to hand, the shared check: the session live, the user
+    // active, the role as it is now (`docs/IDENTITY_AND_DEVICES.md` phase 1).
+    if let Some(users) = auth.credential_store.as_ref() {
+        let principal = fcp_core::session::authenticate_session(
+            token,
+            keys,
+            users.as_ref(),
+            auth.login_sessions.as_deref(),
+            now,
+        )
+        .await?;
+        let user = principal.user;
+        return Some(AuthPrincipal::Session {
+            _username: user.username,
+            role: serde_json::to_value(user.role)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_string))
+                .unwrap_or_default(),
+            tenant_id: user.tenant_id,
+        });
     }
-
-    let tenant_id = claims.tenant_id.parse::<TenantId>().ok()?;
+    // Without them, the token's own word, as before.
+    let claims = keys.decode(token, now).ok()?;
     Some(AuthPrincipal::Session {
-        _username: claims.sub,
+        _username: claims.username.unwrap_or(claims.sub),
         role: claims.role,
-        tenant_id,
+        tenant_id: claims.tenant_id.parse::<TenantId>().ok()?,
     })
-}
-
-fn decode_jwt(token: &str, secret: &[u8]) -> Result<SessionClaims> {
-    use base64::Engine;
-
-    let parts: Vec<&str> = token.split('.').collect();
-    if parts.len() != 3 {
-        anyhow::bail!("invalid token format");
-    }
-
-    let message = format!("{}.{}", parts[0], parts[1]);
-    let mut mac = Hmac::<Sha256>::new_from_slice(secret)?;
-    mac.update(message.as_bytes());
-    let signature = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(parts[2])?;
-    mac.verify_slice(&signature)
-        .map_err(|_| anyhow::anyhow!("invalid token signature"))?;
-
-    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(parts[1])?;
-    let claims: SessionClaims = serde_json::from_slice(&payload)?;
-
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as usize;
-    if claims.exp < now {
-        anyhow::bail!("token expired");
-    }
-
-    Ok(claims)
 }
 
 async fn require_api_token(

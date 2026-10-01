@@ -523,6 +523,12 @@ pub struct ApiConfig {
     /// Redis when `[cluster] redis_url` is set, else in this process.
     #[serde(default)]
     pub rate_limit: fcp_core::ApiRateLimitConfig,
+
+    /// `[api.session]`: sign-in sessions — the signing key, the keys a
+    /// rotation replaced, and the session's and access token's lifetimes
+    /// (`docs/IDENTITY_AND_DEVICES.md` phase 1).
+    #[serde(default)]
+    pub session: fcp_core::ApiSessionConfig,
 }
 
 fn default_bind_address() -> SocketAddr {
@@ -545,6 +551,7 @@ impl Default for ApiConfig {
             deployment_mode: fcp_core::permissions::DeploymentMode::default(),
             managed_by: None,
             rate_limit: fcp_core::ApiRateLimitConfig::default(),
+            session: fcp_core::ApiSessionConfig::default(),
         }
     }
 }
@@ -759,6 +766,11 @@ pub fn load_config(config_path: Option<&Path>) -> Result<AdminConfig> {
 }
 
 pub fn validate_config(config: &AdminConfig) -> Result<()> {
+    config
+        .api
+        .session
+        .validate(config.api.auth_token.as_deref())
+        .map_err(anyhow::Error::msg)?;
     if let Some(cloud) = &config.api.managed_by {
         let cloud = cloud.trim();
         if !(cloud.starts_with("https://") || cloud.starts_with("http://")) {

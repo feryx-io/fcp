@@ -37,6 +37,7 @@ pub mod emergency;
 pub mod encryption;
 pub mod flow_trace;
 mod holds;
+pub mod login_session;
 pub mod prompt;
 pub mod recording;
 pub mod sip_trace;

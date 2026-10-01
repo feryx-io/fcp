@@ -72,7 +72,8 @@ function PageLoader() {
 }
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
-  const { isAuthenticated, user } = useAuthStore()
+  const { isAuthenticated, user, restoring } = useAuthStore()
+  if (restoring) return <PageLoader />
   if (!isAuthenticated) return <Navigate to="/login" replace />
   // End users cannot access admin routes
   if (user?.role === 'end_user') return <Navigate to="/user" replace />
@@ -80,17 +81,23 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 }
 
 function UserProtectedRoute({ children }: { children: React.ReactNode }) {
-  const { isAuthenticated } = useAuthStore()
+  const { isAuthenticated, restoring } = useAuthStore()
+  if (restoring) return <PageLoader />
   if (!isAuthenticated) return <Navigate to="/login" replace />
   return <>{children}</>
 }
 
 function DefaultRedirect() {
-  const { isAuthenticated, user } = useAuthStore()
+  const { isAuthenticated, user, restoring } = useAuthStore()
+  if (restoring) return <PageLoader />
   if (!isAuthenticated) return <Navigate to="/login" replace />
   if (user?.role === 'end_user') return <Navigate to="/user" replace />
   return <Navigate to="/admin" replace />
 }
+
+// A reload keeps you signed in: the session's cookie is asked once, at
+// start (docs/IDENTITY_AND_DEVICES.md phase 1).
+void useAuthStore.getState().restore()
 
 export function App() {
   return (

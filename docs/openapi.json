@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "FCP admin API",
-    "description": "The Ferrous Communications Platform admin API. Every request carries `Authorization: Bearer <token>`: the static token, a session from `/auth/login`, or an API token (`docs/API_TOKENS.md`). Errors are `{error, code, details}`, times are RFC 3339, and lists are `{data, next_cursor, total}` paged by `limit` and `cursor`.",
+    "description": "The Ferrous Communications Platform admin API. Every request carries `Authorization: Bearer <token>`: the static token, a session's access token from `/auth/login` (refreshed by `/auth/refresh` with its HttpOnly cookie), or an API token (`docs/API_TOKENS.md`). Errors are `{error, code, details}`, times are RFC 3339, and lists are `{data, next_cursor, total}` paged by `limit` and `cursor`.",
     "contact": {
       "name": "FCP Team"
     },
@@ -302,7 +302,7 @@
         "operationId": "auth_session_refresh",
         "responses": {
           "200": {
-            "description": "OK",
+            "description": "A new access token; the refresh cookie turned over",
             "content": {
               "application/json": {
                 "schema": {
@@ -4333,6 +4333,49 @@
         "responses": {
           "204": {
             "description": "Done"
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/users/by-id/{id}": {
+      "get": {
+        "tags": [
+          "users"
+        ],
+        "summary": "A user by id (`docs/IDENTITY_AND_DEVICES.md` phase 1): what a token's\nmaker, a session or an event names.",
+        "description": "GET /api/v1/users/by-id/:id",
+        "operationId": "users_get_user_by_id",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "`user-<uuid>`",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserResponse"
+                }
+              }
+            }
           },
           "default": {
             "description": "An error",
@@ -20444,7 +20487,17 @@
         ],
         "properties": {
           "token": {
-            "type": "string"
+            "type": "string",
+            "description": "The access token: `Authorization: Bearer <token>`."
+          },
+          "expires_in": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Seconds the access token lasts; refresh before then.",
+            "minimum": 0
           },
           "user": {
             "$ref": "#/components/schemas/AuthUserResponse"
@@ -33283,6 +33336,8 @@
               "user.enabled",
               "user.disabled",
               "user.calling_changed",
+              "user.signed_in",
+              "user.sign_in_failed",
               "hoteling.login",
               "hoteling.logout",
               "registration.registered",

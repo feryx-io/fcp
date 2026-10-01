@@ -5,8 +5,13 @@
 
 use crate::error::ApiError;
 use crate::state::ApiState;
-use crate::v1::auth_session::{self, Claims};
-use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
+use crate::v1::auth_session;
+use axum::{
+    extract::State,
+    http::{header, HeaderMap, StatusCode},
+    response::IntoResponse,
+    Json,
+};
 use fcp_core::storage::password;
 use fcp_core::{
     AccountStatus, CredentialStore, EmergencyContact, MediaPreferences, Tenant, TenantId,
@@ -74,6 +79,7 @@ async fn cleanup_failed_signup(
 )]
 pub async fn signup(
     State(state): State<ApiState>,
+    headers: HeaderMap,
     Json(req): Json<SignupRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = state
@@ -99,12 +105,10 @@ pub async fn signup(
         return Err(ApiError::BadRequest("Valid email is required".into()));
     }
 
-    // Fail early if JWT issuance is impossible — avoids orphaned rows
-    let jwt_secret = state
-        .jwt_secret
-        .as_deref()
-        .ok_or_else(|| ApiError::Internal("JWT secret not configured".to_string()))?
-        .to_vec();
+    // Fail early if signing in is impossible — avoids orphaned rows
+    if state.session_keys.is_none() {
+        return Err(ApiError::Internal("Sign-in is not configured".to_string()));
+    }
 
     // Hash the password (constant-time, same pattern as create_user)
     let password_hash = password::hash_password(&req.password)
@@ -199,20 +203,16 @@ pub async fn signup(
         )));
     }
 
-    // Generate JWT token (same pattern as auth_session login)
-    let epoch_secs = now.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as usize;
-
-    let claims = Claims {
-        sub: user.username.clone(),
-        role: auth_session::role_to_string(&user.role),
-        tenant_id: tenant_id.to_string(),
-        display_name: user.display_name.clone(),
-        exp: epoch_secs + (24 * 3600), // 24 hours
-        iat: epoch_secs,
-    };
-
-    let token = match auth_session::encode_jwt(&claims, &jwt_secret) {
-        Ok(token) => token,
+    // Signed in as the new tenant's admin.
+    let issued = match auth_session::begin_session(
+        &state,
+        &user,
+        fcp_core::session::method::SIGNUP,
+        &headers,
+    )
+    .await
+    {
+        Ok(issued) => issued,
         Err(error) => {
             cleanup_failed_signup(storage, &tenant_id, &user.username, true).await;
             return Err(error);
@@ -227,13 +227,18 @@ pub async fn signup(
         "New tenant signed up"
     );
 
-    Ok((
+    let mut response = (
         StatusCode::CREATED,
         Json(SignupResponse {
-            token,
+            token: issued.token,
             tenant_id: tenant_id.to_string(),
             tenant_name: tenant.name,
             username: user.username,
         }),
-    ))
+    )
+        .into_response();
+    if let Some(cookie) = issued.cookie {
+        response.headers_mut().append(header::SET_COOKIE, cookie);
+    }
+    Ok(response)
 }

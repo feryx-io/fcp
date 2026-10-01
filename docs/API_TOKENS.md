@@ -17,7 +17,7 @@ Every request carries `Authorization: Bearer <credential>`.
 | Credential | What it is | Reaches |
 |---|---|---|
 | The static token (`[api] auth_token`) | The platform's own key | Everything, in every tenant (`x-fcp-tenant-id` picks one) |
-| A session (`POST /auth/login`) | A JWT for a signed-in user, 24 hours | What the user's role permits |
+| A session (`POST /auth/login`) | A signed-in user's access token, 15 minutes, renewed from the session's cookie until the session ends (§7) | What the user's role permits |
 | An API token (`fcp_…`) | A key a program keeps | See §2 |
 
 ## 2. API tokens
@@ -51,8 +51,12 @@ A token has a **scope**:
 
 ### The maker answers for the token
 
-A token names its maker (`created_by`). Every time the token is used, its
-permissions are checked against what the maker holds now:
+A token names its maker by id, and shows them by username (`created_by`).
+A user deleted and made again with the same name is a different user, and
+not the maker of the first one's tokens. A token made before makers were
+ids names a username; the first time it is used it is matched to that
+user in its tenant and rewritten to their id. Every time the token is
+used, its permissions are checked against what the maker holds now:
 
 - If the maker is demoted, the token loses what the maker lost.
 - If the maker is disabled, suspended or deleted, the token is refused.
@@ -280,3 +284,54 @@ Some things are not lists and keep their own shapes:
 - the cluster view (`{available, nodes}`);
 - the live SIP trace (`{messages}`);
 - downloads.
+
+## 7. Sessions
+
+A sign-in is a session: a row (`login_sessions`) naming the user by id,
+their tenant, how they signed in, when it ends and whether it was revoked
+(`docs/IDENTITY_AND_DEVICES.md` phase 1).
+
+- **Signing in.** `POST /auth/login` answers an access token
+  (`expires_in`: 900 seconds by default) and sets the session's refresh
+  secret in a cookie, `fcp_refresh`: `HttpOnly`, `SameSite=Strict`, sent
+  only to `/api/v1/auth`, and `Secure` when the request came over HTTPS
+  (`X-Forwarded-Proto: https`).
+- **Refreshing.** `POST /auth/refresh` takes the cookie and nothing else,
+  and answers a new access token with the secret turned over. The previous
+  secret is still taken within ten seconds (two tabs refreshing together).
+  After that it means two holders, and the session is revoked. The admin
+  UI refreshes a minute before its token runs out, and after a 401, so a
+  reload keeps you signed in.
+- **Ending.**
+  - `POST /auth/logout` revokes the session and clears the cookie.
+  - A password change revokes the user's other sessions; an
+    administrator's password reset revokes them all.
+  - A user disabled, suspended or locked is signed out everywhere, and
+    stays signed out if enabled again.
+  - A deleted user's sessions go with them.
+  - A session lasts 12 hours however often it is refreshed.
+- **The keys.** Access tokens are signed with `[api.session] signing_key`
+  (32 characters or more, distinct from `auth_token`;
+  `FCP_ADMIN_SESSION_SIGNING_KEY`).
+  - Unset, the key is derived from `auth_token` as before, and changing
+    that token signs everyone out.
+  - To rotate: move the old key to `previous_signing_keys` and set a new
+    one. Tokens the old key signed are accepted until they expire.
+  - The events server verifies the same tokens. Give it the same key as
+    `[auth] session_signing_key` (`FCP_EVENTS_SESSION_SIGNING_KEY`) and
+    `previous_session_signing_keys`.
+- **Lifetimes.** `[api.session] ttl_secs` (43200) and `access_ttl_secs`
+  (900, between 60 and 3600).
+- **Recorded.**
+  - Every sign-in attempt is an audit row under the name tried
+    (`actor_kind` `sign_in`), in the user's tenant when the name was
+    found.
+  - `user.signed_in` and `user.sign_in_failed` are published, the latter
+    with its reason: `bad_credentials`, `locked`, `disabled` or
+    `suspended`.
+  - Ended sessions are deleted a month after they end.
+- **Tokens from before.** An access token made before sessions were rows
+  names a username and lasts 24 hours. It is honoured until it expires.
+- **Users by id.** `GET /api/v1/users/by-id/{id}` reads the user a token,
+  a session or an event names.
+

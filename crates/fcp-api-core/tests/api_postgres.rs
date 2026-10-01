@@ -162,6 +162,12 @@ impl App {
             Arc::new(
                 DynStorage::from_all_in_one(Arc::clone(&storage))
                     .with_api_token_store(api_tokens)
+                    .with_login_session_store(Arc::new(
+                        fcp_storage_postgres::login_session::PostgresLoginSessionStore::new(
+                            storage.pool().clone(),
+                        ),
+                    )
+                        as Arc<dyn fcp_core::session::LoginSessionStore>)
                     .with_flow_trace_store(Arc::clone(&traces) as Arc<dyn FlowTraceStore>)
                     .with_sip_trace_store(Arc::clone(&sip_traces) as Arc<dyn SipTraceStore>)
                     .with_emergency_store(
@@ -1649,6 +1655,7 @@ async fn jwt_login_sessions_and_role_gating() {
     assert_eq!(ok.json["user"]["role"], "tenant_admin");
     assert_eq!(ok.json["user"]["tenant_id"], app.tenant_a.to_string());
     let jwt = ok.json["token"].as_str().expect("jwt").to_string();
+    let cookie = refresh_cookie(&ok).expect("the refresh cookie");
 
     // The session works on the bearer middleware and resolves its tenant.
     let me = app
@@ -1718,9 +1725,9 @@ async fn jwt_login_sessions_and_role_gating() {
         "tenant admin sees its own tenant, got {names:?}"
     );
 
-    // Refresh issues a new usable token.
+    // Refresh, with the session's cookie, issues a new usable token.
     let refreshed = app
-        .send_as(&jwt, Method::POST, "/api/v1/auth/refresh", None)
+        .with_cookie(Method::POST, "/api/v1/auth/refresh", &cookie)
         .await;
     assert_eq!(refreshed.status, StatusCode::OK, "{}", refreshed.text);
     let jwt2 = refreshed.json["token"]
@@ -2236,8 +2243,13 @@ async fn api_tokens_never_exceed_their_maker() {
     for (method, path, status) in [
         (Method::GET, "/api/v1/devices", StatusCode::FORBIDDEN),
         (Method::GET, "/api/v1/me/api-tokens", StatusCode::FORBIDDEN),
-        // Not a session: it cannot be refreshed into one.
-        (Method::POST, "/api/v1/auth/refresh", StatusCode::FORBIDDEN),
+        // Not a session: it cannot be refreshed into one (refresh takes a
+        // session's cookie, and nothing else).
+        (
+            Method::POST,
+            "/api/v1/auth/refresh",
+            StatusCode::UNAUTHORIZED,
+        ),
     ] {
         let res = app.send_as(&personal, method.clone(), path, None).await;
         assert_eq!(res.status, status, "{method} {path}: {}", res.text);
@@ -6619,7 +6631,10 @@ async fn compliance_policy_audit_log_export_and_retention() {
         |e| e["status"] == 401,
     )
     .await;
-    assert_eq!(failed_login["actor"], "anonymous", "{failed_login}");
+    // Recorded under the name tried, though nobody was signed in
+    // (docs/IDENTITY_AND_DEVICES.md phase 1).
+    assert_eq!(failed_login["actor"], "ghost", "{failed_login}");
+    assert_eq!(failed_login["actor_kind"], "sign_in", "{failed_login}");
 
     // A JWT session is recorded under its username, and tenant B's admin
     // sees none of tenant A's events.
@@ -9284,6 +9299,284 @@ async fn a_webhook_delivery_is_signed_logged_and_replayed() {
         .admin(Method::POST, &format!("/api/v1/webhooks/{id}/test"), None)
         .await;
     assert_eq!(disabled.status, StatusCode::CONFLICT, "{}", disabled.text);
+
+    app.finish().await;
+}
+
+// ---------------------------------------------------------------------------
+// Sessions as rows (docs/IDENTITY_AND_DEVICES.md phase 1)
+// ---------------------------------------------------------------------------
+
+/// The refresh cookie a response sets, as `fcp_refresh=<value>`.
+fn refresh_cookie(res: &Response) -> Option<String> {
+    res.headers
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .find(|v| v.starts_with("fcp_refresh="))
+        .map(|v| v.split(';').next().unwrap().to_string())
+}
+
+impl App {
+    async fn with_cookie(&self, method: Method, path: &str, cookie: &str) -> Response {
+        self.send(method, path, &[("cookie", cookie)], None).await
+    }
+}
+
+#[tokio::test]
+async fn a_session_is_a_row_refreshed_by_its_cookie_and_revoked() {
+    let app = require_app!();
+    app.create_user_with_role("alice", "tenant_admin").await;
+
+    // Signing in: a short access token, and the refresh secret in a cookie
+    // that script cannot read and only the sign-in routes are sent.
+    let signed_in = app.login("alice", PASSWORD).await;
+    assert_eq!(signed_in.status, StatusCode::OK, "{}", signed_in.text);
+    assert_eq!(signed_in.json["expires_in"], 900);
+    let set = signed_in
+        .headers
+        .get(header::SET_COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    for part in [
+        "fcp_refresh=",
+        "HttpOnly",
+        "SameSite=Strict",
+        "Path=/api/v1/auth",
+    ] {
+        assert!(set.contains(part), "{part} in {set}");
+    }
+    let token = signed_in.json["token"].as_str().unwrap().to_string();
+    let cookie = refresh_cookie(&signed_in).unwrap();
+    let me = app
+        .send_as(&token, Method::GET, "/api/v1/auth/me", None)
+        .await;
+    assert_eq!(me.json["username"], "alice", "{}", me.text);
+
+    // Refresh: a new access token, the secret turned over.
+    let refreshed = app
+        .with_cookie(Method::POST, "/api/v1/auth/refresh", &cookie)
+        .await;
+    assert_eq!(refreshed.status, StatusCode::OK, "{}", refreshed.text);
+    let turned = refresh_cookie(&refreshed).expect("a new secret");
+    assert_ne!(turned, cookie);
+    // The secret before it, again at once (a second tab): taken, nothing
+    // turned over.
+    let again = app
+        .with_cookie(Method::POST, "/api/v1/auth/refresh", &cookie)
+        .await;
+    assert_eq!(again.status, StatusCode::OK, "{}", again.text);
+    assert!(refresh_cookie(&again).is_none());
+
+    // The previous secret after the grace: two holders, so the session ends.
+    let sessions = app.dyn_storage.login_session_store().unwrap().clone();
+    let (sid, secret) =
+        fcp_core::session::parse_refresh_cookie(cookie.trim_start_matches("fcp_refresh=")).unwrap();
+    let later = std::time::SystemTime::now() + Duration::from_secs(60);
+    let outcome = sessions
+        .rotate_refresh(&sid, &fcp_core::session::refresh_hash(&secret), "x", later)
+        .await
+        .unwrap();
+    assert_eq!(outcome, fcp_core::session::RefreshOutcome::Reused);
+    let refused = app
+        .send_as(&token, Method::GET, "/api/v1/auth/me", None)
+        .await;
+    assert_eq!(
+        refused.status,
+        StatusCode::UNAUTHORIZED,
+        "a revoked session's token"
+    );
+    let refused = app
+        .with_cookie(Method::POST, "/api/v1/auth/refresh", &turned)
+        .await;
+    assert_eq!(refused.status, StatusCode::UNAUTHORIZED);
+
+    // Signing out ends the session; the cookie is cleared.
+    let signed_in = app.login("alice", PASSWORD).await;
+    let token = signed_in.json["token"].as_str().unwrap().to_string();
+    let cookie = refresh_cookie(&signed_in).unwrap();
+    let out = app
+        .with_cookie(Method::POST, "/api/v1/auth/logout", &cookie)
+        .await;
+    assert_eq!(out.status, StatusCode::NO_CONTENT);
+    assert!(refresh_cookie(&out).is_some_and(|c| c == "fcp_refresh="));
+    assert_eq!(
+        app.send_as(&token, Method::GET, "/api/v1/auth/me", None)
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED
+    );
+
+    // A password change signs the user out everywhere else.
+    let here = app.login("alice", PASSWORD).await.json["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let elsewhere = app.login("alice", PASSWORD).await.json["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let changed = app
+        .send_as(
+            &here,
+            Method::PUT,
+            "/api/v1/me/password",
+            Some(json!({"current_password": PASSWORD, "new_password": "An0ther-Passw0rd!"})),
+        )
+        .await;
+    assert!(changed.status.is_success(), "{}", changed.text);
+    let me = app
+        .send_as(&here, Method::GET, "/api/v1/auth/me", None)
+        .await;
+    assert_eq!(me.status, StatusCode::OK, "this session stays: {}", me.text);
+    let gone = app
+        .send_as(&elsewhere, Method::GET, "/api/v1/auth/me", None)
+        .await;
+    assert_eq!(
+        gone.status,
+        StatusCode::UNAUTHORIZED,
+        "another session ends"
+    );
+
+    // Disabled: signed out; enabled again, still signed out.
+    app.admin(
+        Method::PUT,
+        "/api/v1/users/alice",
+        Some(json!({"enabled": false})),
+    )
+    .await;
+    app.admin(
+        Method::PUT,
+        "/api/v1/users/alice",
+        Some(json!({"enabled": true})),
+    )
+    .await;
+    assert_eq!(
+        app.send_as(&here, Method::GET, "/api/v1/auth/me", None)
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED
+    );
+
+    // A sign-in is audited under the user and their tenant.
+    let entry = wait_for_audit(
+        &app,
+        "/api/v1/audit-log?action=POST%20/api/v1/auth/login",
+        |e| e["status"] == 200 && e["actor"] == "alice",
+    )
+    .await;
+    assert_eq!(entry["actor_kind"], "sign_in", "{entry}");
+    assert_eq!(entry["tenant_id"], app.tenant_a.to_string(), "{entry}");
+
+    app.finish().await;
+}
+
+#[tokio::test]
+async fn a_user_made_again_with_the_same_name_inherits_nothing() {
+    let app = require_app!();
+    let first_id = app.create_user_with_role("bob", "tenant_admin").await;
+
+    // The first Bob's session, and a personal token he made.
+    let session = app.login("bob", PASSWORD).await.json["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let made = app
+        .send_as(
+            &session,
+            Method::POST,
+            "/api/v1/me/api-tokens",
+            Some(json!({"name": "bob-phone"})),
+        )
+        .await;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.text);
+    let personal = made.json["secret"].as_str().unwrap().to_string();
+    assert_eq!(
+        made.json["token"]["created_by"], "bob",
+        "shown by name: {}",
+        made.text
+    );
+    assert_eq!(
+        app.send_as(&personal, Method::GET, "/api/v1/me/profile", None)
+            .await
+            .status,
+        StatusCode::OK
+    );
+
+    // By id, in his tenant only.
+    let by_id = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/users/by-id/{first_id}"),
+            None,
+        )
+        .await;
+    assert_eq!(by_id.json["username"], "bob", "{}", by_id.text);
+    assert_eq!(
+        app.admin_in(
+            app.tenant_b,
+            Method::GET,
+            &format!("/api/v1/users/by-id/{first_id}"),
+            None
+        )
+        .await
+        .status,
+        StatusCode::NOT_FOUND
+    );
+
+    // Bob is deleted, and another Bob is made.
+    app.admin(Method::DELETE, "/api/v1/users/bob", None).await;
+    let second_id = app.create_user_with_role("bob", "tenant_admin").await;
+    assert_ne!(first_id, second_id);
+    assert_eq!(
+        app.send_as(&session, Method::GET, "/api/v1/auth/me", None)
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED,
+        "the first Bob's session is not the second's"
+    );
+    assert_eq!(
+        app.send_as(&personal, Method::GET, "/api/v1/me/profile", None)
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED,
+        "nor is his token"
+    );
+
+    // A username shaped like an id is refused.
+    let refused = app
+        .admin(
+            Method::POST,
+            "/api/v1/users",
+            Some(
+                json!({"username": format!("user-{}", uuid::Uuid::new_v4()), "password": PASSWORD}),
+            ),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.text);
+
+    // A token signed before sessions were rows still works until it
+    // expires: its subject is the username.
+    let legacy = fcp_core::session::SessionKeys::new(
+        fcp_core::session::SessionKey::derived_from_auth_token(ADMIN_TOKEN),
+        vec![],
+    );
+    let now = fcp_core::session::epoch(std::time::SystemTime::now());
+    let old = legacy.encode(&fcp_core::session::SessionClaims {
+        sub: "bob".into(),
+        sid: None,
+        username: None,
+        role: "tenant_admin".into(),
+        tenant_id: app.tenant_a.to_string(),
+        display_name: None,
+        exp: now + 600,
+        iat: now,
+    });
+    let me = app
+        .send_as(&old, Method::GET, "/api/v1/auth/me", None)
+        .await;
+    assert_eq!(me.json["username"], "bob", "{}", me.text);
 
     app.finish().await;
 }

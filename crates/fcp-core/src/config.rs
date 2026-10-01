@@ -23,6 +23,7 @@ fn is_secret_key(key: &str) -> bool {
         "master_key",
         "api_key",
         "jwt",
+        "signing_key",
     ]
     .iter()
     .any(|needle| k.contains(needle))
@@ -804,6 +805,95 @@ pub struct ApiConfig {
     /// phase 2).
     #[serde(default)]
     pub rate_limit: ApiRateLimitConfig,
+
+    /// Sign-in sessions (`docs/IDENTITY_AND_DEVICES.md` phase 1).
+    #[serde(default)]
+    pub session: ApiSessionConfig,
+}
+
+/// `[api.session]`: sign-in sessions. A signed-in browser holds an access
+/// token, refreshed from an HttpOnly cookie until the session ends.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApiSessionConfig {
+    /// The key access tokens are signed with, 32 characters or more. Unset,
+    /// it is derived from `api.auth_token`, as before this setting existed,
+    /// and changing that token signs everyone out.
+    #[serde(default)]
+    pub signing_key: Option<String>,
+    /// Keys a rotation replaced: tokens they signed are still accepted
+    /// until they expire, so a rotation signs nobody out.
+    #[serde(default)]
+    pub previous_signing_keys: Vec<String>,
+    /// How long a session lasts, however often it is refreshed.
+    #[serde(default = "default_session_ttl_secs")]
+    pub ttl_secs: u64,
+    /// How long an access token lasts; the UI refreshes it before then.
+    #[serde(default = "default_session_access_ttl_secs")]
+    pub access_ttl_secs: u64,
+}
+
+fn default_session_ttl_secs() -> u64 {
+    crate::session::DEFAULT_SESSION_TTL.as_secs()
+}
+
+fn default_session_access_ttl_secs() -> u64 {
+    crate::session::DEFAULT_ACCESS_TTL.as_secs()
+}
+
+impl Default for ApiSessionConfig {
+    fn default() -> Self {
+        Self {
+            signing_key: None,
+            previous_signing_keys: Vec::new(),
+            ttl_secs: default_session_ttl_secs(),
+            access_ttl_secs: default_session_access_ttl_secs(),
+        }
+    }
+}
+
+impl ApiSessionConfig {
+    /// The keys, from the configured key or else the static token.
+    pub fn keys(&self, auth_token: Option<&str>) -> Option<crate::session::SessionKeys> {
+        crate::session::SessionKeys::from_config(
+            self.signing_key.as_deref().map(str::trim),
+            &self.previous_signing_keys,
+            auth_token.map(str::trim).filter(|t| !t.is_empty()),
+        )
+    }
+
+    pub fn validate(&self, auth_token: Option<&str>) -> Result<(), String> {
+        if let Some(key) = &self.signing_key {
+            reject_crlf("api.session.signing_key", key)?;
+            if key.trim().len() < 32 {
+                return Err("api.session.signing_key must be 32 characters or more".to_string());
+            }
+            if auth_token.map(str::trim) == Some(key.trim()) {
+                return Err(
+                    "api.session.signing_key must be distinct from api.auth_token".to_string(),
+                );
+            }
+        }
+        for key in &self.previous_signing_keys {
+            reject_crlf("api.session.previous_signing_keys", key)?;
+            if key.trim().len() < 32 {
+                return Err(
+                    "api.session.previous_signing_keys: each key is 32 characters or more"
+                        .to_string(),
+                );
+            }
+        }
+        if !(60..=3600).contains(&self.access_ttl_secs) {
+            return Err("api.session.access_ttl_secs must be between 60 and 3600".to_string());
+        }
+        if self.ttl_secs < self.access_ttl_secs || self.ttl_secs > 30 * 86_400 {
+            return Err(
+                "api.session.ttl_secs must be at least access_ttl_secs and at most 30 days"
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
 }
 
 /// `[api.rate_limit]`: how many requests an API token, and all of a
@@ -857,6 +947,7 @@ impl Default for ApiConfig {
             allow_public_signup: false,
             deployment_mode: crate::permissions::DeploymentMode::default(),
             rate_limit: ApiRateLimitConfig::default(),
+            session: ApiSessionConfig::default(),
         }
     }
 }
@@ -901,6 +992,7 @@ impl ApiConfig {
                 "api.auth_token must be set when api.allow_public_signup = true".to_string(),
             );
         }
+        self.session.validate(self.auth_token.as_deref())?;
         Ok(())
     }
 }

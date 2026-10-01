@@ -5,10 +5,10 @@
 
 use crate::error::ApiError;
 use crate::state::ApiState;
-use crate::v1::auth_session::{extract_claims_from_headers, Claims, Me};
+use crate::v1::auth_session::{Claims, Me};
 use axum::{
     extract::{Multipart, Path, State},
-    http::{HeaderMap, StatusCode},
+    http::StatusCode,
     response::IntoResponse,
     Json,
 };
@@ -191,10 +191,15 @@ pub struct ChangePasswordRequest {
 )]
 pub async fn change_password(
     State(state): State<ApiState>,
-    headers: HeaderMap,
+    Me(claims): Me,
     Json(body): Json<ChangePasswordRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let claims = extract_claims_from_headers(&headers, &state)?;
+    // A password is changed by its owner, signed in: not by a token.
+    if claims.personal {
+        return Err(ApiError::Forbidden(
+            "Sign in to change your password".to_string(),
+        ));
+    }
     let storage = require_storage!(state);
 
     let mut user = load_claims_user(storage, &claims, &state).await?;
@@ -224,10 +229,16 @@ pub async fn change_password(
     user.password_last_reset = Some(SystemTime::now());
     user.updated_at = SystemTime::now();
 
+    let user_id = user.id;
     storage
         .put_user(user)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    // Everywhere else this user is signed in, they are signed out.
+    let keep = claims.sid.as_deref().and_then(|s| s.parse().ok());
+    crate::v1::auth_session::revoke_sessions(&state, &user_id, keep.as_ref(), "password changed")
+        .await;
 
     info!(username = %claims.sub, "User changed own password");
 

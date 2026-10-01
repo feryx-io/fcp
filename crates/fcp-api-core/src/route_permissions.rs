@@ -49,7 +49,6 @@ const DELETE: &str = "DELETE";
 pub const ROUTES: &[(&str, &str, Gate)] = &[
     // The session and self-service (`v1::router`'s user routes).
     (GET, "/auth/me", Open),
-    (POST, "/auth/refresh", Open),
     (GET, "/me/profile", Open),
     (PUT, "/me/profile", Open),
     (GET, "/me/profile/avatar", Open),
@@ -164,6 +163,7 @@ pub const ROUTES: &[(&str, &str, Gate)] = &[
     (GET, "/users", Needs(UserRead)),
     (POST, "/users", Needs(UserCreate)),
     (GET, "/users/:username", Needs(UserRead)),
+    (GET, "/users/by-id/:id", Needs(UserRead)),
     (PUT, "/users/:username", Needs(UserUpdate)),
     (DELETE, "/users/:username", Needs(UserDelete)),
     (PUT, "/users/:username/password", Needs(UserSetPassword)),
