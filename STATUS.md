@@ -1623,6 +1623,28 @@ Phase 8b done (v0.25.306): the developer guide (`docs/DEVELOPER_GUIDE.md`).
 
 The developer surface is complete: all eight phases (v0.25.293–306).
 
+## What is next (chosen 2026-10-01, after the developer surface closed)
+
+**Identity and devices** — design in `docs/IDENTITY_AND_DEVICES.md`
+(v0.25.307), the fourth recommendation of the 2026-09-25 feature review:
+how people and phones arrive. Three surveys of the code found:
+- Sign-in is a password and a hand-made JWT: no OIDC, SAML or MFA; the
+  session's subject is a username, its key derived from the platform's
+  static token, and nothing server-side to revoke; a tenant is guessed
+  from the username, so a name in two tenants cannot sign in from the UI.
+- A user is a row keyed by username that owns nothing the database knows
+  about: deleting it orphans devices, bindings, mailboxes and settings,
+  and a re-created username revives the old one's sessions and tokens;
+  disabling is two flags SIP reads differently; there are no groups.
+- Provisioning wants headers no phone can send, knows no vendor file
+  names, records nothing, and nothing helps a phone find it; there is no
+  firmware handling at all.
+
+Nine phases: users by id and sessions as rows; login domains, optional
+passwords and TOTP; OIDC; SAML; a user's lifecycle with groups; SCIM 2.0;
+provisioning phones can use; zero-touch redirection; firmware. Twelve
+questions are open (§5).
+
 ## Historical documents
 
 Superseded status docs live in [`docs/archive/`](docs/archive/README.md) — they describe
