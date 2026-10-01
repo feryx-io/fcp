@@ -16,6 +16,7 @@ from .balance_transaction_kind import BalanceTransactionKind
 from .balance_transaction_response import BalanceTransactionResponse
 from .billing_summary_response import BillingSummaryResponse
 from .bundle_response import BundleResponse
+from .call_control_response import CallControlResponse
 from .call_info import CallInfo
 from .caller_id_policy import CallerIdPolicy
 from .calling_response import CallingResponse
@@ -120,6 +121,7 @@ from .flow_trace_response import FlowTraceResponse
 from .grantable_permission import GrantablePermission
 from .greeting_response import GreetingResponse
 from .greeting_upload import GreetingUpload
+from .hold_request import HoldRequest
 from .hold_response import HoldResponse
 from .hold_response_held_type_0 import HoldResponseHeldType0
 from .holiday import Holiday
@@ -284,6 +286,7 @@ from .page_webhook_response import PageWebhookResponse
 from .page_webhook_response_data_item import PageWebhookResponseDataItem
 from .phone_number_response import PhoneNumberResponse
 from .place_hold_request import PlaceHoldRequest
+from .play_request import PlayRequest
 from .policy_response import PolicyResponse
 from .presence_auth_policy import PresenceAuthPolicy
 from .presence_auth_policy_event_allow import PresenceAuthPolicyEventAllow
@@ -304,6 +307,7 @@ from .rate_response import RateResponse
 from .readiness_response import ReadinessResponse
 from .readiness_summary import ReadinessSummary
 from .recording_response import RecordingResponse
+from .redirect_request import RedirectRequest
 from .reencrypt_report import ReencryptReport
 from .registration_response import RegistrationResponse
 from .release_hold_request import ReleaseHoldRequest
@@ -312,6 +316,7 @@ from .retention_run_response import RetentionRunResponse
 from .rotate_api_token_request import RotateApiTokenRequest
 from .rotate_webhook_secret_request import RotateWebhookSecretRequest
 from .routing_rule_response import RoutingRuleResponse
+from .say_request import SayRequest
 from .schedule_request import ScheduleRequest
 from .schedule_response import ScheduleResponse
 from .seal_request import SealRequest
@@ -348,6 +353,7 @@ from .tenant_calling import TenantCalling
 from .tenant_response import TenantResponse
 from .test_webhook_request import TestWebhookRequest
 from .time_window import TimeWindow
+from .transfer_request import TransferRequest
 from .trunk_node_view import TrunkNodeView
 from .trunk_response import TrunkResponse
 from .trunk_stats import TrunkStats
@@ -426,6 +432,7 @@ __all__ = (
     "BillingSummaryResponse",
     "BTreeMap",
     "BundleResponse",
+    "CallControlResponse",
     "CallerIdPolicy",
     "CallInfo",
     "CallingResponse",
@@ -530,6 +537,7 @@ __all__ = (
     "GrantablePermission",
     "GreetingResponse",
     "GreetingUpload",
+    "HoldRequest",
     "HoldResponse",
     "HoldResponseHeldType0",
     "Holiday",
@@ -694,6 +702,7 @@ __all__ = (
     "PageWebhookResponseDataItem",
     "PhoneNumberResponse",
     "PlaceHoldRequest",
+    "PlayRequest",
     "PolicyResponse",
     "PresenceAuthPolicy",
     "PresenceAuthPolicyEventAllow",
@@ -714,6 +723,7 @@ __all__ = (
     "ReadinessResponse",
     "ReadinessSummary",
     "RecordingResponse",
+    "RedirectRequest",
     "ReencryptReport",
     "RegistrationResponse",
     "ReleaseHoldRequest",
@@ -722,6 +732,7 @@ __all__ = (
     "RotateApiTokenRequest",
     "RotateWebhookSecretRequest",
     "RoutingRuleResponse",
+    "SayRequest",
     "ScheduleRequest",
     "ScheduleResponse",
     "SealRequest",
@@ -758,6 +769,7 @@ __all__ = (
     "TenantResponse",
     "TestWebhookRequest",
     "TimeWindow",
+    "TransferRequest",
     "TrunkNodeView",
     "TrunkResponse",
     "TrunkStats",

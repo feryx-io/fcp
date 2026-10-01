@@ -3,6 +3,7 @@
 pub mod api_tokens;
 pub mod auth_session;
 pub mod billing;
+pub mod call_control;
 pub mod calling;
 pub mod cdrs;
 pub mod classes_of_service;
@@ -359,6 +360,14 @@ pub fn router() -> Router<ApiState> {
             "/calls/:call_id/recording/stop",
             post(media::stop_recording),
         )
+        // Live call control (`docs/DEVELOPER_SURFACE.md` phase 8)
+        .route("/calls/:call_id/hold", post(call_control::hold))
+        .route("/calls/:call_id/resume", post(call_control::resume))
+        .route("/calls/:call_id/transfer", post(call_control::transfer))
+        .route("/calls/:call_id/redirect", post(call_control::redirect))
+        .route("/calls/:call_id/play", post(call_control::play))
+        .route("/calls/:call_id/say", post(call_control::say))
+        .route("/calls/:call_id/hangup", post(call_control::hangup))
         // A supervisor on a call (`docs/ENTERPRISE_CALLING.md` §3.11)
         .route("/calls/:call_id/monitor", post(supervision::monitor))
         .route("/calls/:call_id/whisper", post(supervision::whisper))

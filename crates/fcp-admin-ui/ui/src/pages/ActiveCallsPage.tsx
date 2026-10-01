@@ -53,7 +53,7 @@ export function ActiveCallsPage() {
   })
 
   const holdMutation = useMutation({
-    mutationFn: calls.hold,
+    mutationFn: (callId: string) => calls.hold(callId),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['calls'] }),
   })
 
@@ -155,8 +155,12 @@ export function ActiveCallsPage() {
       header: 'Actions',
       cell: ({ row }) => {
         const call = row.original
-        const isActive = call.state === 'active' || call.state === 'confirmed'
-        const isHeld = call.state === 'held'
+        // Answered, as the events server ("answered") or the node
+        // ("Established") says it. Neither reports a hold, so an answered
+        // call offers both Hold and Resume; a resume of a call not held
+        // does nothing.
+        const isActive = ['answered', 'established'].includes(call.state.toLowerCase())
+        const isHeld = isActive
 
         return (
           <div className="flex items-center gap-1">
@@ -164,7 +168,7 @@ export function ActiveCallsPage() {
               <Button
                 variant="ghost"
                 size="icon"
-                title="Hold"
+                title="Hold the caller"
                 onClick={() => holdMutation.mutate(call.id)}
               >
                 <Pause className="h-4 w-4" />

@@ -1605,6 +1605,16 @@ Phase 7b done (v0.25.304): the flow fixes (`docs/FLOWS.md`).
   started on.
 - `webhook_url`, never read, is removed.
 
+Phase 8a done (v0.25.305): live call control (`docs/CALL_CONTROL.md`).
+- `POST /api/v1/calls/{id}/{hold,resume,transfer,redirect,play,say,hangup}`
+  under `call_control`, put to the node holding the call.
+- Hold plays the hold music to the held party and mutes them; transfer
+  dials the target through the node and drops the other party; redirect
+  moves a party into a flow; play takes a tenant prompt, say the node's
+  TTS; hangup ends both legs.
+- The admin UI's Hold, Resume, Transfer and hang-up buttons work, and show.
+- 8b (the developer guide) is next.
+
 ## Historical documents
 
 Superseded status docs live in [`docs/archive/`](docs/archive/README.md) — they describe

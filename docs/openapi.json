@@ -5040,6 +5040,343 @@
         }
       }
     },
+    "/api/v1/calls/{call_id}/hold": {
+      "post": {
+        "tags": [
+          "call-control"
+        ],
+        "summary": "POST /api/v1/calls/:call_id/hold",
+        "operationId": "call_control_hold",
+        "parameters": [
+          {
+            "name": "call_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HoldRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Held",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CallControlResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/calls/{call_id}/resume": {
+      "post": {
+        "tags": [
+          "call-control"
+        ],
+        "summary": "POST /api/v1/calls/:call_id/resume",
+        "operationId": "call_control_resume",
+        "parameters": [
+          {
+            "name": "call_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Resumed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CallControlResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/calls/{call_id}/transfer": {
+      "post": {
+        "tags": [
+          "call-control"
+        ],
+        "summary": "POST /api/v1/calls/:call_id/transfer",
+        "operationId": "call_control_transfer",
+        "parameters": [
+          {
+            "name": "call_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TransferRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "The target is being dialed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CallControlResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/calls/{call_id}/redirect": {
+      "post": {
+        "tags": [
+          "call-control"
+        ],
+        "summary": "POST /api/v1/calls/:call_id/redirect",
+        "operationId": "call_control_redirect",
+        "parameters": [
+          {
+            "name": "call_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RedirectRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "The party is being moved into the flow",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CallControlResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/calls/{call_id}/play": {
+      "post": {
+        "tags": [
+          "call-control"
+        ],
+        "summary": "POST /api/v1/calls/:call_id/play",
+        "operationId": "call_control_play",
+        "parameters": [
+          {
+            "name": "call_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlayRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Playing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CallControlResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/calls/{call_id}/say": {
+      "post": {
+        "tags": [
+          "call-control"
+        ],
+        "summary": "POST /api/v1/calls/:call_id/say",
+        "operationId": "call_control_say",
+        "parameters": [
+          {
+            "name": "call_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SayRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Playing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CallControlResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/calls/{call_id}/hangup": {
+      "post": {
+        "tags": [
+          "call-control"
+        ],
+        "summary": "POST /api/v1/calls/:call_id/hangup — the node holding the call ends\nit, wherever this API runs.",
+        "operationId": "call_control_hangup",
+        "parameters": [
+          {
+            "name": "call_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CallControlResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/calls/{call_id}/monitor": {
       "post": {
         "tags": [
@@ -14929,6 +15266,49 @@
           }
         }
       },
+      "CallControlResponse": {
+        "type": "object",
+        "description": "What the node answered a control with.",
+        "required": [
+          "call_id",
+          "status"
+        ],
+        "properties": {
+          "call_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "description": "`held`, `resumed`, `transferring`, `redirecting`, `playing` or\n`ended`."
+          },
+          "party": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Who was held, transferred or redirected."
+          },
+          "target": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "flow_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "playback_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A playback, for play and say."
+          }
+        }
+      },
       "CallInfo": {
         "type": "object",
         "required": [
@@ -19422,6 +19802,19 @@
             "type": "string",
             "format": "binary",
             "description": "The recording: a WAV file."
+          }
+        }
+      },
+      "HoldRequest": {
+        "type": "object",
+        "description": "Who is put on hold.",
+        "properties": {
+          "party": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`caller` (the default) or `callee`: they hear the hold music, and\nthe other party stops hearing them."
           }
         }
       },
@@ -27092,6 +27485,26 @@
           }
         }
       },
+      "PlayRequest": {
+        "type": "object",
+        "description": "A prompt played into the call.",
+        "required": [
+          "prompt_id"
+        ],
+        "properties": {
+          "prompt_id": {
+            "type": "string",
+            "description": "One of the tenant's prompts, with audio."
+          },
+          "to": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Who hears it: `both` (the default), `caller` or `callee`."
+          }
+        }
+      },
       "PolicyResponse": {
         "type": "object",
         "required": [
@@ -28058,6 +28471,26 @@
           }
         }
       },
+      "RedirectRequest": {
+        "type": "object",
+        "description": "The flow a party is moved into.",
+        "required": [
+          "flow_id"
+        ],
+        "properties": {
+          "flow_id": {
+            "type": "string",
+            "description": "One of the tenant's flows, enabled."
+          },
+          "party": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Who is moved: `caller` (the default) or `callee`. The other party is\ndropped."
+          }
+        }
+      },
       "ReencryptReport": {
         "type": "object",
         "description": "Outcome of a bulk re-seal pass.",
@@ -28385,6 +28818,37 @@
           "updated_at": {
             "type": "string",
             "format": "date-time"
+          }
+        }
+      },
+      "SayRequest": {
+        "type": "object",
+        "description": "Text spoken into the call by the node's text-to-speech.",
+        "required": [
+          "text"
+        ],
+        "properties": {
+          "text": {
+            "type": "string"
+          },
+          "language": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "voice": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "to": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Who hears it: `both` (the default), `caller` or `callee`."
           }
         }
       },
@@ -29513,6 +29977,26 @@
               "minimum": 0
             },
             "description": "Days of week (0=Sun, 1=Mon, ..., 6=Sat). Empty = all days."
+          }
+        }
+      },
+      "TransferRequest": {
+        "type": "object",
+        "description": "Where a party is transferred.",
+        "required": [
+          "target"
+        ],
+        "properties": {
+          "target": {
+            "type": "string",
+            "description": "A user, an extension or a number, routed as a call to it would be."
+          },
+          "party": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Who is transferred: `caller` (the default) or `callee`. The other\nparty is dropped once the target answers."
           }
         }
       },

@@ -32,7 +32,28 @@ async fn forward(
     call_id: &str,
     request: SupervisionRequest,
 ) -> Result<Response, ApiError> {
-    crate::auth::check_permission(identity, Permission::CallSupervise, state.deployment_mode)?;
+    forward_to_node(
+        state,
+        identity,
+        Permission::CallSupervise,
+        tenant,
+        call_id,
+        request,
+    )
+    .await
+}
+
+/// Put `request` to the node holding the call, as `identity` holding
+/// `permission`, and answer what the node answered.
+pub(crate) async fn forward_to_node(
+    state: &ApiState,
+    identity: &AuthIdentity,
+    permission: Permission,
+    tenant: fcp_core::TenantId,
+    call_id: &str,
+    request: SupervisionRequest,
+) -> Result<Response, ApiError> {
+    crate::auth::check_permission(identity, permission, state.deployment_mode)?;
     let supervisor = state.call_supervisor.as_ref().ok_or_else(|| {
         ApiError::ServiceUnavailable("no call manager can be reached".to_string())
     })?;

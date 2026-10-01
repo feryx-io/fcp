@@ -14,6 +14,7 @@ pub mod auth;
 pub mod claims;
 pub mod class_of_service;
 pub use fcp_b2bua_core::body;
+pub mod call_control;
 pub mod conference;
 pub mod conference_migration;
 pub mod config;

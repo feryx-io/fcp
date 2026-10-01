@@ -112,6 +112,10 @@ pub(crate) struct TransferRun {
     pub headers: Vec<(String, String)>,
     /// Who the target sees calling: the transferred party.
     pub caller: Option<(Option<String>, sip_core::SipUri)>,
+    /// Whether the referrer is told the outcome by NOTIFY: it asked by
+    /// REFER. A transfer the API asks for has a referrer that asked for
+    /// nothing, and is only dropped.
+    pub notify_referrer: bool,
 }
 
 /// Why a transfer did not happen: what the referrer is told, and why.
@@ -438,6 +442,9 @@ impl TransferRun {
 
     /// The REFER's implicit subscription, reported once (RFC 3515 §2.4.5).
     async fn report(&self, code: u16, reason: &str) {
+        if !self.notify_referrer {
+            return;
+        }
         let Some(mut dialog) = self.referrer_dialog.clone() else {
             return;
         };

@@ -48,6 +48,9 @@ pub struct AppState {
     pub call_recorder: Arc<fcp_sip::recording::CallRecorder>,
     /// Calls with a supervisor (`docs/ENTERPRISE_CALLING.md` §3.11).
     pub supervisions: Option<Arc<fcp_sip::supervision::Supervisions>>,
+    /// What live call control acts through (`docs/DEVELOPER_SURFACE.md`
+    /// phase 8): hold, transfer, redirect, play, hang up.
+    pub sip_handler: Option<Arc<fcp_sip::handler::SipMessageHandler>>,
     /// This node's `[[trunks]]`, which outbound and emergency routing use.
     pub trunks: Vec<fcp_sbc_core::TrunkConfig>,
     pub trunk_health: Option<Arc<fcp_sbc_core::TrunkHealthMonitor>>,
@@ -249,6 +252,8 @@ pub async fn run_http_server(bind_addr: SocketAddr, state: Arc<AppState>) -> any
             "/queues/:from/transfer/:call_id",
             post(transfer_call_handler),
         )
+        // Live call control (`docs/DEVELOPER_SURFACE.md` phase 8)
+        .merge(crate::call_control::routes())
         // Supervisor endpoints
         .route("/calls/:id/monitor", post(monitor_call_handler))
         .route("/calls/:id/whisper", post(whisper_call_handler))
@@ -1829,7 +1834,7 @@ struct SupervisorQuery {
 }
 
 /// The call `id` of `tenant` (the node's default tenant when unnamed).
-fn scoped_call(
+pub(crate) fn scoped_call(
     state: &AppState,
     id: &str,
     tenant: Option<TenantId>,
