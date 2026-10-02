@@ -334,4 +334,24 @@ their tenant, how they signed in, when it ends and whether it was revoked
   names a username and lasts 24 hours. It is honoured until it expires.
 - **Users by id.** `GET /api/v1/users/by-id/{id}` reads the user a token,
   a session or an event names.
+- **Signing in by email.** A tenant's login domains (`login_domains`, set
+  by a platform admin, unique across tenants) make `jane@acme.com` that
+  tenant's.
+  - Login takes the email, matched as a username and then by the users'
+    email in that tenant. An email several users share is refused like a
+    wrong password.
+  - `POST /auth/discover {login}` answers the tenant an email's domain
+    belongs to and the ways in (`methods`). It never says whether a user
+    exists; the login page shows "Signing in to <tenant>".
+- **Users without a password.** A user made without `password` has none:
+  a password never signs them in, and their SIP password is generated
+  (`digest_password`, `sip_provisioning_password`).
+- **A tenant's password policy.** `sign_in.password_login` is `allowed`,
+  `admins_only` or `disabled`; a platform super admin is never shut out.
+  - It is checked only after the password is right, so a stranger learns
+    nothing from it.
+  - Refused at sign-in as 403 with `user.sign_in_failed`
+    (`password_not_allowed`).
+  - The API takes nothing but `allowed` until the tenant has an identity
+    provider (phase 3) to sign in with instead.
 

@@ -1,6 +1,7 @@
 import type { components } from '@/api/schema'
 import { apiClient } from './client'
 import type {
+  DiscoverResponse,
   User,
   CreateUserRequest,
   UpdateUserRequest,
@@ -119,6 +120,8 @@ import type {
 
 // Auth
 export const auth = {
+  /** Where a login signs in: the tenant its email domain is, and the ways in. */
+  discover: (login: string) => apiClient.post<DiscoverResponse>('/auth/discover', { login }),
   login: (data: LoginRequest) => apiClient.post<LoginResponse>('/auth/login', data),
   logout: () => apiClient.post<void>('/auth/logout'),
   refresh: () => apiClient.post<LoginResponse>('/auth/refresh'),

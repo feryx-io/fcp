@@ -28,7 +28,9 @@ class CreateUserRequest:
 
         Attributes:
             username (str):
-            password (str):
+            password (None | str | Unset): The web password. Left out, the user has none and signs in only
+                through the tenant's identity provider (`docs/IDENTITY_AND_DEVICES.md`
+                phase 2); their SIP password is then generated.
             sip_provisioning_password (None | str | Unset): Optional SIP password retained for device auto-provisioning
                 templates.
 
@@ -58,7 +60,7 @@ class CreateUserRequest:
      """
 
     username: str
-    password: str
+    password: None | str | Unset = UNSET
     sip_provisioning_password: None | str | Unset = UNSET
     display_name: None | str | Unset = UNSET
     tenant_id: str | Unset = UNSET
@@ -90,7 +92,11 @@ class CreateUserRequest:
         from ..models.media_preferences import MediaPreferences # noqa: PLC0415
         username = self.username
 
-        password = self.password
+        password: None | str | Unset
+        if isinstance(self.password, Unset):
+            password = UNSET
+        else:
+            password = self.password
 
         sip_provisioning_password: None | str | Unset
         if isinstance(self.sip_provisioning_password, Unset):
@@ -213,8 +219,9 @@ class CreateUserRequest:
         field_dict.update(self.additional_properties)
         field_dict.update({
             "username": username,
-            "password": password,
         })
+        if password is not UNSET:
+            field_dict["password"] = password
         if sip_provisioning_password is not UNSET:
             field_dict["sip_provisioning_password"] = sip_provisioning_password
         if display_name is not UNSET:
@@ -268,7 +275,15 @@ class CreateUserRequest:
         d = dict(src_dict)
         username = d.pop("username")
 
-        password = d.pop("password")
+        def _parse_password(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        password = _parse_password(d.pop("password", UNSET))
+
 
         def _parse_sip_provisioning_password(data: object) -> None | str | Unset:
             if data is None:

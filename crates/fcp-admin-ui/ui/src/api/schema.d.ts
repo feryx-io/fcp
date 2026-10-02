@@ -4,6 +4,27 @@
  */
 
 export interface paths {
+    "/api/v1/auth/discover": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /api/v1/auth/discover — where a login signs in: the tenant its
+         *     email domain belongs to, and the ways in. It never says whether a user
+         *     exists.
+         */
+        post: operations["auth_session_discover"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/login": {
         parameters: {
             query?: never;
@@ -5144,6 +5165,9 @@ export interface components {
              */
             platform_trunk_fallback?: boolean | null;
             calling?: components["schemas"]["TenantCalling"] | null;
+            /** @description Email domains whose people are this tenant's. */
+            login_domains?: string[];
+            sign_in?: components["schemas"]["TenantSignIn"] | null;
         };
         /** @description Credit or adjustment request. */
         CreateTransactionRequest: {
@@ -5220,7 +5244,12 @@ export interface components {
         /** @description Create user request. */
         CreateUserRequest: {
             username: string;
-            password: string;
+            /**
+             * @description The web password. Left out, the user has none and signs in only
+             *     through the tenant's identity provider (`docs/IDENTITY_AND_DEVICES.md`
+             *     phase 2); their SIP password is then generated.
+             */
+            password?: string | null;
             /**
              * @description Optional SIP password retained for device auto-provisioning templates.
              *
@@ -5411,6 +5440,19 @@ export interface components {
             /** Format: int32 */
             remote_cseq: number;
             route_set: string[];
+        };
+        /** @description What a login may sign in with. */
+        DiscoverRequest: {
+            /** @description A username, or an email address. */
+            login: string;
+        };
+        /** @description Where a login signs in, and how. */
+        DiscoverResponse: {
+            /** @description The tenant the login's email domain belongs to, when it is one. */
+            tenant_id?: string | null;
+            tenant_name?: string | null;
+            /** @description The ways in: `password` (later the tenant's identity providers). */
+            methods: string[];
         };
         E911AddressResponse: components["schemas"]["CivicElements"] & {
             address1: string;
@@ -7758,6 +7800,13 @@ export interface components {
                  *     (`docs/ENTERPRISE_CALLING.md` §3.7).
                  */
                 calling: components["schemas"]["TenantCalling"];
+                /**
+                 * @description Email domains whose people are this tenant's
+                 *     (`docs/IDENTITY_AND_DEVICES.md` phase 2).
+                 */
+                login_domains: string[];
+                /** @description How the tenant's people may sign in. */
+                sign_in: components["schemas"]["TenantSignIn"];
             }[];
             /** @description The cursor for the next page; null on the last. */
             next_cursor?: string | null;
@@ -8064,6 +8113,11 @@ export interface components {
              */
             total?: number | null;
         };
+        /**
+         * @description Who may sign in with a password.
+         * @enum {string}
+         */
+        PasswordLogin: "allowed" | "admins_only" | "disabled";
         /** @description Phone number response. */
         PhoneNumberResponse: {
             id: string;
@@ -8904,6 +8958,18 @@ export interface components {
              *     (`docs/ENTERPRISE_CALLING.md` §3.7).
              */
             calling: components["schemas"]["TenantCalling"];
+            /**
+             * @description Email domains whose people are this tenant's
+             *     (`docs/IDENTITY_AND_DEVICES.md` phase 2).
+             */
+            login_domains: string[];
+            /** @description How the tenant's people may sign in. */
+            sign_in: components["schemas"]["TenantSignIn"];
+        };
+        /** @description How a tenant's people may sign in (`docs/IDENTITY_AND_DEVICES.md` §2). */
+        TenantSignIn: {
+            /** @description Whether a password signs in. */
+            password_login?: components["schemas"]["PasswordLogin"];
         };
         /** @description A test delivery. */
         TestWebhookRequest: {
@@ -9540,6 +9606,12 @@ export interface components {
             /** @description Whether the platform's trunks may carry this tenant's calls. */
             platform_trunk_fallback?: boolean | null;
             calling?: components["schemas"]["TenantCalling"] | null;
+            /**
+             * @description Replaces the tenant's login domains whole. A platform admin's to
+             *     set: a domain decides where a person's sign-in goes.
+             */
+            login_domains?: string[] | null;
+            sign_in?: components["schemas"]["TenantSignIn"] | null;
         };
         /** @description Update trunk request. */
         UpdateTrunkRequest: {
@@ -9981,6 +10053,39 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    auth_session_discover: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DiscoverRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DiscoverResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     auth_session_login: {
         parameters: {
             query?: never;

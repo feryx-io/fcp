@@ -940,6 +940,33 @@ impl CredentialStore for PostgresStorage {
         Ok(users)
     }
 
+    async fn find_users_by_email_in_tenant(
+        &self,
+        email: &str,
+        tenant_id: &TenantId,
+    ) -> Result<Vec<User>> {
+        let rows = sqlx::query(
+            "SELECT id, username, password_hash, digest_password, sip_ha1_hash, sip_provisioning_password, display_name, tenant_id,
+                    role, department_id, enabled, created_at, updated_at, media_preferences,
+                    email, password_last_reset, phone_number, mobile_number, pin,
+                    extension, department, job_title, location, location_id, language, timezone,
+                    account_status, last_login, emergency_contact_json,
+                    primary_phone_number_id, voicemail_box_id, profile_picture,
+                    failed_login_attempts, account_locked_until
+             FROM users
+             WHERE tenant_id = $1 AND LOWER(email) = LOWER($2)",
+        )
+        .bind(tenant_id.to_string())
+        .bind(email.trim())
+        .fetch_all(self.reads())
+        .await?;
+        let users = rows
+            .into_iter()
+            .filter_map(|row| row_to_user(row).ok())
+            .collect();
+        self.open_users(users).await
+    }
+
     async fn get_user_by_id(&self, user_id: &fcp_core::UserId) -> Result<Option<User>> {
         let row = sqlx::query(
             "SELECT id, username, password_hash, digest_password, sip_ha1_hash, sip_provisioning_password, display_name, tenant_id,
@@ -1333,7 +1360,7 @@ impl RegistrationStore for PostgresStorage {
 const TENANT_SELECT_COLS: &str = "id, name, description, status, contact_email, contact_phone,
     max_users, max_phone_numbers, max_concurrent_calls, billing_id,
     created_at, updated_at, trial_expires_at, metadata, sip_domains,
-    platform_trunk_fallback, calling_json";
+    platform_trunk_fallback, calling_json, login_domains, sign_in_json";
 
 #[async_trait]
 impl TenantStore for PostgresStorage {
@@ -1393,6 +1420,21 @@ impl TenantStore for PostgresStorage {
         }
     }
 
+    async fn get_tenant_by_login_domain(&self, domain: &str) -> Result<Option<Tenant>> {
+        let needle = domain.trim().to_ascii_lowercase();
+        if needle.is_empty() {
+            return Ok(None);
+        }
+        let row = sqlx::query(&format!(
+            "SELECT {} FROM tenants WHERE $1 = ANY(login_domains) LIMIT 1",
+            TENANT_SELECT_COLS
+        ))
+        .bind(&needle)
+        .fetch_optional(self.reads())
+        .await?;
+        row.map(row_to_tenant).transpose()
+    }
+
     async fn list_tenants(&self) -> Result<Vec<Tenant>> {
         let rows = sqlx::query(&format!(
             "SELECT {} FROM tenants ORDER BY name",
@@ -1427,15 +1469,21 @@ impl TenantStore for PostgresStorage {
             .map(|d| d.trim().to_ascii_lowercase())
             .filter(|d| !d.is_empty())
             .collect();
+        let login_domains: Vec<String> = tenant
+            .login_domains
+            .iter()
+            .map(|d| d.trim().to_ascii_lowercase())
+            .filter(|d| !d.is_empty())
+            .collect();
 
         sqlx::query(
             "INSERT INTO tenants (
                 id, name, description, status, contact_email, contact_phone,
                 max_users, max_phone_numbers, max_concurrent_calls, billing_id,
                 created_at, updated_at, trial_expires_at, metadata, sip_domains,
-                platform_trunk_fallback, data, calling_json
+                platform_trunk_fallback, data, calling_json, login_domains, sign_in_json
              )
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, '{}'::jsonb, $17)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, '{}'::jsonb, $17, $18, $19)
              ON CONFLICT(id) DO UPDATE SET
                  name = EXCLUDED.name,
                  description = EXCLUDED.description,
@@ -1451,7 +1499,9 @@ impl TenantStore for PostgresStorage {
                  metadata = EXCLUDED.metadata,
                  sip_domains = EXCLUDED.sip_domains,
                  platform_trunk_fallback = EXCLUDED.platform_trunk_fallback,
-                 calling_json = EXCLUDED.calling_json",
+                 calling_json = EXCLUDED.calling_json,
+                 login_domains = EXCLUDED.login_domains,
+                 sign_in_json = EXCLUDED.sign_in_json",
         )
         .bind(&id)
         .bind(&tenant.name)
@@ -1470,6 +1520,8 @@ impl TenantStore for PostgresStorage {
         .bind(&sip_domains)
         .bind(tenant.platform_trunk_fallback)
         .bind(serde_json::to_value(&tenant.calling)?)
+        .bind(&login_domains)
+        .bind(serde_json::to_value(&tenant.sign_in)?)
         .execute(self.writes())
         .await?;
 
@@ -1532,6 +1584,10 @@ fn row_to_tenant(row: sqlx::postgres::PgRow) -> Result<Tenant> {
         // (`docs/TENANT_TRUNKS.md` §5).
         platform_trunk_fallback: row.get("platform_trunk_fallback"),
         calling: serde_json::from_value(row.get("calling_json")).context("a tenant's calling")?,
+        login_domains: row
+            .try_get::<Vec<String>, _>("login_domains")
+            .unwrap_or_default(),
+        sign_in: serde_json::from_value(row.get("sign_in_json")).context("a tenant's sign-in")?,
     })
 }
 

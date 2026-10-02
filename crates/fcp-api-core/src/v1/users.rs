@@ -110,7 +110,11 @@ impl From<User> for UserResponse {
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct CreateUserRequest {
     pub username: String,
-    pub password: String,
+    /// The web password. Left out, the user has none and signs in only
+    /// through the tenant's identity provider (`docs/IDENTITY_AND_DEVICES.md`
+    /// phase 2); their SIP password is then generated.
+    #[serde(default)]
+    pub password: Option<String>,
     /// Optional SIP password retained for device auto-provisioning templates.
     ///
     /// When set, this becomes the user's SIP digest password and is exposed by
@@ -370,18 +374,33 @@ pub async fn create_user(
         ));
     }
     validation::validate_display_name(&req.display_name)?;
-    validation::reject_crlf("password", &req.password)?;
+    if let Some(ref web_password) = req.password {
+        validation::reject_crlf("password", web_password)?;
+    }
     if let Some(ref sip_password) = req.sip_provisioning_password {
         validation::reject_crlf("sip_provisioning_password", sip_password)?;
     }
 
-    // Always hash the password first (constant-time operation regardless of user existence)
+    // Always hash a password first (constant-time operation regardless of user existence)
     // This prevents timing attacks that could reveal which usernames exist
-    let password_hash = password::hash_password(&req.password)
-        .map_err(|e| ApiError::BadRequest(format!("Invalid password: {}", e)))?;
+    let password_hash = match &req.password {
+        Some(web_password) => password::hash_password(web_password)
+            .map_err(|e| ApiError::BadRequest(format!("Invalid password: {}", e)))?,
+        // No web password: nothing a password can match.
+        None => {
+            let _ = password::hash_password(&generated_sip_password());
+            String::new()
+        }
+    };
+    // A user without a web password still has a phone: a SIP password of
+    // their own, generated, as a separate digest password.
+    let sip_password = req
+        .sip_provisioning_password
+        .clone()
+        .or_else(|| req.password.is_none().then(generated_sip_password));
 
     let (digest_password_hash, sip_ha1_hash, sip_provisioning_password) =
-        if let Some(ref sip_password) = req.sip_provisioning_password {
+        if let Some(ref sip_password) = sip_password {
             let digest_hash = password::hash_password(sip_password).map_err(|e| {
                 ApiError::BadRequest(format!("Invalid SIP provisioning password: {}", e))
             })?;
@@ -393,7 +412,11 @@ pub async fn create_user(
         } else {
             (
                 None,
-                password::compute_ha1(&req.username, &state.realm, &req.password),
+                password::compute_ha1(
+                    &req.username,
+                    &state.realm,
+                    req.password.as_deref().unwrap_or_default(),
+                ),
                 None,
             )
         };
@@ -1074,4 +1097,17 @@ pub async fn delete_user(
     );
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// A SIP password for a user who has no web password to derive one from:
+/// 24 random bytes, with the classes the password rules ask for.
+fn generated_sip_password() -> String {
+    use base64::Engine;
+    use rand::RngCore;
+    let mut bytes = [0u8; 24];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    format!(
+        "Aa1-{}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+    )
 }

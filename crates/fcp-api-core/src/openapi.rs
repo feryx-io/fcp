@@ -25,7 +25,7 @@ use utoipa::{Modify, OpenApi};
     modifiers(&BearerAuth, &EventWebhooks),
     security(("bearer" = [])),
     paths(
-        crate::v1::auth_session::login,
+        crate::v1::auth_session::discover,        crate::v1::auth_session::login,
         crate::v1::auth_session::logout,
         crate::v1::auth_session::change_expired_password,
         crate::v1::provisioning::auto_provision,
@@ -511,6 +511,7 @@ mod tests {
         }
         // The routes outside the bearer layer.
         for (method, path) in [
+            ("POST", "/auth/discover"),
             ("POST", "/auth/login"),
             ("POST", "/auth/refresh"),
             ("POST", "/auth/logout"),

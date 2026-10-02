@@ -161,7 +161,10 @@ pub use crate::storage::{
     UsageAggregation, User, UserFileEntry, WebhookDeliveryLog, WebhookEndpoint, WebhookStore,
 };
 pub use crate::sync::{JournalEntry, SyncOp, SyncStore, SYNC_TABLES};
-pub use crate::tenant::{is_host_literal, Tenant, TenantCalling, TenantStatus};
+pub use crate::tenant::{
+    is_host_literal, login_domain, normalize_login_domain, PasswordLogin, Tenant, TenantCalling,
+    TenantSignIn, TenantStatus,
+};
 pub use crate::transport::{
     ConnectionId, ConnectionMetadata, ConnectionState, Transport, TransportMessage,
     TransportReceiver, TransportType,

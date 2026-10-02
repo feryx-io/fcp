@@ -14,6 +14,7 @@ import datetime
 
 if TYPE_CHECKING:
   from ..models.tenant_calling import TenantCalling
+  from ..models.tenant_sign_in import TenantSignIn
 
 
 
@@ -43,6 +44,9 @@ class UpdateTenantRequest:
                 leave the list alone; use `Some(vec![])` to clear it.
             platform_trunk_fallback (bool | None | Unset): Whether the platform's trunks may carry this tenant's calls.
             calling (None | TenantCalling | Unset):
+            login_domains (list[str] | None | Unset): Replaces the tenant's login domains whole. A platform admin's to
+                set: a domain decides where a person's sign-in goes.
+            sign_in (None | TenantSignIn | Unset):
      """
 
     name: None | str | Unset = UNSET
@@ -59,6 +63,8 @@ class UpdateTenantRequest:
     sip_domains: list[str] | None | Unset = UNSET
     platform_trunk_fallback: bool | None | Unset = UNSET
     calling: None | TenantCalling | Unset = UNSET
+    login_domains: list[str] | None | Unset = UNSET
+    sign_in: None | TenantSignIn | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -67,6 +73,7 @@ class UpdateTenantRequest:
 
     def to_dict(self) -> dict[str, Any]:
         from ..models.tenant_calling import TenantCalling # noqa: PLC0415
+        from ..models.tenant_sign_in import TenantSignIn # noqa: PLC0415
         name: None | str | Unset
         if isinstance(self.name, Unset):
             name = UNSET
@@ -159,6 +166,24 @@ class UpdateTenantRequest:
         else:
             calling = self.calling
 
+        login_domains: list[str] | None | Unset
+        if isinstance(self.login_domains, Unset):
+            login_domains = UNSET
+        elif isinstance(self.login_domains, list):
+            login_domains = self.login_domains
+
+
+        else:
+            login_domains = self.login_domains
+
+        sign_in: dict[str, Any] | None | Unset
+        if isinstance(self.sign_in, Unset):
+            sign_in = UNSET
+        elif isinstance(self.sign_in, TenantSignIn):
+            sign_in = self.sign_in.to_dict()
+        else:
+            sign_in = self.sign_in
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -192,6 +217,10 @@ class UpdateTenantRequest:
             field_dict["platform_trunk_fallback"] = platform_trunk_fallback
         if calling is not UNSET:
             field_dict["calling"] = calling
+        if login_domains is not UNSET:
+            field_dict["login_domains"] = login_domains
+        if sign_in is not UNSET:
+            field_dict["sign_in"] = sign_in
 
         return field_dict
 
@@ -200,6 +229,7 @@ class UpdateTenantRequest:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.tenant_calling import TenantCalling # noqa: PLC0415
+        from ..models.tenant_sign_in import TenantSignIn # noqa: PLC0415
         d = dict(src_dict)
         def _parse_name(data: object) -> None | str | Unset:
             if data is None:
@@ -369,6 +399,44 @@ class UpdateTenantRequest:
         calling = _parse_calling(d.pop("calling", UNSET))
 
 
+        def _parse_login_domains(data: object) -> list[str] | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, list):
+                    raise TypeError()
+                login_domains_type_0 = cast(list[str], data)
+
+                return login_domains_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(list[str] | None | Unset, data)
+
+        login_domains = _parse_login_domains(d.pop("login_domains", UNSET))
+
+
+        def _parse_sign_in(data: object) -> None | TenantSignIn | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                sign_in_type_0 = TenantSignIn.from_dict(data)
+
+
+
+                return sign_in_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(None | TenantSignIn | Unset, data)
+
+        sign_in = _parse_sign_in(d.pop("sign_in", UNSET))
+
+
         update_tenant_request = cls(
             name=name,
             description=description,
@@ -384,6 +452,8 @@ class UpdateTenantRequest:
             sip_domains=sip_domains,
             platform_trunk_fallback=platform_trunk_fallback,
             calling=calling,
+            login_domains=login_domains,
+            sign_in=sign_in,
         )
 
 

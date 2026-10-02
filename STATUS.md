@@ -1660,6 +1660,18 @@ Phase 1 done (v0.25.308): users by id, sessions as rows
 - A reload keeps the admin UI signed in.
 - Renaming a user moved to phase 5.
 
+Phase 2a done (v0.25.309): login domains, optional passwords, the password
+policy.
+- A tenant's login domains (set by a platform admin) send `name@domain`
+  to it; `/auth/discover` says where a login signs in; login takes an
+  email.
+- A user may be made without a password: SSO-only, with a generated SIP
+  password.
+- A tenant's policy can keep passwords to admins or to nobody, a super
+  admin excepted; it waits for phase 3's identity providers before the
+  API lets a tenant restrict it.
+- 2b (TOTP) is next.
+
 ## Historical documents
 
 Superseded status docs live in [`docs/archive/`](docs/archive/README.md) — they describe

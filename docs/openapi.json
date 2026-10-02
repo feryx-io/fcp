@@ -18,6 +18,47 @@
     }
   ],
   "paths": {
+    "/api/v1/auth/discover": {
+      "post": {
+        "tags": [
+          "auth_session"
+        ],
+        "summary": "POST /api/v1/auth/discover — where a login signs in: the tenant its\nemail domain belongs to, and the ways in. It never says whether a user\nexists.",
+        "operationId": "auth_session_discover",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DiscoverRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DiscoverResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/auth/login": {
       "post": {
         "tags": [
@@ -17835,6 +17876,24 @@
                 "type": "null"
               }
             ]
+          },
+          "login_domains": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Email domains whose people are this tenant's."
+          },
+          "sign_in": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TenantSignIn",
+                "description": "How the tenant's people may sign in."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
@@ -18123,15 +18182,18 @@
         "type": "object",
         "description": "Create user request.",
         "required": [
-          "username",
-          "password"
+          "username"
         ],
         "properties": {
           "username": {
             "type": "string"
           },
           "password": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The web password. Left out, the user has none and signs in only\nthrough the tenant's identity provider (`docs/IDENTITY_AND_DEVICES.md`\nphase 2); their SIP password is then generated."
           },
           "sip_provisioning_password": {
             "type": [
@@ -18835,6 +18897,48 @@
             "items": {
               "type": "string"
             }
+          }
+        }
+      },
+      "DiscoverRequest": {
+        "type": "object",
+        "description": "What a login may sign in with.",
+        "required": [
+          "login"
+        ],
+        "properties": {
+          "login": {
+            "type": "string",
+            "description": "A username, or an email address."
+          }
+        }
+      },
+      "DiscoverResponse": {
+        "type": "object",
+        "description": "Where a login signs in, and how.",
+        "required": [
+          "methods"
+        ],
+        "properties": {
+          "tenant_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The tenant the login's email domain belongs to, when it is one."
+          },
+          "tenant_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "methods": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The ways in: `password` (later the tenant's identity providers)."
           }
         }
       },
@@ -26274,7 +26378,9 @@
                 "updated_at",
                 "sip_domains",
                 "platform_trunk_fallback",
-                "calling"
+                "calling",
+                "login_domains",
+                "sign_in"
               ],
               "properties": {
                 "id": {
@@ -26369,6 +26475,17 @@
                 "calling": {
                   "$ref": "#/components/schemas/TenantCalling",
                   "description": "Country, timezone and number-range overrides\n(`docs/ENTERPRISE_CALLING.md` §3.7)."
+                },
+                "login_domains": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Email domains whose people are this tenant's\n(`docs/IDENTITY_AND_DEVICES.md` phase 2)."
+                },
+                "sign_in": {
+                  "$ref": "#/components/schemas/TenantSignIn",
+                  "description": "How the tenant's people may sign in."
                 }
               }
             }
@@ -27347,6 +27464,15 @@
             "minimum": 0
           }
         }
+      },
+      "PasswordLogin": {
+        "type": "string",
+        "description": "Who may sign in with a password.",
+        "enum": [
+          "allowed",
+          "admins_only",
+          "disabled"
+        ]
       },
       "PhoneNumberResponse": {
         "type": "object",
@@ -29891,7 +30017,9 @@
           "updated_at",
           "sip_domains",
           "platform_trunk_fallback",
-          "calling"
+          "calling",
+          "login_domains",
+          "sign_in"
         ],
         "properties": {
           "id": {
@@ -29986,6 +30114,27 @@
           "calling": {
             "$ref": "#/components/schemas/TenantCalling",
             "description": "Country, timezone and number-range overrides\n(`docs/ENTERPRISE_CALLING.md` §3.7)."
+          },
+          "login_domains": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Email domains whose people are this tenant's\n(`docs/IDENTITY_AND_DEVICES.md` phase 2)."
+          },
+          "sign_in": {
+            "$ref": "#/components/schemas/TenantSignIn",
+            "description": "How the tenant's people may sign in."
+          }
+        }
+      },
+      "TenantSignIn": {
+        "type": "object",
+        "description": "How a tenant's people may sign in (`docs/IDENTITY_AND_DEVICES.md` §2).",
+        "properties": {
+          "password_login": {
+            "$ref": "#/components/schemas/PasswordLogin",
+            "description": "Whether a password signs in."
           }
         }
       },
@@ -32272,6 +32421,27 @@
               {
                 "$ref": "#/components/schemas/TenantCalling",
                 "description": "Replaces the tenant's calling defaults whole when given."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "login_domains": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Replaces the tenant's login domains whole. A platform admin's to\nset: a domain decides where a person's sign-in goes."
+          },
+          "sign_in": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TenantSignIn",
+                "description": "Replaces how the tenant's people may sign in."
               },
               {
                 "type": "null"

@@ -82,6 +82,8 @@ from .device_binding_response import DeviceBindingResponse
 from .device_response import DeviceResponse
 from .device_validation_response import DeviceValidationResponse
 from .dialog_info import DialogInfo
+from .discover_request import DiscoverRequest
+from .discover_response import DiscoverResponse
 from .e911_address_response import E911AddressResponse
 from .emergency_call_response import EmergencyCallResponse
 from .emergency_config_response import EmergencyConfigResponse
@@ -284,6 +286,7 @@ from .page_webhook_event_type import PageWebhookEventType
 from .page_webhook_event_type_data_item import PageWebhookEventTypeDataItem
 from .page_webhook_response import PageWebhookResponse
 from .page_webhook_response_data_item import PageWebhookResponseDataItem
+from .password_login import PasswordLogin
 from .phone_number_response import PhoneNumberResponse
 from .place_hold_request import PlaceHoldRequest
 from .play_request import PlayRequest
@@ -351,6 +354,7 @@ from .supervise_request import SuperviseRequest
 from .synthesize_greeting_request import SynthesizeGreetingRequest
 from .tenant_calling import TenantCalling
 from .tenant_response import TenantResponse
+from .tenant_sign_in import TenantSignIn
 from .test_webhook_request import TestWebhookRequest
 from .time_window import TimeWindow
 from .transfer_request import TransferRequest
@@ -498,6 +502,8 @@ __all__ = (
     "DeviceResponse",
     "DeviceValidationResponse",
     "DialogInfo",
+    "DiscoverRequest",
+    "DiscoverResponse",
     "E911AddressResponse",
     "EmergencyCallResponse",
     "EmergencyConfigResponse",
@@ -700,6 +706,7 @@ __all__ = (
     "PageWebhookEventTypeDataItem",
     "PageWebhookResponse",
     "PageWebhookResponseDataItem",
+    "PasswordLogin",
     "PhoneNumberResponse",
     "PlaceHoldRequest",
     "PlayRequest",
@@ -767,6 +774,7 @@ __all__ = (
     "SynthesizeGreetingRequest",
     "TenantCalling",
     "TenantResponse",
+    "TenantSignIn",
     "TestWebhookRequest",
     "TimeWindow",
     "TransferRequest",

@@ -21,7 +21,7 @@ use axum::{
 use fcp_core::session::{self, LoginSessionStore, RefreshOutcome, SessionClaims};
 use fcp_core::storage::password;
 use fcp_core::LoginSessionId;
-use fcp_core::{AccountStatus, CredentialStore};
+use fcp_core::{AccountStatus, CredentialStore, TenantStore};
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, SystemTime};
 
@@ -115,20 +115,46 @@ fn parse_tenant_id(tenant_id: Option<&str>) -> Result<Option<fcp_core::TenantId>
         .transpose()
 }
 
+/// Who `login` is: a username, or an email address in the tenant its domain
+/// belongs to (`docs/IDENTITY_AND_DEVICES.md` phase 2), matched first as a
+/// username and then by the users' email. An email several users share
+/// names nobody: the caller is told no more than for a wrong password.
 async fn load_user_for_login(
     storage: &std::sync::Arc<fcp_core::DynStorage>,
-    username: &str,
+    login: &str,
     tenant_id: Option<&fcp_core::TenantId>,
 ) -> Result<Option<fcp_core::User>, ApiError> {
-    if let Some(tenant_id) = tenant_id {
-        return storage
-            .get_user_in_tenant(username, tenant_id)
+    let tenant = match tenant_id {
+        Some(tenant) => Some(*tenant),
+        None => match fcp_core::login_domain(login) {
+            Some(domain) => storage
+                .get_tenant_by_login_domain(&domain)
+                .await
+                .map_err(|e| ApiError::Internal(e.to_string()))?
+                .map(|t| t.id),
+            None => None,
+        },
+    };
+    if let Some(tenant) = tenant {
+        if let Some(user) = storage
+            .get_user_in_tenant(login, &tenant)
             .await
-            .map_err(|e| ApiError::Internal(e.to_string()));
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+        {
+            return Ok(Some(user));
+        }
+        if !login.contains('@') {
+            return Ok(None);
+        }
+        let mut found = storage
+            .find_users_by_email_in_tenant(login, &tenant)
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
+        return Ok((found.len() == 1).then(|| found.remove(0)));
     }
 
     let users = storage
-        .list_users_by_username(username)
+        .list_users_by_username(login)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
@@ -139,6 +165,68 @@ async fn load_user_for_login(
             "tenant_id is required for usernames that exist in multiple tenants".to_string(),
         )),
     }
+}
+
+/// What a login may sign in with.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct DiscoverRequest {
+    /// A username, or an email address.
+    pub login: String,
+}
+
+/// Where a login signs in, and how.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct DiscoverResponse {
+    /// The tenant the login's email domain belongs to, when it is one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tenant_name: Option<String>,
+    /// The ways in: `password` (later the tenant's identity providers).
+    pub methods: Vec<String>,
+}
+
+/// POST /api/v1/auth/discover — where a login signs in: the tenant its
+/// email domain belongs to, and the ways in. It never says whether a user
+/// exists.
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/discover",
+    tag = "auth_session",
+    operation_id = "auth_session_discover",
+    request_body = DiscoverRequest,
+    responses(
+        (status = 200, description = "OK", body = DiscoverResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn discover(
+    State(state): State<ApiState>,
+    Json(req): Json<DiscoverRequest>,
+) -> Result<Json<DiscoverResponse>, ApiError> {
+    let storage = state
+        .storage
+        .as_ref()
+        .ok_or_else(|| ApiError::Internal("Storage not configured".to_string()))?;
+    let tenant = match fcp_core::login_domain(&req.login) {
+        Some(domain) => storage
+            .get_tenant_by_login_domain(&domain)
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?,
+        None => None,
+    };
+    let password = tenant
+        .as_ref()
+        .is_none_or(|t| t.sign_in.password_login != fcp_core::PasswordLogin::Disabled);
+    Ok(Json(DiscoverResponse {
+        tenant_id: tenant.as_ref().map(|t| t.id.to_string()),
+        tenant_name: tenant.map(|t| t.name),
+        methods: if password {
+            vec!["password".to_string()]
+        } else {
+            Vec::new()
+        },
+    }))
 }
 
 // ---- Sessions (docs/IDENTITY_AND_DEVICES.md phase 1) ----
@@ -491,9 +579,18 @@ async fn sign_in(
         ));
     }
 
-    // Verify password
-    let valid = password::verify_password(&req.password, &user.password)
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    // Verify password. A user without one (made by provisioning, signing
+    // in through an identity provider) has nothing a password can match.
+    let valid = if user.password.is_empty() {
+        let _ = password::verify_password(
+            &req.password,
+            "$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewY5jtRKm5T6fHGC",
+        );
+        false
+    } else {
+        password::verify_password(&req.password, &user.password)
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+    };
 
     if !valid {
         // Increment failed attempts
@@ -523,6 +620,28 @@ async fn sign_in(
             tenant,
             "bad_credentials",
             invalid(),
+        ));
+    }
+
+    // The password is right; the tenant may still not take passwords from
+    // this user (`docs/IDENTITY_AND_DEVICES.md` phase 2). Said only now, so
+    // a stranger learns nothing of the policy or the account.
+    let policy_login = storage
+        .get_tenant(&user.tenant_id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .map(|t| t.sign_in.password_login)
+        .unwrap_or_default();
+    if !policy_login.permits(&user.role) {
+        return Err(refused(
+            state,
+            headers,
+            &req.username,
+            tenant,
+            "password_not_allowed",
+            ApiError::Forbidden(
+                "Password sign-in is not allowed for this account; sign in with your organisation's sign-on".to_string(),
+            ),
         ));
     }
 
