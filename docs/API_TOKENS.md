@@ -354,4 +354,32 @@ their tenant, how they signed in, when it ends and whether it was revoked
     (`password_not_allowed`).
   - The API takes nothing but `allowed` until the tenant has an identity
     provider (phase 3) to sign in with instead.
+- **A second factor.** A user may add a one-time code (TOTP, RFC 6238:
+  six digits, thirty seconds, any authenticator app) to their password.
+  - Set up from the portal's settings: `POST /me/totp/enroll` answers the
+    secret and its `otpauth://` URI (the page shows it as a QR code);
+    `POST /me/totp/confirm {code}` turns it on and answers ten recovery
+    codes, shown once.
+  - Signing in, a right password then answers `mfa_required: "totp"` and
+    an `mfa_token` instead of a token: a ticket good for five minutes and
+    for nothing but `POST /auth/login/totp {mfa_token, code}` (or
+    `recovery_code`). Each code is good once; each recovery code once.
+  - Wrong codes count toward the lockout as wrong passwords do, and a
+    right password no longer resets the count — only a whole sign-in
+    does.
+  - `sign_in.require_totp` (`none`, `admins` — every role but end user —
+    or `everyone`) makes it compulsory: a user it applies to without one
+    is answered `mfa_required: "totp_enrollment"` and sets one up before
+    they are in (`POST /auth/totp/enroll` then `/auth/totp/confirm`,
+    both with the ticket).
+  - `POST /me/totp/disable {code}` turns it off (not when required);
+    `POST /me/totp/recovery-codes {code}` replaces the recovery codes.
+  - An administrator with `user_update` resets a user's
+    (`DELETE /users/{username}/totp`) for a lost phone.
+  - The secret is sealed at rest (`user_totp.secret`, re-sealed by the
+    encryption job). It is not synced to a site: a site's users set up
+    their own there.
+  - An expired password changed at sign-in goes through the second factor
+    like any password. A password that has expired no longer answers a
+    token at all, only `password_expired`.
 

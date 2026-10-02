@@ -360,6 +360,28 @@ Each phase is one PR based on main, with its admin UI and its docs.
      - The policy is enforced after the password is checked. The API
        accepts only `allowed` until phase 3 gives a tenant an identity
        provider.
+   - **2b done (v0.25.310)** (`docs/API_TOKENS.md` §7).
+     - `fcp_core::totp`: RFC 6238 over HMAC-SHA1, checked against the
+       RFC's vectors; a step either way accepted; ten recovery codes kept
+       as SHA-256.
+     - Migration 092: `user_totp`, keyed by the user's id and deleted with
+       them; the secret sealed like the user's other secrets; the last
+       step and the recovery codes spent in single statements, so a code
+       is good once.
+     - A password answers a five-minute ticket (a session claim with a
+       `purpose`, which `authenticate_session` refuses) for
+       `/auth/login/totp`, or for `/auth/totp/{enroll,confirm}` when the
+       tenant's `sign_in.require_totp` applies to a user with none.
+     - `/me/totp` to set it up, turn it off and renew the codes;
+       `DELETE /users/{username}/totp` to reset it.
+     - Wrong codes count toward the lockout; the count is reset only by a
+       whole sign-in.
+     - An expired password no longer answers a token: it was a session
+       the user could use without changing it.
+     - The login page's code, recovery-code and set-up steps, a QR code
+       (`qrcode-generator`); the settings page's two-factor card; the
+       tenant form's "Two-factor sign-in".
+     - Not journaled to sites: a site's users set up their own.
      - The tenant form's login domains; the login page's "Signing in to".
      - Proved by `a_tenants_people_find_it_by_their_email_domain` and
        `a_tenants_password_policy_is_kept_and_never_shuts_out_a_super_admin`.

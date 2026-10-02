@@ -3373,6 +3373,8 @@ pub struct DynStorage {
     api_token_store: Option<Arc<dyn ApiTokenStore>>,
     /// Sign-in sessions (`docs/IDENTITY_AND_DEVICES.md` phase 1).
     login_session_store: Option<Arc<dyn crate::session::LoginSessionStore>>,
+    /// Users' second factors (`docs/IDENTITY_AND_DEVICES.md` phase 2b).
+    totp_store: Option<Arc<dyn crate::totp::TotpStore>>,
     prompt_store: Option<Arc<dyn crate::prompt::PromptStore>>,
     flow_trace_store: Option<Arc<dyn crate::flow_trace::FlowTraceStore>>,
     config_template_store: Option<Arc<dyn ConfigTemplateStore>>,
@@ -3452,6 +3454,7 @@ impl DynStorage {
             sip_trace_store: None,
             api_token_store: None,
             login_session_store: None,
+            totp_store: None,
             prompt_store: None,
             flow_trace_store: None,
             config_template_store: None,
@@ -3533,6 +3536,7 @@ impl DynStorage {
             sip_trace_store: None,
             api_token_store: None,
             login_session_store: None,
+            totp_store: None,
             prompt_store: None,
             flow_trace_store: None,
             config_template_store: Some(storage),
@@ -3628,6 +3632,17 @@ impl DynStorage {
     ) -> Self {
         self.login_session_store = Some(store);
         self
+    }
+
+    /// Attach the second-factor store.
+    pub fn with_totp_store(mut self, store: Arc<dyn crate::totp::TotpStore>) -> Self {
+        self.totp_store = Some(store);
+        self
+    }
+
+    /// The second-factor store, if one is attached.
+    pub fn totp_store(&self) -> Option<&Arc<dyn crate::totp::TotpStore>> {
+        self.totp_store.as_ref()
     }
 
     /// The sign-in session store, if one is attached.

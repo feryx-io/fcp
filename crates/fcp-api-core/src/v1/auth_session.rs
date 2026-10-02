@@ -54,14 +54,29 @@ pub struct LoginRequest {
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct LoginResponse {
-    /// The access token: `Authorization: Bearer <token>`.
-    pub token: String,
+    /// The access token: `Authorization: Bearer <token>`. Absent while a
+    /// second factor is wanted (`mfa_required`) or the password must be
+    /// changed (`password_expired`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
     /// Seconds the access token lasts; refresh before then.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expires_in: Option<u64>,
     pub user: AuthUserResponse,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub password_expired: Option<bool>,
+    /// The password was right; now a second factor
+    /// (`docs/IDENTITY_AND_DEVICES.md` phase 2b): `totp` — a code to
+    /// `/auth/login/totp` — or `totp_enrollment` — the tenant requires one
+    /// the user has not set up: `/auth/totp/enroll` then `/auth/totp/confirm`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mfa_required: Option<String>,
+    /// The ticket those routes take, valid five minutes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mfa_token: Option<String>,
+    /// Recovery codes, shown once, when a second factor was just set up.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recovery_codes: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize, Clone, utoipa::ToSchema)]
@@ -280,6 +295,7 @@ fn access_token(
         display_name: user.display_name.clone(),
         exp: iat + ttl as usize,
         iat,
+        purpose: None,
     };
     Ok((keys(state)?.encode(&claims), ttl))
 }
@@ -376,21 +392,443 @@ pub(crate) async fn begin_session(
 /// A sign-in's answer: the body, and the cookie when there is one.
 fn signed_in(issued: Issued, user: &fcp_core::User, password_expired: bool) -> Response {
     let body = Json(LoginResponse {
-        token: issued.token,
+        token: Some(issued.token),
         expires_in: Some(issued.expires_in),
-        user: AuthUserResponse {
-            username: user.username.clone(),
-            role: role_to_string(&user.role),
-            tenant_id: user.tenant_id.to_string(),
-            display_name: user.display_name.clone(),
-        },
+        user: auth_user(user),
         password_expired: password_expired.then_some(true),
+        mfa_required: None,
+        mfa_token: None,
+        recovery_codes: None,
     });
     let mut response = (StatusCode::OK, body).into_response();
     if let Some(cookie) = issued.cookie {
         response.headers_mut().append(header::SET_COOKIE, cookie);
     }
     response
+}
+
+fn auth_user(user: &fcp_core::User) -> AuthUserResponse {
+    AuthUserResponse {
+        username: user.username.clone(),
+        role: role_to_string(&user.role),
+        tenant_id: user.tenant_id.to_string(),
+        display_name: user.display_name.clone(),
+    }
+}
+
+// ---- The second factor (docs/IDENTITY_AND_DEVICES.md phase 2b) ----
+
+/// A ticket's purposes: a code, or setting one up.
+const MFA_TOTP: &str = "totp";
+const MFA_ENROLL: &str = "totp_enrollment";
+/// How long a sign-in may wait between its password and its code.
+const MFA_TICKET_SECS: u64 = 300;
+
+/// The ticket a sign-in halfway through takes to its second step.
+fn mfa_ticket(state: &ApiState, user: &fcp_core::User, purpose: &str) -> Result<String, ApiError> {
+    let iat = session::epoch(SystemTime::now());
+    Ok(keys(state)?.encode(&SessionClaims {
+        sub: user.id.to_string(),
+        sid: None,
+        username: Some(user.username.clone()),
+        role: role_to_string(&user.role),
+        tenant_id: user.tenant_id.to_string(),
+        display_name: None,
+        exp: iat + MFA_TICKET_SECS as usize,
+        iat,
+        purpose: Some(purpose.to_string()),
+    }))
+}
+
+/// The user a ticket for `purpose` names, still active.
+async fn ticket_user(
+    state: &ApiState,
+    ticket: &str,
+    purpose: &str,
+) -> Result<fcp_core::User, ApiError> {
+    let expired = || ApiError::Unauthorized("Sign in again".to_string());
+    let claims = keys(state)?
+        .decode(ticket, SystemTime::now())
+        .map_err(|_| expired())?;
+    if claims.purpose.as_deref() != Some(purpose) {
+        return Err(expired());
+    }
+    let id: fcp_core::UserId = claims.sub.parse().map_err(|_| expired())?;
+    let storage = state
+        .storage
+        .as_ref()
+        .ok_or_else(|| ApiError::Internal("Storage not configured".to_string()))?;
+    storage
+        .get_user_by_id(&id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .filter(|u| u.tenant_id.to_string() == claims.tenant_id && session::user_is_active(u))
+        .ok_or_else(expired)
+}
+
+fn totp_store(state: &ApiState) -> Result<std::sync::Arc<dyn fcp_core::totp::TotpStore>, ApiError> {
+    state
+        .storage
+        .as_ref()
+        .and_then(|s| s.totp_store().cloned())
+        .ok_or_else(|| ApiError::Internal("Second factors are not available".to_string()))
+}
+
+/// A second step wanted: the ticket, and no session yet.
+fn challenge(state: &ApiState, user: &fcp_core::User, purpose: &str) -> Result<Response, ApiError> {
+    Ok(Json(LoginResponse {
+        token: None,
+        expires_in: Some(MFA_TICKET_SECS),
+        user: auth_user(user),
+        password_expired: None,
+        mfa_required: Some(purpose.to_string()),
+        mfa_token: Some(mfa_ticket(state, user, purpose)?),
+        recovery_codes: None,
+    })
+    .into_response())
+}
+
+/// A password has proved who `user` is: a code next if they have a second
+/// factor, setting one up if their tenant requires one they lack, else a
+/// session.
+async fn after_password(
+    state: &ApiState,
+    headers: &HeaderMap,
+    user: fcp_core::User,
+) -> Result<Response, ApiError> {
+    if let Ok(store) = totp_store(state) {
+        let enrolled = store
+            .get_user_totp(&user.id)
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+            .is_some_and(|t| t.is_confirmed());
+        if enrolled {
+            return challenge(state, &user, MFA_TOTP);
+        }
+        let required = state
+            .storage
+            .as_ref()
+            .ok_or_else(|| ApiError::Internal("Storage not configured".to_string()))?
+            .get_tenant(&user.tenant_id)
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+            .is_some_and(|t| t.sign_in.require_totp.applies(&user.role));
+        if required {
+            return challenge(state, &user, MFA_ENROLL);
+        }
+    }
+    complete_sign_in(state, headers, user, session::method::PASSWORD, None).await
+}
+
+/// Signed in: the failed attempts forgotten, the session begun, published.
+async fn complete_sign_in(
+    state: &ApiState,
+    headers: &HeaderMap,
+    mut user: fcp_core::User,
+    method: &str,
+    recovery_codes: Option<Vec<String>>,
+) -> Result<Response, ApiError> {
+    let now = SystemTime::now();
+    if let Some(storage) = state.storage.as_ref() {
+        user.failed_login_attempts = 0;
+        user.last_login = Some(now);
+        user.updated_at = now;
+        let _ = storage.put_user(user.clone()).await;
+    }
+    let issued = begin_session(state, &user, method, headers).await?;
+    if let Some(session_id) = &issued.session {
+        publish(
+            state,
+            fcp_events::UserEvent::SignedIn {
+                user_id: user.id.to_string(),
+                username: user.username.clone(),
+                tenant_id: user.tenant_id,
+                method: method.to_string(),
+                session_id: session_id.to_string(),
+                source_ip: crate::audit::source_ip(headers),
+                timestamp: now,
+            },
+        );
+    }
+    tracing::info!(username = %user.username, tenant_id = %user.tenant_id, method, "Login successful");
+    if recovery_codes.is_none() {
+        return Ok(signed_in(issued, &user, false));
+    }
+    let mut response = Json(LoginResponse {
+        token: Some(issued.token),
+        expires_in: Some(issued.expires_in),
+        user: auth_user(&user),
+        password_expired: None,
+        mfa_required: None,
+        mfa_token: None,
+        recovery_codes,
+    })
+    .into_response();
+    if let Some(cookie) = issued.cookie {
+        response.headers_mut().append(header::SET_COOKIE, cookie);
+    }
+    Ok(response)
+}
+
+/// A wrong second factor counts as a wrong password: the same lockout.
+async fn count_failure(
+    state: &ApiState,
+    headers: &HeaderMap,
+    mut user: fcp_core::User,
+) -> ApiError {
+    let now = SystemTime::now();
+    let policy = &state.security_policy;
+    user.failed_login_attempts += 1;
+    user.updated_at = now;
+    if user.failed_login_attempts >= policy.max_failed_attempts as i32 {
+        user.account_status = AccountStatus::Locked;
+        user.account_locked_until = Some(now + Duration::from_secs(policy.lockout_duration_secs));
+        tracing::warn!(event = "account_locked", username = %user.username, "Account locked after too many wrong codes");
+    }
+    let (username, tenant) = (user.username.clone(), user.tenant_id);
+    if let Some(storage) = state.storage.as_ref() {
+        let _ = storage.put_user(user).await;
+    }
+    refused(
+        state,
+        headers,
+        &username,
+        Some(tenant),
+        "bad_code",
+        ApiError::Unauthorized("The code is not right".to_string()),
+    )
+}
+
+/// The second step of a sign-in with a second factor.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct TotpLoginRequest {
+    /// The ticket the password step answered.
+    pub mfa_token: String,
+    /// The app's six-digit code.
+    #[serde(default)]
+    pub code: Option<String>,
+    /// Or one of the recovery codes, each good once.
+    #[serde(default)]
+    pub recovery_code: Option<String>,
+}
+
+/// POST /api/v1/auth/login/totp
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/login/totp",
+    tag = "auth_session",
+    operation_id = "auth_session_login_totp",
+    request_body = TotpLoginRequest,
+    responses(
+        (status = 200, description = "Signed in", body = LoginResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn login_totp(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Json(req): Json<TotpLoginRequest>,
+) -> Response {
+    let user = match ticket_user(&state, &req.mfa_token, MFA_TOTP).await {
+        Ok(user) => user,
+        Err(e) => return e.into_response(),
+    };
+    let subject = crate::audit::SignInSubject {
+        username: user.username.clone(),
+        tenant_id: Some(user.tenant_id),
+    };
+    let mut response = match second_factor(&state, &headers, user, &req).await {
+        Ok(response) => response,
+        Err(e) => e.into_response(),
+    };
+    response.extensions_mut().insert(subject);
+    response
+}
+
+async fn second_factor(
+    state: &ApiState,
+    headers: &HeaderMap,
+    user: fcp_core::User,
+    req: &TotpLoginRequest,
+) -> Result<Response, ApiError> {
+    let store = totp_store(state)?;
+    let totp = store
+        .get_user_totp(&user.id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .filter(|t| t.is_confirmed())
+        .ok_or_else(|| ApiError::Unauthorized("Sign in again".to_string()))?;
+    let accepted = match (&req.code, &req.recovery_code) {
+        (Some(code), _) => {
+            match fcp_core::totp::matching_step(&totp.secret, code, SystemTime::now()) {
+                Some(step) => store
+                    .use_totp_step(&user.id, step)
+                    .await
+                    .map_err(|e| ApiError::Internal(e.to_string()))?
+                    .then_some(fcp_core::session::method::TOTP),
+                None => None,
+            }
+        }
+        (None, Some(recovery)) => store
+            .use_recovery_code(&user.id, &fcp_core::totp::recovery_hash(recovery))
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+            .then_some(fcp_core::session::method::RECOVERY_CODE),
+        (None, None) => {
+            return Err(ApiError::BadRequest(
+                "a code or a recovery code is needed".to_string(),
+            ))
+        }
+    };
+    match accepted {
+        Some(method) => complete_sign_in(state, headers, user, method, None).await,
+        None => Err(count_failure(state, headers, user).await),
+    }
+}
+
+/// A ticket to set a second factor up with.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct MfaTicketRequest {
+    pub mfa_token: String,
+}
+
+/// A second factor being set up: the secret for the app, and the URI its
+/// QR code carries.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct TotpEnrollment {
+    pub secret: String,
+    pub otpauth_uri: String,
+}
+
+/// A new unconfirmed secret for `user`.
+pub(crate) async fn enroll(
+    state: &ApiState,
+    user: &fcp_core::User,
+) -> Result<TotpEnrollment, ApiError> {
+    let store = totp_store(state)?;
+    if store
+        .get_user_totp(&user.id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .is_some_and(|t| t.is_confirmed())
+    {
+        return Err(ApiError::Conflict(
+            "A second factor is already set up; turn it off first".to_string(),
+        ));
+    }
+    let issuer = match state.storage.as_ref() {
+        Some(storage) => storage
+            .get_tenant(&user.tenant_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|t| format!("FCP {}", t.name))
+            .unwrap_or_else(|| "FCP".to_string()),
+        None => "FCP".to_string(),
+    };
+    let secret = fcp_core::totp::new_secret();
+    store
+        .put_user_totp(&fcp_core::totp::UserTotp {
+            user_id: user.id,
+            tenant_id: user.tenant_id,
+            secret: secret.clone(),
+            confirmed_at: None,
+            last_step: None,
+            recovery_hashes: Vec::new(),
+            created_at: SystemTime::now(),
+        })
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    Ok(TotpEnrollment {
+        otpauth_uri: fcp_core::totp::otpauth_uri(&secret, &issuer, &user.username),
+        secret,
+    })
+}
+
+/// Confirm `user`'s pending secret with a code from their app: the
+/// recovery codes, shown once; `None` for a wrong code.
+pub(crate) async fn confirm(
+    state: &ApiState,
+    user: &fcp_core::User,
+    code: &str,
+) -> Result<Option<Vec<String>>, ApiError> {
+    let store = totp_store(state)?;
+    let totp = store
+        .get_user_totp(&user.id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .filter(|t| !t.is_confirmed())
+        .ok_or_else(|| ApiError::Conflict("Nothing is being set up".to_string()))?;
+    let Some(step) = fcp_core::totp::matching_step(&totp.secret, code, SystemTime::now()) else {
+        return Ok(None);
+    };
+    let (codes, hashes) = fcp_core::totp::new_recovery_codes();
+    store
+        .confirm_user_totp(&user.id, &hashes, step, SystemTime::now())
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    Ok(Some(codes))
+}
+
+/// POST /api/v1/auth/totp/enroll — set up the second factor a tenant
+/// requires, in the middle of signing in.
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/totp/enroll",
+    tag = "auth_session",
+    operation_id = "auth_session_enroll_totp",
+    request_body = MfaTicketRequest,
+    responses(
+        (status = 200, description = "The secret to add to an app", body = TotpEnrollment),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn enroll_totp(
+    State(state): State<ApiState>,
+    Json(req): Json<MfaTicketRequest>,
+) -> Result<Json<TotpEnrollment>, ApiError> {
+    let user = ticket_user(&state, &req.mfa_token, MFA_ENROLL).await?;
+    Ok(Json(enroll(&state, &user).await?))
+}
+
+/// A code from the app, proving it holds the secret.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct TotpConfirmRequest {
+    pub mfa_token: String,
+    pub code: String,
+}
+
+/// POST /api/v1/auth/totp/confirm — finish setting it up, and sign in.
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/totp/confirm",
+    tag = "auth_session",
+    operation_id = "auth_session_confirm_totp",
+    request_body = TotpConfirmRequest,
+    responses(
+        (status = 200, description = "Signed in, with the recovery codes", body = LoginResponse),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn confirm_totp(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Json(req): Json<TotpConfirmRequest>,
+) -> Result<Response, ApiError> {
+    let user = ticket_user(&state, &req.mfa_token, MFA_ENROLL).await?;
+    match confirm(&state, &user, &req.code).await? {
+        Some(codes) => {
+            complete_sign_in(
+                &state,
+                &headers,
+                user,
+                fcp_core::session::method::TOTP,
+                Some(codes),
+            )
+            .await
+        }
+        None => Err(count_failure(&state, &headers, user).await),
+    }
 }
 
 /// Revoke every session of `user` but `keep`: a password changed, a user
@@ -645,12 +1083,6 @@ async fn sign_in(
         ));
     }
 
-    // Password is correct — reset failed attempts and update last_login
-    user.failed_login_attempts = 0;
-    user.last_login = Some(now);
-    user.updated_at = now;
-    let _ = storage.put_user(user.clone()).await;
-
     // Check password expiration
     let password_expired = if let Some(expiration_days) = policy.password_expiration_days {
         if expiration_days > 0 {
@@ -667,29 +1099,24 @@ async fn sign_in(
     } else {
         false
     };
-
-    let issued = begin_session(state, &user, session::method::PASSWORD, headers).await?;
-    if let Some(session_id) = &issued.session {
-        publish(
-            state,
-            fcp_events::UserEvent::SignedIn {
-                user_id: user.id.to_string(),
-                username: user.username.clone(),
-                tenant_id: user.tenant_id,
-                method: session::method::PASSWORD.to_string(),
-                session_id: session_id.to_string(),
-                source_ip: crate::audit::source_ip(headers),
-                timestamp: now,
-            },
-        );
+    if password_expired {
+        // No session until the password is changed
+        // (`/auth/change-expired-password`).
+        return Ok(Json(LoginResponse {
+            token: None,
+            expires_in: None,
+            user: auth_user(&user),
+            password_expired: Some(true),
+            mfa_required: None,
+            mfa_token: None,
+            recovery_codes: None,
+        })
+        .into_response());
     }
-    tracing::info!(
-        username = %user.username,
-        tenant_id = %user.tenant_id,
-        password_expired = password_expired,
-        "Login successful"
-    );
-    Ok(signed_in(issued, &user, password_expired))
+
+    // The failed attempts are forgotten only once every factor is in: a
+    // right password must not reset the count a wrong code adds to.
+    after_password(state, headers, user).await
 }
 
 /// POST /api/v1/auth/logout
@@ -1032,11 +1459,10 @@ pub async fn change_expired_password(
         "User changed expired password"
     );
 
-    // Whoever else held the old password is signed out; a session, so the
-    // user can proceed.
+    // Whoever else held the old password is signed out; then the second
+    // factor, or a session.
     revoke_sessions(&state, &user.id, None, "password changed").await;
-    let issued = begin_session(&state, &user, session::method::PASSWORD, &headers).await?;
-    Ok(signed_in(issued, &user, false))
+    after_password(&state, &headers, user).await
 }
 
 // ---- Who is calling ----

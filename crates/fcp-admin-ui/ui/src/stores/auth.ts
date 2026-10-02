@@ -71,6 +71,8 @@ export const useAuthStore = create<AuthState>()(
       inFlight = auth
         .refresh()
         .then((response) => {
+          // A refresh always answers a token; anything else is signed out.
+          if (!response.token) throw new Error('no token')
           get().login(response.token, response.user, response.expires_in)
           return true
         })

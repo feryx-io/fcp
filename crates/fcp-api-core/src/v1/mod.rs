@@ -47,6 +47,7 @@ pub mod sites;
 pub mod supervision;
 pub mod system;
 pub mod tenants;
+pub mod totp;
 pub mod trunks;
 pub mod uploads;
 pub mod usage;
@@ -73,6 +74,9 @@ pub fn pre_auth_router(enable_signup: bool) -> Router<ApiState> {
     let router = Router::new()
         .route("/auth/discover", post(auth_session::discover))
         .route("/auth/login", post(auth_session::login))
+        .route("/auth/login/totp", post(auth_session::login_totp))
+        .route("/auth/totp/enroll", post(auth_session::enroll_totp))
+        .route("/auth/totp/confirm", post(auth_session::confirm_totp))
         .route("/auth/refresh", post(auth_session::refresh))
         .route("/auth/logout", post(auth_session::logout))
         .route(
@@ -123,6 +127,12 @@ pub fn router() -> Router<ApiState> {
                 .delete(self_service::delete_avatar),
         )
         .route("/me/password", put(self_service::change_password))
+        // A second factor (docs/IDENTITY_AND_DEVICES.md phase 2b)
+        .route("/me/totp", get(totp::get_totp))
+        .route("/me/totp/enroll", post(totp::enroll_totp))
+        .route("/me/totp/confirm", post(totp::confirm_totp))
+        .route("/me/totp/disable", post(totp::disable_totp))
+        .route("/me/totp/recovery-codes", post(totp::renew_recovery_codes))
         .route(
             "/me/voicemail",
             get(self_service::get_voicemail).put(self_service::update_voicemail),
@@ -324,6 +334,7 @@ pub fn router() -> Router<ApiState> {
         // User management
         .route("/users", get(users::list_users).post(users::create_user))
         .route("/users/by-id/:id", get(users::get_user_by_id))
+        .route("/users/:username/totp", delete(totp::reset_totp))
         .route(
             "/users/:username",
             get(users::get_user)

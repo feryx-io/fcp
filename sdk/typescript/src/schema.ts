@@ -25,6 +25,172 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/login/totp": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/v1/auth/login/totp */
+        post: operations["auth_session_login_totp"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/totp/enroll": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /api/v1/auth/totp/enroll — set up the second factor a tenant
+         *     requires, in the middle of signing in.
+         */
+        post: operations["auth_session_enroll_totp"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/totp/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/v1/auth/totp/confirm — finish setting it up, and sign in. */
+        post: operations["auth_session_confirm_totp"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/totp": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/v1/me/totp */
+        get: operations["self_service_get_totp"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/totp/enroll": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/v1/me/totp/enroll — a secret for an authenticator app. */
+        post: operations["self_service_enroll_totp"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/totp/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/v1/me/totp/confirm — a code from the app turns it on. */
+        post: operations["self_service_confirm_totp"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/totp/disable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /api/v1/me/totp/disable — off, with a current code; not when the
+         *     tenant requires one.
+         */
+        post: operations["self_service_disable_totp"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/totp/recovery-codes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /api/v1/me/totp/recovery-codes — new recovery codes, the old ones
+         *     spent, with a current code.
+         */
+        post: operations["self_service_renew_recovery_codes"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/users/{username}/totp": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * DELETE /api/v1/users/:username/totp — reset a user's second factor (a
+         *     lost phone): they set one up again at their next sign-in if their
+         *     tenant requires it.
+         */
+        delete: operations["users_reset_totp"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/login": {
         parameters: {
             query?: never;
@@ -6001,8 +6167,12 @@ export interface components {
             tenant_id?: string | null;
         };
         LoginResponse: {
-            /** @description The access token: `Authorization: Bearer <token>`. */
-            token: string;
+            /**
+             * @description The access token: `Authorization: Bearer <token>`. Absent while a
+             *     second factor is wanted (`mfa_required`) or the password must be
+             *     changed (`password_expired`).
+             */
+            token?: string | null;
             /**
              * Format: int64
              * @description Seconds the access token lasts; refresh before then.
@@ -6010,6 +6180,17 @@ export interface components {
             expires_in?: number | null;
             user: components["schemas"]["AuthUserResponse"];
             password_expired?: boolean | null;
+            /**
+             * @description The password was right; now a second factor
+             *     (`docs/IDENTITY_AND_DEVICES.md` phase 2b): `totp` — a code to
+             *     `/auth/login/totp` — or `totp_enrollment` — the tenant requires one
+             *     the user has not set up: `/auth/totp/enroll` then `/auth/totp/confirm`.
+             */
+            mfa_required?: string | null;
+            /** @description The ticket those routes take, valid five minutes. */
+            mfa_token?: string | null;
+            /** @description Recovery codes, shown once, when a second factor was just set up. */
+            recovery_codes?: string[] | null;
         };
         /** @description Voicemail mailbox response. */
         MailboxResponse: {
@@ -6133,6 +6314,10 @@ export interface components {
             created_at: string;
             /** Format: date-time */
             accessed_at?: string | null;
+        };
+        /** @description A ticket to set a second factor up with. */
+        MfaTicketRequest: {
+            mfa_token: string;
         };
         /** @description `POST …/join-tokens` body. */
         MintJoinTokenRequest: {
@@ -8487,6 +8672,10 @@ export interface components {
             /** @description Where the bytes are, on this API. */
             download_url: string;
         };
+        /** @description Recovery codes, shown once. */
+        RecoveryCodes: {
+            recovery_codes: string[];
+        };
         /** @description The flow a party is moved into. */
         RedirectRequest: {
             /** @description One of the tenant's flows, enabled. */
@@ -8535,6 +8724,11 @@ export interface components {
         ReleaseHoldRequest: {
             reason: string;
         };
+        /**
+         * @description Who must add a one-time code to a password sign-in.
+         * @enum {string}
+         */
+        RequireTotp: "none" | "admins" | "everyone";
         /** @description Counts of provisioned resources for the tenant. */
         ResourceCounts: {
             phone_numbers: number;
@@ -8970,6 +9164,8 @@ export interface components {
         TenantSignIn: {
             /** @description Whether a password signs in. */
             password_login?: components["schemas"]["PasswordLogin"];
+            /** @description Who must add a one-time code to a password (phase 2b). */
+            require_totp?: components["schemas"]["RequireTotp"];
         };
         /** @description A test delivery. */
         TestWebhookRequest: {
@@ -8990,6 +9186,45 @@ export interface components {
             end_hour: number;
             /** @description Days of week (0=Sun, 1=Mon, ..., 6=Sat). Empty = all days. */
             days?: number[];
+        };
+        /** @description A code from the app. */
+        TotpCodeRequest: {
+            code: string;
+        };
+        /** @description A code from the app, proving it holds the secret. */
+        TotpConfirmRequest: {
+            mfa_token: string;
+            code: string;
+        };
+        /**
+         * @description A second factor being set up: the secret for the app, and the URI its
+         *     QR code carries.
+         */
+        TotpEnrollment: {
+            secret: string;
+            otpauth_uri: string;
+        };
+        /** @description The second step of a sign-in with a second factor. */
+        TotpLoginRequest: {
+            /** @description The ticket the password step answered. */
+            mfa_token: string;
+            /** @description The app's six-digit code. */
+            code?: string | null;
+            /** @description Or one of the recovery codes, each good once. */
+            recovery_code?: string | null;
+        };
+        /**
+         * @description Whether the caller has a second factor, and whether their tenant
+         *     requires one of them.
+         */
+        TotpStatus: {
+            /** @description Set up and confirmed: every password sign-in asks for a code. */
+            enabled: boolean;
+            /** @description Set up, waiting for a code to confirm it. */
+            pending: boolean;
+            recovery_codes_left: number;
+            /** @description The tenant requires a second factor of the caller's role. */
+            required: boolean;
         };
         /** @description Where a party is transferred. */
         TransferRequest: {
@@ -10074,6 +10309,289 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["DiscoverResponse"];
                 };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    auth_session_login_totp: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TotpLoginRequest"];
+            };
+        };
+        responses: {
+            /** @description Signed in */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LoginResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    auth_session_enroll_totp: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MfaTicketRequest"];
+            };
+        };
+        responses: {
+            /** @description The secret to add to an app */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TotpEnrollment"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    auth_session_confirm_totp: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TotpConfirmRequest"];
+            };
+        };
+        responses: {
+            /** @description Signed in, with the recovery codes */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LoginResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_get_totp: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TotpStatus"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_enroll_totp: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The secret to add to an app */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TotpEnrollment"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_confirm_totp: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TotpCodeRequest"];
+            };
+        };
+        responses: {
+            /** @description On, with the recovery codes */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecoveryCodes"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_disable_totp: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TotpCodeRequest"];
+            };
+        };
+        responses: {
+            /** @description Off */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    self_service_renew_recovery_codes: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TotpCodeRequest"];
+            };
+        };
+        responses: {
+            /** @description New codes */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecoveryCodes"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    users_reset_totp: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                username: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Reset */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description An error */
             default: {

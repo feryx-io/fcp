@@ -18,6 +18,7 @@ import { useThemeStore } from '@/stores/theme'
 import { me } from '@/api/endpoints'
 import type { MeProfile } from '@/types'
 import { TIMEZONE_GROUPS } from '@/constants/timezones'
+import { TwoFactorCard } from '@/components/TotpSetup'
 
 const LANGUAGES: { value: string; label: string }[] = [
   { value: 'en-US', label: 'English (US)' },
@@ -488,6 +489,9 @@ export function UserSettingsPage() {
           </form>
         </CardContent>
       </Card>
+
+      {/* A second factor (docs/IDENTITY_AND_DEVICES.md phase 2b) */}
+      <TwoFactorCard />
 
       {/* Appearance */}
       <Card>

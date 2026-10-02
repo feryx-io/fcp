@@ -160,6 +160,34 @@ pub struct TenantSignIn {
     /// Whether a password signs in.
     #[serde(default)]
     pub password_login: PasswordLogin,
+    /// Who must add a one-time code to a password (phase 2b).
+    #[serde(default)]
+    pub require_totp: RequireTotp,
+}
+
+/// Who must add a one-time code to a password sign-in.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum RequireTotp {
+    /// Nobody; a user may still choose to.
+    #[default]
+    None,
+    /// Administrators: every role but end user.
+    Admins,
+    /// Everyone who signs in with a password.
+    Everyone,
+}
+
+impl RequireTotp {
+    /// Whether a user of `role` must.
+    pub fn applies(self, role: &crate::UserRole) -> bool {
+        match self {
+            Self::None => false,
+            Self::Admins => *role != crate::UserRole::EndUser,
+            Self::Everyone => true,
+        }
+    }
 }
 
 /// Who may sign in with a password.
