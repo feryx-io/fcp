@@ -211,6 +211,7 @@ pub async fn signup(
         &user,
         fcp_core::session::method::SIGNUP,
         &headers,
+        None,
     )
     .await
     {

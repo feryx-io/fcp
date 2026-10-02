@@ -245,6 +245,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/sso/{id}/backchannel-logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /api/v1/auth/sso/{id}/backchannel-logout — the provider says a
+         *     person signed out there (OpenID Connect Back-Channel Logout 1.0): the
+         *     sessions begun through it as that provider session (`sid`), or all of
+         *     that person's (`sub`), end.
+         */
+        post: operations["auth_session_sso_backchannel_logout"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/identity-providers": {
         parameters: {
             query?: never;
@@ -4698,6 +4720,10 @@ export interface components {
         BTreeMap: {
             [key: string]: string[];
         };
+        /** @description A provider's back-channel logout request. */
+        BackchannelLogoutForm: {
+            logout_token: string;
+        };
         /** @description Balance response. */
         BalanceResponse: {
             tenant_id: string;
@@ -6225,6 +6251,8 @@ export interface components {
              *     absent where `[api.sso] public_url` is not set.
              */
             redirect_uri?: string | null;
+            /** @description The address to register as its back-channel logout URI. */
+            backchannel_logout_uri?: string | null;
             /** Format: date-time */
             created_at: string;
             /** Format: date-time */
@@ -7274,6 +7302,8 @@ export interface components {
                  *     absent where `[api.sso] public_url` is not set.
                  */
                 redirect_uri?: string | null;
+                /** @description The address to register as its back-channel logout URI. */
+                backchannel_logout_uri?: string | null;
                 /** Format: date-time */
                 created_at: string;
                 /** Format: date-time */
@@ -8822,9 +8852,21 @@ export interface components {
             jit?: boolean;
             /**
              * @description Link an existing user whose email is the one the provider asserts
-             *     as verified (`email_verified`), on their first sign-in.
+             *     as verified, on their first sign-in.
              */
             link_by_email?: boolean;
+            /**
+             * @description The claim that says the email is verified: `email_verified`, the
+             *     standard one; `xms_edov` for Entra ID, whose tokens carry no
+             *     `email_verified`.
+             */
+            email_verified_claim?: string;
+            /**
+             * @description Claims a token must carry to sign anyone in: Google's `hd` (the
+             *     Workspace domain), so a personal Google account is turned away;
+             *     Entra's `tid`. A claim that is a list must contain the value.
+             */
+            required_claims?: components["schemas"]["RequiredClaim"][];
         };
         /** @description Queue config response. */
         QueueConfigResponse: {
@@ -9025,6 +9067,11 @@ export interface components {
          * @enum {string}
          */
         RequireTotp: "none" | "admins" | "everyone";
+        /** @description A claim a token must carry, with this value. */
+        RequiredClaim: {
+            claim: string;
+            value: string;
+        };
         /** @description Counts of provisioned resources for the tenant. */
         ResourceCounts: {
             phone_numbers: number;
@@ -10997,6 +11044,40 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["LoginResponse"];
                 };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    auth_session_sso_backchannel_logout: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The identity provider */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/x-www-form-urlencoded": components["schemas"]["BackchannelLogoutForm"];
+            };
+        };
+        responses: {
+            /** @description The sessions it names are ended */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description An error */
             default: {

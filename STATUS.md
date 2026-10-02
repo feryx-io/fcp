@@ -1691,6 +1691,15 @@ Phase 3a done (v0.25.311): single sign-on through OpenID Connect
 - Next, 3b: back-channel logout, sign-in at sites, and the provider
   guides.
 
+Phase 3b done (v0.25.312): single sign-on finished.
+- A provider's back-channel logout ends the sessions it names.
+- A site signs its people in through the tenant's provider itself,
+  synced from the cloud with its secret sealed under the site's key.
+- Required claims keep a provider to the tenant's own people (Google's
+  `hd`, Entra's `tid`), and Entra's verified-email claim is read.
+- `docs/SSO.md` has guides for Entra ID, Okta and Google Workspace.
+- Phase 3 is complete; phase 4 (SAML) is next.
+
 ## Historical documents
 
 Superseded status docs live in [`docs/archive/`](docs/archive/README.md) — they describe

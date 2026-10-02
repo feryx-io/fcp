@@ -30,8 +30,10 @@ pub enum ProviderKind {
     Oidc,
 }
 
-/// A tenant's identity provider.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A tenant's identity provider. Serialized whole only for a site's link,
+/// over its mutual TLS, which stores it sealed with the site's own key
+/// (`docs/IDENTITY_AND_DEVICES.md` Q11); the API answers without the secret.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IdentityProvider {
     pub id: IdentityProviderId,
     pub tenant_id: TenantId,
@@ -71,9 +73,32 @@ pub struct ProviderSettings {
     #[serde(default)]
     pub jit: bool,
     /// Link an existing user whose email is the one the provider asserts
-    /// as verified (`email_verified`), on their first sign-in.
+    /// as verified, on their first sign-in.
     #[serde(default = "yes")]
     pub link_by_email: bool,
+    /// The claim that says the email is verified: `email_verified`, the
+    /// standard one; `xms_edov` for Entra ID, whose tokens carry no
+    /// `email_verified`.
+    #[serde(default = "default_email_verified_claim")]
+    pub email_verified_claim: String,
+    /// Claims a token must carry to sign anyone in: Google's `hd` (the
+    /// Workspace domain), so a personal Google account is turned away;
+    /// Entra's `tid`. A claim that is a list must contain the value.
+    #[serde(default)]
+    pub required_claims: Vec<RequiredClaim>,
+}
+
+fn default_email_verified_claim() -> String {
+    "email_verified".to_string()
+}
+
+/// A claim a token must carry, with this value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct RequiredClaim {
+    pub claim: String,
+    pub value: String,
 }
 
 fn default_scopes() -> Vec<String> {
@@ -150,6 +175,21 @@ impl ProviderSettings {
             .min()
     }
 
+    /// Whether `claims` carry every required claim.
+    pub fn carries_required(&self, claims: &serde_json::Map<String, serde_json::Value>) -> bool {
+        self.required_claims
+            .iter()
+            .all(|r| match claims.get(&r.claim) {
+                Some(serde_json::Value::String(s)) => s == &r.value,
+                Some(serde_json::Value::Array(list)) => {
+                    list.iter().any(|v| v.as_str() == Some(r.value.as_str()))
+                }
+                Some(serde_json::Value::Bool(b)) => b.to_string() == r.value,
+                Some(serde_json::Value::Number(n)) => n.to_string() == r.value,
+                _ => false,
+            })
+    }
+
     /// What is wrong with it, if anything.
     pub fn problems(&self) -> Option<String> {
         if self.issuer.trim().is_empty() || self.client_id.trim().is_empty() {
@@ -167,7 +207,7 @@ impl ProviderSettings {
 }
 
 /// A user's account at a provider.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UserIdentity {
     pub provider_id: IdentityProviderId,
     /// The provider's `sub` for the user: stable, never reassigned.
@@ -180,6 +220,20 @@ pub struct UserIdentity {
     pub last_sign_in_at: Option<SystemTime>,
 }
 
+impl UserIdentity {
+    /// The one string the sync journal names it by: `<provider>:<subject>`
+    /// (migration 094's generated `id`; a provider id has no colon).
+    pub fn row_id(&self) -> String {
+        format!("{}:{}", self.provider_id, self.subject)
+    }
+
+    /// The provider and subject a journal row id names.
+    pub fn parse_row_id(id: &str) -> Option<(IdentityProviderId, String)> {
+        let (provider, subject) = id.split_once(':')?;
+        Some((provider.parse().ok()?, subject.to_string()))
+    }
+}
+
 /// A sign-in through a provider, in flight.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SsoLogin {
@@ -190,6 +244,17 @@ pub struct SsoLogin {
     pub nonce: String,
     pub code_verifier: String,
     pub created_at: SystemTime,
+}
+
+/// A finished sign-in, waiting for the UI to collect it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SsoHandoff {
+    /// SHA-256 of the one-time code.
+    pub code_hash: String,
+    pub user_id: UserId,
+    pub provider_id: IdentityProviderId,
+    /// The provider's session (`sid`), when its ID token named one.
+    pub idp_sid: Option<String>,
 }
 
 /// How long a sign-in may take at the provider.
@@ -220,6 +285,11 @@ pub trait IdentityStore: Send + Sync {
     /// Create or update (by provider and subject).
     async fn put_user_identity(&self, identity: &UserIdentity) -> crate::Result<()>;
     async fn list_user_identities(&self, user_id: &UserId) -> crate::Result<Vec<UserIdentity>>;
+    /// Every identity of a tenant's users (a site's slice).
+    async fn list_tenant_identities(
+        &self,
+        tenant_id: &TenantId,
+    ) -> crate::Result<Vec<UserIdentity>>;
     async fn delete_user_identity(
         &self,
         provider_id: &IdentityProviderId,
@@ -234,19 +304,13 @@ pub trait IdentityStore: Send + Sync {
         -> crate::Result<Option<SsoLogin>>;
     /// Record a finished sign-in for the UI to collect by the hash of its
     /// one-time code.
-    async fn put_sso_handoff(
-        &self,
-        code_hash: &str,
-        user_id: &UserId,
-        provider_id: &IdentityProviderId,
-        now: SystemTime,
-    ) -> crate::Result<()>;
+    async fn put_sso_handoff(&self, handoff: &SsoHandoff, now: SystemTime) -> crate::Result<()>;
     /// Collect it, once, within [`SSO_HANDOFF_TTL`].
     async fn take_sso_handoff(
         &self,
         code_hash: &str,
         now: SystemTime,
-    ) -> crate::Result<Option<(UserId, IdentityProviderId)>>;
+    ) -> crate::Result<Option<SsoHandoff>>;
 }
 
 #[cfg(test)]
@@ -268,6 +332,8 @@ mod tests {
                 .collect(),
             jit: false,
             link_by_email: true,
+            email_verified_claim: default_email_verified_claim(),
+            required_claims: Vec::new(),
         }
     }
 
@@ -296,6 +362,21 @@ mod tests {
             .problems()
             .is_some());
         assert!(settings(vec![]).problems().is_none());
+    }
+
+    #[test]
+    fn a_token_must_carry_every_required_claim() {
+        let mut s = settings(vec![]);
+        s.required_claims = vec![RequiredClaim {
+            claim: "hd".to_string(),
+            value: "acme.com".to_string(),
+        }];
+        let claims = |v: serde_json::Value| v.as_object().unwrap().clone();
+        assert!(s.carries_required(&claims(serde_json::json!({"hd": "acme.com"}))));
+        assert!(!s.carries_required(&claims(serde_json::json!({"hd": "gmail.com"}))));
+        assert!(!s.carries_required(&claims(serde_json::json!({}))));
+        s.required_claims[0].claim = "groups".to_string();
+        assert!(s.carries_required(&claims(serde_json::json!({"groups": ["x", "acme.com"]}))));
     }
 
     #[test]

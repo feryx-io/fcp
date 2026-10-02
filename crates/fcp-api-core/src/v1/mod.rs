@@ -82,6 +82,10 @@ pub fn pre_auth_router(enable_signup: bool) -> Router<ApiState> {
         .route("/auth/sso/:id/start", get(sso::start))
         .route("/auth/sso/callback", get(sso::callback))
         .route("/auth/sso/exchange", post(sso::exchange))
+        .route(
+            "/auth/sso/:id/backchannel-logout",
+            post(sso::backchannel_logout),
+        )
         .route("/auth/refresh", post(auth_session::refresh))
         .route("/auth/logout", post(auth_session::logout))
         .route(

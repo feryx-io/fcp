@@ -435,6 +435,26 @@ Each phase is one PR based on main, with its admin UI and its docs.
        buttons and its landing, and the tenant form's password policy.
      - It is proved by `fcp_testkit::oidc::StandInIdp`, which signs RS256
        with a fixed test key.
+   - **3b done (v0.25.312)** (`docs/SSO.md` §5–§7).
+     - Back-channel logout:
+       - `POST /auth/sso/{id}/backchannel-logout` takes a `logout_token`,
+         verified like an ID token, issued in the last five minutes,
+         with the logout event, no `nonce`, and a `sub` or `sid`;
+       - it ends sessions by the provider's `sid` or by the person.
+       - Migration 094 adds `login_sessions.idp_provider_id`/`idp_sid`,
+         carried from the ID token through the handoff.
+     - Sites (Q11):
+       - `identity_providers` and `user_identities` are journaled and
+         in the slice; an identity's row id is generated as
+         `provider:subject`;
+       - the client secret crosses the link's mutual TLS and is sealed
+         with the site's key;
+       - the site's admin refuses provider writes;
+       - at a site, no just-in-time creation and no roles from groups.
+     - Two settings: `required_claims` (Google's `hd`, Entra's `tid`) and
+       `email_verified_claim` (`xms_edov` for Entra ID).
+     - Guides for Entra ID, Okta and Google Workspace.
+     - Phase 3 is complete.
 4. **SAML sign-in.**
    - SP metadata per provider, and IdP metadata imported.
    - Signed responses and assertions verified, with audience,

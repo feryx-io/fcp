@@ -11,7 +11,8 @@ use sqlx::{Pool, Postgres, Row};
 use std::time::SystemTime;
 
 const COLUMNS: &str = "id, tenant_id, user_id, method, created_at, refreshed_at, expires_at, \
-     revoked_at, revoked_reason, ip, user_agent, refresh_hash, previous_refresh_hash";
+     revoked_at, revoked_reason, ip, user_agent, refresh_hash, previous_refresh_hash, \
+     idp_provider_id, idp_sid";
 
 fn at(t: SystemTime) -> DateTime<Utc> {
     DateTime::<Utc>::from(t)
@@ -61,6 +62,12 @@ fn parse(row: &sqlx::postgres::PgRow) -> fcp_core::Result<LoginSession> {
         user_agent: row.get("user_agent"),
         refresh_hash: row.get("refresh_hash"),
         previous_refresh_hash: row.get("previous_refresh_hash"),
+        idp: row
+            .get::<Option<String>, _>("idp_provider_id")
+            .map(|provider_id| fcp_core::session::IdpSession {
+                provider_id,
+                sid: row.get("idp_sid"),
+            }),
     })
 }
 
@@ -69,8 +76,8 @@ impl LoginSessionStore for PostgresLoginSessionStore {
     async fn create_login_session(&self, s: &LoginSession) -> fcp_core::Result<()> {
         sqlx::query(
             "INSERT INTO login_sessions (id, tenant_id, user_id, method, created_at,
-                 refreshed_at, expires_at, ip, user_agent, refresh_hash)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+                 refreshed_at, expires_at, ip, user_agent, refresh_hash, idp_provider_id, idp_sid)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
         )
         .bind(s.id.to_string())
         .bind(s.tenant_id.to_string())
@@ -82,6 +89,8 @@ impl LoginSessionStore for PostgresLoginSessionStore {
         .bind(&s.ip)
         .bind(&s.user_agent)
         .bind(&s.refresh_hash)
+        .bind(s.idp.as_ref().map(|i| i.provider_id.clone()))
+        .bind(s.idp.as_ref().and_then(|i| i.sid.clone()))
         .execute(&self.pool)
         .await
         .map_err(store_error)?;
@@ -176,6 +185,34 @@ impl LoginSessionStore for PostgresLoginSessionStore {
         )
         .bind(user_id.to_string())
         .bind(keep.map(|k| k.to_string()))
+        .bind(at(now))
+        .bind(reason)
+        .execute(&self.pool)
+        .await
+        .map_err(store_error)?;
+        Ok(done.rows_affected())
+    }
+
+    async fn revoke_idp_sessions(
+        &self,
+        provider_id: &str,
+        user_id: Option<&UserId>,
+        sid: Option<&str>,
+        reason: &str,
+        now: SystemTime,
+    ) -> fcp_core::Result<u64> {
+        if user_id.is_none() && sid.is_none() {
+            return Ok(0);
+        }
+        let done = sqlx::query(
+            "UPDATE login_sessions SET revoked_at = $4, revoked_reason = $5
+             WHERE idp_provider_id = $1 AND revoked_at IS NULL
+               AND ($2::TEXT IS NULL OR user_id = $2)
+               AND ($3::TEXT IS NULL OR idp_sid = $3)",
+        )
+        .bind(provider_id)
+        .bind(user_id.map(|u| u.to_string()))
+        .bind(sid)
         .bind(at(now))
         .bind(reason)
         .execute(&self.pool)

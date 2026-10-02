@@ -7,8 +7,8 @@ use crate::PostgresStorage;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use fcp_core::identity::{
-    IdentityProvider, IdentityProviderId, IdentityStore, ProviderKind, SsoLogin, UserIdentity,
-    SSO_HANDOFF_TTL, SSO_LOGIN_TTL,
+    IdentityProvider, IdentityProviderId, IdentityStore, ProviderKind, SsoHandoff, SsoLogin,
+    UserIdentity, SSO_HANDOFF_TTL, SSO_LOGIN_TTL,
 };
 use fcp_core::{TenantId, UserId};
 use sqlx::Row;
@@ -199,6 +199,21 @@ impl IdentityStore for PostgresStorage {
         rows.iter().map(identity_from).collect()
     }
 
+    async fn list_tenant_identities(
+        &self,
+        tenant_id: &TenantId,
+    ) -> fcp_core::Result<Vec<UserIdentity>> {
+        let rows = sqlx::query(&format!(
+            "SELECT {IDENTITY_COLUMNS} FROM user_identities WHERE tenant_id = $1
+             ORDER BY provider_id, subject"
+        ))
+        .bind(tenant_id.to_string())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_error)?;
+        rows.iter().map(identity_from).collect()
+    }
+
     async fn delete_user_identity(
         &self,
         provider_id: &IdentityProviderId,
@@ -269,25 +284,20 @@ impl IdentityStore for PostgresStorage {
         Ok(fresh.then_some(login))
     }
 
-    async fn put_sso_handoff(
-        &self,
-        code_hash: &str,
-        user_id: &UserId,
-        provider_id: &IdentityProviderId,
-        now: SystemTime,
-    ) -> fcp_core::Result<()> {
+    async fn put_sso_handoff(&self, h: &SsoHandoff, now: SystemTime) -> fcp_core::Result<()> {
         sqlx::query("DELETE FROM sso_handoffs WHERE created_at < $1")
             .bind(at(now - SSO_HANDOFF_TTL))
             .execute(&self.pool)
             .await
             .map_err(store_error)?;
         sqlx::query(
-            "INSERT INTO sso_handoffs (code_hash, user_id, provider_id, created_at)
-             VALUES ($1, $2, $3, $4)",
+            "INSERT INTO sso_handoffs (code_hash, user_id, provider_id, idp_sid, created_at)
+             VALUES ($1, $2, $3, $4, $5)",
         )
-        .bind(code_hash)
-        .bind(user_id.to_string())
-        .bind(provider_id.to_string())
+        .bind(&h.code_hash)
+        .bind(h.user_id.to_string())
+        .bind(h.provider_id.to_string())
+        .bind(&h.idp_sid)
         .bind(at(now))
         .execute(&self.pool)
         .await
@@ -299,10 +309,10 @@ impl IdentityStore for PostgresStorage {
         &self,
         code_hash: &str,
         now: SystemTime,
-    ) -> fcp_core::Result<Option<(UserId, IdentityProviderId)>> {
+    ) -> fcp_core::Result<Option<SsoHandoff>> {
         let row = sqlx::query(
             "DELETE FROM sso_handoffs WHERE code_hash = $1 AND created_at >= $2
-             RETURNING user_id, provider_id",
+             RETURNING code_hash, user_id, provider_id, idp_sid",
         )
         .bind(code_hash)
         .bind(at(now - SSO_HANDOFF_TTL))
@@ -310,13 +320,17 @@ impl IdentityStore for PostgresStorage {
         .await
         .map_err(store_error)?;
         let Some(row) = row else { return Ok(None) };
-        Ok(Some((
-            row.get::<String, _>("user_id")
+        Ok(Some(SsoHandoff {
+            code_hash: row.get("code_hash"),
+            user_id: row
+                .get::<String, _>("user_id")
                 .parse()
                 .map_err(store_error)?,
-            row.get::<String, _>("provider_id")
+            provider_id: row
+                .get::<String, _>("provider_id")
                 .parse()
                 .map_err(store_error)?,
-        )))
+            idp_sid: row.get("idp_sid"),
+        }))
     }
 }

@@ -66,6 +66,17 @@ pub struct LoginSession {
     pub refresh_hash: String,
     /// SHA-256 of the one before it.
     pub previous_refresh_hash: Option<String>,
+    /// The identity provider it was begun through, and the provider's own
+    /// session, so the provider's back-channel logout can end it
+    /// (`docs/IDENTITY_AND_DEVICES.md` phase 3b).
+    pub idp: Option<IdpSession>,
+}
+
+/// A session's provider: its id, and the `sid` its ID token carried.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IdpSession {
+    pub provider_id: String,
+    pub sid: Option<String>,
 }
 
 impl LoginSession {
@@ -124,6 +135,18 @@ pub trait LoginSessionStore: Send + Sync {
 
     /// A user's live sessions, newest first.
     async fn list_user_sessions(&self, user_id: &UserId) -> crate::Result<Vec<LoginSession>>;
+
+    /// Revoke the live sessions begun through `provider_id` that are the
+    /// provider's session `sid`, or `user_id`'s, or both where both are
+    /// given (a back-channel logout); how many.
+    async fn revoke_idp_sessions(
+        &self,
+        provider_id: &str,
+        user_id: Option<&UserId>,
+        sid: Option<&str>,
+        reason: &str,
+        now: SystemTime,
+    ) -> crate::Result<u64>;
 
     /// Delete sessions that ended more than `keep` ago; how many.
     async fn sweep_ended_sessions(&self, keep: Duration) -> crate::Result<u64> {

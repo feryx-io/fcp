@@ -22,6 +22,10 @@ const CACHE_TTL: Duration = Duration::from_secs(3600);
 const JWKS_REFETCH: Duration = Duration::from_secs(60);
 /// The clock skew allowed between us and the provider.
 const SKEW_SECS: u64 = 60;
+/// How old a back-channel logout token may be.
+const LOGOUT_TOKEN_WINDOW_SECS: u64 = 300;
+/// The event a logout token carries.
+const LOGOUT_EVENT: &str = "http://schemas.openid.net/event/backchannel-logout";
 /// The weakest RSA key accepted.
 const MIN_RSA_BITS: usize = 2048;
 
@@ -343,6 +347,90 @@ impl OidcClient {
         now: SystemTime,
     ) -> Result<Map<String, Value>, OidcError> {
         let bad = |e: &str| OidcError::BadToken(e.to_string());
+        let claims = self.issued_to(discovery, client_id, token).await?;
+        let t = now.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+        match claims.get("exp").and_then(Value::as_u64) {
+            Some(exp) if exp + SKEW_SECS > t => {}
+            _ => return Err(bad("expired")),
+        }
+        if claims
+            .get("iat")
+            .and_then(Value::as_u64)
+            .is_some_and(|iat| iat > t + SKEW_SECS)
+        {
+            return Err(bad("issued in the future"));
+        }
+        match claims.get("nonce").and_then(Value::as_str) {
+            Some(n) if fcp_core::secret::constant_time_eq(n, nonce) => {}
+            _ => return Err(bad("not this sign-in's (nonce)")),
+        }
+        if claims
+            .get("sub")
+            .and_then(Value::as_str)
+            .is_none_or(str::is_empty)
+        {
+            return Err(bad("no subject"));
+        }
+        Ok(claims)
+    }
+
+    /// A back-channel logout token's claims, if it verifies (OpenID
+    /// Connect Back-Channel Logout 1.0 §2.6): signed like an ID token, for
+    /// this client, issued in the last few minutes, the logout event, no
+    /// `nonce`, and a `sub`, a `sid` or both.
+    pub async fn verify_logout(
+        &self,
+        discovery: &Discovery,
+        client_id: &str,
+        token: &str,
+        now: SystemTime,
+    ) -> Result<Map<String, Value>, OidcError> {
+        let bad = |e: &str| OidcError::BadToken(e.to_string());
+        let claims = self.issued_to(discovery, client_id, token).await?;
+        let t = now.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+        // Fresh: a captured token replayed later must not sign people out.
+        match claims.get("iat").and_then(Value::as_u64) {
+            Some(iat) if iat + LOGOUT_TOKEN_WINDOW_SECS > t && iat <= t + SKEW_SECS => {}
+            _ => return Err(bad("not a fresh logout token")),
+        }
+        if claims
+            .get("exp")
+            .and_then(Value::as_u64)
+            .is_some_and(|exp| exp + SKEW_SECS <= t)
+        {
+            return Err(bad("expired"));
+        }
+        let event = claims
+            .get("events")
+            .and_then(Value::as_object)
+            .is_some_and(|e| e.contains_key(LOGOUT_EVENT));
+        if !event {
+            return Err(bad("not a logout event"));
+        }
+        if claims.contains_key("nonce") {
+            return Err(bad("a logout token carries no nonce"));
+        }
+        let named = |c: &str| {
+            claims
+                .get(c)
+                .and_then(Value::as_str)
+                .is_some_and(|s| !s.is_empty())
+        };
+        if !named("sub") && !named("sid") {
+            return Err(bad("a logout token names a sub or a sid"));
+        }
+        Ok(claims)
+    }
+
+    /// A JWS's claims if a key of the issuer's signed it, the issuer is
+    /// `discovery`'s, and it is for `client_id`.
+    async fn issued_to(
+        &self,
+        discovery: &Discovery,
+        client_id: &str,
+        token: &str,
+    ) -> Result<Map<String, Value>, OidcError> {
+        let bad = |e: &str| OidcError::BadToken(e.to_string());
         let mut parts = token.split('.');
         let (Some(h), Some(p), Some(s), None) =
             (parts.next(), parts.next(), parts.next(), parts.next())
@@ -387,29 +475,6 @@ impl OidcClient {
         }
         if audiences.len() > 1 && claims.get("azp").and_then(Value::as_str) != Some(client_id) {
             return Err(bad("issued to another party"));
-        }
-        let t = now.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
-        match claims.get("exp").and_then(Value::as_u64) {
-            Some(exp) if exp + SKEW_SECS > t => {}
-            _ => return Err(bad("expired")),
-        }
-        if claims
-            .get("iat")
-            .and_then(Value::as_u64)
-            .is_some_and(|iat| iat > t + SKEW_SECS)
-        {
-            return Err(bad("issued in the future"));
-        }
-        match claims.get("nonce").and_then(Value::as_str) {
-            Some(n) if fcp_core::secret::constant_time_eq(n, nonce) => {}
-            _ => return Err(bad("not this sign-in's (nonce)")),
-        }
-        if claims
-            .get("sub")
-            .and_then(Value::as_str)
-            .is_none_or(str::is_empty)
-        {
-            return Err(bad("no subject"));
         }
         Ok(claims)
     }
@@ -614,6 +679,41 @@ mod tests {
         assert!(verify(format!("{hs}.{}.{}", parts[1], parts[2]))
             .await
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn a_logout_token_is_fresh_names_someone_and_is_no_id_token() {
+        let (idp, client, d) = provider().await;
+        let verify = |token: String| {
+            let (client, d) = (&client, &d);
+            async move {
+                client
+                    .verify_logout(d, "fcp", &token, SystemTime::now())
+                    .await
+            }
+        };
+        assert_eq!(
+            verify(idp.logout_token(Some("u1"), None)).await.unwrap()["sub"],
+            "u1"
+        );
+        assert!(verify(idp.logout_token(None, Some("s1"))).await.is_ok());
+        assert!(verify(idp.logout_token(None, None)).await.is_err());
+
+        let t = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let event = json!({"http://schemas.openid.net/event/backchannel-logout": {}});
+        // An ID token (no event, a nonce) is not a logout token.
+        assert!(verify(idp.sign(&claims(&idp, json!({})))).await.is_err());
+        let stale =
+            json!({"iss": idp.issuer, "aud": "fcp", "sub": "u1", "iat": t - 3600, "events": event});
+        assert!(verify(idp.sign(&stale)).await.is_err());
+        let with_nonce = json!({"iss": idp.issuer, "aud": "fcp", "sub": "u1", "iat": t, "events": event, "nonce": "n"});
+        assert!(verify(idp.sign(&with_nonce)).await.is_err());
+        let other =
+            json!({"iss": idp.issuer, "aud": "other", "sub": "u1", "iat": t, "events": event});
+        assert!(verify(idp.sign(&other)).await.is_err());
     }
 
     #[tokio::test]

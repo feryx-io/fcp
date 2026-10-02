@@ -33,12 +33,14 @@ interface Form {
   group_roles: string
   jit: boolean
   link_by_email: boolean
+  email_verified_claim: string
+  required_claims: string
 }
 
 const blank: Form = {
   name: '', enabled: true, issuer: '', client_id: '', client_secret: '', scopes: 'profile email',
   username_claim: 'preferred_username', email_claim: 'email', name_claim: 'name', groups_claim: 'groups',
-  group_roles: '', jit: false, link_by_email: true,
+  group_roles: '', jit: false, link_by_email: true, email_verified_claim: 'email_verified', required_claims: '',
 }
 
 function formOf(p: IdentityProvider): Form {
@@ -50,7 +52,18 @@ function formOf(p: IdentityProvider): Form {
     name_claim: s.claims?.display_name ?? 'name', groups_claim: s.claims?.groups ?? 'groups',
     group_roles: (s.group_roles ?? []).map((g) => `${g.group} ${g.role}`).join('\n'),
     jit: s.jit ?? false, link_by_email: s.link_by_email ?? true,
+    email_verified_claim: s.email_verified_claim ?? 'email_verified',
+    required_claims: (s.required_claims ?? []).map((r) => `${r.claim} ${r.value}`).join('\n'),
   }
+}
+
+/** "claim value" per line. */
+function parseRequiredClaims(text: string) {
+  return text.split('\n').map((l) => l.trim()).filter(Boolean).map((line) => {
+    const at = line.indexOf(' ')
+    if (at < 0) throw new Error(`"${line}": write the claim, a space, then the value`)
+    return { claim: line.slice(0, at), value: line.slice(at + 1).trim() }
+  })
 }
 
 /** "group role" per line; a group with spaces keeps them, the role is the last word. */
@@ -76,6 +89,8 @@ function requestOf(f: Form, editing: boolean): IdentityProviderRequest {
       group_roles: parseGroupRoles(f.group_roles),
       jit: f.jit,
       link_by_email: f.link_by_email,
+      email_verified_claim: f.email_verified_claim.trim() || 'email_verified',
+      required_claims: parseRequiredClaims(f.required_claims),
     },
     // Editing, a blank secret keeps the one the provider has.
     client_secret: f.client_secret ? f.client_secret : editing ? undefined : null,
@@ -173,6 +188,12 @@ export function IdentityProvidersPage() {
             {p.redirect_uri
               ? <div>Redirect URI to register: <span className="break-all font-mono">{p.redirect_uri}</span></div>
               : <div className="text-amber-600">Single sign-on is off on this server: set [api.sso] public_url.</div>}
+            {p.backchannel_logout_uri && (
+              <div>Back-channel logout URI: <span className="break-all font-mono">{p.backchannel_logout_uri}</span></div>
+            )}
+            {(p.settings.required_claims ?? []).length > 0 && (
+              <div>Only tokens with: {(p.settings.required_claims ?? []).map((r) => `${r.claim} = ${r.value}`).join(', ')}</div>
+            )}
             {(p.settings.group_roles ?? []).length > 0 && (
               <div>Roles by group: {(p.settings.group_roles ?? []).map((g) => `${g.group} → ${g.role}`).join(', ')}</div>
             )}
@@ -214,6 +235,23 @@ export function IdentityProvidersPage() {
                 One per line: the group, then the role. With any set, a user's role follows their groups at every
                 sign-in (the most privileged wins; none mapped is end_user).
               </p>
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="idp-required">Required claims</Label>
+              <textarea
+                id="idp-required" rows={2} placeholder="hd acme.com"
+                className="flex w-full rounded-md border border-input bg-background px-3 py-2 font-mono text-sm"
+                {...field('required_claims')}
+              />
+              <p className="text-xs text-muted-foreground">
+                One per line: the claim, then the value every token must carry — Google's <code>hd</code> (your Workspace
+                domain), Entra's <code>tid</code> (your directory).
+              </p>
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="idp-ev">Verified-email claim</Label>
+              <Input id="idp-ev" {...field('email_verified_claim')} />
+              <p className="text-xs text-muted-foreground"><code>email_verified</code>; <code>xms_edov</code> for Entra ID.</p>
             </div>
             <div className="flex items-center justify-between"><Label htmlFor="idp-jit">Create users at their first sign-in</Label><Switch id="idp-jit" checked={form.jit} onCheckedChange={(v) => setForm({ ...form, jit: v })} /></div>
             <div className="flex items-center justify-between"><Label htmlFor="idp-link">Link existing users by verified email</Label><Switch id="idp-link" checked={form.link_by_email} onCheckedChange={(v) => setForm({ ...form, link_by_email: v })} /></div>

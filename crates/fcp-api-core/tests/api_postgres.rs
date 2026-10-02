@@ -116,19 +116,32 @@ impl App {
     }
 
     async fn build(mode: DeploymentMode, conference_url: Option<String>) -> Option<Self> {
-        Self::build_with(mode, conference_url, false).await
+        Self::build_with(mode, conference_url, false, None).await
     }
 
     /// An app whose webhooks may name loopback and private addresses, so a
     /// test's own receiver can be one (`[webhooks] allow_private_targets`).
     async fn with_private_webhooks() -> Option<Self> {
-        Self::build_with(DeploymentMode::default(), None, true).await
+        Self::build_with(DeploymentMode::default(), None, true, None).await
+    }
+
+    /// An app that is a site of a cloud (`[api] managed_by`): synced
+    /// objects are the cloud's, and its users come from there.
+    async fn as_site() -> Option<Self> {
+        Self::build_with(
+            DeploymentMode::default(),
+            None,
+            false,
+            Some("https://cloud.test".to_string()),
+        )
+        .await
     }
 
     async fn build_with(
         mode: DeploymentMode,
         conference_url: Option<String>,
         private_webhooks: bool,
+        managed_by: Option<String>,
     ) -> Option<Self> {
         let admin_url = std::env::var("FCP_TEST_DATABASE_URL").ok()?;
         let db_name = format!("fcp_test_{}", Uuid::new_v4().simple());
@@ -263,6 +276,7 @@ impl App {
             tenant_a,
         )
         .with_deployment_mode(mode)
+        .with_managed_by(managed_by)
         .with_conference_server_url(conference_url)
         .with_conference_server_auth_token(Some(CONFERENCE_TOKEN.to_string()))
         .with_profile_pictures_dir(dir.path().join("avatars"))
@@ -10432,6 +10446,230 @@ async fn passwords_can_be_kept_from_a_tenant_once_it_has_a_provider() {
         app.admin(Method::DELETE, &path, None).await.status,
         StatusCode::NO_CONTENT
     );
+
+    app.finish().await;
+}
+
+#[tokio::test]
+async fn a_providers_back_channel_logout_ends_the_sessions_it_names() {
+    let app = require_app!();
+    let idp = StandInIdp::start(IDP_CLIENT, Some(IDP_SECRET))
+        .await
+        .unwrap();
+    let provider = app.make_provider(&idp, json!({"jit": true})).await;
+    let shown = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/identity-providers/{provider}"),
+            None,
+        )
+        .await;
+    let path = format!("/api/v1/auth/sso/{provider}/backchannel-logout");
+    assert_eq!(
+        shown.json["backchannel_logout_uri"],
+        format!("{SSO_PUBLIC_URL}{path}"),
+        "{}",
+        shown.text
+    );
+
+    // Two sign-ins, two of the provider's sessions.
+    let mut sessions = Vec::new();
+    for sid in ["s-1", "s-2"] {
+        let landing = app
+            .sso_landing(
+                &idp,
+                &provider,
+                json!({"sub": "kim-1", "preferred_username": "kim", "sid": sid}),
+            )
+            .await;
+        let signed_in = app.sso_exchange(&landing).await;
+        assert_eq!(signed_in.status, StatusCode::OK, "{}", signed_in.text);
+        sessions.push(refresh_cookie(&signed_in).unwrap());
+    }
+    let refreshes = |cookie: String| {
+        let app = &app;
+        async move {
+            app.with_cookie(Method::POST, "/api/v1/auth/refresh", &cookie)
+                .await
+                .status
+        }
+    };
+    let logout = |token: String| {
+        let app = &app;
+        let path = path.clone();
+        async move {
+            app.send_raw(
+                "unused",
+                Method::POST,
+                &path,
+                "application/x-www-form-urlencoded",
+                format!("logout_token={token}").into_bytes(),
+            )
+            .await
+        }
+    };
+
+    // A forged token ends nothing.
+    let forged =
+        logout(idp.sign(&json!({"iss": idp.issuer, "aud": IDP_CLIENT, "sid": "s-1"}))).await;
+    assert_eq!(forged.status, StatusCode::BAD_REQUEST, "{}", forged.text);
+    assert_eq!(refreshes(sessions[0].clone()).await, StatusCode::OK);
+
+    // The provider's session s-1 ends; s-2 goes on.
+    let one = logout(idp.logout_token(None, Some("s-1"))).await;
+    assert_eq!(one.status, StatusCode::OK, "{}", one.text);
+    assert_eq!(one.headers["cache-control"], "no-store");
+    assert_eq!(
+        refreshes(sessions[0].clone()).await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(refreshes(sessions[1].clone()).await, StatusCode::OK);
+
+    // The person signs out at the provider: every session of theirs ends.
+    let all = logout(idp.logout_token(Some("kim-1"), None)).await;
+    assert_eq!(all.status, StatusCode::OK, "{}", all.text);
+    assert_eq!(
+        refreshes(sessions[1].clone()).await,
+        StatusCode::UNAUTHORIZED
+    );
+
+    app.finish().await;
+}
+
+#[tokio::test]
+async fn a_provider_signs_in_only_the_people_its_tenant_meant() {
+    let app = require_app!();
+    let idp = StandInIdp::start(IDP_CLIENT, Some(IDP_SECRET))
+        .await
+        .unwrap();
+    // A Google Workspace: only the domain's accounts; Entra's verified
+    // email claim.
+    let provider = app
+        .make_provider(
+            &idp,
+            json!({
+                "jit": false,
+                "required_claims": [{"claim": "hd", "value": "acme.test"}],
+                "email_verified_claim": "xms_edov",
+            }),
+        )
+        .await;
+    app.admin(
+        Method::POST,
+        "/api/v1/users",
+        Some(json!({"username": "lee", "email": "lee@acme.test"})),
+    )
+    .await;
+    let error = |landing: &str| query_param(landing, "sso_error").unwrap_or_default();
+
+    let personal = app
+        .sso_landing(
+            &idp,
+            &provider,
+            json!({"sub": "l", "email": "lee@acme.test", "xms_edov": true, "hd": "gmail.com"}),
+        )
+        .await;
+    assert_eq!(error(&personal), "claim_mismatch");
+    // `email_verified` is not the claim this provider verifies with.
+    let unverified = app
+        .sso_landing(&idp, &provider, json!({"sub": "l", "email": "lee@acme.test", "email_verified": true, "hd": "acme.test"}))
+        .await;
+    assert_eq!(error(&unverified), "not_provisioned");
+    let landing = app
+        .sso_landing(
+            &idp,
+            &provider,
+            json!({"sub": "l", "email": "lee@acme.test", "xms_edov": true, "hd": "acme.test"}),
+        )
+        .await;
+    let signed_in = app.sso_exchange(&landing).await;
+    assert_eq!(
+        signed_in.json["user"]["username"], "lee",
+        "{landing} {}",
+        signed_in.text
+    );
+
+    app.finish().await;
+}
+
+#[tokio::test]
+async fn a_site_signs_its_people_in_but_neither_makes_them_nor_sets_their_roles() {
+    let Some(app) = App::as_site().await else {
+        eprintln!("FCP_TEST_DATABASE_URL not set; skipping");
+        return;
+    };
+    let idp = StandInIdp::start(IDP_CLIENT, Some(IDP_SECRET))
+        .await
+        .unwrap();
+    // At a site the provider arrives by the link; the site's admin may not
+    // make one.
+    let refused = app
+        .admin(
+            Method::POST,
+            "/api/v1/identity-providers",
+            Some(json!({"name": "x", "settings": {"issuer": idp.issuer, "client_id": IDP_CLIENT}})),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.text);
+    let now = std::time::SystemTime::now();
+    let provider = fcp_core::identity::IdentityProvider {
+        id: fcp_core::identity::IdentityProviderId::new(),
+        tenant_id: app.tenant_a,
+        name: "Acme SSO".to_string(),
+        kind: fcp_core::identity::ProviderKind::Oidc,
+        enabled: true,
+        settings: serde_json::from_value(json!({
+            "issuer": idp.issuer, "client_id": IDP_CLIENT, "jit": true,
+            "group_roles": [{"group": "it", "role": "tenant_admin"}],
+        }))
+        .unwrap(),
+        client_secret: Some(IDP_SECRET.to_string()),
+        created_at: now,
+        updated_at: now,
+    };
+    fcp_core::identity::IdentityStore::put_identity_provider(app.storage.as_ref(), &provider)
+        .await
+        .unwrap();
+    let id = provider.id.to_string();
+
+    // A stranger is not made here, whatever the provider says.
+    let landing = app
+        .sso_landing(
+            &idp,
+            &id,
+            json!({"sub": "n", "preferred_username": "newcomer"}),
+        )
+        .await;
+    assert_eq!(
+        query_param(&landing, "sso_error").unwrap_or_default(),
+        "not_provisioned"
+    );
+
+    // A user the cloud made (written by the store, as the link writes)
+    // signs in, and keeps the role the cloud gave.
+    let ana: fcp_core::User = serde_json::from_value(json!({
+        "username": "ana", "password": "", "enabled": true,
+        "created_at": 1_700_000_000, "updated_at": 1_700_000_000,
+        "email": "ana@acme.test", "tenant_id": app.tenant_a, "role": "end_user",
+    }))
+    .unwrap();
+    fcp_core::CredentialStore::put_user(app.storage.as_ref(), ana)
+        .await
+        .unwrap();
+    let landing = app
+        .sso_landing(
+            &idp,
+            &id,
+            json!({"sub": "a", "email": "ana@acme.test", "email_verified": true, "groups": ["it"]}),
+        )
+        .await;
+    let signed_in = app.sso_exchange(&landing).await;
+    assert_eq!(
+        signed_in.json["user"]["username"], "ana",
+        "{landing} {}",
+        signed_in.text
+    );
+    assert_eq!(signed_in.json["user"]["role"], "end_user");
 
     app.finish().await;
 }

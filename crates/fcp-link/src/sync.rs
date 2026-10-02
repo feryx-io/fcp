@@ -71,7 +71,8 @@ pub async fn open_site(database_url: &str, max_connections: u32) -> Result<SiteS
         .with_prompt_store(prompt_store as Arc<dyn fcp_core::prompt::PromptStore>)
         .with_config_template_store(
             storage.clone() as Arc<dyn fcp_core::storage::ConfigTemplateStore>
-        );
+        )
+        .with_identity_store(storage.clone() as Arc<dyn fcp_core::identity::IdentityStore>);
     Ok(SiteStores {
         storage: Arc::new(dyn_storage),
         flows: storage as Arc<dyn FlowStore>,
@@ -382,6 +383,16 @@ impl Syncer {
                 let config: fcp_core::e911::EmergencyConfig = parse!();
                 emergency.put_emergency_config(&config).await?
             }
+            "identity_providers" => {
+                let store = storage.identity_store().context("no identity store")?;
+                let provider: fcp_core::identity::IdentityProvider = parse!();
+                store.put_identity_provider(&provider).await?
+            }
+            "user_identities" => {
+                let store = storage.identity_store().context("no identity store")?;
+                let identity: fcp_core::identity::UserIdentity = parse!();
+                store.put_user_identity(&identity).await?
+            }
             "rate_plans" => {
                 #[derive(Deserialize)]
                 struct PlanWithRates {
@@ -487,6 +498,19 @@ impl Syncer {
             "rate_plans" => {
                 let plan_id: uuid::Uuid = id!();
                 storage.delete_rate_plan(&self.tenant, plan_id).await?
+            }
+            "identity_providers" => {
+                let store = storage.identity_store().context("no identity store")?;
+                store.delete_identity_provider(&id!()).await?;
+            }
+            "user_identities" => {
+                let store = storage.identity_store().context("no identity store")?;
+                match fcp_core::identity::UserIdentity::parse_row_id(id) {
+                    Some((provider, subject)) => {
+                        store.delete_user_identity(&provider, &subject).await?;
+                    }
+                    None => warn!(table, id, "An id the link cannot parse; skipped"),
+                }
             }
             other => {
                 warn!(

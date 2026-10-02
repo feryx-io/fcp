@@ -19,7 +19,7 @@ use crate::{
     error::ApiError,
     oidc::{Begun, OidcError},
     state::{ApiState, SsoRuntime},
-    v1::auth_session::{complete_sign_in, publish},
+    v1::auth_session::{complete_sign_in_through, publish},
 };
 use axum::{
     extract::{Path, Query, State},
@@ -280,7 +280,15 @@ pub async fn callback(
     };
     let handoff = crate::oidc::random_token();
     store
-        .put_sso_handoff(&hash(&handoff), &user.id, &provider.id, SystemTime::now())
+        .put_sso_handoff(
+            &fcp_core::identity::SsoHandoff {
+                code_hash: hash(&handoff),
+                user_id: user.id,
+                provider_id: provider.id,
+                idp_sid: claim_str(&claims, "sid"),
+            },
+            SystemTime::now(),
+        )
         .await?;
     Ok(landing("sso_code", &handoff))
 }
@@ -311,8 +319,8 @@ fn claim_groups(claims: &Map<String, Value>, name: &str) -> Option<Vec<String>> 
     }
 }
 
-fn email_verified(claims: &Map<String, Value>) -> bool {
-    match claims.get("email_verified") {
+fn email_verified(claims: &Map<String, Value>, claim: &str) -> bool {
+    match claims.get(claim) {
         Some(Value::Bool(b)) => *b,
         // Some providers send it as a string.
         Some(Value::String(s)) => s == "true",
@@ -350,11 +358,19 @@ async fn resolve_user(
     let store = identity_store(state).map_err(internal)?;
     let mapping = &provider.settings.claims;
     let subject = claim_str(claims, "sub").ok_or(Refusal("bad_id_token", None))?;
+    // A site's users come from the cloud (docs/HYBRID_CONTROL_PLANE.md):
+    // it links them, but neither makes them nor sets their roles.
+    let at_site = state.managed_by.is_some();
     let email = claim_str(claims, &mapping.email);
     let username_claim = claim_str(claims, &mapping.username);
     let display_name = claim_str(claims, &mapping.display_name);
     let named = username_claim.clone().or_else(|| email.clone());
     let refuse = |reason: &'static str| Refusal(reason, named.clone());
+    // Only the people the tenant meant: its Workspace domain, its
+    // directory.
+    if !provider.settings.carries_required(claims) {
+        return Err(refuse("claim_mismatch"));
+    }
 
     let known = store
         .get_user_identity(&provider.id, &subject)
@@ -373,7 +389,10 @@ async fn resolve_user(
 
     // Someone the provider vouches for, new here: their verified email
     // links the user that has it, if exactly one does.
-    if user.is_none() && provider.settings.link_by_email && email_verified(claims) {
+    if user.is_none()
+        && provider.settings.link_by_email
+        && email_verified(claims, &provider.settings.email_verified_claim)
+    {
         if let Some(email) = &email {
             let found = storage
                 .find_users_by_email_in_tenant(email, &provider.tenant_id)
@@ -392,7 +411,7 @@ async fn resolve_user(
 
     let mut user = match user {
         Some(user) => user,
-        None if provider.settings.jit => {
+        None if provider.settings.jit && !at_site => {
             let username = username_claim
                 .as_deref()
                 .and_then(jit_username)
@@ -449,8 +468,13 @@ async fn resolve_user(
         return Err(refuse("super_admin"));
     }
 
-    // The provider's groups decide the role, where it maps any.
-    if let (Some(role), false) = (mapped_role, provider.settings.group_roles.is_empty()) {
+    // The provider's groups decide the role, where it maps any — at the
+    // cloud, the users' system of record.
+    if let (Some(role), false, false) = (
+        mapped_role,
+        provider.settings.group_roles.is_empty(),
+        at_site,
+    ) {
         if user.role != role {
             tracing::info!(username = %user.username, from = ?user.role, to = ?role, "Role set by the identity provider's groups");
             user.role = role;
@@ -504,12 +528,12 @@ pub async fn exchange(
     Json(req): Json<SsoExchangeRequest>,
 ) -> Result<Response, ApiError> {
     let expired = || ApiError::Unauthorized("Sign in again".to_string());
-    let (user_id, _provider) = identity_store(&state)?
+    let handoff = identity_store(&state)?
         .take_sso_handoff(&hash(&req.code), SystemTime::now())
         .await?
         .ok_or_else(expired)?;
     let user = storage(&state)?
-        .get_user_by_id(&user_id)
+        .get_user_by_id(&handoff.user_id)
         .await?
         .filter(session::user_is_active)
         .ok_or_else(expired)?;
@@ -517,10 +541,118 @@ pub async fn exchange(
         username: user.username.clone(),
         tenant_id: Some(user.tenant_id),
     };
-    let mut response =
-        complete_sign_in(&state, &headers, user, session::method::OIDC, None).await?;
+    let idp = session::IdpSession {
+        provider_id: handoff.provider_id.to_string(),
+        sid: handoff.idp_sid,
+    };
+    let mut response = complete_sign_in_through(
+        &state,
+        &headers,
+        user,
+        session::method::OIDC,
+        None,
+        Some(idp),
+    )
+    .await?;
     response.extensions_mut().insert(subject);
     Ok(response)
+}
+
+/// A provider's back-channel logout request.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct BackchannelLogoutForm {
+    pub logout_token: String,
+}
+
+/// POST /api/v1/auth/sso/{id}/backchannel-logout — the provider says a
+/// person signed out there (OpenID Connect Back-Channel Logout 1.0): the
+/// sessions begun through it as that provider session (`sid`), or all of
+/// that person's (`sub`), end.
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/sso/{id}/backchannel-logout",
+    tag = "auth_session",
+    operation_id = "auth_session_sso_backchannel_logout",
+    params(("id" = String, Path, description = "The identity provider")),
+    request_body(content = BackchannelLogoutForm, content_type = "application/x-www-form-urlencoded"),
+    responses(
+        (status = 200, description = "The sessions it names are ended"),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn backchannel_logout(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    axum::Form(form): axum::Form<BackchannelLogoutForm>,
+) -> Result<Response, ApiError> {
+    let sso = sso(&state)?.clone();
+    let store = identity_store(&state)?;
+    let not_found = || ApiError::NotFound("No such identity provider".to_string());
+    let id: IdentityProviderId = id.parse().map_err(|_| not_found())?;
+    let provider = store
+        .get_identity_provider(&id)
+        .await?
+        .ok_or_else(not_found)?;
+    let discovery = sso
+        .client
+        .discovery(&provider.settings.issuer)
+        .await
+        .map_err(|e| ApiError::ServiceUnavailable(e.to_string()))?;
+    let claims = sso
+        .client
+        .verify_logout(
+            &discovery,
+            &provider.settings.client_id,
+            &form.logout_token,
+            SystemTime::now(),
+        )
+        .await
+        .map_err(|e| {
+            tracing::warn!(provider = %provider.id, error = %e, "A back-channel logout refused");
+            ApiError::BadRequest(e.to_string())
+        })?;
+    let sid = claim_str(&claims, "sid");
+    let user = match claim_str(&claims, "sub") {
+        Some(sub) => store
+            .get_user_identity(&provider.id, &sub)
+            .await?
+            .map(|i| i.user_id),
+        None => None,
+    };
+    // A `sub` nobody here is: nothing to end, unless the `sid` names a
+    // session on its own.
+    if user.is_none() && sid.is_none() {
+        return Ok(no_store(StatusCode::OK));
+    }
+    let ended = match state
+        .storage
+        .as_ref()
+        .and_then(|s| s.login_session_store().cloned())
+    {
+        Some(sessions) => {
+            sessions
+                .revoke_idp_sessions(
+                    &provider.id.to_string(),
+                    user.as_ref(),
+                    sid.as_deref(),
+                    "signed out at the identity provider",
+                    SystemTime::now(),
+                )
+                .await?
+        }
+        None => 0,
+    };
+    tracing::info!(provider = %provider.id, ended, "Back-channel logout");
+    Ok(no_store(StatusCode::OK))
+}
+
+/// A response the provider must not cache (Back-Channel Logout §2.8).
+fn no_store(status: StatusCode) -> Response {
+    let mut response = status.into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
 }
 
 // ---- The tenant's providers ----
@@ -541,6 +673,9 @@ pub struct IdentityProviderResponse {
     /// absent where `[api.sso] public_url` is not set.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub redirect_uri: Option<String>,
+    /// The address to register as its back-channel logout URI.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backchannel_logout_uri: Option<String>,
     #[serde(with = "crate::time::rfc3339")]
     #[schema(value_type = String, format = DateTime)]
     pub created_at: SystemTime,
@@ -560,6 +695,12 @@ impl IdentityProviderResponse {
             settings: p.settings,
             has_client_secret: p.client_secret.is_some(),
             redirect_uri: state.sso.as_ref().map(|s| s.redirect_uri()),
+            backchannel_logout_uri: state.sso.as_ref().map(|s| {
+                format!(
+                    "{}/api/v1/auth/sso/{}/backchannel-logout",
+                    s.public_url, p.id
+                )
+            }),
             created_at: p.created_at,
             updated_at: p.updated_at,
         }
